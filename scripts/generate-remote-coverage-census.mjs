@@ -153,7 +153,10 @@ const BATCHES = [
       "unified_chat_commands",
       "agent_sidebar_commands",
       "agent_composer_commands",
-      "conversation_stats_commands",
+      // `conversation_stats_commands` was a B2 module and is now fully classified — PR 3.1-b
+      // batch 3 registered all four usage-aggregate reads at `ui:read`. It is dropped from
+      // the plan because the plan enumerates REMAINING gap work; the completion is recorded
+      // in `work` below so it does not read as a silently abandoned module.
       "conversation_folder_reference_commands",
       "agent_model_commands",
     ],
@@ -162,6 +165,7 @@ const BATCHES = [
       "Split the module by authority: the send/steer commands register as `AgentControl`; the publish/PR surface (`publish_agent_conversation_workspace`, `update_agent_conversation_workspace_from_base`, `close_agent_workspace_pr`) stays denied, and `set_agent_conversation_workspace_auto_publish` is an already-proven detector-(c) rejection.",
       "Verify per command that the process-launch sink sits BEYOND the steer-sink cut (`chat_service.send_message`) rather than inside the command's own closure — the cut is what makes chat send registerable while `resume_task` is not. Any command whose own closure resolves a CLI path is a detector-(c) rejection, not a registration.",
       "P-4 rows must cover `SendAgentMessageInput`'s optional/override fields (the `runtimeOverride` vs legacy-field rejection is an error-path parity row).",
+      "DONE (PR 3.1-b batch 3): `conversation_stats_commands` — all four usage-aggregate reads registered at `ui:read`, so the module no longer appears in this batch's module list. Batch 3's `probe_b2_module_batch_audit` also published detector output for every remaining B2 member; start from it rather than re-deriving. Its headline finding: `get_agent_conversation`, `get_agent_conversation_messages_page` and `get_agent_conversation_timeline_page` — the three transcript reads PR 3.2 needs — all fire detector (a), so they are NOT free reads and need their own hand-trace.",
     ],
     gate: "P-17 green; C-9 dual-lens review recorded; the five 2.6-surfaced ops resolve per this census's `resolvedItems.unregisteredUiAgentOps`.",
   },

@@ -98,6 +98,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: [],
     pins: [],
   },
+  "get_agent_conversation_stats": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
   "get_archived_count": {
     opClass: "read",
     argumentSensitive: false,
@@ -111,6 +117,18 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     pins: [],
   },
   "get_global_execution_settings": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_insights_chat_usage_stats": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_project_chat_usage_stats": {
     opClass: "read",
     argumentSensitive: false,
     capabilities: [],
@@ -135,6 +153,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     pins: [],
   },
   "get_task_agent_workspace": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_task_chat_usage_stats": {
     opClass: "read",
     argumentSensitive: false,
     capabilities: [],

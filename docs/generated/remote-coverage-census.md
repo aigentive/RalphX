@@ -6,7 +6,7 @@
 ## 1. Scan state
 
 ```
-PASS: remote transport drift — 499 invoke command name(s), 0 dynamic, 0 seam bypasses; 428 unclassified (baseline, → 0 in PR 3.1).
+PASS: remote transport drift — 499 invoke command name(s), 0 dynamic, 0 seam bypasses; 424 unclassified (baseline, → 0 in PR 3.1).
 ```
 
 | Measure | Count | Source |
@@ -14,10 +14,10 @@ PASS: remote transport drift — 499 invoke command name(s), 0 dynamic, 0 seam b
 | Invoke command names in `frontend/src` | 499 | drift scan (AST) |
 | Dynamic / unresolvable expressions | 0 | drift scan — must stay 0 |
 | Transport seam bypasses | 0 | drift scan — must stay 0 |
-| Remote-registered (`remote_commands!`) | 43 | `docs/generated/remote-commands.json` |
+| Remote-registered (`remote_commands!`) | 47 | `docs/generated/remote-commands.json` |
 | Reason-coded local-only rows | 29 | `frontend/src/lib/remote/local-only-commands.ts` |
 | Ledger rows (exhaustive over `generate_handler!`) | 541 | `docs/generated/remote-commands.json` |
-| **Unclassified — the 3.1 gap** | **428** | `scripts/remote-transport-drift-baseline.json` |
+| **Unclassified — the 3.1 gap** | **424** | `scripts/remote-transport-drift-baseline.json` |
 
 ## 2. What the gap is made of
 
@@ -25,15 +25,15 @@ The gap is not 447 registrations. Routing each name mechanically through the led
 
 | Disposition | Count | Rule |
 |---|---|---|
-| register-candidate | 266 | ledgered AgentControl (or lower) with no SpawnsProcess capability — eligible for a hand-audited `remote_commands!` entry under `ui:agent` |
+| register-candidate | 262 | ledgered AgentControl (or lower) with no SpawnsProcess capability — eligible for a hand-audited `remote_commands!` entry under `ui:agent` |
 | host-denied (class: denied) | 87 | `class_permits` returns false for Denied at any capability set — registering it fails compilation. Resolves for P-11 through the manifest, never through a local-only reason (phase doc key point 6) |
 | host-denied (SpawnsProcess) | 49 | carries `SpawnsProcess`; `class_permits(AgentControl, [SpawnsProcess])` is false and Elevated is a v1 non-goal, so it is not exposable on the v1 facade at any scope (`remote_server/registry.rs` detector-(c) note) |
 | v1-deferred (Elevated) | 26 | ledgered Elevated without SpawnsProcess — reachable only under `ui:elevated`, which §1 excludes from v1; deferred, not denied |
 | orphan invoke (no local handler) | 0 | invoked by the frontend but absent from `generate_handler!` and from the ledger — it cannot be registered remotely because it does not exist locally either |
 
-**162 of the 428 gap names can never be registered in v1** — they are host-side commands the facade denies or defers. They are not client-local either, so today's scan (registered OR local-only) has no way to classify them and P-11 cannot reach zero. Phase-doc key point 6 fixes the intended resolution: they resolve through the ledger rows the manifest renders. **That mechanism does not exist yet — it is batch B0, and it blocks every other batch's measurable progress.**
+**162 of the 424 gap names can never be registered in v1** — they are host-side commands the facade denies or defers. They are not client-local either, so today's scan (registered OR local-only) has no way to classify them and P-11 cannot reach zero. Phase-doc key point 6 fixes the intended resolution: they resolve through the ledger rows the manifest renders. **That mechanism does not exist yet — it is batch B0, and it blocks every other batch's measurable progress.**
 
-**266 names are registration candidates**, and `register-candidate` means eligible for a hand audit, not approved: detector (c) has already rejected ledgered-`AgentControl` commands whose process authority the manifest cannot see (`resume_task`, `apply_proposals_to_kanban`, `set_agent_conversation_workspace_auto_publish`). Expect a non-empty rejection subset in every registration batch.
+**262 names are registration candidates**, and `register-candidate` means eligible for a hand audit, not approved: detector (c) has already rejected ledgered-`AgentControl` commands whose process authority the manifest cannot see (`resume_task`, `apply_proposals_to_kanban`, `set_agent_conversation_workspace_auto_publish`). Expect a non-empty rejection subset in every registration batch.
 
 ## 3. Recommended batch order
 
@@ -41,7 +41,7 @@ The gap is not 447 registrations. Routing each name mechanically through the led
 |---|---|---|---|---|---|---|
 | 1 | `B0` | P-11 third-disposition mechanism (prerequisite, no registrations) | 0 | 0 | 0 | 0 |
 | 2 | `B1` | Task core — lifecycle, steps, execution, gates | 29 | 27 | 2 | 5 |
-| 3 | `B2` | Chat + agent conversation surface (unblocks PR 3.2) | 56 | 51 | 5 | 6 |
+| 3 | `B2` | Chat + agent conversation surface (unblocks PR 3.2) | 52 | 47 | 5 | 5 |
 | 4 | `B3` | Review, QA, merge pipeline, validation | 31 | 31 | 0 | 4 |
 | 5 | `B4` | Ideation, plans, methodology, workflow | 64 | 63 | 1 | 5 |
 | 6 | `B5` | Automation, research, metrics, activity | 36 | 34 | 2 | 4 |
@@ -99,7 +99,7 @@ Ordering logic: **B0 first** (nothing is measurable without the third dispositio
 
 ### 3. `B2` — Chat + agent conversation surface (unblocks PR 3.2)
 
-**Commands:** 56 · **Register-candidates:** 51 · **Risk classes:** register-candidate 51 · host-denied (class: denied) 5
+**Commands:** 52 · **Register-candidates:** 47 · **Risk classes:** register-candidate 47 · host-denied (class: denied) 5
 
 **Why here:** PR 3.2's whole premise is that chat send paths answer `REMOTE_FORBIDDEN` without `ui:agent` rather than `REMOTE_COMMAND_UNAVAILABLE` — which requires them registered. 2.6 shipped the honest interim (composer renders UNAVAILABLE remotely) and its product note says it 'flips with no client change when 3.1 registers them'. This is the batch that flips it, so it must land before 3.2 starts. It is also the highest-risk batch: `send_message` is a detector-(a) steer sink and the module contains the workspace-publish `git push` surface that stays denied.
 
@@ -108,6 +108,7 @@ Ordering logic: **B0 first** (nothing is measurable without the third dispositio
 - Split the module by authority: the send/steer commands register as `AgentControl`; the publish/PR surface (`publish_agent_conversation_workspace`, `update_agent_conversation_workspace_from_base`, `close_agent_workspace_pr`) stays denied, and `set_agent_conversation_workspace_auto_publish` is an already-proven detector-(c) rejection.
 - Verify per command that the process-launch sink sits BEYOND the steer-sink cut (`chat_service.send_message`) rather than inside the command's own closure — the cut is what makes chat send registerable while `resume_task` is not. Any command whose own closure resolves a CLI path is a detector-(c) rejection, not a registration.
 - P-4 rows must cover `SendAgentMessageInput`'s optional/override fields (the `runtimeOverride` vs legacy-field rejection is an error-path parity row).
+- DONE (PR 3.1-b batch 3): `conversation_stats_commands` — all four usage-aggregate reads registered at `ui:read`, so the module no longer appears in this batch's module list. Batch 3's `probe_b2_module_batch_audit` also published detector output for every remaining B2 member; start from it rather than re-deriving. Its headline finding: `get_agent_conversation`, `get_agent_conversation_messages_page` and `get_agent_conversation_timeline_page` — the three transcript reads PR 3.2 needs — all fire detector (a), so they are NOT free reads and need their own hand-trace.
 
 **Gate:** P-17 green; C-9 dual-lens review recorded; the five 2.6-surfaced ops resolve per this census's `resolvedItems.unregisteredUiAgentOps`.
 
@@ -117,7 +118,6 @@ Ordering logic: **B0 first** (nothing is measurable without the third dispositio
 - **`agent_model_commands`** (3) — `delete_custom_agent_model`, `list_agent_models`, `upsert_custom_agent_model`
 - **`agent_sidebar_commands`** (2) — `get_bulk_workspace_publication_states`, `list_agent_sidebar_conversations`
 - **`conversation_folder_reference_commands`** (3) — `add_conversation_folder_reference`, `list_conversation_folder_references`, `remove_conversation_folder_reference`
-- **`conversation_stats_commands`** (4) — `get_agent_conversation_stats`, `get_insights_chat_usage_stats`, `get_project_chat_usage_stats`, `get_task_chat_usage_stats`
 - **`unified_chat_commands`** (41) — `abort_seeded_agent_conversation`, `archive_agent_conversation`, `close_agent_workspace_pr`, `commit_agent_conversation_workspace_locally`, `create_agent_conversation`, `delete_queued_agent_message`, `fork_agent_conversation`, `get_agent_conversation`, `get_agent_conversation_messages_page`, `get_agent_conversation_runtime_index`, `get_agent_conversation_runtime_statuses`, `get_agent_conversation_summary`, `get_agent_conversation_timeline_page`, `get_agent_conversation_workspace`, `get_agent_conversation_workspace_freshness`, `get_agent_message_tool_call_detail`, `get_agent_run_status_unified`, `get_agent_running_states`, `get_agent_timeline_item_tool_call_detail`, `get_queued_agent_messages`, `is_agent_running`, `is_chat_service_available`, `list_agent_conversation_workspace_publication_events`, `list_agent_conversation_workspaces_by_project`, `list_agent_conversations`, `list_agent_conversations_page`, `precompute_agent_conversation_workspace_pr_description`, `publish_agent_conversation_workspace`, `reconcile_agent_conversation_workspace_publication`, `restore_agent_conversation`, `send_agent_message`, `send_queued_agent_message_now`, `set_agent_conversation_workspace_auto_publish`, `set_agent_conversation_workspace_pr_supervision`, `start_agent_conversation`, `stop_agent`, `switch_agent_conversation_mode`, `switch_agent_conversation_persona`, `update_agent_conversation_coordination_mode`, `update_agent_conversation_title`, `update_agent_conversation_workspace_from_base`
 
 </details>
@@ -434,9 +434,9 @@ Ordering logic: **B0 first** (nothing is measurable without the third dispositio
 | Check | Result |
 |---|---|
 | Drift scan passes | yes (this file is not emitted otherwise) |
-| Scan unclassified count == baseline size | 428 == 428 |
-| Every gap command in exactly one batch | 428 / 428 |
-| Disposition totals sum to the gap | 428 == 428 |
+| Scan unclassified count == baseline size | 424 == 424 |
+| Every gap command in exactly one batch | 424 / 424 |
+| Disposition totals sum to the gap | 424 == 424 |
 | Batch plan claims no empty module and pins no absent command | enforced by the generator |
 
 Machine-readable companion for 3.1-b/c: [`remote-coverage-census.json`](./remote-coverage-census.json) — same batches, plus per-command `{batch, module, ledgerClass, capabilities, disposition}` rows.

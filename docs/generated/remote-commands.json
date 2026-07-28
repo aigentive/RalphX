@@ -2236,6 +2236,38 @@
       "target": "crate::commands::execution_commands::get_active_project"
     },
     {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_agent_conversation_stats",
+      "pins": [],
+      "target": "crate::commands::conversation_stats_commands::get_agent_conversation_stats"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_project_chat_usage_stats",
+      "pins": [],
+      "target": "crate::commands::conversation_stats_commands::get_project_chat_usage_stats"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_task_chat_usage_stats",
+      "pins": [],
+      "target": "crate::commands::conversation_stats_commands::get_task_chat_usage_stats"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_insights_chat_usage_stats",
+      "pins": [],
+      "target": "crate::commands::conversation_stats_commands::get_insights_chat_usage_stats"
+    },
+    {
       "argumentSensitive": true,
       "capabilities": [],
       "class": "operate",
@@ -4715,44 +4747,36 @@
       "registered": false
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_agent_conversation_stats",
       "module": "conversation_stats_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "aggregates conversation/message/run repository reads into usage totals; propagates read errors",
+      "registered": true
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_insights_chat_usage_stats",
       "module": "conversation_stats_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "project-or-all-projects usage aggregation over repository reads; propagates read errors",
+      "registered": true
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_project_chat_usage_stats",
       "module": "conversation_stats_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "project-scoped usage aggregation over repository reads; propagates read errors",
+      "registered": true
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_task_chat_usage_stats",
       "module": "conversation_stats_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "task-scoped usage aggregation over repository reads; propagates read errors",
+      "registered": true
     },
     {
       "capabilities": [
