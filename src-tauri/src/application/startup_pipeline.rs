@@ -966,7 +966,8 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
             Arc::clone(&conversation_repo),
             Arc::clone(&agent_run_repo),
             Arc::clone(&running_agent_registry),
-        );
+        )
+        .with_managed_team(Arc::clone(&app_state.managed_team));
     match assignment_recovery.recover().await {
         Ok(report) => tracing::info!(
             inspected = report.inspected,

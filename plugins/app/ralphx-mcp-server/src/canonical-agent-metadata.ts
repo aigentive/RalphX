@@ -23,6 +23,7 @@ type CanonicalAgentDefinition = {
 
 const canonicalAgentDefinitionCache = new Map<string, CanonicalAgentDefinition | null>();
 const SAFE_CANONICAL_AGENT_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const SAFE_CANONICAL_PROFILE_NAME = /^[a-z0-9]+(?:[_-][a-z0-9]+)*$/;
 
 export function resolveRepoRoot(): string {
   let current = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../");
@@ -141,7 +142,7 @@ export function loadCanonicalAgentDefinitionForProfile(
   if (!definition || !agentProfile) {
     return definition;
   }
-  if (!SAFE_CANONICAL_AGENT_NAME.test(agentProfile)) {
+  if (!SAFE_CANONICAL_PROFILE_NAME.test(agentProfile)) {
     return null;
   }
   const profile = definition.profiles?.[agentProfile];

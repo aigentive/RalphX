@@ -173,6 +173,29 @@ impl TeamWorkspaceReservationRepository for SqliteTeamWorkspaceReservationReposi
             .await
     }
 
+    async fn attach_assignment_if_current(
+        &self,
+        id: &TeamWorkspaceReservationId,
+        generation: i64,
+        attempt_number: i64,
+        assignment_id: &crate::domain::entities::AgentTaskAssignmentId,
+    ) -> AppResult<bool> {
+        let id = id.0.clone();
+        let assignment_id = assignment_id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let count = conn.execute(
+                    "UPDATE managed_team_workspace_reservations
+                     SET assignment_id = ?1
+                     WHERE id = ?2 AND team_member_generation = ?3 AND attempt_number = ?4
+                       AND released_at IS NULL AND (assignment_id IS NULL OR assignment_id = ?1)",
+                    rusqlite::params![assignment_id, id, generation, attempt_number],
+                )?;
+                Ok(count == 1)
+            })
+            .await
+    }
+
     async fn release_if_current(
         &self,
         id: &TeamWorkspaceReservationId,

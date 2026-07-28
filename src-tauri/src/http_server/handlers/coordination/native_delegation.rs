@@ -427,6 +427,11 @@ async fn settle_delegation_from_run(
             .await?
     };
     if let Some(assignment) = assignment {
+        state
+            .app_state
+            .managed_team
+            .settle_member_assignment(&assignment, terminal_status, error.as_deref())
+            .await?;
         candidate.assignment = Some(delegation_assignment_summary(&assignment));
     }
     persist_terminal_projection(

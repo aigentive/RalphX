@@ -27,16 +27,15 @@ pub struct ManagedTeamStatus {
 }
 
 pub struct ManagedTeamService {
-    team_repo: Arc<dyn TeamRepository>,
-    coordination_transition_repo: Arc<dyn TeamCoordinationTransitionRepository>,
-    run_binding_repo: Arc<dyn TeamRunBindingRepository>,
+    pub(super) team_repo: Arc<dyn TeamRepository>,
+    pub(super) coordination_transition_repo: Arc<dyn TeamCoordinationTransitionRepository>,
+    pub(super) run_binding_repo: Arc<dyn TeamRunBindingRepository>,
     #[allow(dead_code)] // wired for later slices (durable messaging)
-    message_repo: Arc<dyn TeamMessageRepository>,
+    pub(super) message_repo: Arc<dyn TeamMessageRepository>,
     #[allow(dead_code)] // wired for later slices (wake batching)
-    wake_batch_repo: Arc<dyn TeamWakeBatchRepository>,
-    #[allow(dead_code)] // wired for later slices (write reservations)
-    reservation_repo: Arc<dyn TeamWorkspaceReservationRepository>,
-    feature_overrides_repo: Arc<dyn UiFeatureFlagOverridesRepository>,
+    pub(super) wake_batch_repo: Arc<dyn TeamWakeBatchRepository>,
+    pub(super) reservation_repo: Arc<dyn TeamWorkspaceReservationRepository>,
+    pub(super) feature_overrides_repo: Arc<dyn UiFeatureFlagOverridesRepository>,
     startup_barrier: Arc<ManagedTeamStartupBarrier>,
 }
 
@@ -69,6 +68,10 @@ impl ManagedTeamService {
 
     pub fn team_repo(&self) -> Arc<dyn TeamRepository> {
         Arc::clone(&self.team_repo)
+    }
+
+    pub fn run_binding_repo(&self) -> Arc<dyn TeamRunBindingRepository> {
+        Arc::clone(&self.run_binding_repo)
     }
 
     /// Whether the Team capability override is enabled. Read errors propagate

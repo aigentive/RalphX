@@ -66,6 +66,17 @@ pub trait AgentTaskRepository: Send + Sync {
         delegated_agent_run_id: &AgentRunId,
     ) -> AppResult<Option<AgentTaskAssignmentView>>;
 
+    /// Attaches durable Team member authority to the exact reserved assignment.
+    /// Legacy delegate assignments keep all Team fields null.
+    async fn set_assignment_team_identity(
+        &self,
+        assignment_id: &AgentTaskAssignmentId,
+        delegated_session_id: &DelegatedSessionId,
+        team_id: &crate::entities::TeamSessionId,
+        team_member_id: &crate::entities::TeamMemberId,
+        team_member_generation: i64,
+    ) -> AppResult<Option<AgentTaskAssignmentView>>;
+
     async fn bind_assignment_run(
         &self,
         assignment_id: &AgentTaskAssignmentId,

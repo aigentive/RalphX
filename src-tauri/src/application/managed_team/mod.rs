@@ -1,18 +1,25 @@
 pub mod lifecycle;
+pub mod members;
+#[cfg(test)]
+mod members_tests;
 pub mod overlay_resolver;
-pub mod recovery;
-pub mod service;
-pub mod team_prompt_contract;
 #[cfg(test)]
 mod overlay_resolver_tests;
+pub mod recovery;
 #[cfg(test)]
 mod recovery_tests;
+pub mod service;
 #[cfg(test)]
 mod service_tests;
+pub mod team_prompt_contract;
 #[cfg(test)]
 mod team_prompt_contract_tests;
 
 pub use lifecycle::{new_coordinator_run_binding, new_team_session};
+pub use members::{
+    ManagedTeamAssignmentPlan, ManagedTeamAssignmentRequest, ManagedTeamMemberSpec,
+    ManagedTeamWorkspaceRequest,
+};
 pub use overlay_resolver::{
     validate_native_team_intent, NativeTeamOverlayError, ResolvedTeamOverlay,
 };

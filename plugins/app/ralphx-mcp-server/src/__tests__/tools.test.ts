@@ -220,6 +220,30 @@ describe('getAllowedToolNames', () => {
     expect(tools).not.toContain('finalize_proposals');
   });
 
+  it('grants Team tools only to Team coordinator profiles in RX-native Team mode', () => {
+    process.env.RALPHX_COORDINATION_MODE = 'rx_native_team';
+    setAgentType(GENERAL_WORKER);
+    expect(getAllowedToolNames()).not.toContain('team_assign');
+
+    process.env.RALPHX_AGENT_PROFILE = 'team_coordinator';
+    expect(getAllowedToolNames()).toEqual(
+      expect.arrayContaining([
+        'team_add_member',
+        'team_assign',
+        'team_list',
+        'team_stop_member',
+      ])
+    );
+
+    setAgentType('ralphx-chat-task');
+    expect(getAllowedToolNames()).toEqual(
+      expect.arrayContaining(['team_add_member', 'team_assign', 'team_list', 'team_stop_member'])
+    );
+
+    process.env.RALPHX_COORDINATION_MODE = 'rx_native_workflow';
+    expect(getAllowedToolNames()).not.toContain('team_assign');
+  });
+
   it('rejects canonical agent path traversal attempts', () => {
     expect(loadCanonicalMcpTools('../secrets')).toBeUndefined();
     expect(loadCanonicalMcpTools(ORCHESTRATOR_IDEATION, '../secrets')).toBeUndefined();

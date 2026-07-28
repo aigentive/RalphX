@@ -2624,3 +2624,39 @@ pub struct ManagedTeamStatusResponse {
     pub session: ManagedTeamSessionSummary,
     pub members: Vec<ManagedTeamMemberSummary>,
 }
+
+#[derive(Debug, Deserialize)]
+pub struct AddManagedTeamMemberRequest {
+    pub name: String,
+    pub canonical_agent_name: String,
+    pub role_summary: String,
+    pub harness: Option<String>,
+    pub logical_model: Option<String>,
+    pub logical_effort: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AssignManagedTeamMemberRequest {
+    pub member_name: String,
+    pub task_ref: String,
+    pub work_classification: String,
+    #[serde(default)]
+    pub writable_paths: Vec<String>,
+    #[serde(default)]
+    pub generated_outputs: Vec<String>,
+    #[serde(default)]
+    pub resource_locks: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct StopManagedTeamMemberRequest {
+    pub member_name: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedTeamAssignmentResponse {
+    pub assignment_id: String,
+    pub agent_run_id: String,
+    pub member: ManagedTeamMemberSummary,
+}

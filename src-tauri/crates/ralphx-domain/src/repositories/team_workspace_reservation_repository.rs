@@ -14,6 +14,15 @@ pub trait TeamWorkspaceReservationRepository: Send + Sync {
         &self,
         id: &TeamWorkspaceReservationId,
     ) -> AppResult<Option<TeamWorkspaceReservation>>;
+    /// Associates a pre-acquired reservation with the exact task assignment
+    /// while preserving the generation/attempt fencing used for release.
+    async fn attach_assignment_if_current(
+        &self,
+        id: &TeamWorkspaceReservationId,
+        generation: i64,
+        attempt_number: i64,
+        assignment_id: &crate::entities::AgentTaskAssignmentId,
+    ) -> AppResult<bool>;
     async fn release_if_current(
         &self,
         id: &TeamWorkspaceReservationId,

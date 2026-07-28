@@ -259,7 +259,10 @@ pub(super) async fn bind_run(
             "agent_task.assignment_run_bound",
             None,
             Some(&assignment.task_id),
-            json!({"delegated_agent_run_id": delegated_agent_run_id.as_str()}),
+            assignment_lifecycle_payload(
+                &assignment,
+                json!({"delegated_agent_run_id": delegated_agent_run_id.as_str()}),
+            ),
         )?;
         let bound = load_by_id(conn, &assignment.id)?
             .ok_or_else(|| AppError::Database("bound assignment disappeared".to_string()))?;
@@ -327,11 +330,86 @@ pub(super) async fn plan_run(
             "agent_task.assignment_run_planned",
             None,
             Some(&assignment.task_id),
-            json!({"delegated_agent_run_id": delegated_agent_run_id.as_str()}),
+            assignment_lifecycle_payload(
+                &assignment,
+                json!({"delegated_agent_run_id": delegated_agent_run_id.as_str()}),
+            ),
         )?;
         let planned = load_by_id(conn, &assignment.id)?
             .ok_or_else(|| AppError::Database("planned assignment disappeared".to_string()))?;
         Ok(Some(view(conn, planned)?))
+    })
+    .await
+}
+
+pub(super) async fn set_team_identity(
+    db: &DbConnection,
+    assignment_id: &AgentTaskAssignmentId,
+    delegated_session_id: &DelegatedSessionId,
+    team_id: &TeamSessionId,
+    team_member_id: &TeamMemberId,
+    team_member_generation: i64,
+) -> AppResult<Option<AgentTaskAssignmentView>> {
+    let assignment_id = assignment_id.clone();
+    let delegated_session_id = delegated_session_id.clone();
+    let team_id = team_id.clone();
+    let team_member_id = team_member_id.clone();
+    db.run_transaction(move |conn| {
+        let Some(assignment) = load_by_id(conn, &assignment_id)? else {
+            return Ok(None);
+        };
+        if assignment.delegated_session_id != delegated_session_id {
+            return Err(AppError::Conflict(
+                "delegate assignment does not belong to the requested session".to_string(),
+            ));
+        }
+        if assignment.state != AgentTaskAssignmentState::Reserved {
+            return Err(AppError::Conflict(
+                "only a reserved delegate assignment can receive Team authority".to_string(),
+            ));
+        }
+        if assignment.team_id.is_some()
+            && (assignment.team_id.as_ref() != Some(&team_id)
+                || assignment.team_member_id.as_ref() != Some(&team_member_id)
+                || assignment.team_member_generation != Some(team_member_generation))
+        {
+            return Err(AppError::Conflict(
+                "delegate assignment already belongs to a different Team member generation"
+                    .to_string(),
+            ));
+        }
+        let updated = conn.execute(
+            "UPDATE agent_task_delegate_assignments
+             SET team_id = ?1, team_member_id = ?2, team_member_generation = ?3,
+                 updated_at = ?4
+             WHERE id = ?5 AND delegated_session_id = ?6 AND state = 'reserved'
+               AND (team_id IS NULL OR (team_id = ?1 AND team_member_id = ?2
+                    AND team_member_generation = ?3))",
+            params![
+                team_id.as_str(),
+                team_member_id.as_str(),
+                team_member_generation,
+                Utc::now().to_rfc3339(),
+                assignment_id.as_str(),
+                delegated_session_id.as_str(),
+            ],
+        )?;
+        if updated != 1 {
+            return Err(AppError::Conflict(
+                "delegate assignment changed before Team authority was attached".to_string(),
+            ));
+        }
+        let assignment = load_by_id(conn, &assignment_id)?
+            .ok_or_else(|| AppError::Database("Team-linked assignment disappeared".to_string()))?;
+        append_event(
+            conn,
+            &assignment.task_list_id,
+            "agent_task.assignment_team_identity_bound",
+            None,
+            Some(&assignment.task_id),
+            assignment_lifecycle_payload(&assignment, json!({})),
+        )?;
+        Ok(Some(view(conn, assignment)?))
     })
     .await
 }
@@ -473,7 +551,10 @@ fn request_intent_in_transaction(
         },
         None,
         Some(&assignment.task_id),
-        json!({"delegated_agent_run_id": delegated_agent_run_id.as_str()}),
+        assignment_lifecycle_payload(
+            &assignment,
+            json!({"delegated_agent_run_id": delegated_agent_run_id.as_str()}),
+        ),
     )?;
     let requested = load_by_id(conn, &assignment.id)?
         .ok_or_else(|| AppError::Database("requested assignment disappeared".to_string()))?;
@@ -694,10 +775,13 @@ fn settle_loaded(
         },
         None,
         Some(&assignment.task_id),
-        json!({
-            "assignment_state": assignment_state.as_str(),
-            "settlement_reason": settlement_reason,
-        }),
+        assignment_lifecycle_payload(
+            &assignment,
+            json!({
+                "assignment_state": assignment_state.as_str(),
+                "settlement_reason": settlement_reason,
+            }),
+        ),
     )?;
     let settled = load_by_id(conn, &assignment.id)?
         .ok_or_else(|| AppError::Database("settled assignment disappeared".to_string()))?;
@@ -706,6 +790,28 @@ fn settle_loaded(
         task_reopened: !completion_authorized,
         task_completed: completion_authorized,
     }))
+}
+
+/// Enrich Team assignment lifecycle payloads without changing the historical
+/// Solo event shape. The dedicated identity-bound event and later run/terminal
+/// events therefore remain generation-fenced for diagnostics and recovery.
+fn assignment_lifecycle_payload(assignment: &AgentTaskAssignment, mut payload: Value) -> Value {
+    let (Some(team_id), Some(member_id), Some(member_generation)) = (
+        assignment.team_id.as_ref(),
+        assignment.team_member_id.as_ref(),
+        assignment.team_member_generation,
+    ) else {
+        return payload;
+    };
+    if let Some(fields) = payload.as_object_mut() {
+        fields.insert("team_id".to_string(), json!(team_id.as_str()));
+        fields.insert("team_member_id".to_string(), json!(member_id.as_str()));
+        fields.insert(
+            "team_member_generation".to_string(),
+            json!(member_generation),
+        );
+    }
+    payload
 }
 
 const ASSIGNMENT_SELECT: &str = "SELECT

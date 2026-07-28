@@ -58,6 +58,27 @@ impl TeamWorkspaceReservationRepository for MemoryTeamWorkspaceReservationReposi
         Ok(self.values.read().await.get(id).cloned())
     }
 
+    async fn attach_assignment_if_current(
+        &self,
+        id: &TeamWorkspaceReservationId,
+        generation: i64,
+        attempt_number: i64,
+        assignment_id: &crate::domain::entities::AgentTaskAssignmentId,
+    ) -> AppResult<bool> {
+        let mut values = self.values.write().await;
+        let Some(value) = values.get_mut(id) else {
+            return Ok(false);
+        };
+        if !value.may_release(generation, attempt_number)
+            || (value.assignment_id.is_some()
+                && value.assignment_id.as_ref() != Some(assignment_id))
+        {
+            return Ok(false);
+        }
+        value.assignment_id = Some(assignment_id.clone());
+        Ok(true)
+    }
+
     async fn release_if_current(
         &self,
         id: &TeamWorkspaceReservationId,

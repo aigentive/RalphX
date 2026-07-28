@@ -81,6 +81,10 @@ profiles:
         - search_memories
         - get_memory
         - get_memories_for_paths
+        - team_add_member
+        - team_assign
+        - team_list
+        - team_stop_member
     harnesses:
       claude:
         model: sonnet

@@ -171,6 +171,19 @@ pub async fn start_http_server_with_listener_ready(
             "/api/managed_team/roster/:team_id",
             get(get_managed_team_roster),
         )
+        .route("/api/managed_team/member", post(add_managed_team_member))
+        .route(
+            "/api/managed_team/member/assign",
+            post(assign_managed_team_member),
+        )
+        .route(
+            "/api/managed_team/member/stop",
+            post(stop_managed_team_member),
+        )
+        .route(
+            "/api/managed_team/members/idle",
+            get(list_idle_managed_team_members),
+        )
         // Ideation tools (ralphx-ideation agent)
         .route("/api/create_task_proposal", post(create_task_proposal))
         .route("/api/finalize_proposals", post(finalize_proposals))

@@ -3,9 +3,9 @@
 use chrono::Utc;
 
 use crate::domain::entities::{
-    AgentRunId, ChatConversationId, ProjectId, TeamRunBinding, TeamRunBindingId,
-    TeamRunBindingStatus, TeamRunTriggerKind, TeamSession, TeamSessionId, TeamSessionStatus,
-    TeamWorkClassification,
+    AgentRunId, ChatConversationId, DelegatedSessionId, ProjectId, TeamMember, TeamRunBinding,
+    TeamRunBindingId, TeamRunBindingStatus, TeamRunTriggerKind, TeamSession, TeamSessionId,
+    TeamSessionStatus, TeamWorkClassification,
 };
 
 /// Default number of members allowed to run concurrently in a new Team.
@@ -57,6 +57,37 @@ pub fn new_coordinator_run_binding(
         trigger_kind: TeamRunTriggerKind::UserCoordinatorTurn,
         work_classification: TeamWorkClassification::CoordinationOnly,
         assignment_id: None,
+        first_message_sequence: None,
+        last_message_sequence: None,
+        status: TeamRunBindingStatus::Planned,
+        version: 0,
+        last_error: None,
+        created_at: Utc::now(),
+        launched_at: None,
+        terminal_at: None,
+    }
+}
+
+/// Builds the durable pre-launch binding for an exact member assignment.
+pub fn new_member_assignment_run_binding(
+    member: &TeamMember,
+    delegated_session_id: DelegatedSessionId,
+    conversation_id: ChatConversationId,
+    agent_run_id: AgentRunId,
+    assignment_id: crate::domain::entities::AgentTaskAssignmentId,
+    work_classification: TeamWorkClassification,
+) -> TeamRunBinding {
+    TeamRunBinding {
+        id: TeamRunBindingId::new(),
+        team_id: member.team_id.clone(),
+        team_member_id: Some(member.id.clone()),
+        team_member_generation: Some(member.generation),
+        agent_run_id,
+        conversation_id,
+        delegated_session_id: Some(delegated_session_id),
+        trigger_kind: TeamRunTriggerKind::Assignment,
+        work_classification,
+        assignment_id: Some(assignment_id),
         first_message_sequence: None,
         last_message_sequence: None,
         status: TeamRunBindingStatus::Planned,
