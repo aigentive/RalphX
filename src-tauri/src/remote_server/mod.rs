@@ -99,6 +99,7 @@ pub(crate) const WS_TICKET_PATH: &str = "/remote/v1/auth/ws-ticket";
 /// machines (§6.1 "host revoke (best-effort) → Keychain delete → row delete", P-27).
 pub(crate) const REVOKE_PATH: &str = "/remote/v1/auth/revoke";
 pub(crate) const SESSION_PATH: &str = "/remote/v1/session";
+pub(crate) const INVOKE_PATH: &str = "/remote/v1/invoke";
 pub(crate) const HEALTH_PATH: &str = "/health";
 
 /// Routes reachable before the bearer check.
@@ -339,6 +340,10 @@ pub(crate) fn authenticated_remote_routes(state: RemoteRouterState) -> Router {
             get(health_handler).options(remote_preflight_handler),
         )
         .route(
+            INVOKE_PATH,
+            post(invoke::invoke_handler).options(remote_preflight_handler),
+        )
+        .route(
             ws::WS_EVENTS_PATH,
             get(ws::ws_events_handler).options(remote_preflight_handler),
         )
@@ -404,6 +409,7 @@ pub(crate) fn remote_error_response(
 /// Ordering is deliberate: refuse → bind → persist → spawn. A refused or failed bind never
 /// leaves `enabled = true` behind, and a failed persist releases the socket.
 pub(crate) async fn start_listener(
+    app_handle: &tauri::AppHandle,
     handle: &RemoteListenerHandle,
     store: &RemoteHostSettingsStore,
     provider: &dyn TailnetSelfAddressProvider,
@@ -495,10 +501,11 @@ pub(crate) async fn start_listener(
     let (stopped_tx, stopped) = oneshot::channel();
     let auth =
         RemoteAuthContext::from_db(store.db(), handle.sessions.clone(), settings.exposure_mode);
-    let mut state = RemoteRouterState::new(settings.environment_id.as_str(), auth)
-        // Installed at app setup, not here: the listener toggle governs network exposure only, so
-        // a restart of the listener must not restart the stream (P-15, P-23).
-        .with_stream(handle.stream());
+    let mut state =
+        RemoteRouterState::new(settings.environment_id.as_str(), auth, app_handle.clone())
+            // Installed at app setup, not here: the listener toggle governs network exposure only, so
+            // a restart of the listener must not restart the stream (P-15, P-23).
+            .with_stream(handle.stream());
     if let Some(sink) = handle.lifecycle_sink() {
         state = state.with_lifecycle_sink(sink);
     }
@@ -575,6 +582,7 @@ pub(crate) async fn stop_listener(
 /// A restart that gets refused leaves remote access disabled rather than silently listening on
 /// the previous address.
 pub(crate) async fn apply_exposure_mode(
+    app_handle: &tauri::AppHandle,
     handle: &RemoteListenerHandle,
     store: &RemoteHostSettingsStore,
     provider: &dyn TailnetSelfAddressProvider,
@@ -591,7 +599,7 @@ pub(crate) async fn apply_exposure_mode(
         return Ok(settings);
     }
 
-    match start_listener(handle, store, provider, tailscale).await {
+    match start_listener(app_handle, handle, store, provider, tailscale).await {
         Ok(_) => Ok(store.get_or_create().await?),
         Err(error) => {
             tracing::error!(
@@ -606,6 +614,7 @@ pub(crate) async fn apply_exposure_mode(
 
 /// Startup auto-start. Never mints the settings row: an absent row means nothing listens.
 pub(crate) async fn auto_start_if_enabled(
+    app_handle: &tauri::AppHandle,
     handle: &RemoteListenerHandle,
     store: &RemoteHostSettingsStore,
     provider: &dyn TailnetSelfAddressProvider,
@@ -619,7 +628,7 @@ pub(crate) async fn auto_start_if_enabled(
         tracing::debug!("Remote host mode is disabled; remote listener stays off");
         return Ok(None);
     }
-    start_listener(handle, store, provider, tailscale)
+    start_listener(app_handle, handle, store, provider, tailscale)
         .await
         .map(Some)
 }
@@ -741,6 +750,7 @@ pub(crate) async fn auto_start_remote_listener_from_handle(app_handle: &tauri::A
     let handle = remote_listener_handle(app_handle);
 
     match auto_start_if_enabled(
+        app_handle,
         &handle,
         &store,
         &TailscaleSelfAddressProvider,
