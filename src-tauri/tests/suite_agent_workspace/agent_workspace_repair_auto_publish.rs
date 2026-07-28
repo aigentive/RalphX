@@ -1838,6 +1838,11 @@ async fn auto_publish_enable_fails_closed_when_ready_repair_target_lease_is_fore
 
 #[tokio::test]
 async fn passed_workspace_review_resumes_the_current_durable_repair_generation() {
+    // Keep this full production-path scenario off libtest's platform-sized thread stack.
+    Box::pin(passed_workspace_review_resumes_the_current_durable_repair_generation_body()).await;
+}
+
+async fn passed_workspace_review_resumes_the_current_durable_repair_generation_body() {
     let conversation_id = ChatConversationId::from_string("66666666-6666-6666-6666-666666666666");
     let fixture =
         setup_rewritten_repair_publish_fixture(conversation_id, "project-review-repair-publish");
@@ -2103,7 +2108,7 @@ async fn passed_workspace_review_resumes_the_current_durable_repair_generation()
         );
     });
 
-    let Json(review) = complete_agent_workspace_review_run(
+    let Json(review) = Box::pin(complete_agent_workspace_review_run(
         axum::extract::State(state.clone()),
         Path(conversation_id.to_string()),
         Json(CompleteAgentWorkspaceReviewRunRequest {
@@ -2112,7 +2117,7 @@ async fn passed_workspace_review_resumes_the_current_durable_repair_generation()
             blocker: None,
             created_by_run_id: Some(reviewer_run_id),
         }),
-    )
+    ))
     .await
     .expect("passed Workspace Review should resume the repair continuation");
     remote_update.await.expect("remote update joins");

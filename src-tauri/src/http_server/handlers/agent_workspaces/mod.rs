@@ -2288,8 +2288,14 @@ pub async fn complete_agent_workspace_review_run(
     // Publishing takes the same lifecycle lock to serialize against review mutations. The review
     // result is durable now, so release this handler's guard before resuming publication.
     drop(lifecycle_guard);
-    settle_workspace_review_publish_authorization(&state, &conversation_id, &workspace, &monitor)
-        .await?;
+    // Keep the nested repair-to-normal-publisher path off the request task's debug-build stack.
+    Box::pin(settle_workspace_review_publish_authorization(
+        &state,
+        &conversation_id,
+        &workspace,
+        &monitor,
+    ))
+    .await?;
     // R3: on a Blocking/Failed gate for an automation-owned conversation, pause the automation and
     // terminalize the stuck run. Classify by the gate ENUM, never the blocker string. No-op for
     // non-automation conversations (handled inside the helper via the run bridge).
@@ -4043,11 +4049,12 @@ pub(crate) async fn settle_workspace_review_publish_authorization(
     workspace: &AgentConversationWorkspace,
     monitor: &AgentWorkspaceReviewMonitor,
 ) -> Result<(), JsonError> {
-    if resume_durable_agent_workspace_repair_publish(
+    // Preserve a heap boundary as review settlement enters the durable repair continuation.
+    if Box::pin(resume_durable_agent_workspace_repair_publish(
         state.app_state.as_ref(),
         conversation_id,
         false,
-    )
+    ))
     .await
     .map_err(|error| json_error(StatusCode::CONFLICT, error, None))?
     .is_some()

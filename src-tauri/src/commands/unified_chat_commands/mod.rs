@@ -7557,7 +7557,8 @@ pub(crate) async fn resume_durable_agent_workspace_repair_publish(
         .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("Agent conversation workspace not found for {conversation_id}"))?
         .publication_pr_number;
-    match continue_agent_workspace_repair_publish(state, attempt)
+    // Coverage builds need this large durable continuation future heap-allocated.
+    match Box::pin(continue_agent_workspace_repair_publish(state, attempt))
         .await
         .map_err(|error| error.to_string())?
     {
@@ -7625,13 +7626,14 @@ pub(crate) async fn publish_agent_conversation_workspace_after_repair_push(
     repair_handoff: AgentWorkspaceRepairPrHandoff,
 ) -> Result<PublishAgentConversationWorkspaceResponse, String> {
     let execution_state = Arc::new(ExecutionState::new());
-    publish_agent_conversation_workspace_for_app_state_inner(
+    // The normal publisher is large enough to overflow Linux debug-test stacks when inlined here.
+    Box::pin(publish_agent_conversation_workspace_for_app_state_inner(
         state,
         &execution_state,
         conversation_id,
         false,
         Some(repair_handoff),
-    )
+    ))
     .await
 }
 
