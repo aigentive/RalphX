@@ -2672,6 +2672,8 @@ fn persona_agent_run_status_response_serializes_attribution_without_body() {
 
 #[cfg(test)]
 mod ipc_contract {
+    use sha2::{Digest, Sha256};
+
     use ralphx_lib::application::agent_conversation_workspace::{
         prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
     };
@@ -2691,10 +2693,10 @@ mod ipc_contract {
         get_agent_conversation_messages_page_for_app_state, get_agent_conversation_summary,
         get_agent_conversation_summary_for_app_state, get_agent_conversation_workspace,
         get_agent_conversation_workspace_freshness, get_agent_message_tool_call_detail,
-        publish_agent_conversation_workspace_for_app_state, start_agent_conversation,
-        switch_agent_conversation_mode_for_state, AgentWorkspaceSourcePullRequestInput,
-        CreateAgentConversationInput, QueueAgentMessageInput, SendAgentMessageInput,
-        StartAgentConversationInput, SwitchAgentConversationModeInput,
+        publish_agent_conversation_workspace_for_app_state, send_agent_message_for_state,
+        start_agent_conversation, switch_agent_conversation_mode_for_state,
+        AgentWorkspaceSourcePullRequestInput, CreateAgentConversationInput, QueueAgentMessageInput,
+        SendAgentMessageInput, StartAgentConversationInput, SwitchAgentConversationModeInput,
         UpdateAgentConversationTitleInput,
     };
     use ralphx_lib::commands::ExecutionState;
@@ -2714,10 +2716,12 @@ mod ipc_contract {
         Task, TaskProposal, VerificationStatus,
     };
     use ralphx_lib::domain::repositories::{
-        AgentConversationWorkspaceRepository, AgentModelRegistryRepository,
+        AgentConversationWorkspaceRepository, AgentModelRegistryRepository, PlanApprovalActor,
     };
     use ralphx_lib::domain::services::{ComposerArtifactReference, RunningAgentKey};
-    use ralphx_lib::infrastructure::memory::MemoryAgentModelRegistryRepository;
+    use ralphx_lib::infrastructure::memory::{
+        MemoryAgentModelRegistryRepository, MemoryPlanArtifactApprovalRepository,
+    };
     use ralphx_lib::infrastructure::sqlite::sqlite_agent_conversation_workspace_repo::SqliteAgentConversationWorkspaceRepository;
     use ralphx_lib::testing::SqliteTestDb;
     use std::sync::Arc;
@@ -3916,6 +3920,341 @@ mod ipc_contract {
             persisted_workspace.mode,
             AgentConversationWorkspaceMode::Edit
         );
+    }
+
+    struct PlanToEditSendFixture {
+        app: tauri::App<tauri::test::MockRuntime>,
+        project_id: ProjectId,
+        conversation_id: ChatConversationId,
+        session_id: IdeationSessionId,
+        overview_id: ArtifactId,
+        blueprint_id: Option<ArtifactId>,
+        approval_repo: Arc<MemoryPlanArtifactApprovalRepository>,
+        _repo_dir: tempfile::TempDir,
+        _worktree_parent: tempfile::TempDir,
+    }
+
+    async fn setup_plan_to_edit_send_fixture(
+        label: &str,
+        include_blueprint: bool,
+    ) -> PlanToEditSendFixture {
+        let repo_dir = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = repo_dir.path().join("repo");
+        let worktree_parent = tempfile::tempdir().expect("worktree tempdir should be created");
+        super::setup_publish_repo(&repo_path);
+
+        let mut state = AppState::new_test();
+        let approval_repo = Arc::new(MemoryPlanArtifactApprovalRepository::new());
+        state.plan_approval_repo = approval_repo.clone();
+        let project_id = ProjectId::from_string(format!("project-plan-to-edit-{label}"));
+        let mut project = Project::new(
+            format!("Plan to Edit {label}"),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.id = project_id.clone();
+        project.base_branch = Some("main".to_string());
+        project.worktree_parent_directory =
+            Some(worktree_parent.path().to_string_lossy().to_string());
+        state
+            .project_repo
+            .create(project)
+            .await
+            .expect("project should persist");
+
+        let mut conversation = ChatConversation::new_project(project_id.clone());
+        conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Plan));
+        let conversation = state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation should persist");
+        let overview = state
+            .artifact_repo
+            .create(Artifact::new_inline(
+                "Plan Overview",
+                ArtifactType::Specification,
+                "# Overview",
+                "planner",
+            ))
+            .await
+            .expect("overview should persist");
+        let blueprint = if include_blueprint {
+            Some(
+                state
+                    .artifact_repo
+                    .create(Artifact::new_inline(
+                        "Implementation Blueprint",
+                        ArtifactType::Specification,
+                        "# Blueprint",
+                        "planner",
+                    ))
+                    .await
+                    .expect("blueprint should persist"),
+            )
+        } else {
+            None
+        };
+        let mut session_builder = IdeationSession::builder()
+            .project_id(project_id.clone())
+            .session_flow(IdeationSessionFlow::Planning)
+            .source_context_type("agent_conversation")
+            .source_context_id(conversation.id.as_str())
+            .plan_artifact_id(overview.id.clone())
+            .plan_contract_version(2);
+        if let Some(blueprint) = blueprint.as_ref() {
+            session_builder = session_builder.plan_blueprint_artifact_id(blueprint.id.clone());
+        }
+        let session = state
+            .ideation_session_repo
+            .create(session_builder.build())
+            .await
+            .expect("planning session should persist");
+        let mut workspace = AgentConversationWorkspace::new(
+            conversation.id,
+            project_id.clone(),
+            AgentConversationWorkspaceMode::Plan,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            None,
+            format!("ralphx/test/plan-to-edit-{label}"),
+            repo_path.to_string_lossy().to_string(),
+        );
+        workspace.linked_ideation_session_id = Some(session.id.clone());
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should persist");
+
+        let execution_state = Arc::new(ExecutionState::new());
+        execution_state.pause();
+        let app = mock_builder()
+            .manage(state)
+            .manage(execution_state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        PlanToEditSendFixture {
+            app,
+            project_id,
+            conversation_id: conversation.id,
+            session_id: session.id,
+            overview_id: overview.id,
+            blueprint_id: blueprint.map(|artifact| artifact.id),
+            approval_repo,
+            _repo_dir: repo_dir,
+            _worktree_parent: worktree_parent,
+        }
+    }
+
+    fn plan_to_edit_send_input(fix: &PlanToEditSendFixture) -> SendAgentMessageInput {
+        SendAgentMessageInput {
+            context_type: "project".to_string(),
+            context_id: fix.project_id.as_str().to_string(),
+            content: "Implement the plan".to_string(),
+            conversation_id: Some(fix.conversation_id.as_str().to_string()),
+            provider_harness: None,
+            model_override: None,
+            logical_effort: Some(LogicalEffort::Medium),
+            codex_fast_mode: None,
+            runtime_override: None,
+            suppress_user_message: false,
+            require_approved_linked_plan: false,
+            expected_linked_plan_fingerprint: None,
+            composer_project_references: Vec::new(),
+            composer_integration_references: Vec::new(),
+            composer_artifact_references: Vec::new(),
+            composer_selection_snapshot: None,
+            composer_excerpt_references: Vec::new(),
+            team_intent: None,
+            team_message_target: None,
+            attachment_ids: Vec::new(),
+        }
+    }
+
+    fn plan_to_edit_fingerprint(fix: &PlanToEditSendFixture) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(b"ralphx-linked-workspace-plan-v1\n");
+        hasher.update(fix.session_id.as_str().as_bytes());
+        hasher.update(b"\noverview\n");
+        hasher.update(fix.overview_id.as_str().as_bytes());
+        hasher.update(b"\n1");
+        if let Some(blueprint_id) = fix.blueprint_id.as_ref() {
+            hasher.update(b"\nblueprint\n");
+            hasher.update(blueprint_id.as_str().as_bytes());
+            hasher.update(b"\n1");
+        }
+        format!("{:x}", hasher.finalize())
+    }
+
+    #[tokio::test]
+    async fn ipc_contract_manual_plan_to_edit_send_queues_current_bundle() {
+        let _fake_claude = FakeCliOnPath::new("claude");
+        let fix = setup_plan_to_edit_send_fixture("current-bundle", true).await;
+
+        let switched = switch_agent_conversation_mode_for_state(
+            SwitchAgentConversationModeInput {
+                conversation_id: fix.conversation_id.as_str().to_string(),
+                mode: "edit".to_string(),
+                runtime_override: None,
+                base_ref_kind: None,
+                base_branch_mode: None,
+                base_ref: None,
+                base_display_name: None,
+                base_source_pull_request: None,
+            },
+            fix.app.state::<AppState>().inner(),
+        )
+        .await
+        .expect("manual mode switch should succeed");
+        assert_eq!(
+            switched
+                .workspace
+                .as_ref()
+                .expect("workspace response")
+                .linked_ideation_session_id
+                .as_deref(),
+            Some(fix.session_id.as_str())
+        );
+
+        let response = send_agent_message_for_state(
+            plan_to_edit_send_input(&fix),
+            fix.app.state::<AppState>().inner(),
+            fix.app.state::<Arc<ExecutionState>>().inner(),
+            fix.app.handle().clone(),
+        )
+        .await
+        .expect("linked Edit send should be admitted");
+        assert!(response.was_queued);
+
+        let queued = fix
+            .app
+            .state::<AppState>()
+            .message_queue
+            .get_queued(ChatContextType::Project, &fix.conversation_id.as_str())
+            .into_iter()
+            .find(|message| response.queued_message_id.as_deref() == Some(message.id.as_str()))
+            .expect("queued message should persist");
+        assert_eq!(queued.composer_artifact_references.len(), 2);
+        assert_eq!(
+            queued.composer_artifact_references[0].artifact_id,
+            fix.overview_id.as_str()
+        );
+        assert_eq!(queued.composer_artifact_references[0].kind, "plan");
+        assert_eq!(
+            queued.composer_artifact_references[0].session_id.as_deref(),
+            Some(fix.session_id.as_str())
+        );
+        assert_eq!(
+            queued.composer_artifact_references[1].artifact_id,
+            fix.blueprint_id.as_ref().expect("v2 blueprint").as_str()
+        );
+        assert_eq!(
+            queued.composer_artifact_references[1].kind,
+            "plan_blueprint"
+        );
+        assert!(fix
+            .app
+            .state::<AppState>()
+            .plan_approval_repo
+            .get_by_session(&fix.session_id)
+            .await
+            .expect("approval lookup should succeed")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn ipc_contract_direct_plan_send_requires_and_queues_backend_approved_bundle() {
+        let _fake_claude = FakeCliOnPath::new("claude");
+        let fix = setup_plan_to_edit_send_fixture("approved-bundle", true).await;
+        fix.approval_repo.approve_bundle(
+            fix.session_id.clone(),
+            fix.overview_id.clone(),
+            fix.blueprint_id.as_ref().expect("v2 blueprint").clone(),
+            1,
+            PlanApprovalActor::User,
+        );
+        switch_agent_conversation_mode_for_state(
+            SwitchAgentConversationModeInput {
+                conversation_id: fix.conversation_id.as_str().to_string(),
+                mode: "edit".to_string(),
+                runtime_override: None,
+                base_ref_kind: None,
+                base_branch_mode: None,
+                base_ref: None,
+                base_display_name: None,
+                base_source_pull_request: None,
+            },
+            fix.app.state::<AppState>().inner(),
+        )
+        .await
+        .expect("manual mode switch should succeed");
+
+        let mut input = plan_to_edit_send_input(&fix);
+        input.suppress_user_message = true;
+        input.require_approved_linked_plan = true;
+        input.expected_linked_plan_fingerprint = Some(plan_to_edit_fingerprint(&fix));
+        let response = send_agent_message_for_state(
+            input,
+            fix.app.state::<AppState>().inner(),
+            fix.app.state::<Arc<ExecutionState>>().inner(),
+            fix.app.handle().clone(),
+        )
+        .await
+        .expect("direct implementation should admit the backend-approved bundle");
+
+        let queued = fix
+            .app
+            .state::<AppState>()
+            .message_queue
+            .get_queued(ChatContextType::Project, &fix.conversation_id.as_str())
+            .into_iter()
+            .find(|message| response.queued_message_id.as_deref() == Some(message.id.as_str()))
+            .expect("queued message should persist");
+        assert_eq!(queued.composer_artifact_references.len(), 2);
+        assert!(queued
+            .composer_artifact_references
+            .iter()
+            .all(|reference| reference.status.as_deref() == Some("approved")));
+    }
+
+    #[tokio::test]
+    async fn ipc_contract_manual_plan_to_edit_rejects_incomplete_v2_without_queue() {
+        let _fake_claude = FakeCliOnPath::new("claude");
+        let fix = setup_plan_to_edit_send_fixture("incomplete-bundle", false).await;
+
+        switch_agent_conversation_mode_for_state(
+            SwitchAgentConversationModeInput {
+                conversation_id: fix.conversation_id.as_str().to_string(),
+                mode: "edit".to_string(),
+                runtime_override: None,
+                base_ref_kind: None,
+                base_branch_mode: None,
+                base_ref: None,
+                base_display_name: None,
+                base_source_pull_request: None,
+            },
+            fix.app.state::<AppState>().inner(),
+        )
+        .await
+        .expect("manual mode switch should succeed");
+
+        let error = send_agent_message_for_state(
+            plan_to_edit_send_input(&fix),
+            fix.app.state::<AppState>().inner(),
+            fix.app.state::<Arc<ExecutionState>>().inner(),
+            fix.app.handle().clone(),
+        )
+        .await
+        .expect_err("incomplete v2 bundle must fail before send admission");
+        assert!(error.contains("implementation blueprint"));
+        assert!(fix
+            .app
+            .state::<AppState>()
+            .message_queue
+            .get_queued(ChatContextType::Project, &fix.conversation_id.as_str())
+            .is_empty());
     }
 
     struct PlanReferenceStartFixture {

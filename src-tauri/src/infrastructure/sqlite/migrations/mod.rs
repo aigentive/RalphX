@@ -560,6 +560,9 @@ mod v20260727115037_agent_workspace_publication_metadata_receipts_tests;
 mod v20260728155615_agent_conversation_mutes;
 #[cfg(test)]
 mod v20260728155615_agent_conversation_mutes_tests;
+mod v20260728183000_workspace_review_plan_context;
+#[cfg(test)]
+mod v20260728183000_workspace_review_plan_context_tests;
 #[cfg(test)]
 pub(super) fn migrate_scripted_agent_workflows_for_test(conn: &Connection) -> AppResult<()> {
     v20260715194617_scripted_agent_workflows::migrate(conn)
@@ -654,7 +657,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260728155615;
+pub const SCHEMA_VERSION: i64 = 20260728183000;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1799,6 +1802,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260728155615,
         name: "agent_conversation_mutes",
         migrate: v20260728155615_agent_conversation_mutes::migrate,
+    },
+    Migration {
+        version: 20260728183000,
+        name: "workspace_review_plan_context",
+        migrate: v20260728183000_workspace_review_plan_context::migrate,
     },
 ];
 

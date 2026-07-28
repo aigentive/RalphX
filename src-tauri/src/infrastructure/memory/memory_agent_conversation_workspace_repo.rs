@@ -2140,6 +2140,8 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
                 != Some(snapshot.diff_fingerprint.as_str())
             || monitor.reviewed_diff_fingerprint.as_deref()
                 != Some(snapshot.diff_fingerprint.as_str())
+            || monitor.current_plan_context_fingerprint != snapshot.plan_context_fingerprint
+            || monitor.reviewed_plan_context_fingerprint != snapshot.plan_context_fingerprint
             || monitor.review_artifact_id.as_ref() != Some(&snapshot.artifact_id)
             || monitor.review_artifact_version != Some(snapshot.artifact_version)
             || monitor.review_requested_changes_artifact_id.as_ref()
@@ -2181,6 +2183,10 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
                 != Some(expected_snapshot.diff_fingerprint.as_str())
             || current.reviewed_diff_fingerprint.as_deref()
                 != Some(expected_snapshot.diff_fingerprint.as_str())
+            || current.current_plan_context_fingerprint
+                != expected_snapshot.plan_context_fingerprint
+            || current.reviewed_plan_context_fingerprint
+                != expected_snapshot.plan_context_fingerprint
             || current.review_artifact_id.as_ref() != Some(&expected_snapshot.artifact_id)
             || current.review_artifact_version != Some(expected_snapshot.artifact_version)
             || current.review_requested_changes_artifact_id.as_ref()

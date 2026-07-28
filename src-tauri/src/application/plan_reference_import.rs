@@ -1,5 +1,6 @@
 use tracing::warn;
 
+use crate::application::agent_plan_context::plan_bundle_composer_references;
 use crate::application::agent_planning_session_titles::hydrate_agent_conversation_planning_session_title;
 use crate::application::ideation_workspace::prepare_ideation_analysis_state_from_agent_workspace;
 use crate::application::AppState;
@@ -168,27 +169,12 @@ pub(crate) async fn import_agent_conversation_plan_reference(
     workspace.updated_at = chrono::Utc::now();
 
     Ok(AgentPlanReferenceImport {
-        composer_references: vec![
-            ComposerArtifactReference {
-                artifact_id: cloned_artifact.id.as_str().to_string(),
-                kind: "plan".to_string(),
-                title: reference
-                    .title
-                    .clone()
-                    .or_else(|| Some(source_artifact.name.clone())),
-                session_id: Some(session.id.as_str().to_string()),
-                version: Some(cloned_artifact.metadata.version),
-                status: Some("draft".to_string()),
-            },
-            ComposerArtifactReference {
-                artifact_id: cloned_blueprint.id.as_str().to_string(),
-                kind: "plan_blueprint".to_string(),
-                title: Some(cloned_blueprint.name.clone()),
-                session_id: Some(session.id.as_str().to_string()),
-                version: Some(cloned_blueprint.metadata.version),
-                status: Some("draft".to_string()),
-            },
-        ],
+        composer_references: plan_bundle_composer_references(
+            &session.id,
+            &cloned_artifact,
+            Some(&cloned_blueprint),
+            "draft",
+        ),
     })
 }
 

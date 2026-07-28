@@ -56,6 +56,8 @@ async fn workspace_review_fixer_claim_is_exact_and_single_winner() {
     monitor.reviewed_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
     monitor.current_diff_fingerprint = Some("diff-claim".to_string());
     monitor.reviewed_diff_fingerprint = Some("diff-claim".to_string());
+    monitor.current_plan_context_fingerprint = Some("plan-claim".to_string());
+    monitor.reviewed_plan_context_fingerprint = Some("plan-claim".to_string());
     monitor.review_artifact_id = Some(artifact_id.clone());
     monitor.review_artifact_version = Some(4);
     monitor.review_requested_changes_artifact_id = Some(artifact_id.clone());
@@ -70,7 +72,21 @@ async fn workspace_review_fixer_claim_is_exact_and_single_winner() {
         artifact_id,
         artifact_version: 4,
         blocking_fingerprint: "blocker-claim".to_string(),
+        plan_context_fingerprint: Some("plan-claim".to_string()),
     };
+
+    let mut stale_plan_snapshot = snapshot.clone();
+    stale_plan_snapshot.plan_context_fingerprint = Some("plan-stale".to_string());
+    assert!(repo
+        .claim_workspace_review_fixer(
+            &conversation_id,
+            &stale_plan_snapshot,
+            "attempt-stale-plan",
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap()
+        .is_none());
 
     let claimed = repo
         .claim_workspace_review_fixer(
@@ -99,6 +115,77 @@ async fn workspace_review_fixer_claim_is_exact_and_single_winner() {
 }
 
 #[tokio::test]
+async fn workspace_review_fixer_settlement_rejects_refreshed_plan_authority() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id))
+        .await
+        .unwrap();
+    let artifact_id = ArtifactId::from_string("artifact-fixer-plan-settle");
+    let snapshot = AgentWorkspaceReviewFixerSnapshot {
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "diff-current".to_string(),
+        artifact_id: artifact_id.clone(),
+        artifact_version: 4,
+        requested_changes_artifact_id: artifact_id.clone(),
+        requested_changes_artifact_version: 4,
+        blocking_fingerprint: "blocker-current".to_string(),
+        plan_context_fingerprint: Some("plan-reviewed".to_string()),
+    };
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        conversation_id,
+        ProjectId::from_string("project-1".to_string()),
+    );
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::Blocking;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Blocking;
+    monitor.current_target_scope = Some(snapshot.target_scope);
+    monitor.reviewed_target_scope = Some(snapshot.target_scope);
+    monitor.current_diff_fingerprint = Some(snapshot.diff_fingerprint.clone());
+    monitor.reviewed_diff_fingerprint = Some(snapshot.diff_fingerprint.clone());
+    monitor.current_plan_context_fingerprint = snapshot.plan_context_fingerprint.clone();
+    monitor.reviewed_plan_context_fingerprint = snapshot.plan_context_fingerprint.clone();
+    monitor.review_artifact_id = Some(artifact_id);
+    monitor.review_artifact_version = Some(snapshot.artifact_version);
+    monitor.review_requested_changes_artifact_id =
+        Some(snapshot.requested_changes_artifact_id.clone());
+    monitor.review_requested_changes_artifact_version =
+        Some(snapshot.requested_changes_artifact_version);
+    monitor.review_blocking_fingerprint = Some(snapshot.blocking_fingerprint.clone());
+    repo.upsert_workspace_review_monitor(monitor).await.unwrap();
+    let mut claimed = repo
+        .claim_workspace_review_fixer(
+            &conversation_id,
+            &snapshot,
+            "attempt-plan-stale",
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+    let mut refreshed = claimed.clone();
+    refreshed.current_plan_context_fingerprint = Some("plan-new".to_string());
+    repo.upsert_workspace_review_monitor(refreshed.clone())
+        .await
+        .unwrap();
+    claimed.review_fixer_status = Some("running".to_string());
+
+    assert!(repo
+        .settle_workspace_review_fixer_attempt(claimed, "attempt-plan-stale", &snapshot)
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        repo.get_workspace_review_monitor(&conversation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .current_plan_context_fingerprint,
+        refreshed.current_plan_context_fingerprint
+    );
+}
+
+#[tokio::test]
 async fn workspace_review_fixer_settlement_rejects_refreshed_target_authority() {
     let (_db, repo, conversation_id) = setup_repo();
     repo.create_or_update(make_workspace(conversation_id))
@@ -113,6 +200,7 @@ async fn workspace_review_fixer_settlement_rejects_refreshed_target_authority() 
         requested_changes_artifact_id: artifact_id.clone(),
         requested_changes_artifact_version: 4,
         blocking_fingerprint: "blocker-old".to_string(),
+        plan_context_fingerprint: None,
     };
     let mut monitor = AgentWorkspaceReviewMonitor::new(
         conversation_id,

@@ -499,6 +499,9 @@ async fn direct_implementation_rejects_stale_blueprint_before_atomic_mode_switch
         activated.artifact_references[1].title.as_deref(),
         Some("Implementation Blueprint")
     );
+    assert_eq!(activated.artifact_references[0].kind, "plan");
+    assert_eq!(activated.artifact_references[1].kind, "plan_blueprint");
+    assert!(!activated.plan_context_fingerprint.is_empty());
 
     let retry = activate_agent_plan_direct_implementation_for_state(
         ActivateAgentPlanDirectImplementationInput {
@@ -512,6 +515,10 @@ async fn direct_implementation_rejects_stale_blueprint_before_atomic_mode_switch
     .unwrap();
     assert_eq!(retry.workspace.mode, "edit");
     assert_eq!(retry.artifact_references, activated.artifact_references);
+    assert_eq!(
+        retry.plan_context_fingerprint,
+        activated.plan_context_fingerprint
+    );
 }
 
 #[tokio::test]

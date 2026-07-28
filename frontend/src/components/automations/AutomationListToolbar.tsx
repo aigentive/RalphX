@@ -47,7 +47,7 @@ export function AutomationListToolbar({
                   : "var(--border-subtle, #2e2e36)",
                 borderStyle: "solid",
                 borderWidth: "1px",
-                color: selected ? "var(--accent-primary, #ff6b35)" : "var(--text-secondary, #c7c7cc)",
+                color: selected ? "var(--accent-primary)" : "var(--text-secondary, #c7c7cc)",
               }}
               aria-pressed={selected}
               onClick={() => onFilterChange(filter.id)}

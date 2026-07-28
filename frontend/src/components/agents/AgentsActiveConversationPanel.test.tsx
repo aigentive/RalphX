@@ -38,6 +38,7 @@ const {
   approvePlanArtifactMock,
   sendAgentMessageMock,
   switchAgentConversationModeMock,
+  activateAgentPlanDirectImplementationMock,
   activateAgentTaskPipelineMock,
   getAgentConversationRuntimeIndexMock,
   getAgentConversationRuntimeStatusesMock,
@@ -73,6 +74,7 @@ const {
   approvePlanArtifactMock: vi.fn(),
   sendAgentMessageMock: vi.fn(),
   switchAgentConversationModeMock: vi.fn(),
+  activateAgentPlanDirectImplementationMock: vi.fn(),
   activateAgentTaskPipelineMock: vi.fn(),
   getAgentConversationRuntimeIndexMock: vi.fn(),
   getAgentConversationRuntimeStatusesMock: vi.fn(),
@@ -425,6 +427,8 @@ vi.mock("@/api/chat", async (importOriginal) => {
       getAgentWorkspacePrReviewContext: getAgentWorkspacePrReviewContextMock,
       sendAgentMessage: sendAgentMessageMock,
       switchAgentConversationMode: switchAgentConversationModeMock,
+      activateAgentPlanDirectImplementation:
+        activateAgentPlanDirectImplementationMock,
       activateAgentTaskPipeline: activateAgentTaskPipelineMock,
     },
   };
@@ -1269,6 +1273,32 @@ describe("AgentsActiveConversationPanel", () => {
     });
     switchAgentConversationModeMock.mockResolvedValue({
       workspace: { ...workspace(), mode: "ideation" },
+    });
+    activateAgentPlanDirectImplementationMock.mockResolvedValue({
+      workspace: {
+        ...workspace(),
+        mode: "edit",
+        linkedIdeationSessionId: "planning-session-1",
+      },
+      artifactReferences: [
+        {
+          artifactId: "artifact-1",
+          kind: "plan",
+          title: "Plan Overview",
+          sessionId: "planning-session-1",
+          version: 1,
+          status: "approved",
+        },
+        {
+          artifactId: "blueprint-1",
+          kind: "plan_blueprint",
+          title: "Implementation Blueprint",
+          sessionId: "planning-session-1",
+          version: 2,
+          status: "approved",
+        },
+      ],
+      planContextFingerprint: "plan-context-fingerprint-1",
     });
     getAgentConversationWorkspaceMock.mockResolvedValue({
       ...workspace(),
@@ -4395,8 +4425,25 @@ describe("AgentsActiveConversationPanel", () => {
       mode: "edit" as const,
       linkedIdeationSessionId: "planning-session-1",
     };
-    switchAgentConversationModeMock.mockResolvedValue({
+    activateAgentPlanDirectImplementationMock.mockResolvedValue({
       workspace: editWorkspace,
+      artifactReferences: [
+        {
+          artifactId: "artifact-1",
+          kind: "plan",
+          sessionId: "planning-session-1",
+          version: 1,
+          status: "approved",
+        },
+        {
+          artifactId: "blueprint-1",
+          kind: "plan_blueprint",
+          sessionId: "planning-session-1",
+          version: 2,
+          status: "approved",
+        },
+      ],
+      planContextFingerprint: "plan-context-fingerprint-1",
     });
     const onConversationModeSwitched = vi.fn();
 
@@ -4423,23 +4470,29 @@ describe("AgentsActiveConversationPanel", () => {
     );
 
     await waitFor(() =>
-      expect(switchAgentConversationModeMock).toHaveBeenCalledWith({
+      expect(activateAgentPlanDirectImplementationMock).toHaveBeenCalledWith({
         conversationId: "conversation-1",
-        mode: "edit",
-        runtimeOverride: approvedPlanRuntime,
+        sessionId: "planning-session-1",
+        retry: false,
       }),
     );
+    expect(switchAgentConversationModeMock).not.toHaveBeenCalled();
     expect(sendAgentMessageMock).toHaveBeenCalledWith(
       "project",
       "project-1",
       expect.stringContaining("Implement the approved plan directly"),
       undefined,
-      {
+      expect.objectContaining({
         conversationId: "conversation-1",
         runtimeOverride: approvedPlanRuntime,
+        requireApprovedLinkedPlan: true,
+        expectedLinkedPlanFingerprint: "plan-context-fingerprint-1",
         suppressUserMessage: true,
-      },
+      }),
     );
+    expect(
+      sendAgentMessageMock.mock.calls[0]?.[4],
+    ).not.toHaveProperty("composerArtifactReferences");
     expect(sendAgentMessageMock.mock.calls[0]?.[2]).not.toContain(
       "do not create task proposals",
     );
@@ -4459,8 +4512,25 @@ describe("AgentsActiveConversationPanel", () => {
       mode: "edit" as const,
       linkedIdeationSessionId: "planning-session-1",
     };
-    switchAgentConversationModeMock.mockResolvedValue({
+    activateAgentPlanDirectImplementationMock.mockResolvedValue({
       workspace: transitionedWorkspace,
+      artifactReferences: [
+        {
+          artifactId: "artifact-1",
+          kind: "plan",
+          sessionId: "planning-session-1",
+          version: 1,
+          status: "approved",
+        },
+        {
+          artifactId: "blueprint-1",
+          kind: "plan_blueprint",
+          sessionId: "planning-session-1",
+          version: 2,
+          status: "approved",
+        },
+      ],
+      planContextFingerprint: "plan-context-fingerprint-1",
     });
     getAgentConversationWorkspaceMock.mockResolvedValue(transitionedWorkspace);
     sendAgentMessageMock.mockRejectedValueOnce(new Error("provider unavailable"));
@@ -4488,7 +4558,8 @@ describe("AgentsActiveConversationPanel", () => {
         "conversation-1",
       );
     });
-    expect(switchAgentConversationModeMock).toHaveBeenCalledTimes(1);
+    expect(activateAgentPlanDirectImplementationMock).toHaveBeenCalledTimes(1);
+    expect(switchAgentConversationModeMock).not.toHaveBeenCalled();
     expect(onConversationModeSwitched).toHaveBeenLastCalledWith(
       "conversation-1",
       "edit",
@@ -4510,9 +4581,6 @@ describe("AgentsActiveConversationPanel", () => {
       ...approvedPlanRuntime,
       model: "different-model",
     };
-    switchAgentConversationModeMock.mockResolvedValue({
-      workspace: transitionedWorkspace,
-    });
     getAgentConversationWorkspaceMock.mockResolvedValue(transitionedWorkspace);
     sendAgentMessageMock
       .mockRejectedValueOnce(new Error("provider unavailable"))
@@ -4550,17 +4618,37 @@ describe("AgentsActiveConversationPanel", () => {
     );
 
     await waitFor(() => expect(sendAgentMessageMock).toHaveBeenCalledTimes(2));
-    expect(switchAgentConversationModeMock).toHaveBeenCalledTimes(1);
-    expect(sendAgentMessageMock.mock.calls[0]?.[4]).toEqual({
-      conversationId: "conversation-1",
-      runtimeOverride: approvedPlanRuntime,
-      suppressUserMessage: true,
-    });
-    expect(sendAgentMessageMock.mock.calls[1]?.[4]).toEqual({
-      conversationId: "conversation-1",
-      runtimeOverride: approvedPlanRuntime,
-      suppressUserMessage: true,
-    });
+    expect(activateAgentPlanDirectImplementationMock).toHaveBeenNthCalledWith(
+      1,
+      {
+        conversationId: "conversation-1",
+        sessionId: "planning-session-1",
+        retry: false,
+      },
+    );
+    expect(activateAgentPlanDirectImplementationMock).toHaveBeenNthCalledWith(
+      2,
+      {
+        conversationId: "conversation-1",
+        sessionId: "planning-session-1",
+        retry: true,
+      },
+    );
+    expect(switchAgentConversationModeMock).not.toHaveBeenCalled();
+    expect(sendAgentMessageMock.mock.calls[0]?.[4]).toEqual(
+      expect.objectContaining({
+        conversationId: "conversation-1",
+        runtimeOverride: approvedPlanRuntime,
+        suppressUserMessage: true,
+      }),
+    );
+    expect(sendAgentMessageMock.mock.calls[1]?.[4]).toEqual(
+      expect.objectContaining({
+        conversationId: "conversation-1",
+        runtimeOverride: approvedPlanRuntime,
+        suppressUserMessage: true,
+      }),
+    );
   });
 
   it("starts plan verification from the composer CTA row", async () => {

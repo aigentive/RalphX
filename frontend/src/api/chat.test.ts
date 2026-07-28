@@ -3104,6 +3104,36 @@ describe("chat api", () => {
     });
   });
 
+  it("sends an approved linked-plan policy without composer artifact references", async () => {
+    mockInvoke.mockResolvedValue({
+      conversation_id: "c1",
+      agent_run_id: "r1",
+      is_new_conversation: false,
+    });
+
+    await sendAgentMessage("project", "p1", "Implement the plan", undefined, {
+      conversationId: "c1",
+      requireApprovedLinkedPlan: true,
+      expectedLinkedPlanFingerprint: "activation-fingerprint-1",
+      suppressUserMessage: true,
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith("send_agent_message", {
+      input: {
+        contextType: "project",
+        contextId: "p1",
+        content: "Implement the plan",
+        conversationId: "c1",
+        requireApprovedLinkedPlan: true,
+        expectedLinkedPlanFingerprint: "activation-fingerprint-1",
+        suppressUserMessage: true,
+      },
+    });
+    expect(mockInvoke.mock.calls[0]?.[1]).not.toHaveProperty(
+      "input.composerArtifactReferences",
+    );
+  });
+
   it("lists queued messages", async () => {
     mockInvoke.mockResolvedValueOnce([
       {

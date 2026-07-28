@@ -12,6 +12,9 @@ use tokio::sync::{Mutex, OwnedMutexGuard};
 use tokio::time::sleep;
 use tracing::{error, info, warn};
 
+use crate::application::agent_plan_context::{
+    load_linked_workspace_plan_snapshot, merge_authoritative_plan_references,
+};
 use crate::application::agent_workspace_review_base::resolve_agent_workspace_review_base;
 use crate::application::chat_service::{
     ChatService, SendCallerContext, SendMessageOptions, SendQueuePolicy,
@@ -70,6 +73,8 @@ const WORKSPACE_REVIEW_FIXER_STATUS_QUEUED: &str = "queued";
 const WORKSPACE_REVIEW_FIXER_STATUS_RUNNING: &str = "running";
 const WORKSPACE_REVIEW_FIXER_STATUS_FAILED: &str = "failed";
 const WORKSPACE_REVIEW_FIXER_SKIPPED_ALREADY_ACTIVE: &str = "fixer_already_active";
+const WORKSPACE_REVIEW_PLAN_CONTEXT_CHANGED_ERROR: &str =
+    "The linked plan changed after this Workspace Review. Run Workspace Review again before repairing its findings.";
 const MERGED_PUBLICATION_PR_STATUS: &str = "merged";
 pub(crate) const WORKSPACE_REVIEW_MODE_CHANGED_TO_PLAN_ERROR: &str =
     "Workspace Review was interrupted because the workspace mode changed to Plan";
@@ -240,6 +245,7 @@ struct WorkspaceReviewInheritedReferences {
     integration_references: Vec<ComposerIntegrationReference>,
     artifact_references: Vec<ComposerArtifactReference>,
     resolved_artifacts: Vec<AgentWorkspaceReviewResolvedArtifactContext>,
+    plan_context_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -744,10 +750,14 @@ pub async fn load_agent_workspace_review_context(
     if target.is_none() && monitor.status != AgentWorkspaceReviewMonitorStatus::Reviewing {
         monitor.status = AgentWorkspaceReviewMonitorStatus::Idle;
     }
-    carry_forward_existing_merged_pr_review_if_current(workspace, &mut monitor, target.as_ref());
-    apply_review_gate_to_monitor(&mut monitor, target.as_ref());
     let inherited_references =
         collect_workspace_review_inherited_references(state, workspace).await?;
+    apply_current_plan_context_to_monitor(
+        &mut monitor,
+        inherited_references.plan_context_fingerprint.as_deref(),
+    );
+    carry_forward_existing_merged_pr_review_if_current(workspace, &mut monitor, target.as_ref());
+    apply_review_gate_to_monitor(&mut monitor, target.as_ref());
     let goal_context = build_workspace_review_goal_context(&inherited_references);
     let context = build_context(workspace, monitor, target, goal_context);
     let scope = target_scope_label(context.target.as_ref());
@@ -876,6 +886,10 @@ async fn start_agent_workspace_review_with_chat_service<S: ChatService + ?Sized>
     let phase_started = Instant::now();
     let inherited_references =
         collect_workspace_review_inherited_references(&state, workspace).await?;
+    apply_current_plan_context_to_monitor(
+        &mut monitor,
+        inherited_references.plan_context_fingerprint.as_deref(),
+    );
     log_workspace_review_phase(
         "workspace_review_start_phase",
         workspace,
@@ -1136,6 +1150,7 @@ async fn start_agent_workspace_review_with_chat_service<S: ChatService + ?Sized>
     monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Reviewing;
     monitor.clear_review_gate_bypass();
     clear_review_blocking_state(&mut monitor);
+    monitor.reviewed_plan_context_fingerprint = monitor.current_plan_context_fingerprint.clone();
     monitor.review_conversation_id = Some(review_conversation_id.clone());
     monitor.last_run_id = Some(preallocated_agent_run_id_value.clone());
     monitor.last_error = None;
@@ -1185,7 +1200,9 @@ async fn start_agent_workspace_review_with_chat_service<S: ChatService + ?Sized>
                 composer_integration_references: inherited_references.integration_references,
                 composer_artifact_references: inherited_references.artifact_references,
                 force_new_provider_session: true,
-                metadata: Some(workspace_review_request_metadata()),
+                metadata: Some(workspace_review_request_metadata(
+                    inherited_references.plan_context_fingerprint.as_deref(),
+                )),
                 caller_context: SendCallerContext::UserInitiated,
                 ..Default::default()
             },
@@ -1339,10 +1356,11 @@ fn workspace_review_conversation_title(target: &AgentWorkspaceReviewTarget) -> S
     }
 }
 
-fn workspace_review_request_metadata() -> String {
+fn workspace_review_request_metadata(plan_context_fingerprint: Option<&str>) -> String {
     serde_json::json!({
         "hidden_from_ui": true,
         "source": "workspace_review_request",
+        "plan_context_fingerprint": plan_context_fingerprint,
     })
     .to_string()
 }
@@ -1432,37 +1450,30 @@ async fn collect_workspace_review_inherited_references(
         );
     }
 
-    if let Some((plan_reference, resolved_artifact)) =
-        linked_workspace_plan_artifact_context(state, workspace).await?
+    if let Some(snapshot) = load_linked_workspace_plan_snapshot(state, workspace)
+        .await
+        .map_err(AppError::Validation)?
     {
-        if let Some(resolved_artifact) = resolved_artifact {
-            push_workspace_review_resolved_artifact(
-                &mut inherited.resolved_artifacts,
-                &mut resolved_artifact_seen,
-                resolved_artifact,
-            );
+        let authoritative_references = snapshot.composer_references();
+        for (reference, artifact) in authoritative_references
+            .iter()
+            .zip(std::iter::once(&snapshot.overview).chain(snapshot.blueprint.as_ref()))
+        {
+            if let Some(resolved_artifact) =
+                workspace_review_resolved_artifact_context(reference, artifact)
+            {
+                push_workspace_review_resolved_artifact(
+                    &mut inherited.resolved_artifacts,
+                    &mut resolved_artifact_seen,
+                    resolved_artifact,
+                );
+            }
         }
-        push_inherited_artifact_reference(
-            &mut inherited.artifact_references,
-            &mut artifact_seen,
-            plan_reference,
+        inherited.artifact_references = merge_authoritative_plan_references(
+            authoritative_references,
+            inherited.artifact_references,
         );
-    }
-    if let Some((blueprint_reference, resolved_artifact)) =
-        linked_workspace_plan_blueprint_context(state, workspace).await?
-    {
-        if let Some(resolved_artifact) = resolved_artifact {
-            push_workspace_review_resolved_artifact(
-                &mut inherited.resolved_artifacts,
-                &mut resolved_artifact_seen,
-                resolved_artifact,
-            );
-        }
-        push_inherited_artifact_reference(
-            &mut inherited.artifact_references,
-            &mut artifact_seen,
-            blueprint_reference,
-        );
+        inherited.plan_context_fingerprint = Some(snapshot.fingerprint());
     }
 
     Ok(inherited)
@@ -1794,88 +1805,6 @@ where
     value
         .cloned()
         .and_then(|value| serde_json::from_value::<Vec<T>>(value).ok())
-}
-
-async fn linked_workspace_plan_artifact_context(
-    state: &AppState,
-    workspace: &AgentConversationWorkspace,
-) -> AppResult<
-    Option<(
-        ComposerArtifactReference,
-        Option<AgentWorkspaceReviewResolvedArtifactContext>,
-    )>,
-> {
-    let Some(session_id) = workspace.linked_ideation_session_id.as_ref() else {
-        return Ok(None);
-    };
-    let Some(session) = state.ideation_session_repo.get_by_id(session_id).await? else {
-        return Ok(None);
-    };
-    let Some(artifact_id) = session
-        .plan_artifact_bundle()
-        .map(|bundle| bundle.overview_id)
-    else {
-        return Ok(None);
-    };
-    let artifact = state.artifact_repo.get_by_id(&artifact_id).await?;
-    let reference = ComposerArtifactReference {
-        artifact_id: artifact_id.as_str().to_string(),
-        kind: "plan".to_string(),
-        title: artifact.as_ref().map(|artifact| artifact.name.clone()),
-        session_id: Some(session.id.as_str().to_string()),
-        version: artifact.as_ref().map(|artifact| artifact.metadata.version),
-        status: None,
-    };
-    let resolved_artifact = artifact
-        .as_ref()
-        .and_then(|artifact| workspace_review_resolved_artifact_context(&reference, artifact));
-    Ok(Some((reference, resolved_artifact)))
-}
-
-async fn linked_workspace_plan_blueprint_context(
-    state: &AppState,
-    workspace: &AgentConversationWorkspace,
-) -> AppResult<
-    Option<(
-        ComposerArtifactReference,
-        Option<AgentWorkspaceReviewResolvedArtifactContext>,
-    )>,
-> {
-    let Some(session_id) = workspace.linked_ideation_session_id.as_ref() else {
-        return Ok(None);
-    };
-    let Some(session) = state.ideation_session_repo.get_by_id(session_id).await? else {
-        return Ok(None);
-    };
-    let Some(artifact_id) = session
-        .plan_artifact_bundle()
-        .and_then(|bundle| bundle.blueprint_id)
-    else {
-        return Ok(None);
-    };
-    let artifact = state.artifact_repo.get_by_id(&artifact_id).await?;
-    let reference = ComposerArtifactReference {
-        artifact_id: artifact_id.as_str().to_string(),
-        kind: "plan_blueprint".to_string(),
-        title: artifact.as_ref().map(|artifact| artifact.name.clone()),
-        session_id: Some(session.id.as_str().to_string()),
-        version: artifact.as_ref().map(|artifact| artifact.metadata.version),
-        status: None,
-    };
-    let resolved_artifact = artifact
-        .as_ref()
-        .and_then(|artifact| workspace_review_resolved_artifact_context(&reference, artifact));
-    Ok(Some((reference, resolved_artifact)))
-}
-
-#[cfg(test)]
-async fn linked_workspace_plan_artifact_reference(
-    state: &AppState,
-    workspace: &AgentConversationWorkspace,
-) -> AppResult<Option<ComposerArtifactReference>> {
-    Ok(linked_workspace_plan_artifact_context(state, workspace)
-        .await?
-        .map(|(reference, _)| reference))
 }
 
 fn workspace_review_resolved_artifact_context(
@@ -2458,6 +2387,41 @@ pub(crate) async fn complete_agent_workspace_review_run_unlocked(
         "workspace Review completion",
     )?;
     monitor.last_run_id = created_by_run_id.or(monitor.last_run_id);
+    let current_plan_context_fingerprint =
+        match load_linked_workspace_plan_snapshot(state, workspace).await {
+            Ok(snapshot) => snapshot.map(|snapshot| snapshot.fingerprint()),
+            Err(error) => {
+                apply_current_plan_context_to_monitor(&mut monitor, None);
+                monitor.status = AgentWorkspaceReviewMonitorStatus::Blocked;
+                monitor.review_outcome = AgentWorkspaceReviewOutcome::RunFailed;
+                monitor.last_error = Some(format!(
+                    "Workspace Review could not validate its linked plan: {error}"
+                ));
+                clear_review_blocking_state(&mut monitor);
+                apply_review_gate_to_monitor(&mut monitor, target.as_ref());
+                return state
+                    .agent_conversation_workspace_repo
+                    .upsert_workspace_review_monitor(monitor)
+                    .await;
+            }
+        };
+    let plan_context_changed =
+        monitor.reviewed_plan_context_fingerprint != current_plan_context_fingerprint;
+    apply_current_plan_context_to_monitor(
+        &mut monitor,
+        current_plan_context_fingerprint.as_deref(),
+    );
+    if plan_context_changed {
+        monitor.status = AgentWorkspaceReviewMonitorStatus::Blocked;
+        monitor.review_outcome = AgentWorkspaceReviewOutcome::RunFailed;
+        monitor.last_error = Some(WORKSPACE_REVIEW_PLAN_CONTEXT_CHANGED_ERROR.to_string());
+        clear_review_blocking_state(&mut monitor);
+        apply_review_gate_to_monitor(&mut monitor, target.as_ref());
+        return state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(monitor)
+            .await;
+    }
     let parsed_outcome = normalized_outcome
         .as_deref()
         .and_then(|value| AgentWorkspaceReviewOutcome::from_str(value).ok())
@@ -3200,6 +3164,13 @@ async fn route_workspace_review_blocking_fixer_with_chat_service<S: ChatService 
         phase_started,
         route_started,
     );
+    if let Err(error) =
+        ensure_workspace_review_plan_context_is_current(state, workspace, monitor).await
+    {
+        next.review_fixer_status = Some(WORKSPACE_REVIEW_FIXER_STATUS_FAILED.to_string());
+        next.last_error = Some(format!("Failed to route Review fixer: {error}"));
+        return settle_workspace_review_fixer_attempt(state, next, monitor).await;
+    }
     let preserve_conversation_provider_session_ref = true;
     let send_started = Instant::now();
     match chat_service
@@ -3232,6 +3203,7 @@ async fn route_workspace_review_blocking_fixer_with_chat_service<S: ChatService 
                     &workspace.conversation_id,
                     monitor.review_blocking_fingerprint.as_deref(),
                     monitor.review_fixer_attempt_id.as_deref(),
+                    monitor.reviewed_plan_context_fingerprint.as_deref(),
                 )),
                 caller_context: SendCallerContext::UserInitiated,
                 ..Default::default()
@@ -3304,6 +3276,23 @@ async fn route_workspace_review_blocking_fixer_with_chat_service<S: ChatService 
     Ok(settled)
 }
 
+async fn ensure_workspace_review_plan_context_is_current(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    monitor: &AgentWorkspaceReviewMonitor,
+) -> AppResult<()> {
+    let current_plan_context_fingerprint = load_linked_workspace_plan_snapshot(state, workspace)
+        .await
+        .map_err(AppError::Validation)?
+        .map(|snapshot| snapshot.fingerprint());
+    if current_plan_context_fingerprint != monitor.reviewed_plan_context_fingerprint {
+        return Err(AppError::Conflict(
+            WORKSPACE_REVIEW_PLAN_CONTEXT_CHANGED_ERROR.to_string(),
+        ));
+    }
+    Ok(())
+}
+
 async fn prepare_workspace_review_fixer_launch(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
@@ -3317,6 +3306,11 @@ async fn prepare_workspace_review_fixer_launch(
         .ok_or_else(|| AppError::NotFound("Conversation not found".to_string()))?;
     let mut inherited_references =
         collect_workspace_review_inherited_references(state, workspace).await?;
+    if inherited_references.plan_context_fingerprint != monitor.reviewed_plan_context_fingerprint {
+        return Err(AppError::Conflict(
+            WORKSPACE_REVIEW_PLAN_CONTEXT_CHANGED_ERROR.to_string(),
+        ));
+    }
     let review_artifact_context = load_workspace_review_artifact_context(
         state,
         monitor.review_artifact_id.as_ref(),
@@ -3329,30 +3323,16 @@ async fn prepare_workspace_review_fixer_launch(
         "review_requested_changes",
     )
     .await?;
-    for artifact in [
-        review_artifact_context.as_ref(),
-        requested_changes_artifact_context.as_ref(),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        if !inherited_references
-            .artifact_references
-            .iter()
-            .any(|reference| reference.artifact_id == artifact.artifact_id)
-        {
-            inherited_references
-                .artifact_references
-                .push(ComposerArtifactReference {
-                    artifact_id: artifact.artifact_id.clone(),
-                    kind: artifact.kind.clone(),
-                    title: artifact.title.clone(),
-                    session_id: None,
-                    version: artifact.version,
-                    status: Some(monitor.review_gate_status.to_string()),
-                });
-        }
-    }
+    prioritize_workspace_review_fixer_artifact_references(
+        &mut inherited_references.artifact_references,
+        [
+            review_artifact_context.as_ref(),
+            requested_changes_artifact_context.as_ref(),
+        ]
+        .into_iter()
+        .flatten(),
+        monitor,
+    );
     let goal_context = build_workspace_review_goal_context(&inherited_references);
     let message = build_workspace_review_blocking_repair_message(
         workspace,
@@ -3366,6 +3346,44 @@ async fn prepare_workspace_review_fixer_launch(
         message,
         inherited_references,
     })
+}
+
+fn prioritize_workspace_review_fixer_artifact_references<'a>(
+    references: &mut Vec<ComposerArtifactReference>,
+    review_artifacts: impl IntoIterator<Item = &'a AgentWorkspaceReviewResolvedArtifactContext>,
+    monitor: &AgentWorkspaceReviewMonitor,
+) {
+    let existing = std::mem::take(references);
+    let mut prioritized = Vec::with_capacity(WORKSPACE_REVIEW_MAX_INHERITED_ARTIFACT_REFERENCES);
+    let mut seen = BTreeSet::new();
+    for reference in existing
+        .iter()
+        .filter(|reference| matches!(reference.kind.as_str(), "plan" | "plan_blueprint"))
+        .cloned()
+    {
+        push_inherited_artifact_reference(&mut prioritized, &mut seen, reference);
+    }
+    for artifact in review_artifacts {
+        push_inherited_artifact_reference(
+            &mut prioritized,
+            &mut seen,
+            ComposerArtifactReference {
+                artifact_id: artifact.artifact_id.clone(),
+                kind: artifact.kind.clone(),
+                title: artifact.title.clone(),
+                session_id: None,
+                version: artifact.version,
+                status: Some(monitor.review_gate_status.to_string()),
+            },
+        );
+    }
+    for reference in existing
+        .into_iter()
+        .filter(|reference| !matches!(reference.kind.as_str(), "plan" | "plan_blueprint"))
+    {
+        push_inherited_artifact_reference(&mut prioritized, &mut seen, reference);
+    }
+    *references = prioritized;
 }
 
 async fn settle_workspace_review_fixer_attempt(
@@ -3398,11 +3416,13 @@ fn workspace_review_fixer_request_metadata(
     conversation_id: &ChatConversationId,
     blocking_fingerprint: Option<&str>,
     attempt_id: Option<&str>,
+    plan_context_fingerprint: Option<&str>,
 ) -> String {
     serde_json::json!({
         "hidden_from_ui": true,
         "source": "workspace_review_blocking_fixer",
         "blocking_fingerprint": blocking_fingerprint,
+        "plan_context_fingerprint": plan_context_fingerprint,
         "fixer_attempt_id": attempt_id,
         "ralphx_action_kind": "workspace_review_fixer",
         "ralphx_action_context_id": attempt_id.map(|_| conversation_id.as_str()),
@@ -3626,6 +3646,7 @@ pub fn apply_review_artifact_pair_to_monitor(
     monitor.reviewed_target_scope = Some(target_scope);
     monitor.reviewed_head_sha = target_head_sha;
     monitor.reviewed_diff_fingerprint = Some(target_diff_fingerprint.clone());
+    monitor.reviewed_plan_context_fingerprint = monitor.current_plan_context_fingerprint.clone();
     monitor.current_target_scope = Some(target_scope);
     monitor.current_diff_fingerprint = Some(target_diff_fingerprint);
     monitor.review_artifact_id = Some(artifact_id);
@@ -3662,6 +3683,7 @@ fn workspace_review_artifact_covers_merged_pr_target(
         || monitor.reviewed_target_scope != Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta)
         || !monitor.has_review_artifact_pair()
         || monitor.reviewed_diff_fingerprint.is_none()
+        || monitor.reviewed_plan_context_fingerprint != monitor.current_plan_context_fingerprint
         || workspace.publication_pr_status.as_deref() != Some(MERGED_PUBLICATION_PR_STATUS)
     {
         return false;
@@ -3879,6 +3901,20 @@ fn clear_review_fixer_state(monitor: &mut AgentWorkspaceReviewMonitor) {
 fn clear_review_fixer_linkage(monitor: &mut AgentWorkspaceReviewMonitor) {
     monitor.review_fixer_run_id = None;
     monitor.review_fixer_conversation_id = None;
+}
+
+fn apply_current_plan_context_to_monitor(
+    monitor: &mut AgentWorkspaceReviewMonitor,
+    plan_context_fingerprint: Option<&str>,
+) {
+    let plan_context_fingerprint = plan_context_fingerprint
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    if monitor.current_plan_context_fingerprint != plan_context_fingerprint {
+        monitor.current_plan_context_fingerprint = plan_context_fingerprint;
+        clear_review_blocking_state(monitor);
+    }
 }
 
 pub(crate) fn apply_current_target_to_monitor(

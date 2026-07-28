@@ -245,26 +245,6 @@ pub(crate) async fn hydrate_linked_branch_source_pull_request(
         }))
 }
 
-async fn linked_ideation_session_is_planning(
-    state: &AppState,
-    workspace: &AgentConversationWorkspace,
-) -> Result<bool, String> {
-    let Some(session_id) = workspace.linked_ideation_session_id.as_ref() else {
-        return Ok(false);
-    };
-
-    let Some(session) = state
-        .ideation_session_repo
-        .get_by_id(session_id)
-        .await
-        .map_err(|error| error.to_string())?
-    else {
-        return Ok(false);
-    };
-
-    Ok(session.session_flow == IdeationSessionFlow::Planning)
-}
-
 pub(crate) async fn ensure_plan_workspace_planning_session_link(
     state: &AppState,
     project: &Project,
@@ -274,7 +254,11 @@ pub(crate) async fn ensure_plan_workspace_planning_session_link(
         return Ok(false);
     }
 
-    if linked_ideation_session_is_planning(state, workspace).await? {
+    if crate::application::agent_plan_context::linked_workspace_planning_session_is_reusable(
+        state, workspace,
+    )
+    .await?
+    {
         return Ok(false);
     }
 
