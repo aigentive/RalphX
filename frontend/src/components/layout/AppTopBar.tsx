@@ -17,6 +17,7 @@ import { useThemeStore, type FontScale } from "@/stores/themeStore";
 import type { AppView } from "@/types/app-view";
 import type { ChatConversation } from "@/types/chat-conversation";
 
+import { EnvironmentSwitcher } from "./EnvironmentSwitcher";
 import { ThemeSelector } from "./ThemeSelector";
 
 interface AppTopBarProps {
@@ -459,7 +460,9 @@ export function AppTopBar({
       !cachedAgentConversation,
     staleTime: 30 * 1000,
   });
-  const [activeMenu, setActiveMenu] = useState<"theme" | "font" | null>(null);
+  const [activeMenu, setActiveMenu] = useState<
+    "environment" | "project" | "theme" | "font" | null
+  >(null);
   const agentConversation =
     currentView === "agents" && selectedAgentConversationId
       ? cachedAgentConversation ?? selectedAgentConversationSummary.data ?? null
@@ -573,12 +576,19 @@ export function AppTopBar({
           </kbd>
         </button>
 
+        <EnvironmentSwitcher
+          open={activeMenu === "environment"}
+          onOpenChange={(open) => setActiveMenu(open ? "environment" : null)}
+        />
+
         {shouldShowProjectSelector && onNewProject && (
           <ProjectSelector
             onNewProject={onNewProject}
             onBeforeProjectChange={onProjectSwitchIntent}
             align="end"
             className="max-w-[240px]"
+            open={activeMenu === "project"}
+            onOpenChange={(open) => setActiveMenu(open ? "project" : null)}
           />
         )}
 
