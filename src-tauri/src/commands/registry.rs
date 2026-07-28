@@ -22,6 +22,7 @@ macro_rules! register_tauri_commands {
             #[cfg(debug_assertions)]
             commands::notification_commands::debug_send_test_notification,
             // remote environment registry (PR 2.1)
+            commands::remote_environment_commands::preview_remote_environment,
             commands::remote_environment_commands::pair_remote_environment,
             commands::remote_environment_commands::list_remote_environments,
             commands::remote_environment_commands::remove_remote_environment,

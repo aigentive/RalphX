@@ -19,7 +19,9 @@
 
 use std::sync::Arc;
 
-use ralphx_remote_protocol::{ClientFrame, ErrorCode, Scope, PROTOCOL_VERSION};
+use ralphx_remote_protocol::{
+    ClientFrame, EnvironmentDescriptor, ErrorCode, Scope, PROTOCOL_VERSION,
+};
 use tokio::sync::RwLock;
 
 use crate::application::remote_event_relay::{RemoteConnectOutcome, RemoteEventRelay};
@@ -205,6 +207,23 @@ const ALLOWED_FETCH_METHODS: &[&str] = &["GET", "HEAD", "POST", "PUT", "PATCH", 
 /// the list is that they can never be added to it by accident.
 const ALLOWED_FETCH_HEADERS: &[&str] = &["content-type", "accept"];
 
+/// Read-only host identity shown before a pairing code is consumed (PR 2.5).
+///
+/// Descriptor fields only. There is no host display name and no project count on the
+/// wire descriptor, and the unauthenticated well-known endpoint must not grow one for
+/// UX — the flow renders what the host actually asserts, nothing more.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteEnvironmentPreview {
+    pub environment_id: String,
+    pub app_version: String,
+    pub platform: String,
+    pub protocol_version: u32,
+    pub min_client_protocol: u32,
+    /// The existing row's name when this host identity is already registered, so the
+    /// flow can say "pairing again updates it" instead of implying a second entry.
+    pub already_paired_as: Option<String>,
+}
+
 /// What the startup reconciler did, for logs and tests (row ids).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RemoteEnvironmentReconcileReport {
@@ -264,6 +283,62 @@ impl RemoteEnvironmentService {
     // Pairing (staged add machine, §6.1 / P-27)
     // ------------------------------------------------------------------
 
+    /// Validates the URL, fetches the host descriptor, and applies the version
+    /// contradiction gate — the prelude both `pair` and `preview` run.
+    ///
+    /// It exists so the gate has exactly ONE definition: a preview that said "compatible"
+    /// while `pair` refused (or the reverse) would be a UI that lies about the very thing
+    /// the step is for. Returns the NORMALIZED url because `pair` needs that exact string
+    /// for the exchange, the stored row, and the replaced-token revoke.
+    async fn pairing_descriptor(
+        &self,
+        url: &str,
+    ) -> Result<(String, EnvironmentDescriptor), RemoteEnvironmentError> {
+        let url = validate_pairing_url(url)?;
+        let descriptor = self
+            .host_client
+            .fetch_descriptor(&url)
+            .await
+            .map_err(descriptor_error)?;
+        if descriptor.min_client_protocol > PROTOCOL_VERSION {
+            return Err(RemoteEnvironmentError::VersionSkew {
+                host_min_client: descriptor.min_client_protocol,
+                client: PROTOCOL_VERSION,
+            });
+        }
+        Ok((url, descriptor))
+    }
+
+    /// Read-only identity probe for the add-environment flow (PR 2.5).
+    ///
+    /// Runs the same descriptor + skew prelude as `pair` and adds one repository read,
+    /// so the user can see WHO they are about to pair with before a single-use code is
+    /// consumed. Deliberately inert: no row write, no Keychain access, no token, no
+    /// active-environment change. Safe to call repeatedly.
+    pub async fn preview(
+        &self,
+        url: &str,
+    ) -> Result<RemoteEnvironmentPreview, RemoteEnvironmentError> {
+        let (_url, descriptor) = self.pairing_descriptor(url).await?;
+
+        // Dedup awareness only: the flow tells the user that pairing again UPDATES this
+        // row rather than adding a second one (the §6.1 upsert is keyed on this id).
+        let already_paired_as = self
+            .repo
+            .get_by_environment_id(&descriptor.environment_id)
+            .await?
+            .map(|existing| existing.name);
+
+        Ok(RemoteEnvironmentPreview {
+            environment_id: descriptor.environment_id,
+            app_version: descriptor.app_version,
+            platform: descriptor.platform,
+            protocol_version: descriptor.protocol_version,
+            min_client_protocol: descriptor.min_client_protocol,
+            already_paired_as,
+        })
+    }
+
     /// Pairs this client with a host: descriptor → pair exchange → row as
     /// `pending_add` → Keychain write → flip `active`.
     ///
@@ -277,20 +352,8 @@ impl RemoteEnvironmentService {
         code: &str,
         name: &str,
     ) -> Result<RemoteEnvironment, RemoteEnvironmentError> {
-        let url = validate_pairing_url(url)?;
-
         // 1. Descriptor: learn the host identity + protocol, abort on skew (§4.2).
-        let descriptor = self
-            .host_client
-            .fetch_descriptor(&url)
-            .await
-            .map_err(descriptor_error)?;
-        if descriptor.min_client_protocol > PROTOCOL_VERSION {
-            return Err(RemoteEnvironmentError::VersionSkew {
-                host_min_client: descriptor.min_client_protocol,
-                client: PROTOCOL_VERSION,
-            });
-        }
+        let (url, descriptor) = self.pairing_descriptor(url).await?;
 
         // 2. Pair exchange (single-use code consumption is host-side).
         let response = self
@@ -1179,6 +1242,21 @@ fn validate_pairing_url(url: &str) -> Result<String, RemoteEnvironmentError> {
     if parsed.host().is_none() {
         return Err(RemoteEnvironmentError::InvalidUrl(
             "missing host".to_string(),
+        ));
+    }
+    // A query or fragment is REJECTED, never stripped. The accepted string becomes the
+    // row's `base_url`, which is the stem every derived URL is built from (the pairing
+    // exchange path, the WS ticket path, the descriptor path). Anything unshaped that
+    // survives here re-emerges glued after those paths as a URL nobody authored, so the
+    // shape is refused at the sink rather than trusted from the caller's provenance.
+    if parsed.query().is_some() {
+        return Err(RemoteEnvironmentError::InvalidUrl(
+            "pairing URL must not carry a query string".to_string(),
+        ));
+    }
+    if trimmed.contains('#') {
+        return Err(RemoteEnvironmentError::InvalidUrl(
+            "pairing URL must not carry a fragment".to_string(),
         ));
     }
     Ok(trimmed.trim_end_matches('/').to_string())

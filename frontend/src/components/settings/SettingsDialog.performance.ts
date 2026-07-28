@@ -27,6 +27,7 @@ export const sectionModuleLoaders: Record<SettingsSectionId, () => Promise<unkno
   "api-keys": () => import("./ApiKeysSection"),
   "external-mcp": () => import("./ExternalMcpSettingsPanel"),
   "remote-access": () => import("./remote-access/RemoteAccessSection"),
+  connections: () => import("./connections/ConnectionsSection"),
   mcp: () => import("./McpSettingsSection"),
   updates: () => import("./UpdatesSettingsSection"),
   accessibility: () => import("./AccessibilitySection"),
