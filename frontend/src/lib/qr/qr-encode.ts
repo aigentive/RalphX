@@ -728,37 +728,35 @@ export function encodeQrMatrix(text: string): QrMatrix {
   return { size: grid.size, version, maskPattern, modules };
 }
 
-export interface QrSvgOptions {
-  /**
-   * Light border around the symbol, in modules. The spec requires at least 4;
-   * scanners rely on it to find the symbol edge.
-   */
-  quietZone?: number;
-  /** Accessible title rendered inside the SVG. */
-  title?: string;
+/**
+ * Light border around the symbol, in modules. The spec requires at least 4;
+ * scanners rely on it to find where the symbol ends.
+ */
+export const QR_QUIET_ZONE = 4;
+
+/** Side length of the drawing area, in modules, including both quiet zones. */
+export function qrSvgExtent(
+  matrix: QrMatrix,
+  quietZone: number = QR_QUIET_ZONE,
+): number {
+  return matrix.size + quietZone * 2;
 }
 
-const DEFAULT_QUIET_ZONE = 4;
-
 /**
- * Renders the matrix as a self-contained SVG string.
+ * Builds the SVG path data for the dark modules, offset by the quiet zone.
  *
- * Colours are LITERAL `#000000` on `#FFFFFF` and never theme tokens: a scanner
- * needs the contrast polarity it expects, and WKWebView drops chained `var()` on
- * some properties, which would silently produce an unreadable symbol. The SVG
- * carries no fixed pixel size — the container scales it, and vector output stays
- * crisp at any scale.
+ * Callers render this into an `<svg>` themselves, which keeps the encoder free of
+ * markup concerns and lets consumers use JSX instead of injecting raw HTML.
+ *
+ * Horizontally adjacent modules merge into one run, so a version-7 symbol emits a
+ * few hundred segments instead of ~2000 individual squares.
  */
-export function qrMatrixToSvg(
+export function qrMatrixToPath(
   matrix: QrMatrix,
-  options: QrSvgOptions = {},
+  quietZone: number = QR_QUIET_ZONE,
 ): string {
-  const quietZone = options.quietZone ?? DEFAULT_QUIET_ZONE;
-  const extent = matrix.size + quietZone * 2;
-
-  // Merge horizontally adjacent dark modules into single path runs; a version-7
-  // symbol drops from ~1000 rects to a few hundred segments.
   const segments: string[] = [];
+
   for (let row = 0; row < matrix.size; row++) {
     let runStart = -1;
     for (let col = 0; col <= matrix.size; col++) {
@@ -775,16 +773,5 @@ export function qrMatrixToSvg(
     }
   }
 
-  const title = options.title
-    ? `<title>${options.title.replace(/[<>&]/g, "")}</title>`
-    : "";
-
-  return (
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${extent} ${extent}" ` +
-    `shape-rendering="crispEdges" role="img" aria-hidden="${title ? "false" : "true"}">` +
-    title +
-    `<rect width="${extent}" height="${extent}" fill="#FFFFFF"/>` +
-    `<path d="${segments.join("")}" fill="#000000"/>` +
-    `</svg>`
-  );
+  return segments.join("");
 }

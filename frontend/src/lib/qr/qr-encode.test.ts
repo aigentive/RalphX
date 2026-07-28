@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import goldens from "./qr-encode.goldens.json";
-import { encodeQrMatrix, qrMatrixToSvg } from "./qr-encode";
+import {
+  QR_QUIET_ZONE,
+  encodeQrMatrix,
+  qrMatrixToPath,
+  qrSvgExtent,
+} from "./qr-encode";
 
 /**
  * The goldens were produced once by an independent reference encoder
@@ -60,32 +65,51 @@ describe("encodeQrMatrix — structure", () => {
   });
 });
 
-describe("qrMatrixToSvg", () => {
+describe("qrMatrixToPath", () => {
   const matrix = encodeQrMatrix("ralphx://pair?host=h#code=rxp_ABCD");
 
-  it("renders literal black-on-white, never CSS variables (WKWebView + scanability)", () => {
-    const svg = qrMatrixToSvg(matrix);
-    expect(svg).toContain("#000000");
-    expect(svg).toContain("#FFFFFF");
-    expect(svg).not.toContain("var(--");
-    expect(svg).not.toContain("currentColor");
+  it("reserves the mandatory 4-module quiet zone around the symbol", () => {
+    expect(QR_QUIET_ZONE).toBe(4);
+    expect(qrSvgExtent(matrix)).toBe(matrix.size + 8);
+
+    // Every coordinate is pushed in by the quiet zone, so nothing is drawn
+    // against the edge of the drawing area.
+    const coords = [...qrMatrixToPath(matrix).matchAll(/M(\d+) (\d+)/g)];
+    expect(coords.length).toBeGreaterThan(0);
+    for (const [, x, y] of coords) {
+      expect(Number(x)).toBeGreaterThanOrEqual(QR_QUIET_ZONE);
+      expect(Number(y)).toBeGreaterThanOrEqual(QR_QUIET_ZONE);
+      expect(Number(x)).toBeLessThan(matrix.size + QR_QUIET_ZONE);
+      expect(Number(y)).toBeLessThan(matrix.size + QR_QUIET_ZONE);
+    }
   });
 
-  it("includes the mandatory 4-module quiet zone in the viewBox", () => {
-    const svg = qrMatrixToSvg(matrix);
-    const expected = matrix.size + 8;
-    expect(svg).toContain(`viewBox="0 0 ${expected} ${expected}"`);
+  it("merges horizontally adjacent modules into single runs", () => {
+    const darkModules = matrix.modules.flat().filter(Boolean).length;
+    const runs = qrMatrixToPath(matrix).match(/M/g)?.length ?? 0;
+
+    // The top-left finder alone guarantees runs wider than one module.
+    expect(runs).toBeGreaterThan(0);
+    expect(runs).toBeLessThan(darkModules);
   });
 
-  it("scales to any rendered size without re-encoding", () => {
-    const svg = qrMatrixToSvg(matrix);
-    // No absolute pixel width/height baked in — the container sizes it.
-    expect(svg).not.toMatch(/width="\d+px"/);
+  it("carries no colour of its own — the caller supplies literal fills", () => {
+    const path = qrMatrixToPath(matrix);
+    expect(path).not.toContain("var(--");
+    expect(path).not.toContain("currentColor");
+    expect(path).toMatch(/^[Mhvz0-9 ,.-]*$/);
   });
 
   it("is stable for a fixed payload", () => {
-    expect(qrMatrixToSvg(matrix)).toBe(
-      qrMatrixToSvg(encodeQrMatrix("ralphx://pair?host=h#code=rxp_ABCD")),
+    expect(qrMatrixToPath(matrix)).toBe(
+      qrMatrixToPath(encodeQrMatrix("ralphx://pair?host=h#code=rxp_ABCD")),
     );
+  });
+
+  it("shifts with a custom quiet zone", () => {
+    const tight = qrMatrixToPath(matrix, 0);
+    const padded = qrMatrixToPath(matrix, 4);
+    expect(tight).not.toBe(padded);
+    expect(qrSvgExtent(matrix, 0)).toBe(matrix.size);
   });
 });
