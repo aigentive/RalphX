@@ -106,6 +106,12 @@ export const LOCAL_ONLY_COMMANDS: readonly LocalOnlyCommand[] = [
     disposition: "run-locally",
     reason: "Reports the listener THIS Mac exposes, not the peer's.",
   },
+  {
+    command: "list_remote_advertised_endpoints",
+    disposition: "run-locally",
+    reason:
+      "The URLs THIS Mac advertises for its own listener; a peer's endpoints are not pairable from here.",
+  },
 
   // --- Host-side device/pairing/session admin (§3.1: no remote admin surface). ---
   {
@@ -155,6 +161,12 @@ export const LOCAL_ONLY_COMMANDS: readonly LocalOnlyCommand[] = [
     disposition: "run-locally",
     reason:
       "Session management is host-UI-only via loopback commands (§3.1, §5.4).",
+  },
+  {
+    command: "list_remote_audit_entries",
+    disposition: "run-locally",
+    reason:
+      "Reads THIS Mac's own remote-access audit log; the pane's other rows are all local (§3.1, §5.4).",
   },
 
   // --- Local app chrome whose subject is this Mac. ---

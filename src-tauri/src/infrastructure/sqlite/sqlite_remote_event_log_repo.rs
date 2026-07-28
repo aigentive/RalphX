@@ -155,13 +155,26 @@ impl RemoteEventLogStore for SqliteRemoteEventLogRepository {
                 drop(statement);
                 // Same transaction as the rows: a committed seq is always a persisted high-water,
                 // and a rolled-back batch leaves neither behind.
-                conn.execute(
-                    "UPDATE remote_host_settings
-                     SET event_seq_high_water = ?1
-                     WHERE id = ?2 AND event_seq_high_water < ?1",
-                    rusqlite::params![seq_to_sql(high_water)?, SETTINGS_ROW_ID],
-                )
-                .map_err(|error| AppError::Database(error.to_string()))?;
+                let updated = conn
+                    .execute(
+                        "UPDATE remote_host_settings
+                         SET event_seq_high_water = ?1
+                         WHERE id = ?2 AND event_seq_high_water < ?1",
+                        rusqlite::params![seq_to_sql(high_water)?, SETTINGS_ROW_ID],
+                    )
+                    .map_err(|error| AppError::Database(error.to_string()))?;
+                // An UPDATE that touched nothing means either the stored high-water is already at
+                // or above this batch (benign) or the settings row is ABSENT — and a missing row
+                // would let the log rows commit without their high-water. The next boot would then
+                // seed `next_seq` below seqs that still exist in the log, every insert would
+                // collide on the seq primary key, and the resulting commit-failure→epoch-roll loop
+                // would kill the durable stream for that whole boot. Fail loudly at the sink
+                // instead of leaving the wedge for a later process to hit (C-14).
+                if updated == 0 && read_high_water(conn)? < high_water {
+                    return Err(AppError::Database(format!(
+                        "remote event high-water {high_water} was not persisted: the remote_host_settings row is missing"
+                    )));
+                }
                 Ok(())
             })
             .await

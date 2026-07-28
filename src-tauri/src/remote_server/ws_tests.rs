@@ -389,18 +389,53 @@ async fn subscribing_at_the_hydration_barrier_pins_the_delta_against_pruning() {
     assert_eq!(stream.leases().lease_floor(), u64::MAX);
 }
 
-/// The fork MUST happen before the drain — that is what closes the drain-end→live gap.
+/// The fork MUST happen before the drain — that is what closes the drain-end→live gap — and
+/// before the epoch window is READ, which is what closes the zombie-session race: a roll landing
+/// between a window read and a later fork would never deliver its `EpochRolled` to this receiver,
+/// leaving a session pinned to a dead epoch that silently drops every later durable frame.
 #[test]
-fn the_live_buffer_is_forked_before_the_catch_up_drain() {
+fn the_live_buffer_is_forked_before_the_epoch_window_read_and_the_catch_up_drain() {
     let source = include_str!("ws.rs");
     let body = source
         .split("pub(crate) async fn begin_subscription")
         .nth(1)
         .expect("begin_subscription should exist");
     let fork = body.find("stream.subscribe_frames()").expect("fork call");
+    let window = body.find("stream.epoch_window()").expect("window read");
+    let validate = body.find("validate_subscribe(").expect("validation call");
     let lease = body.find("leases().acquire(").expect("lease call");
     let drain = body.find("replay_catch_up(").expect("drain call");
-    assert!(fork < lease && lease < drain, "fork → lease → drain");
+    assert!(
+        fork < window && window < validate,
+        "fork → window read → validate"
+    );
+    assert!(
+        validate < lease && lease < drain,
+        "validate → lease → drain"
+    );
+}
+
+/// A durable frame whose epoch is not the one this session subscribed under must TEAR THE SESSION
+/// DOWN, never be skipped: skipping is what turns a missed `EpochRolled` into a live-looking
+/// socket that receives no durable events at all.
+#[test]
+fn a_durable_frame_from_another_epoch_tears_the_session_down() {
+    let source = include_str!("ws.rs");
+    let body = source
+        .split("SessionEvent::Live(LiveFrame::Durable(event)) => {")
+        .nth(1)
+        .expect("the durable live-frame arm should exist");
+    let guard = body
+        .find("if subscribed_epoch.as_ref() != Some(&event.epoch) {")
+        .expect("the epoch guard should exist");
+    let arm = &body[guard..];
+    let teardown = arm
+        .find("close_with_teardown(socket, ResetReason::EpochChanged)")
+        .expect("the epoch guard must tear the session down");
+    assert!(
+        arm[..teardown].find("continue").is_none(),
+        "the mismatch arm must not silently skip the frame"
+    );
 }
 
 // ------------------------------------------------------------------------------------------
@@ -810,6 +845,50 @@ fn the_upgrade_consumes_the_ticket_then_rechecks_the_device_before_upgrading() {
     assert!(
         consume < recheck && recheck < admit && admit < upgrade,
         "ticket → device → cap → upgrade"
+    );
+}
+
+/// §4.4 abuse control: a cap slot admitted before the upgrade must come back when the upgrade
+/// never completes. axum drops the `on_upgrade` callback UNRUN on a failed upgrade, so the guard
+/// has to be constructed outside it — its `Drop` is the only thing that releases the slot on that
+/// path. Constructed inside, each failed upgrade permanently consumed one of the device's 8 slots.
+#[tokio::test]
+async fn a_dropped_upgrade_callback_releases_the_device_cap_slot() {
+    let auth = crate::remote_server::auth_tests::in_memory_auth_context();
+    let device = RemoteDeviceId::from_string("device-cap");
+    let session = RemoteSessionId::from_string("session-cap");
+    let _kill = kill_channel(&auth.registry, &device, &session);
+    assert_eq!(auth.registry.device_session_count(&device), 1);
+
+    let guard = SessionGuard::new(auth.clone(), device.clone(), session.clone());
+    // Exactly what axum does to a callback it never invokes: the closure — and everything moved
+    // into it — is dropped without running.
+    let never_runs = move |_socket: ()| async move {
+        guard.open("127.0.0.1:1").await;
+    };
+    drop(never_runs);
+
+    assert_eq!(
+        auth.registry.device_session_count(&device),
+        0,
+        "a dropped upgrade callback must not leak the admitted cap slot"
+    );
+}
+
+/// The guard is built BEFORE the upgrade and moved in, so the dropped-callback path above is the
+/// one the handler actually takes.
+#[test]
+fn the_session_guard_is_constructed_before_the_upgrade() {
+    let source = include_str!("ws.rs");
+    let body = source
+        .split("pub(crate) async fn ws_events_handler")
+        .nth(1)
+        .expect("handler should exist");
+    let guard = body.find("SessionGuard::new(").expect("guard construction");
+    let upgrade = body.find("upgrade.on_upgrade(").expect("upgrade call");
+    assert!(
+        guard < upgrade,
+        "the unregistering guard must exist before the upgrade is handed off"
     );
 }
 

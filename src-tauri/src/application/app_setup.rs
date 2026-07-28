@@ -422,6 +422,9 @@ fn launch_startup_attempt(
             }
             return;
         }
+        // A crashed process leaves its `remote_sessions` rows open; nothing else ever closes them,
+        // so they must be reconciled before anything can connect in this one.
+        crate::remote_server::close_orphaned_remote_sessions_from_handle(&app_handle).await;
         // Capture + sequencer first, and gated only on host mode being CONFIGURED — not on the
         // listener being enabled. That ordering is the point of P-23: events emitted during a
         // disabled-listener window are still recorded, so a reconnect after a re-enable replays
