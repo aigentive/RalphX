@@ -277,6 +277,10 @@ impl fmt::Display for TaskOutcomeClass {
     }
 }
 
+/// The short Plan-mode verdict strings `"accepted"`, `"declined"`, and
+/// `"revision_requested"` are retired in favour of the canonical `plan_mode_*`
+/// classes. Rows persisted under the retired strings intentionally fall through
+/// to `Other(...)`, which round-trips losslessly; they are not backfilled.
 impl From<&str> for TaskOutcomeClass {
     fn from(value: &str) -> Self {
         match value {

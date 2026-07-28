@@ -528,11 +528,19 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             let workspace = workspaces.get_mut(conversation_id).ok_or_else(|| {
                 AppError::NotFound(format!("Workspace not found: {conversation_id}"))
             })?;
+            let now = Utc::now();
             workspace.linked_ideation_session_id = Some(ideation_session_id.clone());
             workspace.linked_plan_branch_id = Some(plan_branch_id.clone());
+            workspace.publication_pr_number = None;
+            workspace.publication_pr_url = None;
+            workspace.publication_pr_status = None;
+            workspace.publication_push_status = None;
             workspace.publication_pushed_sha = None;
+            workspace.pr_supervision_status = None;
+            workspace.pr_supervision_summary = None;
+            workspace.pr_supervision_updated_at = Some(now);
             workspace.status = AgentConversationWorkspaceStatus::Active;
-            workspace.updated_at = Utc::now();
+            workspace.updated_at = now;
         }
         self.local_cleanup_markers
             .write()

@@ -2303,6 +2303,26 @@ async fn test_restart_move_worktree_relocates_owned_workspace_before_resetting()
     git_ok(repo_dir.path(), &["push", "origin", "main"]);
     let latest_origin_base = git_stdout(repo_dir.path(), &["rev-parse", "origin/main"]);
 
+    let mut publication_seed = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation.id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist before restart");
+    publication_seed.publication_pushed_sha = Some("a".repeat(40));
+    publication_seed.publication_pr_number = Some(895);
+    publication_seed.publication_pr_url =
+        Some("https://github.com/example/repo/pull/895".to_string());
+    publication_seed.publication_pr_status = Some("open".to_string());
+    publication_seed.publication_push_status = Some("pushed".to_string());
+    publication_seed.pr_supervision_status = Some("supervising".to_string());
+    publication_seed.pr_supervision_summary = Some("watching PR #895".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(publication_seed)
+        .await
+        .expect("publication seed should persist");
+
     let result = restart_ideation_implementation_core(&state, session.id.as_str().to_string())
         .await
         .expect("restart should use linked plan branch worktree, not stale conversation path");
@@ -2321,6 +2341,16 @@ async fn test_restart_move_worktree_relocates_owned_workspace_before_resetting()
         stored_workspace.worktree_path, workspace.worktree_path,
         "restart should not rewrite the stale conversation worktree path"
     );
+    assert_eq!(
+        stored_workspace.publication_pushed_sha, None,
+        "restart must clear stale publication evidence"
+    );
+    assert_eq!(stored_workspace.publication_pr_number, None);
+    assert_eq!(stored_workspace.publication_pr_url, None);
+    assert_eq!(stored_workspace.publication_pr_status, None);
+    assert_eq!(stored_workspace.publication_push_status, None);
+    assert_eq!(stored_workspace.pr_supervision_status, None);
+    assert_eq!(stored_workspace.pr_supervision_summary, None);
     assert_eq!(
         stored_workspace.linked_plan_branch_id.as_ref(),
         Some(&plan_branch.id)

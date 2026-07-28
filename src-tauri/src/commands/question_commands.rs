@@ -13,6 +13,7 @@ use crate::application::interactive_notification_producer::question_notification
 use crate::application::memory_orchestration::{
     schedule_explicit_project_skill_distillation, ProjectSkillDistillationScheduleStatus,
 };
+use crate::application::plan_verdict_ledger::length_prefixed_component;
 use crate::application::project_skill_distillation_service::ProjectSkillDistillationSelection;
 use crate::application::{PendingQuestionInfo, QuestionAnswer};
 use crate::commands::unified_chat_commands::{
@@ -166,6 +167,23 @@ pub(crate) fn plan_mode_proposal_continuation_metadata_with_outcome(
     metadata.to_string()
 }
 
+/// Dedupe identity for a Plan-mode proposal verdict row.
+///
+/// The verdict class is part of the key so an accept and a decline in the same
+/// planning session are distinct historical rows; `PlanMode` outcomes are outside
+/// the terminal-PR rank lattice, so a shared key would overwrite the earlier
+/// verdict in place.
+pub(crate) fn plan_mode_proposal_source_ref_id(
+    planning_session_id: &str,
+    outcome_class: &str,
+) -> String {
+    format!(
+        "{}{}",
+        length_prefixed_component('s', planning_session_id),
+        length_prefixed_component('c', outcome_class),
+    )
+}
+
 pub(crate) fn task_outcome_from_plan_mode_verdict(
     outcome: &PlanModeVerdictOutcome,
 ) -> Option<TaskOutcome> {
@@ -181,13 +199,17 @@ pub(crate) fn task_outcome_from_plan_mode_verdict(
     if !source.is_live() {
         return None;
     }
+    let outcome_class = TaskOutcomeClass::from(outcome.outcome_class.as_str());
     let now = chrono::Utc::now();
     Some(TaskOutcome {
         id: TaskOutcomeId::new(),
         project_id: ProjectId::from_string(outcome.project_id.clone()),
         source,
         source_ref_kind: "planning_session".to_string(),
-        source_ref_id: planning_session_id.to_string(),
+        source_ref_id: plan_mode_proposal_source_ref_id(
+            planning_session_id,
+            outcome_class.as_str(),
+        ),
         task_id: None,
         conversation_id: outcome.refs.get("conversation_id").cloned(),
         agent_run_id: None,
@@ -195,7 +217,7 @@ pub(crate) fn task_outcome_from_plan_mode_verdict(
         proposal_id: None,
         verification_id: None,
         review_id: None,
-        outcome_class: Some(TaskOutcomeClass::from(outcome.outcome_class.as_str())),
+        outcome_class: Some(outcome_class),
         status,
         evidence_json: serde_json::to_value(outcome).unwrap_or_else(|_| serde_json::json!({})),
         failure_fingerprint: None,
@@ -292,21 +314,69 @@ async fn capture_declined_plan_mode_proposal_outcome(
         .await
     {
         Ok(Some(workspace)) => workspace,
-        _ => return,
+        Ok(None) => return,
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = %proposal.conversation_id,
+                error = %error,
+                "Could not read the workspace for a declined Plan-mode proposal; no verdict recorded"
+            );
+            return;
+        }
     };
     let Some(session_id) = workspace.linked_ideation_session_id.as_ref() else {
         return;
     };
     let session = match state.ideation_session_repo.get_by_id(session_id).await {
         Ok(Some(session)) => session,
-        _ => return,
+        Ok(None) => return,
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = %proposal.conversation_id,
+                session_id = %session_id.as_str(),
+                error = %error,
+                "Could not read the planning session for a declined Plan-mode proposal; no verdict recorded"
+            );
+            return;
+        }
     };
+    // Derive the project the same way the accept path does (the project conversation's
+    // context id) so accept and decline rows for one planning session share a project
+    // scope and therefore share the dedupe keyspace they are distinguished within.
+    let project_id = match state
+        .chat_conversation_repo
+        .get_by_id(&proposal.conversation_id)
+        .await
+    {
+        Ok(Some(conversation)) if conversation.context_type == ChatContextType::Project => {
+            conversation.context_id
+        }
+        Ok(_) => return,
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = %proposal.conversation_id,
+                error = %error,
+                "Could not read the conversation for a declined Plan-mode proposal; no verdict recorded"
+            );
+            return;
+        }
+    };
+    if project_id != session.project_id.as_str() {
+        tracing::warn!(
+            conversation_id = %proposal.conversation_id,
+            session_id = %session_id.as_str(),
+            "Declined Plan-mode proposal conversation and planning session disagree on project"
+        );
+    }
     let plan_artifact_id = session
         .plan_artifact_id
         .or(session.inherited_plan_artifact_id)
         .map(|artifact_id| artifact_id.as_str().to_string());
+    // `reason` is the declining user's free text here, while the accept path takes the
+    // agent-supplied `metadata["reason"]`. Both answer "why this verdict"; they are kept
+    // in the same `evidence_summary` field on purpose and are never merged.
     let Some(outcome) = capture_plan_mode_verdict(PlanModeVerdictCaptureInput {
-        project_id: session.project_id.as_str().to_string(),
+        project_id: project_id.clone(),
         conversation_id: proposal.conversation_id.as_str().to_string(),
         planning_session_id: Some(session_id.as_str().to_string()),
         accepted_session_id: None,

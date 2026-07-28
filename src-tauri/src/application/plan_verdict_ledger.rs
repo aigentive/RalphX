@@ -58,21 +58,25 @@ pub(crate) struct PlanVerdictLedgerInput {
     pub reason: Option<String>,
 }
 
+/// Encodes one identity component as `<tag><len>:<value>`.
+///
+/// Composite ledger dedupe keys are built from externally sourced ids, so a bare
+/// delimiter join can collide (`"a:b" + "c"` vs `"a" + "b:c"`). Every writer that
+/// builds a composite `source_ref_id` must use this encoder so the keyspaces
+/// cannot drift apart.
+pub(crate) fn length_prefixed_component(tag: char, value: &str) -> String {
+    format!("{tag}{}:{}", value.len(), value)
+}
+
 impl PlanVerdictLedgerInput {
     pub(crate) fn source_ref_id(&self) -> String {
-        let actor = self.actor.as_str();
-        let verdict = self.verdict.as_str();
         format!(
-            "s{}:{}a{}:{}v{}u{}:{}d{}:{}",
-            self.session_id.len(),
-            self.session_id,
-            self.artifact_id.len(),
-            self.artifact_id,
+            "{}{}v{}{}{}",
+            length_prefixed_component('s', &self.session_id),
+            length_prefixed_component('a', &self.artifact_id),
             self.artifact_version,
-            actor.len(),
-            actor,
-            verdict.len(),
-            verdict,
+            length_prefixed_component('u', self.actor.as_str()),
+            length_prefixed_component('d', self.verdict.as_str()),
         )
     }
 }

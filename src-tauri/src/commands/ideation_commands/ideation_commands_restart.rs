@@ -403,6 +403,11 @@ fn upsert_active_plan_pointer(
     Ok(())
 }
 
+/// Resets workspace state for a restart inside the restart transaction.
+///
+/// The inline SQL is required because this runs on the transaction's connection.
+/// `AgentConversationWorkspaceRepository::restore_after_restart` is the contract
+/// counterpart and must clear the same column set; keep the two in sync.
 fn restore_restart_workspace_state(
     conn: &rusqlite::Connection,
     workspace_conversation_id: Option<&str>,
@@ -433,7 +438,6 @@ fn restore_restart_workspace_state(
                      publication_pr_url = NULL,
                      publication_pr_status = NULL,
                      publication_push_status = NULL,
-                     publication_pushed_sha = NULL,
                      pr_supervision_status = NULL,
                      pr_supervision_summary = NULL,
                      pr_supervision_updated_at = ?4,
