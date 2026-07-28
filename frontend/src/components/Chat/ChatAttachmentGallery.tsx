@@ -8,6 +8,7 @@
 import { FileText, Image, FileCode, File, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
 import {
   Dialog,
   DialogContent,
@@ -76,9 +77,29 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+/**
+ * Resolve a displayable preview URL, or `null` when none can be minted on THIS device.
+ *
+ * `convertFileSrc` mints an `asset://` URL against this device's filesystem. Under a
+ * remote environment `attachment.filePath` names a file on the HOST, so the URL resolves
+ * to nothing and the user gets a broken image with no explanation. This mirrors the branch
+ * `MessageAttachments.getImagePreviewSrc` already carries (2.6-a, Fixed Decision 14) —
+ * 2.6 hardened only that renderer, leaving this one to render broken images for the same
+ * attachment the message surface rendered as a placeholder.
+ *
+ * Two sources are deliberately still honoured under a remote environment, because neither
+ * assumes the host filesystem:
+ * - `previewUrl`, which a caller already resolved by some other means;
+ * - `localPreviewUrls`, the `createObjectURL` blobs for files the user just picked on THIS
+ *   device and has not uploaded yet.
+ *
+ * Real remote rendering of a HOST attachment needs the scoped attachments endpoint and a
+ * binary-safe body; until then this is the honest interim.
+ */
 function getImagePreviewSrc(
   attachment: ChatAttachment,
   localPreviewUrls: Record<string, string>,
+  isRemoteEnvironment: boolean,
 ): string | null {
   if (!attachment.mimeType?.startsWith("image/")) {
     return null;
@@ -93,7 +114,7 @@ function getImagePreviewSrc(
     return localPreviewUrl;
   }
 
-  if (attachment.filePath) {
+  if (attachment.filePath && !isRemoteEnvironment) {
     return convertFileSrc(attachment.filePath);
   }
 
@@ -115,6 +136,7 @@ export function ChatAttachmentGallery({
   uploading = false,
   compact = false,
 }: ChatAttachmentGalleryProps) {
+  const isRemoteEnvironment = useIsRemoteEnvironment();
   const [localPreviewUrls, setLocalPreviewUrls] = useState<Record<string, string>>({});
   const [failedPreviewIds, setFailedPreviewIds] = useState<Set<string>>(() => new Set());
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
@@ -155,7 +177,7 @@ export function ChatAttachmentGallery({
     attachment,
     previewSrc: failedPreviewIds.has(attachment.id)
       ? null
-      : getImagePreviewSrc(attachment, localPreviewUrls),
+      : getImagePreviewSrc(attachment, localPreviewUrls, isRemoteEnvironment),
   }));
   const selectedImageEntry =
     attachmentEntries.find(
