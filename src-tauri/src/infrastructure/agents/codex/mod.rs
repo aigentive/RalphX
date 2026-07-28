@@ -37,8 +37,7 @@ use crate::infrastructure::agents::harness_agent_catalog::{
 use crate::infrastructure::agents::internal_skills::{
     inject_internal_skills_into_system_prompt_for_profile,
     inject_pre_execution_learned_skills_into_existing_injection,
-    pre_execution_learned_skill_context_from_runtime, InternalSkillInjection,
-    PreExecutionLearnedSkillContext,
+    InternalSkillInjection, PreExecutionLearnedSkillContext,
 };
 use crate::infrastructure::agents::mcp_runtime_context::{
     append_mcp_runtime_args, append_mcp_runtime_query, McpRuntimeContext,
@@ -512,16 +511,14 @@ pub fn compose_codex_prompt_for_profile_with_runtime_context(
     plugin_dir: Option<&Path>,
     agent_name: Option<&str>,
     agent_profile: Option<&str>,
-    runtime_context: Option<&McpRuntimeContext>,
+    _runtime_context: Option<&McpRuntimeContext>,
 ) -> String {
-    let pre_execution_learned_skills = agent_name
-        .and_then(|name| pre_execution_learned_skill_context_from_runtime(name, runtime_context));
     compose_codex_prompt_for_profile_with_learned_skills(
         prompt,
         plugin_dir,
         agent_name,
         agent_profile,
-        pre_execution_learned_skills.as_ref(),
+        None,
     )
 }
 
@@ -549,17 +546,33 @@ pub fn compose_codex_prompt_for_profile_with_runtime_context_and_outcome(
     agent_name: Option<&str>,
     agent_profile: Option<&str>,
     persona_block: Option<&str>,
-    runtime_context: Option<&McpRuntimeContext>,
+    _runtime_context: Option<&McpRuntimeContext>,
 ) -> CodexPromptComposition {
-    let pre_execution_learned_skills = agent_name
-        .and_then(|name| pre_execution_learned_skill_context_from_runtime(name, runtime_context));
+    compose_codex_prompt_for_profile_with_learned_skills_and_outcome(
+        prompt,
+        plugin_dir,
+        agent_name,
+        agent_profile,
+        persona_block,
+        None,
+    )
+}
+
+pub fn compose_codex_prompt_for_profile_with_learned_skills_and_outcome(
+    prompt: &str,
+    plugin_dir: Option<&Path>,
+    agent_name: Option<&str>,
+    agent_profile: Option<&str>,
+    persona_block: Option<&str>,
+    pre_execution_learned_skills: Option<&PreExecutionLearnedSkillContext>,
+) -> CodexPromptComposition {
     compose_codex_prompt_for_profile_with_context(
         prompt,
         plugin_dir,
         agent_name,
         agent_profile,
         persona_block,
-        pre_execution_learned_skills.as_ref(),
+        pre_execution_learned_skills,
     )
 }
 

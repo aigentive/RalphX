@@ -21,7 +21,11 @@ use crate::domain::entities::{
 use crate::domain::repositories::{
     AgentLaneSettingsRepository, ArtifactRepository, ChatAttachmentRepository,
     DelegatedSessionRepository, IdeationEffortSettingsRepository, IdeationModelSettingsRepository,
-    IdeationSessionRepository, ProjectRepository, TaskRepository,
+    IdeationSessionRepository, ProjectRepository, ProjectSkillListOptions, ProjectSkillRepository,
+    ProjectSkillSettingsRepository, TaskRepository,
+};
+use crate::domain::services::learned_skill_adapters::{
+    project_skill_to_learned_skill_record, LearnedSkillMultiSelectionRequest,
 };
 use crate::infrastructure::agents::claude::agent_names;
 use crate::infrastructure::agents::claude::{
@@ -29,8 +33,12 @@ use crate::infrastructure::agents::claude::{
     ToolCall,
 };
 use crate::infrastructure::agents::codex::{
-    compose_codex_prompt_for_profile_with_runtime_context_and_outcome, CodexPromptComposition,
+    compose_codex_prompt_for_profile_with_learned_skills_and_outcome, CodexPromptComposition,
 };
+use crate::infrastructure::agents::harness_agent_catalog::{
+    load_canonical_agent_definition_for_profile, resolve_project_root_from_plugin_dir,
+};
+use crate::infrastructure::agents::internal_skills::PreExecutionLearnedSkillContext;
 use crate::infrastructure::agents::{
     build_codex_mcp_overrides_for_profile, build_spawnable_codex_exec_command_with_security_policy,
     build_spawnable_codex_resume_command_with_security_policy, CodexCliCapabilities,
@@ -58,6 +66,200 @@ pub use super::resolved_conversation_spawn_context::{
 pub const FOLDER_REFS_SKIPPED_CONTEXT_UNAVAILABLE: &str = "folder_reference_context_unavailable";
 pub const FOLDER_REFS_SKIPPED_PROMPT_UNAVAILABLE: &str = "folder_reference_prompt_unavailable";
 pub const FOLDER_REFS_SKIPPED_NON_PROJECT: &str = "folder_reference_non_project_context";
+
+#[derive(Clone)]
+pub struct ProjectSkillSelectionRepositories {
+    pub settings_repo: Arc<dyn ProjectSkillSettingsRepository>,
+    pub skill_repo: Arc<dyn ProjectSkillRepository>,
+}
+
+impl ProjectSkillSelectionRepositories {
+    pub fn from_app_handle<R: Runtime>(app_handle: Option<&tauri::AppHandle<R>>) -> Option<Self> {
+        let state = app_handle?.try_state::<crate::application::AppState>()?;
+        Some(Self {
+            settings_repo: Arc::clone(&state.project_skill_settings_repo),
+            skill_repo: Arc::clone(&state.project_skill_repo),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectSkillSelectionDisabledReason {
+    MissingProject,
+    MissingCanonicalCapabilities,
+    DisabledBySettings,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectSkillSelectionUnavailableReason {
+    RepositoriesUnavailable,
+    SettingsReadFailed,
+    InvalidSettings,
+    SkillReadFailed,
+    SkillMappingFailed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PreExecutionProjectSkillSelection {
+    Disabled(ProjectSkillSelectionDisabledReason),
+    Selected(PreExecutionLearnedSkillContext),
+    Unavailable(ProjectSkillSelectionUnavailableReason),
+}
+
+impl PreExecutionProjectSkillSelection {
+    fn context(&self) -> Option<&PreExecutionLearnedSkillContext> {
+        match self {
+            Self::Selected(context) => Some(context),
+            Self::Disabled(_) | Self::Unavailable(_) => None,
+        }
+    }
+}
+
+fn log_unavailable_project_skill_selection(
+    selection: &PreExecutionProjectSkillSelection,
+    agent_name: &str,
+    project_id: Option<&str>,
+) {
+    if let PreExecutionProjectSkillSelection::Unavailable(reason) = selection {
+        tracing::warn!(
+            agent_name,
+            project_id,
+            reason = ?reason,
+            "Project skills were unavailable for spawn; continuing without injection"
+        );
+    }
+}
+
+pub async fn load_pre_execution_project_skill_selection(
+    plugin_dir: &Path,
+    agent_name: &str,
+    agent_profile: Option<&str>,
+    project_id: Option<&str>,
+    repositories: Option<&ProjectSkillSelectionRepositories>,
+) -> PreExecutionProjectSkillSelection {
+    let Some(project_id) = project_id.map(str::trim).filter(|value| !value.is_empty()) else {
+        return PreExecutionProjectSkillSelection::Disabled(
+            ProjectSkillSelectionDisabledReason::MissingProject,
+        );
+    };
+    let canonical_root = resolve_project_root_from_plugin_dir(plugin_dir);
+    let Some(definition) =
+        load_canonical_agent_definition_for_profile(&canonical_root, agent_name, agent_profile)
+    else {
+        return PreExecutionProjectSkillSelection::Disabled(
+            ProjectSkillSelectionDisabledReason::MissingCanonicalCapabilities,
+        );
+    };
+    if definition.capabilities.project_skill_buckets.is_empty()
+        || definition.capabilities.project_skill_stages.is_empty()
+    {
+        return PreExecutionProjectSkillSelection::Disabled(
+            ProjectSkillSelectionDisabledReason::MissingCanonicalCapabilities,
+        );
+    }
+    let Some(repositories) = repositories else {
+        return PreExecutionProjectSkillSelection::Unavailable(
+            ProjectSkillSelectionUnavailableReason::RepositoriesUnavailable,
+        );
+    };
+
+    let project_id = ProjectId::from_string(project_id.to_string());
+    let settings = match repositories
+        .settings_repo
+        .get_for_project(&project_id)
+        .await
+    {
+        Ok(Some(settings)) => settings,
+        Ok(None) => {
+            crate::domain::entities::ProjectSkillSettings::default_for_project(project_id.clone())
+        }
+        Err(error) => {
+            tracing::warn!(
+                project_id = project_id.as_str(),
+                agent_name = definition.name,
+                error = %error,
+                "Project skill selection settings are unavailable"
+            );
+            return PreExecutionProjectSkillSelection::Unavailable(
+                ProjectSkillSelectionUnavailableReason::SettingsReadFailed,
+            );
+        }
+    };
+    if settings.validate().is_err() {
+        return PreExecutionProjectSkillSelection::Unavailable(
+            ProjectSkillSelectionUnavailableReason::InvalidSettings,
+        );
+    }
+    if !settings.enabled || !settings.auto_inject {
+        return PreExecutionProjectSkillSelection::Disabled(
+            ProjectSkillSelectionDisabledReason::DisabledBySettings,
+        );
+    }
+
+    let skills = match repositories
+        .skill_repo
+        .list_by_project(
+            &project_id,
+            ProjectSkillListOptions {
+                status: Some(crate::domain::entities::ProjectSkillLifecycleStatus::Approved),
+                ..Default::default()
+            },
+        )
+        .await
+    {
+        Ok(skills) => skills,
+        Err(error) => {
+            tracing::warn!(
+                project_id = project_id.as_str(),
+                agent_name = definition.name,
+                error = %error,
+                "Approved project skills are unavailable for spawn"
+            );
+            return PreExecutionProjectSkillSelection::Unavailable(
+                ProjectSkillSelectionUnavailableReason::SkillReadFailed,
+            );
+        }
+    };
+    let mut mapped = Vec::with_capacity(skills.len());
+    for skill in &skills {
+        let Ok(record) = project_skill_to_learned_skill_record(skill, &definition.name) else {
+            return PreExecutionProjectSkillSelection::Unavailable(
+                ProjectSkillSelectionUnavailableReason::SkillMappingFailed,
+            );
+        };
+        mapped.push(record);
+    }
+
+    let Ok(max_skills) = usize::try_from(settings.injection_max_skills) else {
+        return PreExecutionProjectSkillSelection::Unavailable(
+            ProjectSkillSelectionUnavailableReason::InvalidSettings,
+        );
+    };
+    let Ok(max_total_chars) = usize::try_from(settings.injection_max_chars) else {
+        return PreExecutionProjectSkillSelection::Unavailable(
+            ProjectSkillSelectionUnavailableReason::InvalidSettings,
+        );
+    };
+    let Ok(max_guidance_chars) = usize::try_from(settings.injection_guidance_max_chars) else {
+        return PreExecutionProjectSkillSelection::Unavailable(
+            ProjectSkillSelectionUnavailableReason::InvalidSettings,
+        );
+    };
+
+    PreExecutionProjectSkillSelection::Selected(PreExecutionLearnedSkillContext {
+        request: LearnedSkillMultiSelectionRequest {
+            project_id: project_id.as_str().to_string(),
+            caller_surface: definition.name,
+            stages: definition.capabilities.project_skill_stages,
+            buckets: definition.capabilities.project_skill_buckets,
+            touched_paths: Vec::new(),
+            max_skills,
+        },
+        available_skills: mapped,
+        max_total_chars,
+        max_guidance_chars,
+    })
+}
 
 pub fn folder_references_skip_reason(
     context_type: ChatContextType,
@@ -191,6 +393,7 @@ fn build_claude_spawnable_command(
     effort_override: Option<&str>,
     model_override: Option<&str>,
     mcp_runtime_context: Option<&McpRuntimeContext>,
+    pre_execution_learned_skills: Option<&PreExecutionLearnedSkillContext>,
     context_type: ChatContextType,
     effective_mode: Option<AgentConversationWorkspaceMode>,
 ) -> Result<SpawnableCommand, String> {
@@ -211,6 +414,7 @@ fn build_claude_spawnable_command(
             effort_override,
             model_override,
             mcp_runtime_context,
+            pre_execution_learned_skills,
             permission_policy,
             ClaudePromptDelivery::NonInteractive,
         )
@@ -230,6 +434,7 @@ fn build_claude_spawnable_command(
             effort_override,
             model_override,
             mcp_runtime_context,
+            pre_execution_learned_skills,
             permission_policy,
             ClaudePromptDelivery::NonInteractive,
         )
@@ -249,6 +454,7 @@ pub(super) fn build_claude_spawnable_interactive_command(
     effort_override: Option<&str>,
     model_override: Option<&str>,
     mcp_runtime_context: Option<&McpRuntimeContext>,
+    pre_execution_learned_skills: Option<&PreExecutionLearnedSkillContext>,
     _enforce_spawn_guard: bool,
     context_type: ChatContextType,
     effective_mode: Option<AgentConversationWorkspaceMode>,
@@ -270,6 +476,7 @@ pub(super) fn build_claude_spawnable_interactive_command(
             effort_override,
             model_override,
             mcp_runtime_context,
+            pre_execution_learned_skills,
             permission_policy,
             ClaudePromptDelivery::Interactive,
         );
@@ -287,6 +494,7 @@ pub(super) fn build_claude_spawnable_interactive_command(
         effort_override,
         model_override,
         mcp_runtime_context,
+        pre_execution_learned_skills,
         permission_policy,
         ClaudePromptDelivery::Interactive,
     )
@@ -314,6 +522,7 @@ struct BuildHarnessCommandRequest<'a> {
     model_override: Option<&'a str>,
     is_external_mcp: bool,
     attachment_context_override: Option<&'a str>,
+    project_skill_repositories: Option<ProjectSkillSelectionRepositories>,
 }
 
 struct BuildHarnessResumeCommandRequest<'a> {
@@ -349,6 +558,7 @@ struct BuildHarnessResumeCommandRequest<'a> {
     service_tier_override: Option<&'a str>,
     is_external_mcp: bool,
     attachment_context_override: Option<&'a str>,
+    project_skill_repositories: Option<ProjectSkillSelectionRepositories>,
 }
 
 struct BuildHarnessLaunchRequest<'a> {
@@ -381,6 +591,7 @@ struct BuildHarnessLaunchRequest<'a> {
     enforce_spawn_guard: bool,
     agent_workspace_prompt_context: Option<&'a str>,
     attachment_context_override: Option<&'a str>,
+    project_skill_repositories: Option<ProjectSkillSelectionRepositories>,
 }
 
 fn finalize_prompt_overlay(
@@ -535,6 +746,7 @@ impl ResolvedChatHarnessCli {
                     request.effort_override,
                     request.model_override,
                     request.attachment_context_override,
+                    request.project_skill_repositories,
                 )
                 .await
                 .map(|spawnable| finalize_prompt_overlay(spawnable, &overlay, &conversation_id))?,
@@ -578,6 +790,7 @@ impl ResolvedChatHarnessCli {
                         &resolved_spawn_settings,
                         None,
                         request.attachment_context_override,
+                        request.project_skill_repositories,
                     )
                     .await
                     .map(|spawnable| {
@@ -643,6 +856,7 @@ impl ResolvedChatHarnessCli {
                         effort_override,
                         model_override,
                         request.attachment_context_override,
+                        request.project_skill_repositories,
                     )
                     .await
                     .map(|spawnable| {
@@ -731,6 +945,7 @@ impl ResolvedChatHarnessCli {
                         &resolved_spawn_settings,
                         None,
                         request.attachment_context_override,
+                        request.project_skill_repositories,
                     )
                     .await
                     .map(|spawnable| {
@@ -778,6 +993,7 @@ impl ResolvedChatHarnessCli {
                     request.enforce_spawn_guard,
                     request.agent_workspace_prompt_context,
                     request.attachment_context_override,
+                    request.project_skill_repositories,
                 )
                 .await?;
 
@@ -823,6 +1039,7 @@ impl ResolvedChatHarnessCli {
                             request.resolved_spawn_settings,
                             request.agent_workspace_prompt_context,
                             request.attachment_context_override,
+                            request.project_skill_repositories.clone(),
                         )
                         .await?
                     }
@@ -850,6 +1067,7 @@ impl ResolvedChatHarnessCli {
                             request.resolved_spawn_settings,
                             request.agent_workspace_prompt_context,
                             request.attachment_context_override,
+                            request.project_skill_repositories,
                         )
                         .await?
                     }
@@ -2723,6 +2941,7 @@ pub async fn build_command(
         effort_override,
         model_override,
         attachment_context_override,
+        None,
     )
     .await
 }
@@ -2755,6 +2974,7 @@ pub async fn build_command_with_app_data_dir(
     effort_override: Option<&str>,
     model_override: Option<&str>,
     attachment_context_override: Option<&str>,
+    project_skill_repositories: Option<ProjectSkillSelectionRepositories>,
 ) -> Result<SpawnableCommand, String> {
     // Compute agent_name using the resolution system (context type + optional status).
     let agent_name = conversation
@@ -2767,6 +2987,15 @@ pub async fn build_command_with_app_data_dir(
         entity_status = ?entity_status,
         "Setting RALPHX_AGENT_TYPE for context"
     );
+    let project_skill_selection = load_pre_execution_project_skill_selection(
+        plugin_dir,
+        agent_name,
+        None,
+        project_id,
+        project_skill_repositories.as_ref(),
+    )
+    .await;
+    log_unavailable_project_skill_selection(&project_skill_selection, agent_name, project_id);
 
     // For reviewer agent (not review-chat), start fresh session each review cycle.
     // Resuming causes the model to see old "Review already submitted" messages.
@@ -2829,6 +3058,7 @@ pub async fn build_command_with_app_data_dir(
         total_available,
         effort_override,
         &resolved_spawn_settings,
+        project_skill_selection.context(),
     )
     .await
 }
@@ -2852,6 +3082,7 @@ async fn build_command_from_resolved_settings(
     total_available: usize,
     effort_override: Option<&str>,
     resolved_spawn_settings: &ResolvedAgentSpawnSettings,
+    pre_execution_learned_skills: Option<&PreExecutionLearnedSkillContext>,
 ) -> Result<SpawnableCommand, String> {
     let resolved_model = resolved_spawn_settings.model.as_str();
     let ideation_subagent_model_cap = resolved_spawn_settings.subagent_model_cap.as_deref();
@@ -2937,6 +3168,7 @@ async fn build_command_from_resolved_settings(
         effort_override,
         Some(resolved_model),
         Some(&mcp_runtime_context),
+        pre_execution_learned_skills,
         conversation.context_type,
         conversation.agent_mode,
     )?;
@@ -2979,6 +3211,7 @@ async fn build_recovery_command_from_resolved_settings(
     effort_override: Option<&str>,
     resolved_spawn_settings: &ResolvedAgentSpawnSettings,
     attachment_context_override: Option<&str>,
+    pre_execution_learned_skills: Option<&PreExecutionLearnedSkillContext>,
 ) -> Result<SpawnableCommand, String> {
     let resolved_model = resolved_spawn_settings.model.as_str();
     let ideation_subagent_model_cap = resolved_spawn_settings.subagent_model_cap.as_deref();
@@ -3039,6 +3272,7 @@ async fn build_recovery_command_from_resolved_settings(
         effort_override,
         Some(resolved_model),
         Some(&mcp_runtime_context),
+        pre_execution_learned_skills,
         context_type,
         effective_mode,
     )?;
@@ -3081,10 +3315,20 @@ pub async fn build_codex_command(
     resolved_spawn_settings: &ResolvedAgentSpawnSettings,
     agent_workspace_prompt_context: Option<&str>,
     attachment_context_override: Option<&str>,
+    project_skill_repositories: Option<ProjectSkillSelectionRepositories>,
 ) -> Result<SpawnableCommand, String> {
     let total_started = Instant::now();
     let agent_name = agent_name_override
         .unwrap_or_else(|| resolve_agent(&conversation.context_type, entity_status));
+    let project_skill_selection = load_pre_execution_project_skill_selection(
+        plugin_dir,
+        agent_name,
+        agent_profile,
+        project_id,
+        project_skill_repositories.as_ref(),
+    )
+    .await;
+    log_unavailable_project_skill_selection(&project_skill_selection, agent_name, project_id);
     let ideation_subagent_model_cap = (conversation.context_type == ChatContextType::Ideation)
         .then(|| {
             resolved_spawn_settings
@@ -3193,7 +3437,7 @@ pub async fn build_codex_command(
         prompt,
         persona_injected,
         persona_injection_skipped_reason,
-    } = compose_codex_prompt_for_profile_with_runtime_context_and_outcome(
+    } = compose_codex_prompt_for_profile_with_learned_skills_and_outcome(
         &capability_scoped_prompt(
             format!("{}{}", initial_prompt, attachment_context),
             conversation.coordination_mode,
@@ -3202,7 +3446,7 @@ pub async fn build_codex_command(
         Some(agent_name),
         agent_profile,
         persona_block,
-        Some(&runtime_context),
+        project_skill_selection.context(),
     );
     tracing::info!(
         context_type = %conversation.context_type,
@@ -3374,6 +3618,7 @@ pub(crate) async fn build_launch_plan_for_harness_with_persona(
     resolved_spawn_settings: &ResolvedAgentSpawnSettings,
     agent_workspace_prompt_context: Option<&str>,
     attachment_context_override: Option<&str>,
+    project_skill_repositories: Option<ProjectSkillSelectionRepositories>,
 ) -> Result<ResolvedChatHarnessLaunch, String> {
     build_launch_plan_for_harness_with_spawn_guard(
         harness,
@@ -3407,6 +3652,7 @@ pub(crate) async fn build_launch_plan_for_harness_with_persona(
         true,
         agent_workspace_prompt_context,
         attachment_context_override,
+        project_skill_repositories,
     )
     .await
 }
@@ -3475,6 +3721,7 @@ pub(crate) async fn build_launch_plan_for_harness_for_test(
         false,
         agent_workspace_prompt_context,
         attachment_context_override,
+        None,
     )
     .await
 }
@@ -3545,12 +3792,13 @@ pub async fn build_launch_plan_for_harness_with_persona_for_test(
         false,
         agent_workspace_prompt_context,
         attachment_context_override,
+        None,
     )
     .await
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn build_launch_plan_for_harness_with_spawn_guard(
+pub(super) async fn build_launch_plan_for_harness_with_spawn_guard(
     harness: AgentHarnessKind,
     cli_path: &Path,
     plugin_dir: &Path,
@@ -3582,6 +3830,7 @@ async fn build_launch_plan_for_harness_with_spawn_guard(
     enforce_spawn_guard: bool,
     agent_workspace_prompt_context: Option<&str>,
     attachment_context_override: Option<&str>,
+    project_skill_repositories: Option<ProjectSkillSelectionRepositories>,
 ) -> Result<ResolvedChatHarnessLaunch, String> {
     let conversation_id = conversation_id
         .as_deref()
@@ -3620,6 +3869,7 @@ async fn build_launch_plan_for_harness_with_spawn_guard(
             enforce_spawn_guard,
             agent_workspace_prompt_context,
             attachment_context_override,
+            project_skill_repositories,
         },
     )
     .await
@@ -3674,6 +3924,7 @@ pub async fn build_command_for_harness(
             model_override,
             is_external_mcp,
             attachment_context_override,
+            project_skill_repositories: None,
         },
     )
     .await
@@ -3704,6 +3955,7 @@ pub async fn build_command_for_harness_with_folder_refs(
     model_override: Option<&str>,
     is_external_mcp: bool,
     attachment_context_override: Option<&str>,
+    project_skill_repositories: Option<ProjectSkillSelectionRepositories>,
 ) -> Result<ProviderSpawnableCommand, String> {
     let resolved_cli = resolve_chat_harness_cli(harness, cli_path)?;
     build_noninteractive_command_from_resolved_cli(
@@ -3730,6 +3982,7 @@ pub async fn build_command_for_harness_with_folder_refs(
             model_override,
             is_external_mcp,
             attachment_context_override,
+            project_skill_repositories,
         },
     )
     .await
@@ -3768,10 +4021,20 @@ pub async fn build_interactive_command(
     enforce_spawn_guard: bool,
     agent_workspace_prompt_context: Option<&str>,
     attachment_context_override: Option<&str>,
+    project_skill_repositories: Option<ProjectSkillSelectionRepositories>,
 ) -> Result<SpawnableCommand, String> {
     let agent_started = Instant::now();
     let agent_name = agent_name_override
         .unwrap_or_else(|| resolve_agent(&conversation.context_type, entity_status));
+    let project_skill_selection = load_pre_execution_project_skill_selection(
+        plugin_dir,
+        agent_name,
+        agent_profile,
+        project_id,
+        project_skill_repositories.as_ref(),
+    )
+    .await;
+    log_unavailable_project_skill_selection(&project_skill_selection, agent_name, project_id);
     let ideation_subagent_model_cap = (conversation.context_type == ChatContextType::Ideation)
         .then(|| {
             resolved_spawn_settings
@@ -3904,6 +4167,7 @@ pub async fn build_interactive_command(
         resolved_spawn_settings.claude_effort.as_deref(),
         Some(resolved_spawn_settings.model.as_str()),
         Some(&mcp_runtime_context),
+        project_skill_selection.context(),
         enforce_spawn_guard,
         conversation.context_type,
         conversation.agent_mode,
@@ -4029,6 +4293,7 @@ pub async fn build_resume_command(
     effort_override: Option<&str>,
     model_override: Option<&str>,
     attachment_context_override: Option<&str>,
+    project_skill_repositories: Option<ProjectSkillSelectionRepositories>,
 ) -> Result<SpawnableCommand, String> {
     // Fetch entity status for status-aware agent resolution
     let entity_status = get_entity_status_for_resume(
@@ -4042,6 +4307,15 @@ pub async fn build_resume_command(
 
     let agent_name = agent_name_override
         .unwrap_or_else(|| resolve_agent(&context_type, entity_status.as_deref()));
+    let project_skill_selection = load_pre_execution_project_skill_selection(
+        plugin_dir,
+        agent_name,
+        agent_profile,
+        project_id,
+        project_skill_repositories.as_ref(),
+    )
+    .await;
+    log_unavailable_project_skill_selection(&project_skill_selection, agent_name, project_id);
     let resolved_spawn_settings =
         crate::application::agent_lane_resolution::resolve_agent_spawn_settings(
             agent_name,
@@ -4078,6 +4352,7 @@ pub async fn build_resume_command(
         effort_override,
         &resolved_spawn_settings,
         attachment_context_override,
+        project_skill_selection.context(),
     )
     .await
 }
@@ -4106,6 +4381,7 @@ async fn build_resume_command_from_resolved_settings(
     effort_override: Option<&str>,
     resolved_spawn_settings: &ResolvedAgentSpawnSettings,
     attachment_context_override: Option<&str>,
+    pre_execution_learned_skills: Option<&PreExecutionLearnedSkillContext>,
 ) -> Result<SpawnableCommand, String> {
     match provider_resume_mode_for_session(AgentHarnessKind::Claude, session_id) {
         ProviderResumeMode::Resume => {
@@ -4154,6 +4430,7 @@ async fn build_resume_command_from_resolved_settings(
                 effort_override,
                 Some(resolved_model),
                 Some(&mcp_runtime_context),
+                pre_execution_learned_skills,
                 context_type,
                 effective_mode,
             )?;
@@ -4196,6 +4473,7 @@ async fn build_resume_command_from_resolved_settings(
                 effort_override,
                 resolved_spawn_settings,
                 attachment_context_override,
+                pre_execution_learned_skills,
             )
             .await
         }
@@ -4231,6 +4509,7 @@ pub async fn build_codex_resume_command(
     resolved_spawn_settings: &ResolvedAgentSpawnSettings,
     agent_workspace_prompt_context: Option<&str>,
     attachment_context_override: Option<&str>,
+    project_skill_repositories: Option<ProjectSkillSelectionRepositories>,
 ) -> Result<SpawnableCommand, String> {
     let entity_status = get_entity_status_for_resume(
         context_type,
@@ -4242,6 +4521,15 @@ pub async fn build_codex_resume_command(
     .await;
     let agent_name = agent_name_override
         .unwrap_or_else(|| resolve_agent(&context_type, entity_status.as_deref()));
+    let project_skill_selection = load_pre_execution_project_skill_selection(
+        plugin_dir,
+        agent_name,
+        agent_profile,
+        project_id,
+        project_skill_repositories.as_ref(),
+    )
+    .await;
+    log_unavailable_project_skill_selection(&project_skill_selection, agent_name, project_id);
     let ideation_subagent_model_cap = resolved_spawn_settings.subagent_model_cap.as_deref();
 
     let runtime_context = build_mcp_runtime_context(
@@ -4299,13 +4587,13 @@ pub async fn build_codex_resume_command(
                 prompt,
                 persona_injected,
                 persona_injection_skipped_reason,
-            } = compose_codex_prompt_for_profile_with_runtime_context_and_outcome(
+            } = compose_codex_prompt_for_profile_with_learned_skills_and_outcome(
                 &resume_prompt,
                 Some(plugin_dir),
                 Some(agent_name),
                 agent_profile,
                 persona_block,
-                Some(&runtime_context),
+                project_skill_selection.context(),
             );
 
             let mut spawnable = build_spawnable_codex_resume_command_with_security_policy(
@@ -4372,13 +4660,13 @@ pub async fn build_codex_resume_command(
                 prompt,
                 persona_injected,
                 persona_injection_skipped_reason,
-            } = compose_codex_prompt_for_profile_with_runtime_context_and_outcome(
+            } = compose_codex_prompt_for_profile_with_learned_skills_and_outcome(
                 &recovery_prompt,
                 Some(plugin_dir),
                 Some(agent_name),
                 agent_profile,
                 persona_block,
-                Some(&runtime_context),
+                project_skill_selection.context(),
             );
             let mut spawnable = build_spawnable_codex_exec_command_with_security_policy(
                 cli_path,
@@ -4477,6 +4765,7 @@ pub async fn build_resume_command_for_harness(
         None,
         is_external_mcp,
         attachment_context_override,
+        None,
     )
     .await
 }
@@ -4515,6 +4804,7 @@ pub async fn build_resume_command_for_harness_with_folder_refs(
     model_override: Option<&str>,
     is_external_mcp: bool,
     attachment_context_override: Option<&str>,
+    project_skill_repositories: Option<ProjectSkillSelectionRepositories>,
 ) -> Result<ProviderSpawnableCommand, String> {
     build_resume_command_for_harness_with_continuation(
         harness,
@@ -4551,6 +4841,7 @@ pub async fn build_resume_command_for_harness_with_folder_refs(
         None,
         is_external_mcp,
         attachment_context_override,
+        project_skill_repositories,
     )
     .await
 }
@@ -4591,6 +4882,7 @@ pub(super) async fn build_resume_command_for_harness_with_continuation(
     service_tier_override: Option<&str>,
     is_external_mcp: bool,
     attachment_context_override: Option<&str>,
+    project_skill_repositories: Option<ProjectSkillSelectionRepositories>,
 ) -> Result<ProviderSpawnableCommand, String> {
     let resolved_cli = resolve_chat_harness_cli(harness, cli_path)?;
     build_noninteractive_resume_command_from_resolved_cli(
@@ -4628,6 +4920,7 @@ pub(super) async fn build_resume_command_for_harness_with_continuation(
             service_tier_override,
             is_external_mcp,
             attachment_context_override,
+            project_skill_repositories,
         },
     )
     .await

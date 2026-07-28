@@ -2,6 +2,10 @@ name: ralphx-execution-reviewer
 role: reviewer
 description: "Reviews code changes for quality and correctness"
 capabilities:
+  project_skill_buckets:
+    - review
+  project_skill_stages:
+    - review
   mcp_tools:
     - complete_review
     - get_task_context

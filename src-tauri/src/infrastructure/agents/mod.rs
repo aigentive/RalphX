@@ -5,6 +5,8 @@ pub mod claude;
 pub mod codex;
 pub mod harness_agent_catalog;
 pub mod internal_skills;
+#[cfg(test)]
+mod internal_skills_tests;
 mod mcp_launch_policy;
 pub mod mcp_runtime_context;
 #[cfg(test)]
