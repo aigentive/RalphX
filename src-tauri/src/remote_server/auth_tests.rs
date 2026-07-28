@@ -15,10 +15,10 @@ use tower::ServiceExt;
 
 use super::auth::{
     device_token_prefix, expiry_timestamp, generate_device_token, generate_pairing_code,
-    generate_ws_ticket, now_timestamp, scope_label, strip_trust_headers, RemoteAuthContext,
-    RemoteAuthRejection, PAIRING_CODE_TTL_SECS, RALPHX_HEADER_NAMESPACE,
-    REMOTE_DEVICE_TOKEN_PREFIX, REMOTE_PAIRING_CODE_PREFIX, REMOTE_WS_TICKET_PREFIX,
-    STRIPPED_TRUST_HEADERS, WS_TICKET_TTL_SECS,
+    generate_ws_ticket, now_timestamp, require_scope, scope_label, strip_trust_headers,
+    RemoteAuthContext, RemoteAuthRejection, RemoteIdentity, PAIRING_CODE_TTL_SECS,
+    RALPHX_HEADER_NAMESPACE, REMOTE_DEVICE_TOKEN_PREFIX, REMOTE_PAIRING_CODE_PREFIX,
+    REMOTE_WS_TICKET_PREFIX, STRIPPED_TRUST_HEADERS, WS_TICKET_TTL_SECS,
 };
 use super::endpoints::RemoteRouterState;
 use super::session_registry::{RemoteSessionAdmission, RemoteSessionRegistry};
@@ -365,6 +365,40 @@ fn every_remote_scope_has_the_protocol_label() {
     assert_eq!(scope_label(Scope::UiOperate), "ui:operate");
     assert_eq!(scope_label(Scope::UiAgent), "ui:agent");
     assert_eq!(scope_label(Scope::UiElevated), "ui:elevated");
+}
+
+#[test]
+fn too_many_concurrent_requests_sets_the_retry_after_header() {
+    let response = RemoteAuthRejection::TooManyConcurrentRequests.into_response();
+
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(response.headers()[header::RETRY_AFTER], "1");
+}
+
+#[test]
+fn require_scope_returns_the_exact_missing_scope() {
+    let identity = RemoteIdentity {
+        device_id: RemoteDeviceId::new(),
+        device_name: "read-only device".to_string(),
+        scopes: RemoteScopeSet::from_scopes([Scope::UiRead]),
+    };
+
+    assert_eq!(
+        require_scope(&identity, Scope::UiAgent),
+        Err(RemoteAuthRejection::InsufficientScope(Scope::UiAgent))
+    );
+    assert!(require_scope(&identity, Scope::UiRead).is_ok());
+}
+
+#[test]
+fn host_local_context_uses_serve_exposure() {
+    let conn = rusqlite::Connection::open_in_memory().expect("in-memory database should open");
+    run_migrations(&conn).expect("migrations should apply");
+
+    let context =
+        RemoteAuthContext::host_local(DbConnection::new(conn), RemoteSessionRegistry::new());
+
+    assert_eq!(context.exposure_mode, RemoteExposureMode::Serve);
 }
 
 #[tokio::test]

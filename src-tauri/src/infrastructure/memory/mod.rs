@@ -67,6 +67,8 @@ pub mod memory_proposal_dependency_repo;
 pub mod memory_question_repo;
 pub mod memory_queued_message_repo;
 pub mod memory_remote_environment_repo;
+#[cfg(test)]
+mod memory_remote_environment_repo_tests;
 pub mod memory_review_issue_repo;
 pub mod memory_review_repo;
 pub mod memory_review_settings_repo;

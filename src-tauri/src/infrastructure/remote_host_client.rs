@@ -697,6 +697,94 @@ impl RemoteHostClient for MockRemoteHostClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    use axum::body::to_bytes;
+    use axum::extract::{Request as AxumRequest, State};
+    use axum::routing::any;
+    use axum::Router;
+
+    #[derive(Clone)]
+    struct CannedResponse {
+        status: StatusCode,
+        body: &'static str,
+        seen: Arc<Mutex<Vec<SeenRequest>>>,
+    }
+
+    #[derive(Debug)]
+    struct SeenRequest {
+        method: Method,
+        path: String,
+        authorization: Option<String>,
+        custom_header: Option<String>,
+        body: String,
+    }
+
+    async fn canned_handler(
+        State(state): State<CannedResponse>,
+        request: AxumRequest,
+    ) -> (StatusCode, String) {
+        let method = request.method().clone();
+        let path = request.uri().path().to_string();
+        let authorization = request
+            .headers()
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let custom_header = request
+            .headers()
+            .get("x-test-header")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let body = to_bytes(request.into_body(), 64 * 1024)
+            .await
+            .expect("request body")
+            .to_vec();
+        state.seen.lock().expect("seen requests").push(SeenRequest {
+            method,
+            path,
+            authorization,
+            custom_header,
+            body: String::from_utf8(body).expect("utf8 request body"),
+        });
+        (state.status, state.body.to_string())
+    }
+
+    async fn spawn_canned_server(
+        status: StatusCode,
+        body: &'static str,
+    ) -> (
+        String,
+        Arc<Mutex<Vec<SeenRequest>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let state = CannedResponse {
+            status,
+            body,
+            seen: Arc::clone(&seen),
+        };
+        let app = Router::new()
+            .fallback(any(canned_handler))
+            .with_state(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind server");
+        let address = listener.local_addr().expect("server address");
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve canned host");
+        });
+        (format!("http://{address}"), seen, task)
+    }
+
+    fn pair_wire_request() -> PairWireRequest {
+        PairWireRequest {
+            pairing_code: "rxp_code".to_string(),
+            device_name: "Desktop".to_string(),
+            client_version: "1.0.0".to_string(),
+            requested_scopes: vec![Scope::UiRead],
+        }
+    }
 
     // C-11: parity tests use REAL serialization shapes — explicit camelCase keys,
     // protocol scope strings — not mock-convenient shapes.
@@ -731,8 +819,7 @@ mod tests {
             "environmentId": "env-1",
             "protocolVersion": 1
         }"#;
-        let response: PairWireResponse =
-            serde_json::from_str(raw).expect("response should parse");
+        let response: PairWireResponse = serde_json::from_str(raw).expect("response should parse");
         assert_eq!(response.device_token, "rxd_live_secret");
         assert_eq!(response.device_id, "device-1");
         assert_eq!(response.scopes, vec![Scope::UiRead, Scope::UiOperate]);
@@ -780,5 +867,224 @@ mod tests {
             join_url("http://100.101.102.103:3849", REMOTE_DESCRIPTOR_PATH),
             "http://100.101.102.103:3849/.well-known/ralphx/environment"
         );
+    }
+
+    #[tokio::test]
+    async fn unavailable_client_returns_its_reason_from_every_surface() {
+        let client = UnavailableRemoteHostClient::new("TLS roots missing");
+        let invoke = InvokeWireRequest {
+            request_id: "request-1".to_string(),
+            cmd: "health_check".to_string(),
+            args: serde_json::json!({}),
+        };
+        let fetch = RemoteFetchRequest {
+            path: "/api/tasks".to_string(),
+            method: "GET".to_string(),
+            headers: vec![],
+            body: None,
+        };
+
+        let errors = [
+            client.fetch_descriptor("http://host").await.unwrap_err(),
+            client
+                .pair("http://host", &pair_wire_request())
+                .await
+                .unwrap_err(),
+            client
+                .validate_token("http://host", "token")
+                .await
+                .unwrap_err(),
+            client
+                .revoke_token("http://host", "token")
+                .await
+                .unwrap_err(),
+            client
+                .invoke("http://host", "token", &invoke)
+                .await
+                .unwrap_err(),
+            client
+                .fetch("http://host", "token", &fetch)
+                .await
+                .unwrap_err(),
+        ];
+        assert!(errors.into_iter().all(|error| matches!(
+            error,
+            RemoteHostClientError::Unreachable(reason) if reason == "TLS roots missing"
+        )));
+    }
+
+    #[tokio::test]
+    async fn hyper_client_parses_descriptor_and_pair_successes() {
+        let descriptor_json = r#"{"environmentId":"env-1","appVersion":"1.0.0","protocolVersion":1,"minClientProtocol":1,"platform":"macos"}"#;
+        let (base_url, seen, task) = spawn_canned_server(StatusCode::OK, descriptor_json).await;
+        let client = HyperRemoteHostClient::new().expect("client");
+        let descriptor = client
+            .fetch_descriptor(&base_url)
+            .await
+            .expect("descriptor");
+        assert_eq!(descriptor.environment_id, "env-1");
+        assert_eq!(seen.lock().expect("seen")[0].path, REMOTE_DESCRIPTOR_PATH);
+        task.abort();
+
+        let pair_json = r#"{"deviceToken":"token","deviceId":"device-1","scopes":["ui:read"],"environmentId":"env-1","protocolVersion":1}"#;
+        let (base_url, seen, task) = spawn_canned_server(StatusCode::OK, pair_json).await;
+        let response = client
+            .pair(&base_url, &pair_wire_request())
+            .await
+            .expect("pair");
+        assert_eq!(response.device_token, "token");
+        let seen = seen.lock().expect("seen");
+        assert_eq!(seen[0].method, Method::POST);
+        assert_eq!(seen[0].path, REMOTE_PAIR_PATH);
+        assert!(seen[0].body.contains("pairingCode"));
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn hyper_client_classifies_rejections_and_invalid_json() {
+        let client = HyperRemoteHostClient::new().expect("client");
+        let (base_url, _, task) =
+            spawn_canned_server(StatusCode::BAD_REQUEST, "bad pairing code").await;
+        assert!(matches!(
+            client.pair(&base_url, &pair_wire_request()).await,
+            Err(RemoteHostClientError::Rejected { status: 400, message })
+                if message == "bad pairing code"
+        ));
+        task.abort();
+
+        let (base_url, _, task) = spawn_canned_server(StatusCode::OK, "not-json").await;
+        assert!(matches!(
+            client.fetch_descriptor(&base_url).await,
+            Err(RemoteHostClientError::InvalidResponse(_))
+        ));
+        assert!(matches!(
+            client.pair(&base_url, &pair_wire_request()).await,
+            Err(RemoteHostClientError::InvalidResponse(_))
+        ));
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn hyper_client_validates_and_revokes_with_bearer_status_semantics() {
+        let client = HyperRemoteHostClient::new().expect("client");
+        for (status, expected) in [
+            (StatusCode::OK, true),
+            (StatusCode::UNAUTHORIZED, false),
+            (StatusCode::FORBIDDEN, false),
+        ] {
+            let (base_url, seen, task) = spawn_canned_server(status, "session").await;
+            assert_eq!(
+                client
+                    .validate_token(&base_url, "secret")
+                    .await
+                    .expect("classified validation"),
+                expected
+            );
+            assert_eq!(
+                seen.lock().expect("seen")[0].authorization.as_deref(),
+                Some("Bearer secret")
+            );
+            task.abort();
+        }
+        let (base_url, _, task) =
+            spawn_canned_server(StatusCode::INTERNAL_SERVER_ERROR, "broken").await;
+        assert!(matches!(
+            client.validate_token(&base_url, "secret").await,
+            Err(RemoteHostClientError::Rejected { status: 500, .. })
+        ));
+        task.abort();
+
+        for status in [
+            StatusCode::NO_CONTENT,
+            StatusCode::UNAUTHORIZED,
+            StatusCode::FORBIDDEN,
+        ] {
+            let (base_url, _, task) = spawn_canned_server(status, "").await;
+            client
+                .revoke_token(&base_url, "secret")
+                .await
+                .expect("completed revoke");
+            task.abort();
+        }
+        let (base_url, _, task) = spawn_canned_server(StatusCode::NOT_FOUND, "missing route").await;
+        assert!(matches!(
+            client.revoke_token(&base_url, "secret").await,
+            Err(RemoteHostClientError::Rejected { status: 404, .. })
+        ));
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn invoke_and_fetch_preserve_non_success_status_and_request_shape() {
+        let client = HyperRemoteHostClient::new().expect("client");
+        let (base_url, seen, task) = spawn_canned_server(StatusCode::FORBIDDEN, "denied").await;
+        let invoke = InvokeWireRequest {
+            request_id: "request-1".to_string(),
+            cmd: "list_tasks".to_string(),
+            args: serde_json::json!({"projectId": "p-1"}),
+        };
+        let response = client
+            .invoke(&base_url, "secret", &invoke)
+            .await
+            .expect("invoke response");
+        assert_eq!(
+            response,
+            RemoteHttpResponse {
+                status: 403,
+                body: "denied".to_string()
+            }
+        );
+        assert_eq!(
+            seen.lock().expect("seen")[0].authorization.as_deref(),
+            Some("Bearer secret")
+        );
+        task.abort();
+
+        let (base_url, seen, task) =
+            spawn_canned_server(StatusCode::INTERNAL_SERVER_ERROR, "failed").await;
+        let request = RemoteFetchRequest {
+            path: "/api/tasks/task-1".to_string(),
+            method: "PUT".to_string(),
+            headers: vec![("x-test-header".to_string(), "custom".to_string())],
+            body: Some("payload".to_string()),
+        };
+        let response = client
+            .fetch(&base_url, "secret", &request)
+            .await
+            .expect("fetch response");
+        assert_eq!(response.status, 500);
+        assert_eq!(response.body, "failed");
+        let seen = seen.lock().expect("seen");
+        assert_eq!(seen[0].method, Method::PUT);
+        assert_eq!(seen[0].path, "/api/tasks/task-1");
+        assert_eq!(seen[0].authorization.as_deref(), Some("Bearer secret"));
+        assert_eq!(seen[0].custom_header.as_deref(), Some("custom"));
+        assert_eq!(seen[0].body, "payload");
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn hyper_client_maps_invalid_method_and_refused_connection() {
+        let client = HyperRemoteHostClient::new().expect("client");
+        let request = RemoteFetchRequest {
+            path: "/api/tasks".to_string(),
+            method: "bad method".to_string(),
+            headers: vec![],
+            body: None,
+        };
+        assert!(matches!(
+            client.fetch("http://127.0.0.1:1", "secret", &request).await,
+            Err(RemoteHostClientError::InvalidResponse(_))
+        ));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let address = listener.local_addr().expect("address");
+        drop(listener);
+        assert!(matches!(
+            client.fetch_descriptor(&format!("http://{address}")).await,
+            Err(RemoteHostClientError::Unreachable(_))
+        ));
     }
 }
