@@ -35,6 +35,7 @@ import {
   ConnectionSupervisor,
   type EnvironmentDescriptorView,
 } from "./supervisor";
+import { toRemoteTransportError } from "./transport-errors";
 
 const CLIENT_PROTOCOL_VERSION = 1;
 const CLIENT_MIN_PROTOCOL = 1;
@@ -120,9 +121,15 @@ async function sendFrame(
   environmentId: string,
   frame: RemoteClientFrame
 ): Promise<void> {
-  await primitiveInvoke("remote_stream_send", {
-    input: { id: environmentId, frame },
-  });
+  try {
+    await primitiveInvoke("remote_stream_send", {
+      input: { id: environmentId, frame },
+    });
+  } catch (reason: unknown) {
+    // The proxy rejects with the `"{CODE}: {message}"` rendering, which the
+    // supervisor's typed classification cannot read as anything but `transient`.
+    throw toRemoteTransportError(reason, environmentId, "remote_stream_send");
+  }
 }
 
 function detachedBus(environmentId: string, localBus: EventBus): NetworkEventBus {
@@ -247,15 +254,27 @@ export function initializeEnvironmentRuntime(): () => void {
         return parseDescriptor(await response.json());
       },
       openStream: async () => {
-        const outcome = parseConnectOutcome(
-          await primitiveInvoke("remote_connect", { input: { id: environmentId } })
-        );
+        let raw: unknown;
+        try {
+          raw = await primitiveInvoke("remote_connect", {
+            input: { id: environmentId },
+          });
+        } catch (reason: unknown) {
+          // A revoked credential must reach `classifyFailure` as REMOTE_UNAUTHORIZED,
+          // not as an untyped string the ladder retries forever.
+          throw toRemoteTransportError(reason, environmentId, "remote_connect");
+        }
+        const outcome = parseConnectOutcome(raw);
         runtime.socketLive = true;
         return outcome;
       },
       releaseStream: async () => {
         runtime.socketLive = false;
-        await primitiveInvoke("remote_disconnect", { input: { id: environmentId } });
+        try {
+          await primitiveInvoke("remote_disconnect", { input: { id: environmentId } });
+        } catch (reason: unknown) {
+          throw toRemoteTransportError(reason, environmentId, "remote_disconnect");
+        }
       },
       probe: async () => {
         const response = await networkFetch(environmentId, HEALTH_PATH);

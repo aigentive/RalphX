@@ -10,6 +10,7 @@ import {
 import { useUiStore } from "@/stores/uiStore";
 
 import type { RemoteStreamTarget } from "./stream-relay";
+import { RemoteTransportError } from "./transport-errors";
 
 const { supervisors } = vi.hoisted(() => ({
   supervisors: [] as Array<{
@@ -17,6 +18,7 @@ const { supervisors } = vi.hoisted(() => ({
       environmentId: string;
       refreshScopes: () => Promise<readonly string[]>;
       applyScopes: (scopes: readonly string[]) => void;
+      openStream: () => Promise<unknown>;
       beginStream: (outcome: {
         environmentId: string;
         hostEnvironmentId: string;
@@ -235,6 +237,25 @@ describe("environment runtime composition", () => {
 
     expect(runtime?.streamLosses).toBe(1);
     expect(runtime?.authorityWithdrawals).toEqual([]);
+  });
+
+  it("lifts a proxy refusal on the connect path into the transport taxonomy", async () => {
+    const { invoke } = await import("#tauri-core-primitive");
+    const { initializeEnvironmentRuntime } = await import("./environment-runtime");
+    useEnvironmentStore.getState().setEnvironments([summary("env-b")]);
+    setFlag(true);
+    teardown = initializeEnvironmentRuntime();
+    const runtime = supervisors[supervisors.length - 1];
+
+    // The Rust proxy rejects with its `"{CODE}: {message}"` rendering. Left raw, the
+    // supervisor classifies a revoked device as `transient` and loops the ladder.
+    vi.mocked(invoke).mockRejectedValueOnce(
+      "REMOTE_UNAUTHORIZED: this device was revoked"
+    );
+    const failure = await runtime?.deps.openStream().catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(RemoteTransportError);
+    expect((failure as RemoteTransportError).code).toBe("REMOTE_UNAUTHORIZED");
   });
 
   it("fails the hydration barrier when the snapshot refetch rejects", async () => {

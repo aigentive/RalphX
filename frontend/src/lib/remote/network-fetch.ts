@@ -17,8 +17,7 @@ import { invoke as primitiveInvoke } from "#tauri-core-primitive";
 
 import {
   RemoteTransportError,
-  parseRemoteTransportErrorCode,
-  parseRemoteTransportErrorMessage,
+  toRemoteTransportError,
 } from "./transport-errors";
 
 /** Statuses the `Response` constructor refuses a body for. */
@@ -215,18 +214,7 @@ function toFetchTransportError(
   environmentId: string,
   path: string
 ): unknown {
-  if (reason instanceof RemoteTransportError) {
-    return reason;
-  }
-  // Reuse the invoke taxonomy parser: `remote_fetch` renders its failures with the
-  // same `"{CODE}: {message}"` convention.
-  const code = parseRemoteTransportErrorCode(reason);
-  if (code === null) {
-    return reason;
-  }
-  return new RemoteTransportError({
-    code,
-    message: `${parseRemoteTransportErrorMessage(reason)} (${path})`,
-    environmentId,
-  });
+  // The shared taxonomy lift: `remote_fetch` renders its failures with the same
+  // `"{CODE}: {message}"` convention every other `remote_*` command uses.
+  return toRemoteTransportError(reason, environmentId, path);
 }
