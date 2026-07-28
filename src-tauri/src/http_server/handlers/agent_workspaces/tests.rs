@@ -71,6 +71,16 @@ fn test_http_state(app_state: Arc<AppState>) -> HttpServerState {
     }
 }
 
+/// Legacy fixture coverage remains isolated from the production compatibility endpoint, which
+/// delegates exclusively through the durable repair coordinator.
+async fn complete_agent_workspace_pr_fix(
+    state: State<HttpServerState>,
+    conversation_id: Path<String>,
+    request: Json<CompleteAgentWorkspacePrFixRequest>,
+) -> Result<Json<CompleteAgentWorkspacePrFixResponse>, JsonError> {
+    super::complete_agent_workspace_pr_fix_legacy_for_test(state, conversation_id, request).await
+}
+
 fn open_review_pr_health() -> PrHealth {
     PrHealth {
         sync_state: PrSyncState {
@@ -3892,6 +3902,7 @@ async fn setup_workspace_for_review_completion(
                 plan_reminder_count: 0,
                 plan_pending_instructions: None,
                 plan_last_parked_artifact_id: None,
+                plan_last_parked_blueprint_artifact_id: None,
                 agent_phase_started_at: None,
                 conversation_id: Some(conversation_id.clone()),
                 run_prompt: "Run".to_string(),

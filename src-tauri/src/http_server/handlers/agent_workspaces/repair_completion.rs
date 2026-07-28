@@ -401,6 +401,18 @@ pub async fn complete_agent_workspace_repair(
 ) -> Result<Json<CompleteAgentWorkspaceRepairResponse>, JsonError> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let run_id = trusted_runtime_identity(&headers, &conversation_id)?;
+    complete_agent_workspace_repair_for_trusted_run(&state, conversation_id, run_id, req).await
+}
+
+/// Completes a durable repair after the transport has authenticated and bound the exact agent run.
+/// Compatibility transports may reuse this boundary, but may not settle workspace projections or
+/// publish directly.
+pub(crate) async fn complete_agent_workspace_repair_for_trusted_run(
+    state: &HttpServerState,
+    conversation_id: ChatConversationId,
+    run_id: AgentRunId,
+    req: CompleteAgentWorkspaceRepairRequest,
+) -> Result<Json<CompleteAgentWorkspaceRepairResponse>, JsonError> {
     if req.summary.trim().is_empty() {
         return Err(json_error(
             StatusCode::BAD_REQUEST,
@@ -420,13 +432,14 @@ pub async fn complete_agent_workspace_repair(
         ));
     }
 
-    let authority = current_authorized_repair_attempt(&state, &conversation_id, &run_id).await?;
+    let authority = current_authorized_repair_attempt(state, &conversation_id, &run_id).await?;
     if let Some(response) = authority_response(authority.clone())? {
         return Ok(response);
     }
     let AgentWorkspaceRepairCompletionAuthority::Current(attempt) = authority else {
         unreachable!("authority response returns every non-current outcome");
     };
+    let attempt = *attempt;
     let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
 
     if let Some(blocker) = req.blocker.as_deref() {
@@ -449,7 +462,7 @@ pub async fn complete_agent_workspace_repair(
             )),
             AgentWorkspaceRepairTransitionOutcome::Stale(_)
             | AgentWorkspaceRepairTransitionOutcome::Missing => {
-                stale_completion_transition_response(&state, &conversation_id, &run_id).await
+                stale_completion_transition_response(state, &conversation_id, &run_id).await
             }
         };
     }
@@ -469,7 +482,7 @@ pub async fn complete_agent_workspace_repair(
         AgentWorkspaceRepairTransitionOutcome::Applied(attempt) => attempt,
         AgentWorkspaceRepairTransitionOutcome::Stale(_)
         | AgentWorkspaceRepairTransitionOutcome::Missing => {
-            return stale_completion_transition_response(&state, &conversation_id, &run_id).await;
+            return stale_completion_transition_response(state, &conversation_id, &run_id).await;
         }
     };
     if let Err(error) = validate_agent_workspace_repair_target_lease(
@@ -508,7 +521,7 @@ pub async fn complete_agent_workspace_repair(
             )),
             AgentWorkspaceRepairTransitionOutcome::Stale(_)
             | AgentWorkspaceRepairTransitionOutcome::Missing => {
-                stale_completion_transition_response(&state, &conversation_id, &run_id).await
+                stale_completion_transition_response(state, &conversation_id, &run_id).await
             }
         };
     }
@@ -543,7 +556,7 @@ pub async fn complete_agent_workspace_repair(
                 AgentWorkspaceRepairTransitionOutcome::Applied(_) => Err(validation_error),
                 AgentWorkspaceRepairTransitionOutcome::Stale(_)
                 | AgentWorkspaceRepairTransitionOutcome::Missing => {
-                    stale_completion_transition_response(&state, &conversation_id, &run_id).await
+                    stale_completion_transition_response(state, &conversation_id, &run_id).await
                 }
             };
         }
@@ -564,7 +577,7 @@ pub async fn complete_agent_workspace_repair(
         AgentWorkspaceRepairTransitionOutcome::Applied(validated) => validated,
         AgentWorkspaceRepairTransitionOutcome::Stale(_)
         | AgentWorkspaceRepairTransitionOutcome::Missing => {
-            return stale_completion_transition_response(&state, &conversation_id, &run_id).await;
+            return stale_completion_transition_response(state, &conversation_id, &run_id).await;
         }
     };
     #[cfg(feature = "test-utils")]
@@ -582,7 +595,7 @@ pub async fn complete_agent_workspace_repair(
         AgentWorkspaceRepairTransitionOutcome::Applied(attempt) => attempt,
         AgentWorkspaceRepairTransitionOutcome::Stale(_)
         | AgentWorkspaceRepairTransitionOutcome::Missing => {
-            return stale_completion_transition_response(&state, &conversation_id, &run_id).await;
+            return stale_completion_transition_response(state, &conversation_id, &run_id).await;
         }
     };
     if continuation.phase == AgentWorkspaceRepairPhase::Blocked {

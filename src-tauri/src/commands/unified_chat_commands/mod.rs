@@ -78,8 +78,8 @@ use crate::application::agent_workspace_pr_description::{
 };
 use crate::application::agent_workspace_pr_supervision_recovery::{
     build_agent_workspace_pr_supervision_recovery_deps,
-    pr_supervision_recovery_schedule_skip_reason, schedule_agent_workspace_pr_supervision_recovery,
-    AgentWorkspacePrFixReviewPublishResumer, AgentWorkspacePrSupervisionRecoveryTrigger,
+    schedule_agent_workspace_pr_supervision_recovery, AgentWorkspacePrFixReviewPublishResumer,
+    AgentWorkspacePrSupervisionRecoveryTrigger,
 };
 use crate::application::agent_workspace_publish_recovery::recover_stale_publish_repair_for_workspace_in_state;
 use crate::application::agent_workspace_publish_repair_state::{
@@ -1156,9 +1156,6 @@ fn schedule_pr_supervision_recovery_for_workspace(
     trigger: AgentWorkspacePrSupervisionRecoveryTrigger,
     force: bool,
 ) {
-    if pr_supervision_recovery_schedule_skip_reason(workspace).is_some() {
-        return;
-    }
     let execution_state = state
         .app_handle
         .as_ref()
@@ -7531,7 +7528,7 @@ pub(crate) async fn resume_durable_agent_workspace_repair_publish(
     .map_err(|error| error.to_string())?;
     let attempt = match resume {
         AgentWorkspaceRepairPublishResumeOutcome::NoAttempt => return Ok(None),
-        AgentWorkspaceRepairPublishResumeOutcome::Continue(attempt) => attempt,
+        AgentWorkspaceRepairPublishResumeOutcome::Continue(attempt) => *attempt,
         AgentWorkspaceRepairPublishResumeOutcome::AwaitingReview => {
             return durable_repair_publish_response(state, conversation_id, false).await.map(Some)
         }

@@ -35,13 +35,14 @@ use ralphx_lib::http_server::handlers::agent_workspaces::{
     clear_agent_workspace_repair_completion_reservation_gate_for_test,
     clear_agent_workspace_repair_completion_success_reservation_gate_for_test,
     clear_agent_workspace_repair_completion_validation_gate_for_test,
-    complete_agent_workspace_repair, get_agent_workspace_publish_status,
+    complete_agent_workspace_pr_fix, complete_agent_workspace_repair,
+    get_agent_workspace_publish_status,
     set_agent_workspace_repair_completion_blocker_gate_for_test,
     set_agent_workspace_repair_completion_continuation_gate_for_test,
     set_agent_workspace_repair_completion_reservation_gate_for_test,
     set_agent_workspace_repair_completion_success_reservation_gate_for_test,
     set_agent_workspace_repair_completion_validation_gate_for_test,
-    CompleteAgentWorkspaceRepairRequest,
+    CompleteAgentWorkspacePrFixRequest, CompleteAgentWorkspaceRepairRequest,
 };
 use ralphx_lib::http_server::types::HttpServerState;
 use tower::ServiceExt;
@@ -61,6 +62,15 @@ fn repair_completion_app(state: HttpServerState) -> Router {
         .route(
             "/api/agent-workspaces/:conversation_id/complete-repair",
             post(complete_agent_workspace_repair),
+        )
+        .with_state(state)
+}
+
+fn pr_fix_compatibility_app(state: HttpServerState) -> Router {
+    Router::new()
+        .route(
+            "/api/agent-workspaces/:conversation_id/complete-pr-fix",
+            post(complete_agent_workspace_pr_fix),
         )
         .with_state(state)
 }
@@ -91,6 +101,34 @@ async fn repair_completion_http_response(
         .oneshot(request)
         .await
         .expect("repair completion router response")
+}
+
+async fn pr_fix_compatibility_http_response(
+    state: HttpServerState,
+    conversation_id: &ChatConversationId,
+    request: CompleteAgentWorkspacePrFixRequest,
+) -> axum::response::Response {
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!(
+            "/api/agent-workspaces/{}/complete-pr-fix",
+            conversation_id
+        ))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&serde_json::json!({
+                "summary": request.summary,
+                "blocker": request.blocker,
+                "fix_commit_sha": request.fix_commit_sha,
+                "created_by_run_id": request.created_by_run_id,
+            }))
+            .expect("serialize PR-fix compatibility request"),
+        ))
+        .expect("build PR-fix compatibility request");
+    pr_fix_compatibility_app(state)
+        .oneshot(request)
+        .await
+        .expect("PR-fix compatibility router response")
 }
 
 async fn response_status(response: axum::response::Response) -> (StatusCode, String) {
@@ -492,6 +530,183 @@ async fn assert_no_duplicate_completion_side_effects(
         state.app_state.message_queue.list_keys().is_empty(),
         "duplicate completion must not enqueue a message"
     );
+}
+
+#[tokio::test]
+async fn legacy_pr_fix_transport_without_a_durable_attempt_fails_closed_without_legacy_effects() {
+    let state = test_state();
+    let conversation_id = ChatConversationId::new();
+    let workspace = AgentConversationWorkspace::new(
+        conversation_id.clone(),
+        ProjectId::from_string("legacy-pr-fix-no-attempt".to_string()),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("main".to_string()),
+        Some("base-head".to_string()),
+        "ralphx/test/legacy-pr-fix-no-attempt".to_string(),
+        "/missing-on-purpose".to_string(),
+    );
+    state
+        .app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("seed workspace without a durable attempt");
+    let before = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("read seeded workspace")
+        .expect("workspace remains");
+    let owner_run = AgentRun::new(conversation_id.clone());
+    let owner_run_id = owner_run.id.clone();
+    state
+        .app_state
+        .agent_run_repo
+        .create(owner_run)
+        .await
+        .expect("seed trusted transport run");
+
+    let response = pr_fix_compatibility_http_response(
+        state.clone(),
+        &conversation_id,
+        CompleteAgentWorkspacePrFixRequest {
+            summary: "Legacy completion must not create repair authority".to_string(),
+            blocker: None,
+            fix_commit_sha: None,
+            created_by_run_id: Some(owner_run_id.to_string()),
+        },
+    )
+    .await;
+    let (status, response_status) = response_status(response).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(response_status.is_empty());
+    assert!(state
+        .app_state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("read durable attempt")
+        .is_none());
+    let after = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("reload workspace")
+        .expect("workspace remains");
+    assert_eq!(after.updated_at, before.updated_at);
+    assert!(state
+        .app_state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("list publication events")
+        .is_empty());
+    assert!(state
+        .app_state
+        .chat_message_repo
+        .get_by_conversation(&conversation_id)
+        .await
+        .expect("list chat messages")
+        .is_empty());
+    assert!(state.app_state.message_queue.list_keys().is_empty());
+}
+
+#[tokio::test]
+async fn legacy_pr_fix_transport_rejects_wrong_durable_run_without_effects() {
+    let state = test_state();
+    let (conversation_id, _owner_run_id, before) = seed_current_attempt(&state).await;
+    let wrong_run = AgentRun::new(conversation_id.clone());
+    let wrong_run_id = wrong_run.id.clone();
+    state
+        .app_state
+        .agent_run_repo
+        .create(wrong_run)
+        .await
+        .expect("seed wrong transport run");
+
+    let response = pr_fix_compatibility_http_response(
+        state.clone(),
+        &conversation_id,
+        CompleteAgentWorkspacePrFixRequest {
+            summary: "Wrong repair run must not complete the durable attempt".to_string(),
+            blocker: None,
+            fix_commit_sha: None,
+            created_by_run_id: Some(wrong_run_id.to_string()),
+        },
+    )
+    .await;
+    let (status, response_status) = response_status(response).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(response_status.is_empty());
+    let after = state
+        .app_state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload durable attempt")
+        .expect("durable attempt remains");
+    assert_eq!(after.id, before.id);
+    assert_eq!(after.phase, before.phase);
+    assert_eq!(after.updated_at, before.updated_at);
+    assert_no_duplicate_completion_side_effects(&state, &conversation_id, &after).await;
+}
+
+#[tokio::test]
+async fn legacy_pr_fix_transport_uses_durable_completion_without_legacy_publish_writers() {
+    let state = test_state();
+    let (conversation_id, owner_run_id, before) = seed_current_attempt(&state).await;
+
+    let response = pr_fix_compatibility_http_response(
+        state.clone(),
+        &conversation_id,
+        CompleteAgentWorkspacePrFixRequest {
+            summary: "Durable coordinator owns this compatibility completion".to_string(),
+            blocker: None,
+            fix_commit_sha: Some("f".repeat(40)),
+            created_by_run_id: Some(owner_run_id.to_string()),
+        },
+    )
+    .await;
+    let (status, response_status) = response_status(response).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(response_status.is_empty());
+    let after = state
+        .app_state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload durable attempt")
+        .expect("durable attempt remains");
+    assert_eq!(after.id, before.id);
+    assert_eq!(after.generation, before.generation);
+    assert_eq!(after.phase, AgentWorkspaceRepairPhase::Blocked);
+    assert!(state
+        .app_state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("list compatibility events")
+        .iter()
+        .all(|event| !event.step.starts_with("pr_autofix_")));
+    assert!(state
+        .app_state
+        .chat_message_repo
+        .get_by_conversation(&conversation_id)
+        .await
+        .expect("list chat messages")
+        .is_empty());
+    assert!(state.app_state.message_queue.list_keys().is_empty());
+    assert!(state
+        .app_state
+        .agent_workspace_repair_repo
+        .get_open_repair_effect(&after.id)
+        .await
+        .expect("read repair effect")
+        .is_none());
 }
 
 #[test]

@@ -933,13 +933,19 @@ async fn recovers_stale_needs_agent_repair_without_rearming_pr_supervision() {
 }
 
 #[tokio::test]
-async fn durable_repair_authority_blocks_legacy_pr_supervision_replay() {
+async fn durable_base_update_authority_runs_before_legacy_pr_supervision_gates() {
     let (_temp_dir, project, mut workspace, head_sha) =
         setup_recovery_workspace("pr-supervision-durable-authority").await;
     let conversation_id = workspace.conversation_id.clone();
     workspace.base_commit = Some(head_sha);
     workspace.publication_push_status = Some("needs_agent".to_string());
     workspace.pr_supervision_status = Some("fixing".to_string());
+    workspace.publication_pr_number = None;
+    workspace.publication_pr_url = None;
+    workspace.publication_pr_status = None;
+    workspace.auto_publish_enabled = false;
+    workspace.pr_autofix_enabled = false;
+    workspace.pr_auto_merge_desired = false;
 
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     workspace_repo
@@ -954,8 +960,8 @@ async fn durable_repair_authority_blocks_legacy_pr_supervision_replay() {
     let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
     let mut attempt = AgentWorkspaceRepairAttempt::new(
         conversation_id.clone(),
-        AgentWorkspaceRepairSource::PrAutofix,
-        AgentWorkspaceRepairContinuation::ResumePrSupervision,
+        AgentWorkspaceRepairSource::BaseUpdate,
+        AgentWorkspaceRepairContinuation::UpdateOnly,
         "main",
         false,
         true,

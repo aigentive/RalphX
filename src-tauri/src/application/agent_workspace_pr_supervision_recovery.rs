@@ -198,26 +198,6 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
         ));
     };
 
-    if let Some(reason) = pr_supervision_recovery_schedule_skip_reason(&workspace) {
-        return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(reason));
-    }
-
-    let Some(project) = deps.project_repo.get_by_id(&workspace.project_id).await? else {
-        return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
-            "project_missing",
-        ));
-    };
-    if project.archived_at.is_some() {
-        return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
-            "project_archived",
-        ));
-    }
-    if !project.github_pr_enabled && workspace.publication_pr_number.is_none() {
-        return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
-            "github_pr_disabled",
-        ));
-    }
-
     #[cfg(not(any(test, feature = "test-utils")))]
     if deps.durable_recovery_state.is_none() {
         tracing::error!(
@@ -290,6 +270,29 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
         #[cfg(not(any(test, feature = "test-utils")))]
         return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
             "durable_repair_authority_unavailable",
+        ));
+    }
+
+    // The durable repair coordinator is the first recovery authority. Its work may be a base
+    // update with no PR and may intentionally run while legacy Auto Publish/PR-autofix gates are
+    // disabled, so those compatibility gates apply only after it has no current generation.
+    if let Some(reason) = pr_supervision_recovery_schedule_skip_reason(&workspace) {
+        return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(reason));
+    }
+
+    let Some(project) = deps.project_repo.get_by_id(&workspace.project_id).await? else {
+        return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
+            "project_missing",
+        ));
+    };
+    if project.archived_at.is_some() {
+        return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
+            "project_archived",
+        ));
+    }
+    if !project.github_pr_enabled && workspace.publication_pr_number.is_none() {
+        return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
+            "github_pr_disabled",
         ));
     }
 

@@ -27,7 +27,8 @@ use crate::application::agent_workspace_publish_repair_state::{
 use crate::application::agent_workspace_publish_repair_state::{
     classify_agent_workspace_repair_delivery, reserve_agent_workspace_repair_dispatch,
     settle_agent_workspace_repair_dispatch_outcome, start_or_join_agent_workspace_repair,
-    start_or_join_agent_workspace_repair_without_projection, AgentWorkspaceRepairDispatchOutcome,
+    start_or_join_agent_workspace_repair_without_projection,
+    validate_agent_workspace_repair_target_lease, AgentWorkspaceRepairDispatchOutcome,
     AgentWorkspaceRepairDispatchSettlement, AgentWorkspaceRepairStartOutcome,
     AgentWorkspaceRepairStartRequest,
 };
@@ -1084,6 +1085,18 @@ async fn agent_workspace_poll_loop(
             return;
         }
 
+        #[cfg(not(test))]
+        if repair_repo.is_none() {
+            tracing::error!(
+                conversation_id = conversation_id.as_str(),
+                pr_number,
+                "Agent workspace PR poller: durable repair repository is unavailable"
+            );
+            active.remove(&conversation_id);
+            stopping.remove(&conversation_id);
+            return;
+        }
+
         if !agent_workspace_pr_polling_should_continue(
             Arc::clone(&workspace_repo),
             &conversation_id,
@@ -1865,7 +1878,9 @@ async fn route_agent_workspace_pr_conflict_repair_if_needed_with_repair_repo(
         return Ok(false);
     }
     let Some(repair_repo) = repair_repo else {
-        return Ok(false);
+        return Err(AppError::Infrastructure(
+            "durable PR conflict repair dispatch requires workspace repair authority".to_string(),
+        ));
     };
     let Some(branch_update_repo) = branch_update_repo else {
         return Err(AppError::Infrastructure(
@@ -2702,6 +2717,17 @@ async fn route_agent_workspace_pr_autofix_for_target(
     if !workspace.auto_publish_enabled {
         return Ok(false);
     }
+    if repair_repo.is_none() {
+        #[cfg(not(test))]
+        return Err(AppError::Infrastructure(
+            "PR autofix dispatch requires durable workspace repair authority".to_string(),
+        ));
+    }
+    if repair_repo.is_some() && branch_update_repo.is_none() {
+        return Err(AppError::Infrastructure(
+            "durable PR autofix dispatch requires canonical Git target authority".to_string(),
+        ));
+    }
     if repair_repo.is_none()
         && agent_workspace_pr_autofix_repair_in_flight(&workspace, agent_run_repo.as_ref()).await?
     {
@@ -2837,50 +2863,30 @@ async fn route_agent_workspace_pr_autofix_for_target(
         return Ok(false);
     }
 
-    let auto_merge_current = match prepare_agent_workspace_pr_repair_auto_merge_state(
-        Arc::clone(&github),
-        working_dir,
-        target.pr_number,
-        conversation_id,
-        &health,
-        Arc::clone(&workspace_repo),
-    )
-    .await
-    {
-        Ok(Some(auto_merge_current)) => auto_merge_current,
-        Ok(None) => return Ok(false),
-        Err(error) => {
-            let summary =
-                format!("PR autofix could not persist the GitHub auto-merge disarm state: {error}");
-            record_agent_workspace_pr_autofix_pre_start_failure(
-                Arc::clone(&github),
-                working_dir,
-                target.pr_number,
-                workspace_repo.as_ref(),
-                conversation_id,
-                health.auto_merge_request.is_some(),
-                &summary,
-            )
-            .await?;
-            return Ok(false);
-        }
-    };
-
     let Some(workspace_for_options) =
         authorize_agent_workspace_pr_autofix(workspace_repo.as_ref(), conversation_id, &target)
             .await?
     else {
-        record_agent_workspace_pr_autofix_pre_start_failure(
+        return Ok(false);
+    };
+    // Test-only compatibility dispatch has no durable target authority. Keep its historical
+    // behavior isolated; production always takes the reservation-first path below.
+    let auto_merge_before_reservation = if repair_repo.is_none() {
+        let Some(auto_merge_current) = prepare_agent_workspace_pr_repair_auto_merge_state(
             Arc::clone(&github),
             working_dir,
             target.pr_number,
-            workspace_repo.as_ref(),
             conversation_id,
-            health.auto_merge_request.is_some(),
-            "PR autofix authorization changed after GitHub auto-merge was disabled.",
+            &health,
+            Arc::clone(&workspace_repo),
         )
-        .await?;
-        return Ok(false);
+        .await?
+        else {
+            return Ok(false);
+        };
+        Some(auto_merge_current)
+    } else {
+        workspace_for_options.pr_auto_merge_current
     };
     let message = build_agent_workspace_pr_autofix_message(
         target.pr_number,
@@ -2895,12 +2901,14 @@ async fn route_agent_workspace_pr_autofix_for_target(
         workspace_repo,
         agent_run_repo,
         chat_service,
+        github,
+        &health,
         working_dir,
         conversation_id,
         &workspace_for_options,
         target.pr_number,
         &issue.classification,
-        Some(auto_merge_current),
+        auto_merge_before_reservation,
         AgentWorkspacePrAutofixDispatch {
             repair_summary: &issue.summary,
             #[cfg(test)]
@@ -2962,12 +2970,14 @@ async fn dispatch_agent_workspace_pr_autofix(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     agent_run_repo: &Arc<dyn AgentRunRepository>,
     chat_service: Arc<dyn ChatService>,
+    github: Arc<dyn GithubServiceTrait>,
+    health: &PrHealth,
     working_dir: &Path,
     conversation_id: &ChatConversationId,
     workspace: &AgentConversationWorkspace,
     pr_number: i64,
     classification: &str,
-    auto_merge_current: Option<bool>,
+    auto_merge_before_reservation: Option<bool>,
     dispatch: AgentWorkspacePrAutofixDispatch<'_>,
 ) -> crate::AppResult<bool> {
     let Some(repair_repo) = repair_repo else {
@@ -2981,7 +2991,7 @@ async fn dispatch_agent_workspace_pr_autofix(
             workspace,
             pr_number,
             classification,
-            auto_merge_current,
+            auto_merge_before_reservation,
             dispatch,
         )
         .await;
@@ -3008,7 +3018,7 @@ async fn dispatch_agent_workspace_pr_autofix(
             verified_newer_base: false,
             reason: dispatch.repair_summary.to_string(),
             summary: dispatch.repair_summary.to_string(),
-            auto_merge_current,
+            auto_merge_current: auto_merge_before_reservation,
             retry_blocked: false,
         },
     )
@@ -3028,13 +3038,85 @@ async fn dispatch_agent_workspace_pr_autofix(
         attempt,
         preallocated_run_id.clone(),
         dispatch.repair_summary,
-        auto_merge_current,
+        auto_merge_before_reservation,
     )
     .await?
     {
         AgentWorkspaceRepairDispatchOutcome::Reserved(attempt) => attempt,
         AgentWorkspaceRepairDispatchOutcome::Stale(_)
         | AgentWorkspaceRepairDispatchOutcome::Missing => {
+            return Ok(false);
+        }
+    };
+    let canonical_target = async {
+        let persisted = validate_agent_workspace_repair_target_lease(
+            branch_update_repo.as_ref(),
+            &dispatch_attempt,
+        )
+        .await?;
+        let observed =
+            GitService::canonical_target_identity(working_dir, &workspace.branch_name).await?;
+        if observed != persisted {
+            return Err(AppError::Conflict(
+                "PR autofix workspace/ref differs from its durable dispatch target".to_string(),
+            ));
+        }
+        Ok::<(), AppError>(())
+    }
+    .await;
+    if let Err(error) = canonical_target {
+        let summary = format!(
+            "{} reserved a durable worker, but its canonical target could not be revalidated: {error}",
+            dispatch.dispatch_label
+        );
+        settle_agent_workspace_pr_autofix_dispatch_failure(
+            Arc::clone(&repair_repo),
+            Arc::clone(&branch_update_repo),
+            dispatch_attempt,
+            &summary,
+            AgentWorkspaceRepairDispatchSettlement::RetryableFailure,
+            auto_merge_before_reservation,
+        )
+        .await?;
+        return Ok(false);
+    }
+    let auto_merge_current = match prepare_agent_workspace_pr_repair_auto_merge_state(
+        github,
+        working_dir,
+        pr_number,
+        conversation_id,
+        health,
+        Arc::clone(&workspace_repo),
+    )
+    .await
+    {
+        Ok(Some(auto_merge_current)) => auto_merge_current,
+        Ok(None) => {
+            settle_agent_workspace_pr_autofix_dispatch_failure(
+                Arc::clone(&repair_repo),
+                Arc::clone(&branch_update_repo),
+                dispatch_attempt,
+                "PR autofix reserved a durable worker, but GitHub auto-merge could not be disabled.",
+                AgentWorkspaceRepairDispatchSettlement::RetryableFailure,
+                auto_merge_before_reservation,
+            )
+            .await?;
+            return Ok(false);
+        }
+        Err(error) => {
+            let summary = format!(
+                "{} reserved a durable worker, but GitHub auto-merge preparation failed: {error}",
+                dispatch.dispatch_label
+            );
+            settle_agent_workspace_pr_autofix_dispatch_failure(
+                Arc::clone(&repair_repo),
+                Arc::clone(&branch_update_repo),
+                dispatch_attempt,
+                &summary,
+                AgentWorkspaceRepairDispatchSettlement::RetryableFailure,
+                auto_merge_before_reservation,
+            )
+            .await?;
             return Ok(false);
         }
     };
@@ -3054,7 +3136,7 @@ async fn dispatch_agent_workspace_pr_autofix(
                     dispatch_attempt,
                     &summary,
                     AgentWorkspaceRepairDispatchSettlement::RetryableFailure,
-                    auto_merge_current,
+                    Some(auto_merge_current),
                 )
                 .await?;
                 return Ok(false);
@@ -3074,7 +3156,7 @@ async fn dispatch_agent_workspace_pr_autofix(
         .await;
     let settlement = classify_agent_workspace_repair_delivery(
         delivery.as_ref(),
-        &conversation_id,
+        conversation_id,
         &preallocated_run_id,
     );
     let send_result = match delivery {
@@ -3090,7 +3172,7 @@ async fn dispatch_agent_workspace_pr_autofix(
                 dispatch_attempt,
                 &summary,
                 settlement,
-                auto_merge_current,
+                Some(auto_merge_current),
             )
             .await?;
             return Ok(false);
@@ -3103,7 +3185,7 @@ async fn dispatch_agent_workspace_pr_autofix(
                 dispatch_attempt,
                 &summary,
                 settlement,
-                auto_merge_current,
+                Some(auto_merge_current),
             )
             .await?;
             return Ok(false);
@@ -3117,7 +3199,7 @@ async fn dispatch_agent_workspace_pr_autofix(
         dispatch_attempt,
         AgentWorkspaceRepairDispatchSettlement::Delivered,
         dispatch.repair_summary,
-        auto_merge_current,
+        Some(auto_merge_current),
     )
     .await?;
 
@@ -3251,61 +3333,6 @@ async fn dispatch_agent_workspace_pr_autofix_legacy(
         );
     }
     Ok(true)
-}
-
-async fn record_agent_workspace_pr_autofix_pre_start_failure(
-    github: Arc<dyn GithubServiceTrait>,
-    working_dir: &Path,
-    pr_number: i64,
-    workspace_repo: &dyn AgentConversationWorkspaceRepository,
-    conversation_id: &ChatConversationId,
-    restore_auto_merge: bool,
-    summary: &str,
-) -> crate::AppResult<()> {
-    let workspace = workspace_repo
-        .get_by_conversation_id(conversation_id)
-        .await?
-        .ok_or_else(|| {
-            AppError::NotFound(format!(
-                "Agent conversation workspace not found for conversation {}",
-                conversation_id
-            ))
-        })?;
-    workspace_repo
-        .update_publication(
-            conversation_id,
-            workspace.publication_pr_number,
-            workspace.publication_pr_url.as_deref(),
-            workspace.publication_pr_status.as_deref(),
-            Some("failed"),
-        )
-        .await?;
-    workspace_repo
-        .update_pr_auto_merge_state(conversation_id, Some(false), Some("blocked"), Some(summary))
-        .await?;
-
-    if !restore_auto_merge || !workspace.pr_auto_merge_desired {
-        return Ok(());
-    }
-
-    let (auto_merge_current, final_summary) = match github
-        .enable_pr_auto_merge(working_dir, pr_number, &workspace.pr_auto_merge_method)
-        .await
-    {
-        Ok(()) => (true, format!("{summary} GitHub auto-merge was restored.")),
-        Err(error) => (
-            false,
-            format!("{summary} {}", auto_merge_enable_failure_summary(&error)),
-        ),
-    };
-    workspace_repo
-        .update_pr_auto_merge_state(
-            conversation_id,
-            Some(auto_merge_current),
-            Some("blocked"),
-            Some(&final_summary),
-        )
-        .await
 }
 
 async fn agent_workspace_pr_autofix_repair_in_flight(
@@ -4174,6 +4201,18 @@ async fn route_agent_workspace_review_feedback_if_present_with_repair_repo(
     let Some(target) = AgentWorkspacePrAutofixTarget::review_feedback(&workspace, pr_number) else {
         return Ok(false);
     };
+    if repair_repo.is_none() {
+        #[cfg(not(test))]
+        return Err(AppError::Infrastructure(
+            "PR review-feedback dispatch requires durable workspace repair authority".to_string(),
+        ));
+    }
+    if repair_repo.is_some() && branch_update_repo.is_none() {
+        return Err(AppError::Infrastructure(
+            "durable PR review-feedback dispatch requires canonical Git target authority"
+                .to_string(),
+        ));
+    }
 
     let Some(feedback) = github
         .check_pr_review_feedback(working_dir, pr_number)
@@ -4249,52 +4288,6 @@ async fn route_agent_workspace_review_feedback_if_present_with_repair_repo(
             return Ok(false);
         }
     }
-    let auto_merge_current = match prepare_agent_workspace_pr_repair_auto_merge_state(
-        Arc::clone(&github),
-        working_dir,
-        pr_number,
-        conversation_id,
-        &health,
-        Arc::clone(&workspace_repo),
-    )
-    .await
-    {
-        Ok(Some(auto_merge_current)) => auto_merge_current,
-        Ok(None) => return Ok(false),
-        Err(error) => {
-            let summary = format!(
-                "PR review autofix could not persist the GitHub auto-merge disarm state: {error}"
-            );
-            record_agent_workspace_pr_autofix_pre_start_failure(
-                Arc::clone(&github),
-                working_dir,
-                pr_number,
-                workspace_repo.as_ref(),
-                conversation_id,
-                health.auto_merge_request.is_some(),
-                &summary,
-            )
-            .await?;
-            return Ok(false);
-        }
-    };
-
-    let Some(_workspace_for_options) =
-        authorize_agent_workspace_pr_autofix(workspace_repo.as_ref(), conversation_id, &target)
-            .await?
-    else {
-        record_agent_workspace_pr_autofix_pre_start_failure(
-            Arc::clone(&github),
-            working_dir,
-            pr_number,
-            workspace_repo.as_ref(),
-            conversation_id,
-            health.auto_merge_request.is_some(),
-            "PR review-fixer authorization changed after GitHub auto-merge was disabled.",
-        )
-        .await?;
-        return Ok(false);
-    };
     let repair_summary = "GitHub requested changes routed to the PR fixer.";
     #[cfg(test)]
     let summary = format!(
@@ -4305,17 +4298,25 @@ async fn route_agent_workspace_review_feedback_if_present_with_repair_repo(
         authorize_agent_workspace_pr_autofix(workspace_repo.as_ref(), conversation_id, &target)
             .await?
     else {
-        record_agent_workspace_pr_autofix_pre_start_failure(
+        return Ok(false);
+    };
+    // See the matching PR-health route: legacy test dispatch has no durable reservation seam.
+    let auto_merge_before_reservation = if repair_repo.is_none() {
+        let Some(auto_merge_current) = prepare_agent_workspace_pr_repair_auto_merge_state(
             Arc::clone(&github),
             working_dir,
             pr_number,
-            workspace_repo.as_ref(),
             conversation_id,
-            health.auto_merge_request.is_some(),
-            "PR review-fixer authorization changed before dispatch.",
+            &health,
+            Arc::clone(&workspace_repo),
         )
-        .await?;
-        return Ok(false);
+        .await?
+        else {
+            return Ok(false);
+        };
+        Some(auto_merge_current)
+    } else {
+        workspace_for_dispatch.pr_auto_merge_current
     };
     dispatch_agent_workspace_pr_autofix(
         repair_repo,
@@ -4323,12 +4324,14 @@ async fn route_agent_workspace_review_feedback_if_present_with_repair_repo(
         workspace_repo,
         agent_run_repo,
         chat_service,
+        github,
+        &health,
         working_dir,
         conversation_id,
         &workspace_for_dispatch,
         pr_number,
         &issue.classification,
-        Some(auto_merge_current),
+        auto_merge_before_reservation,
         AgentWorkspacePrAutofixDispatch {
             repair_summary,
             #[cfg(test)]

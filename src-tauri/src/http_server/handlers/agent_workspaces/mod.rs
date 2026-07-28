@@ -14,13 +14,13 @@ pub use workspace_review_context::get_agent_workspace_review_context;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    future::Future,
     path::PathBuf,
-    pin::Pin,
     str::FromStr,
     sync::Arc,
     time::Instant,
 };
+#[cfg(test)]
+use std::{future::Future, pin::Pin};
 
 use axum::{
     extract::{Path, State},
@@ -33,46 +33,61 @@ use crate::application::agent_conversation_workspace::AgentConversationWorkspace
 use crate::application::agent_workspace_local_commit::{
     commit_agent_workspace_locally, AgentWorkspaceLocalCommitRequest,
 };
+#[cfg(test)]
 use crate::application::agent_workspace_pr_autofix_attempt::{
     load_pr_autofix_completion_authority, PrAutofixCompletionAuthority,
 };
+#[cfg(test)]
 use crate::application::agent_workspace_pr_supervision_recovery::{
     build_agent_workspace_pr_supervision_recovery_deps,
     schedule_agent_workspace_pr_supervision_recovery, AgentWorkspacePrSupervisionRecoveryTrigger,
 };
+#[cfg(test)]
 use crate::application::agent_workspace_publish_repair_state::{
-    abort_agent_workspace_pr_fix_review_handoff, block_agent_workspace_pr_fix_claim,
-    complete_agent_workspace_pr_fix_claim, continue_agent_workspace_pr_fix_after_review_handoff,
+    abort_agent_workspace_pr_fix_review_handoff, continue_agent_workspace_pr_fix_after_review_handoff,
     AgentWorkspaceRepairClaim,
+};
+#[cfg(test)]
+use crate::application::agent_workspace_publish_repair_state::{
+    block_agent_workspace_pr_fix_claim, complete_agent_workspace_pr_fix_claim,
 };
 use crate::application::agent_workspace_review::{
     apply_review_artifact_pair_to_monitor, complete_agent_workspace_review_run_unlocked,
     load_agent_workspace_review_context, load_current_workspace_review_eligible,
     lock_workspace_review_lifecycle, review_gate_publish_blocker,
     start_agent_workspace_review_blocking_fixer_with_override, workspace_review_mode_is_eligible,
-    AgentWorkspaceReviewGoalContext, AgentWorkspaceReviewHunkAnchor, AgentWorkspaceReviewStart,
+    AgentWorkspaceReviewGoalContext, AgentWorkspaceReviewHunkAnchor,
     AgentWorkspaceReviewTarget, WorkspaceReviewFixerConfirmation,
 };
 #[cfg(test)]
+use crate::application::agent_workspace_review::AgentWorkspaceReviewStart;
+#[cfg(test)]
 use crate::application::agent_workspace_review::apply_review_artifact_to_monitor;
 use crate::application::agent_workspace_review_auto_merge::{
-    preview_manual_workspace_review_start, start_guarded_agent_workspace_review,
-    start_guarded_agent_workspace_review_with_runtime_override, WorkspaceReviewStartConfirmation,
-    WorkspaceReviewStartOrigin,
+    preview_manual_workspace_review_start, start_guarded_agent_workspace_review_with_runtime_override,
+    WorkspaceReviewStartConfirmation, WorkspaceReviewStartOrigin,
+};
+#[cfg(test)]
+use crate::application::agent_workspace_review_auto_merge::{
+    start_guarded_agent_workspace_review,
 };
 use crate::application::agent_workspace_review_diff::{
     ensure_workspace_review_snapshot_current, full_hunk_anchors_for_requests,
 };
-use crate::application::agent_workspace_review_publish_handoff::{
-    resume_pr_fix_publish_after_passed_workspace_review, workspace_review_authorization_kind,
-};
+use crate::application::agent_workspace_review_publish_handoff::workspace_review_authorization_kind;
+#[cfg(test)]
+use crate::application::agent_workspace_review_publish_handoff::resume_pr_fix_publish_after_passed_workspace_review;
 use crate::application::interactive_notification_producer::pr_review_notification_key;
+#[cfg(test)]
+use crate::application::publish_resilience::push_publish_branch;
+#[cfg(test)]
 use crate::application::publish_resilience::{
-    push_publish_branch, verify_agent_workspace_settled_current_head,
-    AgentWorkspaceSettledHeadCheck,
+    verify_agent_workspace_settled_current_head, AgentWorkspaceSettledHeadCheck,
 };
 use crate::application::services::pr_merge_poller::import_agent_workspace_pr_comment_evidence;
-use crate::application::{AppState, ChatService, GitService};
+use crate::application::{AppState, ChatService};
+#[cfg(test)]
+use crate::application::GitService;
 use crate::commands::unified_chat_commands::{
     agent_workspace_response_for_state, get_agent_conversation_workspace_freshness_for_app_state,
     publish_agent_conversation_workspace_for_app_state,
@@ -81,12 +96,14 @@ use crate::commands::unified_chat_commands::{
     update_agent_conversation_workspace_from_base_for_app_state_with_caller,
     AgentConversationWorkspaceFreshnessResponse,
     AgentConversationWorkspacePublicationEventResponse, AgentConversationWorkspaceResponse,
-    AgentWorkspacePrFixReviewPublishCommandResumer,
     AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE,
 };
+#[cfg(test)]
+use crate::commands::unified_chat_commands::AgentWorkspacePrFixReviewPublishCommandResumer;
 use crate::domain::agents::{
     AgentHarnessKind, LogicalEffort, ManualRoleRuntimeOverride, ManualServiceTier,
 };
+#[cfg(test)]
 use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus as PlanDbPrStatus};
 use crate::domain::entities::{
     is_publication_push_active, pr_comment_body_excerpt, AgentConversationWorkspace,
@@ -95,14 +112,14 @@ use crate::domain::entities::{
     AgentWorkspacePrMetadataDecision, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
     AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewGateStatus,
-    AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
+    AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor, AgentRunId,
     AgentWorkspaceReviewTargetScope, Artifact, ArtifactId, ArtifactType, ChatConversationId,
     IdeationAnalysisBaseRefKind, NewNotification, NotificationCategory, NotificationSeverity,
     NotificationTarget, NotificationTargetKind, PlanBranch, ProjectId,
 };
-use crate::domain::repositories::{
-    AgentWorkspacePrReviewActionMutation, AgentWorkspaceRepairStateGuard,
-};
+use crate::domain::repositories::AgentWorkspacePrReviewActionMutation;
+#[cfg(test)]
+use crate::domain::repositories::AgentWorkspaceRepairStateGuard;
 use crate::domain::services::github_service::{
     GithubServiceTrait, PrHealth, PrReviewFeedback, PrReviewSubmissionEvent, PrStatus,
 };
@@ -2366,9 +2383,69 @@ pub async fn read_agent_workspace_pr_comment(
 
 /// POST /api/agent-workspaces/{conversation_id}/complete-pr-fix
 ///
-/// Called by the PR fixer agent after it has addressed PR health/review issues.
-/// RalphX then republishes the workspace branch and resumes PR supervision.
+/// Compatibility transport for older PR-fixer clients. The durable repair coordinator remains
+/// the sole completion, projection, and publication authority.
 pub async fn complete_agent_workspace_pr_fix(
+    State(state): State<HttpServerState>,
+    Path(conversation_id): Path<String>,
+    Json(req): Json<CompleteAgentWorkspacePrFixRequest>,
+) -> Result<Json<CompleteAgentWorkspacePrFixResponse>, JsonError> {
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let run_id = req
+        .created_by_run_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            json_error(
+                StatusCode::UNAUTHORIZED,
+                "Missing trusted PR-fixer run authority",
+                None,
+            )
+        })
+        .and_then(|value| {
+            AgentRunId::from_str(value).map_err(|_| {
+                json_error(
+                    StatusCode::UNAUTHORIZED,
+                    "PR-fixer run authority is malformed",
+                    None,
+                )
+            })
+        })?;
+    let Json(response) = repair_completion::complete_agent_workspace_repair_for_trusted_run(
+        &state,
+        conversation_id,
+        run_id,
+        CompleteAgentWorkspaceRepairRequest {
+            summary: req.summary,
+            blocker: req.blocker,
+        },
+    )
+    .await?;
+
+    let publish_status = match response.status.as_str() {
+        "accepted" => Some("pending".to_string()),
+        "already_completed" | "superseded" | "blocked" => Some("skipped".to_string()),
+        _ => None,
+    };
+    Ok(Json(CompleteAgentWorkspacePrFixResponse {
+        success: response.success,
+        status: response.status,
+        message: response.message,
+        workspace: None,
+        publish_status,
+        publish_error: None,
+        commit_sha: None,
+        pushed: None,
+        created_pr: None,
+        pr_number: None,
+        pr_url: None,
+    }))
+}
+
+/// Test-only compatibility fixture for the removed coarse PR-fix state machine.
+#[cfg(test)]
+async fn complete_agent_workspace_pr_fix_legacy_for_test(
     State(state): State<HttpServerState>,
     Path(conversation_id): Path<String>,
     Json(req): Json<CompleteAgentWorkspacePrFixRequest>,
@@ -2390,32 +2467,6 @@ pub async fn complete_agent_workspace_pr_fix(
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
         .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Agent workspace not found", None))?;
-    // This endpoint is the old coarse PR-fix settlement path. A durable repair generation,
-    // including a settled one, permanently owns this conversation's repair lifecycle; do not
-    // resolve targets, inspect Git, emit events, or publish from the legacy route.
-    if state
-        .app_state
-        .agent_workspace_repair_repo
-        .get_latest_repair_attempt_for_conversation(&conversation_id)
-        .await
-        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
-        .is_some()
-    {
-        return Ok(Json(CompleteAgentWorkspacePrFixResponse {
-            success: true,
-            status: "superseded".to_string(),
-            message: "This legacy PR fixer completion is no longer authoritative; RalphX is using the durable repair operation."
-                .to_string(),
-            workspace: None,
-            publish_status: Some("skipped".to_string()),
-            publish_error: None,
-            commit_sha: None,
-            pushed: None,
-            created_pr: None,
-            pr_number: workspace.publication_pr_number,
-            pr_url: workspace.publication_pr_url.clone(),
-        }));
-    }
     let target = resolve_agent_workspace_pr_fix_target(state.app_state.as_ref(), &workspace)
         .await?
         .ok_or_else(|| {
@@ -2797,6 +2848,7 @@ pub async fn complete_agent_workspace_pr_fix(
     }
 }
 
+#[cfg(test)]
 fn schedule_pr_autofix_completion_recovery(
     state: &HttpServerState,
     conversation_id: &ChatConversationId,
@@ -2833,6 +2885,7 @@ fn schedule_pr_autofix_completion_recovery(
     );
 }
 
+#[cfg(test)]
 async fn complete_ideation_plan_pr_fix_for_terminal_pr(
     state: &AppState,
     conversation_id: &ChatConversationId,
@@ -2895,6 +2948,7 @@ async fn complete_ideation_plan_pr_fix_for_terminal_pr(
     }))
 }
 
+#[cfg(test)]
 async fn clear_terminal_plan_pr_auto_merge_marker(
     state: &AppState,
     plan_branch: &PlanBranch,
@@ -2935,6 +2989,7 @@ async fn clear_terminal_plan_pr_auto_merge_marker(
     }
 }
 
+#[cfg(test)]
 async fn complete_ideation_plan_pr_fix_publish(
     state: &HttpServerState,
     conversation_id: &ChatConversationId,
@@ -3139,6 +3194,7 @@ async fn complete_ideation_plan_pr_fix_publish(
     }))
 }
 
+#[cfg(test)]
 async fn finish_ideation_plan_pr_fix_publish_failed(
     state: &HttpServerState,
     conversation_id: &ChatConversationId,
@@ -3234,6 +3290,7 @@ async fn start_workspace_review_for_pr_fix_if_required(
     }
 }
 
+#[cfg(test)]
 async fn settle_pr_fix_workspace_review_handoff(
     state: &HttpServerState,
     conversation_id: &ChatConversationId,
@@ -3355,6 +3412,7 @@ async fn settle_pr_fix_workspace_review_handoff(
     }
 }
 
+#[cfg(test)]
 async fn pr_fix_workspace_review_waiting_response(
     state: &AppState,
     conversation_id: &ChatConversationId,
@@ -3379,6 +3437,7 @@ async fn pr_fix_workspace_review_waiting_response(
     }))
 }
 
+#[cfg(test)]
 async fn pr_fix_workspace_review_blocked_response(
     state: &AppState,
     conversation_id: &ChatConversationId,
@@ -3403,6 +3462,7 @@ async fn pr_fix_workspace_review_blocked_response(
     }))
 }
 
+#[cfg(test)]
 enum WorkspaceReviewAfterFixAction {
     Continue,
     Waiting {
@@ -3414,9 +3474,11 @@ enum WorkspaceReviewAfterFixAction {
     },
 }
 
+#[cfg(test)]
 type WorkspaceReviewStartFuture<'a> =
     Pin<Box<dyn Future<Output = crate::error::AppResult<AgentWorkspaceReviewStart>> + Send + 'a>>;
 
+#[cfg(test)]
 trait WorkspaceReviewStarter {
     fn start<'a>(
         &'a self,
@@ -3426,8 +3488,10 @@ trait WorkspaceReviewStarter {
     ) -> WorkspaceReviewStartFuture<'a>;
 }
 
+#[cfg(test)]
 struct DefaultWorkspaceReviewStarter;
 
+#[cfg(test)]
 impl WorkspaceReviewStarter for DefaultWorkspaceReviewStarter {
     fn start<'a>(
         &'a self,
@@ -3445,6 +3509,7 @@ impl WorkspaceReviewStarter for DefaultWorkspaceReviewStarter {
     }
 }
 
+#[cfg(test)]
 async fn workspace_review_action_after_fix_if_required(
     state: &HttpServerState,
     workspace: &AgentConversationWorkspace,
@@ -3457,6 +3522,7 @@ async fn workspace_review_action_after_fix_if_required(
     .await
 }
 
+#[cfg(test)]
 async fn workspace_review_action_after_fix_if_required_with_starter<S>(
     state: &HttpServerState,
     workspace: &AgentConversationWorkspace,
@@ -3582,6 +3648,7 @@ async fn finish_pr_fix_waiting_for_workspace_review(
     }))
 }
 
+#[cfg(test)]
 fn pr_fix_workspace_review_block_classification(
     status: AgentWorkspaceReviewGateStatus,
 ) -> &'static str {
@@ -3591,6 +3658,7 @@ fn pr_fix_workspace_review_block_classification(
     }
 }
 
+#[cfg(test)]
 async fn complete_repair_workspace_review_response_if_required(
     state: &HttpServerState,
     conversation_id: &ChatConversationId,
@@ -3611,6 +3679,7 @@ async fn complete_repair_workspace_review_response_if_required(
     .await
 }
 
+#[cfg(test)]
 async fn complete_repair_workspace_review_response_if_required_with_starter<S>(
     state: &HttpServerState,
     conversation_id: &ChatConversationId,
@@ -3688,6 +3757,7 @@ where
     }
 }
 
+#[cfg(test)]
 fn workspace_repair_was_routed_from_workspace_review(
     monitor: &AgentWorkspaceReviewMonitor,
 ) -> bool {
@@ -3696,6 +3766,7 @@ fn workspace_repair_was_routed_from_workspace_review(
         || monitor.review_fixer_conversation_id.is_some()
 }
 
+#[cfg(test)]
 async fn repair_workspace_review_response(
     _state: &HttpServerState,
     _conversation_id: &ChatConversationId,
@@ -3719,6 +3790,7 @@ async fn repair_workspace_review_response(
     }))
 }
 
+#[cfg(test)]
 async fn finish_repair_waiting_for_workspace_review(
     state: &HttpServerState,
     conversation_id: &ChatConversationId,
@@ -3764,6 +3836,7 @@ async fn finish_repair_waiting_for_workspace_review(
     .await
 }
 
+#[cfg(test)]
 async fn finish_repair_blocked_by_workspace_review(
     state: &HttpServerState,
     conversation_id: &ChatConversationId,
@@ -3861,6 +3934,7 @@ async fn finish_pr_fix_blocked_by_workspace_review(
     }))
 }
 
+#[cfg(test)]
 async fn resume_pr_fix_publish_after_workspace_review(
     state: &HttpServerState,
     conversation_id: &ChatConversationId,
@@ -4002,8 +4076,6 @@ pub(crate) async fn settle_workspace_review_publish_authorization(
     {
         return Ok(());
     }
-    resume_pr_fix_publish_after_workspace_review(state, conversation_id, workspace, monitor)
-        .await?;
     resume_initial_auto_publish_after_workspace_review(state, conversation_id, workspace, monitor)
         .await
 }
@@ -4040,6 +4112,7 @@ fn workspace_review_block_detail(monitor: &AgentWorkspaceReviewMonitor) -> Optio
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
 async fn complete_pr_fix_for_terminal_pr(
     state: &AppState,
     conversation_id: &ChatConversationId,
@@ -4087,6 +4160,7 @@ async fn complete_pr_fix_for_terminal_pr(
     }))
 }
 
+#[cfg(test)]
 async fn completed_pr_fix_paused_response(
     state: &AppState,
     conversation_id: &ChatConversationId,

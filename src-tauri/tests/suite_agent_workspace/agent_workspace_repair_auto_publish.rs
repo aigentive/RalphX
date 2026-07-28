@@ -241,6 +241,7 @@ fn setup_rewritten_repair_publish_fixture(
     project.id = ProjectId::from_string(project_id.to_string());
     project.base_branch = Some("main".to_string());
     project.worktree_parent_directory = Some(worktrees.path().to_string_lossy().to_string());
+    project.github_pr_enabled = true;
 
     let workspace_path =
         resolve_agent_conversation_workspace_path(&project, &conversation_id).unwrap();
@@ -279,6 +280,14 @@ fn setup_rewritten_repair_publish_fixture(
         ],
     );
     git(repo.path(), &["checkout", "main"]);
+    git(
+        repo.path(),
+        &[
+            "config",
+            "remote.origin.pushurl",
+            "git@github.com:ralphx-test/agent-workspace.git",
+        ],
+    );
 
     RewrittenRepairPublishFixture {
         _repo: repo,
@@ -334,18 +343,21 @@ async fn seed_rewritten_repair_publish_workspace(
     run_id
 }
 
-async fn checkpoint_recovery_repair_target_lease(
+async fn checkpoint_current_repair_target_lease(
     state: &AppState,
-    fixture: &RewrittenRepairPublishFixture,
+    conversation_id: &ChatConversationId,
+    workspace_path: &std::path::Path,
+    branch_name: &str,
+    target_base_commit: &str,
 ) -> AgentWorkspaceRepairAttempt {
     let current = state
         .agent_workspace_repair_repo
-        .get_current_repair_attempt(&fixture.conversation_id)
+        .get_current_repair_attempt(conversation_id)
         .await
         .expect("load recovery repair attempt")
         .expect("recovery repair attempt is current");
     let identity =
-        GitService::canonical_target_identity(&fixture.workspace_path, &fixture.branch_name)
+        GitService::canonical_target_identity(workspace_path, branch_name)
             .await
             .expect("resolve canonical recovery target");
     let owner = GitTargetLeaseOwner::agent_workspace_repair(current.id.as_str());
@@ -363,7 +375,7 @@ async fn checkpoint_recovery_repair_target_lease(
         outcome => panic!("recovery fixture target must be available, got {outcome:?}"),
     };
     let mut checkpointed = current.clone();
-    checkpointed.target_base_commit = Some(fixture.base_sha.clone());
+    checkpointed.target_base_commit = Some(target_base_commit.to_string());
     checkpointed.git_common_dir = Some(identity.git_common_dir().to_string_lossy().into_owned());
     checkpointed.target_ref = Some(identity.full_ref().to_string());
     checkpointed.target_identity_version = Some(1);
@@ -386,6 +398,20 @@ async fn checkpoint_recovery_repair_target_lease(
         AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
         outcome => panic!("expected durable recovery lease checkpoint, got {outcome:?}"),
     }
+}
+
+async fn checkpoint_recovery_repair_target_lease(
+    state: &AppState,
+    fixture: &RewrittenRepairPublishFixture,
+) -> AgentWorkspaceRepairAttempt {
+    checkpoint_current_repair_target_lease(
+        state,
+        &fixture.conversation_id,
+        &fixture.workspace_path,
+        &fixture.branch_name,
+        &fixture.base_sha,
+    )
+    .await
 }
 
 async fn park_current_repair_at_ready(
@@ -627,6 +653,20 @@ async fn terminal_then_startup_recovery_continues_a_clean_durable_repair_once() 
             .count(),
         1,
         "terminal recovery emits one publication event"
+    );
+    assert!(
+        state
+            .app_state
+            .chat_message_repo
+            .get_by_conversation(&conversation_id)
+            .await
+            .expect("read concurrent recovery messages")
+            .is_empty(),
+        "workspace, terminal, and startup recovery must not emit a duplicate worker message"
+    );
+    assert!(
+        state.app_state.message_queue.list_keys().is_empty(),
+        "workspace, terminal, and startup recovery must not enqueue a duplicate worker message"
     );
 
     assert_eq!(
@@ -1159,6 +1199,14 @@ async fn complete_repair_hands_off_auto_publish_to_durable_continuation() {
         .await
         .expect("seed workspace");
     let run_id = seed_current_repair_attempt(&app_state, conversation_id.clone()).await;
+    checkpoint_current_repair_target_lease(
+        &app_state,
+        &conversation_id,
+        &workspace_path,
+        branch_name,
+        &base_sha,
+    )
+    .await;
     disable_workspace_review_gate(&app_state).await;
 
     let state = make_http_state(app_state);
@@ -1185,7 +1233,15 @@ async fn complete_repair_hands_off_auto_publish_to_durable_continuation() {
         .expect("repair attempt remains current");
     assert_eq!(
         current.phase,
-        AgentWorkspaceRepairPhase::ContinuationPending
+        AgentWorkspaceRepairPhase::Blocked,
+        "the repair completion is accepted, while a local-only project fails closed before PR continuation",
+    );
+    assert!(
+        current
+            .blocker
+            .as_deref()
+            .is_some_and(|blocker| blocker.contains("GitHub integration is unavailable")),
+        "the durable attempt must retain the continuation blocker instead of claiming a pending PR handoff",
     );
     let event_count = state
         .app_state
@@ -1207,7 +1263,7 @@ async fn complete_repair_hands_off_auto_publish_to_durable_continuation() {
     .await
     .expect("duplicate completion is idempotent")
     .0;
-    assert_eq!(duplicate.status, "already_completed");
+    assert_eq!(duplicate.status, "blocked");
     let after_duplicate = state
         .app_state
         .agent_workspace_repair_repo

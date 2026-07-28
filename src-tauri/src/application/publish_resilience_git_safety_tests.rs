@@ -209,8 +209,25 @@ async fn setup_workspace_push(remote_history: RepairPushRemoteHistory) -> Repair
         StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(attempt) => attempt,
         outcome => panic!("expected a new repair attempt, got {outcome:?}"),
     };
+    let identity = GitService::canonical_target_identity(&worktree_path, &branch)
+        .await
+        .expect("resolve canonical repair target");
+    let common_dir = identity.git_common_dir().to_string_lossy().into_owned();
+    let target_ref = identity.full_ref().to_string();
+    let owner = GitTargetLeaseOwner::agent_workspace_repair(attempt.id.as_str());
+    let AcquireGitTargetLeaseOutcome::Acquired { fencing_epoch } = branch_update_repo
+        .acquire_target_lease(AcquireGitTargetLease { identity, owner })
+        .await
+        .expect("acquire durable repair target lease")
+    else {
+        panic!("new repair fixture should acquire its target lease");
+    };
     let mut pending = attempt.clone();
     pending.phase = AgentWorkspaceRepairPhase::ContinuationPending;
+    pending.git_common_dir = Some(common_dir);
+    pending.target_ref = Some(target_ref);
+    pending.target_identity_version = Some(AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION);
+    pending.target_lease_epoch = Some(fencing_epoch);
     pending.updated_at += Duration::microseconds(1);
     let pending = match repair_repo
         .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
@@ -272,7 +289,7 @@ async fn state_with_in_flight_repair_push(
     .await
     .expect("resolve canonical repair target");
     let owner = GitTargetLeaseOwner::agent_workspace_repair(fixture.attempt.id.as_str());
-    let AcquireGitTargetLeaseOutcome::Acquired { fencing_epoch } = state
+    let fencing_epoch = match state
         .branch_update_repo
         .acquire_target_lease(AcquireGitTargetLease {
             identity: identity.clone(),
@@ -280,8 +297,10 @@ async fn state_with_in_flight_repair_push(
         })
         .await
         .expect("acquire repair target lease")
-    else {
-        panic!("repair target lease should be newly acquired");
+    {
+        AcquireGitTargetLeaseOutcome::Acquired { fencing_epoch }
+        | AcquireGitTargetLeaseOutcome::AlreadyOwned { fencing_epoch } => fencing_epoch,
+        outcome => panic!("repair target lease should remain repair-owned, got {outcome:?}"),
     };
 
     let mut continuing = fixture.attempt.clone();
@@ -408,6 +427,96 @@ async fn busy_repair_push_returns_before_touching_the_workspace_git_path() {
             .id,
         effect.id,
         "a Busy return must preserve the existing owner receipt"
+    );
+}
+
+#[tokio::test]
+async fn simultaneous_first_repair_pushes_create_one_preflight_owner_before_git_observation() {
+    let fixture = setup_rewritten_workspace_push().await;
+    assert!(fixture
+        .state
+        .agent_workspace_repair_repo
+        .get_repair_effect_by_idempotency_key(&repair_push_effect_idempotency_key(&fixture))
+        .await
+        .expect("initial repair effect lookup")
+        .is_none());
+
+    let github = Arc::new(MockGithubService::new());
+    let push_started = Arc::new(tokio::sync::Notify::new());
+    {
+        let mut github_state = github.state();
+        github_state.push_branch_with_expected_remote_oid_lease_delay_ms = 50;
+        github_state.push_branch_with_expected_remote_oid_lease_started =
+            Some(Arc::clone(&push_started));
+    }
+    let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+    let first_github = Arc::clone(&github_trait);
+    let first_repair_repo = Arc::clone(&fixture.state.agent_workspace_repair_repo);
+    let first_branch_update_repo = Arc::clone(&fixture.state.branch_update_repo);
+    let first_worktree = PathBuf::from(&fixture.workspace.worktree_path);
+    let first_branch = fixture.branch.clone();
+    let first_attempt = fixture.attempt.clone();
+    let first = tokio::spawn(async move {
+        push_agent_workspace_repair_branch(
+            &first_github,
+            first_repair_repo,
+            first_branch_update_repo,
+            AgentWorkspaceRepairPushRequest {
+                target_worktree_path: &first_worktree,
+                target_branch_name: &first_branch,
+                attempt: first_attempt,
+                expected_phase: AgentWorkspaceRepairPhase::ContinuationPending,
+            },
+        )
+        .await
+    });
+
+    let remote_update = tokio::spawn(update_remote_after_push_started(
+        Arc::clone(&push_started),
+        fixture.remote_path.clone(),
+        PathBuf::from(&fixture.workspace.worktree_path),
+        fixture.branch.clone(),
+        fixture.local_head.clone(),
+    ));
+    push_started.notified().await;
+
+    let continuing = fixture
+        .state
+        .agent_workspace_repair_repo
+        .get_repair_attempt(&fixture.attempt.id)
+        .await
+        .expect("load first-time continuation owner")
+        .expect("first continuation should remain durable");
+    let loser = push_agent_workspace_repair_branch(
+        &github_trait,
+        Arc::clone(&fixture.state.agent_workspace_repair_repo),
+        Arc::clone(&fixture.state.branch_update_repo),
+        AgentWorkspaceRepairPushRequest {
+            target_worktree_path: Path::new("/definitely-missing-ralphx-first-push-loser"),
+            target_branch_name: &fixture.branch,
+            attempt: continuing,
+            expected_phase: AgentWorkspaceRepairPhase::Continuing,
+        },
+    )
+    .await
+    .expect("the first-time losing continuation must return before Git observation");
+    assert_eq!(loser, AgentWorkspaceRepairPushOutcome::Busy);
+
+    remote_update.await.expect("remote update joins");
+    let owner = first
+        .await
+        .expect("first continuation task joins")
+        .expect("first continuation succeeds");
+    assert!(matches!(
+        owner,
+        AgentWorkspaceRepairPushOutcome::Observed { .. }
+    ));
+    assert_eq!(
+        github
+            .state()
+            .push_branch_with_expected_remote_oid_lease_calls,
+        1,
+        "only the first preflight owner may reach the GitHub push"
     );
 }
 
@@ -690,7 +799,7 @@ async fn fast_forward_repair_push_uses_the_ordinary_github_route() {
     assert_normal_repair_push_uses_the_ordinary_route(RepairPushRemoteHistory::FastForward).await;
 }
 
-async fn assert_late_effect_outcome_releases_new_lease(
+async fn assert_late_effect_outcome_preserves_dispatch_lease(
     forced_outcome: ForcedCreateAgentWorkspaceRepairEffectOutcome,
 ) {
     let fixture = setup_rewritten_workspace_push().await;
@@ -717,8 +826,11 @@ async fn assert_late_effect_outcome_releases_new_lease(
         .get_target_lease(&target_identity)
         .await
         .expect("read target lease")
-        .expect("acquired target lease record");
-    assert!(lease.is_released(), "newly acquired lease must be released");
+        .expect("dispatch target lease record");
+    assert!(
+        !lease.is_released(),
+        "durable dispatch lease remains owned for recovery"
+    );
     assert_eq!(
         lease.owner(),
         &GitTargetLeaseOwner::agent_workspace_repair(fixture.attempt.id.as_str())
@@ -752,16 +864,16 @@ async fn assert_late_effect_outcome_releases_new_lease(
 }
 
 #[tokio::test]
-async fn late_stale_effect_creation_releases_the_newly_acquired_target_lease() {
-    assert_late_effect_outcome_releases_new_lease(
+async fn late_stale_effect_creation_preserves_the_dispatch_target_lease() {
+    assert_late_effect_outcome_preserves_dispatch_lease(
         ForcedCreateAgentWorkspaceRepairEffectOutcome::Stale,
     )
     .await;
 }
 
 #[tokio::test]
-async fn late_missing_effect_creation_releases_the_newly_acquired_target_lease() {
-    assert_late_effect_outcome_releases_new_lease(
+async fn late_missing_effect_creation_preserves_the_dispatch_target_lease() {
+    assert_late_effect_outcome_preserves_dispatch_lease(
         ForcedCreateAgentWorkspaceRepairEffectOutcome::Missing,
     )
     .await;

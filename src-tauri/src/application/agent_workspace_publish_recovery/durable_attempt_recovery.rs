@@ -268,7 +268,7 @@ async fn reconcile_agent_workspace_repair_attempt(
             .await?
             {
                 AgentWorkspaceRepairPublishResumeOutcome::Continue(next) => {
-                    Box::pin(reconcile_agent_workspace_repair_attempt(state, next)).await
+                    Box::pin(reconcile_agent_workspace_repair_attempt(state, *next)).await
                 }
                 AgentWorkspaceRepairPublishResumeOutcome::AwaitingReview
                 | AgentWorkspaceRepairPublishResumeOutcome::Ready

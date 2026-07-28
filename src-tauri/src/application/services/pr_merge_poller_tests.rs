@@ -5346,6 +5346,56 @@ async fn review_pr_monitor_skips_requested_changes_feedback_routing() {
 }
 
 #[tokio::test]
+async fn missing_repair_repository_rejects_pr_conflict_without_side_effects() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let workspace = supervised_workspace(
+        "missing-repair-repository",
+        "project-missing-repair-repository",
+        worktree.path(),
+    );
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    let mut health = open_pr_health("missing-repair-repository-head");
+    health.sync_state.merge_state_status = Some(PrMergeStateStatus::Dirty);
+    health.sync_state.mergeable = Some(PrMergeableState::Conflicting);
+    let github = Arc::new(MockGithubService::new());
+    let chat = Arc::new(MockChatService::new());
+
+    let error = super::route_agent_workspace_pr_conflict_repair_if_needed_with_repair_repo(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &health,
+        &conversation_id,
+        workspace_repo.clone(),
+        None,
+        None,
+        Some(Arc::new(MemoryBranchUpdateRepository::new())),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect_err("missing durable repair repository must fail closed");
+
+    assert!(error.to_string().contains("repair authority"));
+    assert_eq!(github.state().disable_pr_auto_merge_calls, 0);
+    assert!(chat.get_sent_messages().await.is_empty());
+    assert!(workspace_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("read durable attempt")
+        .is_none());
+    assert!(workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("list workspace events")
+        .is_empty());
+}
+
+#[tokio::test]
 async fn busy_pr_conflict_repair_does_not_disable_auto_merge_or_send_a_worker() {
     let worktree = tempfile::tempdir().expect("worktree path");
     let mut workspace = supervised_workspace(

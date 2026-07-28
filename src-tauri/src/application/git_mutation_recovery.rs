@@ -360,6 +360,14 @@ async fn recover_repair_owned_git_mutation_claim(
         )
         .await;
     };
+    // A crash after the push preflight reserves the deterministic effect/claim but before it
+    // observes local or remote Git state. No mutation was authorized yet, so release only this
+    // exact claim and let the normal continuation initialize the same effect on its next pass.
+    // Treating this as a blocker would turn a concurrent Busy loser into a false failure.
+    if is_uninitialized_repair_push_preflight(&effect) {
+        return complete_repair_claim(state.branch_update_repo.as_ref(), claim, effect.id.as_str())
+            .await;
+    }
     if let Err(reason) = validate_repair_push_claim(&claim, &current, &effect) {
         return block_repair_claim_recovery(state, current, claim, &reason).await;
     }
@@ -486,6 +494,14 @@ fn validate_repair_push_claim(
         return Err("repair push effect was already marked failed".to_string());
     }
     Ok(())
+}
+
+fn is_uninitialized_repair_push_preflight(effect: &AgentWorkspaceRepairEffect) -> bool {
+    effect.kind == AgentWorkspaceRepairEffectKind::PushBranch
+        && effect.status == AgentWorkspaceRepairEffectStatus::InFlight
+        && effect.intended_head_oid.is_none()
+        && effect.expected_remote_oid.is_none()
+        && !effect.expected_remote_absent
 }
 
 async fn read_repair_origin_branch_oid(

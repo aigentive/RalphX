@@ -332,7 +332,7 @@ impl AgentWorkspaceRepairEffect {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentWorkspaceRepairCompletionAuthority {
-    Current(AgentWorkspaceRepairAttempt),
+    Current(Box<AgentWorkspaceRepairAttempt>),
     Superseded,
     AlreadyCompleted,
     AlreadyBlocked,

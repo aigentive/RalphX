@@ -4,9 +4,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Duration, Utc};
 
 use crate::application::agent_conversation_workspace::resolve_effective_agent_conversation_workspace_path;
-use crate::application::agent_workspace_publish_repair_state::{
-    validate_agent_workspace_repair_target_lease, AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION,
-};
+use crate::application::agent_workspace_publish_repair_state::validate_agent_workspace_repair_target_lease;
 use crate::domain::entities::plan_branch::PrPushStatus;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation,
@@ -15,9 +13,8 @@ use crate::domain::entities::{
     GitMutationKind, GitTargetIdentity, GitTargetLeaseOwner, IdeationAnalysisBaseRefKind,
 };
 use crate::domain::repositories::{
-    AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, AgentWorkspaceRepairAttemptTransition,
-    AgentWorkspaceRepairAttemptTransitionOutcome, AgentWorkspaceRepairRepository,
-    BranchUpdateRepository, CompleteAgentWorkspaceRepairEffect,
+    AgentWorkspaceRepairAttemptTransition, AgentWorkspaceRepairAttemptTransitionOutcome,
+    AgentWorkspaceRepairRepository, BranchUpdateRepository, CompleteAgentWorkspaceRepairEffect,
     CompleteAgentWorkspaceRepairEffectOutcome, CompleteGitMutation,
     CreateAgentWorkspaceRepairEffect, CreateAgentWorkspaceRepairEffectOutcome,
     GitAuthorityCasOutcome, SettleAgentWorkspaceRepairAttempt,
@@ -740,7 +737,7 @@ async fn release_agent_workspace_repair_lease_after_pr_handoff(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AgentWorkspaceRepairPushOutcome {
     Observed {
-        effect: AgentWorkspaceRepairEffect,
+        effect: Box<AgentWorkspaceRepairEffect>,
         remote_oid: String,
         reconciled_after_push_error: bool,
     },
@@ -787,91 +784,32 @@ pub(crate) async fn push_agent_workspace_repair_branch(
     }
 
     let owner = GitTargetLeaseOwner::agent_workspace_repair(current.id.as_str());
-    let has_durable_dispatch_lease = current.reserved_agent_run_id.is_some()
-        || current.git_common_dir.is_some()
-        || current.target_ref.is_some()
-        || current.target_identity_version.is_some()
-        || current.target_lease_epoch.is_some();
-    let workspace_path = request.target_worktree_path;
-    let (target_identity, fencing_epoch, lease_acquired_here) = if has_durable_dispatch_lease {
-        let persisted_identity =
-            validate_agent_workspace_repair_target_lease(branch_update_repo.as_ref(), &current)
-                .await?;
-        let expected_ref = format!("refs/heads/{}", request.target_branch_name);
-        if persisted_identity.full_ref() != expected_ref.as_str() {
-            return Err(AppError::Conflict(
-                "workspace repair push target differs from its dispatch-acquired canonical lease"
-                    .to_string(),
-            ));
-        }
-        (
-            persisted_identity,
-            current
-                .target_lease_epoch
-                .expect("validated repair lease has an epoch"),
-            false,
-        )
-    } else {
-        let target_identity =
-            GitService::canonical_target_identity(workspace_path, request.target_branch_name)
-                .await?;
-        let (fencing_epoch, lease_acquired_here) = match branch_update_repo
-            .acquire_target_lease(AcquireGitTargetLease {
-                identity: target_identity.clone(),
-                owner: owner.clone(),
-            })
-            .await?
-        {
-            AcquireGitTargetLeaseOutcome::Acquired { fencing_epoch } => (fencing_epoch, true),
-            AcquireGitTargetLeaseOutcome::AlreadyOwned { fencing_epoch } => (fencing_epoch, false),
-            AcquireGitTargetLeaseOutcome::TargetBusy {
-                owner: active_owner,
-                fencing_epoch,
-            } => {
-                return Err(AppError::Conflict(format!(
-                    "workspace repair push target is owned by {:?} at fencing epoch {fencing_epoch}",
-                    active_owner
-                )));
-            }
-        };
-        (target_identity, fencing_epoch, lease_acquired_here)
-    };
+    let persisted_identity =
+        validate_agent_workspace_repair_target_lease(branch_update_repo.as_ref(), &current).await?;
+    let expected_ref = format!("refs/heads/{}", request.target_branch_name);
+    if persisted_identity.full_ref() != expected_ref.as_str() {
+        return Err(AppError::Conflict(
+            "workspace repair push target differs from its dispatch-acquired canonical lease"
+                .to_string(),
+        ));
+    }
+    let fencing_epoch = current
+        .target_lease_epoch
+        .expect("validated repair lease has an epoch");
 
     let prepared_attempt = prepare_agent_workspace_repair_push_attempt(
         repair_repo.as_ref(),
         current,
         request.expected_phase,
-        &target_identity,
-        fencing_epoch,
     )
     .await;
     let attempt = match prepared_attempt {
         Ok(Some(attempt)) => attempt,
-        Ok(None) => {
-            release_new_workspace_repair_push_lease(
-                branch_update_repo.as_ref(),
-                &target_identity,
-                &owner,
-                fencing_epoch,
-                lease_acquired_here,
-            )
-            .await?;
-            return Ok(AgentWorkspaceRepairPushOutcome::Stale);
-        }
-        Err(error) => {
-            release_new_workspace_repair_push_lease(
-                branch_update_repo.as_ref(),
-                &target_identity,
-                &owner,
-                fencing_epoch,
-                lease_acquired_here,
-            )
-            .await?;
-            return Err(error);
-        }
+        Ok(None) => return Ok(AgentWorkspaceRepairPushOutcome::Stale),
+        Err(error) => return Err(error),
     };
 
-    let local_ref = target_identity.full_ref().to_string();
+    let local_ref = persisted_identity.full_ref().to_string();
     let branch_name = local_ref.strip_prefix("refs/heads/").ok_or_else(|| {
         AppError::Validation("workspace repair target is not a local branch ref".to_string())
     })?;
@@ -879,52 +817,22 @@ pub(crate) async fn push_agent_workspace_repair_branch(
         "agent_workspace_repair:{}:{}:push_branch",
         attempt.id, attempt.generation
     );
-    let existing_effect = repair_repo
+    let effect = match repair_repo
         .get_repair_effect_by_idempotency_key(&idempotency_key)
-        .await?;
-    let early_claim_id = existing_effect
-        .as_ref()
-        .filter(|effect| effect.status == AgentWorkspaceRepairEffectStatus::InFlight)
-        .map(|effect| format!("{}:push", effect.id));
-    let early_claim_active = if let Some(claim_id) = early_claim_id.as_ref() {
-        match branch_update_repo
-            .begin_git_mutation(crate::domain::repositories::BeginGitMutation {
-                identity: target_identity.clone(),
-                owner: owner.clone(),
-                fencing_epoch,
-                claim_id: claim_id.clone(),
-                kind: GitMutationKind::Push,
-            })
-            .await?
-        {
-            GitAuthorityCasOutcome::Applied { .. } => true,
-            GitAuthorityCasOutcome::MutationInFlight => {
-                return Ok(AgentWorkspaceRepairPushOutcome::Busy);
-            }
-            outcome => {
-                return Err(AppError::Conflict(format!(
-                    "workspace repair push lost Git target authority before mutation: {outcome:?}"
-                )));
-            }
-        }
-    } else {
-        false
-    };
-
-    let checked_out_branch = GitService::get_current_branch(workspace_path).await?;
-    if checked_out_branch != request.target_branch_name {
-        return Err(AppError::Validation(format!(
-            "workspace repair target is checked out at '{}' instead of '{}'",
-            checked_out_branch, request.target_branch_name
-        )));
-    }
-    let intended_head_oid = GitService::get_head_sha(&workspace_path).await?;
-    let effect = match existing_effect {
+        .await?
+    {
         Some(effect) => {
-            validate_existing_workspace_repair_push_effect(effect, &attempt, &intended_head_oid)?
+            if effect.status == AgentWorkspaceRepairEffectStatus::Observed {
+                return observed_workspace_repair_push_outcome(effect);
+            }
+            if effect.status != AgentWorkspaceRepairEffectStatus::InFlight {
+                return Err(AppError::Conflict(
+                    "workspace repair push effect is not available for continuation".to_string(),
+                ));
+            }
+            effect
         }
         None => {
-            let observed_remote_oid = read_origin_branch_oid(&workspace_path, branch_name).await?;
             let mut effect = AgentWorkspaceRepairEffect::new(
                 attempt.id.clone(),
                 AgentWorkspaceRepairEffectKind::PushBranch,
@@ -932,9 +840,6 @@ pub(crate) async fn push_agent_workspace_repair_branch(
                 Utc::now(),
             );
             effect.status = AgentWorkspaceRepairEffectStatus::InFlight;
-            effect.intended_head_oid = Some(intended_head_oid.clone());
-            effect.expected_remote_oid = observed_remote_oid.clone();
-            effect.expected_remote_absent = observed_remote_oid.is_none();
             match repair_repo
                 .create_repair_effect(CreateAgentWorkspaceRepairEffect {
                     attempt_id: attempt.id.clone(),
@@ -948,126 +853,144 @@ pub(crate) async fn push_agent_workspace_repair_branch(
                 .await?
             {
                 CreateAgentWorkspaceRepairEffectOutcome::Created(effect) => effect,
-                CreateAgentWorkspaceRepairEffectOutcome::OpenEffectExists(effect) => {
-                    validate_existing_workspace_repair_push_effect(
-                        effect,
-                        &attempt,
-                        &intended_head_oid,
-                    )?
-                }
+                CreateAgentWorkspaceRepairEffectOutcome::OpenEffectExists(effect) => effect,
                 CreateAgentWorkspaceRepairEffectOutcome::Stale(_)
                 | CreateAgentWorkspaceRepairEffectOutcome::Missing => {
-                    release_new_workspace_repair_push_lease(
-                        branch_update_repo.as_ref(),
-                        &target_identity,
-                        &owner,
-                        fencing_epoch,
-                        lease_acquired_here,
-                    )
-                    .await?;
                     return Ok(AgentWorkspaceRepairPushOutcome::Stale);
                 }
             }
         }
     };
+    if effect.status == AgentWorkspaceRepairEffectStatus::Observed {
+        return observed_workspace_repair_push_outcome(effect);
+    }
+    if effect.status != AgentWorkspaceRepairEffectStatus::InFlight {
+        return Err(AppError::Conflict(
+            "workspace repair push effect is not available for continuation".to_string(),
+        ));
+    }
 
-    let claim_id = early_claim_id.unwrap_or_else(|| format!("{}:push", effect.id));
-    let observed_remote_oid = read_origin_branch_oid(&workspace_path, branch_name).await?;
-    if observed_remote_oid.as_deref() == effect.intended_head_oid.as_deref() {
-        if early_claim_active {
-            let completion = branch_update_repo
-                .complete_git_mutation(CompleteGitMutation {
-                    identity: target_identity.clone(),
-                    owner: owner.clone(),
-                    fencing_epoch,
-                    claim_id: claim_id.clone(),
-                })
-                .await?;
-            if !matches!(completion, GitAuthorityCasOutcome::Applied { .. }) {
-                return Err(AppError::Conflict(format!(
-                    "workspace repair push lost Git target authority after mutation: {completion:?}"
-                )));
-            }
+    let claim_id = format!("{}:push", effect.id);
+    match branch_update_repo
+        .begin_git_mutation(crate::domain::repositories::BeginGitMutation {
+            identity: persisted_identity.clone(),
+            owner: owner.clone(),
+            fencing_epoch,
+            claim_id: claim_id.clone(),
+            kind: GitMutationKind::Push,
+        })
+        .await?
+    {
+        GitAuthorityCasOutcome::Applied { .. } => {}
+        GitAuthorityCasOutcome::MutationInFlight => {
+            return Ok(AgentWorkspaceRepairPushOutcome::Busy);
         }
-        let remote_oid = observed_remote_oid.expect("matching remote OID is present");
-        let effect = observe_agent_workspace_repair_push_effect(
+        outcome => {
+            return Err(AppError::Conflict(format!(
+                "workspace repair push lost Git target authority before mutation: {outcome:?}"
+            )));
+        }
+    }
+
+    // Once the deterministic effect and mutation claim exist, every Git observation is fenced by
+    // the exact durable attempt. An interrupted preflight has an incomplete effect that startup
+    // recovery can safely release for retry; it is never a reason to block a concurrent owner.
+    let workspace_path = request.target_worktree_path;
+    let mutation_result = async {
+        let observed_identity =
+            GitService::canonical_target_identity(workspace_path, request.target_branch_name)
+                .await?;
+        if observed_identity != persisted_identity {
+            return Err(AppError::Conflict(
+                "workspace repair push workspace/ref differs from its persisted canonical target"
+                    .to_string(),
+            ));
+        }
+        let checked_out_branch = GitService::get_current_branch(workspace_path).await?;
+        if checked_out_branch != request.target_branch_name {
+            return Err(AppError::Validation(format!(
+                "workspace repair target is checked out at '{}' instead of '{}'",
+                checked_out_branch, request.target_branch_name
+            )));
+        }
+        let intended_head_oid = GitService::get_head_sha(workspace_path).await?;
+        let observed_remote_oid = read_origin_branch_oid(workspace_path, branch_name).await?;
+        let effect = initialize_agent_workspace_repair_push_effect(
             repair_repo.as_ref(),
             &attempt,
             effect,
-            &local_ref,
-            &remote_oid,
+            &intended_head_oid,
+            observed_remote_oid.as_deref(),
         )
         .await?;
-        return Ok(AgentWorkspaceRepairPushOutcome::Observed {
-            effect,
-            remote_oid,
-            reconciled_after_push_error: false,
-        });
-    }
-
-    if effect.status == AgentWorkspaceRepairEffectStatus::Observed {
-        return Err(AppError::Conflict(
-            "observed workspace repair push no longer matches its verified remote receipt"
-                .to_string(),
-        ));
-    }
-    verify_workspace_repair_push_remote_precondition(&effect, observed_remote_oid.as_deref())?;
-
-    let uses_exact_lease = effect.expected_remote_oid.is_some()
-        && GitService::count_commits_not_on_branch(
-            &workspace_path,
-            effect
-                .expected_remote_oid
-                .as_deref()
-                .expect("checked expected remote OID"),
-            &local_ref,
-        )
-        .await?
-            > 0;
-    if !early_claim_active {
-        match branch_update_repo
-            .begin_git_mutation(crate::domain::repositories::BeginGitMutation {
-                identity: target_identity.clone(),
-                owner: owner.clone(),
-                fencing_epoch,
-                claim_id: claim_id.clone(),
-                kind: GitMutationKind::Push,
-            })
-            .await?
-        {
-            GitAuthorityCasOutcome::Applied { .. } => {}
-            // The exact current attempt already owns this deterministic mutation claim. A concurrent
-            // live/recovery re-entry must leave that owner and its durable effect unchanged rather
-            // than blocking the generation or issuing a second push.
-            GitAuthorityCasOutcome::MutationInFlight => {
-                return Ok(AgentWorkspaceRepairPushOutcome::Busy);
-            }
-            outcome => {
-                return Err(AppError::Conflict(format!(
-                    "workspace repair push lost Git target authority before mutation: {outcome:?}"
-                )));
-            }
-        }
-    }
-
-    let push_result = if uses_exact_lease {
-        github
-            .push_branch_with_expected_remote_oid_lease(
-                &workspace_path,
+        if observed_remote_oid.as_deref() == effect.intended_head_oid.as_deref() {
+            let remote_oid = observed_remote_oid.expect("matching remote OID is present");
+            let effect = observe_agent_workspace_repair_push_effect(
+                repair_repo.as_ref(),
+                &attempt,
+                effect,
                 &local_ref,
+                &remote_oid,
+            )
+            .await?;
+            return Ok(AgentWorkspaceRepairPushOutcome::Observed {
+                effect: Box::new(effect),
+                remote_oid,
+                reconciled_after_push_error: false,
+            });
+        }
+        verify_workspace_repair_push_remote_precondition(&effect, observed_remote_oid.as_deref())?;
+        let uses_exact_lease = effect.expected_remote_oid.is_some()
+            && GitService::count_commits_not_on_branch(
+                workspace_path,
                 effect
                     .expected_remote_oid
                     .as_deref()
                     .expect("exact lease requires expected remote OID"),
+                &local_ref,
             )
-            .await
-    } else {
-        github.push_branch(&workspace_path, branch_name).await
-    };
-    let postcondition = read_origin_branch_oid(&workspace_path, branch_name).await;
+            .await?
+                > 0;
+        let push_result = if uses_exact_lease {
+            github
+                .push_branch_with_expected_remote_oid_lease(
+                    workspace_path,
+                    &local_ref,
+                    effect
+                        .expected_remote_oid
+                        .as_deref()
+                        .expect("exact lease requires expected remote OID"),
+                )
+                .await
+        } else {
+            github.push_branch(workspace_path, branch_name).await
+        };
+        let observed_remote_oid = read_origin_branch_oid(workspace_path, branch_name).await?;
+        if observed_remote_oid.as_deref() == effect.intended_head_oid.as_deref() {
+            let remote_oid = observed_remote_oid.expect("matching remote OID is present");
+            let effect = observe_agent_workspace_repair_push_effect(
+                repair_repo.as_ref(),
+                &attempt,
+                effect,
+                &local_ref,
+                &remote_oid,
+            )
+            .await?;
+            return Ok(AgentWorkspaceRepairPushOutcome::Observed {
+                effect: Box::new(effect),
+                remote_oid,
+                reconciled_after_push_error: push_result.is_err(),
+            });
+        }
+        push_result?;
+        Err(AppError::Conflict(
+            "workspace repair push finished without its expected remote postcondition".to_string(),
+        ))
+    }
+    .await;
     let completion = branch_update_repo
         .complete_git_mutation(CompleteGitMutation {
-            identity: target_identity,
+            identity: persisted_identity,
             owner,
             fencing_epoch,
             claim_id,
@@ -1078,83 +1001,14 @@ pub(crate) async fn push_agent_workspace_repair_branch(
             "workspace repair push lost Git target authority after mutation: {completion:?}"
         )));
     }
-
-    let observed_remote_oid = postcondition?;
-    if observed_remote_oid.as_deref() == effect.intended_head_oid.as_deref() {
-        let remote_oid = observed_remote_oid.expect("matching remote OID is present");
-        let effect = observe_agent_workspace_repair_push_effect(
-            repair_repo.as_ref(),
-            &attempt,
-            effect,
-            &local_ref,
-            &remote_oid,
-        )
-        .await?;
-        return Ok(AgentWorkspaceRepairPushOutcome::Observed {
-            effect,
-            remote_oid,
-            reconciled_after_push_error: push_result.is_err(),
-        });
-    }
-    if let Err(error) = push_result {
-        return Err(error);
-    }
-    Err(AppError::Conflict(
-        "workspace repair push finished without its expected remote postcondition".to_string(),
-    ))
-}
-
-async fn release_new_workspace_repair_push_lease(
-    branch_update_repo: &dyn BranchUpdateRepository,
-    target_identity: &crate::domain::entities::GitTargetIdentity,
-    owner: &GitTargetLeaseOwner,
-    fencing_epoch: u64,
-    lease_acquired_here: bool,
-) -> AppResult<()> {
-    if !lease_acquired_here {
-        return Ok(());
-    }
-    match branch_update_repo
-        .release_target_lease(target_identity, owner, fencing_epoch)
-        .await?
-    {
-        GitAuthorityCasOutcome::Applied { .. } => Ok(()),
-        outcome => Err(AppError::Conflict(format!(
-            "workspace repair push could not release its uncheckpointed Git target lease: {outcome:?}"
-        ))),
-    }
+    mutation_result
 }
 
 async fn prepare_agent_workspace_repair_push_attempt(
     repair_repo: &dyn AgentWorkspaceRepairRepository,
     mut attempt: AgentWorkspaceRepairAttempt,
     expected_phase: AgentWorkspaceRepairPhase,
-    target_identity: &crate::domain::entities::GitTargetIdentity,
-    fencing_epoch: u64,
 ) -> AppResult<Option<AgentWorkspaceRepairAttempt>> {
-    let common_dir = target_identity
-        .git_common_dir()
-        .to_string_lossy()
-        .to_string();
-    let target_ref = target_identity.full_ref().to_string();
-    let has_durable_dispatch_lease = attempt.reserved_agent_run_id.is_some()
-        || attempt.git_common_dir.is_some()
-        || attempt.target_ref.is_some()
-        || attempt.target_identity_version.is_some()
-        || attempt.target_lease_epoch.is_some();
-    if has_durable_dispatch_lease {
-        if attempt.git_common_dir.as_deref() != Some(common_dir.as_str())
-            || attempt.target_ref.as_deref() != Some(target_ref.as_str())
-            || attempt.target_identity_version
-                != Some(AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION)
-            || attempt.target_lease_epoch != Some(fencing_epoch)
-        {
-            return Err(AppError::Conflict(
-                "workspace repair target lease does not match its durable canonical identity"
-                    .to_string(),
-            ));
-        }
-    }
     if matches!(attempt.phase, AgentWorkspaceRepairPhase::Continuing) {
         return Ok(Some(attempt));
     }
@@ -1164,12 +1018,6 @@ async fn prepare_agent_workspace_repair_push_attempt(
         return Ok(None);
     }
     attempt.phase = AgentWorkspaceRepairPhase::Continuing;
-    if !has_durable_dispatch_lease {
-        attempt.git_common_dir = Some(common_dir);
-        attempt.target_ref = Some(target_ref);
-        attempt.target_identity_version = Some(AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION);
-        attempt.target_lease_epoch = Some(fencing_epoch);
-    }
     let expected_updated_at = attempt.updated_at;
     attempt.updated_at = next_effect_checkpoint_at(expected_updated_at);
     match repair_repo
@@ -1189,20 +1037,96 @@ async fn prepare_agent_workspace_repair_push_attempt(
     }
 }
 
-fn validate_existing_workspace_repair_push_effect(
+fn observed_workspace_repair_push_outcome(
     effect: AgentWorkspaceRepairEffect,
+) -> AppResult<AgentWorkspaceRepairPushOutcome> {
+    let remote_oid = effect
+        .receipt_json
+        .as_deref()
+        .and_then(|receipt| serde_json::from_str::<serde_json::Value>(receipt).ok())
+        .and_then(|receipt| {
+            receipt
+                .get("remote_oid")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+        })
+        .filter(|remote_oid| !remote_oid.is_empty())
+        .ok_or_else(|| {
+            AppError::Conflict(
+                "observed workspace repair push effect is missing its remote receipt".to_string(),
+            )
+        })?;
+    if effect.intended_head_oid.as_deref() != Some(remote_oid.as_str()) {
+        return Err(AppError::Conflict(
+            "observed workspace repair push receipt does not match its intended head".to_string(),
+        ));
+    }
+    Ok(AgentWorkspaceRepairPushOutcome::Observed {
+        effect: Box::new(effect),
+        remote_oid,
+        reconciled_after_push_error: false,
+    })
+}
+
+async fn initialize_agent_workspace_repair_push_effect(
+    repair_repo: &dyn AgentWorkspaceRepairRepository,
     attempt: &AgentWorkspaceRepairAttempt,
+    mut effect: AgentWorkspaceRepairEffect,
     intended_head_oid: &str,
+    observed_remote_oid: Option<&str>,
 ) -> AppResult<AgentWorkspaceRepairEffect> {
     if effect.attempt_id != attempt.id
         || effect.kind != AgentWorkspaceRepairEffectKind::PushBranch
-        || effect.intended_head_oid.as_deref() != Some(intended_head_oid)
+        || effect.status != AgentWorkspaceRepairEffectStatus::InFlight
     {
         return Err(AppError::Conflict(
             "workspace repair push receipt does not match the current attempt target".to_string(),
         ));
     }
-    Ok(effect)
+    let initialized = effect.intended_head_oid.is_some()
+        && (effect.expected_remote_absent || effect.expected_remote_oid.is_some());
+    if initialized {
+        if effect.intended_head_oid.as_deref() != Some(intended_head_oid) {
+            return Err(AppError::Conflict(
+                "workspace repair push receipt does not match the current attempt head".to_string(),
+            ));
+        }
+        return Ok(effect);
+    }
+    if effect.intended_head_oid.is_some()
+        || effect.expected_remote_oid.is_some()
+        || effect.expected_remote_absent
+    {
+        return Err(AppError::Conflict(
+            "workspace repair push preflight receipt is partially initialized".to_string(),
+        ));
+    }
+
+    let expected_effect_updated_at = effect.updated_at;
+    effect.intended_head_oid = Some(intended_head_oid.to_string());
+    effect.expected_remote_oid = observed_remote_oid.map(ToOwned::to_owned);
+    effect.expected_remote_absent = observed_remote_oid.is_none();
+    effect.updated_at = next_effect_checkpoint_at(effect.updated_at);
+    match repair_repo
+        .complete_repair_effect(CompleteAgentWorkspaceRepairEffect {
+            attempt_id: attempt.id.clone(),
+            generation: attempt.generation,
+            expected_phase: AgentWorkspaceRepairPhase::Continuing,
+            expected_attempt_updated_at: attempt.updated_at,
+            expected_effect_updated_at,
+            expected_effect_status: AgentWorkspaceRepairEffectStatus::InFlight,
+            effect,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await?
+    {
+        CompleteAgentWorkspaceRepairEffectOutcome::Applied(effect) => Ok(effect),
+        CompleteAgentWorkspaceRepairEffectOutcome::Stale(_)
+        | CompleteAgentWorkspaceRepairEffectOutcome::Missing => Err(AppError::Conflict(
+            "workspace repair push preflight receipt lost current attempt authority".to_string(),
+        )),
+    }
 }
 
 fn verify_workspace_repair_push_remote_precondition(
