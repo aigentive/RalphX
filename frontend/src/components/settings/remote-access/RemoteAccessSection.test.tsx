@@ -4,8 +4,8 @@
  * Proof obligations: C-8 first-paint (shell before any invoke), flag inertness,
  * optimistic listener toggle with revert, pairing flow + countdown expiry,
  * agent-control warning-before-commit, teardown-backed revoke/disconnect,
- * local-only session event subscriptions, and explicit degraded states for the
- * missing PR 1.6 endpoint / audit surfaces.
+ * local-only session event subscriptions, and endpoint/audit load failures surfacing
+ * as errors rather than as "the surface has not landed".
  */
 
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -101,6 +101,7 @@ const baseStatus: RemoteListenerStatus = {
   bindAddress: "127.0.0.1:3849",
   serveActive: true,
   serveDegradedReason: null,
+  serveDegradedKind: null,
 };
 
 const deviceOff: RemoteDeviceView = {
@@ -347,15 +348,18 @@ describe("listener controls", () => {
     );
   });
 
-  it("shows an explicit degraded note when endpoint discovery is unavailable", async () => {
+  // `list_remote_advertised_endpoints` is registered, so a rejection is a real backend failure
+  // (settings-store error, transport failure) and must read as one — never as a calm
+  // "this feature has not landed" note, which is a failure rendered as a benign state.
+  it("surfaces an endpoint-discovery failure as an error", async () => {
     api.listAdvertisedEndpoints.mockRejectedValue(
-      new Error("unknown command list_remote_advertised_endpoints"),
+      new Error("the settings store is unavailable"),
     );
     renderSection();
     await hydrate();
-    expect(
-      await screen.findByTestId("remote-endpoints-unavailable"),
-    ).toBeInTheDocument();
+    const error = await screen.findByTestId("remote-access-error");
+    expect(error).toHaveTextContent("the settings store is unavailable");
+    expect(screen.queryByTestId("remote-endpoints-unavailable")).toBeNull();
   });
 });
 
@@ -616,12 +620,14 @@ describe("revoke and sessions", () => {
     expect(await screen.findByTestId("remote-session-sess-2")).toBeInTheDocument();
   });
 
-  it("shows the explicit audit-unavailable note when the audit surface is missing", async () => {
-    api.listAuditEntries.mockRejectedValue(
-      new Error("unknown command list_remote_audit_entries"),
-    );
+  // Same as endpoint discovery: `list_remote_audit_entries` is registered, so a rejection is a
+  // repository/transport failure and must not be dressed up as a missing surface.
+  it("surfaces an audit-log failure as an error", async () => {
+    api.listAuditEntries.mockRejectedValue(new Error("the audit log could not be read"));
     renderSection();
     await hydrate();
-    expect(await screen.findByTestId("remote-audit-unavailable")).toBeInTheDocument();
+    const error = await screen.findByTestId("remote-access-error");
+    expect(error).toHaveTextContent("the audit log could not be read");
+    expect(screen.queryByTestId("remote-audit-unavailable")).toBeNull();
   });
 });
