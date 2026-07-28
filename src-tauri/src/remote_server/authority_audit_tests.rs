@@ -10,13 +10,21 @@ fn trace(graph: &CallGraph, root: &str) -> Option<Vec<String>> {
         .collect();
     let mut parents: HashMap<String, String> = HashMap::new();
     let mut seen: BTreeSet<String> = BTreeSet::new();
-    let mut queue = VecDeque::from([root.to_string()]);
-    seen.insert(root.to_string());
+    let mut queue = VecDeque::new();
+    for resolved in graph.roots_named(root) {
+        seen.insert(resolved.clone());
+        queue.push_back(resolved);
+    }
     while let Some(name) = queue.pop_front() {
         let Some(node) = graph.nodes.get(&name) else {
             continue;
         };
-        if !node.sink_hits.is_empty() && name != root {
+        if node
+            .sink_hits
+            .iter()
+            .any(|hit| verdict_for(hit) == HitVerdict::Arming)
+            && name != root
+        {
             let mut path = vec![format!(
                 "{name} !! {:?}",
                 node.sink_hits
@@ -56,12 +64,21 @@ fn probe_paths() {
         "health_check",
         "list_projects",
         "get_notification_settings",
+        "list_remote_advertised_endpoints",
+        "list_remote_audit_entries",
         "pause_task",
+        "block_task",
+        "stop_task",
+        "pause_tasks_in_group",
+        "deny_permission_request",
     ] {
+        let closure = graph.closure([root.to_string()]);
+        let verdict = closure_is_arming(&closure);
         match trace(&graph, root) {
-            Some(path) => eprintln!("PROBE {root} => {}", path.join(" -> ")),
-            None => eprintln!("PROBE {root} => NO SINK"),
+            Some(path) => eprintln!("PROBE {root} arming={verdict} => {}", path.join(" -> ")),
+            None => eprintln!("PROBE {root} arming={verdict} => NO SINK"),
         }
+        eprintln!("PROBE {root} hits={:?}", closure.sink_hits);
     }
     // Which node names are defined the most times (name-collision pressure)?
     let mut fanout: Vec<(usize, String)> = graph
