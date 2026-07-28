@@ -13,6 +13,7 @@ use serde::Serialize;
 use crate::remote_server::attachments::RemoteAttachmentContext;
 use crate::remote_server::auth::RemoteAuthContext;
 use crate::remote_server::dedup::RemoteDedupState;
+use crate::remote_server::fetch_remount::SharedHttpAppState;
 use crate::remote_server::invoke::{RemoteInvokeDispatcher, TauriRemoteInvokeDispatcher};
 use crate::remote_server::sequencer::RemoteStreamHandle;
 use crate::remote_server::settings::RemoteExposureMode;
@@ -54,6 +55,14 @@ pub(crate) struct RemoteRouterState {
     /// `Option` for the same fail-closed reason as `dedup`: if the app data dir could not be
     /// resolved the attachment handlers refuse rather than write to a guessed directory.
     attachments: Option<Arc<RemoteAttachmentContext>>,
+    /// The shared :3847 `AppState` behind the curated fetch remount (PR 1.5-B, R-8).
+    ///
+    /// `Option` for the same fail-closed reason as `dedup`: when the shared state was never
+    /// managed, the `/api` routes are never mounted at all — they answer with the 404 fallback
+    /// exactly like any other unlisted path. The remount NEVER falls back to a fresh
+    /// `AppState`, because a second graph would reintroduce the invoke-vs-fetch divergence
+    /// this field exists to eliminate.
+    remount: Option<Arc<SharedHttpAppState>>,
 }
 
 impl RemoteRouterState {
@@ -82,7 +91,20 @@ impl RemoteRouterState {
             lifecycle: Arc::new(NoopLifecycleSink),
             dedup: None,
             attachments: None,
+            remount: None,
         }
+    }
+
+    pub(crate) fn with_remount(mut self, remount: Arc<SharedHttpAppState>) -> Self {
+        self.remount = Some(remount);
+        self
+    }
+
+    /// The shared :3847 state, or `None` when it was never managed.
+    ///
+    /// Callers must treat `None` as "mount nothing", never as "build a fresh state".
+    pub(crate) fn remount(&self) -> Option<&Arc<SharedHttpAppState>> {
+        self.remount.as_ref()
     }
 
     pub(crate) fn with_dedup(mut self, dedup: Arc<RemoteDedupState>) -> Self {
