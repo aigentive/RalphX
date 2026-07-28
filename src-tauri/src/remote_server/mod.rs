@@ -500,14 +500,11 @@ pub(crate) async fn start_listener(
     let (stopped_tx, stopped) = oneshot::channel();
     let auth =
         RemoteAuthContext::from_db(store.db(), handle.sessions.clone(), settings.exposure_mode);
-    let mut state = RemoteRouterState::new(
-        settings.environment_id.as_str(),
-        auth,
-        app_handle.clone(),
-    )
-    // Installed at app setup, not here: the listener toggle governs network exposure only, so
-    // a restart of the listener must not restart the stream (P-15, P-23).
-    .with_stream(handle.stream());
+    let mut state =
+        RemoteRouterState::new(settings.environment_id.as_str(), auth, app_handle.clone())
+            // Installed at app setup, not here: the listener toggle governs network exposure only, so
+            // a restart of the listener must not restart the stream (P-15, P-23).
+            .with_stream(handle.stream());
     if let Some(sink) = handle.lifecycle_sink() {
         state = state.with_lifecycle_sink(sink);
     }
