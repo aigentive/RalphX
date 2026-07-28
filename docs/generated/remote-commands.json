@@ -1429,6 +1429,13 @@
       "kind": "async_runtime::spawn"
     }
   ],
+  "conditional_capabilities": [
+    {
+      "capability": "mutatesAgentConsumedContent",
+      "command": "update_task",
+      "condition": "conditional: title,description — discharged by update_task_authz"
+    }
+  ],
   "coverage": {
     "agentConsumedContent": "complete",
     "detectorA": "complete",
@@ -1442,6 +1449,267 @@
     {
       "command": "resolve_user_question",
       "reason": "steering-question"
+    }
+  ],
+  "facade_ops": [
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "health_check",
+      "pins": [],
+      "target": "crate::commands::health::health_check"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "list_tasks",
+      "pins": [],
+      "target": "crate::commands::task_commands::query::list_tasks"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_task",
+      "pins": [],
+      "target": "crate::commands::task_commands::query::get_task"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "search_tasks",
+      "pins": [],
+      "target": "crate::commands::task_commands::query::search_tasks"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_valid_transitions",
+      "pins": [],
+      "target": "crate::commands::task_commands::query::get_valid_transitions"
+    },
+    {
+      "argumentSensitive": true,
+      "capabilities": [],
+      "class": "operate",
+      "command": "update_task",
+      "pins": [],
+      "target": "crate::commands::task_commands::mutation::update_task"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "operate",
+      "command": "create_task",
+      "pins": [],
+      "target": "crate::commands::task_commands::mutation::create_task"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "operate",
+      "command": "pause_task",
+      "pins": [],
+      "target": "crate::commands::task_commands::mutation::pause_task"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "operate",
+      "command": "block_task",
+      "pins": [],
+      "target": "crate::commands::task_commands::mutation::block_task"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "operate",
+      "command": "stop_task",
+      "pins": [],
+      "target": "crate::commands::task_commands::mutation::stop_task"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "operate",
+      "command": "pause_tasks_in_group",
+      "pins": [],
+      "target": "crate::commands::task_commands::mutation::pause_tasks_in_group"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "operate",
+      "command": "deny_permission_request",
+      "pins": [
+        {
+          "field": "decision",
+          "param": "args",
+          "value": "deny"
+        }
+      ],
+      "target": "crate::commands::permission_commands::resolve_permission_request"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl",
+        "mutatesAgentConsumedContent"
+      ],
+      "class": "agentControl",
+      "command": "move_task",
+      "pins": [],
+      "target": "crate::commands::task_commands::mutation::move_task"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "unblock_task",
+      "pins": [],
+      "target": "crate::commands::task_commands::mutation::unblock_task"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "answer_user_question",
+      "pins": [],
+      "target": "crate::commands::task_commands::mutation::answer_user_question"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "mutatesAgentConsumedContent"
+      ],
+      "class": "agentControl",
+      "command": "approve_task_for_review",
+      "pins": [],
+      "target": "crate::commands::review_commands::approve_task_for_review"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "reanalyze_project",
+      "pins": [],
+      "target": "crate::commands::project_commands::reanalyze_project"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "seedsSpawnTriggeringState"
+      ],
+      "class": "agentControl",
+      "command": "inject_task",
+      "pins": [],
+      "target": "crate::commands::task_commands::mutation::inject_task"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "seedsSpawnTriggeringState"
+      ],
+      "class": "agentControl",
+      "command": "resume_automation",
+      "pins": [],
+      "target": "crate::commands::automation_commands::resume_automation"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "seedsSpawnTriggeringState"
+      ],
+      "class": "agentControl",
+      "command": "finalize_automation",
+      "pins": [],
+      "target": "crate::commands::automation_commands::finalize_automation"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "mutatesAgentConsumedContent"
+      ],
+      "class": "agentControl",
+      "command": "create_task_step",
+      "pins": [],
+      "target": "crate::commands::task_step_commands::create_task_step"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "mutatesAgentConsumedContent"
+      ],
+      "class": "agentControl",
+      "command": "update_task_step",
+      "pins": [],
+      "target": "crate::commands::task_step_commands::update_task_step"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "mutatesAgentConsumedContent"
+      ],
+      "class": "agentControl",
+      "command": "create_artifact",
+      "pins": [],
+      "target": "crate::commands::artifact_commands::create_artifact"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "mutatesAgentConsumedContent"
+      ],
+      "class": "agentControl",
+      "command": "update_artifact",
+      "pins": [],
+      "target": "crate::commands::artifact_commands::update_artifact"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "mutatesAgentConsumedContent"
+      ],
+      "class": "agentControl",
+      "command": "add_artifact_relation",
+      "pins": [],
+      "target": "crate::commands::artifact_commands::add_artifact_relation"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "mutatesAgentConsumedContent"
+      ],
+      "class": "agentControl",
+      "command": "update_task_proposal",
+      "pins": [],
+      "target": "crate::commands::ideation_commands::update_task_proposal"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "approve_permission_request",
+      "pins": [
+        {
+          "field": "decision",
+          "param": "args",
+          "value": "allow"
+        }
+      ],
+      "target": "crate::commands::permission_commands::resolve_permission_request"
     }
   ],
   "ledger": [
@@ -2139,7 +2407,7 @@
       "command": "resume_automation",
       "module": "automation_commands",
       "reason": "detector-b: restores Active automation consumed by the automation scheduler",
-      "registered": false
+      "registered": true
     },
     {
       "capabilities": [
@@ -2149,7 +2417,7 @@
       "command": "finalize_automation",
       "module": "automation_commands",
       "reason": "detector-b: completes automation arming state consumed by the automation scheduler",
-      "registered": false
+      "registered": true
     },
     {
       "capabilities": [
@@ -2438,24 +2706,20 @@
       "registered": true
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "operate",
       "command": "create_task",
       "module": "task_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "Backlog-only by construction: CreateTaskInput carries no status field and Task::new_with_category sets InternalStatus::Backlog, so a created task cannot be born in a spawn-triggering state",
+      "registered": true
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "operate",
       "command": "update_task",
       "module": "task_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "inert fields only at this class: category is a closed enum and priority an i32; title/description carry a conditional MutatesAgentConsumedContent discharged by update_task_authz, and internal_status is rejected by validate_update_task_input",
+      "registered": true
     },
     {
       "capabilities": [
@@ -2465,7 +2729,7 @@
       "command": "answer_user_question",
       "module": "task_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": true
     },
     {
       "capabilities": [
@@ -2475,7 +2739,7 @@
       "command": "inject_task",
       "module": "task_commands",
       "reason": "detector-b: seeds internal_status=Ready consumed by the ready-task scheduler",
-      "registered": false
+      "registered": true
     },
     {
       "capabilities": [
@@ -2486,7 +2750,7 @@
       "command": "move_task",
       "module": "task_commands",
       "reason": "detector-a plus content-surface: restart note is worker-consumed",
-      "registered": false
+      "registered": true
     },
     {
       "capabilities": [
@@ -2514,7 +2778,7 @@
       "command": "block_task",
       "module": "task_commands",
       "reason": "authority-reducing: transitions only to Blocked",
-      "registered": false
+      "registered": true
     },
     {
       "capabilities": [
@@ -2524,7 +2788,7 @@
       "command": "unblock_task",
       "module": "task_commands",
       "reason": "authority-restoring transition",
-      "registered": false
+      "registered": true
     },
     {
       "capabilities": [
@@ -2562,7 +2826,7 @@
       "command": "pause_tasks_in_group",
       "module": "task_commands",
       "reason": "authority-reducing: transitions only to Paused",
-      "registered": false
+      "registered": true
     },
     {
       "capabilities": [
@@ -2620,7 +2884,7 @@
       "command": "pause_task",
       "module": "task_commands",
       "reason": "authority-reducing: transitions only to Paused",
-      "registered": false
+      "registered": true
     },
     {
       "capabilities": [
@@ -2648,7 +2912,7 @@
       "command": "stop_task",
       "module": "task_commands",
       "reason": "authority-reducing: transitions only to Stopped",
-      "registered": false
+      "registered": true
     },
     {
       "capabilities": [
@@ -2734,7 +2998,7 @@
       "command": "create_task_step",
       "module": "task_step_commands",
       "reason": "content-surface: creates worker-consumed task step",
-      "registered": false
+      "registered": true
     },
     {
       "capabilities": [
@@ -2754,7 +3018,7 @@
       "command": "update_task_step",
       "module": "task_step_commands",
       "reason": "content-surface: updates worker-consumed task step",
-      "registered": false
+      "registered": true
     },
     {
       "capabilities": [
@@ -2934,7 +3198,7 @@
       "command": "reanalyze_project",
       "module": "project_commands",
       "reason": "spawns the project-analyzer agent",
-      "registered": false
+      "registered": true
     },
     {
       "capabilities": [
@@ -3364,7 +3628,7 @@
       "command": "approve_task_for_review",
       "module": "review_commands",
       "reason": "content-surface: writes worker-consumed review note",
-      "registered": false
+      "registered": true
     },
     {
       "capabilities": [
@@ -4034,7 +4298,7 @@
       "command": "update_task_proposal",
       "module": "ideation_commands",
       "reason": "content-surface: updates worker-consumed task proposal",
-      "registered": false
+      "registered": true
     },
     {
       "capabilities": [
@@ -4944,7 +5208,7 @@
       "command": "create_artifact",
       "module": "artifact_commands",
       "reason": "content-surface: creates worker-consumed artifact of any kind",
-      "registered": false
+      "registered": true
     },
     {
       "capabilities": [
@@ -4954,7 +5218,7 @@
       "command": "update_artifact",
       "module": "artifact_commands",
       "reason": "content-surface: updates worker-consumed artifact of any kind",
-      "registered": false
+      "registered": true
     },
     {
       "capabilities": [
@@ -5044,7 +5308,7 @@
       "command": "add_artifact_relation",
       "module": "artifact_commands",
       "reason": "content-surface: changes worker-consumed artifact relations",
-      "registered": false
+      "registered": true
     },
     {
       "capabilities": [
@@ -6827,7 +7091,7 @@
       "registered": false
     }
   ],
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "spawn_triggering_state_surface": [
     {
       "armedValue": "Ready",

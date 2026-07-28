@@ -13,14 +13,28 @@
 //! on the hand-audited [`super::capability_ledger`] plus the independent
 //! [`super::authority_audit`] detectors, whose output is a CI-enforced floor (P-17, N3-H1).
 //!
-//! # Runtime parameterisation (deviation, recorded)
+//! # Runtime parameterisation (PR 1.5 resolution of the 1.3 deviation)
 //!
-//! [`dispatch`] is generic over `R: tauri::Runtime` so the P-4 parity suite can drive the
-//! *production* dispatch path under `tauri::test::MockRuntime` rather than a test-only fork
-//! of it (A-7: no forked command fns). The consequence is that the `app_handle` injection form
-//! yields `AppHandle<R>`, so a command whose signature demands the Wry-monomorphic
-//! `tauri::AppHandle` is not registrable in this PR. No `Read`-class command needs one; PR 3.1
-//! must either monomorphise the facade on `Wry` or widen those signatures.
+//! [`dispatch`] stays generic over `R: tauri::Runtime` so the P-4 parity suite and the whole
+//! P-17b scope suite can drive the *production* dispatch path under `tauri::test::MockRuntime`
+//! rather than a test-only fork of it (A-7: no forked command fns).
+//!
+//! PR 1.3 recorded the consequence as a blocker: the `(app_handle)` injection form yields
+//! `AppHandle<R>`, so the ~115 commands whose signature demands the Wry-monomorphic
+//! `tauri::AppHandle` — including the `block_task`/`pause_tasks_in_group` brakes — were
+//! unregistrable. PR 1.5 needs them, and **monomorphising `dispatch` on `Wry` is not a usable
+//! resolution on this platform**: building a Wry `AppHandle` in a test panics with
+//! `On macOS, EventLoop must be created on the main thread!` (this is the standing
+//! `remote_server::listener_tests` failure — it reproduces under `cargo nextest` too, because
+//! libtest runs the test body on a spawned thread). Monomorphising would therefore make every
+//! dispatch-path test unrunnable and silently delete the facade's only authorization coverage.
+//!
+//! The resolution is the [`(host_app_handle)`](remote_commands) injection arm: the facade keeps
+//! its generic dispatch and resolves the concrete Wry handle from `AppState::app_handle`, which
+//! the host populates at startup. This mirrors the `:3847` HTTP surface, which already resolves
+//! the same handle the same way (`http_server/handlers/git.rs` `build_transition_service`), and
+//! it fails CLOSED: when no handle is managed the request is refused with
+//! `REMOTE_INTERNAL_ERROR` instead of taking a degraded path.
 
 use ralphx_remote_protocol::{Capability, ErrorCode, RiskClass, Scope};
 use serde_json::Value;
@@ -34,6 +48,23 @@ pub type AuthzPredicate = fn(&Value) -> Scope;
 /// A validation predicate, evaluated after authorization and before dispatch.
 pub type ValidatePredicate = fn(&Value) -> Result<(), String>;
 
+/// A server-minted constant bound into a target fn's input, replacing whatever the client sent.
+///
+/// This is what makes one dual-decision command safe to expose as two single-purpose facade ops
+/// (P-1): `deny_permission_request` pins `decision = "deny"` into `ResolvePermissionArgs`, so a
+/// request carrying `"decision": "allow"` still denies. The declaration below is the ONLY source
+/// of the pinned value — [`extract_pinned_arg`] reads `spec.pins` at dispatch time, so a pin
+/// cannot be declared in the manifest yet absent from the wire path, or vice versa.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PinnedField {
+    /// The target fn's parameter whose (struct) input carries the field.
+    pub param: &'static str,
+    /// The field inside that input which is server-controlled.
+    pub field: &'static str,
+    /// The constant written into it.
+    pub value: &'static str,
+}
+
 /// One row of the remote allowlist.
 #[derive(Clone)]
 pub struct RemoteCommandSpec {
@@ -46,6 +77,8 @@ pub struct RemoteCommandSpec {
     pub capabilities: &'static [Capability],
     pub authz: Option<AuthzPredicate>,
     pub validate: Option<ValidatePredicate>,
+    /// Server-pinned input fields (see [`PinnedField`]). Empty for ordinary registrations.
+    pub pins: &'static [PinnedField],
 }
 
 /// The scope a risk class requires before any dispatch happens.
@@ -87,6 +120,16 @@ impl RemoteInvokeError {
     fn bad_args(message: impl Into<String>) -> Self {
         Self {
             code: ErrorCode::RemoteInvalidArguments,
+            message: message.into(),
+        }
+    }
+
+    /// A host-side fault: the request was well-formed and authorized, but the host could not
+    /// assemble what the target fn needs. Never a statement about the client's request, and
+    /// never a path that lets the command run with a substitute.
+    pub fn internal(message: impl Into<String>) -> Self {
+        Self {
+            code: ErrorCode::RemoteInternalError,
             message: message.into(),
         }
     }
@@ -140,6 +183,44 @@ pub fn extract_arg<T: serde::de::DeserializeOwned>(
         .or_else(|| args.get(camel_case(name)))
         .cloned()
         .unwrap_or(Value::Null);
+    serde_json::from_value(raw)
+        .map_err(|error| RemoteInvokeError::bad_args(format!("Invalid argument `{name}`: {error}")))
+}
+
+/// Extracts a struct argument, then OVERWRITES its server-pinned fields.
+///
+/// The overwrite is unconditional and happens after the client's object is taken, so a
+/// client-supplied value for a pinned field is discarded rather than merged. `pins` is filtered
+/// to the requested parameter, so one registration can pin fields in several inputs.
+///
+/// A missing input deserializes from an empty object rather than `null`, which is what lets a
+/// fully-pinned struct be invoked with no client args at all.
+pub fn extract_pinned_arg<T: serde::de::DeserializeOwned>(
+    args: &Value,
+    name: &str,
+    pins: &[PinnedField],
+) -> Result<T, RemoteInvokeError> {
+    let mut raw = args
+        .get(name)
+        .or_else(|| args.get(camel_case(name)))
+        .cloned()
+        .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+    let object = raw.as_object_mut().ok_or_else(|| {
+        RemoteInvokeError::bad_args(format!("Argument `{name}` must be an object"))
+    })?;
+    let mut applied = 0usize;
+    for pin in pins.iter().filter(|pin| pin.param == name) {
+        object.insert(pin.field.to_string(), Value::String(pin.value.to_string()));
+        applied += 1;
+    }
+    if applied == 0 {
+        // A `pinned_arg` param whose spec declares no pin for it would silently degrade into an
+        // ordinary client-controlled argument — exactly the dual-decision shape this mechanism
+        // exists to remove. Refuse instead.
+        return Err(RemoteInvokeError::internal(format!(
+            "Argument `{name}` is registered as pinned but the specification declares no pin for it"
+        )));
+    }
     serde_json::from_value(raw)
         .map_err(|error| RemoteInvokeError::bad_args(format!("Invalid argument `{name}`: {error}")))
 }
@@ -228,6 +309,7 @@ macro_rules! remote_commands {
                 params: [ $( $param:tt ),* $(,)? ],
                 call: $call:ident,
                 result: $result:ident
+                $(, pins: [ $( ($pin_param:literal, $pin_field:literal, $pin_value:literal) ),* $(,)? ] )?
                 $(, authz: $authz:expr )?
                 $(, validate: $validate:expr )?
                 $(,)?
@@ -265,6 +347,13 @@ macro_rules! remote_commands {
                         capabilities: &[ $( ::ralphx_remote_protocol::Capability::$cap ),* ],
                         authz: $crate::remote_commands!(@authz $( $authz )?),
                         validate: $crate::remote_commands!(@validate $( $validate )?),
+                        pins: &[ $($(
+                            $crate::remote_server::registry::PinnedField {
+                                param: $pin_param,
+                                field: $pin_field,
+                                value: $pin_value,
+                            }
+                        ),*)? ],
                     }
                 }
             ),*
@@ -300,7 +389,7 @@ macro_rules! remote_commands {
                 $(
                     $name => {
                         let outcome = $crate::remote_commands!(
-                            @invoke app, args, $target, $call, $result, [ $( $param ),* ]
+                            @invoke app, args, spec, $target, $call, $result, [ $( $param ),* ]
                         );
                         outcome
                     }
@@ -336,36 +425,65 @@ macro_rules! remote_commands {
         compile_error!("remote_commands!: raw response bodies are not dispatchable over the facade");
     };
     (@reject_forbidden_param (arg $n:ident : $t:ty)) => {};
+    (@reject_forbidden_param (pinned_arg $n:ident : $t:ty)) => {};
     (@reject_forbidden_param (app_state)) => {};
     (@reject_forbidden_param (execution_state)) => {};
     (@reject_forbidden_param (active_project_state)) => {};
     (@reject_forbidden_param (app_handle)) => {};
+    (@reject_forbidden_param (host_app_handle)) => {};
 
     // --- (b) the FIXED injection table -------------------------------------------------
-    // These four arms ARE the table. An extractor form absent here has no matching arm, so
+    // These five arms ARE the table. An extractor form absent here has no matching arm, so
     // registering a command that needs it is a compile error (C-12, X-11).
-    (@bind $app:ident, $args:ident, (app_state)) => {
+    (@bind $app:ident, $args:ident, $spec:ident, (app_state)) => {
         $app.state::<$crate::application::AppState>()
     };
-    (@bind $app:ident, $args:ident, (execution_state)) => {
+    (@bind $app:ident, $args:ident, $spec:ident, (execution_state)) => {
         $app.state::<::std::sync::Arc<$crate::commands::execution_commands::ExecutionState>>()
     };
-    (@bind $app:ident, $args:ident, (active_project_state)) => {
+    (@bind $app:ident, $args:ident, $spec:ident, (active_project_state)) => {
         $app.state::<::std::sync::Arc<$crate::commands::execution_commands::ActiveProjectState>>()
     };
-    (@bind $app:ident, $args:ident, (app_handle)) => {
+    (@bind $app:ident, $args:ident, $spec:ident, (app_handle)) => {
         $app.clone()
     };
-    (@bind $app:ident, $args:ident, (arg $n:ident : $t:ty)) => {
+    // The Wry-monomorphic handle, resolved from the managed `AppState` rather than from the
+    // generic dispatch handle (see the module docs). Fails closed when the host has not
+    // populated it — a command demanding an `AppHandle` never runs without one.
+    (@bind $app:ident, $args:ident, $spec:ident, (host_app_handle)) => {
+        match $app
+            .state::<$crate::application::AppState>()
+            .app_handle
+            .clone()
+        {
+            Some(handle) => handle,
+            None => {
+                return Err($crate::remote_server::registry::RemoteInvokeError::internal(
+                    "The host application handle is unavailable; the command was not executed.",
+                ))
+            }
+        }
+    };
+    (@bind $app:ident, $args:ident, $spec:ident, (arg $n:ident : $t:ty)) => {
         match $crate::remote_server::registry::extract_arg::<$t>($args, stringify!($n)) {
+            Ok(value) => value,
+            Err(error) => return Err(error),
+        }
+    };
+    (@bind $app:ident, $args:ident, $spec:ident, (pinned_arg $n:ident : $t:ty)) => {
+        match $crate::remote_server::registry::extract_pinned_arg::<$t>(
+            $args,
+            stringify!($n),
+            $spec.pins,
+        ) {
             Ok(value) => value,
             Err(error) => return Err(error),
         }
     };
 
     // --- call + result shaping ---------------------------------------------------------
-    (@invoke $app:ident, $args:ident, $target:path, async, fallible, [ $( $param:tt ),* ]) => {{
-        match $target( $( $crate::remote_commands!(@bind $app, $args, $param) ),* ).await {
+    (@invoke $app:ident, $args:ident, $spec:ident, $target:path, async, fallible, [ $( $param:tt ),* ]) => {{
+        match $target( $( $crate::remote_commands!(@bind $app, $args, $spec, $param) ),* ).await {
             Ok(value) => $crate::remote_server::registry::serialize_ok(value)
                 .map($crate::remote_server::registry::DispatchOutcome::Ok),
             Err(error) => Ok($crate::remote_server::registry::DispatchOutcome::Err(
@@ -373,13 +491,13 @@ macro_rules! remote_commands {
             )),
         }
     }};
-    (@invoke $app:ident, $args:ident, $target:path, async, infallible, [ $( $param:tt ),* ]) => {{
-        let value = $target( $( $crate::remote_commands!(@bind $app, $args, $param) ),* ).await;
+    (@invoke $app:ident, $args:ident, $spec:ident, $target:path, async, infallible, [ $( $param:tt ),* ]) => {{
+        let value = $target( $( $crate::remote_commands!(@bind $app, $args, $spec, $param) ),* ).await;
         $crate::remote_server::registry::serialize_ok(value)
             .map($crate::remote_server::registry::DispatchOutcome::Ok)
     }};
-    (@invoke $app:ident, $args:ident, $target:path, sync, fallible, [ $( $param:tt ),* ]) => {{
-        match $target( $( $crate::remote_commands!(@bind $app, $args, $param) ),* ) {
+    (@invoke $app:ident, $args:ident, $spec:ident, $target:path, sync, fallible, [ $( $param:tt ),* ]) => {{
+        match $target( $( $crate::remote_commands!(@bind $app, $args, $spec, $param) ),* ) {
             Ok(value) => $crate::remote_server::registry::serialize_ok(value)
                 .map($crate::remote_server::registry::DispatchOutcome::Ok),
             Err(error) => Ok($crate::remote_server::registry::DispatchOutcome::Err(
@@ -387,8 +505,8 @@ macro_rules! remote_commands {
             )),
         }
     }};
-    (@invoke $app:ident, $args:ident, $target:path, sync, infallible, [ $( $param:tt ),* ]) => {{
-        let value = $target( $( $crate::remote_commands!(@bind $app, $args, $param) ),* );
+    (@invoke $app:ident, $args:ident, $spec:ident, $target:path, sync, infallible, [ $( $param:tt ),* ]) => {{
+        let value = $target( $( $crate::remote_commands!(@bind $app, $args, $spec, $param) ),* );
         $crate::remote_server::registry::serialize_ok(value)
             .map($crate::remote_server::registry::DispatchOutcome::Ok)
     }};
@@ -536,5 +654,288 @@ crate::remote_commands! {
         params: [(arg task_id: String), (app_state)],
         call: async,
         result: fallible,
+    },
+
+    // -----------------------------------------------------------------------------------
+    // PR 1.5-A — `ui:operate`: watch + brakes + inert edits, and NOTHING that can start,
+    // resume, restart, or steer an agent. This is the default pairing's entire mutating
+    // surface (the "viewer with brakes" boundary, §3.3/§4.3).
+    // -----------------------------------------------------------------------------------
+
+    // Argument-sensitive: `category`/`priority` are inert (closed enum + i32, so neither can
+    // carry attacker-chosen text into a prompt); `title`/`description` are worker-consumed
+    // content and `update_task_authz` escalates those requests to `ui:agent`. The conditional
+    // `MutatesAgentConsumedContent` capability cannot live in `caps:` — `class_permits` gives
+    // `Operate` no capabilities at all — so it is carried as a ledger annotation whose CI guard
+    // requires this predicate to exist (`capability_ledger::CONDITIONAL_CAPABILITIES`).
+    "update_task" => crate::commands::task_commands::mutation::update_task {
+        class: Operate,
+        caps: [],
+        params: [
+            (arg task_id: String),
+            (arg input: crate::commands::task_commands::types::UpdateTaskInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+        authz: crate::remote_server::registry::update_task_authz,
+    },
+    // Backlog-only by construction: `CreateTaskInput` carries no status field and every
+    // construction path runs `Task::new_with_category`, which sets `InternalStatus::Backlog`.
+    // A created task therefore cannot be born in a spawn-triggering state.
+    "create_task" => crate::commands::task_commands::mutation::create_task {
+        class: Operate,
+        caps: [],
+        params: [
+            (arg input: crate::commands::task_commands::types::CreateTaskInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "pause_task" => crate::commands::task_commands::mutation::pause_task {
+        class: Operate,
+        caps: [],
+        params: [(arg task_id: String), (app_state), (execution_state)],
+        call: async,
+        result: fallible,
+    },
+    "block_task" => crate::commands::task_commands::mutation::block_task {
+        class: Operate,
+        caps: [],
+        params: [
+            (arg task_id: String),
+            (arg reason: Option<String>),
+            (app_state),
+            (execution_state),
+            (host_app_handle),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "stop_task" => crate::commands::task_commands::mutation::stop_task {
+        class: Operate,
+        caps: [],
+        params: [
+            (arg task_id: String),
+            (arg reason: Option<String>),
+            (app_state),
+            (execution_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "pause_tasks_in_group" => crate::commands::task_commands::mutation::pause_tasks_in_group {
+        class: Operate,
+        caps: [],
+        params: [
+            (arg group_kind: String),
+            (arg group_id: String),
+            (arg project_id: String),
+            (app_state),
+            (execution_state),
+            (host_app_handle),
+        ],
+        call: async,
+        result: fallible,
+    },
+    // The deny half of the dual-decision `resolve_permission_request`. The raw command is
+    // NEVER registered; `decision` is server-pinned, so a client sending `"allow"` still denies.
+    "deny_permission_request" => crate::commands::permission_commands::resolve_permission_request {
+        class: Operate,
+        caps: [],
+        params: [
+            (app_state),
+            (pinned_arg args: crate::commands::permission_commands::ResolvePermissionArgs),
+        ],
+        call: async,
+        result: fallible,
+        pins: [("args", "decision", "deny")],
+    },
+
+    // -----------------------------------------------------------------------------------
+    // PR 1.5-A — `ui:agent`: everything that can start, resume, restart or steer an agent,
+    // whether directly (detector a), by seeding state a background loop consumes
+    // (detector b), by mutating agent-consumed content, or as a declared membership.
+    // Off by default; granted per device.
+    // -----------------------------------------------------------------------------------
+
+    // Detector (a).
+    "move_task" => crate::commands::task_commands::mutation::move_task {
+        class: AgentControl,
+        caps: [AgentControl, MutatesAgentConsumedContent],
+        params: [
+            (arg task_id: String),
+            (arg to_status: String),
+            (arg note: Option<String>),
+            (app_state),
+            (execution_state),
+            (host_app_handle),
+        ],
+        call: async,
+        result: fallible,
+    },
+    // NOT registered — detector (c) proves `resume_task`, `apply_proposals_to_kanban` and
+    // `set_agent_conversation_workspace_auto_publish` reach a process-launch sink, and a
+    // command carrying `SpawnsProcess` authority is not exposable on the v1 facade at any
+    // scope. They stay AgentControl-floor members and answer `REMOTE_COMMAND_UNAVAILABLE`;
+    // the generated P-17b suite asserts exactly that.
+    "unblock_task" => crate::commands::task_commands::mutation::unblock_task {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [
+            (arg task_id: String),
+            (app_state),
+            (execution_state),
+            (host_app_handle),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "answer_user_question" => crate::commands::task_commands::mutation::answer_user_question {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [
+            (arg input: crate::commands::task_commands::types::AnswerUserQuestionInput),
+            (app_state),
+            (execution_state),
+            (host_app_handle),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "approve_task_for_review" => crate::commands::review_commands::approve_task_for_review {
+        class: AgentControl,
+        caps: [MutatesAgentConsumedContent],
+        params: [
+            (arg input: crate::commands::review_commands_types::ApproveTaskInput),
+            (app_state),
+            (execution_state),
+            (host_app_handle),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "reanalyze_project" => crate::commands::project_commands::reanalyze_project {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [(arg id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+
+    // Detector (b) — seeds state a registered background loop consumes.
+    "inject_task" => crate::commands::task_commands::mutation::inject_task {
+        class: AgentControl,
+        caps: [SeedsSpawnTriggeringState],
+        params: [
+            (arg input: crate::commands::task_commands::types::InjectTaskInput),
+            (app_state),
+            (host_app_handle),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "resume_automation" => crate::commands::automation_commands::resume_automation {
+        class: AgentControl,
+        caps: [SeedsSpawnTriggeringState],
+        params: [
+            (arg input: crate::commands::automation_commands::AutomationIdInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "finalize_automation" => crate::commands::automation_commands::finalize_automation {
+        class: AgentControl,
+        caps: [SeedsSpawnTriggeringState],
+        params: [
+            (arg input: crate::commands::automation_commands::AutomationIdInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+
+    // Agent-consumed content surface.
+    "create_task_step" => crate::commands::task_step_commands::create_task_step {
+        class: AgentControl,
+        caps: [MutatesAgentConsumedContent],
+        params: [
+            (arg task_id: String),
+            (arg input: crate::commands::task_step_commands_types::CreateTaskStepInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "update_task_step" => crate::commands::task_step_commands::update_task_step {
+        class: AgentControl,
+        caps: [MutatesAgentConsumedContent],
+        params: [
+            (arg step_id: String),
+            (arg input: crate::commands::task_step_commands_types::UpdateTaskStepInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "create_artifact" => crate::commands::artifact_commands::create_artifact {
+        class: AgentControl,
+        caps: [MutatesAgentConsumedContent],
+        params: [
+            (arg input: crate::commands::artifact_commands::CreateArtifactInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "update_artifact" => crate::commands::artifact_commands::update_artifact {
+        class: AgentControl,
+        caps: [MutatesAgentConsumedContent],
+        params: [
+            (arg id: String),
+            (arg input: crate::commands::artifact_commands::UpdateArtifactInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "add_artifact_relation" => crate::commands::artifact_commands::add_artifact_relation {
+        class: AgentControl,
+        caps: [MutatesAgentConsumedContent],
+        params: [
+            (arg input: crate::commands::artifact_commands::AddRelationInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "update_task_proposal" => crate::commands::ideation_commands::update_task_proposal {
+        class: AgentControl,
+        caps: [MutatesAgentConsumedContent],
+        params: [
+            (arg id: String),
+            (arg input: crate::commands::ideation_commands::UpdateProposalInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+
+    // Declared membership: authorising a live tool call is not inferable from a transition or
+    // process sink, so it is declared. Same target fn as `deny_permission_request`, opposite
+    // server-pinned decision — and a whole class higher.
+    "approve_permission_request"
+        => crate::commands::permission_commands::resolve_permission_request {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [
+            (app_state),
+            (pinned_arg args: crate::commands::permission_commands::ResolvePermissionArgs),
+        ],
+        call: async,
+        result: fallible,
+        pins: [("args", "decision", "allow")],
     },
 }

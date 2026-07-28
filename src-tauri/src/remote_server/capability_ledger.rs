@@ -591,6 +591,28 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
             "spawns the project-analyzer agent",
         ),
     },
+    // PR 1.5 `ui:operate` mutating surface. Both sit BELOW their `task_commands` module default
+    // (AgentControl) and each needs a structural reason, not a judgement call.
+    CommandOverride {
+        command: "update_task",
+        policy: policy(
+            RiskClass::Operate,
+            NONE,
+            "inert fields only at this class: category is a closed enum and priority an i32; \
+             title/description carry a conditional MutatesAgentConsumedContent discharged by \
+             update_task_authz, and internal_status is rejected by validate_update_task_input",
+        ),
+    },
+    CommandOverride {
+        command: "create_task",
+        policy: policy(
+            RiskClass::Operate,
+            NONE,
+            "Backlog-only by construction: CreateTaskInput carries no status field and \
+             Task::new_with_category sets InternalStatus::Backlog, so a created task cannot be \
+             born in a spawn-triggering state",
+        ),
+    },
     // Declared memberships not inferable from transition/process sinks.
     CommandOverride {
         command: "resolve_permission_request",
@@ -603,6 +625,17 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
     CommandOverride {
         command: "resolve_user_question",
         policy: policy(RiskClass::AgentControl, AGENT, "steering-question"),
+    },
+    // The approve half of the pinned permission split. Its sibling `deny_permission_request`
+    // carries an authority-reducing exemption down to Operate; this half gets none, because
+    // authorizing a live tool call is the declared membership itself.
+    CommandOverride {
+        command: "approve_permission_request",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "declared membership: authorizes-live-tool-call (server-pinned allow decision)",
+        ),
     },
 ];
 
@@ -657,6 +690,28 @@ pub const AUTHORITY_REDUCING_EXEMPTIONS: &[AuthorityReducingExemption] = &[
         rationale: "domain/state_machine/transition_handler/on_enter_states/mod.rs has no Archived entry action and application reconciliation does not scan Archived tasks",
     },
 ];
+
+/// A capability a command carries only for SOME arguments.
+///
+/// `class_permits(Operate, [MutatesAgentConsumedContent])` is a compile error — `Operate` permits
+/// no capability at all — so §3.3's "conditional capability" cannot be a macro `caps:` entry. It
+/// is recorded here instead, and `conditional_capabilities_are_discharged_by_a_live_predicate`
+/// makes the annotation and the argument-sensitive predicate inseparable: dropping the predicate
+/// while the annotation stands (or the reverse) fails CI. Without that tie, `update_task` would
+/// silently become a `ui:operate` write of worker-consumed prompt text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConditionalCapability {
+    pub command: &'static str,
+    pub capability: Capability,
+    /// The argument condition under which the capability applies, and what discharges it.
+    pub condition: &'static str,
+}
+
+pub const CONDITIONAL_CAPABILITIES: &[ConditionalCapability] = &[ConditionalCapability {
+    command: "update_task",
+    capability: Capability::MutatesAgentConsumedContent,
+    condition: "conditional: title,description — discharged by update_task_authz",
+}];
 
 pub const DECLARED_MEMBERSHIPS: &[(&str, &str)] = &[
     ("approve_permission_request", "authorizes-live-tool-call"),

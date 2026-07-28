@@ -8,8 +8,8 @@ use super::authority_audit::{
     SPAWN_TRIGGERING_STATE_SURFACE,
 };
 use super::capability_ledger::{
-    policy_for, AUTHORITY_REDUCING_EXEMPTIONS, COMMAND_OVERRIDES, DECLARED_MEMBERSHIPS,
-    MODULE_DEFAULTS,
+    policy_for, AUTHORITY_REDUCING_EXEMPTIONS, COMMAND_OVERRIDES, CONDITIONAL_CAPABILITIES,
+    DECLARED_MEMBERSHIPS, MODULE_DEFAULTS,
 };
 use super::registry::{find_spec, REMOTE_COMMANDS};
 
@@ -391,9 +391,45 @@ fn generated_manifest() -> serde_json::Value {
         serde_json::json!({"id": entry.id, "surface": entry.surface, "armedValue": entry.armed_value, "readByLoops": entry.read_by_loops, "writers": writers})
     }).collect::<Vec<_>>();
 
+    // The REGISTERED facade surface, including the two pinned permission ops. Those two are not
+    // census commands (no such Tauri command exists — the live surface has only the
+    // dual-decision `resolve_permission_request`), so the `ledger` table cannot carry them and
+    // the manifest would otherwise publish no record of the mutating surface's shape. `pins` is
+    // read straight off the specs, which is the same data the dispatch path binds — a pin cannot
+    // be documented here and absent from the wire.
+    let facade_ops = REMOTE_COMMANDS
+        .iter()
+        .map(|spec| {
+            serde_json::json!({
+                "command": spec.name,
+                "target": spec.target,
+                "class": spec.class,
+                "capabilities": spec.capabilities,
+                "argumentSensitive": spec.authz.is_some(),
+                "pins": spec.pins.iter().map(|pin| serde_json::json!({
+                    "param": pin.param,
+                    "field": pin.field,
+                    "value": pin.value,
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let conditional_capabilities = CONDITIONAL_CAPABILITIES
+        .iter()
+        .map(|entry| {
+            serde_json::json!({
+                "command": entry.command,
+                "capability": entry.capability,
+                "condition": entry.condition,
+            })
+        })
+        .collect::<Vec<_>>();
+
     serde_json::json!({
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "background_loop_inventory": background_loop_inventory,
+        "facade_ops": facade_ops,
+        "conditional_capabilities": conditional_capabilities,
         "spawn_triggering_state_surface": spawn_triggering_state_surface,
         "agent_consumed_content_surface": {"reads": agent_content_reads(), "writers": agent_content_writers()},
         "worker_task_view_allowlist": worker_task_view_allowlist(),
@@ -438,6 +474,112 @@ fn remote_command_manifest_is_current() {
     let actual = std::fs::read_to_string(manifest_path())
         .expect("remote command manifest is checked in; run the gated regeneration test");
     assert_eq!(actual, manifest_text(), "remote command manifest is stale");
+}
+
+/// The annotation ⇔ predicate tie (§3.3 conditional capability).
+///
+/// A conditional capability is a promise that SOME arguments need a higher scope than the
+/// command's class. The only thing that can keep that promise is an argument-sensitive `authz:`
+/// predicate on the registered spec. This asserts the tie in BOTH directions, so neither half can
+/// be removed alone:
+///
+/// * annotation → predicate: every `CONDITIONAL_CAPABILITIES` row is registered, sits at a class
+///   that does NOT already permit the capability (otherwise the annotation is noise), and carries
+///   a predicate;
+/// * content-writer → annotation-or-capability: every registered command the 1.3 content-surface
+///   enumeration names as a writer either declares `MutatesAgentConsumedContent` outright or is
+///   annotated conditional. A registered `Operate` content writer with neither fails here.
+#[test]
+fn conditional_capabilities_are_discharged_by_a_live_predicate() {
+    for entry in CONDITIONAL_CAPABILITIES {
+        let spec = find_spec(entry.command).unwrap_or_else(|| {
+            panic!(
+                "`{}` carries a conditional capability but is not registered; \
+                 an annotation on an unreachable command proves nothing",
+                entry.command
+            )
+        });
+        assert!(
+            !class_permits(spec.class, &[entry.capability]),
+            "`{}` is registered at {:?}, which already permits {:?} — declare it in `caps:` \
+             instead of annotating it as conditional",
+            entry.command,
+            spec.class,
+            entry.capability
+        );
+        assert!(
+            spec.authz.is_some(),
+            "`{}` is annotated with a conditional {:?} but has no `authz:` predicate to \
+             discharge it — the annotation would be the only thing standing between a \
+             ui:operate device and the content surface",
+            entry.command,
+            entry.capability
+        );
+    }
+
+    let annotated = CONDITIONAL_CAPABILITIES
+        .iter()
+        .map(|entry| entry.command)
+        .collect::<BTreeSet<_>>();
+    for row in agent_content_writers() {
+        let writer = row["writer"].as_str().expect("writer is a string");
+        let Some(spec) = find_spec(writer) else {
+            // Unregistered writers are unreachable remotely; nothing to discharge.
+            continue;
+        };
+        let declares = spec
+            .capabilities
+            .contains(&Capability::MutatesAgentConsumedContent);
+        assert!(
+            declares || annotated.contains(writer),
+            "`{writer}` writes the agent-consumed content surface and is registered at {:?}, \
+             but declares neither MutatesAgentConsumedContent nor a conditional annotation",
+            spec.class
+        );
+        // A conditional annotation is only honest when the manifest row is also marked
+        // conditional; otherwise the audit output and the ledger disagree about the same write.
+        if !declares {
+            assert!(
+                row.get("conditional").is_some(),
+                "`{writer}` is annotated conditional in the ledger but the content-surface \
+                 row publishes it as an unconditional write"
+            );
+        }
+    }
+}
+
+/// P-1 feeder: a dual-decision sink is only safe when the decision is SERVER-controlled.
+#[test]
+fn no_facade_op_accepts_a_client_supplied_decision() {
+    assert!(
+        find_spec("resolve_permission_request").is_none(),
+        "the raw dual-decision command must never be registered; the facade exposes only the \
+         two single-purpose pinned ops"
+    );
+
+    let pinned = REMOTE_COMMANDS
+        .iter()
+        .filter(|spec| spec.pins.iter().any(|pin| pin.field == "decision"))
+        .map(|spec| (spec.name, spec.pins[0].value))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        pinned,
+        [
+            ("approve_permission_request", "allow"),
+            ("deny_permission_request", "deny"),
+        ]
+        .into_iter()
+        .collect::<BTreeMap<_, _>>(),
+        "the pinned permission ops drifted from their server-controlled decisions"
+    );
+
+    // Both ops target the SAME existing fn (A-7: no forked command fns) and are separated only
+    // by the pin and the class.
+    let approve = find_spec("approve_permission_request").expect("approve op is registered");
+    let deny = find_spec("deny_permission_request").expect("deny op is registered");
+    assert_eq!(approve.target, deny.target);
+    assert_eq!(approve.class, RiskClass::AgentControl);
+    assert_eq!(deny.class, RiskClass::Operate);
 }
 
 #[test]
@@ -1054,12 +1196,63 @@ fn every_registered_spec_matches_its_ledger_row() {
         "the registered surface must not be empty or this gate is vacuous"
     );
     for spec in REMOTE_COMMANDS {
-        let module = modules.get(spec.name).unwrap_or_else(|| {
-            panic!(
-                "registered command `{}` is not in the live census",
-                spec.name
-            )
-        });
+        // A pinned facade op is a SYNTHESISED name: no such Tauri command exists, so it has no
+        // census row of its own. It still may not float free of the ledger — it inherits the
+        // scrutiny of the fn it targets, plus two extra obligations, because splitting one
+        // command into two ops is precisely how an authority boundary gets quietly widened.
+        let module = match modules.get(spec.name) {
+            Some(module) => module,
+            None => {
+                assert!(
+                    !spec.pins.is_empty(),
+                    "registered command `{}` is not in the live census and is not a pinned \
+                     facade op; the facade may only expose existing commands",
+                    spec.name
+                );
+                let target_command = spec
+                    .target
+                    .rsplit("::")
+                    .next()
+                    .expect("target path has a final segment");
+                let target_module = modules.get(target_command).unwrap_or_else(|| {
+                    panic!(
+                        "pinned op `{}` targets `{target_command}`, which is not a live command",
+                        spec.name
+                    )
+                });
+                let target_row = policy_for(target_command, target_module)
+                    .unwrap_or_else(|| panic!("`{target_command}` is not ledgered"));
+                let own_row = policy_for(spec.name, target_module).unwrap_or_else(|| {
+                    panic!(
+                        "pinned op `{}` needs its own COMMAND_OVERRIDES row; inheriting the \
+                         module default would silently reclassify it",
+                        spec.name
+                    )
+                });
+                assert_eq!(
+                    spec.class, own_row.class,
+                    "pinned op `{}` is registered {:?} but ledgered {:?}",
+                    spec.name, spec.class, own_row.class
+                );
+                assert_eq!(spec.capabilities, own_row.capabilities);
+                // Weakening below the target's class is only legitimate when the pin makes the
+                // op authority-REDUCING, and that claim must be recorded, not asserted in a
+                // comment.
+                if own_row.class != target_row.class {
+                    assert!(
+                        AUTHORITY_REDUCING_EXEMPTIONS.iter().any(|exemption| {
+                            exemption.subject == spec.name && exemption.kind == "command"
+                        }),
+                        "pinned op `{}` is ledgered {:?} while its target `{target_command}` is \
+                         {:?}, with no authority-reducing exemption to justify the gap",
+                        spec.name,
+                        own_row.class,
+                        target_row.class
+                    );
+                }
+                continue;
+            }
+        };
         let row = policy_for(spec.name, module)
             .unwrap_or_else(|| panic!("registered command `{}` is not ledgered", spec.name));
         assert_eq!(
@@ -1157,6 +1350,7 @@ fn proof_class_writers_are_flagged_by_write_site_markers() {
 fn detector_c_floors_process_spawn_authority() {
     let graph = CallGraph::build(&load_production_sources());
     let mut spawners = BTreeSet::new();
+    let mut registered_spawners = Vec::new();
 
     for (command, module) in census() {
         let tokens = graph.closure([command.clone()]).tokens;
@@ -1171,12 +1365,18 @@ fn detector_c_floors_process_spawn_authority() {
              SpawnsProcess is only expressible under Elevated",
             row.class
         );
-        assert!(
-            find_spec(&command).is_none(),
-            "detector (c): `{command}` carries process authority and must not be registered \
-             on the remote facade in this PR"
-        );
+        if find_spec(&command).is_some() {
+            registered_spawners.push(command.clone());
+        }
     }
+    // Reported as a set rather than on first hit: a registration sweep that trips this gate
+    // typically trips it many times, and failing one-at-a-time turns a single audit finding into
+    // a sequence of misleading ones.
+    assert!(
+        registered_spawners.is_empty(),
+        "detector (c): {registered_spawners:?} carry process authority and must not be \
+         registered on the remote facade in this PR"
+    );
 
     // Calibration — the detector must actually fire, or the floor above is vacuous.
     for command in [
