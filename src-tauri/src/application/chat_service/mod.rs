@@ -790,11 +790,17 @@ pub fn agent_name_for_conversation_mode(mode: AgentConversationWorkspaceMode) ->
 }
 
 #[doc(hidden)]
-pub fn agent_profile_for_conversation_mode(
-    mode: AgentConversationWorkspaceMode,
+pub fn resolve_agent_conversation_runtime_profile(
+    agent_mode: AgentConversationWorkspaceMode,
+    coordination_mode: CoordinationMode,
 ) -> Option<&'static str> {
-    match mode {
+    match agent_mode {
         AgentConversationWorkspaceMode::Plan => Some("plan"),
+        AgentConversationWorkspaceMode::Edit
+            if coordination_mode == CoordinationMode::RxNativeTeam =>
+        {
+            Some("team_coordinator")
+        }
         _ => None,
     }
 }
@@ -5892,7 +5898,9 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             ),
             agent_conversation_mode,
         );
-        let agent_profile = agent_conversation_mode.and_then(agent_profile_for_conversation_mode);
+        let agent_profile = agent_conversation_mode.and_then(|agent_mode| {
+            resolve_agent_conversation_runtime_profile(agent_mode, conversation.coordination_mode)
+        });
         let resolved_persona = self
             .resolve_persona_for_send(
                 &conversation,

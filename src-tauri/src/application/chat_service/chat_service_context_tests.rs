@@ -35,6 +35,38 @@ mod codex_standalone_security;
 #[path = "chat_service_context_tests/launch_security.rs"]
 mod launch_security;
 
+#[test]
+fn team_coordinator_profile_is_limited_to_mutable_edit_conversations() {
+    assert_eq!(
+        super::resolve_agent_conversation_runtime_profile(
+            AgentConversationWorkspaceMode::Edit,
+            CoordinationMode::RxNativeTeam,
+        ),
+        Some("team_coordinator")
+    );
+    assert_eq!(
+        super::resolve_agent_conversation_runtime_profile(
+            AgentConversationWorkspaceMode::Edit,
+            CoordinationMode::Solo,
+        ),
+        None
+    );
+    assert_eq!(
+        super::resolve_agent_conversation_runtime_profile(
+            AgentConversationWorkspaceMode::Plan,
+            CoordinationMode::RxNativeTeam,
+        ),
+        Some("plan")
+    );
+    assert_eq!(
+        super::resolve_agent_conversation_runtime_profile(
+            AgentConversationWorkspaceMode::Autopilot,
+            CoordinationMode::RxNativeTeam,
+        ),
+        None
+    );
+}
+
 struct EnvGuard {
     key: &'static str,
     original: Option<OsString>,

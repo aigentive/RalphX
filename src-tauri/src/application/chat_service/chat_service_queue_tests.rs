@@ -598,7 +598,10 @@ fn hidden_resume_marker_metadata_strips_transient_flags() {
 
 #[test]
 fn queued_agent_identity_for_plan_uses_ideation_agent_plan_profile() {
-    let identity = queued_agent_identity_for_mode(Some(AgentConversationWorkspaceMode::Plan));
+    let identity = queued_agent_identity_for_mode(
+        Some(AgentConversationWorkspaceMode::Plan),
+        CoordinationMode::Solo,
+    );
 
     assert_eq!(
         identity.agent_name,
@@ -609,8 +612,10 @@ fn queued_agent_identity_for_plan_uses_ideation_agent_plan_profile() {
 
 #[test]
 fn queued_agent_identity_for_persona_builder_uses_extractor_agent() {
-    let identity =
-        queued_agent_identity_for_mode(Some(AgentConversationWorkspaceMode::PersonaBuilder));
+    let identity = queued_agent_identity_for_mode(
+        Some(AgentConversationWorkspaceMode::PersonaBuilder),
+        CoordinationMode::Solo,
+    );
 
     assert_eq!(
         identity.agent_name,

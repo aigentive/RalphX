@@ -673,6 +673,7 @@ struct QueuedAgentContext {
 
 fn queued_agent_identity_for_mode(
     mode: Option<AgentConversationWorkspaceMode>,
+    coordination_mode: CoordinationMode,
 ) -> QueuedAgentIdentity {
     let Some(mode) = mode else {
         return QueuedAgentIdentity::default();
@@ -680,7 +681,7 @@ fn queued_agent_identity_for_mode(
 
     QueuedAgentIdentity {
         agent_name: Some(super::agent_name_for_conversation_mode(mode).to_string()),
-        agent_profile: super::agent_profile_for_conversation_mode(mode),
+        agent_profile: super::resolve_agent_conversation_runtime_profile(mode, coordination_mode),
     }
 }
 
@@ -696,7 +697,12 @@ fn queued_agent_identity_for_conversation(
             agent_profile: None,
         };
     }
-    queued_agent_identity_for_mode(mode)
+    queued_agent_identity_for_mode(
+        mode,
+        conversation
+            .map(|conversation| conversation.coordination_mode)
+            .unwrap_or(CoordinationMode::Solo),
+    )
 }
 
 async fn resolve_queued_agent_context<R: Runtime + 'static>(

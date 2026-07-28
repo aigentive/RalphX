@@ -4,7 +4,8 @@ use serde_json::{json, Value};
 
 use super::*;
 use crate::domain::entities::{
-    AgentTaskAssignment, AgentTaskAssignmentId, AgentTaskAssignmentState,
+    AgentTaskAssignment, AgentTaskAssignmentId, AgentTaskAssignmentState, TeamMemberId,
+    TeamSessionId,
 };
 
 const UNRESOLVED_STATES_SQL: &str =
@@ -714,6 +715,9 @@ const ASSIGNMENT_SELECT: &str = "SELECT
     a.caller_agent_run_id,
     a.planned_delegated_agent_run_id,
     a.delegated_agent_run_id,
+    a.team_id,
+    a.team_member_id,
+    a.team_member_generation,
     a.task_list_id,
     a.task_id,
     a.delegate_agent_name,
@@ -803,6 +807,13 @@ fn row_to_assignment(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentTaskAssig
         delegated_agent_run_id: row
             .get::<_, Option<String>>("delegated_agent_run_id")?
             .map(AgentRunId::from_string),
+        team_id: row
+            .get::<_, Option<String>>("team_id")?
+            .map(TeamSessionId::from_string),
+        team_member_id: row
+            .get::<_, Option<String>>("team_member_id")?
+            .map(TeamMemberId::from_string),
+        team_member_generation: row.get("team_member_generation")?,
         task_list_id: AgentTaskListId::from_string(row.get::<_, String>("task_list_id")?),
         task_id: AgentTaskId::from_string(row.get::<_, String>("task_id")?),
         delegate_agent_name: row.get("delegate_agent_name")?,

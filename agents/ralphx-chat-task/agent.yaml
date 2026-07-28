@@ -31,3 +31,43 @@ harnesses:
 delegation:
   allowed_targets:
     - ralphx-general-explorer
+profiles:
+  team_coordinator:
+    role: team_coordinator
+    description: "Read-only coordinator for an RX-native Team; delegates writable work to members."
+    capabilities:
+      mcp_tools:
+        - update_task
+        - add_task_note
+        - get_task_details
+        - get_artifact
+        - search_memories
+        - get_memory
+        - get_memories_for_paths
+        - delegate_start
+        - delegate_wait
+        - delegate_cancel
+        - create_agent_task
+        - get_agent_task
+        - list_agent_tasks
+        - update_agent_task
+        - claim_agent_task
+        - complete_agent_task
+    harnesses:
+      claude:
+        model: sonnet
+        tools:
+          extends: readonly_tools
+        disallowed_tools:
+          - Write
+          - Edit
+          - NotebookEdit
+          - Bash
+          - Task
+        preapproved_cli_tools: []
+      codex:
+        runtime_features:
+          shell_tool: false
+    delegation:
+      allowed_targets:
+        - ralphx-general-explorer
