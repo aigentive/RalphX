@@ -2768,6 +2768,35 @@ fn probe_conversation_list_arming_paths() {
     }
 }
 
+/// Diagnostic: detector verdicts for the batch-5 B2 read-shaped candidates.
+#[test]
+#[ignore = "diagnostic probe"]
+fn probe_b2_remaining_read_candidates() {
+    let graph = CallGraph::build(&load_production_sources());
+
+    for command in [
+        "get_agent_conversation_workspace",
+        "get_agent_conversation_workspace_freshness",
+        "get_agent_conversation_workspace_freshness_for_app_state",
+        "is_chat_service_available",
+        "list_agent_conversation_workspaces_by_project",
+        "list_agent_sidebar_conversations",
+        "list_agent_sidebar_conversations_for_app_state",
+        "search_agent_composer_entries",
+        "agent_workspace_response_for_state",
+        "schedule_external_pr_reconciliation_for_workspace",
+    ] {
+        let closure = graph.closure([command.to_string()]);
+        eprintln!(
+            "{command}: visited={} arming={} launch={} transition={}",
+            closure.visited.len(),
+            closure_is_arming(&closure),
+            tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS),
+            tokens_reach_any(&closure.tokens, TRANSITION_SINKS),
+        );
+    }
+}
+
 /// The scope-confinement annotation and its predicate are inseparable (batch 4).
 ///
 /// Mirrors `conditional_capabilities_are_discharged_by_a_live_predicate`. Asserted in BOTH
@@ -3091,6 +3120,109 @@ fn the_remote_conversation_list_reads_are_reviewed_read_rows() {
         );
         assert!(find_spec(command).is_some());
     }
+}
+
+/// The six remaining read-SHAPED B2 candidates, all refused, each with its mechanism pinned.
+///
+/// Batch 4 closed by saying B2's remainder "is the workspace/publish surface, which fires
+/// (a)+(b)+(c) together". That was a hand-wave, and this test is the evidence for it: the six
+/// commands that still LOOK like reads are audited here and every one is disqualified. A
+/// refusal cluster is the whole result of this audit, which is a legitimate outcome — the
+/// alternative was registering a `Read` row over a surface that shells out to git.
+///
+/// The mechanisms are asserted, not just the absence of a spec, so that a refactor which
+/// removes a disqualifier fails here and returns the command to review instead of leaving the
+/// refusal to survive as folklore.
+#[test]
+fn the_b2_workspace_read_refusals_are_pinned() {
+    let graph = CallGraph::build(&load_production_sources());
+    let sources = load_production_sources();
+
+    for command in [
+        // Shared hydrator arms; see below.
+        "get_agent_conversation_workspace",
+        "list_agent_conversation_workspaces_by_project",
+        "list_agent_sidebar_conversations",
+        // Shells out to git/gh for base-vs-remote comparison.
+        "get_agent_conversation_workspace_freshness",
+        // Harness capability probe + the AppHandle/ExecutionState carriers.
+        "is_chat_service_available",
+        // Process launch + fail-open fallback + host path disclosure.
+        "search_agent_composer_entries",
+    ] {
+        assert!(
+            find_spec(command).is_none(),
+            "`{command}` was audited and refused in batch 5; registering it needs a new \
+             argument, not a quiet re-add"
+        );
+    }
+
+    // MECHANISM 1 — the shared workspace hydrator arms, which is what disqualifies the whole
+    // workspace read cluster. Every workspace-returning command funnels through it, so this is
+    // the single fact that makes three of the six refusals non-negotiable.
+    let hydrator = graph.closure(["agent_workspace_response_for_state".to_string()]);
+    assert!(
+        !hydrator.visited.is_empty(),
+        "the hydrator did not resolve; this assertion would be vacuous"
+    );
+    assert!(
+        closure_is_arming(&hydrator),
+        "`agent_workspace_response_for_state` no longer arms. If the workspace read surface \
+         became genuinely passive, re-audit the three refusals it disqualifies rather than \
+         deleting this assertion."
+    );
+
+    // MECHANISM 2 — the sidebar list reaches the same arming surface through its own seam, so
+    // its `_for_app_state` shape is NOT sufficient to make it registrable. Recorded explicitly
+    // because a reviewer who saw batch 5's list split could reasonably expect this one to be
+    // the same easy win, and it is not.
+    let sidebar = graph.closure(["list_agent_sidebar_conversations_for_app_state".to_string()]);
+    assert!(!sidebar.visited.is_empty());
+    assert!(
+        closure_is_arming(&sidebar),
+        "the sidebar list stopped arming; re-audit it as a registration candidate"
+    );
+
+    // MECHANISM 3 — freshness and the composer search are process launchers.
+    for command in [
+        "get_agent_conversation_workspace_freshness_for_app_state",
+        "search_agent_composer_entries",
+    ] {
+        let closure = graph.closure([command.to_string()]);
+        assert!(!closure.visited.is_empty(), "`{command}` did not resolve");
+        assert!(
+            tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS),
+            "`{command}` no longer reaches a process-launch sink; re-audit it"
+        );
+    }
+
+    // MECHANISM 4 — `get_agent_conversation_workspace` also SCHEDULES external PR
+    // reconciliation from a nominally read-only command. Asserted over source because the
+    // scheduling call is what a reviewer would miss; the command body otherwise reads as a
+    // plain repository lookup.
+    let (_, chat_commands) = sources
+        .iter()
+        .find(|(file, _)| file == "commands/unified_chat_commands/mod.rs")
+        .expect("the chat command module must exist");
+    assert!(
+        chat_commands.contains("schedule_external_pr_reconciliation_for_workspace"),
+        "the reconciliation scheduler vanished; re-audit `get_agent_conversation_workspace`"
+    );
+
+    // MECHANISM 5 — the composer search is the FAIL-OPEN shape batch 4 refused four times,
+    // and it is the sibling of `search_agent_composer_plan_references` which batch 4 refused
+    // for exactly this. A failed `git ls-files` silently becomes a filesystem walk, so a
+    // remote client cannot distinguish "these are the project's files" from "git failed".
+    let (_, project_entries) = sources
+        .iter()
+        .find(|(file, _)| file == "commands/agent_composer_commands/project_entries.rs")
+        .expect("the composer entry module must exist");
+    assert!(
+        project_entries
+            .contains("collect_git_entries(root).unwrap_or_else(|| collect_fs_entries(root))"),
+        "the composer search's fail-open fallback changed shape; re-audit whether it now \
+         propagates its errors, in which case it may become registrable"
+    );
 }
 
 // ---------------------------------------------------------------------------------------
