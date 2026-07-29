@@ -1,5 +1,6 @@
 pub mod activity_event;
 pub mod agent_conversation_granola_note;
+pub mod agent_conversation_mute;
 pub mod agent_conversation_issue;
 pub mod agent_conversation_jira_issue;
 pub mod agent_conversation_linear_issue;
@@ -8,6 +9,9 @@ pub mod agent_conversation_workspace;
 mod agent_conversation_workspace_tests;
 #[cfg(test)]
 mod agent_conversation_workspace_review_monitor_tests;
+pub mod agent_workspace_repair;
+#[cfg(test)]
+mod agent_workspace_repair_tests;
 pub mod agent_workspace_pr_metadata;
 #[cfg(test)]
 mod agent_workspace_pr_metadata_tests;
@@ -82,6 +86,7 @@ pub use activity_event::{
 pub use agent_conversation_granola_note::{
     AgentConversationGranolaNoteLink, AgentConversationGranolaRefreshStatus,
 };
+pub use agent_conversation_mute::AgentConversationMute;
 pub use agent_conversation_issue::{
     canonicalize_agent_conversation_issue, AgentConversationIssue,
     AgentConversationIssueCanonicalIdentity, AgentConversationIssueCanonicalInput,
@@ -116,6 +121,14 @@ pub use agent_conversation_workspace::{
     AgentWorkspaceReviewRuntimeState,
     AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest,
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+};
+pub use agent_workspace_repair::{
+    AgentWorkspaceRepairAttempt, AgentWorkspaceRepairAttemptId,
+    AgentWorkspaceRepairCompletionAuthority, AgentWorkspaceRepairContinuation,
+    AgentWorkspaceRepairEffect, AgentWorkspaceRepairEffectId, AgentWorkspaceRepairEffectKind,
+    AgentWorkspaceRepairEffectStatus, AgentWorkspaceRepairOperationSnapshot,
+    AgentWorkspaceRepairOperationStage, AgentWorkspaceRepairOperationStatus,
+    AgentWorkspaceRepairOutcome, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
 };
 pub use agent_workspace_pr_metadata::AgentWorkspacePrMetadataDecision;
 pub use agent_run::{

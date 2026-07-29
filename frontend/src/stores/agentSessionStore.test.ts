@@ -52,7 +52,7 @@ describe("agentSessionStore", () => {
   it("defaults the Agents sidebar to all projects", () => {
     expect(useAgentSessionStore.getInitialState().showAllProjects).toBe(true);
     expect(useAgentSessionStore.getInitialState().showEmptyProjectGroups).toBe(true);
-    expect(useAgentSessionStore.getInitialState().sidebarGroupBy).toBe("project");
+    expect(useAgentSessionStore.getInitialState().sidebarGroupBy).toBe("inbox");
     expect(useAgentSessionStore.getInitialState().sidebarPublicationStateFilters).toEqual([
       "active",
       "draft",
@@ -128,7 +128,7 @@ describe("agentSessionStore", () => {
       showAllProjects: false,
       showEmptyProjectGroups: true,
       projectSort: "za",
-      sidebarGroupBy: "project",
+      sidebarGroupBy: "inbox",
       sidebarProjectFilterIds: ["project-1", "project-2"],
       sidebarPublicationStateFilters: ["active", "draft"],
     });
@@ -146,7 +146,73 @@ describe("agentSessionStore", () => {
     ).toEqual({
       showEmptyProjectGroups: false,
       sidebarProjectFilterIds: ["project-2"],
+      sidebarGroupBy: "inbox",
+      sidebarInboxActiveLane: "needs",
     });
+  });
+
+  it("promotes stores persisted before the inbox existed to the inbox default", () => {
+    const migrated = migrateAgentSessionStore(
+      { sidebarGroupBy: "publication" },
+      10,
+    ) as { sidebarGroupBy?: unknown };
+
+    expect(migrated.sidebarGroupBy).toBe("inbox");
+  });
+
+  it("preserves a grouping chosen after the inbox shipped", () => {
+    const migrated = migrateAgentSessionStore(
+      { sidebarGroupBy: "publication" },
+      11,
+    ) as { sidebarGroupBy?: unknown };
+
+    expect(migrated.sidebarGroupBy).toBe("publication");
+  });
+
+  it("defaults the inbox active lane for stores persisted before lanes existed", () => {
+    const migrated = migrateAgentSessionStore(
+      { sidebarGroupBy: "project" },
+      10,
+    ) as { sidebarInboxActiveLane?: unknown };
+
+    expect(migrated.sidebarInboxActiveLane).toBe("needs");
+  });
+
+  it("drops the retired collapsed-lane set instead of projecting it onto a selection", () => {
+    const migrated = migrateAgentSessionStore(
+      { sidebarInboxCollapsedLanes: ["done", "stale"] },
+      11,
+    ) as Record<string, unknown>;
+
+    expect("sidebarInboxCollapsedLanes" in migrated).toBe(false);
+    expect(migrated.sidebarInboxActiveLane).toBe("needs");
+  });
+
+  it("preserves an inbox active lane persisted after the lane switcher shipped", () => {
+    const migrated = migrateAgentSessionStore(
+      { sidebarInboxActiveLane: "done" },
+      12,
+    ) as { sidebarInboxActiveLane?: unknown };
+
+    expect(migrated.sidebarInboxActiveLane).toBe("done");
+  });
+
+  it("falls back to the needs lane when the persisted active lane is unknown", () => {
+    const merged = mergeAgentSessionStore(
+      { sidebarInboxActiveLane: "archived-lane" },
+      useAgentSessionStore.getState(),
+    );
+
+    expect(merged.sidebarInboxActiveLane).toBe("needs");
+  });
+
+  it("keeps a known persisted active lane through merge", () => {
+    const merged = mergeAgentSessionStore(
+      { sidebarInboxActiveLane: "stale" },
+      useAgentSessionStore.getState(),
+    );
+
+    expect(merged.sidebarInboxActiveLane).toBe("stale");
   });
 
   it("migrates remembered runtimes to include model-specific effort", () => {
@@ -301,7 +367,7 @@ describe("agentSessionStore", () => {
         3,
       ),
     ).toMatchObject({
-      sidebarGroupBy: "project",
+      sidebarGroupBy: "inbox",
       sidebarProjectFilterIds: [],
       sidebarPublicationStateFilters: [
         "active",
@@ -390,6 +456,19 @@ describe("agentSessionStore", () => {
   describe("actions", () => {
     beforeEach(() => {
       useAgentSessionStore.setState(useAgentSessionStore.getInitialState(), true);
+    });
+
+    it("defaults the inbox lane switcher to the needs lane", () => {
+      expect(useAgentSessionStore.getState().sidebarInboxActiveLane).toBe("needs");
+    });
+
+    it("persists the selected inbox lane", () => {
+      useAgentSessionStore.getState().setSidebarInboxActiveLane("done");
+
+      expect(useAgentSessionStore.getState().sidebarInboxActiveLane).toBe("done");
+      expect(localStorage.getItem("ralphx-agent-session-store")).toContain(
+        '"sidebarInboxActiveLane":"done"',
+      );
     });
 
     it("persists the preferred ordinary new-run mode", () => {

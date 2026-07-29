@@ -173,6 +173,7 @@ import type { AgentTaskRuntimeContextType } from "./agentTaskRuntimeContext";
 import type {
   AgentsChatFocus,
   AutomationRunFocusOptions,
+  FocusedArtifactIdeationSession,
 } from "./agentChatFocus";
 import {
   AGENT_WORKSPACE_STALE_MS,
@@ -195,8 +196,14 @@ import {
   buildPlanActionHint,
   isPlanRecommendationCheckPending,
 } from "./agentPlanModeActions";
-import { activateAgentPlanProposals } from "./agentPlanProposalActivation";
-import { implementAgentPlanDirectly } from "./implementAgentPlanDirectly";
+import {
+  activateAgentPlanProposals,
+  PlanContinuationCommittedError,
+} from "./agentPlanProposalActivation";
+import {
+  implementAgentPlanDirectly,
+  type DirectImplementationActivationSnapshot,
+} from "./implementAgentPlanDirectly";
 import { materializeWorkspaceRuntimeSelection } from "./agentPlanRuntime";
 import { useApprovedPlanContinuation } from "./useApprovedPlanContinuation";
 import { ArtifactSelectionProvider } from "./artifact-selection/ArtifactSelectionProvider";
@@ -598,7 +605,7 @@ interface AgentsArtifactPaneProps {
   workspace?: AgentConversationWorkspace | null;
   activeWorkspaceFreshness?: AgentConversationWorkspaceFreshness | undefined;
   projectBaseBranch?: string | null;
-  focusedIdeationSessionId?: string | null;
+  focusedIdeationSession?: FocusedArtifactIdeationSession | null;
   activeTab: AgentArtifactTab;
   hiddenTabs?: readonly AgentArtifactTab[];
   taskMode: AgentTaskArtifactMode;
@@ -655,7 +662,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   workspace = null,
   activeWorkspaceFreshness,
   projectBaseBranch = null,
-  focusedIdeationSessionId = null,
+  focusedIdeationSession = null,
   activeTab,
   hiddenTabs = [],
   taskMode,
@@ -730,6 +737,11 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     activeWorkspaceFreshness?.conversationId === scopedWorkspace.conversationId
       ? activeWorkspaceFreshness
       : undefined;
+  const conversationId = conversation?.id ?? workspace?.conversationId ?? null;
+  const focusedIdeationSessionId =
+    focusedIdeationSession?.conversationId === conversationId
+      ? focusedIdeationSession.sessionId
+      : null;
   const canHydrateIdeationArtifacts = Boolean(
     conversation?.contextType === "ideation" ||
     focusedIdeationSessionId ||
@@ -765,7 +777,6 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         : [],
     [conversationData, conversation?.id, shouldLoadIdeationData],
   );
-  const conversationId = conversation?.id ?? workspace?.conversationId ?? null;
   const attachedSessionId = useMemo(
     () =>
       focusedIdeationSessionId ??
@@ -3227,35 +3238,49 @@ function AgentPlanPanel({
     if (!session || !workspace?.conversationId || !canImplementDirectly) {
       return;
     }
+    let pinnedActivation: DirectImplementationActivationSnapshot | undefined;
+    let committedRuntimeOverride:
+      | import("@/api/manual-role-defaults.types").ManualRoleRuntimeSelection
+      | null = null;
     void confirmImplementDirectly(async (runtimeOverride) => {
+      const runtimeForAttempt = committedRuntimeOverride ?? runtimeOverride;
       setIsImplementingPlanDirectly(true);
       try {
         await implementAgentPlanDirectly({
           projectId: session.projectId,
-          workspace,
+          workspace: pinnedActivation?.workspace ?? workspace,
           queryClient,
           ...(onConversationModeSwitched ? { onConversationModeSwitched } : {}),
-          sendOptions: { runtimeOverride },
+          ...(pinnedActivation ? { pinnedActivation } : {}),
+          onActivated: (snapshot) => {
+            if (!pinnedActivation) {
+              pinnedActivation = snapshot;
+              committedRuntimeOverride = { ...runtimeForAttempt };
+            }
+          },
+          sendOptions: { runtimeOverride: runtimeForAttempt },
         });
         useAgentSessionStore
           .getState()
           .setRuntimeForConversation(
             workspace.conversationId,
             session.projectId,
-            materializeWorkspaceRuntimeSelection(runtimeOverride, modelRegistry),
+            materializeWorkspaceRuntimeSelection(runtimeForAttempt, modelRegistry),
           );
         useAgentSessionStore
           .getState()
           .setServiceTierForConversation(
             workspace.conversationId,
-            runtimeOverride.serviceTier,
+            runtimeForAttempt.serviceTier,
           );
         toast.success("Implementation started");
       } catch (err) {
         console.error("Failed to implement plan directly:", err);
-        toast.error(
-          err instanceof Error ? err.message : "Failed to start implementation",
-        );
+        if (!(err instanceof PlanContinuationCommittedError)) {
+          toast.error(
+            err instanceof Error ? err.message : "Failed to start implementation",
+          );
+        }
         throw err;
       } finally {
         setIsImplementingPlanDirectly(false);

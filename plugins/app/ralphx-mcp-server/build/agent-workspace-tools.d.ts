@@ -4,7 +4,8 @@
  * These are intentionally separate from task-pipeline workflow tools.
  */
 import { Tool } from "@modelcontextprotocol/sdk/types.js";
-type TauriPost = (path: string, body: Record<string, unknown>) => Promise<unknown>;
+import type { TauriCallOptions } from "./tauri-client.js";
+type TauriPost = (path: string, body: Record<string, unknown>, options?: TauriCallOptions) => Promise<unknown>;
 type TauriGet = (path: string, options?: {
     headers?: Record<string, string>;
 }) => Promise<unknown>;
@@ -33,7 +34,7 @@ export declare function callWritePrReviewArtifactTool(callTauri: TauriPost, args
 export declare function callCompletePrReviewRunTool(callTauri: TauriPost, args: unknown, runtimeContext?: AgentWorkspaceToolRuntimeContext): Promise<unknown>;
 export declare function callReadAgentWorkspacePrCommentTool(callTauriGet: TauriGet, args: unknown): Promise<unknown>;
 export declare function callCompleteAgentWorkspacePrFixTool(callTauri: TauriPost, args: unknown, runtimeContext?: AgentWorkspaceToolRuntimeContext): Promise<unknown>;
-export declare function callCompleteAgentWorkspaceRepairTool(callTauri: TauriPost, args: unknown): Promise<unknown>;
+export declare function callCompleteAgentWorkspaceRepairTool(callTauri: TauriPost, args: unknown, runtimeContext?: AgentWorkspaceToolRuntimeContext): Promise<unknown>;
 export declare function callSubmitAgentWorkspacePrDescriptionTool(callTauri: TauriPost, args: unknown): Promise<unknown>;
 export {};
 //# sourceMappingURL=agent-workspace-tools.d.ts.map

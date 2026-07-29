@@ -4,6 +4,7 @@
 pub mod active_plan_repository;
 pub mod activity_event_repository;
 pub mod agent_conversation_granola_note_repository;
+pub mod agent_conversation_mute_repository;
 pub mod agent_conversation_issue_repository;
 pub mod agent_conversation_jira_issue_repository;
 pub mod agent_conversation_linear_issue_repository;
@@ -19,6 +20,9 @@ pub mod agent_provider_settings_repository;
 pub mod agent_run_repository;
 pub mod agent_task_repository;
 pub mod agent_workflow_repository;
+pub mod agent_workspace_repair_repository;
+#[cfg(test)]
+mod agent_workspace_repair_repository_tests;
 pub mod api_key_repository;
 pub mod remote_access_repository;
 pub mod remote_request_dedup_repository;
@@ -76,6 +80,7 @@ pub use activity_event_repository::{
     ActivityEventFilter, ActivityEventPage, ActivityEventRepository,
 };
 pub use agent_conversation_granola_note_repository::AgentConversationGranolaNoteRepository;
+pub use agent_conversation_mute_repository::AgentConversationMuteRepository;
 pub use agent_conversation_issue_repository::{
     is_open_issue_status, AgentConversationIssueRepository,
 };
@@ -95,9 +100,22 @@ pub use mcp_policy_repository::McpPolicyRepository;
 pub use agent_model_registry_repository::AgentModelRegistryRepository;
 pub use agent_profile_repository::{AgentProfileId, AgentProfileRepository};
 pub use agent_provider_settings_repository::AgentProviderSettingsRepository;
-pub use agent_run_repository::{AgentRunRepository, ORPHANED_AGENT_RUN_ON_APP_RESTART};
+pub use agent_run_repository::{
+    AgentRunRepository, ORPHANED_AGENT_RUN_ON_APP_RESTART, PRUNED_STALE_AGENT_RUN,
+};
 pub use agent_task_repository::{AgentTaskListOptions, AgentTaskRepository};
 pub use agent_workflow_repository::AgentWorkflowRepository;
+pub use agent_workspace_repair_repository::{
+    AgentWorkspaceRepairAttemptTransition, AgentWorkspaceRepairAttemptTransitionOutcome,
+    AgentWorkspaceRepairCompatibilityProjection, AgentWorkspaceRepairRepository,
+    BindAgentWorkspaceRepairAttemptRun, CompleteAgentWorkspaceRepairEffect,
+    CompleteAgentWorkspaceRepairEffectOutcome, CreateAgentWorkspaceRepairEffect,
+    CreateAgentWorkspaceRepairEffectOutcome, ImportLegacyAgentWorkspaceRepairAttempt,
+    ImportLegacyAgentWorkspaceRepairAttemptOutcome, SettleAgentWorkspaceRepairAttempt,
+    SettleAgentWorkspaceRepairAttemptOutcome, SettleAndStartAgentWorkspaceRepairSuccessor,
+    SettleAndStartAgentWorkspaceRepairSuccessorOutcome, StartOrJoinAgentWorkspaceRepairAttempt,
+    StartOrJoinAgentWorkspaceRepairAttemptOutcome,
+};
 pub use api_key_repository::{ApiKeyRepository, CreateKeyParams, RotateKeyParams};
 pub use remote_access_repository::{
     RemoteAuditLogRepository, RemoteDeviceLookup, RemoteDeviceRepository, RemotePairingCodeRepository,
@@ -121,8 +139,7 @@ pub use branch_update_repository::{
     CompleteBranchUpdateContinuation, CompleteGitMutation, GitAuthorityCasOutcome,
     MarkBranchUpdateResolving, PauseBranchUpdate, ResumeBranchUpdate, RetryBranchUpdate,
     CheckpointBranchUpdateResult, SettleBranchUpdateProgrammatic, StopBranchUpdate,
-    TransferBranchUpdateTargetLease,
-    UnbindBranchUpdateRun,
+    TransferBranchUpdateTargetLease, UnbindBranchUpdateRun,
 };
 pub use automation_run_repository::{AutomationRunPublicationMetadata, AutomationRunRepository};
 pub use chat_attachment_repository::ChatAttachmentRepository;

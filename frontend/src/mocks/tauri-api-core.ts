@@ -27,6 +27,7 @@ import {
   mockListConversationsPage,
   mockPublishAgentConversationWorkspace,
   mockReconcileAgentConversationWorkspacePublication,
+  mockSetAgentConversationMuted,
   mockStartAgentConversation,
   mockSwitchAgentConversationMode,
   mockUpdateAgentConversationCoordinationMode,
@@ -2756,9 +2757,29 @@ const commandHandlers: Record<
           ref_label: row.refLabel,
           publication_state: row.publicationState,
           publication_label: row.publicationLabel,
+          attention_lane: row.attentionLane ?? "needs",
+          action_verb: row.actionVerb ?? "",
+          is_muted: row.isMuted ?? false,
         })),
       })),
     };
+  },
+  set_agent_conversation_muted: async (args) => {
+    const controller =
+      typeof window !== "undefined" ? window.__mockChatApi : undefined;
+    const input = args.input as {
+      conversationId: string;
+      muted: boolean;
+    };
+    if (controller?.setAgentConversationMuted) {
+      await controller.setAgentConversationMuted(
+        input.conversationId,
+        input.muted,
+      );
+    } else {
+      await mockSetAgentConversationMuted(input.conversationId, input.muted);
+    }
+    return null;
   },
   get_conversation: async (args) => {
     const controller =

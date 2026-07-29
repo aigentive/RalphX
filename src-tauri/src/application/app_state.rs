@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Instant;
 use tauri::{AppHandle, Manager, Runtime};
 use tokio::sync::Mutex;
@@ -60,10 +60,11 @@ use crate::domain::qa::QASettings;
 use crate::domain::repositories::{
     ActivePlanRepository, ActivityEventRepository, AgentConversationGranolaNoteRepository,
     AgentConversationIssueRepository, AgentConversationJiraIssueRepository,
-    AgentConversationLinearIssueRepository, AgentConversationWorkspaceRepository,
-    AgentLaneSettingsRepository, AgentModelRegistryRepository, AgentProfileRepository,
-    AgentProviderSettingsRepository, AgentRunRepository, AgentTaskRepository,
-    AgentWorkflowRepository, ApiKeyRepository, AppStateRepository, ArtifactBucketRepository,
+    AgentConversationLinearIssueRepository, AgentConversationMuteRepository,
+    AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
+    AgentModelRegistryRepository, AgentProfileRepository, AgentProviderSettingsRepository,
+    AgentRunRepository, AgentTaskRepository, AgentWorkflowRepository,
+    AgentWorkspaceRepairRepository, ApiKeyRepository, AppStateRepository, ArtifactBucketRepository,
     ArtifactFlowRepository, ArtifactRepository, AutomationRepository, AutomationRunRepository,
     BranchUpdateRepository, ChatAttachmentRepository, ChatConversationRepository,
     ChatMessageRepository, ChatTimelineRepository, ConversationFolderReferenceRepository,
@@ -88,11 +89,12 @@ use crate::infrastructure::memory::{
     InMemoryMemoryEntryRepository, InMemoryMemoryEventRepository, MemoryActivePlanRepository,
     MemoryActivityEventRepository, MemoryAgentConversationGranolaNoteRepository,
     MemoryAgentConversationIssueRepository, MemoryAgentConversationJiraIssueRepository,
-    MemoryAgentConversationLinearIssueRepository, MemoryAgentConversationWorkspaceRepository,
-    MemoryAgentLaneSettingsRepository, MemoryAgentModelRegistryRepository,
-    MemoryAgentProfileRepository, MemoryAgentProviderSettingsRepository, MemoryAgentRunRepository,
-    MemoryAgentTaskRepository, MemoryApiKeyRepository, MemoryAppStateRepository,
-    MemoryArtifactBucketRepository, MemoryArtifactFlowRepository, MemoryArtifactRepository,
+    MemoryAgentConversationLinearIssueRepository, MemoryAgentConversationMuteRepository,
+    MemoryAgentConversationWorkspaceRepository, MemoryAgentLaneSettingsRepository,
+    MemoryAgentModelRegistryRepository, MemoryAgentProfileRepository,
+    MemoryAgentProviderSettingsRepository, MemoryAgentRunRepository, MemoryAgentTaskRepository,
+    MemoryApiKeyRepository, MemoryAppStateRepository, MemoryArtifactBucketRepository,
+    MemoryArtifactFlowRepository, MemoryArtifactRepository,
     MemoryAtlassianIntegrationSettingsRepository, MemoryAutomationRepository,
     MemoryAutomationRunRepository, MemoryBranchUpdateRepository, MemoryChatAttachmentRepository,
     MemoryChatConversationRepository, MemoryChatMessageRepository, MemoryChatTimelineRepository,
@@ -124,32 +126,32 @@ use crate::infrastructure::sqlite::{
     open_connection, run_migrations, SqliteActivePlanRepository, SqliteActivityEventRepository,
     SqliteAgentConversationGranolaNoteRepository, SqliteAgentConversationIssueRepository,
     SqliteAgentConversationJiraIssueRepository, SqliteAgentConversationLinearIssueRepository,
-    SqliteAgentConversationWorkspaceRepository, SqliteAgentLaneSettingsRepository,
-    SqliteAgentModelRegistryRepository, SqliteAgentProfileRepository,
-    SqliteAgentProviderSettingsRepository, SqliteAgentRunRepository, SqliteAgentTaskRepository,
-    SqliteAgentWorkflowRepository, SqliteApiKeyRepository, SqliteAppStateRepository,
-    SqliteArtifactBucketRepository, SqliteArtifactFlowRepository, SqliteArtifactRepository,
-    SqliteAtlassianIntegrationSettingsRepository, SqliteAutomationRepository,
-    SqliteAutomationRunRepository, SqliteBranchUpdateRepository, SqliteChatAttachmentRepository,
-    SqliteChatConversationRepository, SqliteChatMessageRepository, SqliteChatTimelineRepository,
-    SqliteClickUpIntegrationSettingsRepository, SqliteConversationFolderReferenceRepository,
-    SqliteDelegatedSessionRepository, SqliteExecutionPlanRepository,
-    SqliteExecutionSettingsRepository, SqliteExternalEventsRepository,
-    SqliteExternalIssueLinkRepository, SqliteGlobalExecutionSettingsRepository,
-    SqliteGranolaIntegrationSettingsRepository, SqliteIdeationEffortSettingsRepository,
-    SqliteIdeationModelSettingsRepository, SqliteIdeationSessionRepository,
-    SqliteIdeationSettingsRepository, SqliteLinearIntegrationSettingsRepository,
-    SqliteManualRoleDefaultRepository, SqliteMcpPolicyRepository, SqliteMemoryArchiveRepository,
-    SqliteMemoryEntryRepository, SqliteMemoryEventRepository, SqliteMethodologyRepository,
-    SqliteNotificationRepository, SqliteNotificationSettingsRepository,
-    SqliteOrphanWorktreeCleanupMarkerRepository, SqlitePermissionRepository,
-    SqlitePersonaRepository, SqlitePlanArtifactApprovalRepository, SqlitePlanBranchRepository,
-    SqlitePlanSelectionStatsRepository, SqliteProcessRepository, SqliteProjectRepository,
-    SqliteProposalDependencyRepository, SqliteQuestionRepository, SqliteQueuedMessageRepository,
-    SqliteReviewIssueRepository, SqliteReviewRepository, SqliteReviewSettingsRepository,
-    SqliteRunningAgentRegistry, SqliteSessionLinkRepository, SqliteTaskDependencyRepository,
-    SqliteTaskProposalRepository, SqliteTaskQARepository, SqliteTaskRepository,
-    SqliteTaskStepRepository, SqliteTicketCanonicalBranchRepository,
+    SqliteAgentConversationMuteRepository, SqliteAgentConversationWorkspaceRepository,
+    SqliteAgentLaneSettingsRepository, SqliteAgentModelRegistryRepository,
+    SqliteAgentProfileRepository, SqliteAgentProviderSettingsRepository, SqliteAgentRunRepository,
+    SqliteAgentTaskRepository, SqliteAgentWorkflowRepository, SqliteApiKeyRepository,
+    SqliteAppStateRepository, SqliteArtifactBucketRepository, SqliteArtifactFlowRepository,
+    SqliteArtifactRepository, SqliteAtlassianIntegrationSettingsRepository,
+    SqliteAutomationRepository, SqliteAutomationRunRepository, SqliteBranchUpdateRepository,
+    SqliteChatAttachmentRepository, SqliteChatConversationRepository, SqliteChatMessageRepository,
+    SqliteChatTimelineRepository, SqliteClickUpIntegrationSettingsRepository,
+    SqliteConversationFolderReferenceRepository, SqliteDelegatedSessionRepository,
+    SqliteExecutionPlanRepository, SqliteExecutionSettingsRepository,
+    SqliteExternalEventsRepository, SqliteExternalIssueLinkRepository,
+    SqliteGlobalExecutionSettingsRepository, SqliteGranolaIntegrationSettingsRepository,
+    SqliteIdeationEffortSettingsRepository, SqliteIdeationModelSettingsRepository,
+    SqliteIdeationSessionRepository, SqliteIdeationSettingsRepository,
+    SqliteLinearIntegrationSettingsRepository, SqliteManualRoleDefaultRepository,
+    SqliteMcpPolicyRepository, SqliteMemoryArchiveRepository, SqliteMemoryEntryRepository,
+    SqliteMemoryEventRepository, SqliteMethodologyRepository, SqliteNotificationRepository,
+    SqliteNotificationSettingsRepository, SqliteOrphanWorktreeCleanupMarkerRepository,
+    SqlitePermissionRepository, SqlitePersonaRepository, SqlitePlanArtifactApprovalRepository,
+    SqlitePlanBranchRepository, SqlitePlanSelectionStatsRepository, SqliteProcessRepository,
+    SqliteProjectRepository, SqliteProposalDependencyRepository, SqliteQuestionRepository,
+    SqliteQueuedMessageRepository, SqliteReviewIssueRepository, SqliteReviewRepository,
+    SqliteReviewSettingsRepository, SqliteRunningAgentRegistry, SqliteSessionLinkRepository,
+    SqliteTaskDependencyRepository, SqliteTaskProposalRepository, SqliteTaskQARepository,
+    SqliteTaskRepository, SqliteTaskStepRepository, SqliteTicketCanonicalBranchRepository,
     SqliteTicketingStatusCatalogRepository, SqliteUiFeatureFlagOverridesRepository,
     SqliteValidationRunRepository, SqliteWebhookRegistrationRepository, SqliteWorkflowRepository,
     SqliteWorkspaceReviewRuntimeSettingsRepository,
@@ -283,12 +285,36 @@ pub struct AppState {
     pub persona_repo: Arc<dyn PersonaRepository>,
     /// Conversation-owned branch/worktree repository for Agents starter workspaces
     pub agent_conversation_workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    /// Repair-attempt persistence shares the concrete workspace repository instance.
+    pub agent_workspace_repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    /// Command-composed publisher callback used only after a repair-owned push has an observed
+    /// receipt. The handle is shared with the HTTP AppState graph during runtime wiring.
+    pub(crate) agent_workspace_repair_publish_continuation: Arc<
+        RwLock<
+            Option<
+                Arc<dyn crate::application::publish_resilience::AgentWorkspaceRepairPublishContinuation>,
+            >,
+        >,
+    >,
+    /// Command-composed PR-fix publisher resumed only after a Workspace Review handoff. The
+    /// handle is shared with the HTTP AppState graph during runtime wiring.
+    pub(crate) agent_workspace_pr_fix_review_publish_resumer: Arc<
+        RwLock<
+            Option<
+                Arc<
+                    dyn crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrFixReviewPublishResumer,
+                >,
+            >,
+        >,
+    >,
     /// Conversation-owned primary Jira assignment/cache repository
     pub agent_conversation_jira_issue_repo: Arc<dyn AgentConversationJiraIssueRepository>,
     /// Conversation-owned primary Linear assignment/cache repository
     pub agent_conversation_linear_issue_repo: Arc<dyn AgentConversationLinearIssueRepository>,
     /// Conversation-owned primary Granola note assignment/cache repository
     pub agent_conversation_granola_note_repo: Arc<dyn AgentConversationGranolaNoteRepository>,
+    /// Derived attention-state mute repository for agent conversations
+    pub agent_conversation_mute_repo: Arc<dyn AgentConversationMuteRepository>,
     /// Per-ticket canonical branch that all conversations for a ticket base off of
     pub ticket_canonical_branch_repo: Arc<dyn TicketCanonicalBranchRepository>,
     /// Startup orphan agent-worktree cleanup backoff markers
@@ -408,6 +434,100 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Installs the command-composed normal-publish continuation after the Tauri runtime state is
+    /// available. Replacing an existing continuation is intentional during startup retry.
+    pub(crate) fn install_agent_workspace_repair_publish_continuation(
+        &self,
+        continuation: Arc<
+            dyn crate::application::publish_resilience::AgentWorkspaceRepairPublishContinuation,
+        >,
+    ) {
+        *self
+            .agent_workspace_repair_publish_continuation
+            .write()
+            .expect("repair publish continuation lock") = Some(continuation);
+    }
+
+    /// Returns the command-composed publisher only at the durable post-push boundary. Missing
+    /// runtime composition fails closed before a PR effect receipt is recorded.
+    pub(crate) fn agent_workspace_repair_publish_continuation(
+        &self,
+    ) -> AppResult<
+        Arc<dyn crate::application::publish_resilience::AgentWorkspaceRepairPublishContinuation>,
+    > {
+        self.agent_workspace_repair_publish_continuation
+            .read()
+            .expect("repair publish continuation lock")
+            .clone()
+            .ok_or_else(|| {
+                AppError::Infrastructure(
+                    "workspace repair publish continuation is unavailable in this runtime"
+                        .to_string(),
+                )
+            })
+    }
+
+    /// Installs the command-composed Workspace Review PR-fix resumer after the runtime is
+    /// available. Replacing an existing resumer is intentional during startup retry.
+    pub(crate) fn install_agent_workspace_pr_fix_review_publish_resumer(
+        &self,
+        resumer: Arc<
+            dyn crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrFixReviewPublishResumer,
+        >,
+    ) {
+        *self
+            .agent_workspace_pr_fix_review_publish_resumer
+            .write()
+            .expect("PR-fix review publish resumer lock") = Some(resumer);
+    }
+
+    /// Returns the command-composed resumer only at the Workspace Review handoff boundary.
+    /// Missing runtime composition fails closed before recovery can publish a PR fix.
+    #[cfg(test)]
+    pub(crate) fn agent_workspace_pr_fix_review_publish_resumer(
+        &self,
+    ) -> AppResult<
+        Arc<
+            dyn crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrFixReviewPublishResumer,
+        >,
+    >{
+        self.agent_workspace_pr_fix_review_publish_resumer
+            .read()
+            .expect("PR-fix review publish resumer lock")
+            .clone()
+            .ok_or_else(|| {
+                AppError::Infrastructure(
+                    "PR-fix review publish resumer is unavailable in this runtime".to_string(),
+                )
+            })
+    }
+
+    fn sqlite_agent_workspace_repositories(
+        shared_conn: &Arc<Mutex<rusqlite::Connection>>,
+    ) -> (
+        Arc<dyn AgentConversationWorkspaceRepository>,
+        Arc<dyn AgentWorkspaceRepairRepository>,
+    ) {
+        let repository = Arc::new(SqliteAgentConversationWorkspaceRepository::from_shared(
+            Arc::clone(shared_conn),
+        ));
+        let workspace_repository: Arc<dyn AgentConversationWorkspaceRepository> =
+            repository.clone();
+        let repair_repository: Arc<dyn AgentWorkspaceRepairRepository> = repository;
+        (workspace_repository, repair_repository)
+    }
+
+    fn memory_agent_workspace_repositories() -> (
+        Arc<dyn AgentConversationWorkspaceRepository>,
+        Arc<dyn AgentWorkspaceRepairRepository>,
+    ) {
+        let repository = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+        let workspace_repository: Arc<dyn AgentConversationWorkspaceRepository> =
+            repository.clone();
+        let repair_repository: Arc<dyn AgentWorkspaceRepairRepository> = repository;
+        (workspace_repository, repair_repository)
+    }
+
     pub(crate) fn manual_role_default_service(
         &self,
     ) -> crate::application::manual_role_default_service::ManualRoleDefaultService {
@@ -1345,6 +1465,8 @@ impl AppState {
         let attachment_storage_path = app_paths.attachment_storage_path();
 
         let gh_svc: Arc<dyn GithubServiceTrait> = Arc::new(GhCliGithubService::new());
+        let (agent_conversation_workspace_repo, agent_workspace_repair_repo) =
+            Self::sqlite_agent_workspace_repositories(&shared_conn);
 
         let state = Self {
             task_repo: Arc::clone(&task_repo),
@@ -1476,9 +1598,10 @@ impl AppState {
             persona_repo: Arc::new(SqlitePersonaRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
-            agent_conversation_workspace_repo: Arc::new(
-                SqliteAgentConversationWorkspaceRepository::from_shared(Arc::clone(&shared_conn)),
-            ),
+            agent_conversation_workspace_repo,
+            agent_workspace_repair_repo,
+            agent_workspace_repair_publish_continuation: Arc::new(RwLock::new(None)),
+            agent_workspace_pr_fix_review_publish_resumer: Arc::new(RwLock::new(None)),
             agent_conversation_jira_issue_repo: Arc::new(
                 SqliteAgentConversationJiraIssueRepository::from_shared(Arc::clone(&shared_conn)),
             ),
@@ -1487,6 +1610,9 @@ impl AppState {
             ),
             agent_conversation_granola_note_repo: Arc::new(
                 SqliteAgentConversationGranolaNoteRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
+            agent_conversation_mute_repo: Arc::new(
+                SqliteAgentConversationMuteRepository::from_shared(Arc::clone(&shared_conn)),
             ),
             ticket_canonical_branch_repo: Arc::new(
                 SqliteTicketCanonicalBranchRepository::from_shared(Arc::clone(&shared_conn)),
@@ -1608,6 +1734,9 @@ impl AppState {
         state
             .pr_poller_registry
             .set_notification_service(state.notification_service());
+        state
+            .pr_poller_registry
+            .set_branch_update_repo(Arc::clone(&state.branch_update_repo));
         Ok(state)
     }
 
@@ -1667,6 +1796,8 @@ impl AppState {
         let attachment_storage_path = app_paths.attachment_storage_path();
         let (events, internal_event_bus) = Self::null_event_runtime();
         let automation_state = MemoryAutomationRepository::new_shared_state();
+        let (agent_conversation_workspace_repo, agent_workspace_repair_repo) =
+            Self::memory_agent_workspace_repositories();
 
         Self {
             task_repo: Arc::new(MemoryTaskRepository::new()),
@@ -1748,9 +1879,10 @@ impl AppState {
             chat_timeline_repo: Arc::new(MemoryChatTimelineRepository::new()),
             chat_conversation_repo: Arc::new(MemoryChatConversationRepository::new()),
             persona_repo: Arc::new(MemoryPersonaRepository::new()),
-            agent_conversation_workspace_repo: Arc::new(
-                MemoryAgentConversationWorkspaceRepository::new(),
-            ),
+            agent_conversation_workspace_repo,
+            agent_workspace_repair_repo,
+            agent_workspace_repair_publish_continuation: Arc::new(RwLock::new(None)),
+            agent_workspace_pr_fix_review_publish_resumer: Arc::new(RwLock::new(None)),
             agent_conversation_jira_issue_repo: Arc::new(
                 MemoryAgentConversationJiraIssueRepository::new(),
             ),
@@ -1760,6 +1892,7 @@ impl AppState {
             agent_conversation_granola_note_repo: Arc::new(
                 MemoryAgentConversationGranolaNoteRepository::new(),
             ),
+            agent_conversation_mute_repo: Arc::new(MemoryAgentConversationMuteRepository::new()),
             ticket_canonical_branch_repo: Arc::new(MemoryTicketCanonicalBranchRepository::new()),
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 MemoryOrphanWorktreeCleanupMarkerRepository::new(),
@@ -1861,6 +1994,8 @@ impl AppState {
         let attachment_storage_path = app_paths.attachment_storage_path();
         let (events, internal_event_bus) = Self::null_event_runtime();
         let automation_state = MemoryAutomationRepository::new_shared_state();
+        let (agent_conversation_workspace_repo, agent_workspace_repair_repo) =
+            Self::memory_agent_workspace_repositories();
 
         Self {
             task_repo: Arc::new(MemoryTaskRepository::new()),
@@ -1942,9 +2077,10 @@ impl AppState {
             chat_timeline_repo: Arc::new(MemoryChatTimelineRepository::new()),
             chat_conversation_repo: Arc::new(MemoryChatConversationRepository::new()),
             persona_repo: Arc::new(MemoryPersonaRepository::new()),
-            agent_conversation_workspace_repo: Arc::new(
-                MemoryAgentConversationWorkspaceRepository::new(),
-            ),
+            agent_conversation_workspace_repo,
+            agent_workspace_repair_repo,
+            agent_workspace_repair_publish_continuation: Arc::new(RwLock::new(None)),
+            agent_workspace_pr_fix_review_publish_resumer: Arc::new(RwLock::new(None)),
             agent_conversation_jira_issue_repo: Arc::new(
                 MemoryAgentConversationJiraIssueRepository::new(),
             ),
@@ -1954,6 +2090,7 @@ impl AppState {
             agent_conversation_granola_note_repo: Arc::new(
                 MemoryAgentConversationGranolaNoteRepository::new(),
             ),
+            agent_conversation_mute_repo: Arc::new(MemoryAgentConversationMuteRepository::new()),
             ticket_canonical_branch_repo: Arc::new(MemoryTicketCanonicalBranchRepository::new()),
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 MemoryOrphanWorktreeCleanupMarkerRepository::new(),
@@ -2060,6 +2197,8 @@ impl AppState {
         let app_paths = AppPaths::for_tests();
         let attachment_storage_path = app_paths.attachment_storage_path();
         let (events, internal_event_bus) = Self::null_event_runtime();
+        let (agent_conversation_workspace_repo, agent_workspace_repair_repo) =
+            Self::sqlite_agent_workspace_repositories(&shared_conn);
 
         Self {
             task_repo: Arc::new(SqliteTaskRepository::from_shared(Arc::clone(&shared_conn))),
@@ -2148,9 +2287,10 @@ impl AppState {
             chat_timeline_repo: Arc::new(MemoryChatTimelineRepository::new()),
             chat_conversation_repo: Arc::new(MemoryChatConversationRepository::new()),
             persona_repo: Arc::new(MemoryPersonaRepository::new()),
-            agent_conversation_workspace_repo: Arc::new(
-                SqliteAgentConversationWorkspaceRepository::from_shared(Arc::clone(&shared_conn)),
-            ),
+            agent_conversation_workspace_repo,
+            agent_workspace_repair_repo,
+            agent_workspace_repair_publish_continuation: Arc::new(RwLock::new(None)),
+            agent_workspace_pr_fix_review_publish_resumer: Arc::new(RwLock::new(None)),
             agent_conversation_jira_issue_repo: Arc::new(
                 SqliteAgentConversationJiraIssueRepository::from_shared(Arc::clone(&shared_conn)),
             ),
@@ -2159,6 +2299,9 @@ impl AppState {
             ),
             agent_conversation_granola_note_repo: Arc::new(
                 SqliteAgentConversationGranolaNoteRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
+            agent_conversation_mute_repo: Arc::new(
+                SqliteAgentConversationMuteRepository::from_shared(Arc::clone(&shared_conn)),
             ),
             ticket_canonical_branch_repo: Arc::new(
                 SqliteTicketCanonicalBranchRepository::from_shared(Arc::clone(&shared_conn)),
@@ -2264,6 +2407,8 @@ impl AppState {
         let attachment_storage_path = app_paths.attachment_storage_path();
         let (events, internal_event_bus) = Self::null_event_runtime();
         let automation_state = MemoryAutomationRepository::new_shared_state();
+        let (agent_conversation_workspace_repo, agent_workspace_repair_repo) =
+            Self::memory_agent_workspace_repositories();
 
         Self {
             task_repo: Arc::clone(&task_repo),
@@ -2327,9 +2472,10 @@ impl AppState {
             chat_timeline_repo: Arc::new(MemoryChatTimelineRepository::new()),
             chat_conversation_repo: Arc::new(MemoryChatConversationRepository::new()),
             persona_repo: Arc::new(MemoryPersonaRepository::new()),
-            agent_conversation_workspace_repo: Arc::new(
-                MemoryAgentConversationWorkspaceRepository::new(),
-            ),
+            agent_conversation_workspace_repo,
+            agent_workspace_repair_repo,
+            agent_workspace_repair_publish_continuation: Arc::new(RwLock::new(None)),
+            agent_workspace_pr_fix_review_publish_resumer: Arc::new(RwLock::new(None)),
             agent_conversation_jira_issue_repo: Arc::new(
                 MemoryAgentConversationJiraIssueRepository::new(),
             ),
@@ -2339,6 +2485,7 @@ impl AppState {
             agent_conversation_granola_note_repo: Arc::new(
                 MemoryAgentConversationGranolaNoteRepository::new(),
             ),
+            agent_conversation_mute_repo: Arc::new(MemoryAgentConversationMuteRepository::new()),
             ticket_canonical_branch_repo: Arc::new(MemoryTicketCanonicalBranchRepository::new()),
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 MemoryOrphanWorktreeCleanupMarkerRepository::new(),

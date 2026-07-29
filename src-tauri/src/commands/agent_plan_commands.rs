@@ -3,6 +3,7 @@ use tauri::State;
 
 pub(crate) use crate::application::agent_task_pipeline_service::validate_complete_task_pipeline_proposal_selection;
 use crate::application::{
+    agent_plan_context::{plan_bundle_composer_references, plan_bundle_fingerprint},
     agent_task_pipeline_service::{
         activate_agent_task_pipeline as activate_agent_task_pipeline_service,
         validate_direct_implementation_authority_sync, validate_supervised_task_pipeline,
@@ -70,6 +71,7 @@ pub struct ActivateAgentPlanDirectImplementationInput {
 pub struct ActivateAgentPlanDirectImplementationResponse {
     pub workspace: AgentConversationWorkspaceResponse,
     pub artifact_references: Vec<ComposerArtifactReference>,
+    pub plan_context_fingerprint: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -283,7 +285,7 @@ pub(crate) async fn activate_agent_plan_direct_implementation_for_state(
     let conversation_id = ChatConversationId::from_string(input.conversation_id.clone());
     let tx_conversation_id = input.conversation_id;
     let tx_session_id = input.session_id;
-    let response_session_id = tx_session_id.clone();
+    let response_session_id = IdeationSessionId::from_string(tx_session_id.clone());
     let retry = input.retry;
     let approved_bundle = state
         .db
@@ -341,41 +343,22 @@ pub(crate) async fn activate_agent_plan_direct_implementation_for_state(
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "Activated Edit workspace was not found".to_string())?;
     let workspace = agent_workspace_response_for_state(state, workspace).await?;
-    let mut artifact_references = vec![approved_plan_composer_reference(
-        approved_bundle.overview,
+    let artifact_references = plan_bundle_composer_references(
         &response_session_id,
-        "Plan Overview",
-    )];
-    if let Some(blueprint) = approved_bundle.blueprint {
-        artifact_references.push(approved_plan_composer_reference(
-            blueprint,
-            &response_session_id,
-            "Implementation Blueprint",
-        ));
-    }
+        &approved_bundle.overview,
+        approved_bundle.blueprint.as_ref(),
+        "approved",
+    );
+    let plan_context_fingerprint = plan_bundle_fingerprint(
+        &response_session_id,
+        &approved_bundle.overview,
+        approved_bundle.blueprint.as_ref(),
+    );
     Ok(ActivateAgentPlanDirectImplementationResponse {
         workspace,
         artifact_references,
+        plan_context_fingerprint,
     })
-}
-
-fn approved_plan_composer_reference(
-    artifact: Artifact,
-    session_id: &str,
-    fallback_title: &str,
-) -> ComposerArtifactReference {
-    ComposerArtifactReference {
-        artifact_id: artifact.id.as_str().to_string(),
-        kind: "plan".to_string(),
-        title: Some(if artifact.name.trim().is_empty() {
-            fallback_title.to_string()
-        } else {
-            artifact.name
-        }),
-        session_id: Some(session_id.to_string()),
-        version: Some(artifact.metadata.version),
-        status: Some("approved".to_string()),
-    }
 }
 
 #[doc(hidden)]

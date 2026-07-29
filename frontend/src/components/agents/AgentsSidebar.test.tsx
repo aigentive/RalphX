@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useState, type ComponentProps } from "react";
 import userEvent from "@testing-library/user-event";
@@ -48,6 +48,8 @@ const { virtuosoMockState } = vi.hoisted(() => ({
     dimensionsByTestId: new Map<string, VirtuosoMockDimensions>(),
     endReachedByTestId: new Map<string, () => void>(),
     rangeByTestId: new Map<string, VirtuosoMockRange>(),
+    restoreStateByTestIdAndCount: new Map<string, VirtuosoMockStateSnapshot>(),
+    scrollToCallsByTestId: new Map<string, number>(),
     resetScrollAfterMountWithoutStateByTestId: new Set<string>(),
     asyncGetStateByTestId: new Set<string>(),
   },
@@ -88,6 +90,15 @@ const { publicationGroupCalls } = vi.hoisted(() => ({
     sort: string;
     minimumRowCount?: number;
   }>,
+}));
+const { inboxLaneByConversationId } = vi.hoisted(() => ({
+  inboxLaneByConversationId: new Map<
+    string,
+    { lane: "needs" | "working" | "stale" | "done"; actionVerb: string }
+  >(),
+}));
+const { mutedConversationIds } = vi.hoisted(() => ({
+  mutedConversationIds: new Set<string>(),
 }));
 const { automationGroupIndexCalls, automationGroupCalls, automationLabels } = vi.hoisted(() => ({
   automationGroupIndexCalls: [] as Array<{
@@ -161,6 +172,12 @@ vi.mock("react-virtuoso", async () => {
       } = props;
       const scrollerNodeRef = React.useRef<HTMLDivElement | null>(null);
       const testId = dataTestId ?? "mock-virtuoso";
+      if (restoreStateFrom) {
+        virtuosoMockState.restoreStateByTestIdAndCount.set(
+          `${testId}:${data.length}`,
+          restoreStateFrom
+        );
+      }
       const range = virtuosoMockState.rangeByTestId.get(testId);
       const startIndex = range?.startIndex ?? 0;
       const endIndex = range?.endIndex ?? data.length - 1;
@@ -190,6 +207,10 @@ vi.mock("react-virtuoso", async () => {
           },
           scrollTo: (location: ScrollToOptions) => {
             if (typeof location.top === "number" && scrollerNodeRef.current) {
+              virtuosoMockState.scrollToCallsByTestId.set(
+                testId,
+                (virtuosoMockState.scrollToCallsByTestId.get(testId) ?? 0) + 1
+              );
               scrollerNodeRef.current.scrollTop = location.top;
             }
           },
@@ -500,6 +521,7 @@ vi.mock("./useAgentSidebarPublicationGroup", () => {
               : workspace?.baseRef ?? "master",
           publicationState: state,
           publicationLabel: getPublicationLabel(workspace, state),
+          isMuted: mutedConversationIds.has(conversation.id),
         };
       })
       .filter((row) => publicationStates.includes(row.publicationState))
@@ -589,6 +611,48 @@ vi.mock("./useAgentSidebarPublicationGroup", () => {
         fetchNextPage: firstProjectResult?.fetchNextPage,
         isLoading: firstProjectResult?.isLoading,
       });
+    },
+    useAgentSidebarInboxGroup: ({
+      lane,
+      projectIds,
+      archivedOnly,
+      search,
+      publicationStates,
+      pinnedConversationIds,
+      priorityConversationIds,
+      sort,
+    }: {
+      lane: "needs" | "working" | "stale" | "done";
+      projectIds: string[];
+      archivedOnly: boolean;
+      search: string;
+      publicationStates: string[];
+      pinnedConversationIds: string[];
+      priorityConversationIds?: string[];
+      sort: string;
+    }) => {
+      const result = buildGroupResult({
+        projectIds,
+        groupKey: lane,
+        groupLabel: lane,
+        archivedOnly,
+        search,
+        publicationStates,
+        pinnedConversationIds,
+        priorityConversationIds,
+        sort,
+      });
+      const rows = result.group.rows
+        .filter((row) => inboxLaneByConversationId.get(row.conversation.id)?.lane === lane)
+        .map((row) => ({
+          ...row,
+          attentionLane: lane,
+          actionVerb: inboxLaneByConversationId.get(row.conversation.id)?.actionVerb ?? "",
+        }));
+      return {
+        ...result,
+        group: { ...result.group, rows, total: rows.length },
+      };
     },
     useAgentSidebarProjectGroup: ({
       projectId,
@@ -834,31 +898,40 @@ const workspace = (
   ...overrides,
 });
 
+function buildSidebarProps(
+  projects: Project[] = [project()],
+  props?: Partial<ComponentProps<typeof AgentsSidebar>>
+): ComponentProps<typeof AgentsSidebar> {
+  return {
+    projects,
+    focusedProjectId: "project-1",
+    selectedConversationId: null,
+    onFocusProject: vi.fn(),
+    onSelectConversation: vi.fn(),
+    onCreateAgent: vi.fn(),
+    onCreateProject: vi.fn(),
+    onArchiveProject: vi.fn(),
+    onAutoRenameConversation: vi.fn(),
+    onRenameConversation: vi.fn(),
+    onArchiveConversation: vi.fn(),
+    onBulkArchiveConversations: vi.fn(),
+    onBulkMuteConversations: vi.fn(),
+    onSetConversationMuted: vi.fn(),
+    onRestoreConversation: vi.fn(),
+    onForkConversation: vi.fn(),
+    showArchived: false,
+    onShowArchivedChange: vi.fn(),
+    ...props,
+  };
+}
+
 function renderSidebar(
   projects: Project[] = [project()],
   props?: Partial<ComponentProps<typeof AgentsSidebar>>
 ) {
   return render(
     <TooltipProvider delayDuration={0}>
-      <AgentsSidebar
-        projects={projects}
-        focusedProjectId="project-1"
-        selectedConversationId={null}
-        onFocusProject={vi.fn()}
-        onSelectConversation={vi.fn()}
-        onCreateAgent={vi.fn()}
-        onCreateProject={vi.fn()}
-        onArchiveProject={vi.fn()}
-        onAutoRenameConversation={vi.fn()}
-        onRenameConversation={vi.fn()}
-        onArchiveConversation={vi.fn()}
-        onBulkArchiveConversations={vi.fn()}
-        onRestoreConversation={vi.fn()}
-        onForkConversation={vi.fn()}
-        showArchived={false}
-        onShowArchivedChange={vi.fn()}
-        {...props}
-      />
+      <AgentsSidebar {...buildSidebarProps(projects, props)} />
     </TooltipProvider>
   );
 }
@@ -915,6 +988,8 @@ describe("AgentsSidebar", () => {
     workspacesByProject.clear();
     workspaceCalls.length = 0;
     publicationGroupCalls.length = 0;
+    inboxLaneByConversationId.clear();
+    mutedConversationIds.clear();
     automationGroupIndexCalls.length = 0;
     automationGroupCalls.length = 0;
     automationLabels.clear();
@@ -923,6 +998,8 @@ describe("AgentsSidebar", () => {
     virtuosoMockState.dimensionsByTestId.clear();
     virtuosoMockState.endReachedByTestId.clear();
     virtuosoMockState.rangeByTestId.clear();
+    virtuosoMockState.restoreStateByTestIdAndCount.clear();
+    virtuosoMockState.scrollToCallsByTestId.clear();
     virtuosoMockState.resetScrollAfterMountWithoutStateByTestId.clear();
     virtuosoMockState.asyncGetStateByTestId.clear();
     runningStatesHook.mockClear();
@@ -934,6 +1011,7 @@ describe("AgentsSidebar", () => {
       showEmptyProjectGroups: true,
       projectSort: "latest",
       sidebarGroupBy: "project",
+      sidebarInboxActiveLane: "needs",
       sidebarProjectFilterIds: [],
       sidebarPublicationStateFilters: [
         "active",
@@ -964,6 +1042,33 @@ describe("AgentsSidebar", () => {
     expect(screen.getByTestId("agents-new-agent")).toHaveTextContent("New");
     expect(screen.getByTestId("agents-new-agent").className).toContain("h-7");
     expect(screen.getByTestId("agents-add-project").className).toContain("rounded-[6px]");
+  });
+
+  it("keeps a lightweight list frame but does not mount Virtuoso while hidden", () => {
+    conversationsByProject.set("project-1", {
+      data: [conversation()],
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    const hiddenSidebar = renderSidebar([project()], { isVisible: false });
+
+    expect(
+      screen.getByTestId("agents-sidebar-session-list-project-1-frame")
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-sidebar-session-list-project-1")
+    ).not.toBeInTheDocument();
+
+    hiddenSidebar.rerender(
+      <TooltipProvider delayDuration={0}>
+        <AgentsSidebar {...buildSidebarProps([project()], { isVisible: true })} />
+      </TooltipProvider>
+    );
+
+    expect(screen.getByTestId("agents-sidebar-session-list-project-1")).toBeInTheDocument();
   });
 
   it("renders the data-driven No project group and selects its standalone row without a project id", async () => {
@@ -1714,6 +1819,111 @@ describe("AgentsSidebar", () => {
     expect(screen.getByTestId("agents-sidebar-session-list-project-1").scrollTop).toBe(
       184
     );
+  });
+
+  it("restores a saved scroll state only once for a scroll key across data refreshes", () => {
+    const rows = Array.from({ length: 12 }, (_, index) =>
+      conversation({
+        id: `conversation-restore-${index + 1}`,
+        title: `Restore row ${index + 1}`,
+      })
+    );
+    conversationsByProject.set("project-1", {
+      data: rows,
+      total: rows.length,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    const firstRender = renderSidebar();
+    const firstList = screen.getByTestId("agents-sidebar-session-list-project-1");
+    firstList.scrollTop = 184;
+    fireEvent.scroll(firstList);
+    firstRender.unmount();
+    virtuosoMockState.dimensionsByTestId.set("agents-sidebar-session-list-project-1", {
+      clientHeight: 368,
+      scrollHeight: 736,
+    });
+
+    const refreshedRows = [
+      ...rows,
+      conversation({ id: "conversation-restore-13", title: "Restore row 13" }),
+    ];
+    const restoredRender = renderSidebar();
+    conversationsByProject.set("project-1", {
+      data: refreshedRows,
+      total: refreshedRows.length,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    restoredRender.rerender(
+      <TooltipProvider delayDuration={0}>
+        <AgentsSidebar {...buildSidebarProps()} />
+      </TooltipProvider>
+    );
+
+    const testId = "agents-sidebar-session-list-project-1";
+    expect(virtuosoMockState.restoreStateByTestIdAndCount.get(`${testId}:12`)).toBe(
+      virtuosoMockState.restoreStateByTestIdAndCount.get(`${testId}:13`)
+    );
+    expect(virtuosoMockState.scrollToCallsByTestId.get(testId)).toBe(1);
+  });
+
+  it("restores the latest saved scroll position after a hide and show cycle", async () => {
+    const hideProject = project({ id: "project-hide", name: "hide-show" });
+    useAgentSessionStore.setState({
+      expandedProjectIds: { "project-hide": true },
+    });
+    const rows = Array.from({ length: 12 }, (_, index) =>
+      conversation({
+        id: `conversation-hide-${index + 1}`,
+        title: `Hide row ${index + 1}`,
+        projectId: "project-hide",
+        contextId: "project-hide",
+      })
+    );
+    conversationsByProject.set("project-hide", {
+      data: rows,
+      total: rows.length,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    virtuosoMockState.dimensionsByTestId.set(
+      "agents-sidebar-session-list-project-hide",
+      { clientHeight: 368, scrollHeight: 736 }
+    );
+
+    const view = renderSidebar([hideProject], { isVisible: true });
+    const list = screen.getByTestId("agents-sidebar-session-list-project-hide");
+    list.scrollTop = 184;
+    fireEvent.scroll(list);
+    await waitForAnimationFrame();
+
+    view.rerender(
+      <TooltipProvider delayDuration={0}>
+        <AgentsSidebar {...buildSidebarProps([hideProject], { isVisible: false })} />
+      </TooltipProvider>
+    );
+    expect(
+      screen.queryByTestId("agents-sidebar-session-list-project-hide")
+    ).not.toBeInTheDocument();
+
+    view.rerender(
+      <TooltipProvider delayDuration={0}>
+        <AgentsSidebar {...buildSidebarProps([hideProject], { isVisible: true })} />
+      </TooltipProvider>
+    );
+    await waitForAnimationFrame();
+
+    expect(
+      screen.getByTestId("agents-sidebar-session-list-project-hide").scrollTop
+    ).toBe(184);
   });
 
   it("refetches the previously loaded project page depth when returning to a group", async () => {
@@ -2706,7 +2916,11 @@ describe("AgentsSidebar", () => {
     expect(screen.getByTestId("agents-filter-toolbar").getAttribute("style")).toContain(
       "background-color: var(--bg-surface)",
     );
-    expect(screen.getByTestId("agents-group-trigger")).toHaveTextContent("Group");
+    expect(screen.getByTestId("agents-group-trigger")).toHaveTextContent("Project");
+    expect(screen.getByTestId("agents-group-trigger")).toHaveAttribute(
+      "aria-label",
+      "Group conversations: Project"
+    );
     expect(screen.getByTestId("agents-filters-trigger")).toHaveTextContent("Filters");
     expect(screen.getByTestId("agents-sort-trigger")).toHaveTextContent("Sort");
     expect(screen.getByTestId("agents-bulk-archive-trigger")).toHaveAccessibleName(
@@ -2754,12 +2968,26 @@ describe("AgentsSidebar", () => {
         "Sort conversations: Latest"
       )
     );
+    expect(screen.getByTestId("agents-group-trigger")).toHaveTextContent(
+      "Publication state"
+    );
     await user.click(screen.getByRole("radio", { name: "Automations" }));
     await waitFor(() =>
       expect(screen.getByTestId("agents-sort-trigger")).toHaveAttribute(
         "aria-label",
         "Sort automations: Latest"
       )
+    );
+    expect(screen.getByTestId("agents-group-trigger")).toHaveTextContent(
+      "Automations"
+    );
+    expect(screen.getByTestId("agents-group-trigger")).toHaveAttribute(
+      "aria-label",
+      "Group conversations: Automations"
+    );
+    await user.click(screen.getByRole("radio", { name: "Inbox" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-group-trigger")).toHaveTextContent("Inbox")
     );
 
     await user.click(screen.getByTestId("agents-filters-trigger"));
@@ -2938,6 +3166,25 @@ describe("AgentsSidebar", () => {
       })
     ).toBeChecked();
     expect(screen.getByRole("heading", { name: "Archive selected sessions?" })).toBeVisible();
+  });
+
+  it("mutes every selected session without opening archive confirmation", async () => {
+    const user = userEvent.setup();
+    const first = conversation({ id: "conversation-bulk-mute-first", title: "First mute" });
+    const second = conversation({ id: "conversation-bulk-mute-second", title: "Second mute" });
+    conversationsByProject.set("project-1", {
+      data: [first, second], total: 2, isLoading: false, hasNextPage: false, isFetchingNextPage: false,
+    });
+    const onBulkMuteConversations = vi.fn();
+    renderSidebar([project()], { onBulkMuteConversations });
+
+    await user.click(screen.getByTestId("agents-bulk-archive-trigger"));
+    await user.click(screen.getByRole("checkbox", { name: "Select First mute for bulk archive" }));
+    await user.click(screen.getByRole("checkbox", { name: "Select Second mute for bulk archive" }));
+    await user.click(screen.getByRole("button", { name: "Mute" }));
+
+    expect(onBulkMuteConversations).toHaveBeenCalledWith([first.id, second.id]);
+    expect(screen.queryByRole("heading", { name: "Archive selected sessions?" })).not.toBeInTheDocument();
   });
 
   it("prunes a selected row when it leaves the loaded filter result", async () => {
@@ -4176,6 +4423,57 @@ describe("AgentsSidebar", () => {
     ).toContain("color: var(--accent-primary)");
   });
 
+  it("shows mute before archive and keeps a pinned muted session pinned", async () => {
+    const user = userEvent.setup();
+    const conv = conversation({ id: "conversation-muted", title: "Muted session" });
+    conversationsByProject.set("project-1", {
+      data: [conv], total: 1, isLoading: false, hasNextPage: false, isFetchingNextPage: false,
+    });
+    mutedConversationIds.add(conv.id);
+    useAgentSessionStore.setState({ pinnedConversationIds: { [conv.id]: true } });
+    const onSetConversationMuted = vi.fn();
+    renderSidebar([project()], { onSetConversationMuted });
+
+    expect(screen.getByTestId(`agents-pin-icon-${conv.id}`)).toBeInTheDocument();
+    expect(screen.queryByTestId(`agents-mute-icon-${conv.id}`)).not.toBeInTheDocument();
+    await user.click(within(screen.getByTestId(`agents-session-${conv.id}`)).getByRole("button", { name: "Session actions" }));
+    expect(screen.getByText("Unmute session")).toBeInTheDocument();
+    expect(screen.getByText("Returns it to its normal lane.")).toBeInTheDocument();
+    expect(screen.getByText("Deletes the local workspace and branch.")).toBeInTheDocument();
+    const menuItemTexts = screen.getAllByRole("menuitem").map((item) => item.textContent);
+    expect(menuItemTexts.indexOf("Unmute sessionReturns it to its normal lane.")).toBeLessThan(
+      menuItemTexts.indexOf("Archive sessionDeletes the local workspace and branch.")
+    );
+    await user.click(screen.getByText("Unmute session"));
+    expect(onSetConversationMuted).toHaveBeenCalledWith(conv, false);
+  });
+
+  it("renders the muted marker when the session is not pinned", () => {
+    const conv = conversation({ id: "conversation-muted-marker" });
+    conversationsByProject.set("project-1", {
+      data: [conv], total: 1, isLoading: false, hasNextPage: false, isFetchingNextPage: false,
+    });
+    mutedConversationIds.add(conv.id);
+
+    renderSidebar([project()]);
+
+    expect(screen.getByTestId(`agents-mute-icon-${conv.id}`)).toHaveAccessibleName(
+      "Muted until it changes"
+    );
+  });
+
+  it("offers Mute until it changes for an unmuted session", async () => {
+    const user = userEvent.setup();
+    const conv = conversation({ id: "conversation-unmuted-menu" });
+    conversationsByProject.set("project-1", {
+      data: [conv], total: 1, isLoading: false, hasNextPage: false, isFetchingNextPage: false,
+    });
+    renderSidebar([project()]);
+
+    await user.click(within(screen.getByTestId(`agents-session-${conv.id}`)).getByRole("button", { name: "Session actions" }));
+    expect(screen.getByText("Mute until it changes")).toBeInTheDocument();
+  });
+
   it("groups conversations by publication state when selected in Group", async () => {
     const user = userEvent.setup();
     const merged = conversation({ id: "conversation-merged", title: "Merged run" });
@@ -4758,5 +5056,205 @@ describe("AgentsSidebar", () => {
     await user.clear(titleInput);
     await user.keyboard("{Enter}");
     expect(onRenameConversation).not.toHaveBeenCalled();
+  });
+
+  it("selects Inbox and renders its four lane chips in fixed order", async () => {
+    const user = userEvent.setup();
+    const lanes = ["needs", "working", "stale", "done"] as const;
+    const conversations = lanes.map((lane) => {
+      const value = conversation({ id: `conversation-${lane}`, title: lane });
+      inboxLaneByConversationId.set(value.id, { lane, actionVerb: "Review" });
+      return value;
+    });
+    conversationsByProject.set("project-1", { data: conversations, isLoading: false });
+
+    renderSidebar();
+    await user.click(screen.getByTestId("agents-group-trigger"));
+    await user.click(screen.getByRole("radio", { name: "Inbox" }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("agents-inbox-lane-chips")).toBeInTheDocument();
+    });
+    expect(
+      screen
+        .getAllByRole("tab")
+        .map((element) => element.dataset.testid)
+    ).toEqual(lanes.map((lane) => `agents-inbox-lane-chip-${lane}`));
+    expect(screen.getByTestId("agents-inbox-footer")).toHaveTextContent("1 waiting on you");
+  });
+
+  it("renders only the selected lane's rows behind a single sidebar scroller", async () => {
+    const user = userEvent.setup();
+    const needs = conversation({ id: "conversation-needs", title: "Needs review" });
+    const working = conversation({ id: "conversation-working", title: "Working review" });
+    inboxLaneByConversationId.set(needs.id, { lane: "needs", actionVerb: "Review" });
+    inboxLaneByConversationId.set(working.id, { lane: "working", actionVerb: "Publish" });
+    conversationsByProject.set("project-1", { data: [needs, working], isLoading: false });
+    useAgentSessionStore.setState({ sidebarGroupBy: "inbox" });
+
+    renderSidebar();
+
+    expect(
+      screen.getByTestId("agents-sidebar-session-list-inbox-needs")
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-sidebar-session-list-inbox-working")
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-inbox-lane-panel-needs")).toBeInTheDocument();
+    // The lane list owns the pane's only scroller, so the body must not scroll too.
+    expect(screen.getByTestId("agents-sidebar-body")).not.toHaveClass("overflow-y-auto");
+    expect(screen.getByTestId("agents-sidebar-body")).toHaveClass("overflow-hidden");
+
+    await user.click(screen.getByTestId("agents-inbox-lane-chip-working"));
+
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("agents-sidebar-session-list-inbox-working")
+      ).toBeInTheDocument();
+    });
+    expect(
+      screen.queryByTestId("agents-sidebar-session-list-inbox-needs")
+    ).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(useAgentSessionStore.getState().sidebarInboxActiveLane).toBe("working");
+    });
+  });
+
+  it("keeps zero-count lane chips selectable and shows the lane's own empty copy", async () => {
+    const user = userEvent.setup();
+    useAgentSessionStore.setState({ sidebarGroupBy: "inbox" });
+
+    renderSidebar();
+
+    expect(screen.getByTestId("agents-inbox-lane-chip-needs")).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+    expect(screen.getByTestId("agents-inbox-lane-empty-needs")).toHaveTextContent(
+      "Nothing waiting on you"
+    );
+
+    await user.click(screen.getByTestId("agents-inbox-lane-chip-working"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("agents-inbox-lane-empty-working")).toHaveTextContent(
+        "Nothing working"
+      );
+    });
+    expect(
+      screen.queryByTestId("agents-inbox-lane-empty-needs")
+    ).not.toBeInTheDocument();
+  });
+
+  it("repaints the selected lane chip before persisting the selection", async () => {
+    useAgentSessionStore.setState({ sidebarGroupBy: "inbox" });
+
+    renderSidebar();
+
+    act(() => {
+      fireEvent.click(screen.getByTestId("agents-inbox-lane-chip-done"));
+    });
+
+    // Visible selection flips in the click commit; the store write is deferred
+    // past the paint so serializing the sidebar store never blocks the switch.
+    expect(screen.getByTestId("agents-inbox-lane-chip-done")).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+    expect(useAgentSessionStore.getState().sidebarInboxActiveLane).toBe("needs");
+
+    await waitFor(() => {
+      expect(useAgentSessionStore.getState().sidebarInboxActiveLane).toBe("done");
+    });
+  });
+
+  it("caps lane chip counts at 99+ while keeping the exact total accessible", async () => {
+    const conversations = Array.from({ length: 120 }, (_, index) => {
+      const value = conversation({
+        id: `conversation-needs-${index}`,
+        title: `Needs ${index}`,
+      });
+      inboxLaneByConversationId.set(value.id, { lane: "needs", actionVerb: "Review" });
+      return value;
+    });
+    conversationsByProject.set("project-1", { data: conversations, isLoading: false });
+    useAgentSessionStore.setState({ sidebarGroupBy: "inbox" });
+
+    renderSidebar();
+
+    const needsChip = await screen.findByTestId("agents-inbox-lane-chip-needs");
+    await waitFor(() => {
+      expect(needsChip).toHaveTextContent("99+");
+    });
+    expect(needsChip).toHaveAccessibleName("Needs you, 120 conversations");
+    expect(needsChip).toHaveAttribute("title", "Needs you, 120 conversations");
+  });
+
+  it("moves lane selection with arrow keys and restores the selection after remount", async () => {
+    const user = userEvent.setup();
+    useAgentSessionStore.setState({ sidebarGroupBy: "inbox" });
+
+    const { unmount } = renderSidebar();
+
+    const needsChip = screen.getByTestId("agents-inbox-lane-chip-needs");
+    expect(needsChip).toHaveAttribute("tabindex", "0");
+    expect(screen.getByTestId("agents-inbox-lane-chip-done")).toHaveAttribute(
+      "tabindex",
+      "-1"
+    );
+
+    needsChip.focus();
+    await user.keyboard("{ArrowRight}");
+
+    await waitFor(() => {
+      expect(screen.getByTestId("agents-inbox-lane-chip-working")).toHaveAttribute(
+        "aria-selected",
+        "true"
+      );
+    });
+
+    await user.keyboard("{ArrowLeft}{ArrowLeft}");
+    await waitFor(() => {
+      expect(screen.getByTestId("agents-inbox-lane-chip-done")).toHaveAttribute(
+        "aria-selected",
+        "true"
+      );
+    });
+    await waitFor(() => {
+      expect(useAgentSessionStore.getState().sidebarInboxActiveLane).toBe("done");
+    });
+
+    unmount();
+    renderSidebar();
+
+    expect(screen.getByTestId("agents-inbox-lane-chip-done")).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+    expect(screen.getByTestId("agents-inbox-lane-panel-done")).toBeInTheDocument();
+  });
+
+  it("preserves inbox verb and publication metadata and drops it when leaving the inbox", async () => {
+    const needs = conversation({ id: "conversation-needs", title: "Needs review" });
+    inboxLaneByConversationId.set(needs.id, { lane: "needs", actionVerb: "Review" });
+    conversationsByProject.set("project-1", { data: [needs], isLoading: false });
+    workspacesByProject.set("project-1", [
+      workspace({ conversationId: needs.id, publicationPrStatus: "draft" }),
+    ]);
+    useAgentSessionStore.setState({ sidebarGroupBy: "inbox" });
+
+    renderSidebar();
+    expect(screen.getByTestId("agents-session-conversation-needs")).toHaveTextContent(
+      "Review"
+    );
+    expect(screen.getByTestId("agents-session-conversation-needs")).toHaveTextContent(
+      "draft"
+    );
+
+    act(() => {
+      useAgentSessionStore.setState({ sidebarGroupBy: "project" });
+    });
+    expect(screen.queryByText("Review")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agents-inbox-lane-chips")).not.toBeInTheDocument();
   });
 });

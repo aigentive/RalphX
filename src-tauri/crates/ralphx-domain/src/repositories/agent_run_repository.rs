@@ -16,6 +16,9 @@ use crate::error::AppResult;
 /// Error marker used when startup cancels a run that was left active by a prior app session.
 pub const ORPHANED_AGENT_RUN_ON_APP_RESTART: &str = "Orphaned on app restart";
 
+/// Error marker used when the system pruner cancels a stale running registry entry.
+pub const PRUNED_STALE_AGENT_RUN: &str = "pruned_stale_running_registry_entry";
+
 /// Repository trait for AgentRun persistence.
 /// Implementations can use SQLite, PostgreSQL, in-memory, etc.
 #[async_trait]
@@ -172,11 +175,17 @@ pub trait AgentRunRepository: Send + Sync {
         Ok(true)
     }
 
+    /// Complete only when this caller repairs a system prune cancellation.
+    async fn complete_if_prune_cancelled(&self, id: &AgentRunId) -> AppResult<bool>;
+
     /// Fail a run (set status to Failed, completed_at timestamp, and error message)
     async fn fail(&self, id: &AgentRunId, error_message: &str) -> AppResult<()>;
 
     /// Cancel a run (set status to Cancelled and completed_at timestamp)
     async fn cancel(&self, id: &AgentRunId) -> AppResult<()>;
+
+    /// Cancel a currently running run and persist the attributable system reason.
+    async fn cancel_with_reason(&self, id: &AgentRunId, reason: &str) -> AppResult<()>;
 
     /// Delete a run
     async fn delete(&self, id: &AgentRunId) -> AppResult<()>;

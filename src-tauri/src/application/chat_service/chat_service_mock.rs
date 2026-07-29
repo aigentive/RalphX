@@ -18,7 +18,7 @@ use crate::infrastructure::agents::claude::ToolCall;
 
 use super::{
     AgentRunningState, ChatConversationWithMessages, ChatService, ChatServiceError,
-    SendMessageOptions, SendResult,
+    SendMessageOptions, SendResult, MESSAGE_DELIVERED_NOT_PERSISTED_PREFIX,
 };
 
 // ============================================================================
@@ -50,6 +50,9 @@ pub struct MockChatService {
     delete_queued_message_calls: Mutex<Vec<(ChatContextType, String, String)>>,
     /// When set, the next delete_queued_message call returns an error.
     fail_next_delete_queued_message: Mutex<bool>,
+    /// When set, the next send_message reports the turn as delivered to the live
+    /// process but not persisted.
+    fail_next_send_as_delivered_not_persisted: Mutex<bool>,
     /// When set, the next successful send reports a different conversation identity.
     mismatch_next_send_result_identity: Mutex<bool>,
     /// Optional production-style run sink used by authority-sensitive tests.
@@ -79,6 +82,7 @@ impl MockChatService {
             sent_options: Mutex::new(Vec::new()),
             delete_queued_message_calls: Mutex::new(Vec::new()),
             fail_next_delete_queued_message: Mutex::new(false),
+            fail_next_send_as_delivered_not_persisted: Mutex::new(false),
             mismatch_next_send_result_identity: Mutex::new(false),
             agent_run_repo: None,
         }
@@ -100,6 +104,7 @@ impl MockChatService {
             sent_options: Mutex::new(Vec::new()),
             delete_queued_message_calls: Mutex::new(Vec::new()),
             fail_next_delete_queued_message: Mutex::new(false),
+            fail_next_send_as_delivered_not_persisted: Mutex::new(false),
             mismatch_next_send_result_identity: Mutex::new(false),
             agent_run_repo: None,
         }
@@ -137,6 +142,11 @@ impl MockChatService {
 
     pub async fn fail_next_delete_queued_message(&self) {
         *self.fail_next_delete_queued_message.lock().await = true;
+    }
+
+    /// Simulates a Gate-1 turn that reached the live process but could not be stored.
+    pub async fn fail_next_send_as_delivered_not_persisted(&self) {
+        *self.fail_next_send_as_delivered_not_persisted.lock().await = true;
     }
 
     pub async fn mismatch_next_send_result_identity(&self) {
@@ -205,6 +215,17 @@ impl ChatService for MockChatService {
     ) -> Result<SendResult, ChatServiceError> {
         self.sent_messages.lock().await.push(message.to_string());
         self.sent_options.lock().await.push(options.clone());
+
+        if std::mem::take(
+            &mut *self
+                .fail_next_send_as_delivered_not_persisted
+                .lock()
+                .await,
+        ) {
+            return Err(ChatServiceError::MessageDeliveredNotPersisted(format!(
+                "{MESSAGE_DELIVERED_NOT_PERSISTED_PREFIX} Repository error: mock create failed]"
+            )));
+        }
 
         let current = self
             .call_count

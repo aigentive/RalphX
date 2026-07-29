@@ -16,6 +16,8 @@ export type StatusPillTone = "neutral" | "success" | "warning" | "error" | "acce
 
 export type StatusPillSize = "sm" | "md";
 
+export type StatusPillVariant = "default" | "tinted";
+
 interface StatusPillToneStyle {
   color: string;
   backgroundColor: string;
@@ -50,11 +52,37 @@ const TONE_STYLES: Record<StatusPillTone, StatusPillToneStyle> = {
   },
 };
 
+const TINTED_TONE_STYLES: Record<StatusPillTone, StatusPillToneStyle> = {
+  neutral: TONE_STYLES.neutral,
+  success: {
+    color: "var(--status-success, #2eb867)",
+    backgroundColor: "var(--status-success-muted, #173c29)",
+    borderColor: "var(--status-success-border, #286a45)",
+  },
+  warning: {
+    color: "var(--status-warning, #e8a33d)",
+    backgroundColor: "var(--status-warning-muted, #402f18)",
+    borderColor: "var(--status-warning-border, #6b4d25)",
+  },
+  error: {
+    color: "var(--status-error, #e5484d)",
+    backgroundColor: "var(--status-error-muted, #421f25)",
+    borderColor: "var(--status-error-border, #70313b)",
+  },
+  accent: {
+    color: "var(--accent-primary)",
+    backgroundColor: "var(--accent-muted, #3a2a22)",
+    borderColor: "var(--accent-border, #59392a)",
+  },
+};
+
 export interface StatusPillProps {
   label: ReactNode;
   /** Semantic tone; `accent` marks live/active state, `success` settled health. */
   tone?: StatusPillTone;
   size?: StatusPillSize;
+  /** Additive translucent status treatment for dense summary/list surfaces. */
+  variant?: StatusPillVariant;
   /** Optional leading icon slot; callers own icon sizing/spin. */
   icon?: ReactNode;
   /** Pulsing live dot for in-flight state (implies attention, not success). */
@@ -69,13 +97,14 @@ export function StatusPill({
   label,
   tone = "neutral",
   size = "sm",
+  variant = "default",
   icon,
   live = false,
   ariaLabel,
   className,
   testId,
 }: StatusPillProps) {
-  const style = TONE_STYLES[tone];
+  const style = (variant === "tinted" ? TINTED_TONE_STYLES : TONE_STYLES)[tone];
   return (
     <span
       className={cn(
@@ -91,6 +120,7 @@ export function StatusPill({
         borderWidth: "1px",
       }}
       data-tone={tone}
+      data-variant={variant}
       {...(ariaLabel ? { role: "img" } : {})}
       {...(ariaLabel ? { "aria-label": ariaLabel } : {})}
       {...(testId ? { "data-testid": testId } : {})}

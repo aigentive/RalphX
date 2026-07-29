@@ -1,9 +1,9 @@
-use super::plan_references::{
-    lookup_plan_approval, normalize_query, plan_reference_status, score_reference,
-    session_can_reference_plan, PlanApprovalLookup,
-};
+use super::plan_references::{normalize_query, score_reference, session_can_reference_plan};
 use super::types::SearchAgentComposerPlanReferencesInput;
 use super::AgentComposerPlanReferenceResponse;
+use crate::application::agent_plan_context::{
+    lookup_plan_approval, plan_reference_status, PlanApprovalLookup,
+};
 use crate::application::AppState;
 use crate::domain::entities::{
     Artifact, ArtifactId, ArtifactType, IdeationSession, IdeationSessionStatus, Project, ProjectId,
@@ -127,6 +127,7 @@ fn plan_reference_status_prefers_accepted_then_approved_then_draft() {
 
     let approval = PlanApprovalLookup {
         approved_at: Some("2026-06-12T00:00:00Z".to_string()),
+        approved_by: "user".to_string(),
     };
     let active = referenceable_session();
     assert_eq!(plan_reference_status(&active, Some(&approval)), "approved");

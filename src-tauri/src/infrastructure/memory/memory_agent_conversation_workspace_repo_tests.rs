@@ -5,8 +5,8 @@ use crate::domain::entities::{
     AgentWorkspacePrDescription, AgentWorkspacePrMetadataDecision, AgentWorkspacePrReviewAction,
     AgentWorkspacePrReviewActionKind, AgentWorkspacePrReviewActionStatus,
     AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewMonitorStatus,
-    AgentWorkspacePublicationMetadataPhase, AgentWorkspacePublicationMetadataReceipt,
-    AgentWorkspacePublicationMetadataState, AgentWorkspaceReviewApprovalSnapshot,
+    AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation, AgentWorkspaceRepairPhase,
+    AgentWorkspaceRepairSource, AgentWorkspaceReviewApprovalSnapshot,
     AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewAutoMergeGuardStatus,
     AgentWorkspaceReviewFixerSnapshot, AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor,
     AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
@@ -15,10 +15,9 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
-    AgentWorkspacePrReviewActionMutation, AgentWorkspacePublicationGuard,
-    AgentWorkspacePublicationMetadataReceiptClaim, AgentWorkspacePublicationMetadataReceiptRefresh,
-    AgentWorkspacePublicationUpdate, AgentWorkspaceRepairStateGuard,
-    AgentWorkspaceRepairStateTransition,
+    AgentWorkspacePrReviewActionMutation, AgentWorkspaceRepairRepository,
+    AgentWorkspaceRepairStateGuard, AgentWorkspaceRepairStateTransition,
+    StartOrJoinAgentWorkspaceRepairAttempt, StartOrJoinAgentWorkspaceRepairAttemptOutcome,
 };
 
 fn pr_review_action(
@@ -119,6 +118,8 @@ async fn workspace_review_fixer_claim_is_exact_and_single_winner() {
     monitor.reviewed_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
     monitor.current_diff_fingerprint = Some("diff-claim".to_string());
     monitor.reviewed_diff_fingerprint = Some("diff-claim".to_string());
+    monitor.current_plan_context_fingerprint = Some("plan-claim".to_string());
+    monitor.reviewed_plan_context_fingerprint = Some("plan-claim".to_string());
     monitor.review_artifact_id = Some(artifact_id.clone());
     monitor.review_artifact_version = Some(4);
     monitor.review_requested_changes_artifact_id = Some(artifact_id.clone());
@@ -135,7 +136,21 @@ async fn workspace_review_fixer_claim_is_exact_and_single_winner() {
         artifact_id,
         artifact_version: 4,
         blocking_fingerprint: "blocker-claim".to_string(),
+        plan_context_fingerprint: Some("plan-claim".to_string()),
     };
+
+    let mut stale_plan_snapshot = snapshot.clone();
+    stale_plan_snapshot.plan_context_fingerprint = Some("plan-stale".to_string());
+    assert!(repo
+        .claim_workspace_review_fixer(
+            &conversation_id,
+            &stale_plan_snapshot,
+            "attempt-stale-plan",
+            chrono::Utc::now(),
+        )
+        .await
+        .expect("stale plan claim should be a clean rejection")
+        .is_none());
 
     let claimed = repo
         .claim_workspace_review_fixer(
@@ -177,6 +192,7 @@ async fn workspace_review_fixer_settlement_rejects_refreshed_target_authority() 
         requested_changes_artifact_id: artifact_id.clone(),
         requested_changes_artifact_version: 4,
         blocking_fingerprint: "blocker-old".to_string(),
+        plan_context_fingerprint: None,
     };
     let mut monitor = AgentWorkspaceReviewMonitor::new(
         conversation_id,
@@ -189,6 +205,8 @@ async fn workspace_review_fixer_settlement_rejects_refreshed_target_authority() 
     monitor.reviewed_target_scope = Some(snapshot.target_scope);
     monitor.current_diff_fingerprint = Some(snapshot.diff_fingerprint.clone());
     monitor.reviewed_diff_fingerprint = Some(snapshot.diff_fingerprint.clone());
+    monitor.current_plan_context_fingerprint = Some("plan-old".to_string());
+    monitor.reviewed_plan_context_fingerprint = Some("plan-old".to_string());
     monitor.review_artifact_id = Some(artifact_id);
     monitor.review_artifact_version = Some(snapshot.artifact_version);
     monitor.review_requested_changes_artifact_id =
@@ -196,6 +214,10 @@ async fn workspace_review_fixer_settlement_rejects_refreshed_target_authority() 
     monitor.review_requested_changes_artifact_version =
         Some(snapshot.requested_changes_artifact_version);
     monitor.review_blocking_fingerprint = Some(snapshot.blocking_fingerprint.clone());
+    let snapshot = AgentWorkspaceReviewFixerSnapshot {
+        plan_context_fingerprint: Some("plan-old".to_string()),
+        ..snapshot
+    };
     repo.upsert_workspace_review_monitor(monitor).await.unwrap();
     let mut claimed = repo
         .claim_workspace_review_fixer(
@@ -229,6 +251,75 @@ async fn workspace_review_fixer_settlement_rejects_refreshed_target_authority() 
             .unwrap()
             .current_diff_fingerprint,
         refreshed.current_diff_fingerprint
+    );
+}
+
+#[tokio::test]
+async fn workspace_review_fixer_settlement_rejects_refreshed_plan_authority() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("conversation-fixer-plan-settle");
+    let artifact_id = ArtifactId::from_string("artifact-fixer-plan-settle");
+    let snapshot = AgentWorkspaceReviewFixerSnapshot {
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "diff-current".to_string(),
+        artifact_id: artifact_id.clone(),
+        artifact_version: 4,
+        requested_changes_artifact_id: artifact_id.clone(),
+        requested_changes_artifact_version: 4,
+        blocking_fingerprint: "blocker-current".to_string(),
+        plan_context_fingerprint: Some("plan-reviewed".to_string()),
+    };
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        conversation_id,
+        ProjectId::from_string("project-memory".to_string()),
+    );
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::Blocking;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Blocking;
+    monitor.current_target_scope = Some(snapshot.target_scope);
+    monitor.reviewed_target_scope = Some(snapshot.target_scope);
+    monitor.current_diff_fingerprint = Some(snapshot.diff_fingerprint.clone());
+    monitor.reviewed_diff_fingerprint = Some(snapshot.diff_fingerprint.clone());
+    monitor.current_plan_context_fingerprint = snapshot.plan_context_fingerprint.clone();
+    monitor.reviewed_plan_context_fingerprint = snapshot.plan_context_fingerprint.clone();
+    monitor.review_artifact_id = Some(artifact_id);
+    monitor.review_artifact_version = Some(snapshot.artifact_version);
+    monitor.review_requested_changes_artifact_id =
+        Some(snapshot.requested_changes_artifact_id.clone());
+    monitor.review_requested_changes_artifact_version =
+        Some(snapshot.requested_changes_artifact_version);
+    monitor.review_blocking_fingerprint = Some(snapshot.blocking_fingerprint.clone());
+    repo.upsert_workspace_review_monitor(monitor).await.unwrap();
+    let mut claimed = repo
+        .claim_workspace_review_fixer(
+            &conversation_id,
+            &snapshot,
+            "attempt-plan-stale",
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+    let mut refreshed = claimed.clone();
+    refreshed.current_plan_context_fingerprint = Some("plan-new".to_string());
+    repo.upsert_workspace_review_monitor(refreshed.clone())
+        .await
+        .unwrap();
+    claimed.review_fixer_status = Some("running".to_string());
+
+    assert!(repo
+        .settle_workspace_review_fixer_attempt(claimed, "attempt-plan-stale", &snapshot)
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        repo.get_workspace_review_monitor(&conversation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .current_plan_context_fingerprint,
+        refreshed.current_plan_context_fingerprint
     );
 }
 
@@ -685,41 +776,6 @@ fn make_workspace(conversation_id: ChatConversationId) -> AgentConversationWorks
     )
 }
 
-fn metadata_receipt_claim(
-    conversation_id: &ChatConversationId,
-    attempt_id: &str,
-    target_pr_number: i64,
-) -> AgentWorkspacePublicationMetadataReceiptClaim {
-    let mut event = AgentConversationWorkspacePublicationEvent::new(
-        conversation_id.clone(),
-        "metadata_prepared",
-        "started",
-        "Prepared PR metadata update.",
-        None,
-    );
-    event.attempt_id = Some(attempt_id.to_string());
-    AgentWorkspacePublicationMetadataReceiptClaim {
-        receipt: AgentWorkspacePublicationMetadataReceipt {
-            attempt_id: attempt_id.to_string(),
-            phase: AgentWorkspacePublicationMetadataPhase::Prepared,
-            state: AgentWorkspacePublicationMetadataState::NotAttempted,
-            target_pr_number,
-            before_authority_sha256: "a".repeat(64),
-            before_title_sha256: "b".repeat(64),
-            before_editable_body_sha256: "c".repeat(64),
-            before_managed_suffix_sha256: Some("d".repeat(64)),
-            intended_title_sha256: Some("e".repeat(64)),
-            intended_editable_body_sha256: Some("f".repeat(64)),
-            updated_at: chrono::Utc::now(),
-        },
-        decision: AgentWorkspacePrMetadataDecision::Patch {
-            title: Some("Prepared title".to_string()),
-            body_markdown: Some("Prepared body".to_string()),
-        },
-        event,
-    }
-}
-
 #[tokio::test]
 async fn repair_state_cas_is_atomic_and_rejects_a_stale_guard() {
     let repo = MemoryAgentConversationWorkspaceRepository::new();
@@ -865,432 +921,94 @@ async fn repair_state_and_events_are_all_or_nothing_in_memory() {
 }
 
 #[tokio::test]
-async fn publication_metadata_receipt_claim_rejects_partial_workspace_authority() {
+async fn legacy_repair_cas_cannot_mutate_a_durable_generation() {
     let repo = MemoryAgentConversationWorkspaceRepository::new();
-    let conversation_id = ChatConversationId::from_string("metadata-partial-claim-memory");
+    let conversation_id = ChatConversationId::from_string("repair-state-durable-memory");
     let mut workspace = make_workspace(conversation_id.clone());
-    workspace.publication_pr_number = Some(88);
-    workspace.publication_metadata_attempt_id = Some("partial-attempt".to_string());
-    repo.create_or_update(workspace).await.unwrap();
-    let workspace = repo
+    workspace.publication_push_status = Some("needs_agent".to_string());
+    workspace.pr_supervision_status = Some("fixing".to_string());
+    workspace.pr_supervision_updated_at = Some(chrono::Utc::now());
+    repo.create_or_update(workspace.clone()).await.unwrap();
+
+    let attempt = AgentWorkspaceRepairAttempt::new(
+        conversation_id.clone(),
+        AgentWorkspaceRepairSource::Publish,
+        AgentWorkspaceRepairContinuation::Publish,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    let durable = match repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt,
+            reason: "durable owner".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .unwrap()
+    {
+        StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(attempt) => attempt,
+        outcome => panic!("expected durable attempt, got {outcome:?}"),
+    };
+    assert_eq!(durable.phase, AgentWorkspaceRepairPhase::Requested);
+    let before = repo
         .get_by_conversation_id(&conversation_id)
         .await
         .unwrap()
         .unwrap();
-
-    let error = repo
-        .claim_publication_metadata_receipt(
+    let transition = AgentWorkspaceRepairStateTransition {
+        publication_push_status: Some("pushed".to_string()),
+        pr_supervision_status: Some("publishing".to_string()),
+        pr_supervision_summary: Some("stale legacy success".to_string()),
+        pr_supervision_updated_at: before.pr_supervision_updated_at.unwrap()
+            + chrono::Duration::seconds(1),
+        pr_auto_merge_current: Some(true),
+        base_commit: Some("stale-base".to_string()),
+    };
+    let guard = AgentWorkspaceRepairStateGuard::from_workspace(&before);
+    assert!(!repo
+        .compare_and_set_repair_state(&conversation_id, &guard, &transition)
+        .await
+        .unwrap());
+    assert!(!repo
+        .compare_and_set_repair_state_with_events(
             &conversation_id,
-            metadata_receipt_claim(&conversation_id, "replacement-attempt", 88),
+            &guard,
+            &transition,
+            vec![AgentConversationWorkspacePublicationEvent::new(
+                conversation_id.clone(),
+                "legacy_repair_succeeded",
+                "succeeded",
+                "stale legacy success",
+                Some("legacy".to_string()),
+            )],
         )
         .await
-        .expect_err("partial receipt authority must fail closed");
-
-    assert!(matches!(error, crate::error::AppError::Validation(_)));
+        .unwrap());
     assert_eq!(
         repo.get_by_conversation_id(&conversation_id)
             .await
             .unwrap()
             .unwrap(),
-        workspace
+        before
     );
     assert!(repo
         .list_publication_events(&conversation_id)
         .await
         .unwrap()
         .is_empty());
-    assert!(repo
-        .get_pr_metadata_decision(&conversation_id)
-        .await
-        .unwrap()
-        .is_none());
-}
-
-#[tokio::test]
-async fn publication_metadata_receipt_claim_cas_and_settlement_are_attempt_scoped() {
-    let repo = MemoryAgentConversationWorkspaceRepository::new();
-    let conversation_id = ChatConversationId::from_string("metadata-receipt-memory");
-    let mut workspace = make_workspace(conversation_id.clone());
-    workspace.publication_pr_number = Some(88);
-    repo.create_or_update(workspace).await.unwrap();
-
-    let claim = metadata_receipt_claim(&conversation_id, "attempt-current", 88);
-    let expected_receipt = claim.receipt.clone();
-    let expected_decision = claim.decision.clone();
-    assert!(repo
-        .claim_publication_metadata_receipt(&conversation_id, claim)
-        .await
-        .unwrap());
-    assert!(!repo
-        .claim_publication_metadata_receipt(
-            &conversation_id,
-            metadata_receipt_claim(&conversation_id, "attempt-racing", 88),
-        )
-        .await
-        .unwrap());
-
-    let claimed = repo
-        .get_by_conversation_id(&conversation_id)
-        .await
-        .unwrap()
-        .unwrap();
     assert_eq!(
-        claimed.publication_metadata_phase,
-        Some(AgentWorkspacePublicationMetadataPhase::Prepared)
-    );
-    assert_eq!(
-        claimed.publication_metadata_state,
-        Some(AgentWorkspacePublicationMetadataState::NotAttempted)
-    );
-    assert_eq!(
-        claimed.publication_metadata_attempt_id.as_deref(),
-        Some("attempt-current")
-    );
-    assert_eq!(
-        repo.get_publication_metadata_receipt(&conversation_id)
-            .await
-            .unwrap(),
-        Some(expected_receipt)
-    );
-    assert_eq!(
-        repo.get_pr_metadata_decision(&conversation_id)
-            .await
-            .unwrap(),
-        Some(expected_decision)
-    );
-
-    let refreshed_decision = AgentWorkspacePrMetadataDecision::Patch {
-        title: None,
-        body_markdown: Some("Refreshed body".to_string()),
-    };
-    let mut refreshed_event = AgentConversationWorkspacePublicationEvent::new(
-        conversation_id.clone(),
-        "metadata_refreshed",
-        "succeeded",
-        "Refreshed PR metadata authority.",
-        None,
-    );
-    refreshed_event.attempt_id = Some("attempt-current".to_string());
-    assert!(repo
-        .compare_and_set_publication_metadata_receipt_with_events(
-            &conversation_id,
-            "attempt-current",
-            AgentWorkspacePublicationMetadataPhase::Prepared,
-            AgentWorkspacePublicationMetadataState::NotAttempted,
-            AgentWorkspacePublicationMetadataPhase::Prepared,
-            AgentWorkspacePublicationMetadataState::NotAttempted,
-            Some(AgentWorkspacePublicationMetadataReceiptRefresh {
-                decision: refreshed_decision.clone(),
-                target_pr_number: 88,
-                before_authority_sha256: "1".repeat(64),
-                before_title_sha256: "2".repeat(64),
-                before_editable_body_sha256: "3".repeat(64),
-                before_managed_suffix_sha256: Some("4".repeat(64)),
-                intended_title_sha256: None,
-                intended_editable_body_sha256: Some("5".repeat(64)),
-                updated_at: chrono::Utc::now(),
-            }),
-            vec![refreshed_event],
-        )
-        .await
-        .unwrap());
-    let refreshed_receipt = repo
-        .get_publication_metadata_receipt(&conversation_id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(refreshed_receipt.before_authority_sha256, "1".repeat(64));
-    assert_eq!(refreshed_receipt.before_title_sha256, "2".repeat(64));
-    assert_eq!(
-        refreshed_receipt.before_editable_body_sha256,
-        "3".repeat(64)
-    );
-    assert_eq!(
-        refreshed_receipt.before_managed_suffix_sha256,
-        Some("4".repeat(64))
-    );
-    assert_eq!(refreshed_receipt.intended_title_sha256, None);
-    assert_eq!(
-        refreshed_receipt.intended_editable_body_sha256,
-        Some("5".repeat(64))
-    );
-    assert_eq!(
-        repo.get_pr_metadata_decision(&conversation_id)
-            .await
-            .unwrap(),
-        Some(refreshed_decision)
-    );
-
-    let mut pending_event = AgentConversationWorkspacePublicationEvent::new(
-        conversation_id.clone(),
-        "metadata_apply_started",
-        "started",
-        "Applying PR metadata.",
-        None,
-    );
-    pending_event.attempt_id = Some("attempt-current".to_string());
-    assert!(repo
-        .compare_and_set_publication_metadata_receipt_with_events(
-            &conversation_id,
-            "attempt-current",
-            AgentWorkspacePublicationMetadataPhase::Prepared,
-            AgentWorkspacePublicationMetadataState::NotAttempted,
-            AgentWorkspacePublicationMetadataPhase::Reconciling,
-            AgentWorkspacePublicationMetadataState::Unknown,
-            None,
-            vec![pending_event],
-        )
-        .await
-        .unwrap());
-
-    let mut stale_event = AgentConversationWorkspacePublicationEvent::new(
-        conversation_id.clone(),
-        "metadata_apply_failed",
-        "failed",
-        "A stale attempt must not settle metadata.",
-        None,
-    );
-    stale_event.attempt_id = Some("attempt-current".to_string());
-    assert!(!repo
-        .compare_and_set_publication_metadata_receipt_with_events(
-            &conversation_id,
-            "attempt-current",
-            AgentWorkspacePublicationMetadataPhase::Prepared,
-            AgentWorkspacePublicationMetadataState::NotAttempted,
-            AgentWorkspacePublicationMetadataPhase::Settled,
-            AgentWorkspacePublicationMetadataState::NotApplied,
-            None,
-            vec![stale_event],
-        )
-        .await
-        .unwrap());
-    assert_eq!(
-        repo.list_publication_events(&conversation_id)
+        repo.get_current_repair_attempt(&conversation_id)
             .await
             .unwrap()
-            .len(),
-        3
-    );
-
-    let mut settled_event = AgentConversationWorkspacePublicationEvent::new(
-        conversation_id.clone(),
-        "metadata_reconciled",
-        "succeeded",
-        "Confirmed PR metadata was applied.",
-        None,
-    );
-    settled_event.attempt_id = Some("attempt-current".to_string());
-    assert!(repo
-        .settle_publication_metadata_receipt_with_events(
-            &conversation_id,
-            "attempt-current",
-            AgentWorkspacePublicationMetadataPhase::Reconciling,
-            AgentWorkspacePublicationMetadataState::Unknown,
-            AgentWorkspacePublicationMetadataPhase::Settled,
-            AgentWorkspacePublicationMetadataState::Applied,
-            AgentWorkspacePublicationUpdate {
-                pr_number: Some(88),
-                pr_url: Some("https://example.test/pr/88".to_string()),
-                pr_status: Some("open".to_string()),
-                push_status: Some("pushed".to_string()),
-            },
-            vec![settled_event],
-        )
-        .await
-        .unwrap());
-
-    let settled = repo
-        .get_by_conversation_id(&conversation_id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        settled.publication_metadata_state,
-        Some(AgentWorkspacePublicationMetadataState::Applied)
-    );
-    assert_eq!(settled.publication_pr_number, Some(88));
-    assert_eq!(settled.publication_push_status.as_deref(), Some("pushed"));
-    assert_eq!(
-        repo.list_publication_events(&conversation_id)
-            .await
             .unwrap()
-            .iter()
-            .map(|event| event.attempt_id.as_deref())
-            .collect::<Vec<_>>(),
-        vec![
-            Some("attempt-current"),
-            Some("attempt-current"),
-            Some("attempt-current"),
-            Some("attempt-current")
-        ]
-    );
-}
-
-#[tokio::test]
-async fn publication_metadata_receipt_event_failure_keeps_claimed_workspace_unchanged() {
-    let repo = MemoryAgentConversationWorkspaceRepository::new();
-    let conversation_id = ChatConversationId::from_string("metadata-receipt-memory-rollback");
-    let mut workspace = make_workspace(conversation_id.clone());
-    workspace.publication_pr_number = Some(89);
-    repo.create_or_update(workspace).await.unwrap();
-    assert!(repo
-        .claim_publication_metadata_receipt(
-            &conversation_id,
-            metadata_receipt_claim(&conversation_id, "attempt-rollback", 89),
-        )
-        .await
-        .unwrap());
-    let claimed = repo
-        .get_by_conversation_id(&conversation_id)
-        .await
-        .unwrap()
-        .unwrap();
-    let claimed_events = repo
-        .list_publication_events(&conversation_id)
-        .await
-        .unwrap();
-    let mut event = AgentConversationWorkspacePublicationEvent::new(
-        conversation_id.clone(),
-        "metadata_reconciling",
-        "started",
-        "Reconciling PR metadata.",
-        None,
-    );
-    event.attempt_id = Some("attempt-rollback".to_string());
-    repo.fail_next_matching_publication_event(
-        "metadata_reconciling",
-        "started",
-        "injected event failure",
-    );
-
-    assert!(repo
-        .compare_and_set_publication_metadata_receipt_with_events(
-            &conversation_id,
-            "attempt-rollback",
-            AgentWorkspacePublicationMetadataPhase::Prepared,
-            AgentWorkspacePublicationMetadataState::NotAttempted,
-            AgentWorkspacePublicationMetadataPhase::Reconciling,
-            AgentWorkspacePublicationMetadataState::Unknown,
-            None,
-            vec![event],
-        )
-        .await
-        .is_err());
-    assert_eq!(
-        repo.get_by_conversation_id(&conversation_id)
-            .await
-            .unwrap()
-            .unwrap(),
-        claimed
-    );
-    assert_eq!(
-        repo.list_publication_events(&conversation_id)
-            .await
-            .unwrap(),
-        claimed_events
-    );
-}
-
-#[tokio::test]
-async fn publication_metadata_receipt_claim_event_failure_rolls_back_authority_and_decision() {
-    let repo = MemoryAgentConversationWorkspaceRepository::new();
-    let conversation_id = ChatConversationId::from_string("metadata-receipt-claim-rollback");
-    let mut workspace = make_workspace(conversation_id.clone());
-    workspace.publication_pr_number = Some(90);
-    workspace.publication_push_status = Some("pushing".to_string());
-    let persisted_workspace = repo.create_or_update(workspace).await.unwrap();
-    repo.fail_next_publication_event("injected claim event failure");
-
-    assert!(repo
-        .claim_publication_metadata_receipt(
-            &conversation_id,
-            metadata_receipt_claim(&conversation_id, "attempt-claim-rollback", 90),
-        )
-        .await
-        .is_err());
-    assert_eq!(
-        repo.get_by_conversation_id(&conversation_id).await.unwrap(),
-        Some(persisted_workspace)
-    );
-    assert_eq!(
-        repo.get_publication_metadata_receipt(&conversation_id)
-            .await
-            .unwrap(),
-        None
-    );
-    assert_eq!(
-        repo.get_pr_metadata_decision(&conversation_id)
-            .await
-            .unwrap(),
-        None
-    );
-    assert!(repo
-        .list_publication_events(&conversation_id)
-        .await
-        .unwrap()
-        .is_empty());
-}
-
-#[tokio::test]
-async fn publication_metadata_guarded_update_rejects_stale_writer_without_side_effects() {
-    let repo = MemoryAgentConversationWorkspaceRepository::new();
-    let conversation_id = ChatConversationId::from_string("guarded-publication-memory");
-    let mut workspace = make_workspace(conversation_id.clone());
-    workspace.publication_push_status = Some("pushing".to_string());
-    let workspace = repo.create_or_update(workspace).await.unwrap();
-    let expected = AgentWorkspacePublicationGuard::from_workspace(&workspace);
-    let mut stale = expected.clone();
-    stale.push_status = Some("checking".to_string());
-    let event = AgentConversationWorkspacePublicationEvent::new(
-        conversation_id.clone(),
-        "published",
-        "succeeded",
-        "Draft pull request is ready.",
-        None,
-    );
-    let publication = AgentWorkspacePublicationUpdate {
-        pr_number: Some(91),
-        pr_url: Some("https://example.test/pr/91".to_string()),
-        pr_status: Some("draft".to_string()),
-        push_status: Some("pushed".to_string()),
-    };
-
-    assert!(!repo
-        .update_publication_with_events(
-            &conversation_id,
-            &stale,
-            publication.clone(),
-            vec![event.clone()],
-        )
-        .await
-        .unwrap());
-    assert_eq!(
-        repo.get_by_conversation_id(&conversation_id).await.unwrap(),
-        Some(workspace)
-    );
-    assert!(repo
-        .list_publication_events(&conversation_id)
-        .await
-        .unwrap()
-        .is_empty());
-
-    assert!(repo
-        .update_publication_with_events(&conversation_id, &expected, publication, vec![event])
-        .await
-        .unwrap());
-    let settled = repo
-        .get_by_conversation_id(&conversation_id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(settled.publication_pr_number, Some(91));
-    assert_eq!(settled.publication_push_status.as_deref(), Some("pushed"));
-    assert_eq!(
-        repo.list_publication_events(&conversation_id)
-            .await
-            .unwrap()
-            .len(),
-        1
+            .id,
+        durable.id
     );
 }
 
@@ -2660,48 +2378,6 @@ mod tests {
 
         assert_eq!(workspaces.len(), 1);
         assert_eq!(workspaces[0].conversation_id, refreshing.conversation_id);
-    }
-
-    #[tokio::test]
-    async fn pending_publication_metadata_receipt_workspaces_require_a_stale_receipt() {
-        let repo = MemoryAgentConversationWorkspaceRepository::new();
-        let mut pending = candidate_workspace("pending-receipt");
-        let conversation_id = pending.conversation_id.clone();
-        pending.publication_pr_number = Some(31);
-        pending.publication_pr_status = Some("open".to_string());
-        repo.create_or_update(pending).await.unwrap();
-        assert!(repo
-            .claim_publication_metadata_receipt(
-                &conversation_id,
-                super::metadata_receipt_claim(&conversation_id, "pending-recovery-attempt", 31),
-            )
-            .await
-            .unwrap());
-
-        let mut pushing_without_receipt = candidate_workspace("pushing-without-receipt");
-        pushing_without_receipt.publication_pr_number = Some(32);
-        pushing_without_receipt.publication_pr_status = Some("open".to_string());
-        pushing_without_receipt.publication_push_status = Some("pushing".to_string());
-        repo.create_or_update(pushing_without_receipt)
-            .await
-            .unwrap();
-
-        assert!(repo
-            .list_active_pending_publication_metadata_receipt_workspaces(300)
-            .await
-            .unwrap()
-            .is_empty());
-
-        let workspaces = repo
-            .list_active_pending_publication_metadata_receipt_workspaces(0)
-            .await
-            .unwrap();
-        assert_eq!(workspaces.len(), 1);
-        assert_eq!(workspaces[0].conversation_id, conversation_id);
-        assert_eq!(
-            workspaces[0].publication_push_status.as_deref(),
-            Some("pushing")
-        );
     }
 
     #[tokio::test]

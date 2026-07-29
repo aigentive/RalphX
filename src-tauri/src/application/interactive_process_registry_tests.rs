@@ -1,6 +1,7 @@
 use crate::application::interactive_process_registry::*;
 use crate::domain::agents::AgentHarnessKind;
 use std::sync::Arc;
+use tokio::io::AsyncReadExt;
 use tokio::process::ChildStdin;
 
 #[tokio::test]
@@ -100,6 +101,67 @@ async fn captured_owner_snapshot_is_invalidated_by_replacement() {
         current_owner.metadata.agent_run_id.as_deref(),
         Some("current-run")
     );
+}
+
+#[tokio::test]
+async fn exact_owner_write_rejects_replacement_without_touching_its_stdin() {
+    let registry = InteractiveProcessRegistry::new();
+    let key = InteractiveProcessKey::new("project", "write-replacement");
+    let (stale_stdin, mut stale_child) = create_observable_test_stdin().await;
+    registry
+        .register_with_metadata(
+            key.clone(),
+            stale_stdin,
+            InteractiveProcessMetadata {
+                agent_run_id: Some("stale-run".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+    let stale_owner = registry
+        .capture_owner(&key)
+        .await
+        .expect("capture stale owner");
+
+    let (replacement_stdin, mut replacement_child) = create_observable_test_stdin().await;
+    registry
+        .register_with_metadata(
+            key.clone(),
+            replacement_stdin,
+            InteractiveProcessMetadata {
+                agent_run_id: Some("replacement-run".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    assert!(matches!(
+        registry
+            .write_message_if_owner(
+                &key,
+                stale_owner.token,
+                &stale_owner.agent_run_id,
+                "must not reach replacement",
+            )
+            .await,
+        Err(InteractiveProcessWriteError::Missing { .. })
+    ));
+
+    registry.remove(&key).await;
+    let mut replacement_output = Vec::new();
+    replacement_child
+        .stdout
+        .take()
+        .expect("replacement stdout")
+        .read_to_end(&mut replacement_output)
+        .await
+        .expect("read replacement stdout");
+    let _ = replacement_child.wait().await;
+    assert!(
+        replacement_output.is_empty(),
+        "a stale owner snapshot must not write to the replacement process"
+    );
+    let _ = stale_child.wait().await;
 }
 
 #[tokio::test]
@@ -849,6 +911,17 @@ async fn create_test_stdin() -> (ChildStdin, tokio::process::Child) {
         .stderr(std::process::Stdio::null())
         .spawn()
         .expect("failed to spawn cat");
+    let stdin = child.stdin.take().expect("no stdin");
+    (stdin, child)
+}
+
+async fn create_observable_test_stdin() -> (ChildStdin, tokio::process::Child) {
+    let mut child = tokio::process::Command::new("cat")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("failed to spawn observable cat");
     let stdin = child.stdin.take().expect("no stdin");
     (stdin, child)
 }

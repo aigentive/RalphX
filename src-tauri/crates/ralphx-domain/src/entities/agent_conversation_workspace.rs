@@ -555,6 +555,7 @@ pub struct AgentWorkspaceReviewMonitor {
     pub review_gate_bypassed_artifact_version: Option<u32>,
     pub reviewed_head_sha: Option<String>,
     pub reviewed_diff_fingerprint: Option<String>,
+    pub reviewed_plan_context_fingerprint: Option<String>,
     pub selected_source_base_ref: Option<String>,
     pub selected_source_base_sha: Option<String>,
     pub selected_source_head_ref: Option<String>,
@@ -565,6 +566,7 @@ pub struct AgentWorkspaceReviewMonitor {
     pub workspace_head_ref: Option<String>,
     pub workspace_head_sha: Option<String>,
     pub current_diff_fingerprint: Option<String>,
+    pub current_plan_context_fingerprint: Option<String>,
     pub previous_version_id: Option<ArtifactId>,
     pub review_requested_changes_previous_version_id: Option<ArtifactId>,
     pub review_blocking_summary: Option<String>,
@@ -606,6 +608,7 @@ impl AgentWorkspaceReviewMonitor {
             review_gate_bypassed_artifact_version: None,
             reviewed_head_sha: None,
             reviewed_diff_fingerprint: None,
+            reviewed_plan_context_fingerprint: None,
             selected_source_base_ref: None,
             selected_source_base_sha: None,
             selected_source_head_ref: None,
@@ -616,6 +619,7 @@ impl AgentWorkspaceReviewMonitor {
             workspace_head_ref: None,
             workspace_head_sha: None,
             current_diff_fingerprint: None,
+            current_plan_context_fingerprint: None,
             previous_version_id: None,
             review_requested_changes_previous_version_id: None,
             review_blocking_summary: None,
@@ -649,6 +653,7 @@ impl AgentWorkspaceReviewMonitor {
     ) -> bool {
         if self.reviewed_target_scope != Some(target_scope)
             || self.reviewed_diff_fingerprint.as_deref() != Some(diff_fingerprint)
+            || self.reviewed_plan_context_fingerprint != self.current_plan_context_fingerprint
         {
             return false;
         }
@@ -725,6 +730,7 @@ pub struct AgentWorkspaceReviewFixerSnapshot {
     pub requested_changes_artifact_id: ArtifactId,
     pub requested_changes_artifact_version: u32,
     pub blocking_fingerprint: String,
+    pub plan_context_fingerprint: Option<String>,
 }
 
 impl AgentWorkspaceReviewFixerSnapshot {
@@ -738,6 +744,9 @@ impl AgentWorkspaceReviewFixerSnapshot {
             .clone()
             .filter(|value| !value.trim().is_empty())?;
         if monitor.reviewed_diff_fingerprint.as_deref() != Some(diff_fingerprint.as_str()) {
+            return None;
+        }
+        if monitor.reviewed_plan_context_fingerprint != monitor.current_plan_context_fingerprint {
             return None;
         }
         let artifact_id = monitor
@@ -766,6 +775,7 @@ impl AgentWorkspaceReviewFixerSnapshot {
             requested_changes_artifact_id,
             requested_changes_artifact_version,
             blocking_fingerprint,
+            plan_context_fingerprint: monitor.current_plan_context_fingerprint.clone(),
         })
     }
 }

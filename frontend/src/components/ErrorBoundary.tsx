@@ -1,4 +1,5 @@
 import { Component, type ReactNode } from "react";
+import { invoke } from "@tauri-apps/api/core";
 
 interface Props {
   children: ReactNode;
@@ -13,7 +14,7 @@ interface State {
 
 /**
  * Error Boundary component that catches React errors and displays them visually.
- * In development, shows full error details. In production, shows a generic message.
+ * Shows a useful error message and retains full details for diagnosis.
  */
 export class ErrorBoundary extends Component<Props, State> {
   constructor(props: Props) {
@@ -27,8 +28,18 @@ export class ErrorBoundary extends Component<Props, State> {
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
     this.setState({ errorInfo });
-    // Log to console for visibility
     console.error("ErrorBoundary caught an error:", error, errorInfo);
+
+    try {
+      void invoke("log_frontend_error", {
+        input: {
+          message: error.message,
+          componentStack: errorInfo.componentStack,
+        },
+      }).catch(() => undefined);
+    } catch {
+      // Tauri is optional for web and development builds.
+    }
   }
 
   render() {
@@ -72,7 +83,7 @@ export class ErrorBoundary extends Component<Props, State> {
             </h2>
           </div>
 
-          {isDev && this.state.error && (
+          {this.state.error && (
             <>
               <div
                 style={{
@@ -91,44 +102,43 @@ export class ErrorBoundary extends Component<Props, State> {
                     wordBreak: "break-word",
                   }}
                 >
-                  {this.state.error.toString()}
+                  {isDev ? this.state.error.toString() : this.state.error.message}
                 </code>
               </div>
 
-              {this.state.errorInfo && (
-                <details style={{ marginTop: "8px" }}>
-                  <summary
+              <details style={{ marginTop: "8px" }}>
+                <summary
+                  style={{
+                    cursor: "pointer",
+                    fontSize: "0.8125rem",
+                    color: "#9ca3af",
+                    marginBottom: "8px",
+                  }}
+                >
+                  Error details
+                </summary>
+                <div
+                  style={{
+                    padding: "12px",
+                    borderRadius: "6px",
+                    backgroundColor: "var(--overlay-scrim)",
+                    overflow: "auto",
+                    maxHeight: "300px",
+                  }}
+                >
+                  <pre
                     style={{
-                      cursor: "pointer",
-                      fontSize: "0.8125rem",
+                      margin: 0,
+                      fontSize: "0.6875rem",
                       color: "#9ca3af",
-                      marginBottom: "8px",
+                      whiteSpace: "pre-wrap",
                     }}
                   >
-                    Component Stack
-                  </summary>
-                  <div
-                    style={{
-                      padding: "12px",
-                      borderRadius: "6px",
-                      backgroundColor: "var(--overlay-scrim)",
-                      overflow: "auto",
-                      maxHeight: "300px",
-                    }}
-                  >
-                    <pre
-                      style={{
-                        margin: 0,
-                        fontSize: "0.6875rem",
-                        color: "#9ca3af",
-                        whiteSpace: "pre-wrap",
-                      }}
-                    >
-                      {this.state.errorInfo.componentStack}
-                    </pre>
-                  </div>
-                </details>
-              )}
+                    {this.state.error.toString()}
+                    {this.state.errorInfo?.componentStack}
+                  </pre>
+                </div>
+              </details>
             </>
           )}
 

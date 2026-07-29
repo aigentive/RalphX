@@ -5,6 +5,7 @@ use crate::domain::entities::{
     AgentRunActionKind, AgentRunAttribution, AgentRunUsage, IdeationSessionId,
     ProviderUsageSnapshot, UsageCapture, UsageProvenance,
 };
+use crate::domain::repositories::{ORPHANED_AGENT_RUN_ON_APP_RESTART, PRUNED_STALE_AGENT_RUN};
 use crate::testing::SqliteTestDb;
 use std::collections::HashSet;
 
@@ -402,6 +403,93 @@ async fn complete_if_running_never_resurrects_terminal_or_missing_runs() {
         AgentRunStatus::Cancelled
     );
     assert!(!repo.complete_if_running(&AgentRunId::new()).await.unwrap());
+}
+
+#[tokio::test]
+async fn prune_cancel_repair_is_attributed_idempotent_and_fail_closed() {
+    let (db, repo) = setup_repo();
+    let conversation = db.seed_ideation_conversation();
+
+    let marked = AgentRun::new(conversation.id);
+    let marked_id = marked.id;
+    repo.create(marked).await.unwrap();
+    repo.cancel_with_reason(&marked_id, PRUNED_STALE_AGENT_RUN)
+        .await
+        .unwrap();
+    let marked_cancel = repo.get_by_id(&marked_id).await.unwrap().unwrap();
+    assert_eq!(marked_cancel.status, AgentRunStatus::Cancelled);
+    assert_eq!(
+        marked_cancel.error_message.as_deref(),
+        Some(PRUNED_STALE_AGENT_RUN)
+    );
+    assert!(repo.complete_if_prune_cancelled(&marked_id).await.unwrap());
+    assert!(!repo.complete_if_prune_cancelled(&marked_id).await.unwrap());
+
+    let user_cancelled = AgentRun::new(conversation.id);
+    let user_cancelled_id = user_cancelled.id;
+    repo.create(user_cancelled).await.unwrap();
+    repo.cancel(&user_cancelled_id).await.unwrap();
+
+    let mut failed = AgentRun::new(conversation.id);
+    failed.fail("provider failed");
+    let failed_id = failed.id;
+    repo.create(failed).await.unwrap();
+
+    let mut completed = AgentRun::new(conversation.id);
+    completed.complete();
+    let completed_id = completed.id;
+    repo.create(completed).await.unwrap();
+    repo.cancel_with_reason(&completed_id, PRUNED_STALE_AGENT_RUN)
+        .await
+        .unwrap();
+
+    repo.cancel_with_reason(&failed_id, PRUNED_STALE_AGENT_RUN)
+        .await
+        .unwrap();
+
+    let mut restart_orphan = AgentRun::new(conversation.id);
+    restart_orphan.status = AgentRunStatus::Cancelled;
+    restart_orphan.error_message = Some(ORPHANED_AGENT_RUN_ON_APP_RESTART.to_string());
+    let restart_orphan_id = restart_orphan.id;
+    repo.create(restart_orphan).await.unwrap();
+
+    for id in [
+        &user_cancelled_id,
+        &failed_id,
+        &completed_id,
+        &restart_orphan_id,
+    ] {
+        assert!(!repo.complete_if_prune_cancelled(id).await.unwrap());
+    }
+    assert!(!repo
+        .complete_if_prune_cancelled(&AgentRunId::new())
+        .await
+        .unwrap());
+
+    assert_eq!(
+        repo.get_by_id(&user_cancelled_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        AgentRunStatus::Cancelled
+    );
+    assert_eq!(
+        repo.get_by_id(&failed_id).await.unwrap().unwrap().status,
+        AgentRunStatus::Failed
+    );
+    let completed = repo.get_by_id(&completed_id).await.unwrap().unwrap();
+    assert_eq!(completed.status, AgentRunStatus::Completed);
+    assert_eq!(completed.error_message, None);
+    assert_eq!(
+        repo.get_by_id(&restart_orphan_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .error_message
+            .as_deref(),
+        Some(ORPHANED_AGENT_RUN_ON_APP_RESTART)
+    );
 }
 
 #[tokio::test]

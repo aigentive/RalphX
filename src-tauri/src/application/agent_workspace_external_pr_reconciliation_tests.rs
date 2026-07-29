@@ -20,20 +20,25 @@ use crate::application::external_issue_link_service::ExternalIssueLinkService;
 use crate::application::services::PrPollerRegistry;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
-    AgentRun, ChatConversationId, IdeationAnalysisBaseRefKind, PlanBranchId, Project,
+    AgentRun, AgentWorkspaceRepairPhase, ChatConversationId, IdeationAnalysisBaseRefKind,
+    PlanBranchId, Project,
 };
 use crate::domain::integrations::{
     ClickUpIntegrationSettings, ClickUpIntegrationSettingsRepository, IntegrationValidationStatus,
 };
 use crate::domain::repositories::{
-    AgentConversationWorkspaceRepository, AgentRunRepository, ProjectRepository,
+    AgentConversationWorkspaceRepository, AgentRunRepository, AgentWorkspaceRepairRepository,
+    BranchUpdateRepository, ProjectRepository,
 };
-use crate::domain::services::github_service::PrDetail;
+use crate::domain::services::github_service::{
+    PrDetail, PrHealth, PrMergeStateStatus, PrMergeableState, PrSyncState,
+};
 use crate::domain::services::{GithubServiceTrait, PrBranchMatch, PrStatus, SecretStore};
 use crate::infrastructure::memory::{
     MemoryAgentConversationWorkspaceRepository, MemoryAgentRunRepository,
-    MemoryClickUpIntegrationSettingsRepository, MemoryExternalIssueLinkRepository,
-    MemoryPlanBranchRepository, MemoryProjectRepository, MemorySecretStore,
+    MemoryBranchUpdateRepository, MemoryClickUpIntegrationSettingsRepository,
+    MemoryExternalIssueLinkRepository, MemoryPlanBranchRepository, MemoryProjectRepository,
+    MemorySecretStore,
 };
 use crate::tests::mock_github_service::MockGithubService;
 
@@ -206,6 +211,7 @@ async fn deps_with_workspace(
             pr_poller_registry: None,
             chat_service: None,
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+            agent_workspace_repair_repo: None,
             plan_branch_repo: Arc::new(MemoryPlanBranchRepository::new()),
             app_handle: None,
         },
@@ -236,6 +242,7 @@ async fn reconciliation_links_external_open_pr_to_unpublished_workspace() {
     ));
     deps.pr_poller_registry = Some(Arc::clone(&registry));
     deps.chat_service = Some(Arc::new(MockChatService::new()) as Arc<dyn ChatService>);
+    deps.agent_workspace_repair_repo = Some(workspace_repo.clone());
 
     let outcome = reconcile_agent_workspace_external_pr(
         deps,
@@ -287,13 +294,14 @@ async fn reconciliation_restarts_polling_for_linked_open_pr() {
     workspace.publication_push_status = Some("pushed".to_string());
     let github = Arc::new(MockGithubService::new());
     github.will_return_status(PrStatus::Open);
-    let (mut deps, _) = deps_with_workspace(project, workspace, github.clone()).await;
+    let (mut deps, workspace_repo) = deps_with_workspace(project, workspace, github.clone()).await;
     let registry = Arc::new(PrPollerRegistry::new(
         Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
         Arc::new(MemoryPlanBranchRepository::new()),
     ));
     deps.pr_poller_registry = Some(Arc::clone(&registry));
     deps.chat_service = Some(Arc::new(MockChatService::new()) as Arc<dyn ChatService>);
+    deps.agent_workspace_repair_repo = Some(workspace_repo);
 
     let outcome = reconcile_agent_workspace_external_pr(
         deps,
@@ -315,39 +323,234 @@ async fn reconciliation_restarts_polling_for_linked_open_pr() {
 }
 
 #[tokio::test]
-async fn reconciliation_preserves_linked_pr_when_future_pr_preference_is_disabled() {
-    let mut project = test_project();
-    project.github_pr_enabled = false;
-    let mut workspace = test_workspace(&project);
+async fn live_reconciliation_fails_closed_without_a_durable_repair_repository() {
+    let project = test_project();
+    let workspace = test_workspace(&project);
     let conversation_id = workspace.conversation_id.clone();
-    workspace.publication_pr_number = Some(42);
-    workspace.publication_pr_url = Some("https://github.com/owner/repo/pull/42".to_string());
-    workspace.publication_pr_status = Some("open".to_string());
-    workspace.publication_push_status = Some("pushed".to_string());
     let github = Arc::new(MockGithubService::new());
-    github.will_return_status(PrStatus::Open);
-    let (deps, workspace_repo) = deps_with_workspace(project, workspace, github.clone()).await;
+    github.set_find_latest_pr_by_head_branch(Ok(Some(PrBranchMatch {
+        number: 42,
+        url: "https://github.com/owner/repo/pull/42".to_string(),
+        status: PrStatus::Open,
+        is_draft: false,
+        head_ref_name: workspace.branch_name.clone(),
+        updated_at: Some("2026-05-11T22:00:00Z".to_string()),
+        author_login: None,
+    })));
+    let (mut deps, workspace_repo) = deps_with_workspace(project, workspace, github.clone()).await;
+    let registry = Arc::new(PrPollerRegistry::new(
+        Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
+        Arc::new(MemoryPlanBranchRepository::new()),
+    ));
+    let chat = Arc::new(MockChatService::new());
+    deps.pr_poller_registry = Some(Arc::clone(&registry));
+    deps.chat_service = Some(chat.clone() as Arc<dyn ChatService>);
 
-    let outcome = reconcile_agent_workspace_external_pr(
+    let error = reconcile_agent_workspace_external_pr(
         deps,
         conversation_id.clone(),
         AgentWorkspaceExternalPrReconciliationTrigger::WorkspaceLoad,
     )
     .await
-    .expect("linked PR reconciliation should remain available");
+    .expect_err("live reconciliation must not fall back to the legacy poller");
 
-    assert_eq!(
-        outcome,
-        AgentWorkspaceExternalPrReconciliationOutcome::Skipped("linked_pr_not_terminal")
-    );
+    assert!(error
+        .to_string()
+        .contains("durable workspace repair repository"));
+    assert!(chat.get_sent_messages().await.is_empty());
+    assert!(!registry.is_agent_workspace_polling(&conversation_id));
     let updated = workspace_repo
         .get_by_conversation_id(&conversation_id)
         .await
-        .unwrap()
+        .expect("workspace lookup should succeed")
         .expect("workspace should exist");
-    assert_eq!(updated.publication_pr_number, Some(42));
-    assert_eq!(github.state().check_pr_status_calls, 1);
-    assert_eq!(github.state().find_latest_pr_by_head_branch_calls, 0);
+    assert_eq!(updated.publication_pr_number, None);
+    assert!(workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("events should list")
+        .is_empty());
+    assert_eq!(github.state().find_latest_pr_by_head_branch_calls, 1);
+}
+
+#[tokio::test]
+async fn live_reconciliation_routes_pr_conflicts_through_one_durable_repair_attempt() {
+    let git_root = tempfile::tempdir_in(std::env::current_dir().expect("current directory"))
+        .expect("git root");
+    for args in [
+        vec!["init", "-b", "ralphx/demo/agent-conflict"],
+        vec!["config", "user.email", "test@example.com"],
+        vec!["config", "user.name", "RalphX Test"],
+        vec!["commit", "--allow-empty", "-m", "base"],
+    ] {
+        let output = std::process::Command::new("git")
+            .args(&args)
+            .current_dir(git_root.path())
+            .output()
+            .expect("git fixture command should spawn");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let mut project = test_project();
+    project.working_directory = git_root.path().to_string_lossy().to_string();
+    let mut workspace = test_workspace(&project);
+    workspace.branch_name = "ralphx/demo/agent-conflict".to_string();
+    workspace.worktree_path = git_root.path().to_string_lossy().to_string();
+    workspace.auto_publish_enabled = true;
+    workspace.pr_auto_merge_desired = false;
+    let conversation_id = workspace.conversation_id.clone();
+    let github = Arc::new(MockGithubService::new());
+    github.set_find_latest_pr_by_head_branch(Ok(Some(PrBranchMatch {
+        number: 42,
+        url: "https://github.com/owner/repo/pull/42".to_string(),
+        status: PrStatus::Open,
+        is_draft: false,
+        head_ref_name: workspace.branch_name.clone(),
+        updated_at: Some("2026-05-11T22:00:00Z".to_string()),
+        author_login: None,
+    })));
+    let conflict_health = PrHealth {
+        sync_state: PrSyncState {
+            status: PrStatus::Open,
+            merge_state_status: Some(PrMergeStateStatus::Dirty),
+            mergeable: Some(PrMergeableState::Conflicting),
+            is_draft: false,
+            head_ref_name: workspace.branch_name.clone(),
+            base_ref_name: "main".to_string(),
+            head_ref_oid: Some("conflict-head".to_string()),
+            base_ref_oid: Some("base-sha".to_string()),
+        },
+        review_decision: None,
+        checks: Vec::new(),
+        issue_comments: Vec::new(),
+        auto_merge_request: None,
+    };
+    github.state().fetch_pr_health_result = Some(Ok(conflict_health.clone()));
+
+    let (mut deps, workspace_repo) =
+        deps_with_workspace(project, workspace.clone(), github.clone()).await;
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
+    let registry = Arc::new(PrPollerRegistry::new(
+        Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
+        Arc::new(MemoryPlanBranchRepository::new()),
+    ));
+    registry.set_branch_update_repo(
+        Arc::new(MemoryBranchUpdateRepository::new()) as Arc<dyn BranchUpdateRepository>
+    );
+    let chat = Arc::new(MockChatService::new());
+    deps.pr_poller_registry = Some(Arc::clone(&registry));
+    deps.chat_service = Some(chat.clone() as Arc<dyn ChatService>);
+    deps.agent_workspace_repair_repo = Some(Arc::clone(&repair_repo));
+
+    reconcile_agent_workspace_external_pr(
+        deps.clone(),
+        conversation_id.clone(),
+        AgentWorkspaceExternalPrReconciliationTrigger::WorkspaceLoad,
+    )
+    .await
+    .expect("initial live reconciliation should link the external PR");
+
+    let mut first_attempt = None;
+    for _ in 0..100 {
+        if let Some(attempt) = repair_repo
+            .get_current_repair_attempt(&conversation_id)
+            .await
+            .expect("durable repair lookup should succeed")
+        {
+            if attempt.phase == AgentWorkspaceRepairPhase::Repairing
+                && chat.get_sent_messages().await.len() == 1
+            {
+                first_attempt = Some(attempt);
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let first_attempt = first_attempt.expect("durable repair attempt should be created");
+    assert_eq!(first_attempt.generation, 1);
+    assert_eq!(
+        first_attempt.target_base_commit.as_deref(),
+        Some("base-sha")
+    );
+    assert_eq!(chat.get_sent_messages().await.len(), 1);
+    let events_before_repeat = workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("events should list");
+    for _ in 0..100 {
+        if !registry.is_agent_workspace_polling(&conversation_id) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        !registry.is_agent_workspace_polling(&conversation_id),
+        "the initial conflict poller should settle before the repeat signal"
+    );
+
+    let mut stale_workspace = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    stale_workspace.base_commit = Some("stale-observation-base".to_string());
+    workspace_repo
+        .create_or_update(stale_workspace)
+        .await
+        .expect("stale workspace observation should save");
+    github.state().fetch_pr_health_result = Some(Ok(conflict_health.clone()));
+
+    reconcile_agent_workspace_external_pr(
+        deps,
+        conversation_id.clone(),
+        AgentWorkspaceExternalPrReconciliationTrigger::AgentRunCompleted,
+    )
+    .await
+    .expect("repeat live reconciliation should stay durable");
+
+    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    assert_eq!(
+        github.state().fetch_pr_health_calls,
+        1,
+        "an unsettled durable repair keeps the repeat poller from re-reading or re-dispatching"
+    );
+
+    let current_attempt = repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("durable repair lookup should succeed")
+        .expect("repair attempt should remain active");
+    assert_eq!(current_attempt.id, first_attempt.id);
+    assert_eq!(current_attempt.generation, 1);
+    assert_eq!(
+        current_attempt.target_base_commit.as_deref(),
+        Some("base-sha")
+    );
+    assert_eq!(chat.get_sent_messages().await.len(), 1);
+    assert_eq!(
+        workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("events should list"),
+        events_before_repeat
+    );
+    assert!(repair_repo
+        .get_open_repair_effect(&first_attempt.id)
+        .await
+        .expect("repair effects should load")
+        .is_none());
+    let github_state = github.state();
+    assert_eq!(github_state.disable_pr_auto_merge_calls, 0);
+    assert_eq!(github_state.push_branch_calls, 0);
+    assert_eq!(
+        github_state.push_branch_with_expected_remote_oid_lease_calls,
+        0
+    );
+    drop(github_state);
+    registry.stop_agent_workspace_polling(&conversation_id);
 }
 
 #[tokio::test]
@@ -761,6 +964,7 @@ async fn reconciliation_skips_missing_workspace_project_and_disabled_projects() 
         pr_poller_registry: None,
         chat_service: None,
         agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+        agent_workspace_repair_repo: None,
         plan_branch_repo: Arc::new(MemoryPlanBranchRepository::new()),
         app_handle: None,
     };
@@ -925,6 +1129,7 @@ async fn startup_reconciliation_processes_candidates_and_skips_blocked_projects(
         pr_poller_registry: None,
         chat_service: None,
         agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+        agent_workspace_repair_repo: None,
         plan_branch_repo: Arc::new(MemoryPlanBranchRepository::new()),
         app_handle: None,
     };
@@ -971,6 +1176,7 @@ async fn startup_reconciliation_marks_linked_failed_pr_terminal() {
         pr_poller_registry: None,
         chat_service: None,
         agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+        agent_workspace_repair_repo: None,
         plan_branch_repo: Arc::new(MemoryPlanBranchRepository::new()),
         app_handle: None,
     };

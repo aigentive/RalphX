@@ -9,9 +9,9 @@ import type { AutomationGoalItem } from "@/components/automations/automationGoal
 import type { AutomationJudgeRecovery } from "@/components/automations/automationRunView";
 import type { AutomationRunOpenTarget } from "@/components/automations/automationRunNavigation";
 import { RunTimelineItem } from "@/components/automations/AutomationRunTimelineItem";
+import { AutomationRunsTimelineHeader } from "@/components/automations/AutomationRunsTimelineHeader";
 import { Button } from "@/components/ui/button";
 import { NoticeBanner } from "@/components/ui/notice-banner";
-import { Section } from "./automationDetailShared";
 
 function sortedNewestRuns(runs: AutomationRun[]): AutomationRun[] {
   return [...runs].sort((a, b) => b.runIndex - a.runIndex);
@@ -100,14 +100,15 @@ export function AutomationRunsTab({
           {CANCELLED_RUN_RESTART_DESCRIPTION}
         </NoticeBanner>
       ) : null}
-      <Section title="Runs timeline" testId="automation-runs-timeline">
+      <section data-testid="automation-runs-timeline">
+        <AutomationRunsTimelineHeader runs={runs} chainMode={automation.chainMode} />
         {newestRuns.length === 0 ? (
           <p className="text-sm" style={{ color: "var(--text-muted)" }}>
             No runs have been created yet.
           </p>
         ) : (
-          <div className="relative space-y-4 before:absolute before:bottom-0 before:left-[5px] before:top-2 before:w-px before:bg-[var(--border-subtle)]">
-            {newestRuns.map((run) => {
+          <div className="space-y-2.5">
+            {newestRuns.map((run, index) => {
               const isLatest = run.runIndex === latest?.runIndex;
               return (
                 <RunTimelineItem
@@ -118,6 +119,7 @@ export function AutomationRunsTab({
                   defaultExpanded={isLatest || isOpenAutomationRun(run)}
                   activeGoalItem={activeGoalItem}
                   isLatest={isLatest}
+                  isLastInTimeline={index === newestRuns.length - 1}
                   {...(onDeleteRun ? { onDeleteRun } : {})}
                   {...(onResumeRun ? { onResumeRun } : {})}
                   {...(onOpenRunConversation ? { onOpenRunConversation } : {})}
@@ -128,7 +130,7 @@ export function AutomationRunsTab({
             })}
           </div>
         )}
-      </Section>
+      </section>
     </div>
   );
 }

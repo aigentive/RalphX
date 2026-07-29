@@ -6,6 +6,7 @@ import { toast } from "sonner";
 
 import {
   chatApi,
+  setAgentConversationMuted,
   type AgentConversationWorkspace,
   type ArchiveConversationResult,
   type ChatMessageResponse,
@@ -34,6 +35,7 @@ vi.mock("@/api/chat", async (importOriginal) => {
       getConversation: vi.fn(),
       spawnConversationSessionNamer: vi.fn(),
     },
+    setAgentConversationMuted: vi.fn(),
   };
 });
 
@@ -362,6 +364,31 @@ describe("useAgentConversationActions", () => {
       description: "fork failed",
       duration: 10000,
     });
+  });
+
+  it("mutes a session and unmutes it from the toast Undo action", async () => {
+    const conversation: AgentConversation = {
+      ...createConversation({ id: "conversation-mute", title: "Mute me" }),
+      projectId: "project-1",
+      ideationSessionId: null,
+    };
+    const { result } = renderActions();
+
+    await act(async () => {
+      await result.current.handleSetConversationMuted(conversation, true);
+    });
+
+    expect(setAgentConversationMuted).toHaveBeenCalledWith(conversation.id, true);
+    expect(toast.success).toHaveBeenCalledWith(
+      'Muted "Mute me" — comes back on its next change',
+      expect.objectContaining({ action: expect.objectContaining({ label: "Undo" }) })
+    );
+    const options = vi.mocked(toast.success).mock.calls.at(-1)?.[1];
+    if (!options?.action) throw new Error("Mute toast did not include Undo");
+    await act(async () => {
+      options.action.onClick();
+    });
+    expect(setAgentConversationMuted).toHaveBeenLastCalledWith(conversation.id, false);
   });
 
   it.each([

@@ -55,8 +55,14 @@ function blockKeyPart(block: StreamingContentBlock, index: number): string {
   return seq != null ? `seq-${seq}` : `idx-${index}`;
 }
 
-function textRowKey(block: StreamingContentBlock, index: number): string {
-  return `streaming-text:${blockKeyPart(block, index)}`;
+function textRowKey(
+  block: Extract<StreamingContentBlock, { type: "text" }>,
+  index: number,
+): string {
+  const keyPart = block.blockIndex != null
+    ? `block-${block.blockIndex}`
+    : blockKeyPart(block, index);
+  return `streaming-text:${keyPart}`;
 }
 
 export function liveToolGroupKey(

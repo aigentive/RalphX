@@ -2061,13 +2061,14 @@ describe("AgentsArtifactPane", () => {
         },
         {
           artifactId: "blueprint-1",
-          kind: "plan",
+          kind: "plan_blueprint",
           title: "Implementation Blueprint",
           sessionId: "session-1",
           version: 2,
           status: "approved",
         },
       ],
+      planContextFingerprint: "plan-context-fingerprint-1",
     });
     activateAgentTaskPipelineMock.mockResolvedValue(
       workspace({
@@ -9030,14 +9031,15 @@ describe("AgentsArtifactPane", () => {
         {
           conversationId: "conversation-1",
           runtimeOverride: approvedPlanRuntime,
-          composerArtifactReferences: [
-            expect.objectContaining({ artifactId: "artifact-1" }),
-            expect.objectContaining({ artifactId: "blueprint-1" }),
-          ],
+          requireApprovedLinkedPlan: true,
+          expectedLinkedPlanFingerprint: "plan-context-fingerprint-1",
           suppressUserMessage: true,
         },
       ),
     );
+    expect(
+      sendAgentMessageMock.mock.calls[0]?.[4],
+    ).not.toHaveProperty("composerArtifactReferences");
     expect(switchAgentConversationModeMock).not.toHaveBeenCalled();
     expect(sendAgentMessageMock.mock.calls[0]?.[2]).not.toContain(
       "do not create task proposals",
@@ -9764,7 +9766,12 @@ describe("AgentsArtifactPane", () => {
       vi.fn(),
       false,
       conversation(),
-      { focusedIdeationSessionId: "session-focused" },
+      {
+        focusedIdeationSession: {
+          conversationId: "conversation-1",
+          sessionId: "session-focused",
+        },
+      },
     );
 
     await waitFor(() =>
@@ -9773,6 +9780,28 @@ describe("AgentsArtifactPane", () => {
     expect(getIdeationSessionMock).not.toHaveBeenCalledWith(
       "session-from-workspace",
     );
+    expect(useConversationMock).toHaveBeenCalledWith("conversation-1", {
+      enabled: false,
+      pageSize: 40,
+    });
+  });
+
+  it("rejects an ideation focus owned by another conversation", () => {
+    renderPane(
+      "plan",
+      workspace({ mode: "edit" }),
+      vi.fn(),
+      false,
+      conversation(),
+      {
+        focusedIdeationSession: {
+          conversationId: "conversation-2",
+          sessionId: "session-focused",
+        },
+      },
+    );
+
+    expect(getIdeationSessionMock).not.toHaveBeenCalledWith("session-focused");
     expect(useConversationMock).toHaveBeenCalledWith("conversation-1", {
       enabled: false,
       pageSize: 40,
@@ -10560,6 +10589,55 @@ describe("AgentsArtifactPane", () => {
       ),
     );
     expect(publish).not.toHaveBeenCalled();
+  });
+
+  it("defers rebase base inspection until active maintenance clears", async () => {
+    const queryClient = createTestQueryClient();
+    queryClient.setQueryData(
+      agentWorkspaceKeys.scopedFreshness("conversation-1", "full"),
+      workspaceFreshness({
+        freshnessScope: "full",
+        baseStatus: "blocked",
+        effectiveBaseRef: null,
+        effectiveBaseDisplayName: null,
+        baseBlockReason: "Saved base commit is unavailable.",
+      }),
+    );
+    const blockedWorkspace = workspace({
+      mode: "edit",
+      maintenanceOperation: {
+        operationId: "maintenance-rebase-1",
+        generation: 1,
+        source: "base_update",
+        stage: "repairing",
+        status: "active",
+        summary: "Resolving the base conflict",
+        blocker: null,
+        automaticContinuation: true,
+        startedAt: "2026-07-25T10:00:00Z",
+        updatedAt: "2026-07-25T10:01:00Z",
+      },
+    });
+    const { rerenderWorkspace } = renderPublishPanelForWorkspaceRerender(
+      blockedWorkspace,
+      queryClient,
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "Repairing workspace" }),
+    ).toBeInTheDocument();
+    expect(loadBranchBaseOptionsMock).not.toHaveBeenCalled();
+
+    rerenderWorkspace({ ...blockedWorkspace, maintenanceOperation: null });
+
+    await waitFor(() =>
+      expect(loadBranchBaseOptionsMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workingDirectory: "/tmp/ralphx/conversation-1",
+          includeAgentBranches: false,
+        }),
+      ),
+    );
   });
 
   it("closes the Rebase branch dialog and shows a persistent elapsed toast while rebasing", async () => {
@@ -11726,6 +11804,83 @@ describe("AgentsArtifactPane", () => {
     expect(screen.getByTestId("agents-auto-publish-switch")).toBeChecked();
     expect(screen.getByTestId("agents-pr-autofix-switch")).toBeEnabled();
     expect(screen.getByTestId("agents-pr-auto-merge-switch")).toBeEnabled();
+  });
+
+  it("keeps maintenance automation controls inert until the operation clears", async () => {
+    const activeMaintenance = publishedPrSupervisionWorkspace({
+      prSupervisionStatus: "blocked",
+      maintenanceOperation: {
+        operationId: "maintenance-automation-1",
+        generation: 1,
+        source: "base_update",
+        stage: "repairing",
+        status: "active",
+        summary: "Resolving the base conflict",
+        blocker: null,
+        automaticContinuation: true,
+        startedAt: "2026-07-25T10:00:00Z",
+        updatedAt: "2026-07-25T10:01:00Z",
+      },
+    });
+    const { rerenderWorkspace } = renderPublishPanelForWorkspaceRerender(
+      activeMaintenance,
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "Repairing workspace" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-pr-supervision-status"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("PR supervision blocked")).not.toBeInTheDocument();
+
+    const autoPublish = screen.getByTestId("agents-auto-publish-switch");
+    const prAutofix = screen.getByTestId("agents-pr-autofix-switch");
+    const prAutoMerge = screen.getByTestId("agents-pr-auto-merge-switch");
+    expect(autoPublish).toBeDisabled();
+    expect(prAutofix).toBeDisabled();
+    expect(prAutoMerge).toBeDisabled();
+
+    fireEvent.click(autoPublish);
+    fireEvent.click(prAutofix);
+    fireEvent.click(prAutoMerge);
+    expect(setWorkspaceAutoPublishMock).not.toHaveBeenCalled();
+    expect(setWorkspacePrSupervisionMock).not.toHaveBeenCalled();
+
+    rerenderWorkspace({ ...activeMaintenance, maintenanceOperation: null });
+
+    expect(await screen.findByTestId("agents-auto-publish-switch")).toBeEnabled();
+    expect(screen.getByTestId("agents-pr-autofix-switch")).toBeEnabled();
+    expect(screen.getByTestId("agents-pr-auto-merge-switch")).toBeEnabled();
+
+    fireEvent.click(screen.getByTestId("agents-pr-autofix-switch"));
+    await waitFor(() =>
+      expect(setWorkspacePrSupervisionMock).toHaveBeenLastCalledWith(
+        "conversation-1",
+        expect.objectContaining({ autoFixEnabled: false }),
+      ),
+    );
+
+    fireEvent.click(screen.getByTestId("agents-pr-auto-merge-switch"));
+    await waitFor(() =>
+      expect(setWorkspacePrSupervisionMock).toHaveBeenLastCalledWith(
+        "conversation-1",
+        expect.objectContaining({ autoMergeDesired: false }),
+      ),
+    );
+
+    fireEvent.click(screen.getByTestId("agents-auto-publish-switch"));
+    fireEvent.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Pause Auto Publish",
+      }),
+    );
+    await waitFor(() =>
+      expect(setWorkspaceAutoPublishMock).toHaveBeenCalledWith(
+        "conversation-1",
+        { autoPublishEnabled: false },
+      ),
+    );
   });
 
   it("labels merge-paused repair state", async () => {

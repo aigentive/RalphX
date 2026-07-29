@@ -68,7 +68,8 @@ async function switchThemeViaSettings(page: Page, theme: ThemeName) {
   await page.evaluate(() => window.__uiStore?.getState().openModal("settings"));
   const settingsDialog = page.getByTestId("settings-dialog");
   await expect(settingsDialog).toBeVisible();
-  await settingsDialog.getByTestId("settings-section-accessibility").click();
+  await settingsDialog.getByTestId("settings-nav-application").click();
+  await settingsDialog.getByTestId("settings-leaf-accessibility").click();
 
   const themeTrigger = settingsDialog.getByTestId("theme-selector");
   await expect(themeTrigger).toBeVisible();

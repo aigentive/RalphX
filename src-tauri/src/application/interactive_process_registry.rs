@@ -237,6 +237,30 @@ impl InteractiveProcessRegistry {
         key: &InteractiveProcessKey,
         message: &str,
     ) -> Result<(), InteractiveProcessWriteError> {
+        self.write_message_for_owner(key, None, message).await
+    }
+
+    /// Write only when the key still belongs to the captured registration.
+    ///
+    /// A concurrent replacement is reported as missing so callers never send a
+    /// follow-up to a process whose run identity they did not authorize.
+    pub async fn write_message_if_owner(
+        &self,
+        key: &InteractiveProcessKey,
+        token: InteractiveProcessToken,
+        agent_run_id: &str,
+        message: &str,
+    ) -> Result<(), InteractiveProcessWriteError> {
+        self.write_message_for_owner(key, Some((token, agent_run_id)), message)
+            .await
+    }
+
+    async fn write_message_for_owner(
+        &self,
+        key: &InteractiveProcessKey,
+        expected_owner: Option<(InteractiveProcessToken, &str)>,
+        message: &str,
+    ) -> Result<(), InteractiveProcessWriteError> {
         let mut processes = self.processes.lock().await;
         let entry =
             processes
@@ -245,6 +269,16 @@ impl InteractiveProcessRegistry {
                     context_type: key.context_type.clone(),
                     context_id: key.context_id.clone(),
                 })?;
+        if expected_owner.is_some_and(|(token, agent_run_id)| {
+            entry.token != token
+                || agent_run_id.trim().is_empty()
+                || entry.metadata.agent_run_id.as_deref() != Some(agent_run_id)
+        }) {
+            return Err(InteractiveProcessWriteError::Missing {
+                context_type: key.context_type.clone(),
+                context_id: key.context_id.clone(),
+            });
+        }
         if entry.retire_after_turn {
             return Err(InteractiveProcessWriteError::Retiring {
                 context_type: key.context_type.clone(),

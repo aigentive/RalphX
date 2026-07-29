@@ -51,7 +51,7 @@ async fn test_changing_run_id_discards_stale_transient_projection() {
     cache
         .set_run_id("conv-123", Some("run-1".to_string()))
         .await;
-    cache.append_text("conv-123", "stale text").await;
+    cache.append_text("conv-123", 0, "stale text").await;
     cache
         .upsert_tool_call(
             "conv-123",
@@ -76,6 +76,7 @@ async fn test_changing_run_id_discards_stale_transient_projection() {
     let state = cache.get("conv-123").await.unwrap();
     assert_eq!(state.run_id.as_deref(), Some("run-2"));
     assert!(state.partial_text.is_empty());
+    assert!(state.partial_text_segments.is_empty());
     assert!(state.tool_calls.is_empty());
     assert!(state.streaming_tasks.is_empty());
 }
@@ -197,11 +198,34 @@ async fn test_complete_task() {
 async fn test_append_text() {
     let cache = StreamingStateCache::new();
 
-    cache.append_text("conv-123", "Hello ").await;
-    cache.append_text("conv-123", "world!").await;
+    cache.append_text("conv-123", 0, "Hello ").await;
+    cache.append_text("conv-123", 0, "world!").await;
 
     let state = cache.get("conv-123").await.unwrap();
     assert_eq!(state.partial_text, "Hello world!");
+    assert_eq!(state.partial_text_segments, vec!["Hello world!"]);
+    assert_eq!(
+        state.partial_text,
+        state.partial_text_segments.concat(),
+        "joined partial text must remain compatible with segment recovery"
+    );
+}
+
+#[tokio::test]
+async fn test_append_text_keeps_text_blocks_ordered_and_fills_gaps() {
+    let cache = StreamingStateCache::new();
+
+    cache.append_text("conv-123", 0, "Before ").await;
+    cache.append_text("conv-123", 2, "After").await;
+    cache.append_text("conv-123", 0, "tool").await;
+
+    let state = cache.get("conv-123").await.unwrap();
+    assert_eq!(
+        state.partial_text_segments,
+        vec!["Before tool", "", "After"]
+    );
+    assert_eq!(state.partial_text, "Before toolAfter");
+    assert_eq!(state.partial_text, state.partial_text_segments.concat());
 }
 
 #[tokio::test]
@@ -272,13 +296,13 @@ async fn test_multiple_conversations_independent() {
 async fn test_updated_at_changes_on_modification() {
     let cache = StreamingStateCache::new();
 
-    cache.append_text("conv-123", "test").await;
+    cache.append_text("conv-123", 0, "test").await;
     let first_update = cache.get("conv-123").await.unwrap().updated_at;
 
     // Small delay to ensure timestamp difference
     tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
-    cache.append_text("conv-123", " more").await;
+    cache.append_text("conv-123", 0, " more").await;
     let second_update = cache.get("conv-123").await.unwrap().updated_at;
 
     assert!(second_update > first_update);
@@ -301,6 +325,7 @@ async fn test_serialize_produces_expected_json() {
             ..cached_streaming_task("toolu_002")
         }],
         partial_text: "Hello".to_string(),
+        partial_text_segments: vec!["Hello".to_string()],
         updated_at: Utc::now(),
     };
 
@@ -308,6 +333,7 @@ async fn test_serialize_produces_expected_json() {
     assert!(json.contains("\"tool_calls\""));
     assert!(json.contains("\"streaming_tasks\""));
     assert!(json.contains("\"partial_text\""));
+    assert!(json.contains("\"partial_text_segments\""));
     assert!(json.contains("\"toolu_001\""));
     assert!(json.contains("\"running\""));
     assert!(json.contains("\"Hello\""));

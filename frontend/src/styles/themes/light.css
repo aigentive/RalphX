@@ -213,21 +213,32 @@ html[data-theme="light"] body {
   --sidebar-border:             #E5E5E8;
   --sidebar-ring:               #FF6A35;
 
-  /* Settings modal — v30 literal tokens for WKWebView parity */
+  /* Settings modal — v30 literal tokens for WKWebView parity.
+     Same tonal relationships as dark (rail below the dialog surface, pane
+     level with it, cards above), inverted for a light canvas. */
   --dialog-overlay-bg: rgba(0,0,0,.18);
-  --dialog-bg: #F8F8FA;
-  --dialog-rail-bg: #F8F8FA;
-  --dialog-pane-bg: #FAFAFB;
+  --dialog-bg: #F6F6F8;
+  --dialog-rail-bg: #EFEFF2;
+  --dialog-pane-bg: #F6F6F8;
   --dialog-pane-head-bg: #FFFFFF;
   --dialog-pane-head-icon-bg: #F1F1F4;
-  --dialog-border-color: #D9D9DD;
-  --dialog-divider-color: #E5E5E8;
+  --dialog-border-color: #E2E2E6;
+  --dialog-divider-color: #EBEBEE;
   --dialog-control-bg: #FFFFFF;
   --dialog-control-border: #D9D9DD;
   --dialog-control-border-hover: #C8C8CD;
-  --dialog-nav-active-bg: #F1F1F4;
-  --dialog-nav-active-border: #D9D9DD;
+  --dialog-nav-active-bg: #E4E4E9;
+  --dialog-nav-active-border: transparent;
+  --dialog-nav-hover-bg: #EAEAEE;
+  --dialog-hover-bg: #ECECEF;
+  --dialog-tab-bg: #EAEAEE;
+  --dialog-tab-active-bg: #FFFFFF;
+  --dialog-tab-active-text: #18181D;
+  --dialog-search-results-bg: #FFFFFF;
+  --dialog-text-muted: #5C5C65;
+  --dialog-text-subtle: #74747D;
   --dialog-toggle-off-bg: #C8C8CD;
+  --dialog-toggle-knob-bg: #FFFFFF;
   --dialog-warn: #A66F00;
   --dialog-warn-bg: rgba(166,111,0,.08);
   --dialog-warn-card-bg: rgba(201,150,46,.06);
@@ -479,7 +490,6 @@ html[data-theme="light"] body {
 }
 
 [data-theme="light"] [data-testid="settings-dialog"] .settings-modal__crumbs .lbl,
-[data-theme="light"] [data-testid="settings-dialog"] .settings-nav__label,
 [data-theme="light"] [data-testid="settings-dialog"] .settings-pane-head__sub,
 [data-theme="light"] [data-testid="settings-dialog"] .settings-section__label,
 [data-theme="light"] [data-testid="settings-dialog"] .settings-row__help,

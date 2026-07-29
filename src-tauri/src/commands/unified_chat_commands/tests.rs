@@ -17,10 +17,11 @@ use super::{
     get_agent_timeline_item_tool_call_detail_for_app_state, hidden_user_message_metadata,
     invalidate_agent_workspace_freshness_cache, list_agent_conversations_page,
     load_delegated_tool_runtime_snapshot, mark_agent_workspace_failure_with_routing_and_action,
-    merge_delegated_snapshot_into_result, normalize_agent_runtime_selection,
-    normalize_agent_workspace_source_pull_request, normalize_explicit_publish_base_selection,
-    normalized_effort_for_supported, parse_wrapped_mcp_result_object,
-    persist_workspace_base_resolution_if_retargeted,
+    mark_agent_workspace_publish_failure_with_target,
+    mark_agent_workspace_update_failure_with_target, merge_delegated_snapshot_into_result,
+    normalize_agent_runtime_selection, normalize_agent_workspace_source_pull_request,
+    normalize_explicit_publish_base_selection, normalized_effort_for_supported,
+    parse_wrapped_mcp_result_object, persist_workspace_base_resolution_if_retargeted,
     precompute_agent_conversation_workspace_pr_description_for_app_state,
     preview_tool_payloads_for_message, project_plan_branch_publication_into_workspace_response,
     publication_event_status_for_push_status, publication_event_summary_for_push_status,
@@ -64,7 +65,6 @@ use crate::application::agent_conversation_workspace_base::{
     BaseResolutionResult, BaseStatus, BLOCK_REASON_MISSING_BASE_COMMIT,
 };
 use crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrSupervisionRecoveryTrigger;
-use crate::application::agent_workspace_publish_repair_state::AgentWorkspaceRepairClaim;
 use crate::application::git_service::GitService;
 use crate::application::publish_resilience::PublishBranchFreshnessStatus;
 use crate::application::{
@@ -81,7 +81,8 @@ use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
     AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent, AgentRun,
-    AgentRunStatus, AgentWorkspacePrMetadataDecision, AgentWorkspacePublicationMetadataState,
+    AgentRunStatus, AgentWorkspacePrMetadataDecision, AgentWorkspaceRepairAttempt,
+    AgentWorkspaceRepairContinuation, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
     AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewAutoMergeGuardStatus,
     AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
     AgentWorkspaceReviewOutcome, AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest,
@@ -94,8 +95,11 @@ use crate::domain::entities::{
     TeamIntent, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::execution::ExecutionSettings;
-use crate::domain::repositories::AgentConversationWorkspaceRepository;
-use crate::domain::repositories::AgentWorkspaceRepairStateGuard;
+use crate::domain::repositories::{
+    AgentConversationWorkspaceRepository, AgentWorkspaceRepairAttemptTransition,
+    AgentWorkspaceRepairAttemptTransitionOutcome, StartOrJoinAgentWorkspaceRepairAttempt,
+    StartOrJoinAgentWorkspaceRepairAttemptOutcome,
+};
 use crate::domain::review::ReviewSettings;
 use crate::domain::services::github_generated_markdown::{
     decompose_ralphx_managed_pr_body, RALPHX_GENERATED_FOOTER, RALPHX_MANAGED_PR_BODY_END,
@@ -243,44 +247,6 @@ fn local_commit_ipc_response_serializes_camel_case_contract_fields() {
     assert_eq!(value["attemptToken"], "attempt-1");
     assert!(value.get("branch").is_none());
     assert!(value.get("currentHeadSha").is_none());
-}
-
-#[test]
-fn workspace_publication_receipt_serializes_for_frontend_consumers() {
-    let conversation_id =
-        ChatConversationId::from_string("receipt-contract-conversation".to_string());
-    let project_id = ProjectId::from_string("receipt-contract-project".to_string());
-    let mut workspace = workspace_for_runtime_test(&conversation_id, &project_id);
-    workspace.publication_metadata_attempt_id = Some("metadata-attempt-1".to_string());
-    workspace.publication_metadata_phase =
-        Some(crate::domain::entities::AgentWorkspacePublicationMetadataPhase::Reconciling);
-    workspace.publication_metadata_state = Some(AgentWorkspacePublicationMetadataState::Unknown);
-
-    let workspace_value = serde_json::to_value(AgentConversationWorkspaceResponse::from(workspace))
-        .expect("workspace response should serialize");
-
-    assert_eq!(
-        workspace_value["publication_metadata_attempt_id"],
-        "metadata-attempt-1"
-    );
-    assert_eq!(workspace_value["publication_metadata_phase"], "reconciling");
-    assert_eq!(workspace_value["publication_metadata_state"], "unknown");
-
-    let mut event = AgentConversationWorkspacePublicationEvent::new(
-        conversation_id,
-        "metadata_reconciling",
-        "active",
-        "Verifying linked PR metadata",
-        None,
-    );
-    event.attempt_id = Some("metadata-attempt-1".to_string());
-
-    let event_value = serde_json::to_value(
-        super::AgentConversationWorkspacePublicationEventResponse::from(event),
-    )
-    .expect("publication event response should serialize");
-
-    assert_eq!(event_value["attempt_id"], "metadata-attempt-1");
 }
 
 #[tokio::test]
@@ -1241,9 +1207,6 @@ fn linked_plan_branch_publication_is_projected_into_workspace_response() {
         publication_pr_url: None,
         publication_pr_status: None,
         publication_push_status: None,
-        publication_metadata_attempt_id: None,
-        publication_metadata_phase: None,
-        publication_metadata_state: None,
         auto_publish_enabled: true,
         auto_publish_initial_pr_enabled: false,
         auto_publish_paused_pr_autofix_enabled: None,
@@ -1260,6 +1223,7 @@ fn linked_plan_branch_publication_is_projected_into_workspace_response() {
         updated_at: "2026-04-28T12:00:00+00:00".to_string(),
         mode_switch_locked: false,
         mode_switch_lock_reason: None,
+        maintenance_operation: None,
     };
     let mut plan_branch = PlanBranch::new(
         ArtifactId::from_string("artifact-1"),
@@ -1313,9 +1277,6 @@ fn linked_plan_branch_publication_overrides_stale_workspace_publication_response
         publication_pr_url: Some("https://github.com/mock/project/pull/12".to_string()),
         publication_pr_status: Some("open".to_string()),
         publication_push_status: Some("needs_agent".to_string()),
-        publication_metadata_attempt_id: None,
-        publication_metadata_phase: None,
-        publication_metadata_state: None,
         auto_publish_enabled: true,
         auto_publish_initial_pr_enabled: false,
         auto_publish_paused_pr_autofix_enabled: None,
@@ -1332,6 +1293,7 @@ fn linked_plan_branch_publication_overrides_stale_workspace_publication_response
         updated_at: "2026-04-28T12:00:00+00:00".to_string(),
         mode_switch_locked: true,
         mode_switch_lock_reason: Some("Plan execution is still active".to_string()),
+        maintenance_operation: None,
     };
     let mut plan_branch = PlanBranch::new(
         ArtifactId::from_string("artifact-1"),
@@ -1671,8 +1633,7 @@ async fn repair_wait_releases_when_ipr_is_idle_or_process_exited() {
 #[tokio::test]
 async fn fixable_publish_failure_routes_repair_and_records_events() {
     let state = AppState::new_test();
-    let workspace = command_test_workspace();
-    let target = AgentConversationWorkspaceRepairTarget::from_workspace(&workspace);
+    let (_temp, workspace, target) = command_test_workspace_with_git_target();
     state
         .agent_conversation_workspace_repo
         .create_or_update(workspace.clone())
@@ -1714,11 +1675,6 @@ async fn fixable_publish_failure_routes_repair_and_records_events() {
         .await
         .expect("events should list");
     assert!(events.iter().any(|event| {
-        event.step == "needs_agent"
-            && event.status == "failed"
-            && event.classification.as_deref() == Some("agent_fixable")
-    }));
-    assert!(events.iter().any(|event| {
         event.step == "repair_requested"
             && event.status == "started"
             && event.classification.as_deref() == Some("agent_fixable:publish")
@@ -1735,7 +1691,15 @@ async fn fixable_publish_failure_routes_repair_and_records_events() {
 async fn fixable_update_failure_records_repair_send_failure() {
     let state = AppState::new_test();
     let workspace = command_test_workspace();
-    let target = AgentConversationWorkspaceRepairTarget::from_workspace(&workspace);
+    let repository = tempfile::tempdir().expect("repair dispatch repository should exist");
+    let repository_path = repository.path().join("repair-dispatch");
+    setup_publish_repo(&repository_path);
+    let target = AgentConversationWorkspaceRepairTarget {
+        branch_name: workspace.branch_name.clone(),
+        base_ref: workspace.base_ref.clone(),
+        base_display_name: workspace.base_display_name.clone(),
+        worktree_path: Some(repository_path),
+    };
     state
         .agent_conversation_workspace_repo
         .create_or_update(workspace.clone())
@@ -1767,11 +1731,23 @@ async fn fixable_update_failure_records_repair_send_failure() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(
-        settled.publication_push_status.as_deref(),
-        Some("needs_agent")
-    );
+    assert_eq!(settled.publication_push_status.as_deref(), Some("failed"));
     assert_eq!(settled.pr_supervision_status.as_deref(), Some("blocked"));
+    let attempt = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&workspace.conversation_id)
+        .await
+        .expect("durable repair attempt should load")
+        .expect("terminal delivery must leave its exact generation visible");
+    assert_eq!(attempt.phase, AgentWorkspaceRepairPhase::Blocked);
+    assert!(attempt.next_dispatch_at.is_none());
+    assert!(
+        attempt.reserved_agent_run_id.is_none(),
+        "a terminal pre-start failure must clear only its untrusted run reservation"
+    );
+    assert!(attempt.git_common_dir.is_none());
+    assert!(attempt.target_ref.is_none());
+    assert!(attempt.target_lease_epoch.is_none());
     assert!(events.iter().any(|event| {
         event.step == "repair_requested"
             && event.classification.as_deref() == Some("agent_fixable:update_only")
@@ -1781,8 +1757,246 @@ async fn fixable_update_failure_records_repair_send_failure() {
         event.step == "repair_sent"
             && event.status == "failed"
             && event.summary.contains("Failed to send base update failure")
-            && event.classification.as_deref() == Some("operational")
     }));
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.step == "repair_sent" && event.status == "failed")
+            .count(),
+        1,
+        "terminal replay must not append another repair-delivery event"
+    );
+    assert_eq!(
+        service.get_sent_messages().await.len(),
+        1,
+        "the failed immediate delivery must not start a duplicate repair worker"
+    );
+}
+
+#[tokio::test]
+async fn fixable_update_failure_retries_an_uncertain_immediate_repair_delivery_once() {
+    let state = AppState::new_test();
+    let workspace = command_test_workspace();
+    let repository = tempfile::tempdir().expect("repair dispatch repository should exist");
+    let repository_path = repository.path().join("uncertain-repair-dispatch");
+    setup_publish_repo(&repository_path);
+    let target = AgentConversationWorkspaceRepairTarget {
+        branch_name: workspace.branch_name.clone(),
+        base_ref: workspace.base_ref.clone(),
+        base_display_name: workspace.base_display_name.clone(),
+        worktree_path: Some(repository_path.clone()),
+    };
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    let service = MockChatService::new();
+    service.mismatch_next_send_result_identity().await;
+
+    mark_agent_workspace_failure_with_routing_and_action(
+        &state,
+        &workspace,
+        "merge conflict while updating from base",
+        None,
+        &service,
+        true,
+        &target,
+        AgentWorkspacePostRepairAction::UpdateOnly,
+    )
+    .await;
+
+    let scheduled = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&workspace.conversation_id)
+        .await
+        .expect("durable repair attempt should load")
+        .expect("uncertain repair delivery must remain current for retry");
+    assert_eq!(scheduled.phase, AgentWorkspaceRepairPhase::Requested);
+    assert_eq!(scheduled.dispatch_count, 1);
+    assert!(scheduled.next_dispatch_at.is_some());
+    assert!(scheduled.reserved_agent_run_id.is_none());
+    let identity = GitService::canonical_target_identity(&repository_path, &workspace.branch_name)
+        .await
+        .expect("resolve repair target identity");
+    assert!(
+        !state
+            .branch_update_repo
+            .get_target_lease(&identity)
+            .await
+            .expect("load retry lease")
+            .expect("retry retains its exact repair lease")
+            .is_released(),
+        "delivery uncertainty must preserve the exact lease for its bounded retry"
+    );
+    let events = state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&workspace.conversation_id)
+        .await
+        .expect("retry events should load");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.step == "repair_sent" && event.status == "retrying")
+            .count(),
+        1
+    );
+
+    mark_agent_workspace_failure_with_routing_and_action(
+        &state,
+        &workspace,
+        "merge conflict while updating from base",
+        None,
+        &service,
+        true,
+        &target,
+        AgentWorkspacePostRepairAction::UpdateOnly,
+    )
+    .await;
+    assert_eq!(service.get_sent_messages().await.len(), 1);
+    assert_eq!(
+        state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&workspace.conversation_id)
+            .await
+            .expect("duplicate replay events should load"),
+        events,
+        "a current retry generation suppresses duplicate repair delivery and audit effects"
+    );
+}
+
+#[tokio::test]
+async fn live_base_update_and_publish_repair_paths_coalesce_without_stale_authority_overwrite() {
+    let state = AppState::new_test();
+    let (_temp, mut workspace, repair_target) = command_test_workspace_with_git_target();
+    workspace.base_commit = Some("base-oid-before-join".to_string());
+    let conversation_id = workspace.conversation_id.clone();
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    let service = MockChatService::new();
+
+    mark_agent_workspace_update_failure_with_target(
+        &state,
+        &workspace,
+        "merge conflict while updating from base",
+        None,
+        &service,
+        &repair_target,
+    )
+    .await;
+
+    let first = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("repair attempt should load")
+        .expect("base update should create a durable repair attempt");
+    let reserved_run_id = first
+        .reserved_agent_run_id
+        .clone()
+        .expect("base update must reserve the exact repair run before dispatch");
+    assert_eq!(first.generation, 1);
+    assert_eq!(first.source, AgentWorkspaceRepairSource::BaseUpdate);
+    assert_eq!(
+        first.continuation,
+        AgentWorkspaceRepairContinuation::UpdateOnly
+    );
+    assert_eq!(first.phase, AgentWorkspaceRepairPhase::Repairing);
+    assert_eq!(first.target_base_ref, workspace.base_ref);
+    assert_eq!(
+        first.target_base_commit.as_deref(),
+        Some("base-oid-before-join")
+    );
+    let messages_before_joins = service.get_sent_messages().await;
+    let events_before_joins = state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("events should list");
+
+    let mut publish_observation = workspace.clone();
+    publish_observation.base_commit = Some("base-oid-stale-publish-observation".to_string());
+    let publish_target =
+        AgentConversationWorkspaceRepairTarget::from_workspace(&publish_observation);
+    mark_agent_workspace_publish_failure_with_target(
+        &state,
+        &publish_observation,
+        "merge conflict while updating from base",
+        None,
+        &service,
+        &publish_target,
+    )
+    .await;
+    let mut stale_observation = publish_observation;
+    stale_observation.base_ref = "release/stale-observation".to_string();
+    let stale_target = AgentConversationWorkspaceRepairTarget::from_workspace(&stale_observation);
+    let ((), ()) = tokio::join!(
+        mark_agent_workspace_update_failure_with_target(
+            &state,
+            &stale_observation,
+            "merge conflict while updating from base",
+            None,
+            &service,
+            &stale_target,
+        ),
+        mark_agent_workspace_update_failure_with_target(
+            &state,
+            &stale_observation,
+            "merge conflict while updating from base",
+            None,
+            &service,
+            &stale_target,
+        ),
+    );
+
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("repair attempt should load after joins")
+        .expect("the original repair generation must remain current");
+    assert_eq!(current.id, first.id);
+    assert_eq!(current.generation, 1);
+    assert_eq!(current.source, AgentWorkspaceRepairSource::BaseUpdate);
+    assert_eq!(
+        current.continuation,
+        AgentWorkspaceRepairContinuation::Publish,
+        "the stronger publish producer must upgrade the durable continuation"
+    );
+    assert_eq!(
+        current.reserved_agent_run_id,
+        Some(reserved_run_id),
+        "stale joins must not replace the initial run reservation"
+    );
+    assert_eq!(current.target_base_ref, workspace.base_ref);
+    assert_eq!(
+        current.target_base_commit.as_deref(),
+        Some("base-oid-before-join"),
+        "a stale producer observation must not overwrite the durable base authority"
+    );
+    assert_eq!(
+        service.get_sent_messages().await,
+        messages_before_joins,
+        "joined producers must not spawn another repair agent"
+    );
+    assert_eq!(
+        state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("events should list after joins"),
+        events_before_joins,
+        "joined producers must not emit duplicate repair events"
+    );
+    assert!(state
+        .agent_workspace_repair_repo
+        .get_open_repair_effect(&first.id)
+        .await
+        .expect("repair effects should load")
+        .is_none());
 }
 
 #[tokio::test]
@@ -1791,8 +2005,8 @@ async fn repair_request_event_failure_settles_without_dispatch() {
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     state.agent_conversation_workspace_repo =
         workspace_repo.clone() as Arc<dyn AgentConversationWorkspaceRepository>;
-    let workspace = command_test_workspace();
-    let target = AgentConversationWorkspaceRepairTarget::from_workspace(&workspace);
+    state.agent_workspace_repair_repo = workspace_repo.clone();
+    let (_temp, workspace, target) = command_test_workspace_with_git_target();
     workspace_repo
         .create_or_update(workspace.clone())
         .await
@@ -1823,6 +2037,27 @@ async fn repair_request_event_failure_settles_without_dispatch() {
         .unwrap()
         .unwrap();
     assert_eq!(settled.pr_supervision_status.as_deref(), Some("blocked"));
+    assert_eq!(settled.publication_push_status.as_deref(), Some("failed"));
+    let attempt = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&workspace.conversation_id)
+        .await
+        .unwrap()
+        .expect("failed audit persistence should leave a blocked durable attempt");
+    assert_eq!(attempt.phase, AgentWorkspaceRepairPhase::Blocked);
+    assert!(attempt
+        .blocker
+        .as_deref()
+        .unwrap_or_default()
+        .contains("audit could not be persisted"));
+    assert!(attempt.git_common_dir.is_none());
+    assert!(attempt.target_ref.is_none());
+    assert!(attempt.target_lease_epoch.is_none());
+    assert!(workspace_repo
+        .list_publication_events(&workspace.conversation_id)
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]
@@ -1831,8 +2066,8 @@ async fn successful_dispatch_remains_completable_when_success_event_write_fails(
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     state.agent_conversation_workspace_repo =
         workspace_repo.clone() as Arc<dyn AgentConversationWorkspaceRepository>;
-    let workspace = command_test_workspace();
-    let target = AgentConversationWorkspaceRepairTarget::from_workspace(&workspace);
+    state.agent_workspace_repair_repo = workspace_repo.clone();
+    let (_temp, workspace, target) = command_test_workspace_with_git_target();
     workspace_repo
         .create_or_update(workspace.clone())
         .await
@@ -1863,14 +2098,33 @@ async fn successful_dispatch_remains_completable_when_success_event_write_fails(
         .unwrap()
         .unwrap();
     assert_eq!(current.pr_supervision_status.as_deref(), Some("fixing"));
-    assert!(crate::application::agent_workspace_publish_repair_state::current_agent_workspace_repair_claim_for_completion(
-        state.agent_conversation_workspace_repo,
-        state.agent_run_repo,
-        &current,
-    )
-    .await
-    .unwrap()
-    .is_some());
+    let attempt = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&workspace.conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(attempt.phase, AgentWorkspaceRepairPhase::Repairing);
+    let run_id = attempt
+        .reserved_agent_run_id
+        .as_ref()
+        .expect("delivered repair should retain its run authority");
+    assert!(matches!(
+        crate::application::agent_workspace_publish_repair_state::classify_agent_workspace_repair_completion_authority(
+            Arc::clone(&state.agent_workspace_repair_repo),
+            &workspace.conversation_id,
+            run_id,
+        )
+        .await
+        .unwrap(),
+        crate::domain::entities::AgentWorkspaceRepairCompletionAuthority::Current(_)
+    ));
+    assert!(!workspace_repo
+        .list_publication_events(&workspace.conversation_id)
+        .await
+        .unwrap()
+        .iter()
+        .any(|event| event.step == "repair_sent" && event.status == "succeeded"));
 }
 
 #[tokio::test]
@@ -2850,6 +3104,140 @@ async fn auto_publish_enable_before_pr_sets_initial_pr_opt_in() {
 }
 
 #[tokio::test]
+async fn auto_publish_enable_leaves_ready_manual_and_update_only_repairs_parked() {
+    for continuation in [
+        AgentWorkspaceRepairContinuation::Manual,
+        AgentWorkspaceRepairContinuation::UpdateOnly,
+    ] {
+        let state = AppState::new_test();
+        let workspace = command_test_workspace();
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("workspace should persist");
+        let ready =
+            seed_ready_command_repair_attempt(&state, &workspace, continuation.clone()).await;
+
+        let response = set_agent_conversation_workspace_auto_publish_for_state(
+            workspace.conversation_id.as_str(),
+            AgentConversationWorkspaceAutoPublishInput {
+                auto_publish_enabled: true,
+            },
+            &state,
+        )
+        .await
+        .expect("Auto Publish preference should persist without promoting a non-Publish repair");
+
+        assert!(response.auto_publish_initial_pr_enabled);
+        let after = state
+            .agent_workspace_repair_repo
+            .get_current_repair_attempt(&workspace.conversation_id)
+            .await
+            .expect("read parked repair attempt")
+            .expect("parked repair must remain current");
+        assert_eq!(after.id, ready.id);
+        assert_eq!(after.phase, AgentWorkspaceRepairPhase::Ready);
+        assert_eq!(after.continuation, continuation);
+    }
+}
+
+#[tokio::test]
+async fn existing_pr_auto_publish_enable_keeps_ready_projection_when_handoff_cannot_acquire_target()
+{
+    let state = AppState::new_test();
+    let mut workspace = command_test_workspace();
+    workspace.publication_pr_number = Some(442);
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.auto_publish_enabled = false;
+    let mut project = Project::new(
+        "Auto Publish existing PR command test".to_string(),
+        "/tmp/agent-workspace-auto-publish-existing-pr".to_string(),
+    );
+    project.id = workspace.project_id.clone();
+    state
+        .project_repo
+        .create(project)
+        .await
+        .expect("unrelated project seed should succeed");
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    let ready = seed_ready_command_repair_attempt(
+        &state,
+        &workspace,
+        AgentWorkspaceRepairContinuation::Publish,
+    )
+    .await;
+
+    let response = set_agent_conversation_workspace_auto_publish_for_state(
+        workspace.conversation_id.as_str(),
+        AgentConversationWorkspaceAutoPublishInput {
+            auto_publish_enabled: true,
+        },
+        &state,
+    )
+    .await
+    .expect("preference enable should return the durable Ready projection");
+
+    assert!(response.auto_publish_enabled);
+    let ready_after_failed_handoff = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&workspace.conversation_id)
+        .await
+        .expect("read repair attempt after failed handoff")
+        .expect("Ready repair must remain current");
+    assert_eq!(ready_after_failed_handoff.id, ready.id);
+    assert_eq!(
+        ready_after_failed_handoff.phase,
+        AgentWorkspaceRepairPhase::Ready
+    );
+    assert_eq!(
+        response
+            .maintenance_operation
+            .as_ref()
+            .map(|operation| operation.status),
+        Some(crate::domain::entities::AgentWorkspaceRepairOperationStatus::Ready),
+        "response must not report a successful continuation after target reacquisition fails"
+    );
+
+    let event_count = state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&workspace.conversation_id)
+        .await
+        .expect("list events after blocked continuation")
+        .len();
+    let replay = set_agent_conversation_workspace_auto_publish_for_state(
+        workspace.conversation_id.as_str(),
+        AgentConversationWorkspaceAutoPublishInput {
+            auto_publish_enabled: true,
+        },
+        &state,
+    )
+    .await
+    .expect("already-enabled preference should not retry the Ready continuation");
+    assert_eq!(
+        replay
+            .maintenance_operation
+            .as_ref()
+            .map(|operation| operation.status),
+        Some(crate::domain::entities::AgentWorkspaceRepairOperationStatus::Ready)
+    );
+    assert_eq!(
+        event_count,
+        state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&workspace.conversation_id)
+            .await
+            .expect("list events after replay")
+            .len(),
+        "repeated enable must not append another preference or continuation event"
+    );
+}
+
+#[tokio::test]
 async fn pr_supervision_rejects_enable_when_auto_publish_is_paused() {
     let state = AppState::new_test();
     let mut workspace = command_test_workspace();
@@ -2929,10 +3317,8 @@ async fn deferred_repair_spawn_without_app_handle_noops() {
         AgentWorkspaceRepairRuntimeOverrides::default(),
         target,
         AgentWorkspacePostRepairAction::Publish,
-        AgentWorkspaceRepairClaim {
-            conversation_id: workspace.conversation_id.clone(),
-            guard: AgentWorkspaceRepairStateGuard::from_workspace(&workspace),
-        },
+        None,
+        None,
     )
     .await;
 
@@ -3087,6 +3473,166 @@ fn command_test_workspace() -> AgentConversationWorkspace {
         "ralphx/test/agent-command".to_string(),
         "/tmp/agent-command-workspace".to_string(),
     )
+}
+
+fn command_test_workspace_with_git_target() -> (
+    tempfile::TempDir,
+    AgentConversationWorkspace,
+    AgentConversationWorkspaceRepairTarget,
+) {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let worktree_path = temp.path().join("agent-workspace");
+    std::fs::create_dir_all(&worktree_path).expect("worktree root should be created");
+    git(&worktree_path, &["init", "-b", "ralphx/test/agent-command"]);
+    git(
+        &worktree_path,
+        &["config", "user.email", "test@example.com"],
+    );
+    git(&worktree_path, &["config", "user.name", "Test User"]);
+    std::fs::write(worktree_path.join("README.md"), "repair fixture\n")
+        .expect("fixture file should be written");
+    git(&worktree_path, &["add", "README.md"]);
+    git(&worktree_path, &["commit", "-m", "repair fixture"]);
+
+    let mut workspace = command_test_workspace();
+    workspace.worktree_path = worktree_path.to_string_lossy().to_string();
+    let mut target = AgentConversationWorkspaceRepairTarget::from_workspace(&workspace);
+    target.worktree_path = Some(worktree_path);
+    (temp, workspace, target)
+}
+
+async fn seed_ready_command_repair_attempt(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    continuation: AgentWorkspaceRepairContinuation,
+) -> AgentWorkspaceRepairAttempt {
+    let started = state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                workspace.conversation_id.clone(),
+                AgentWorkspaceRepairSource::BaseUpdate,
+                continuation,
+                workspace.base_ref.clone(),
+                false,
+                true,
+                false,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: "seed parked repair for Auto Publish command test".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("seed durable repair attempt");
+    let StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(started) = started else {
+        panic!("first durable repair generation should start");
+    };
+    let mut ready = started.clone();
+    ready.phase = AgentWorkspaceRepairPhase::Ready;
+    ready.summary = Some("Repair is parked at the publish boundary.".to_string());
+    ready.updated_at += chrono::Duration::microseconds(1);
+    match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: ready,
+            expected_phase: started.phase,
+            expected_updated_at: started.updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Ready,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("park durable repair at Ready")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(ready) => ready,
+        outcome => panic!("expected Ready repair attempt, got {outcome:?}"),
+    }
+}
+
+#[tokio::test]
+async fn workspace_response_does_not_recover_a_stranded_repair_inline() {
+    let state = AppState::new_test();
+    let workspace = command_test_workspace();
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+
+    let started = state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                workspace.conversation_id.clone(),
+                AgentWorkspaceRepairSource::BaseUpdate,
+                AgentWorkspaceRepairContinuation::Publish,
+                workspace.base_ref.clone(),
+                false,
+                false,
+                false,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: "seed stranded repair for workspace-read regression".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("seed durable repair attempt");
+    let StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(started) = started else {
+        panic!("first durable repair generation should start");
+    };
+    let mut stranded = started.clone();
+    stranded.phase = AgentWorkspaceRepairPhase::Repairing;
+    stranded.updated_at += chrono::Duration::microseconds(1);
+    let stranded = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: stranded,
+            expected_phase: started.phase,
+            expected_updated_at: started.updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Repairing,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("mark repair stranded")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("expected stranded repair attempt, got {outcome:?}"),
+    };
+
+    let response = tokio::time::timeout(
+        Duration::from_millis(100),
+        agent_workspace_response_for_state(&state, workspace.clone()),
+    )
+    .await
+    .expect("workspace read should return without waiting for recovery")
+    .expect("workspace response should succeed");
+
+    assert_eq!(response.conversation_id, workspace.conversation_id.as_str());
+    assert_eq!(
+        state
+            .agent_workspace_repair_repo
+            .get_current_repair_attempt(&workspace.conversation_id)
+            .await
+            .expect("read durable repair attempt"),
+        Some(stranded),
+        "workspace reads must not reserve, block, or otherwise recover a durable repair inline"
+    );
+    assert!(
+        state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&workspace.conversation_id)
+            .await
+            .expect("read workspace events")
+            .is_empty(),
+        "workspace reads must not emit recovery compatibility events inline"
+    );
 }
 
 #[tokio::test]
@@ -3758,7 +4304,7 @@ async fn setup_linked_plan_publish_command_state(
     workspace.linked_plan_branch_id = Some(plan_branch_id.clone());
 
     let mut task = Task::new(project.id.clone(), "Plan task".to_string());
-    task.ideation_session_id = Some(session_id);
+    task.ideation_session_id = Some(session_id.clone());
     task.execution_plan_id = Some(execution_plan.id.clone());
     task.internal_status = if active_regular_task {
         InternalStatus::Executing
@@ -3774,6 +4320,19 @@ async fn setup_linked_plan_publish_command_state(
         .create(project.clone())
         .await
         .expect("project should be persisted");
+    state
+        .ideation_session_repo
+        .create(
+            IdeationSession::builder()
+                .id(session_id.clone())
+                .project_id(project.id.clone())
+                .session_flow(IdeationSessionFlow::Planning)
+                .source_context_type("agent_conversation")
+                .source_context_id(conversation_id.as_str())
+                .build(),
+        )
+        .await
+        .expect("planning session should be persisted");
     state
         .execution_plan_repo
         .create(execution_plan)
@@ -6180,59 +6739,6 @@ async fn publish_workspace_stops_before_push_when_pr_description_fails() {
 }
 
 #[tokio::test]
-async fn publish_workspace_retains_failure_settlement_when_new_pr_creation_fails() {
-    let github = Arc::new(MockGithubService::new());
-    let (_temp, state, conversation_id, github) =
-        setup_publish_command_state("new-pr-create-fails", true, None, github).await;
-    enable_github_pr_publishing(&state, &conversation_id).await;
-    github.queue_find_pr_by_head_branch(Ok(None));
-    github.state().create_draft_pr_result =
-        Some(Err(AppError::Infrastructure("create failed".to_string())));
-    write_publishable_workspace_change(&state, &conversation_id).await;
-    let client = Arc::new(SubmittingPrDescriptionClient::new(
-        Arc::clone(&state.agent_conversation_workspace_repo),
-        conversation_id.clone(),
-    ));
-    client
-        .queue_decision(
-            AgentWorkspacePrMetadataDecision::patch(
-                Some("New PR".to_string()),
-                Some("## Summary\n\nNew PR body".to_string()),
-            )
-            .unwrap(),
-        )
-        .await;
-    let state = state.with_agent_client(client);
-
-    let error = publish_agent_conversation_workspace_for_app_state(
-        &state,
-        &Arc::new(ExecutionState::new()),
-        conversation_id.clone(),
-        false,
-    )
-    .await
-    .expect_err("new PR creation failure must settle the receipt-free publish attempt");
-
-    assert!(error.contains("create failed"));
-    let stored = state
-        .agent_conversation_workspace_repo
-        .get_by_conversation_id(&conversation_id)
-        .await
-        .expect("workspace lookup should succeed")
-        .expect("workspace should exist");
-    assert_eq!(stored.publication_push_status.as_deref(), Some("failed"));
-    assert!(stored.publication_metadata_attempt_id.is_none());
-    assert!(publication_events_for(&state, &conversation_id)
-        .await
-        .iter()
-        .any(|event| event.step == "failed" && event.status == "failed"));
-    let github_state = github.state();
-    assert_eq!(github_state.push_branch_calls, 1);
-    assert_eq!(github_state.create_draft_pr_calls, 1);
-    assert_eq!(github_state.patch_pr_metadata_calls, 0);
-}
-
-#[tokio::test]
 async fn publish_workspace_updates_authoritative_existing_pr_metadata_after_push() {
     let github = Arc::new(MockGithubService::new());
     let (_temp, state, conversation_id, github) =
@@ -6316,191 +6822,16 @@ async fn publish_workspace_updates_authoritative_existing_pr_metadata_after_push
         .list_publication_events(&conversation_id)
         .await
         .expect("publication events should load");
-    let receipt = stored
-        .publication_metadata_attempt_id
-        .as_deref()
-        .expect("receipt settlement should retain the attempt identity");
     assert!(events.iter().any(|event| {
-        event.step == "metadata_settled"
+        event.step == "pushed"
             && event.status == "succeeded"
-            && event.attempt_id.as_deref() == Some(receipt)
+            && event.summary == "Agent branch pushed"
     }));
-    assert!(!events.iter().any(|event| event.step == "pushed"));
-}
-
-#[tokio::test]
-async fn publish_workspace_reconciles_ambiguous_existing_metadata_patch_after_readback() {
-    let github = Arc::new(MockGithubService::new());
-    let (_temp, state, conversation_id, github) =
-        setup_publish_command_state("metadata-ambiguous-applied", true, Some(470), github).await;
-    let workspace = state
-        .agent_conversation_workspace_repo
-        .get_by_conversation_id(&conversation_id)
-        .await
-        .expect("workspace lookup should succeed")
-        .expect("workspace should exist");
-    for (title, body) in [
-        ("Before", "Existing body"),
-        ("Before", "Existing body"),
-        ("ambiguous title", "Existing body"),
-    ] {
-        github.queue_pr_detail(Ok(authoritative_pr_detail(
-            470,
-            workspace.branch_name.clone(),
-            title,
-            body,
-        )));
-    }
-    github.queue_patch_pr_metadata_result(Err(AppError::Infrastructure("timeout".to_string())));
-    write_publishable_workspace_change(&state, &conversation_id).await;
-    let client = Arc::new(SubmittingPrDescriptionClient::new(
-        Arc::clone(&state.agent_conversation_workspace_repo),
-        conversation_id.clone(),
-    ));
-    client
-        .queue_decision(AgentWorkspacePrMetadataDecision::Patch {
-            title: Some("ambiguous title".to_string()),
-            body_markdown: None,
-        })
-        .await;
-    let state = state.with_agent_client(client);
-
-    publish_agent_conversation_workspace_for_app_state(
-        &state,
-        &Arc::new(ExecutionState::new()),
-        conversation_id.clone(),
-        false,
-    )
-    .await
-    .expect("applied readback must reconcile ambiguous metadata mutation");
-    state
-        .pr_poller_registry
-        .stop_agent_workspace_polling(&conversation_id);
-
-    {
-        let github_state = github.state();
-        assert_eq!(github_state.patch_pr_metadata_calls, 1);
-        assert_eq!(github_state.fetch_pr_detail_calls, 3);
-    }
-    let stored = state
-        .agent_conversation_workspace_repo
-        .get_by_conversation_id(&conversation_id)
-        .await
-        .expect("workspace lookup should succeed")
-        .expect("workspace should exist");
-    assert_eq!(stored.publication_push_status.as_deref(), Some("pushed"));
-    assert_eq!(
-        stored.publication_metadata_state,
-        Some(AgentWorkspacePublicationMetadataState::Reconciled)
-    );
-    assert!(!publication_events_for(&state, &conversation_id)
-        .await
-        .iter()
-        .any(|event| event.step == "description_failed"));
-}
-
-#[tokio::test]
-async fn publish_workspace_keeps_receipt_truthful_for_unapplied_conflicted_and_unreadable_metadata()
-{
-    for (suffix, readback, expected_state, expected_push_status) in [
-        (
-            "metadata-not-applied",
-            Some(("Before", "Existing body")),
-            AgentWorkspacePublicationMetadataState::NotApplied,
-            "description_failed",
-        ),
-        (
-            "metadata-conflicted",
-            Some(("other editor title", "Existing body")),
-            AgentWorkspacePublicationMetadataState::Conflicted,
-            "description_failed",
-        ),
-        (
-            "metadata-unknown",
-            None,
-            AgentWorkspacePublicationMetadataState::Unknown,
-            "pushing",
-        ),
-    ] {
-        let github = Arc::new(MockGithubService::new());
-        let (_temp, state, conversation_id, github) =
-            setup_publish_command_state(suffix, true, Some(471), github).await;
-        let workspace = state
-            .agent_conversation_workspace_repo
-            .get_by_conversation_id(&conversation_id)
-            .await
-            .expect("workspace lookup should succeed")
-            .expect("workspace should exist");
-        for _ in 0..2 {
-            github.queue_pr_detail(Ok(authoritative_pr_detail(
-                471,
-                workspace.branch_name.clone(),
-                "Before",
-                "Existing body",
-            )));
-        }
-        match readback {
-            Some((title, body)) => github.queue_pr_detail(Ok(authoritative_pr_detail(
-                471,
-                workspace.branch_name.clone(),
-                title,
-                body,
-            ))),
-            None => {
-                github.queue_pr_detail(Err(AppError::Infrastructure("readback failed".to_string())))
-            }
-        }
-        github.queue_patch_pr_metadata_result(Err(AppError::Infrastructure("timeout".to_string())));
-        write_publishable_workspace_change(&state, &conversation_id).await;
-        let client = Arc::new(SubmittingPrDescriptionClient::new(
-            Arc::clone(&state.agent_conversation_workspace_repo),
-            conversation_id.clone(),
-        ));
-        client
-            .queue_decision(AgentWorkspacePrMetadataDecision::Patch {
-                title: Some("new title".to_string()),
-                body_markdown: None,
-            })
-            .await;
-        let state = state.with_agent_client(client);
-
-        let error = publish_agent_conversation_workspace_for_app_state(
-            &state,
-            &Arc::new(ExecutionState::new()),
-            conversation_id.clone(),
-            false,
-        )
-        .await
-        .expect_err(
-            "non-applied or unreadable metadata settlement must not report publish success",
-        );
-
-        assert!(error.contains(if readback.is_none() {
-            "unknown"
-        } else {
-            "metadata"
-        }));
-        let stored = state
-            .agent_conversation_workspace_repo
-            .get_by_conversation_id(&conversation_id)
-            .await
-            .expect("workspace lookup should succeed")
-            .expect("workspace should exist");
-        assert_eq!(stored.publication_metadata_state, Some(expected_state));
-        assert_eq!(
-            stored.publication_push_status.as_deref(),
-            Some(expected_push_status)
-        );
-        let events = publication_events_for(&state, &conversation_id).await;
-        assert!(!events
-            .iter()
-            .any(|event| event.step == "published" && event.status == "succeeded"));
-        if readback.is_none() {
-            assert!(!events
-                .iter()
-                .any(|event| event.step == "description_failed"));
-        }
-    }
+    assert!(events.iter().any(|event| {
+        event.step == "published"
+            && event.status == "succeeded"
+            && event.summary == "Draft pull request is ready"
+    }));
 }
 
 #[tokio::test]
@@ -7008,22 +7339,10 @@ async fn publish_workspace_redrafts_once_when_existing_pr_authority_drifts() {
         assert_eq!(github_state.update_pr_details_calls, 0);
     }
     assert_eq!(client.spawned_count().await, 2);
-    let stored = state
-        .agent_conversation_workspace_repo
-        .get_by_conversation_id(&conversation_id)
-        .await
-        .expect("workspace lookup should succeed")
-        .expect("workspace should exist");
-    let attempt_id = stored
-        .publication_metadata_attempt_id
-        .as_deref()
-        .expect("refreshed receipt should retain its attempt identity");
     assert!(publication_events_for(&state, &conversation_id)
         .await
         .iter()
-        .any(|event| {
-            event.step == "metadata_refreshed" && event.attempt_id.as_deref() == Some(attempt_id)
-        }));
+        .any(|event| { event.step == "published" && event.status == "succeeded" }));
 }
 
 #[tokio::test]
@@ -7121,14 +7440,8 @@ async fn publish_workspace_fails_after_push_when_existing_pr_drifts_twice_or_fin
             stored.publication_push_status.as_deref(),
             Some("description_failed")
         );
-        let events = publication_events_for(&state, &conversation_id).await;
-        assert!(stored.publication_metadata_attempt_id.is_some());
-        assert!(events.iter().any(|event| {
-            event.step == "metadata_settled"
-                && event.status == "skipped"
-                && event.attempt_id == stored.publication_metadata_attempt_id
-        }));
-        assert!(!events
+        assert!(!publication_events_for(&state, &conversation_id)
+            .await
             .iter()
             .any(|event| { event.step == "published" && event.status == "succeeded" }));
     }
@@ -7199,7 +7512,7 @@ async fn publish_workspace_recovers_duplicate_pr_with_a_redrafted_existing_patch
         let github_state = github.state();
         assert_eq!(github_state.push_branch_calls, 1);
         assert_eq!(github_state.create_draft_pr_calls, 1);
-        assert_eq!(github_state.find_pr_by_head_branch_calls, 2);
+        assert_eq!(github_state.find_pr_by_head_branch_calls, 3);
         assert_eq!(github_state.fetch_pr_detail_calls, 2);
         assert_eq!(github_state.patch_pr_metadata_calls, 1);
         assert_eq!(

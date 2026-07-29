@@ -10,7 +10,10 @@ export class AutomationDetailPage extends BasePage {
   readonly runsTabLiveDot: Locator;
   readonly runsTimeline: Locator;
   readonly goalCard: Locator;
-  readonly detailsCard: Locator;
+  readonly phasesCard: Locator;
+  readonly statCards: Locator;
+  readonly executionCard: Locator;
+  readonly specInputsCard: Locator;
   readonly planDialog: Locator;
 
   constructor(page: Page) {
@@ -22,7 +25,10 @@ export class AutomationDetailPage extends BasePage {
     this.runsTabLiveDot = page.getByTestId("automation-tab-runs-live-dot");
     this.runsTimeline = page.getByTestId("automation-runs-timeline");
     this.goalCard = page.getByTestId("automation-goal-card");
-    this.detailsCard = page.getByTestId("automation-details-card");
+    this.phasesCard = page.getByTestId("automation-phases-card");
+    this.statCards = page.getByTestId("automation-stat-cards");
+    this.executionCard = page.getByTestId("automation-execution-card");
+    this.specInputsCard = page.getByTestId("automation-spec-inputs-card");
     this.planDialog = page.getByTestId("automation-plan-dialog");
   }
 

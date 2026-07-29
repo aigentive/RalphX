@@ -51,10 +51,13 @@ function mockAutomation(overrides: Partial<Automation> = {}): Automation {
   };
 }
 
-function mockDetail(automation: Automation = mockAutomation()): AutomationDetail {
+function mockDetail(
+  automation: Automation = mockAutomation(),
+  runs: AutomationRun[] = [],
+): AutomationDetail {
   return {
     automation,
-    runs: [],
+    runs,
     usage: {
       inputTokens: 0,
       outputTokens: 0,
@@ -119,11 +122,64 @@ function deferredSchedule(reason: string): AutomationScheduleResponse {
   return { scheduled: false, reason };
 }
 
-export const mockAutomationsApi = {
-  list: async (_input: ListAutomationsInput = {}): Promise<Automation[]> => [],
+const mockAutomationFixtures = [
+  mockAutomation({
+    id: "mock-automation-attention",
+    name: "Resolve review feedback",
+    status: "paused",
+    pausedReasonCode: "workspace_review_blocked",
+    goalPrompt: "Ship the release safely.",
+  }),
+  mockAutomation({
+    id: "mock-automation-running",
+    name: "Prepare release notes",
+    status: "active",
+    goalPrompt: "Publish a complete release summary.",
+  }),
+  mockAutomation({
+    id: "mock-automation-finished",
+    name: "Migrate legacy settings",
+    status: "completed",
+    goalPrompt: "Migrate all existing settings.",
+  }),
+  mockAutomation({
+    id: "mock-automation-draft",
+    name: "Audit onboarding flow",
+    status: "draft",
+    goalPrompt: "",
+  }),
+];
 
-  get: async (id: string): Promise<AutomationDetail> =>
-    mockDetail(mockAutomation({ id })),
+const mockRunsByAutomationId: Record<string, AutomationRun[]> = {
+  "mock-automation-running": [
+    mockRun({
+      id: "mock-running-run",
+      automationId: "mock-automation-running",
+      runIndex: 3,
+      status: "running",
+      startedAt: "2026-07-28T10:00:00Z",
+    }),
+  ],
+  "mock-automation-finished": [
+    mockRun({
+      id: "mock-finished-run",
+      automationId: "mock-automation-finished",
+      runIndex: 4,
+      status: "merged",
+      prNumber: 482,
+      prMergedAt: "2026-07-27T10:00:00Z",
+    }),
+  ],
+};
+
+export const mockAutomationsApi = {
+  list: async (_input: ListAutomationsInput = {}): Promise<Automation[]> => mockAutomationFixtures,
+
+  get: async (id: string): Promise<AutomationDetail> => {
+    const automation = mockAutomationFixtures.find((item) => item.id === id)
+      ?? mockAutomation({ id });
+    return mockDetail(automation, mockRunsByAutomationId[id] ?? []);
+  },
 
   createDraft: async (
     input: CreateAutomationDraftInput,

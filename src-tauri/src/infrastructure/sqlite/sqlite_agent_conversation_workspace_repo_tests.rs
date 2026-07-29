@@ -6,8 +6,8 @@ use crate::domain::entities::{
     AgentWorkspacePrMetadataDecision, AgentWorkspacePrReviewAction,
     AgentWorkspacePrReviewActionKind, AgentWorkspacePrReviewActionStatus,
     AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewMonitorStatus,
-    AgentWorkspacePublicationMetadataPhase, AgentWorkspacePublicationMetadataReceipt,
-    AgentWorkspacePublicationMetadataState, AgentWorkspaceReviewApprovalSnapshot,
+    AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation, AgentWorkspaceRepairPhase,
+    AgentWorkspaceRepairSource, AgentWorkspaceReviewApprovalSnapshot,
     AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewAutoMergeGuardStatus,
     AgentWorkspaceReviewFixerSnapshot, AgentWorkspaceReviewGateStatus,
     AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
@@ -18,10 +18,9 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
-    AgentWorkspacePrReviewActionMutation, AgentWorkspacePublicationGuard,
-    AgentWorkspacePublicationMetadataReceiptClaim, AgentWorkspacePublicationMetadataReceiptRefresh,
-    AgentWorkspacePublicationUpdate, AgentWorkspaceRepairStateGuard,
-    AgentWorkspaceRepairStateTransition,
+    AgentWorkspacePrReviewActionMutation, AgentWorkspaceRepairRepository,
+    AgentWorkspaceRepairStateGuard, AgentWorkspaceRepairStateTransition,
+    StartOrJoinAgentWorkspaceRepairAttempt, StartOrJoinAgentWorkspaceRepairAttemptOutcome,
 };
 use crate::testing::SqliteTestDb;
 
@@ -57,6 +56,8 @@ async fn workspace_review_fixer_claim_is_exact_and_single_winner() {
     monitor.reviewed_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
     monitor.current_diff_fingerprint = Some("diff-claim".to_string());
     monitor.reviewed_diff_fingerprint = Some("diff-claim".to_string());
+    monitor.current_plan_context_fingerprint = Some("plan-claim".to_string());
+    monitor.reviewed_plan_context_fingerprint = Some("plan-claim".to_string());
     monitor.review_artifact_id = Some(artifact_id.clone());
     monitor.review_artifact_version = Some(4);
     monitor.review_requested_changes_artifact_id = Some(artifact_id.clone());
@@ -71,7 +72,21 @@ async fn workspace_review_fixer_claim_is_exact_and_single_winner() {
         artifact_id,
         artifact_version: 4,
         blocking_fingerprint: "blocker-claim".to_string(),
+        plan_context_fingerprint: Some("plan-claim".to_string()),
     };
+
+    let mut stale_plan_snapshot = snapshot.clone();
+    stale_plan_snapshot.plan_context_fingerprint = Some("plan-stale".to_string());
+    assert!(repo
+        .claim_workspace_review_fixer(
+            &conversation_id,
+            &stale_plan_snapshot,
+            "attempt-stale-plan",
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap()
+        .is_none());
 
     let claimed = repo
         .claim_workspace_review_fixer(
@@ -100,6 +115,77 @@ async fn workspace_review_fixer_claim_is_exact_and_single_winner() {
 }
 
 #[tokio::test]
+async fn workspace_review_fixer_settlement_rejects_refreshed_plan_authority() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id))
+        .await
+        .unwrap();
+    let artifact_id = ArtifactId::from_string("artifact-fixer-plan-settle");
+    let snapshot = AgentWorkspaceReviewFixerSnapshot {
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "diff-current".to_string(),
+        artifact_id: artifact_id.clone(),
+        artifact_version: 4,
+        requested_changes_artifact_id: artifact_id.clone(),
+        requested_changes_artifact_version: 4,
+        blocking_fingerprint: "blocker-current".to_string(),
+        plan_context_fingerprint: Some("plan-reviewed".to_string()),
+    };
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        conversation_id,
+        ProjectId::from_string("project-1".to_string()),
+    );
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::Blocking;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Blocking;
+    monitor.current_target_scope = Some(snapshot.target_scope);
+    monitor.reviewed_target_scope = Some(snapshot.target_scope);
+    monitor.current_diff_fingerprint = Some(snapshot.diff_fingerprint.clone());
+    monitor.reviewed_diff_fingerprint = Some(snapshot.diff_fingerprint.clone());
+    monitor.current_plan_context_fingerprint = snapshot.plan_context_fingerprint.clone();
+    monitor.reviewed_plan_context_fingerprint = snapshot.plan_context_fingerprint.clone();
+    monitor.review_artifact_id = Some(artifact_id);
+    monitor.review_artifact_version = Some(snapshot.artifact_version);
+    monitor.review_requested_changes_artifact_id =
+        Some(snapshot.requested_changes_artifact_id.clone());
+    monitor.review_requested_changes_artifact_version =
+        Some(snapshot.requested_changes_artifact_version);
+    monitor.review_blocking_fingerprint = Some(snapshot.blocking_fingerprint.clone());
+    repo.upsert_workspace_review_monitor(monitor).await.unwrap();
+    let mut claimed = repo
+        .claim_workspace_review_fixer(
+            &conversation_id,
+            &snapshot,
+            "attempt-plan-stale",
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+    let mut refreshed = claimed.clone();
+    refreshed.current_plan_context_fingerprint = Some("plan-new".to_string());
+    repo.upsert_workspace_review_monitor(refreshed.clone())
+        .await
+        .unwrap();
+    claimed.review_fixer_status = Some("running".to_string());
+
+    assert!(repo
+        .settle_workspace_review_fixer_attempt(claimed, "attempt-plan-stale", &snapshot)
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        repo.get_workspace_review_monitor(&conversation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .current_plan_context_fingerprint,
+        refreshed.current_plan_context_fingerprint
+    );
+}
+
+#[tokio::test]
 async fn workspace_review_fixer_settlement_rejects_refreshed_target_authority() {
     let (_db, repo, conversation_id) = setup_repo();
     repo.create_or_update(make_workspace(conversation_id))
@@ -114,6 +200,7 @@ async fn workspace_review_fixer_settlement_rejects_refreshed_target_authority() 
         requested_changes_artifact_id: artifact_id.clone(),
         requested_changes_artifact_version: 4,
         blocking_fingerprint: "blocker-old".to_string(),
+        plan_context_fingerprint: None,
     };
     let mut monitor = AgentWorkspaceReviewMonitor::new(
         conversation_id,
@@ -339,41 +426,6 @@ fn make_workspace(conversation_id: ChatConversationId) -> AgentConversationWorks
     )
 }
 
-fn metadata_receipt_claim(
-    conversation_id: &ChatConversationId,
-    attempt_id: &str,
-    target_pr_number: i64,
-) -> AgentWorkspacePublicationMetadataReceiptClaim {
-    let mut event = AgentConversationWorkspacePublicationEvent::new(
-        conversation_id.clone(),
-        "metadata_prepared",
-        "started",
-        "Prepared PR metadata update.",
-        None,
-    );
-    event.attempt_id = Some(attempt_id.to_string());
-    AgentWorkspacePublicationMetadataReceiptClaim {
-        receipt: AgentWorkspacePublicationMetadataReceipt {
-            attempt_id: attempt_id.to_string(),
-            phase: AgentWorkspacePublicationMetadataPhase::Prepared,
-            state: AgentWorkspacePublicationMetadataState::NotAttempted,
-            target_pr_number,
-            before_authority_sha256: "a".repeat(64),
-            before_title_sha256: "b".repeat(64),
-            before_editable_body_sha256: "c".repeat(64),
-            before_managed_suffix_sha256: Some("d".repeat(64)),
-            intended_title_sha256: Some("e".repeat(64)),
-            intended_editable_body_sha256: Some("f".repeat(64)),
-            updated_at: chrono::Utc::now(),
-        },
-        decision: AgentWorkspacePrMetadataDecision::Patch {
-            title: Some("Prepared title".to_string()),
-            body_markdown: Some("Prepared body".to_string()),
-        },
-        event,
-    }
-}
-
 #[tokio::test]
 async fn repair_state_cas_is_null_safe_atomic_and_preserves_unrelated_fields() {
     let (_db, repo, conversation_id) = setup_repo();
@@ -495,475 +547,93 @@ async fn repair_state_and_events_transaction_rolls_back_on_insert_failure() {
 }
 
 #[tokio::test]
-async fn publication_metadata_receipt_claim_rejects_orphaned_authority_columns() {
-    let (db, repo, conversation_id) = setup_repo();
+async fn legacy_repair_cas_cannot_mutate_a_durable_generation() {
+    let (_db, repo, conversation_id) = setup_repo();
     let mut workspace = make_workspace(conversation_id.clone());
-    workspace.publication_pr_number = Some(99);
+    workspace.publication_push_status = Some("needs_agent".to_string());
+    workspace.pr_supervision_status = Some("fixing".to_string());
+    workspace.pr_supervision_updated_at = Some(chrono::Utc::now());
     repo.create_or_update(workspace).await.unwrap();
-    let workspace = repo
+
+    let durable = match repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                conversation_id.clone(),
+                AgentWorkspaceRepairSource::Publish,
+                AgentWorkspaceRepairContinuation::Publish,
+                "main",
+                false,
+                true,
+                false,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: "durable owner".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .unwrap()
+    {
+        StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(attempt) => attempt,
+        outcome => panic!("expected durable attempt, got {outcome:?}"),
+    };
+    assert_eq!(durable.phase, AgentWorkspaceRepairPhase::Requested);
+    let before = repo
         .get_by_conversation_id(&conversation_id)
         .await
         .unwrap()
         .unwrap();
-    db.with_connection(|conn| {
-        conn.execute(
-            "UPDATE agent_conversation_workspaces
-             SET publication_metadata_before_authority_sha256 = ?2
-             WHERE conversation_id = ?1",
-            rusqlite::params![conversation_id.as_str(), "a".repeat(64)],
-        )
-        .unwrap();
-    });
-
-    let error = repo
-        .claim_publication_metadata_receipt(
+    let transition = AgentWorkspaceRepairStateTransition {
+        publication_push_status: Some("pushed".to_string()),
+        pr_supervision_status: Some("publishing".to_string()),
+        pr_supervision_summary: Some("stale legacy success".to_string()),
+        pr_supervision_updated_at: before.pr_supervision_updated_at.unwrap()
+            + chrono::Duration::seconds(1),
+        pr_auto_merge_current: Some(true),
+        base_commit: Some("stale-base".to_string()),
+    };
+    let guard = AgentWorkspaceRepairStateGuard::from_workspace(&before);
+    assert!(!repo
+        .compare_and_set_repair_state(&conversation_id, &guard, &transition)
+        .await
+        .unwrap());
+    assert!(!repo
+        .compare_and_set_repair_state_with_events(
             &conversation_id,
-            metadata_receipt_claim(&conversation_id, "replacement-attempt", 99),
+            &guard,
+            &transition,
+            vec![AgentConversationWorkspacePublicationEvent::new(
+                conversation_id.clone(),
+                "legacy_repair_succeeded",
+                "succeeded",
+                "stale legacy success",
+                Some("legacy".to_string()),
+            )],
         )
         .await
-        .expect_err("orphaned receipt authority must fail closed");
-
-    assert!(matches!(error, crate::error::AppError::Validation(_)));
+        .unwrap());
     assert_eq!(
         repo.get_by_conversation_id(&conversation_id)
             .await
             .unwrap()
             .unwrap(),
-        workspace
+        before
     );
     assert!(repo
         .list_publication_events(&conversation_id)
         .await
         .unwrap()
         .is_empty());
-    assert!(repo
-        .get_pr_metadata_decision(&conversation_id)
-        .await
-        .unwrap()
-        .is_none());
-    db.with_connection(|conn| {
-        assert_eq!(
-            conn.query_row(
-                "SELECT publication_metadata_before_authority_sha256
-                 FROM agent_conversation_workspaces
-                 WHERE conversation_id = ?1",
-                [conversation_id.as_str()],
-                |row| row.get::<_, Option<String>>(0),
-            )
-            .unwrap()
-            .as_deref(),
-            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-        );
-    });
-}
-
-#[tokio::test]
-async fn publication_metadata_receipt_is_exact_atomic_and_reads_legacy_event_rows() {
-    let (db, repo, conversation_id) = setup_repo();
-    let mut workspace = make_workspace(conversation_id.clone());
-    workspace.publication_pr_number = Some(99);
-    repo.create_or_update(workspace).await.unwrap();
-
-    let claim = metadata_receipt_claim(&conversation_id, "attempt-sqlite-current", 99);
-    let expected_receipt = claim.receipt.clone();
-    let expected_decision = claim.decision.clone();
-    assert!(repo
-        .claim_publication_metadata_receipt(&conversation_id, claim)
-        .await
-        .unwrap());
-    assert!(!repo
-        .claim_publication_metadata_receipt(
-            &conversation_id,
-            metadata_receipt_claim(&conversation_id, "attempt-sqlite-racing", 99),
-        )
-        .await
-        .unwrap());
     assert_eq!(
-        repo.get_publication_metadata_receipt(&conversation_id)
-            .await
-            .unwrap(),
-        Some(expected_receipt)
-    );
-    assert_eq!(
-        repo.get_pr_metadata_decision(&conversation_id)
-            .await
-            .unwrap(),
-        Some(expected_decision)
-    );
-    let refreshed_decision = AgentWorkspacePrMetadataDecision::Patch {
-        title: None,
-        body_markdown: Some("Refreshed body".to_string()),
-    };
-    let mut refreshed_event = AgentConversationWorkspacePublicationEvent::new(
-        conversation_id.clone(),
-        "metadata_refreshed",
-        "succeeded",
-        "Refreshed PR metadata authority.",
-        None,
-    );
-    refreshed_event.attempt_id = Some("attempt-sqlite-current".to_string());
-    assert!(repo
-        .compare_and_set_publication_metadata_receipt_with_events(
-            &conversation_id,
-            "attempt-sqlite-current",
-            AgentWorkspacePublicationMetadataPhase::Prepared,
-            AgentWorkspacePublicationMetadataState::NotAttempted,
-            AgentWorkspacePublicationMetadataPhase::Prepared,
-            AgentWorkspacePublicationMetadataState::NotAttempted,
-            Some(AgentWorkspacePublicationMetadataReceiptRefresh {
-                decision: refreshed_decision.clone(),
-                target_pr_number: 99,
-                before_authority_sha256: "1".repeat(64),
-                before_title_sha256: "2".repeat(64),
-                before_editable_body_sha256: "3".repeat(64),
-                before_managed_suffix_sha256: Some("4".repeat(64)),
-                intended_title_sha256: None,
-                intended_editable_body_sha256: Some("5".repeat(64)),
-                updated_at: chrono::Utc::now(),
-            }),
-            vec![refreshed_event],
-        )
-        .await
-        .unwrap());
-    let refreshed_receipt = repo
-        .get_publication_metadata_receipt(&conversation_id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(refreshed_receipt.before_authority_sha256, "1".repeat(64));
-    assert_eq!(refreshed_receipt.before_title_sha256, "2".repeat(64));
-    assert_eq!(
-        refreshed_receipt.before_editable_body_sha256,
-        "3".repeat(64)
-    );
-    assert_eq!(
-        refreshed_receipt.before_managed_suffix_sha256,
-        Some("4".repeat(64))
-    );
-    assert_eq!(refreshed_receipt.intended_title_sha256, None);
-    assert_eq!(
-        refreshed_receipt.intended_editable_body_sha256,
-        Some("5".repeat(64))
-    );
-    assert_eq!(
-        repo.get_pr_metadata_decision(&conversation_id)
-            .await
-            .unwrap(),
-        Some(refreshed_decision)
-    );
-
-    db.with_connection(|conn| {
-        conn.execute(
-            "INSERT INTO agent_conversation_workspace_publication_events (
-                id, conversation_id, step, status, summary, classification, created_at
-             ) VALUES (?1, ?2, 'legacy', 'succeeded', 'legacy event', NULL, ?3)",
-            rusqlite::params![
-                "legacy-receipt-event",
-                conversation_id.as_str(),
-                chrono::Utc::now().to_rfc3339(),
-            ],
-        )
-        .unwrap();
-    });
-    let legacy = repo
-        .list_publication_events(&conversation_id)
-        .await
-        .unwrap();
-    assert_eq!(legacy.len(), 3);
-    assert_eq!(
-        legacy
-            .iter()
-            .find(|event| event.step == "legacy")
-            .and_then(|event| event.attempt_id.as_deref()),
-        None
-    );
-
-    let mut reconciling_event = AgentConversationWorkspacePublicationEvent::new(
-        conversation_id.clone(),
-        "metadata_reconciling",
-        "started",
-        "Reconciling PR metadata.",
-        None,
-    );
-    reconciling_event.attempt_id = Some("attempt-sqlite-current".to_string());
-    assert!(repo
-        .compare_and_set_publication_metadata_receipt_with_events(
-            &conversation_id,
-            "attempt-sqlite-current",
-            AgentWorkspacePublicationMetadataPhase::Prepared,
-            AgentWorkspacePublicationMetadataState::NotAttempted,
-            AgentWorkspacePublicationMetadataPhase::Reconciling,
-            AgentWorkspacePublicationMetadataState::Unknown,
-            None,
-            vec![reconciling_event],
-        )
-        .await
-        .unwrap());
-
-    let mut stale_event = AgentConversationWorkspacePublicationEvent::new(
-        conversation_id.clone(),
-        "metadata_stale",
-        "failed",
-        "Stale metadata attempt.",
-        None,
-    );
-    stale_event.attempt_id = Some("attempt-sqlite-current".to_string());
-    assert!(!repo
-        .settle_publication_metadata_receipt_with_events(
-            &conversation_id,
-            "attempt-sqlite-current",
-            AgentWorkspacePublicationMetadataPhase::Prepared,
-            AgentWorkspacePublicationMetadataState::NotAttempted,
-            AgentWorkspacePublicationMetadataPhase::Reconciling,
-            AgentWorkspacePublicationMetadataState::NotApplied,
-            AgentWorkspacePublicationUpdate {
-                pr_number: Some(99),
-                pr_url: Some("https://example.test/pr/99".to_string()),
-                pr_status: Some("open".to_string()),
-                push_status: Some("failed".to_string()),
-            },
-            vec![stale_event],
-        )
-        .await
-        .unwrap());
-    assert_eq!(
-        repo.list_publication_events(&conversation_id)
+        repo.get_current_repair_attempt(&conversation_id)
             .await
             .unwrap()
-            .len(),
-        4
-    );
-
-    let mut settled_event = AgentConversationWorkspacePublicationEvent::new(
-        conversation_id.clone(),
-        "metadata_reconciled",
-        "succeeded",
-        "Confirmed PR metadata was applied.",
-        None,
-    );
-    settled_event.attempt_id = Some("attempt-sqlite-current".to_string());
-    assert!(repo
-        .settle_publication_metadata_receipt_with_events(
-            &conversation_id,
-            "attempt-sqlite-current",
-            AgentWorkspacePublicationMetadataPhase::Reconciling,
-            AgentWorkspacePublicationMetadataState::Unknown,
-            AgentWorkspacePublicationMetadataPhase::Settled,
-            AgentWorkspacePublicationMetadataState::Applied,
-            AgentWorkspacePublicationUpdate {
-                pr_number: Some(99),
-                pr_url: Some("https://example.test/pr/99".to_string()),
-                pr_status: Some("open".to_string()),
-                push_status: Some("pushed".to_string()),
-            },
-            vec![settled_event],
-        )
-        .await
-        .unwrap());
-    let settled = repo
-        .get_by_conversation_id(&conversation_id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        settled.publication_metadata_phase,
-        Some(AgentWorkspacePublicationMetadataPhase::Settled)
-    );
-    assert_eq!(
-        settled.publication_metadata_state,
-        Some(AgentWorkspacePublicationMetadataState::Applied)
-    );
-    assert_eq!(settled.publication_pr_number, Some(99));
-    assert_eq!(settled.publication_push_status.as_deref(), Some("pushed"));
-}
-
-#[tokio::test]
-async fn publication_metadata_receipt_claim_event_failure_rolls_back_sqlite_authority() {
-    let (db, repo, conversation_id) = setup_repo();
-    let mut workspace = make_workspace(conversation_id.clone());
-    workspace.publication_pr_number = Some(100);
-    workspace.publication_push_status = Some("pushing".to_string());
-    let persisted_workspace = repo.create_or_update(workspace).await.unwrap();
-    let claim = metadata_receipt_claim(&conversation_id, "attempt-sqlite-rollback", 100);
-    db.with_connection(|conn| {
-        conn.execute(
-            "INSERT INTO agent_conversation_workspace_publication_events (
-                id, conversation_id, step, status, summary, classification, attempt_id, created_at
-             ) VALUES (?1, ?2, 'existing', 'succeeded', 'existing event', NULL, NULL, ?3)",
-            rusqlite::params![
-                claim.event.id,
-                conversation_id.as_str(),
-                chrono::Utc::now().to_rfc3339(),
-            ],
-        )
-        .unwrap();
-    });
-
-    assert!(repo
-        .claim_publication_metadata_receipt(&conversation_id, claim)
-        .await
-        .is_err());
-    assert_eq!(
-        repo.get_by_conversation_id(&conversation_id).await.unwrap(),
-        Some(persisted_workspace)
-    );
-    assert_eq!(
-        repo.get_publication_metadata_receipt(&conversation_id)
-            .await
-            .unwrap(),
-        None
-    );
-    assert_eq!(
-        repo.get_pr_metadata_decision(&conversation_id)
-            .await
-            .unwrap(),
-        None
-    );
-    assert_eq!(
-        repo.list_publication_events(&conversation_id)
-            .await
             .unwrap()
-            .len(),
-        1
+            .id,
+        durable.id
     );
-}
-
-#[tokio::test]
-async fn publication_metadata_guarded_update_is_stale_safe_and_atomic_in_sqlite() {
-    let (db, repo, conversation_id) = setup_repo();
-    let mut workspace = make_workspace(conversation_id.clone());
-    workspace.publication_push_status = Some("pushing".to_string());
-    let workspace = repo.create_or_update(workspace).await.unwrap();
-    let expected = AgentWorkspacePublicationGuard::from_workspace(&workspace);
-    let mut stale = expected.clone();
-    stale.push_status = Some("checking".to_string());
-    let publication = AgentWorkspacePublicationUpdate {
-        pr_number: Some(101),
-        pr_url: Some("https://example.test/pr/101".to_string()),
-        pr_status: Some("draft".to_string()),
-        push_status: Some("pushed".to_string()),
-    };
-    let event = AgentConversationWorkspacePublicationEvent::new(
-        conversation_id.clone(),
-        "published",
-        "succeeded",
-        "Draft pull request is ready.",
-        None,
-    );
-
-    assert!(!repo
-        .update_publication_with_events(
-            &conversation_id,
-            &stale,
-            publication.clone(),
-            vec![event.clone()],
-        )
-        .await
-        .unwrap());
-    assert_eq!(
-        repo.get_by_conversation_id(&conversation_id).await.unwrap(),
-        Some(workspace.clone())
-    );
-
-    db.with_connection(|conn| {
-        conn.execute(
-            "INSERT INTO agent_conversation_workspace_publication_events (
-                id, conversation_id, step, status, summary, classification, attempt_id, created_at
-             ) VALUES (?1, ?2, 'existing', 'succeeded', 'existing event', NULL, NULL, ?3)",
-            rusqlite::params![
-                event.id,
-                conversation_id.as_str(),
-                chrono::Utc::now().to_rfc3339(),
-            ],
-        )
-        .unwrap();
-    });
-    assert!(repo
-        .update_publication_with_events(
-            &conversation_id,
-            &expected,
-            publication.clone(),
-            vec![event],
-        )
-        .await
-        .is_err());
-    assert_eq!(
-        repo.get_by_conversation_id(&conversation_id).await.unwrap(),
-        Some(workspace)
-    );
-
-    let success_event = AgentConversationWorkspacePublicationEvent::new(
-        conversation_id.clone(),
-        "published",
-        "succeeded",
-        "Draft pull request is ready.",
-        None,
-    );
-    assert!(repo
-        .update_publication_with_events(
-            &conversation_id,
-            &expected,
-            publication,
-            vec![success_event],
-        )
-        .await
-        .unwrap());
-    let settled = repo
-        .get_by_conversation_id(&conversation_id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(settled.publication_pr_number, Some(101));
-    assert_eq!(settled.publication_push_status.as_deref(), Some("pushed"));
-}
-
-#[tokio::test]
-async fn publication_metadata_receipt_rejects_malformed_persisted_enum_values() {
-    let (db, repo, conversation_id) = setup_repo();
-    repo.create_or_update(make_workspace(conversation_id.clone()))
-        .await
-        .unwrap();
-    db.with_connection(|conn| {
-        conn.execute(
-            "UPDATE agent_conversation_workspaces
-             SET publication_metadata_phase = 'not_a_receipt_phase'
-             WHERE conversation_id = ?1",
-            [conversation_id.as_str()],
-        )
-        .unwrap();
-    });
-
-    let error = repo
-        .get_by_conversation_id(&conversation_id)
-        .await
-        .expect_err("invalid receipt phase must fail closed");
-    assert!(matches!(error, crate::error::AppError::Validation(_)));
-}
-
-#[tokio::test]
-async fn publication_metadata_receipt_rejects_partial_authority_rows() {
-    let (db, repo, conversation_id) = setup_repo();
-    repo.create_or_update(make_workspace(conversation_id.clone()))
-        .await
-        .unwrap();
-    db.with_connection(|conn| {
-        conn.execute(
-            "UPDATE agent_conversation_workspaces
-             SET publication_metadata_attempt_id = 'partial-attempt',
-                 publication_metadata_phase = 'prepared',
-                 publication_metadata_state = 'not_attempted',
-                 publication_metadata_updated_at = ?2
-             WHERE conversation_id = ?1",
-            rusqlite::params![conversation_id.as_str(), chrono::Utc::now().to_rfc3339(),],
-        )
-        .unwrap();
-    });
-
-    let error = repo
-        .get_publication_metadata_receipt(&conversation_id)
-        .await
-        .expect_err("partial receipt authority must fail closed");
-    assert!(matches!(error, crate::error::AppError::Validation(_)));
 }
 
 #[tokio::test]
@@ -4093,19 +3763,6 @@ async fn list_active_transient_publish_status_workspaces_filters_stale_open_rows
     repo.create_or_update(describing.clone()).await.unwrap();
     set_workspace_updated_at(&db, &describing.conversation_id, older);
 
-    let pushing_id = ChatConversationId::from_string("abababab-abab-abab-abab-abababababab");
-    seed_conversation(&db, &pushing_id);
-    let mut pushing = make_workspace(pushing_id);
-    pushing.publication_pr_number = Some(97);
-    pushing.publication_pr_status = Some("open".to_string());
-    pushing.publication_push_status = Some("pushing".to_string());
-    repo.create_or_update(pushing.clone()).await.unwrap();
-    set_workspace_updated_at(
-        &db,
-        &pushing.conversation_id,
-        chrono::Utc::now() - chrono::Duration::minutes(15),
-    );
-
     let recent_id = ChatConversationId::from_string("cccccccc-cccc-cccc-cccc-cccccccccccc");
     seed_conversation(&db, &recent_id);
     let mut recent = make_workspace(recent_id);
@@ -4152,55 +3809,7 @@ async fn list_active_transient_publish_status_workspaces_filters_stale_open_rows
             .into_iter()
             .map(|workspace| workspace.conversation_id)
             .collect::<Vec<_>>(),
-        vec![
-            describing.conversation_id,
-            pushing.conversation_id,
-            refreshing.conversation_id,
-        ]
-    );
-}
-
-#[tokio::test]
-async fn pending_publication_metadata_receipt_workspaces_require_a_stale_receipt() {
-    let (db, repo, conversation_id) = setup_repo();
-    let mut pending = make_workspace(conversation_id.clone());
-    pending.publication_pr_number = Some(97);
-    pending.publication_pr_status = Some("open".to_string());
-    repo.create_or_update(pending).await.unwrap();
-    assert!(repo
-        .claim_publication_metadata_receipt(
-            &conversation_id,
-            metadata_receipt_claim(&conversation_id, "pending-recovery-attempt", 97),
-        )
-        .await
-        .unwrap());
-
-    let pushing_without_receipt_id =
-        ChatConversationId::from_string("abababab-abab-abab-abab-abababababab");
-    seed_conversation(&db, &pushing_without_receipt_id);
-    let mut pushing_without_receipt = make_workspace(pushing_without_receipt_id);
-    pushing_without_receipt.publication_pr_number = Some(98);
-    pushing_without_receipt.publication_pr_status = Some("open".to_string());
-    pushing_without_receipt.publication_push_status = Some("pushing".to_string());
-    repo.create_or_update(pushing_without_receipt)
-        .await
-        .unwrap();
-
-    assert!(repo
-        .list_active_pending_publication_metadata_receipt_workspaces(300)
-        .await
-        .unwrap()
-        .is_empty());
-
-    let workspaces = repo
-        .list_active_pending_publication_metadata_receipt_workspaces(0)
-        .await
-        .unwrap();
-    assert_eq!(workspaces.len(), 1);
-    assert_eq!(workspaces[0].conversation_id, conversation_id);
-    assert_eq!(
-        workspaces[0].publication_push_status.as_deref(),
-        Some("pushing")
+        vec![describing.conversation_id, refreshing.conversation_id]
     );
 }
 
