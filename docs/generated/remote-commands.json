@@ -2521,6 +2521,51 @@
     },
     {
       "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_agent_conversation_summary",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::unified_chat_commands::get_agent_conversation_summary"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_agent_conversation_runtime_index",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::unified_chat_commands::get_agent_conversation_runtime_index"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "list_agent_conversation_workspace_publication_events",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::unified_chat_commands::list_agent_conversation_workspace_publication_events"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_bulk_workspace_publication_states",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::agent_sidebar_commands::get_bulk_workspace_publication_states"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "list_agent_models",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::agent_model_commands::list_agent_models"
+    },
+    {
+      "argumentSensitive": false,
       "capabilities": [
         "mutatesAgentConsumedContent"
       ],
@@ -4228,14 +4273,12 @@
       "registered": false
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "list_agent_models",
       "module": "agent_model_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "built-in and custom model registry merge; propagates read errors",
+      "registered": true
     },
     {
       "capabilities": [
@@ -6603,14 +6646,12 @@
       "registered": false
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_bulk_workspace_publication_states",
       "module": "agent_sidebar_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "publication state enum and label per conversation; propagates read errors",
+      "registered": true
     },
     {
       "capabilities": [
@@ -6623,14 +6664,12 @@
       "registered": false
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_agent_conversation_summary",
       "module": "unified_chat_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "conversation metadata without messages; propagates read errors",
+      "registered": true
     },
     {
       "capabilities": [
@@ -6714,14 +6753,12 @@
       "registered": false
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "list_agent_conversation_workspace_publication_events",
       "module": "unified_chat_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "workspace publication event history; propagates read errors",
+      "registered": true
     },
     {
       "capabilities": [
@@ -6904,14 +6941,12 @@
       "registered": false
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_agent_conversation_runtime_index",
       "module": "unified_chat_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "runtime lifecycle index via the non-mutating direct_agent_running_state_for_context path; propagates read errors",
+      "registered": true
     },
     {
       "capabilities": [
