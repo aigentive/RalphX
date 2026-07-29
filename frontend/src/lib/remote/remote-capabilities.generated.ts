@@ -44,6 +44,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: ["agentControl"],
     pins: [{"param":"args","field":"decision","value":"allow"}],
   },
+  "approve_review": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["mutatesAgentConsumedContent"],
+    pins: [],
+  },
   "approve_task_for_review": {
     opClass: "agentControl",
     argumentSensitive: false,
@@ -60,6 +66,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     opClass: "operate",
     argumentSensitive: false,
     capabilities: [],
+    pins: [],
+  },
+  "clear_active_plan": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl"],
     pins: [],
   },
   "create_artifact": {
@@ -428,6 +440,18 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: [],
     pins: [],
   },
+  "mark_issue_addressed": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl","mutatesAgentConsumedContent"],
+    pins: [],
+  },
+  "mark_issue_in_progress": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl","mutatesAgentConsumedContent"],
+    pins: [],
+  },
   "move_task": {
     opClass: "agentControl",
     argumentSensitive: false,
@@ -452,16 +476,52 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: [],
     pins: [],
   },
+  "re_review_task_from_escalated": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl"],
+    pins: [],
+  },
   "reanalyze_project": {
     opClass: "agentControl",
     argumentSensitive: false,
     capabilities: ["agentControl"],
     pins: [],
   },
+  "reject_review": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["mutatesAgentConsumedContent"],
+    pins: [],
+  },
+  "reopen_issue": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl","mutatesAgentConsumedContent"],
+    pins: [],
+  },
+  "request_changes": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["mutatesAgentConsumedContent"],
+    pins: [],
+  },
+  "request_task_changes_for_review": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["mutatesAgentConsumedContent"],
+    pins: [],
+  },
   "resume_automation": {
     opClass: "agentControl",
     argumentSensitive: false,
     capabilities: ["seedsSpawnTriggeringState"],
+    pins: [],
+  },
+  "retry_qa": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl"],
     pins: [],
   },
   "search_agent_composer_plan_references": {
@@ -476,11 +536,29 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: [],
     pins: [],
   },
+  "seed_builtin_workflows": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl"],
+    pins: [],
+  },
   "send_remote_chat_message": {
     opClass: "agentControl",
     argumentSensitive: false,
     capabilities: ["mutatesAgentConsumedContent"],
     pins: [{"param":"input","field":"role","value":"user"}],
+  },
+  "set_active_project": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl"],
+    pins: [],
+  },
+  "start_research": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl"],
+    pins: [],
   },
   "stop_execution": {
     opClass: "operate",
@@ -506,6 +584,18 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: ["mutatesAgentConsumedContent"],
     pins: [],
   },
+  "update_qa_settings": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl"],
+    pins: [],
+  },
+  "update_review_settings": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl","seedsSpawnTriggeringState"],
+    pins: [],
+  },
   "update_task": {
     opClass: "operate",
     argumentSensitive: true,
@@ -522,6 +612,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     opClass: "agentControl",
     argumentSensitive: false,
     capabilities: ["mutatesAgentConsumedContent"],
+    pins: [],
+  },
+  "verify_issue": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl","mutatesAgentConsumedContent"],
     pins: [],
   },
 };

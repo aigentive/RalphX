@@ -1194,6 +1194,250 @@ crate::remote_commands! {
         pins: [("input", "role", "user")],
     },
 
+    // -----------------------------------------------------------------------------------
+    // PR 3.1-b batch 10 — the `ui:agent` registration decisions.
+    //
+    // Batch 9 left 25 audited-and-refused commands on the ratchet with a precise diagnosis:
+    // every recorded finding was arming, steering, or an unaudited write, and the facade
+    // already serves 16 `agentControl` ops of exactly that shape. So the refusals recorded
+    // which batch ran out of scope, not a property of the command, and what they needed was
+    // the `ui:agent` registration audit nobody had done. Batch 10 did it.
+    //
+    // The floor held first: `probe_batch9_retroactive_closure_candidates` was re-run against
+    // the CURRENT graph and detector (c) is SILENT on all 25 — not one reaches a
+    // `PROCESS_LAUNCH_SINKS` resolver. Nothing below is registered over a CLI launch.
+    //
+    // Detector silence was necessary and never sufficient, and it did not carry the batch:
+    // seven of the 25 audit DIRTY and are in `AUDIT_REFUSALS` rather than here — three
+    // fail-open writes and four surfaces the facade already answers under another name.
+    //
+    // Every row below was hand-traced to its repository call. The shared structural property,
+    // checked rather than assumed: a status/enum guard that returns `Err` on violation, and
+    // repository errors propagated with `?`/`map_err(...)?` — never collapsed into a default,
+    // an empty result, or a discarded write. The only `let _ =` in any of these bodies is a
+    // post-transition `app.emit`, i.e. a UI notification AFTER the backend has already
+    // accepted the write, which is the authority-before-effects ordering rather than a breach
+    // of it.
+    // -----------------------------------------------------------------------------------
+
+    // --- Review lifecycle: human gate decisions that resume or redirect agent work. These are
+    //     the closest siblings of the already-registered `approve_task_for_review`, and two of
+    //     them reach the very same `TaskTransitionService`.
+    //
+    // NOT registered — the fix-task repair pair. Batch 10 audited `approve_fix_task` clean (a
+    // Blocked→Ready transition in the registered `unblock_task` shape) and intended to register
+    // it, and `no_registered_facade_target_reaches_a_corrective_transition` refused the other
+    // half: `reject_fix_task` reaches `transition_task_corrective`, the nonstandard repair jump
+    // that is repair-path-only and must never be remotely reachable. That is a hard invariant,
+    // not a scope call, so `reject_fix_task` cannot be registered at any scope as it stands.
+    //
+    // `approve_fix_task` is then withheld on the pre-existing PAIR argument rather than on any
+    // finding of its own, and batch 10 upholds it: registering the approve half alone would let
+    // a paired device unblock fix tasks with no remote way to reject one — the same
+    // brake-less asymmetry batch 3 closed for execution. Both stay on the ratchet, and both
+    // reasons are recorded in `b3_members_that_audit_dirty_stay_unregistered`.
+    // Registered where its near-twin `request_task_changes_from_reviewing` is REFUSED, and the
+    // split is the batch's sharpest single finding. Both reach the same `RevisionNeeded`
+    // transition; only the `_from_reviewing` variant first rewrites `task.metadata` through two
+    // `unwrap_or_else` fallbacks that replace an unparseable blob with a stub and drop every
+    // other field while still returning `Ok`. This one carries no such write.
+    "request_task_changes_for_review"
+        => crate::commands::review_commands::request_task_changes_for_review {
+        class: AgentControl,
+        caps: [MutatesAgentConsumedContent],
+        params: [
+            (arg input: crate::commands::review_commands_types::RequestTaskChangesInput),
+            (app_state),
+            (execution_state),
+            (host_app_handle),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "re_review_task_from_escalated"
+        => crate::commands::review_commands::re_review_task_from_escalated {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [
+            (arg input: crate::commands::review_commands_types::ReReviewTaskInput),
+            (app_state),
+            (execution_state),
+            (host_app_handle),
+        ],
+        call: async,
+        result: fallible,
+    },
+    // Detector (b): arms `require_workspace_review`, which the auto-review spawner consumes.
+    // The registered `inject_task`/`resume_automation`/`finalize_automation` carry the same
+    // `SeedsSpawnTriggeringState` capability, which is exactly why batch 9 refused to call this
+    // shape host-denied.
+    "update_review_settings" => crate::commands::review_commands::update_review_settings {
+        class: AgentControl,
+        caps: [AgentControl, SeedsSpawnTriggeringState],
+        params: [
+            (arg input: crate::commands::review_commands_types::UpdateReviewSettingsInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+
+    // --- Review ISSUE bookkeeping. Each is `review_issue_repo.get_by_id` → an explicit status
+    //     guard → `review_issue_repo.update`, taking only `&AppState`: no transition service,
+    //     no `AppHandle`, no `ExecutionState`. They carry `MutatesAgentConsumedContent` because
+    //     a reviewing agent reads issue state, which is the whole reason they are `ui:agent`
+    //     rather than `ui:operate`.
+    "reopen_issue" => crate::commands::review_commands::reopen_issue {
+        class: AgentControl,
+        caps: [AgentControl, MutatesAgentConsumedContent],
+        params: [
+            (arg input: crate::commands::review_commands_types::ReopenIssueInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "verify_issue" => crate::commands::review_commands::verify_issue {
+        class: AgentControl,
+        caps: [AgentControl, MutatesAgentConsumedContent],
+        params: [
+            (arg input: crate::commands::review_commands_types::VerifyIssueInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "mark_issue_in_progress" => crate::commands::review_commands::mark_issue_in_progress {
+        class: AgentControl,
+        caps: [AgentControl, MutatesAgentConsumedContent],
+        params: [
+            (arg input: crate::commands::review_commands_types::MarkIssueInProgressInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "mark_issue_addressed" => crate::commands::review_commands::mark_issue_addressed {
+        class: AgentControl,
+        caps: [AgentControl, MutatesAgentConsumedContent],
+        params: [
+            (arg input: crate::commands::review_commands_types::MarkIssueAddressedInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+
+    // --- Review ROW verdicts. Recorded precisely, because batch 9's pairing table guessed
+    //     these were duplicates of `approve_task_for_review` and the body audit refuted that:
+    //     they write the `reviews` row only (`review_repo.update` on status/notes/completed_at)
+    //     and never touch `Task::internal_status` or any transition service. So they are NOT a
+    //     second path to the registered task approval — they are a different, narrower write,
+    //     which is why they are registered on their own audit rather than twin-classified.
+    "approve_review" => crate::commands::review_commands::approve_review {
+        class: AgentControl,
+        caps: [MutatesAgentConsumedContent],
+        params: [
+            (arg input: crate::commands::review_commands_types::ApproveReviewInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "reject_review" => crate::commands::review_commands::reject_review {
+        class: AgentControl,
+        caps: [MutatesAgentConsumedContent],
+        params: [
+            (arg input: crate::commands::review_commands_types::RejectReviewInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "request_changes" => crate::commands::review_commands::request_changes {
+        class: AgentControl,
+        caps: [MutatesAgentConsumedContent],
+        params: [
+            (arg input: crate::commands::review_commands_types::RequestChangesInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+
+    // --- QA. `retry_qa` writes an unambiguous all-Pending reset; its sibling `skip_qa` is
+    //     REFUSED because the verdict it writes does not mean what its name promises.
+    //     `update_qa_settings` is an arming write with a DECLARED_MEMBERSHIPS row.
+    "retry_qa" => crate::commands::qa_commands::retry_qa {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [
+            (arg task_id: String),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "update_qa_settings" => crate::commands::qa_commands::update_qa_settings {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [
+            (arg input: crate::commands::qa_commands::UpdateQASettingsInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+
+    // --- Plan / workflow / research writes.
+    //
+    // `clear_active_plan` is registered while its WRITE sibling `set_active_plan` stays
+    // refused, and the asymmetry is the finding, not an oversight: set_active_plan swallows an
+    // execution-plan lookup behind `if let Ok(Some(ep))` and discards the follow-up write with
+    // `let _ =`; clear is one `active_plan_repo.clear` with its error propagated.
+    "clear_active_plan" => crate::commands::plan_commands::clear_active_plan {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [
+            (arg project_id: String),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "seed_builtin_workflows" => crate::commands::workflow_commands::seed_builtin_workflows {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [(app_state)],
+        call: async,
+        result: fallible,
+    },
+    "start_research" => crate::commands::research_commands::start_research {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [
+            (arg input: crate::commands::research_commands::StartResearchInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+
+    // --- The scheduler-quota arming write. Uses the `active_project_state` injection arm, and
+    //     is the first registered command to do so. Declared, not detected: it writes
+    //     `ExecutionState` atomics rather than an `InternalStatus`, so no detector models it.
+    "set_active_project" => crate::commands::execution_commands::set_active_project {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [
+            (arg project_id: Option<String>),
+            (active_project_state),
+            (execution_state),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
 
     // -----------------------------------------------------------------------------------
     // The spawn-free transcript reads (batch 4) — the PR 3.2 dependency.
