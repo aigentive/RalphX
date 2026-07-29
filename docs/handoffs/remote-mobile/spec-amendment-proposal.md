@@ -95,3 +95,7 @@ P-17b membership is generated from detector output, so a command that is detecto
 ### A8. PR 3.2 scripted-agent premise (04-phase-3-hardening.md)
 
 The phase doc directs the two-instance harness to drive turns via a scripted `AgenticClient`. That seam does not exist on main: `AppChatService::send_message` never calls an `AgenticClient` — it spawns a provider CLI process and parses stream-json. The real scripted seam is `with_cli_path` pointed at a fake stream-json script (working recipe recorded in the 3.2 lane tracker). Amend the doc to name the fake-CLI seam; the landed harness (`remote_server::harness`, 11 legs) exercises the production Tauri bus path and defers the full fake-CLI chat turn to 3.4's E2E suite.
+
+### A9. P-16 byte-parity vs R5-P (source-spec.md)
+
+P-16's ":3847 byte-identical to main" and R5-P's mandated `WorkerTaskView` projection are mutually exclusive: R5-P required changing `http_server/helpers.rs` (`task: task.into()` + `ProjectScopeGuard`), so strict phase-wide byte-parity fails by exactly that spec-mandated diff (+8/−2 across 3 files, commit `912e00293`). `backend_endpoint.rs` — the bind-policy half P-16 actually protects — is byte-identical. Amend P-16 to: "byte-identical except the R5-P projection change; bind policy and route surface byte-identical unconditionally."
