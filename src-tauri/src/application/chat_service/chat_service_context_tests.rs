@@ -654,6 +654,9 @@ fn task_runtime_state_reaches_env_and_mcp_context() {
         agent_names::AGENT_WORKER,
         ChatContextType::TaskExecution,
         "task-runtime-env",
+        Some("conversation-runtime-env"),
+        Some("parent-conversation-runtime-env"),
+        Some("run-runtime-env"),
         Path::new("/tmp/task-runtime-env"),
         Some("re_executing"),
         Some("project-runtime-env"),
@@ -664,6 +667,18 @@ fn task_runtime_state_reaches_env_and_mcp_context() {
         spawnable_env_value(&spawnable, "RALPHX_TASK_STATE").as_deref(),
         Some("re_executing")
     );
+    assert_eq!(
+        spawnable_env_value(&spawnable, "RALPHX_CONVERSATION_ID").as_deref(),
+        Some("conversation-runtime-env")
+    );
+    assert_eq!(
+        spawnable_env_value(&spawnable, "RALPHX_PARENT_CONVERSATION_ID").as_deref(),
+        Some("parent-conversation-runtime-env")
+    );
+    assert_eq!(
+        spawnable_env_value(&spawnable, "RALPHX_AGENT_RUN_ID").as_deref(),
+        Some("run-runtime-env")
+    );
 
     let mut project_spawnable = test_spawnable();
     apply_ralphx_env_vars(
@@ -671,6 +686,9 @@ fn task_runtime_state_reaches_env_and_mcp_context() {
         agent_names::AGENT_CHAT_PROJECT,
         ChatContextType::Project,
         "project-runtime-env",
+        None,
+        None,
+        None,
         Path::new("/tmp/project-runtime-env"),
         Some("executing"),
         Some("project-runtime-env"),
@@ -679,6 +697,18 @@ fn task_runtime_state_reaches_env_and_mcp_context() {
     );
     assert_eq!(
         spawnable_env_value(&project_spawnable, "RALPHX_TASK_STATE"),
+        None
+    );
+    assert_eq!(
+        spawnable_env_value(&project_spawnable, "RALPHX_CONVERSATION_ID"),
+        None
+    );
+    assert_eq!(
+        spawnable_env_value(&project_spawnable, "RALPHX_PARENT_CONVERSATION_ID"),
+        None
+    );
+    assert_eq!(
+        spawnable_env_value(&project_spawnable, "RALPHX_AGENT_RUN_ID"),
         None
     );
 
