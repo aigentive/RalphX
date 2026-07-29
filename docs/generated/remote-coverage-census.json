@@ -6,17 +6,17 @@
     "invokedCommands": 499,
     "dynamicExpressions": 0,
     "seamBypasses": 0,
-    "manifestClassified": 190,
-    "unclassified": 257,
-    "line": "PASS: remote transport drift — 499 invoke command name(s), 0 dynamic, 0 seam bypasses; 190 manifest-classified; 257 unclassified (baseline, → 0 in PR 3.1)."
+    "manifestClassified": 191,
+    "unclassified": 242,
+    "line": "PASS: remote transport drift — 499 invoke command name(s), 0 dynamic, 0 seam bypasses; 191 manifest-classified; 242 unclassified (baseline, → 0 in PR 3.1)."
   },
   "totals": {
     "invokedCommandNames": 499,
-    "remoteRegistered": 57,
+    "remoteRegistered": 71,
     "localOnlyRows": 29,
     "ledgerRows": 546,
-    "unclassified": 257,
-    "assignedToBatches": 257,
+    "unclassified": 242,
+    "assignedToBatches": 242,
     "batches": 14
   },
   "dispositionModel": {
@@ -42,7 +42,7 @@
     }
   },
   "dispositionTotals": {
-    "registerCandidate": 257
+    "registerCandidate": 242
   },
   "batches": [
     {
@@ -298,31 +298,24 @@
       "retiredNote": null,
       "work": [
         "Confirm every content-surface writer keeps `MutatesAgentConsumedContent` and lands at or above the AgentControl floor.",
-        "Check the merge-pipeline members against the destructive-git deny list (`cleanup_task_branch`, `resolve_merge_conflict` are Denied and must not ride in on module similarity)."
+        "Check the merge-pipeline members against the destructive-git deny list (`cleanup_task_branch`, `resolve_merge_conflict` are Denied and must not ride in on module similarity).",
+        "DONE (PR 3.1-b batch 7): `merge_pipeline_commands` — all three hydration/projection reads registered at `ui:read`; `validation_commands` — `get_task_validation_summary` resolved as `host-denied-spawns-process`. Neither module appears in this batch's module list any more. Batch 7 also registered the `review_commands`/`qa_commands` read cluster (11 rows) and published `probe_b3_module_batch_audit`; start from its detector output rather than re-deriving.",
+        "READ FIRST — batch 7's audit-graph fix changes what a clean probe means. `resolve_dispatch` used to drop every call inside a `commands/` file whose name matched a registered command, which deleted the command→same-named-service delegation edge and made detectors (a)/(b)/(c) vacuously silent for 92 command names. Verdicts taken before that fix are not evidence. `get_task_validation_summary` is the worked example: clean on all three detectors, and shelling out to `git rev-parse HEAD` the whole time.",
+        "OPEN — a second scanner-scope gap is recorded but NOT fixed: `load_production_sources` walks `src-tauri/src` only, so entity methods defined in the `ralphx-domain` crate are invisible and every call to one falls into the resolver's all-same-name fallback. That is what makes `reopen_issue` read as a detector-(c) spawner when its body is a repository read plus an update. It is refused rather than registered, and deliberately NOT ledgered `SpawnsProcess`, so it stays in the gap until the crate scope is widened."
       ],
       "gate": "P-17d floor diff clean; C-9 review recorded.",
-      "commandCount": 31,
+      "commandCount": 16,
       "modules": [
-        "merge_pipeline_commands",
         "qa_commands",
-        "review_commands",
-        "validation_commands"
+        "review_commands"
       ],
       "dispositionCounts": {
-        "registerCandidate": 31
+        "registerCandidate": 16
       },
-      "registerCandidates": 31,
+      "registerCandidates": 16,
       "nonRegistering": 0,
       "commandsByModule": {
-        "merge_pipeline_commands": [
-          "get_merge_phase_list",
-          "get_merge_pipeline",
-          "get_merge_progress"
-        ],
         "qa_commands": [
-          "get_qa_results",
-          "get_qa_settings",
-          "get_task_qa",
           "retry_qa",
           "skip_qa",
           "update_qa_settings"
@@ -330,14 +323,6 @@
         "review_commands": [
           "approve_fix_task",
           "approve_review",
-          "get_fix_task_attempts",
-          "get_issue_progress",
-          "get_pending_reviews",
-          "get_review_by_id",
-          "get_review_settings",
-          "get_reviews_by_task_id",
-          "get_task_issues",
-          "get_task_state_history",
           "mark_issue_addressed",
           "mark_issue_in_progress",
           "re_review_task_from_escalated",
@@ -349,29 +334,11 @@
           "request_task_changes_from_reviewing",
           "update_review_settings",
           "verify_issue"
-        ],
-        "validation_commands": [
-          "get_task_validation_summary"
         ]
       },
       "commands": [
         "approve_fix_task",
         "approve_review",
-        "get_fix_task_attempts",
-        "get_issue_progress",
-        "get_merge_phase_list",
-        "get_merge_pipeline",
-        "get_merge_progress",
-        "get_pending_reviews",
-        "get_qa_results",
-        "get_qa_settings",
-        "get_review_by_id",
-        "get_review_settings",
-        "get_reviews_by_task_id",
-        "get_task_issues",
-        "get_task_qa",
-        "get_task_state_history",
-        "get_task_validation_summary",
         "mark_issue_addressed",
         "mark_issue_in_progress",
         "re_review_task_from_escalated",
@@ -1806,17 +1773,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "get_fix_task_attempts",
-      "batch": "B3",
-      "module": "review_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
       "command": "get_ideation_agent_workspace",
       "batch": "B4",
       "module": "ideation_commands",
@@ -1916,17 +1872,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "get_issue_progress",
-      "batch": "B3",
-      "module": "review_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
       "command": "get_last_seen_release_notes_version",
       "batch": "B7",
       "module": "release_notes_commands",
@@ -1963,39 +1908,6 @@
       "command": "get_mcp_catalog",
       "batch": "B6",
       "module": "mcp_policy_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_merge_phase_list",
-      "batch": "B3",
-      "module": "merge_pipeline_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_merge_pipeline",
-      "batch": "B3",
-      "module": "merge_pipeline_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_merge_progress",
-      "batch": "B3",
-      "module": "merge_pipeline_commands",
       "ledgerClass": "agentControl",
       "capabilities": [
         "agentControl"
@@ -2051,17 +1963,6 @@
       "command": "get_pending_questions",
       "batch": "B1",
       "module": "question_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_pending_reviews",
-      "batch": "B3",
-      "module": "review_commands",
       "ledgerClass": "agentControl",
       "capabilities": [
         "agentControl"
@@ -2136,28 +2037,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "get_qa_results",
-      "batch": "B3",
-      "module": "qa_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_qa_settings",
-      "batch": "B3",
-      "module": "qa_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
       "command": "get_queued_agent_messages",
       "batch": "B2",
       "module": "unified_chat_commands",
@@ -2216,39 +2095,6 @@
       "command": "get_research_processes",
       "batch": "B5",
       "module": "research_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_review_by_id",
-      "batch": "B3",
-      "module": "review_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_review_settings",
-      "batch": "B3",
-      "module": "review_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_reviews_by_task_id",
-      "batch": "B3",
-      "module": "review_commands",
       "ledgerClass": "agentControl",
       "capabilities": [
         "agentControl"
@@ -2323,17 +2169,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "get_task_issues",
-      "batch": "B3",
-      "module": "review_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
       "command": "get_task_metrics",
       "batch": "B5",
       "module": "metrics_commands",
@@ -2348,39 +2183,6 @@
       "command": "get_task_proposal",
       "batch": "B4",
       "module": "ideation_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_task_qa",
-      "batch": "B3",
-      "module": "qa_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_task_state_history",
-      "batch": "B3",
-      "module": "review_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_task_validation_summary",
-      "batch": "B3",
-      "module": "validation_commands",
       "ledgerClass": "agentControl",
       "capabilities": [
         "agentControl"

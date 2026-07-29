@@ -1172,6 +1172,170 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
             "declared membership: authorizes-live-tool-call (server-pinned allow decision)",
         ),
     },
+    // PR 3.1-b batch 7 — census `B3`, the review/QA/merge-pipeline read cluster.
+    //
+    // Every row here previously resolved through its module's `agent_default`, i.e. it carried
+    // "conservative-module-default: may steer or arm autonomous work" — a placeholder, not a
+    // reviewed judgement. The module defaults stay `AgentControl` because `review_commands`
+    // also holds the human approval/transition actions and `qa_commands` holds `retry_qa`.
+    //
+    // The shared structural reason, identical to batch 2's `task_commands` cluster: each body
+    // is a repository (or in-memory store) query whose error is PROPAGATED — `map_err(...)?`
+    // or `?` — never collapsed into an empty or default result. A read failure therefore
+    // cannot be presented to a remote client as "no reviews", "no issues" or "QA never ran".
+    //
+    // These verdicts were taken against the call graph AFTER the same-name delegation fix in
+    // this batch. Under the old graph every command in this cluster that delegates to an
+    // identically-named service (`get_issue_progress`, `mark_issue_*`, …) had a closure that
+    // stopped at its own body, so "detectors silent" carried no information. The one member
+    // that changed verdict under the fix — `get_task_validation_summary` — is excluded below.
+    CommandOverride {
+        command: "get_pending_reviews",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "pending-review enumeration: `review_repo.get_pending` mapped to responses; \
+             selects rows and starts no review",
+        ),
+    },
+    CommandOverride {
+        command: "get_review_by_id",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "single-review read: `review_repo.get_by_id`, an Option-returning row read whose \
+             repository error propagates rather than reading as absent",
+        ),
+    },
+    CommandOverride {
+        command: "get_reviews_by_task_id",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "per-task review list: `review_repo.get_by_task_id` mapped to responses",
+        ),
+    },
+    CommandOverride {
+        command: "get_task_state_history",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "review-note history: `review_repo.get_notes_by_task_id`; reads notes already \
+             written and writes none",
+        ),
+    },
+    CommandOverride {
+        command: "get_fix_task_attempts",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "fix-attempt count: `review_repo.count_fix_actions` rendered as a scalar",
+        ),
+    },
+    CommandOverride {
+        command: "get_task_issues",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "issue list: `review_issue_repo.get_open_by_task_id`/`get_by_task_id` selected by \
+             a status filter; both halves propagate their repository error",
+        ),
+    },
+    CommandOverride {
+        command: "get_issue_progress",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "issue progress summary: `review_issue_repo.get_summary`, an aggregate read",
+        ),
+    },
+    CommandOverride {
+        command: "get_review_settings",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "review policy read: `review_settings_repo.get_settings`; the WRITE half \
+             (`update_review_settings`) seeds spawn-triggering state and stays AgentControl",
+        ),
+    },
+    CommandOverride {
+        command: "get_qa_settings",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "QA settings read: clones the in-memory `AppState::qa_settings` behind a read \
+             guard; the WRITE half (`update_qa_settings`) arms auto-QA and stays AgentControl",
+        ),
+    },
+    CommandOverride {
+        command: "get_task_qa",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "per-task QA record: `task_qa_repo.get_by_task_id` mapped to a response",
+        ),
+    },
+    CommandOverride {
+        command: "get_qa_results",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "QA test results: `task_qa_repo.get_by_task_id` projected to its `test_results`; \
+             retries nothing and resets no result",
+        ),
+    },
+    CommandOverride {
+        command: "get_merge_pipeline",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "merge-pipeline projection: batched `project_repo`/`task_repo`/`plan_branch_repo`/\
+             `agent_conversation_workspace_repo` reads bucketed by `InternalStatus`; every \
+             repository error propagates and no merge is started, deferred or resolved",
+        ),
+    },
+    CommandOverride {
+        command: "get_merge_progress",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "merge-progress hydration: clones accumulated events out of the in-memory \
+             `MERGE_PROGRESS_STORE`. The empty default is absence of emitted events, not a \
+             swallowed error — the store read cannot fail",
+        ),
+    },
+    CommandOverride {
+        command: "get_merge_phase_list",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "merge phase-list hydration: clones the stored phase list out of the in-memory \
+             `MERGE_PHASE_LIST_STORE`; returns `None` when nothing was emitted",
+        ),
+    },
+    // Detector (c) finding, and the reason this batch's graph fix had to land first: the
+    // validation summary delegates to `TaskValidationService::get_task_validation_summary`,
+    // which calls `GitService::get_head_sha` -> `git_cmd::run(["rev-parse","HEAD"])` ->
+    // `resolve_git_cli_path`. It is the `list_projects` shape exactly — a getter whose only
+    // process authority is one incidental response field (`current_head_sha`, used to decide
+    // whether the latest validation run still matches HEAD).
+    //
+    // `SpawnsProcess` is expressible only under `Elevated`, so this row is NOT registerable on
+    // the v1 facade at any scope and resolves through the manifest instead of a client-local
+    // reason: it is a host command the facade denies, not a command the client handles.
+    //
+    // The `list_projects` remedy (census §5.1 option A — cache the process-derived field and
+    // read it in the getter) would apply here too and would make this `Read`. That is a code
+    // change gated on the same owner call, so it stays out of this batch.
+    CommandOverride {
+        command: "get_task_validation_summary",
+        policy: policy(
+            RiskClass::Elevated,
+            PROCESS,
+            "resolves the git CLI through `GitService::get_head_sha` to stamp the validation \
+             summary with the current HEAD sha",
+        ),
+    },
 ];
 
 pub const AUTHORITY_REDUCING_EXEMPTIONS: &[AuthorityReducingExemption] = &[

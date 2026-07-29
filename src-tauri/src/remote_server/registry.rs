@@ -1432,4 +1432,128 @@ crate::remote_commands! {
         result: fallible,
         pins: [("args", "decision", "allow")],
     },
+
+    // -----------------------------------------------------------------------------------
+    // PR 3.1-b batch 7 — census `B3`, the review / QA / merge-pipeline read cluster, at
+    // `ui:read`.
+    //
+    // Reclassifications, not newly-permissive rows: each sat at `AgentControl` only because
+    // `review_commands` / `qa_commands` / `merge_pipeline_commands` default there, and those
+    // defaults are conservative because the same modules hold the human approval actions,
+    // `retry_qa`, and the review-settings write. The per-command audit — detectors (a), (b)
+    // and (c) all silent, bodies hand-traced to repository or in-memory-store reads whose
+    // errors propagate — is recorded in `capability_ledger` and pinned by the detector
+    // calibration lists.
+    //
+    // The audit that authorized these ran AFTER this batch's `resolve_dispatch` fix. Before
+    // it, any command delegating to an identically-named service had an empty closure and
+    // read "detector-clean" vacuously; `get_task_validation_summary` is the member that
+    // failed on the corrected graph and is NOT here.
+    // -----------------------------------------------------------------------------------
+    "get_pending_reviews" => crate::commands::review_commands::get_pending_reviews {
+        class: Read,
+        caps: [],
+        params: [(arg project_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_review_by_id" => crate::commands::review_commands::get_review_by_id {
+        class: Read,
+        caps: [],
+        params: [(arg review_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_reviews_by_task_id" => crate::commands::review_commands::get_reviews_by_task_id {
+        class: Read,
+        caps: [],
+        params: [(arg task_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_task_state_history" => crate::commands::review_commands::get_task_state_history {
+        class: Read,
+        caps: [],
+        params: [(arg task_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_fix_task_attempts" => crate::commands::review_commands::get_fix_task_attempts {
+        class: Read,
+        caps: [],
+        params: [(arg task_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_task_issues" => crate::commands::review_commands::get_task_issues {
+        class: Read,
+        caps: [],
+        params: [
+            (arg task_id: String),
+            (arg status_filter: Option<String>),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "get_issue_progress" => crate::commands::review_commands::get_issue_progress {
+        class: Read,
+        caps: [],
+        params: [(arg task_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_review_settings" => crate::commands::review_commands::get_review_settings {
+        class: Read,
+        caps: [],
+        params: [(app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_qa_settings" => crate::commands::qa_commands::get_qa_settings {
+        class: Read,
+        caps: [],
+        params: [(app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_task_qa" => crate::commands::qa_commands::get_task_qa {
+        class: Read,
+        caps: [],
+        params: [(arg task_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_qa_results" => crate::commands::qa_commands::get_qa_results {
+        class: Read,
+        caps: [],
+        params: [(arg task_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_merge_pipeline" => crate::commands::merge_pipeline_commands::get_merge_pipeline {
+        class: Read,
+        caps: [],
+        params: [
+            (arg project_id: Option<String>),
+            (active_project_state),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "get_merge_progress" => crate::commands::merge_pipeline_commands::get_merge_progress {
+        class: Read,
+        caps: [],
+        params: [(arg task_id: String)],
+        call: async,
+        result: fallible,
+    },
+    "get_merge_phase_list" => crate::commands::merge_pipeline_commands::get_merge_phase_list {
+        class: Read,
+        caps: [],
+        params: [(arg task_id: String)],
+        call: async,
+        result: fallible,
+    },
 }
