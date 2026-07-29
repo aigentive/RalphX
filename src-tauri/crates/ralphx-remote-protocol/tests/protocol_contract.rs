@@ -1,6 +1,6 @@
 use ralphx_remote_protocol::{
     Capability, ClientFrame, EnvironmentDescriptor, ErrorCode, EventClassification, EventDelivery,
-    EventOrigin, ResetReason, RiskClass, ServerFrame, CAPABILITIES, ERROR_CODES,
+    EventOrigin, ResetReason, RiskClass, Scope, ServerFrame, CAPABILITIES, ERROR_CODES,
     EVENT_CLASSIFICATIONS, PROTOCOL_VERSION, RESET_REASONS, RISK_CLASSES, SCOPES,
 };
 use serde::Serialize;
@@ -213,3 +213,83 @@ const _: () = assert!(!ralphx_remote_protocol::class_permits(
     RiskClass::Operate,
     &[Capability::SeedsSpawnTriggeringState],
 ));
+
+/// P-11 batch B0 — the third disposition. Every ledger row resolves against the v1 facade as
+/// exactly one of: registerable, or one of three manifest-classified refusals. The drift scan
+/// consumes this derivation through the rendered manifest, so the mapping is contract, not a
+/// scan-local heuristic.
+#[test]
+fn v1_resolution_partitions_every_class_capability_pair() {
+    use ralphx_remote_protocol::{v1_resolution, V1Resolution, V1_FACADE_SCOPES};
+
+    // `Denied` has no scope at any capability set — `scope_for_class` yields `None`.
+    for capabilities in [&[][..], &[Capability::SpawnsProcess][..], CAPABILITIES] {
+        assert_eq!(
+            v1_resolution(RiskClass::Denied, capabilities),
+            V1Resolution::HostDenied,
+        );
+    }
+
+    // `SpawnsProcess` outranks the class label: `class_permits` admits it only under
+    // `Elevated`, and `ui:elevated` is a v1 non-goal, so it is unexposable at any v1 scope.
+    assert_eq!(
+        v1_resolution(RiskClass::Elevated, &[Capability::SpawnsProcess]),
+        V1Resolution::HostDeniedSpawnsProcess,
+    );
+    assert_eq!(
+        v1_resolution(
+            RiskClass::Elevated,
+            &[Capability::PtyControl, Capability::SpawnsProcess]
+        ),
+        V1Resolution::HostDeniedSpawnsProcess,
+    );
+
+    // Ledgered `Elevated` without `SpawnsProcess` is deferred, not denied.
+    assert_eq!(
+        v1_resolution(RiskClass::Elevated, &[Capability::TouchesCredentials]),
+        V1Resolution::V1Deferred,
+    );
+    assert_eq!(
+        v1_resolution(RiskClass::Elevated, &[]),
+        V1Resolution::V1Deferred,
+    );
+
+    // Everything a v1 scope can carry stays a registration candidate.
+    for class in [
+        RiskClass::Read,
+        RiskClass::Operate,
+        RiskClass::PathScoped,
+        RiskClass::AgentControl,
+    ] {
+        assert_eq!(v1_resolution(class, &[]), V1Resolution::Registerable);
+    }
+
+    // `ui:elevated` is excluded from the v1 facade (§1); the constant is what the derivation
+    // and the census both read, so pin it.
+    assert_eq!(
+        V1_FACADE_SCOPES,
+        &[Scope::UiRead, Scope::UiOperate, Scope::UiAgent]
+    );
+}
+
+/// The wire spelling the manifest renders. The drift scan matches these literals, so a rename
+/// is a breaking change to the ratchet and must fail here first.
+#[test]
+fn v1_resolution_wire_spelling_is_kebab_case_and_closed() {
+    use ralphx_remote_protocol::{V1Resolution, V1_RESOLUTIONS};
+
+    assert_eq!(
+        V1_RESOLUTIONS
+            .iter()
+            .map(|resolution| value(resolution))
+            .collect::<Vec<_>>(),
+        vec![
+            json!("registerable"),
+            json!("host-denied"),
+            json!("host-denied-spawns-process"),
+            json!("v1-deferred"),
+        ]
+    );
+    assert_eq!(V1_RESOLUTIONS.len(), 4);
+    assert!(V1_RESOLUTIONS.contains(&V1Resolution::Registerable));
+}
