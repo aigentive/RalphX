@@ -25,6 +25,10 @@ mod endpoints_tests;
 #[cfg(feature = "test-utils")]
 pub mod harness;
 #[cfg(all(test, feature = "test-utils"))]
+#[path = "remote_load_tests.rs"]
+mod remote_load_tests;
+
+#[cfg(all(test, feature = "test-utils"))]
 mod harness_tests;
 // --- end PR 3.2 block ---
 #[cfg(test)]
