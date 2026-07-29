@@ -1809,18 +1809,21 @@ wait "$stdin_drain_pid" 2>/dev/null || true
             .await
             .expect("load automatic streak successor")
             .expect("automatic streak successor remains current");
-        assert_eq!(successor.phase, AgentWorkspaceRepairPhase::Repairing);
+        assert!(matches!(
+            successor.phase,
+            AgentWorkspaceRepairPhase::Requested | AgentWorkspaceRepairPhase::Repairing
+        ));
+        assert!(
+            successor.reserved_agent_run_id.is_some() || successor.next_dispatch_at.is_some(),
+            "automatic successor must be active or durably scheduled: {successor:?}"
+        );
         assert!(successor
             .pending_reasons
             .iter()
             .any(|reason| { reason == &format!("auto_retry_blocked_repair:{expected_streak}") }));
-        blocked = block_repair_attempt_after(
-            &state,
-            &conversation_id,
-            AgentWorkspaceRepairPhase::Repairing,
-            1_000,
-        )
-        .await;
+        let successor_phase = successor.phase;
+        blocked =
+            block_repair_attempt_after(&state, &conversation_id, successor_phase, 1_000).await;
     }
 
     assert_eq!(
