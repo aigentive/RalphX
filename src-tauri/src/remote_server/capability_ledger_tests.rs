@@ -354,6 +354,12 @@ fn generated_manifest() -> serde_json::Value {
                 "capabilities": row.capabilities,
                 "reason": row.reason,
                 "registered": find_spec(command).is_some(),
+                // P-11 batch B0: the third disposition. Rendered from the row rather than
+                // re-derived downstream, so the drift scan and the census read one authority.
+                "v1Resolution": ralphx_remote_protocol::v1_resolution(
+                    row.class,
+                    row.capabilities,
+                ),
             })
         })
         .collect::<Vec<_>>();
@@ -671,6 +677,59 @@ fn regenerate_remote_command_manifest_when_requested() {
     let parent = path.parent().expect("manifest has parent");
     std::fs::create_dir_all(parent).expect("generated docs directory is writable");
     std::fs::write(path, manifest_text()).expect("remote command manifest is writable");
+}
+
+/// P-11 batch B0 — the manifest is the third classification source.
+///
+/// The drift scan resolves a frontend invoke name it cannot find in `remote_commands!` or in
+/// `local-only-commands.ts` by reading this row's `v1Resolution`. Two invariants make that
+/// safe, and both are asserted here rather than in the scan:
+///
+/// * **totality** — every ledger row renders a resolution, so "absent field" can never read as
+///   "classified";
+/// * **non-contradiction** — a row that renders a refusal must not also be registered. A
+///   registered-and-denied row would let the scan classify a name the facade actually serves.
+#[test]
+fn manifest_renders_a_non_contradictory_v1_resolution_for_every_row() {
+    let manifest = generated_manifest();
+    let ledger = manifest["ledger"]
+        .as_array()
+        .expect("manifest renders a ledger array");
+    assert!(!ledger.is_empty(), "ledger must not be empty");
+
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for row in ledger {
+        let command = row["command"].as_str().expect("row names a command");
+        let resolution = row["v1Resolution"]
+            .as_str()
+            .unwrap_or_else(|| panic!("row `{command}` renders no v1Resolution"));
+        assert!(
+            matches!(
+                resolution,
+                "registerable" | "host-denied" | "host-denied-spawns-process" | "v1-deferred"
+            ),
+            "row `{command}` renders an unknown v1Resolution `{resolution}`"
+        );
+        if resolution != "registerable" {
+            assert_eq!(
+                row["registered"],
+                serde_json::Value::Bool(false),
+                "`{command}` is registered but renders `{resolution}` — the ledger and the \
+                 registry contradict each other, and the drift scan would classify a name the \
+                 facade actually serves"
+            );
+        }
+        *counts.entry(resolution.to_string()).or_default() += 1;
+    }
+
+    // Each refusal class is non-empty: a scan that only ever sees `registerable` would pass
+    // this test while classifying nothing.
+    for resolution in ["host-denied", "host-denied-spawns-process", "v1-deferred"] {
+        assert!(
+            counts.get(resolution).copied().unwrap_or_default() > 0,
+            "no ledger row renders `{resolution}`"
+        );
+    }
 }
 
 #[test]
