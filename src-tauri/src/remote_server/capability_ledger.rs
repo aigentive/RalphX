@@ -936,6 +936,62 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
     // usage-reporting surface, not the transcript surface; the transcript reads stay at the
     // module default and are the next batch's problem.
     // -----------------------------------------------------------------------------------
+    // Batch 4 — the B2 detector-silent getters.
+    //
+    // Method, unchanged from batches 2 and 3: start from live detector output
+    // (`probe_b2_module_batch_audit`, all 56 members), then hand-trace every candidate body,
+    // because detector silence is necessary and never sufficient. Batches 2 and 3 each found
+    // one detector-silent command that had to be refused; this pass found SEVEN, which is why
+    // only five of seventeen candidates are registered here.
+    //
+    // Every row below satisfies the same three properties, each asserted:
+    //   1. propagates read errors — no `unwrap_or_default`/`.ok()`/`Ok(vec![])` on an Err
+    //      branch. A remote client is never told "no data" when the truth is "the query
+    //      failed"; that fail-open shape is what disqualified two batch-1 candidates and four
+    //      of this batch's.
+    //   2. no write of any kind, including in-memory registry cleanup.
+    //   3. takes `&AppState` only — no `tauri::AppHandle`, the spawn-authority carrier.
+    CommandOverride {
+        command: "get_agent_conversation_summary",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "conversation metadata without messages; propagates read errors",
+        ),
+    },
+    CommandOverride {
+        command: "get_agent_conversation_runtime_index",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "runtime lifecycle index via the non-mutating direct_agent_running_state_for_context path; propagates read errors",
+        ),
+    },
+    CommandOverride {
+        command: "list_agent_conversation_workspace_publication_events",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "workspace publication event history; propagates read errors",
+        ),
+    },
+    CommandOverride {
+        command: "get_bulk_workspace_publication_states",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "publication state enum and label per conversation; propagates read errors",
+        ),
+    },
+    CommandOverride {
+        command: "list_agent_models",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "built-in and custom model registry merge; propagates read errors",
+        ),
+    },
+    // -----------------------------------------------------------------------------------
     // Batch 4 — the spawn-free transcript reads (the PR 3.2 dependency).
     //
     // The LOCAL `get_agent_conversation` / `..._messages_page` / `..._timeline_page` all fire

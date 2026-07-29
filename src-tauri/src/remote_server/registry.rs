@@ -1246,6 +1246,65 @@ crate::remote_commands! {
         result: fallible,
     },
 
+    // -----------------------------------------------------------------------------------
+    // The B2 detector-silent getters (batch 4). Five of seventeen candidates; the other
+    // twelve were refused or deferred — see `the_b2_getter_refusals_are_pinned`.
+    // -----------------------------------------------------------------------------------
+    "get_agent_conversation_summary"
+        => crate::commands::unified_chat_commands::get_agent_conversation_summary {
+        class: Read,
+        caps: [],
+        params: [
+            (arg conversation_id: String),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "get_agent_conversation_runtime_index"
+        => crate::commands::unified_chat_commands::get_agent_conversation_runtime_index {
+        class: Read,
+        caps: [],
+        params: [
+            (arg conversation_id: String),
+            (app_state),
+            (execution_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "list_agent_conversation_workspace_publication_events"
+        => crate::commands::unified_chat_commands::list_agent_conversation_workspace_publication_events {
+        class: Read,
+        caps: [],
+        params: [
+            (arg conversation_id: String),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "get_bulk_workspace_publication_states"
+        => crate::commands::agent_sidebar_commands::get_bulk_workspace_publication_states {
+        class: Read,
+        caps: [],
+        params: [
+            (arg conversation_ids: Vec<String>),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "list_agent_models" => crate::commands::agent_model_commands::list_agent_models {
+        class: Read,
+        caps: [],
+        params: [
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+
     // Agent-consumed content surface.
     "create_task_step" => crate::commands::task_step_commands::create_task_step {
         class: AgentControl,

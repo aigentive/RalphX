@@ -2884,3 +2884,164 @@ fn the_remote_transcript_reads_are_reviewed_read_rows() {
         .expect("module has a default");
     assert_eq!(chat_default.policy.class, RiskClass::AgentControl);
 }
+
+// ---------------------------------------------------------------------------------------
+// Batch 4 — the B2 detector-silent getters
+// ---------------------------------------------------------------------------------------
+
+const B2_REGISTERED_GETTERS: &[&str] = &[
+    "get_agent_conversation_summary",
+    "get_agent_conversation_runtime_index",
+    "list_agent_conversation_workspace_publication_events",
+    "get_bulk_workspace_publication_states",
+    "list_agent_models",
+];
+
+/// The five registered getters are reviewed `Read` rows, not module-default inheritance.
+#[test]
+fn the_b2_getters_are_reviewed_read_rows() {
+    let rows = census().into_iter().collect::<BTreeMap<_, _>>();
+
+    for command in B2_REGISTERED_GETTERS {
+        let module = rows
+            .get(*command)
+            .unwrap_or_else(|| panic!("`{command}` must be a live Tauri command"));
+        let row = policy_for(command, module).expect("ledgered");
+        assert_eq!(row.class, RiskClass::Read, "`{command}`");
+        assert!(
+            row.capabilities.is_empty(),
+            "`{command}` is a pure read; a Read row with capabilities is a mislabel"
+        );
+        assert!(
+            !row.reason.contains("conservative-module-default"),
+            "`{command}` still carries the module-default reason; it was not reviewed"
+        );
+        // The shared structural claim of the whole cluster.
+        assert!(
+            row.reason.contains("propagates read errors"),
+            "`{command}` must record that its reads fail closed"
+        );
+        assert!(
+            find_spec(command).is_some(),
+            "`{command}` must be registered"
+        );
+    }
+
+    // Every module the five come from keeps its conservative default; these are EXCEPTIONS.
+    for module in [
+        "unified_chat_commands",
+        "agent_sidebar_commands",
+        "agent_model_commands",
+    ] {
+        let default = MODULE_DEFAULTS
+            .iter()
+            .find(|entry| entry.module == module)
+            .unwrap_or_else(|| panic!("`{module}` has a default"));
+        assert_eq!(
+            default.policy.class,
+            RiskClass::AgentControl,
+            "`{module}`'s default weakened; its members were registered as exceptions to it"
+        );
+    }
+}
+
+/// The twelve candidates that were NOT registered, with their reasons pinned by class.
+///
+/// Absence alone is not evidence of review — an unregistered command looks identical whether
+/// it was audited and refused or simply never examined. Each group below asserts the specific
+/// property that disqualified it, so a future change that removes the hazard fails this test
+/// and forces the command back through review rather than letting the refusal go stale.
+#[test]
+fn the_b2_getter_refusals_are_pinned() {
+    for command in [
+        // Fail-open: swallows a repository/filesystem error into an empty-but-successful
+        // result. `get_agent_running_states` returns `HashMap`, not `Result`, so a failed
+        // registry list is reported to the client as "nothing is running" — the false-success
+        // shape this ledger exists to prevent.
+        "get_agent_running_states",
+        "get_agent_conversation_runtime_statuses",
+        "list_agent_composer_skills",
+        "search_agent_composer_plan_references",
+        // In-memory registry WRITE from a nominally read-only command.
+        "is_agent_running",
+        // Raw un-truncated content: pending prompt text, or full tool arguments/results.
+        "get_queued_agent_messages",
+        "get_agent_message_tool_call_detail",
+        "get_agent_timeline_item_tool_call_detail",
+        // Host path disclosure: returns absolute directories from the operator's machine.
+        "list_conversation_folder_references",
+        // Fail-open on enrichment: model fields go silently null when the lookup errors, so
+        // the cluster's "propagates read errors" invariant does not hold.
+        "get_agent_run_status_unified",
+        // Deferred, NOT refused: both take `tauri::AppHandle`, the spawn-authority carrier.
+        // They are detector-silent and otherwise clean, and they want the same seam split the
+        // transcript reads got rather than a registration of the carrier itself.
+        "list_agent_conversations",
+        "list_agent_conversations_page",
+    ] {
+        assert!(
+            find_spec(command).is_none(),
+            "`{command}` was audited and refused/deferred in batch 4; registering it needs a \
+             new argument, not a quiet re-add"
+        );
+    }
+
+    // The registry-writing pair must keep reaching the cleanup path. If a future change makes
+    // them genuinely read-only, this fails and the refusal returns to review instead of
+    // persisting as folklore.
+    //
+    // Asserted over SOURCE rather than the call graph, and that is itself the finding: the
+    // command bodies call `service.is_agent_running(..)` through the `ChatService` trait, and
+    // the graph does not resolve trait dispatch. The write is two levels below a body that
+    // reads as a pure delegation, which is precisely why every detector was silent on these
+    // and why the hand-trace — not the probe — is what disqualified them.
+    let chat_service = load_production_sources()
+        .into_iter()
+        .find(|(file, _)| file == "application/chat_service/mod.rs")
+        .map(|(_, source)| source)
+        .expect("chat_service source is loaded");
+
+    for caller in ["\"is_agent_running\"", "\"get_agent_running_states\""] {
+        assert!(
+            chat_service.contains(caller),
+            "`AppChatService` no longer passes {caller} as a registry-cleanup source; the \
+             stated reason these are unregistered has changed — re-audit rather than leaving \
+             a stale refusal."
+        );
+    }
+    assert!(
+        chat_service.contains("cleanup_stale_registry_block")
+            && chat_service.contains("cleanup_inactive_registry_block")
+            && chat_service.contains("RegistryCleanupCaller::ReadOnly"),
+        "the read-only registry-cleanup path is gone; re-audit `is_agent_running` and \
+         `get_agent_running_states`"
+    );
+
+    // Honesty about the strength of this refusal, recorded where it cannot be lost: the
+    // cleanup is liveness-GUARDED. `registry_entry_blocks_send_but_is_stale` requires
+    // `!is_process_alive(pid)`, and the `ReadOnly` arm of
+    // `registry_entry_blocks_send_because_run_inactive` bails out when the process is alive.
+    // So the write reaps a dead entry; it cannot evict a live agent's concurrency gate. These
+    // two are refused on the judgement that a `Read` row must not write at all, NOT on a
+    // proven hazard — and the guard is pinned so a future change that REMOVES it makes this
+    // a genuine hazard loudly rather than quietly.
+    assert!(
+        chat_service.contains("!is_process_alive(info.pid)"),
+        "the staleness guard on read-only registry cleanup is gone; the refusal of \
+         `is_agent_running` was based on a GUARDED reap, and an unguarded one is a much \
+         stronger hazard that needs its own review"
+    );
+
+    // Calibration: a registered sibling from the SAME module is not implicated, so the
+    // criterion above discriminates rather than matching all of `unified_chat_commands`.
+    let graph = CallGraph::build(&load_production_sources());
+    let clean = graph.closure(["get_agent_conversation_summary".to_string()]);
+    assert!(
+        !clean.visited.is_empty(),
+        "calibration closure is empty and proves nothing"
+    );
+    assert!(
+        !closure_is_arming(&clean),
+        "`get_agent_conversation_summary` arms; it should not have been registered"
+    );
+}
