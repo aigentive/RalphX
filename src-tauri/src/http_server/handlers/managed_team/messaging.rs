@@ -5,6 +5,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     Json,
 };
+use sha2::{Digest, Sha256};
 
 use crate::application::managed_team::{
     ManagedTeamMessageRequest, ManagedTeamMessageSender, ManagedTeamMessageTarget,
@@ -18,6 +19,28 @@ use crate::http_server::types::{
 };
 
 type JsonError = (StatusCode, Json<serde_json::Value>);
+
+pub(super) fn team_tool_idempotency_key(
+    source_run_id: &AgentRunId,
+    target: &ManagedTeamMessageTarget,
+    kind: TeamMessageKind,
+    content: &str,
+) -> String {
+    // The key is persisted in UNIQUE(team_id, idempotency_key), so it must be
+    // stable across processes: fixed field order, unit-separated, SHA-256.
+    let target_identity = match target {
+        ManagedTeamMessageTarget::Coordinator => "coordinator".to_string(),
+        ManagedTeamMessageTarget::MemberName(name) => format!("member:{name}"),
+        ManagedTeamMessageTarget::Broadcast => "broadcast".to_string(),
+    };
+    let kind_identity = serde_json::to_value(kind)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_else(|| format!("{kind:?}"));
+    let identity = format!("{target_identity}\u{1f}{kind_identity}\u{1f}{content}");
+    let digest = Sha256::digest(identity.as_bytes());
+    format!("team-tool:{}:{digest:x}", source_run_id.as_str())
+}
 
 fn json_error(status: StatusCode, error: impl Into<String>) -> JsonError {
     (
@@ -257,7 +280,8 @@ pub async fn send_managed_team_message(
             ));
         }
     };
-    let idempotency_key = format!("team-tool:{}", source_run_id.as_str());
+    let idempotency_key =
+        team_tool_idempotency_key(&source_run_id, &target, kind, &request.content);
     let (message, deliveries) = state
         .app_state
         .managed_team
