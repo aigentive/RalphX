@@ -2111,6 +2111,45 @@ fn probe_chat_send_trio_sink_paths() {
     }
 }
 
+/// Calibration probe for census `B4` — ideation, plans, methodology, workflow.
+///
+/// Same shape as [`probe_b3_module_batch_audit`]. Worth re-running rather than reusing any
+/// pre-batch-7 output: before the same-name delegation fix, `ideation_commands` and
+/// `workflow_commands` were among the heaviest users of the command → identically-named
+/// service shape, so their old detector verdicts were vacuous.
+#[test]
+#[ignore = "calibration probe"]
+fn probe_b4_module_batch_audit() {
+    const B4_MODULES: &[&str] = &[
+        "agent_plan_commands",
+        "ideation_commands",
+        "methodology_commands",
+        "plan_commands",
+        "workflow_commands",
+    ];
+    let graph = CallGraph::build(&load_production_sources());
+    let rows = census();
+    let commands = rows.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>();
+    let detector_b = spawn_triggering_writers(&graph, commands, SPAWN_TRIGGERING_STATE_SURFACE);
+
+    for (command, module) in &rows {
+        if !B4_MODULES.contains(&module.as_str()) {
+            continue;
+        }
+        let closure = graph.closure([command.clone()]);
+        let a = closure_is_arming(&closure);
+        let b = detector_b.contains(command);
+        let c = tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS);
+        let row = policy_for(command, module).expect("ledgered");
+        eprintln!(
+            "PROBE-B4 {module} {command} a={a} b={b} c={c} class={:?} caps={:?} registered={}",
+            row.class,
+            row.capabilities,
+            find_spec(command).is_some(),
+        );
+    }
+}
+
 /// Calibration probe for census `B3` — review, QA, merge pipeline, validation.
 ///
 /// Same shape as [`probe_b1_module_batch_audit`]: prints the live detector (a)/(b)/(c) verdict
@@ -3755,4 +3794,128 @@ fn b3_members_that_audit_dirty_stay_unregistered() {
          classification would put a false statement in the ledger"
     );
     assert!(find_spec("reopen_issue").is_none());
+}
+
+/// The `B4` rows reclassified to `Read` carry a reviewed reason and audit clean, exactly as
+/// the `B3` cluster does.
+#[test]
+fn b4_read_reclassifications_are_reviewed_rather_than_module_defaults() {
+    const RECLASSIFIED: &[(&str, &str)] = &[
+        ("get_active_plan", "plan_commands"),
+        ("get_active_execution_plan", "plan_commands"),
+        ("list_plan_selector_candidates", "plan_commands"),
+        ("get_methodologies", "methodology_commands"),
+        ("get_active_methodology", "methodology_commands"),
+        ("get_workflows", "workflow_commands"),
+        ("get_workflow", "workflow_commands"),
+        ("get_builtin_workflows", "workflow_commands"),
+        ("get_active_workflow_columns", "workflow_commands"),
+    ];
+
+    let graph = CallGraph::build(&load_production_sources());
+    let rows = census();
+    let commands = rows
+        .iter()
+        .map(|(command, _)| command.clone())
+        .collect::<Vec<_>>();
+    let detector_b = spawn_triggering_writers(&graph, commands, SPAWN_TRIGGERING_STATE_SURFACE);
+
+    for (command, module) in RECLASSIFIED {
+        let row = policy_for(command, module).expect("reclassified row is ledgered");
+        assert_eq!(
+            row.class,
+            RiskClass::Read,
+            "`{command}` must be ledgered Read"
+        );
+        assert!(
+            row.capabilities.is_empty(),
+            "`{command}` is a read and must declare no capability; got {:?}",
+            row.capabilities
+        );
+        assert!(
+            !row.reason.contains("conservative-module-default"),
+            "`{command}` still carries the module-default placeholder as its reason"
+        );
+
+        let closure = graph.closure([(*command).to_string()]);
+        assert!(
+            !closure_is_arming(&closure),
+            "detector (a): `{command}` reaches a transition/steer sink and cannot be `Read`"
+        );
+        assert!(
+            !detector_b.contains(*command),
+            "detector (b): `{command}` writes spawn-triggering state and cannot be `Read`"
+        );
+        assert!(
+            !tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS),
+            "detector (c): `{command}` resolves a CLI and cannot be `Read`"
+        );
+
+        let spec = find_spec(command).expect("reclassified row is registered");
+        assert_eq!(spec.class, RiskClass::Read);
+        assert!(spec.capabilities.is_empty());
+    }
+}
+
+/// `set_active_plan` audits clean on all three detectors and is still refused.
+///
+/// No detector models this: the body swallows TWO errors. The execution-plan lookup is
+/// `if let Ok(Some(ep))`, so a repository failure is indistinguishable from "this session has
+/// no execution plan", and the follow-up `set_execution_plan_id` write is discarded with
+/// `let _ =`. Both failures leave `Ok(())` on the wire, so a remote client is told the active
+/// plan was set while the derived execution-plan id silently did not move — and the execution
+/// plan id is what the Kanban/Graph filters and the scheduler read.
+///
+/// This is the same fail-open disqualification batch 2 applied to
+/// `get_pending_permissions`/`get_pending_questions`, in the write direction. Registered
+/// siblings in the same module do not license it; the fix is to propagate both errors, and
+/// until then the honest answer is that it stays out of the facade.
+#[test]
+fn b4_members_that_audit_dirty_stay_unregistered() {
+    let graph = CallGraph::build(&load_production_sources());
+    let rows = census();
+    let commands = rows
+        .iter()
+        .map(|(command, _)| command.clone())
+        .collect::<Vec<_>>();
+    let detector_b = spawn_triggering_writers(&graph, commands, SPAWN_TRIGGERING_STATE_SURFACE);
+
+    let closure = graph.closure(["set_active_plan".to_string()]);
+    assert!(
+        !closure_is_arming(&closure)
+            && !detector_b.contains("set_active_plan")
+            && !tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS),
+        "`set_active_plan` is a HAND-audited exclusion; if a detector now fires on it, the \
+         reason recorded here is no longer the operative one and must be re-derived"
+    );
+    let row = policy_for("set_active_plan", "plan_commands").expect("ledgered");
+    assert_eq!(
+        row.class,
+        RiskClass::AgentControl,
+        "set_active_plan swallows the execution-plan lookup error and the \
+         set_execution_plan_id write error, so it can report success on a partial write; its \
+         read siblings being registered does not license reclassifying it"
+    );
+    assert!(
+        find_spec("set_active_plan").is_none(),
+        "set_active_plan must not be registered"
+    );
+
+    // The other two writers in the reclassified modules, held on the ordinary write/read
+    // split rather than on a fail-open finding.
+    for (command, module) in [
+        ("clear_active_plan", "plan_commands"),
+        ("seed_builtin_workflows", "workflow_commands"),
+    ] {
+        let row = policy_for(command, module).expect("ledgered");
+        assert_eq!(
+            row.class,
+            RiskClass::AgentControl,
+            "`{command}` writes and must not be reclassified downward by module analogy"
+        );
+        assert!(
+            find_spec(command).is_none(),
+            "`{command}` must not be registered"
+        );
+    }
 }

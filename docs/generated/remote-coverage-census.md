@@ -6,7 +6,7 @@
 ## 1. Scan state
 
 ```
-PASS: remote transport drift — 499 invoke command name(s), 0 dynamic, 0 seam bypasses; 191 manifest-classified; 242 unclassified (baseline, → 0 in PR 3.1).
+PASS: remote transport drift — 499 invoke command name(s), 0 dynamic, 0 seam bypasses; 191 manifest-classified; 233 unclassified (baseline, → 0 in PR 3.1).
 ```
 
 | Measure | Count | Source |
@@ -14,11 +14,11 @@ PASS: remote transport drift — 499 invoke command name(s), 0 dynamic, 0 seam b
 | Invoke command names in `frontend/src` | 499 | drift scan (AST) |
 | Dynamic / unresolvable expressions | 0 | drift scan — must stay 0 |
 | Transport seam bypasses | 0 | drift scan — must stay 0 |
-| Remote-registered (`remote_commands!`) | 71 | `docs/generated/remote-commands.json` |
+| Remote-registered (`remote_commands!`) | 80 | `docs/generated/remote-commands.json` |
 | Reason-coded local-only rows | 29 | `frontend/src/lib/remote/local-only-commands.ts` |
 | Ledger rows (exhaustive over `generate_handler!`) | 546 | `docs/generated/remote-commands.json` |
 | Manifest-classified (host-denied / v1-deferred) | 191 | `v1Resolution` in `docs/generated/remote-commands.json` |
-| **Unclassified — the 3.1 gap** | **242** | `scripts/remote-transport-drift-baseline.json` |
+| **Unclassified — the 3.1 gap** | **233** | `scripts/remote-transport-drift-baseline.json` |
 
 ## 2. What the gap is made of
 
@@ -26,15 +26,15 @@ Routing each name mechanically through the ledger splits it into very different 
 
 | Disposition | Count | Rule |
 |---|---|---|
-| register-candidate | 242 | ledgered AgentControl (or lower) with no SpawnsProcess capability — eligible for a hand-audited `remote_commands!` entry under `ui:agent` |
+| register-candidate | 233 | ledgered AgentControl (or lower) with no SpawnsProcess capability — eligible for a hand-audited `remote_commands!` entry under `ui:agent` |
 | host-denied (class: denied) | 0 | `class_permits` returns false for Denied at any capability set — registering it fails compilation. Resolves for P-11 through the manifest, never through a local-only reason (phase doc key point 6) |
 | host-denied (SpawnsProcess) | 0 | carries `SpawnsProcess`; `class_permits(AgentControl, [SpawnsProcess])` is false and Elevated is a v1 non-goal, so it is not exposable on the v1 facade at any scope (`remote_server/registry.rs` detector-(c) note) |
 | v1-deferred (Elevated) | 0 | ledgered Elevated without SpawnsProcess — reachable only under `ui:elevated`, which §1 excludes from v1; deferred, not denied |
 | orphan invoke (no local handler) | 0 | invoked by the frontend but absent from `generate_handler!` and from the ledger — it cannot be registered remotely because it does not exist locally either |
 
-**191 invoked names now resolve through the manifest** — host-side commands the facade denies or defers, classified by their ledger row's `v1Resolution` rather than by a registration or a client-local reason (phase-doc key point 6). B0 landed that mechanism and the gap fell 419 → 242 with zero registrations. **What remains in the baseline is registration work only**, so from here every batch's delta is exactly the count it registers.
+**191 invoked names now resolve through the manifest** — host-side commands the facade denies or defers, classified by their ledger row's `v1Resolution` rather than by a registration or a client-local reason (phase-doc key point 6). B0 landed that mechanism and the gap fell 419 → 233 with zero registrations. **What remains in the baseline is registration work only**, so from here every batch's delta is exactly the count it registers.
 
-**242 names are registration candidates**, and `register-candidate` means eligible for a hand audit, not approved: detector (c) has already rejected ledgered-`AgentControl` commands whose process authority the manifest cannot see (`resume_task`, `apply_proposals_to_kanban`, `set_agent_conversation_workspace_auto_publish`). Expect a non-empty rejection subset in every registration batch.
+**233 names are registration candidates**, and `register-candidate` means eligible for a hand audit, not approved: detector (c) has already rejected ledgered-`AgentControl` commands whose process authority the manifest cannot see (`resume_task`, `apply_proposals_to_kanban`, `set_agent_conversation_workspace_auto_publish`). Expect a non-empty rejection subset in every registration batch.
 
 ## 3. Recommended batch order
 
@@ -44,7 +44,7 @@ Routing each name mechanically through the ledger splits it into very different 
 | 2 | `B1` | Task core — lifecycle, steps, execution, gates | 27 | 27 | 0 | 5 |
 | 3 | `B2` | Chat + agent conversation surface (unblocks PR 3.2) | 42 | 42 | 0 | 5 |
 | 4 | `B3` | Review, QA, merge pipeline, validation | 16 | 16 | 0 | 2 |
-| 5 | `B4` | Ideation, plans, methodology, workflow | 63 | 63 | 0 | 5 |
+| 5 | `B4` | Ideation, plans, methodology, workflow | 54 | 54 | 0 | 5 |
 | 6 | `B5` | Automation, research, metrics, activity | 34 | 34 | 0 | 4 |
 | 7 | `B6` | Personas, role defaults, MCP policy, review settings | 27 | 27 | 0 | 4 |
 | 8 | `B7` | Artifacts, task context, notifications, app chrome | 33 | 33 | 0 | 6 |
@@ -149,7 +149,7 @@ Ordering logic: **B0 first** (nothing is measurable without the third dispositio
 
 ### 5. `B4` — Ideation, plans, methodology, workflow
 
-**Commands:** 63 · **Register-candidates:** 63 · **Risk classes:** register-candidate 63
+**Commands:** 54 · **Register-candidates:** 54 · **Risk classes:** register-candidate 54
 
 **Why here:** The largest single module in the gap (42). It is also where the known detector-(c) rejection `apply_proposals_to_kanban` lives, so the batch must be sized to absorb a mid-batch reclassification without stalling the others.
 
@@ -164,9 +164,9 @@ Ordering logic: **B0 first** (nothing is measurable without the third dispositio
 
 - **`agent_plan_commands`** (5) — `activate_agent_plan_direct_implementation`, `activate_agent_task_pipeline`, `copy_agent_conversation_plan`, `import_agent_conversation_plan`, `start_agent_task_pipeline`
 - **`ideation_commands`** (41) — `analyze_dependencies`, `apply_proposals_to_kanban`, `archive_ideation_session`, `assess_all_priorities`, `assess_proposal_priority`, `create_cross_project_session`, `create_ideation_session`, `create_task_proposal`, `export_ideation_session`, `get_agent_harness_availability`, `get_agent_lane_settings`, `get_blocked_tasks`, `get_child_sessions`, `get_ideation_agent_workspace`, `get_ideation_effort_settings`, `get_ideation_model_settings`, `get_ideation_session`, `get_ideation_session_with_data`, `get_ideation_settings`, `get_latest_child_session_id`, `get_proposal_dependencies`, `get_proposal_dependents`, `get_session_group_counts`, `get_task_blockers`, `get_task_proposal`, `get_tasks_disable_impact`, `import_ideation_session`, `list_ideation_sessions`, `list_session_proposals`, `list_sessions_by_group`, `remove_proposal_dependency`, `reopen_ideation_session`, `reorder_proposals`, `restart_ideation_implementation`, `set_tasks_feature_enabled`, `spawn_session_namer`, `update_agent_lane_settings`, `update_ideation_effort_settings`, `update_ideation_model_settings`, `update_ideation_session_title`, `update_ideation_settings`
-- **`methodology_commands`** (4) — `activate_methodology`, `deactivate_methodology`, `get_active_methodology`, `get_methodologies`
-- **`plan_commands`** (5) — `clear_active_plan`, `get_active_execution_plan`, `get_active_plan`, `list_plan_selector_candidates`, `set_active_plan`
-- **`workflow_commands`** (8) — `create_workflow`, `get_active_workflow_columns`, `get_builtin_workflows`, `get_workflow`, `get_workflows`, `seed_builtin_workflows`, `set_default_workflow`, `update_workflow`
+- **`methodology_commands`** (2) — `activate_methodology`, `deactivate_methodology`
+- **`plan_commands`** (2) — `clear_active_plan`, `set_active_plan`
+- **`workflow_commands`** (4) — `create_workflow`, `seed_builtin_workflows`, `set_default_workflow`, `update_workflow`
 
 </details>
 
@@ -400,9 +400,9 @@ Ordering logic: **B0 first** (nothing is measurable without the third dispositio
 | Check | Result |
 |---|---|
 | Drift scan passes | yes (this file is not emitted otherwise) |
-| Scan unclassified count == baseline size | 242 == 242 |
-| Every gap command in exactly one batch | 242 / 242 |
-| Disposition totals sum to the gap | 242 == 242 |
+| Scan unclassified count == baseline size | 233 == 233 |
+| Every gap command in exactly one batch | 233 / 233 |
+| Disposition totals sum to the gap | 233 == 233 |
 | Batch plan claims no empty module and pins no absent command | enforced by the generator |
 
 Machine-readable companion for 3.1-b/c: [`remote-coverage-census.json`](./remote-coverage-census.json) — same batches, plus per-command `{batch, module, ledgerClass, capabilities, disposition}` rows.

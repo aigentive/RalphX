@@ -1556,4 +1556,88 @@ crate::remote_commands! {
         call: async,
         result: fallible,
     },
+
+    // -----------------------------------------------------------------------------------
+    // PR 3.1-b batch 7 — census `B4`, the plan / methodology / workflow read cluster, at
+    // `ui:read`.
+    //
+    // Same reclassification shape as the `B3` cluster above: `AgentControl` by module default
+    // only. `plan_commands` defaults conservatively because it also holds `set_active_plan`
+    // and `clear_active_plan`, which steer which plan the Kanban/Graph surfaces and the
+    // scheduler read; `workflow_commands` because it holds the workflow writers.
+    //
+    // `set_active_plan` is NOT here and is not merely "the write half": its body swallows two
+    // errors (`if let Ok(Some(ep))` on the execution-plan lookup, `let _ =` on the
+    // `set_execution_plan_id` write), so a partial application reports success. A fail-open
+    // shape gets fixed or refused, never registered — see `b4_members_that_audit_dirty...`.
+    // -----------------------------------------------------------------------------------
+    "get_active_plan" => crate::commands::plan_commands::get_active_plan {
+        class: Read,
+        caps: [],
+        params: [(arg project_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_active_execution_plan" => crate::commands::plan_commands::get_active_execution_plan {
+        class: Read,
+        caps: [],
+        params: [(arg project_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "list_plan_selector_candidates"
+        => crate::commands::plan_commands::list_plan_selector_candidates {
+        class: Read,
+        caps: [],
+        params: [
+            (arg project_id: String),
+            (arg query: Option<String>),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "get_methodologies" => crate::commands::methodology_commands::get_methodologies {
+        class: Read,
+        caps: [],
+        params: [(app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_active_methodology" => crate::commands::methodology_commands::get_active_methodology {
+        class: Read,
+        caps: [],
+        params: [(app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_workflows" => crate::commands::workflow_commands::get_workflows {
+        class: Read,
+        caps: [],
+        params: [(app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_workflow" => crate::commands::workflow_commands::get_workflow {
+        class: Read,
+        caps: [],
+        params: [(arg id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_builtin_workflows" => crate::commands::workflow_commands::get_builtin_workflows {
+        class: Read,
+        caps: [],
+        params: [],
+        call: async,
+        result: fallible,
+    },
+    "get_active_workflow_columns"
+        => crate::commands::workflow_commands::get_active_workflow_columns {
+        class: Read,
+        caps: [],
+        params: [(app_state)],
+        call: async,
+        result: fallible,
+    },
 }

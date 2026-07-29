@@ -92,7 +92,31 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: ["seedsSpawnTriggeringState"],
     pins: [],
   },
+  "get_active_execution_plan": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_active_methodology": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_active_plan": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
   "get_active_project": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_active_workflow_columns": {
     opClass: "read",
     argumentSensitive: false,
     capabilities: [],
@@ -117,6 +141,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     pins: [],
   },
   "get_archived_count": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_builtin_workflows": {
     opClass: "read",
     argumentSensitive: false,
     capabilities: [],
@@ -171,6 +201,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     pins: [],
   },
   "get_merge_progress": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_methodologies": {
     opClass: "read",
     argumentSensitive: false,
     capabilities: [],
@@ -320,6 +356,18 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: [],
     pins: [],
   },
+  "get_workflow": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_workflows": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
   "health_check": {
     opClass: "read",
     argumentSensitive: false,
@@ -351,6 +399,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     pins: [],
   },
   "list_pending_question_gates": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "list_plan_selector_candidates": {
     opClass: "read",
     argumentSensitive: false,
     capabilities: [],

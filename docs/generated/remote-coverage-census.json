@@ -7,16 +7,16 @@
     "dynamicExpressions": 0,
     "seamBypasses": 0,
     "manifestClassified": 191,
-    "unclassified": 242,
-    "line": "PASS: remote transport drift — 499 invoke command name(s), 0 dynamic, 0 seam bypasses; 191 manifest-classified; 242 unclassified (baseline, → 0 in PR 3.1)."
+    "unclassified": 233,
+    "line": "PASS: remote transport drift — 499 invoke command name(s), 0 dynamic, 0 seam bypasses; 191 manifest-classified; 233 unclassified (baseline, → 0 in PR 3.1)."
   },
   "totals": {
     "invokedCommandNames": 499,
-    "remoteRegistered": 71,
+    "remoteRegistered": 80,
     "localOnlyRows": 29,
     "ledgerRows": 546,
-    "unclassified": 242,
-    "assignedToBatches": 242,
+    "unclassified": 233,
+    "assignedToBatches": 233,
     "batches": 14
   },
   "dispositionModel": {
@@ -42,7 +42,7 @@
     }
   },
   "dispositionTotals": {
-    "registerCandidate": 242
+    "registerCandidate": 233
   },
   "batches": [
     {
@@ -367,7 +367,7 @@
         "`delete_task_proposal` is Denied (deletesEntity) — it stays a manifest disposition inside this batch."
       ],
       "gate": "P-17 green; C-9 review recorded; rejected members appear as manifest dispositions, never as local-only rows.",
-      "commandCount": 63,
+      "commandCount": 54,
       "modules": [
         "agent_plan_commands",
         "ideation_commands",
@@ -376,9 +376,9 @@
         "workflow_commands"
       ],
       "dispositionCounts": {
-        "registerCandidate": 63
+        "registerCandidate": 54
       },
-      "registerCandidates": 63,
+      "registerCandidates": 54,
       "nonRegistering": 0,
       "commandsByModule": {
         "agent_plan_commands": [
@@ -433,23 +433,14 @@
         ],
         "methodology_commands": [
           "activate_methodology",
-          "deactivate_methodology",
-          "get_active_methodology",
-          "get_methodologies"
+          "deactivate_methodology"
         ],
         "plan_commands": [
           "clear_active_plan",
-          "get_active_execution_plan",
-          "get_active_plan",
-          "list_plan_selector_candidates",
           "set_active_plan"
         ],
         "workflow_commands": [
           "create_workflow",
-          "get_active_workflow_columns",
-          "get_builtin_workflows",
-          "get_workflow",
-          "get_workflows",
           "seed_builtin_workflows",
           "set_default_workflow",
           "update_workflow"
@@ -472,14 +463,9 @@
         "create_workflow",
         "deactivate_methodology",
         "export_ideation_session",
-        "get_active_execution_plan",
-        "get_active_methodology",
-        "get_active_plan",
-        "get_active_workflow_columns",
         "get_agent_harness_availability",
         "get_agent_lane_settings",
         "get_blocked_tasks",
-        "get_builtin_workflows",
         "get_child_sessions",
         "get_ideation_agent_workspace",
         "get_ideation_effort_settings",
@@ -488,19 +474,15 @@
         "get_ideation_session_with_data",
         "get_ideation_settings",
         "get_latest_child_session_id",
-        "get_methodologies",
         "get_proposal_dependencies",
         "get_proposal_dependents",
         "get_session_group_counts",
         "get_task_blockers",
         "get_task_proposal",
         "get_tasks_disable_impact",
-        "get_workflow",
-        "get_workflows",
         "import_agent_conversation_plan",
         "import_ideation_session",
         "list_ideation_sessions",
-        "list_plan_selector_candidates",
         "list_session_proposals",
         "list_sessions_by_group",
         "remove_proposal_dependency",
@@ -1410,50 +1392,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "get_active_execution_plan",
-      "batch": "B4",
-      "module": "plan_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_active_methodology",
-      "batch": "B4",
-      "module": "methodology_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_active_plan",
-      "batch": "B4",
-      "module": "plan_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_active_workflow_columns",
-      "batch": "B4",
-      "module": "workflow_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
       "command": "get_agent_conversation",
       "batch": "B2",
       "module": "unified_chat_commands",
@@ -1729,17 +1667,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "get_builtin_workflows",
-      "batch": "B4",
-      "module": "workflow_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
       "command": "get_child_sessions",
       "batch": "B4",
       "module": "ideation_commands",
@@ -1908,17 +1835,6 @@
       "command": "get_mcp_catalog",
       "batch": "B6",
       "module": "mcp_policy_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_methodologies",
-      "batch": "B4",
-      "module": "methodology_commands",
       "ledgerClass": "agentControl",
       "capabilities": [
         "agentControl"
@@ -2235,28 +2151,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "get_workflow",
-      "batch": "B4",
-      "module": "workflow_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_workflows",
-      "batch": "B4",
-      "module": "workflow_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
       "command": "get_workspace_review_runtime_settings",
       "batch": "B6",
       "module": "workspace_review_settings_commands",
@@ -2447,17 +2341,6 @@
       "command": "list_personas",
       "batch": "B6",
       "module": "persona_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "list_plan_selector_candidates",
-      "batch": "B4",
-      "module": "plan_commands",
       "ledgerClass": "agentControl",
       "capabilities": [
         "agentControl"

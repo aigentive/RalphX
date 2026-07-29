@@ -1336,6 +1336,91 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
              summary with the current HEAD sha",
         ),
     },
+    // PR 3.1-b batch 7 — census `B4`, the plan / methodology / workflow read cluster.
+    //
+    // Same structural reason as the `B3` cluster: repository reads whose errors propagate.
+    // The module defaults stay `AgentControl` because `plan_commands` also holds
+    // `set_active_plan`/`clear_active_plan` and `workflow_commands` holds the writers.
+    CommandOverride {
+        command: "get_active_plan",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "active-plan read: `active_plan_repo.get` rendered as an Option<String>; selects \
+             no plan and records no selection",
+        ),
+    },
+    CommandOverride {
+        command: "get_active_execution_plan",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "active execution-plan id read: `active_plan_repo.get_execution_plan_id`",
+        ),
+    },
+    CommandOverride {
+        command: "list_plan_selector_candidates",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "plan selector candidates: `ideation_session_repo.get_by_project` filtered to \
+             Accepted, joined per session with `task_repo.get_by_ideation_session` and scored \
+             in process; every repository error propagates",
+        ),
+    },
+    CommandOverride {
+        command: "get_methodologies",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "methodology list: `methodology_repo.get_all` mapped to responses",
+        ),
+    },
+    CommandOverride {
+        command: "get_active_methodology",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "active methodology read: `methodology_repo.get_active`; the ACTIVATE half writes \
+             the active row and stays AgentControl",
+        ),
+    },
+    CommandOverride {
+        command: "get_workflows",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "workflow list: `workflow_repo.get_all` mapped to responses",
+        ),
+    },
+    CommandOverride {
+        command: "get_workflow",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "single workflow read: `workflow_repo.get_by_id`, Option-returning with the \
+             repository error propagated rather than read as absent",
+        ),
+    },
+    CommandOverride {
+        command: "get_builtin_workflows",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "built-in workflow schemas: constructs three in-process constants and touches no \
+             state at all — the command takes no `AppState`",
+        ),
+    },
+    CommandOverride {
+        command: "get_active_workflow_columns",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "active column set: `workflow_repo.get_default` with its error propagated, \
+             falling back to the built-in RalphX columns only when no default is SET; \
+             `seed_builtin_workflows` is the write half and stays AgentControl",
+        ),
+    },
 ];
 
 pub const AUTHORITY_REDUCING_EXEMPTIONS: &[AuthorityReducingExemption] = &[
