@@ -26,7 +26,6 @@ const EXTERNAL_MCP_SERVER_DIR: &str = "ralphx-external-mcp";
 const FALLBACK_RUNTIME_ENTRY_NAMES: &[&str] = &[INTERNAL_MCP_SERVER_DIR, EXTERNAL_MCP_SERVER_DIR];
 const GENERATED_PLUGIN_ENTRY_NAMES: &[&str] = &[
     ".claude-plugin",
-    ".mcp.json",
     HOOKS_ENTRY_NAME,
     "memory-framework.md",
     "skills",
@@ -1041,10 +1040,6 @@ mod tests {
                 EXTERNAL_MCP_SERVER_DIR,
             ),
             base_plugin_dir.join(EXTERNAL_MCP_SERVER_DIR)
-        );
-        assert_eq!(
-            expected_runtime_entry_source(&base_plugin_dir, &fallback_plugin_dir, ".mcp.json"),
-            base_plugin_dir.join(".mcp.json")
         );
     }
 
