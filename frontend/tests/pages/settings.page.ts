@@ -107,30 +107,55 @@ export class SettingsPage extends BasePage {
     await this.settingsDialog.waitFor({ state: "visible" });
   }
 
-  /** Select a section by its ID using the left-rail navigation */
+  /**
+   * Select a leaf section. Prefers the real user path — nav entry, then leaf
+   * tab or Integrations hub card — and falls back to the store deep link when
+   * the rail is collapsed (narrow viewports).
+   */
   async selectSection(sectionId: string) {
-    const sectionButton = this.settingsDialog.locator(
-      `[data-testid="settings-section-${sectionId}"]`,
+    const leafTab = this.settingsDialog.locator(
+      `[data-testid="settings-leaf-${sectionId}"]`,
     );
-    if (await sectionButton.isVisible()) {
-      await sectionButton.click();
-    } else {
-      await this.openViaStore(sectionId);
+    if (await leafTab.isVisible()) {
+      await leafTab.click();
+      return;
     }
+    const hubCard = this.settingsDialog.locator(
+      `[data-testid="integration-card-${sectionId}"]`,
+    );
+    if (await hubCard.isVisible()) {
+      await hubCard.getByRole("button").click();
+      return;
+    }
+    await this.openViaStore(sectionId);
+  }
+
+  /** Click one of the seven consolidated nav entries. */
+  async selectNav(navId: string) {
+    await this.settingsDialog.getByTestId(`settings-nav-${navId}`).click();
   }
 
   async waitForSection(sectionId: string, heading: string) {
-    const sectionButton = this.settingsDialog.locator(
-      `[data-testid="settings-section-${sectionId}"]`,
-    );
-    await expect(sectionButton).toHaveAttribute("aria-current", "page", {
-      timeout: 10000,
-    });
+    await expect(
+      this.settingsDialog.locator('.settings-nav__item[aria-current="page"]'),
+    ).toHaveCount(1, { timeout: 10000 });
     await expect(this.page.getByTestId("settings-section-loading")).toBeHidden({
       timeout: 10000,
     });
+    const leafTab = this.settingsDialog.locator(
+      `[data-testid="settings-leaf-${sectionId}"]`,
+    );
+    if (await leafTab.count()) {
+      await expect(leafTab).toHaveAttribute("aria-selected", "true", {
+        timeout: 10000,
+      });
+    }
+    // Scoped to the page body: the nav-level h1 can carry the same words as a
+    // section's own card heading (e.g. "Agents", "Repository").
     await expect(
-      this.settingsDialog.getByRole("heading", { name: heading, exact: true }),
+      this.settingsDialog
+        .locator(".settings-page__body")
+        .getByRole("heading", { name: heading, exact: true }),
     ).toBeVisible({ timeout: 10000 });
   }
 

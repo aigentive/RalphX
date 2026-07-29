@@ -118,6 +118,112 @@ test.describe("Settings Dialog", () => {
     });
   }
 
+  test("matches the consolidated nav rail and page header", async ({ page }) => {
+    settingsPage = new SettingsPage(page);
+    await settingsPage.openViaStore("providers");
+    await settingsPage.waitForSection("providers", "Providers");
+    await expect(
+      settingsPage.settingsDialog.getByTestId("settings-page-title"),
+    ).toHaveText("Models & Providers");
+    await settingsPage.waitForAnimations();
+
+    await expect(
+      settingsPage.settingsDialog.locator(".settings-nav"),
+    ).toHaveScreenshot("settings-dialog-nav-rail.png", {
+      maxDiffPixelRatio: 0.01,
+    });
+  });
+
+  test("matches the Integrations hub grid", async ({ page }) => {
+    settingsPage = new SettingsPage(page);
+    await settingsPage.openViaStore("integrations-hub");
+    await expect(
+      settingsPage.settingsDialog.getByTestId("integrations-hub"),
+    ).toBeVisible({ timeout: 10000 });
+    await settingsPage.waitForAnimations();
+
+    await expect(settingsPage.settingsDialog).toHaveScreenshot(
+      "settings-dialog-section-integrations-hub.png",
+      { maxDiffPixelRatio: 0.01 },
+    );
+  });
+
+  test("drills into an integration panel and back to the hub", async ({ page }) => {
+    settingsPage = new SettingsPage(page);
+    await settingsPage.openViaStore("integrations-hub");
+    await settingsPage.selectSection("github");
+    await settingsPage.waitForSection("github", "GitHub");
+
+    const back = settingsPage.settingsDialog.getByTestId(
+      "settings-drill-in-back",
+    );
+    await expect(back).toBeVisible();
+    await settingsPage.waitForAnimations();
+    await expect(settingsPage.settingsDialog).toHaveScreenshot(
+      "settings-dialog-integrations-drill-in.png",
+      { maxDiffPixelRatio: 0.01 },
+    );
+
+    await back.click();
+    await expect(
+      settingsPage.settingsDialog.getByTestId("integrations-hub"),
+    ).toBeVisible();
+  });
+
+  test("matches the settings search results dropdown", async ({ page }) => {
+    settingsPage = new SettingsPage(page);
+    await settingsPage.openViaStore("providers");
+    await settingsPage.waitForSection("providers", "Providers");
+
+    // The focused input's blinking caret makes the element screenshot unstable.
+    await page.addStyleTag({ content: ".settings-search__input { caret-color: transparent; }" });
+    const search = settingsPage.settingsDialog.getByRole("searchbox", {
+      name: "Search settings",
+    });
+    await search.fill("review");
+    await expect(
+      settingsPage.settingsDialog.getByRole("listbox", {
+        name: "Settings search results",
+      }),
+    ).toBeVisible();
+    await settingsPage.waitForAnimations();
+
+    await expect(
+      settingsPage.settingsDialog.getByTestId("settings-search"),
+    ).toHaveScreenshot("settings-dialog-search-box.png", {
+      maxDiffPixelRatio: 0.01,
+    });
+
+    // The dropdown is absolutely positioned, so it falls outside the search
+    // box's own bounds — capture the listbox directly.
+    await expect(
+      settingsPage.settingsDialog.getByRole("listbox", {
+        name: "Settings search results",
+      }),
+    ).toHaveScreenshot("settings-dialog-search-results.png", {
+      maxDiffPixelRatio: 0.01,
+    });
+  });
+
+  test("matches the settings search empty state", async ({ page }) => {
+    settingsPage = new SettingsPage(page);
+    await settingsPage.openViaStore("providers");
+    await settingsPage.waitForSection("providers", "Providers");
+
+    await page.addStyleTag({ content: ".settings-search__input { caret-color: transparent; }" });
+    await settingsPage.settingsDialog
+      .getByRole("searchbox", { name: "Search settings" })
+      .fill("zzzznomatch");
+
+    const empty = settingsPage.settingsDialog.getByRole("status");
+    await expect(empty).toBeVisible();
+    await settingsPage.waitForAnimations();
+
+    await expect(empty).toHaveScreenshot("settings-dialog-search-empty.png", {
+      maxDiffPixelRatio: 0.01,
+    });
+  });
+
   test("Updates defaults to Stable and persists the Nightly radio selection", async () => {
     await settingsPage.openViaStore("updates");
     await settingsPage.waitForSection("updates", "Updates");
