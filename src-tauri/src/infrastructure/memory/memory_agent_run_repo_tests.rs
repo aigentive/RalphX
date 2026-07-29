@@ -465,3 +465,55 @@ async fn test_cancel_running_started_before_preserves_current_boot_run() {
     assert_eq!(current.status, AgentRunStatus::Running);
     assert_eq!(current.error_message, None);
 }
+
+/// Mirrors `fail_persists_a_bounded_cause_and_keeps_the_terminal_tail` in the SQLite repo tests:
+/// both implementations must bound the cause identically so memory-backed tests observe bounding.
+#[tokio::test]
+async fn fail_persists_a_bounded_cause_and_keeps_the_terminal_tail() {
+    let repo = MemoryAgentRunRepository::new();
+    let run = AgentRun::new(ChatConversationId::new());
+    let run_id = run.id;
+    repo.create(run).await.unwrap();
+
+    let oversized_cause = format!(
+        "{}TERMINAL-DETAIL",
+        "successful ripgrep output line\n".repeat(8_000)
+    );
+    assert!(oversized_cause.len() > 100_000);
+
+    repo.fail(&run_id, &oversized_cause).await.unwrap();
+
+    let failed = repo.get_by_id(&run_id).await.unwrap().unwrap();
+    assert_eq!(failed.status, AgentRunStatus::Failed);
+    let stored = failed
+        .error_message
+        .expect("failed run must record a cause");
+    assert!(
+        stored.len() <= 8 * 1024 + 64,
+        "persisted cause must stay bounded, got {} bytes",
+        stored.len()
+    );
+    assert!(
+        stored.ends_with("TERMINAL-DETAIL"),
+        "the terminal detail at the tail must survive truncation"
+    );
+    assert!(stored.contains("bytes elided"), "elision must be explicit");
+}
+
+#[tokio::test]
+async fn fail_persists_short_causes_verbatim() {
+    let repo = MemoryAgentRunRepository::new();
+    let run = AgentRun::new(ChatConversationId::new());
+    let run_id = run.id;
+    repo.create(run).await.unwrap();
+
+    repo.fail(&run_id, "Codex stream ended without completion")
+        .await
+        .unwrap();
+
+    let failed = repo.get_by_id(&run_id).await.unwrap().unwrap();
+    assert_eq!(
+        failed.error_message.as_deref(),
+        Some("Codex stream ended without completion")
+    );
+}

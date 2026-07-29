@@ -1074,3 +1074,67 @@ async fn test_cancel_running_started_before_preserves_current_boot_run() {
     assert_eq!(current.status, AgentRunStatus::Running);
     assert_eq!(current.error_message, None);
 }
+
+#[tokio::test]
+async fn fail_persists_a_bounded_cause_and_keeps_the_terminal_tail() {
+    let (db, repo) = setup_repo();
+    let conversation = db.seed_ideation_conversation();
+    let run = AgentRun::new(conversation.id);
+    let run_id = run.id;
+    repo.create(run).await.unwrap();
+
+    // The original incident stored 124KB of successful ripgrep output here.
+    let oversized_cause = format!(
+        "{}TERMINAL-DETAIL",
+        "successful ripgrep output line\n".repeat(8_000)
+    );
+    assert!(oversized_cause.len() > 100_000);
+
+    repo.fail(&run_id, &oversized_cause).await.unwrap();
+
+    let failed = repo.get_by_id(&run_id).await.unwrap().unwrap();
+    assert_eq!(failed.status, AgentRunStatus::Failed);
+    let stored = failed
+        .error_message
+        .expect("failed run must record a cause");
+    assert!(
+        stored.len() <= 8 * 1024 + 64,
+        "persisted cause must stay bounded, got {} bytes",
+        stored.len()
+    );
+    assert!(
+        stored.ends_with("TERMINAL-DETAIL"),
+        "the terminal detail at the tail must survive truncation"
+    );
+    assert!(stored.contains("bytes elided"), "elision must be explicit");
+}
+
+#[tokio::test]
+async fn fail_persists_short_causes_verbatim() {
+    let (db, repo) = setup_repo();
+    let conversation = db.seed_ideation_conversation();
+    let run = AgentRun::new(conversation.id);
+    let run_id = run.id;
+    repo.create(run).await.unwrap();
+
+    repo.fail(&run_id, "Codex stream ended without a completion signal")
+        .await
+        .unwrap();
+
+    let failed = repo.get_by_id(&run_id).await.unwrap().unwrap();
+    assert_eq!(failed.status, AgentRunStatus::Failed);
+    assert_eq!(
+        failed.error_message.as_deref(),
+        Some("Codex stream ended without a completion signal")
+    );
+}
+
+#[test]
+fn truncate_persisted_error_message_is_utf8_safe() {
+    let multibyte = "é".repeat(20_000);
+    let truncated = truncate_persisted_error_message(&multibyte);
+
+    assert!(truncated.len() < multibyte.len());
+    assert!(truncated.ends_with('é'));
+    assert!(truncated.contains("bytes elided"));
+}

@@ -193,7 +193,13 @@ fn codex_local_diagnostics_without_runtime_error_returns_local_tool_failed() {
 
     match result {
         StreamError::LocalToolFailed { message } => {
-            assert_eq!(message, "local MCP tool failed");
+            // The terminal fact is that the stream ended without completing; the
+            // tool diagnostic is retained as supporting evidence behind it.
+            assert_eq!(
+                message,
+                "Codex stream ended without a completion signal; \
+                 local tool diagnostics from this turn: local MCP tool failed"
+            );
         }
         other => panic!("expected local tool failure, got {other:?}"),
     }

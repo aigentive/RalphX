@@ -1,6 +1,7 @@
 // Infrastructure layer - external implementations
 // SQLite, file system, and harness-specific external integrations
 
+pub(crate) mod agent_run_error_message;
 pub mod agents;
 pub mod atlassian_client;
 pub mod clickup_client;

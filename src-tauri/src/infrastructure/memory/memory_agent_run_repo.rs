@@ -13,6 +13,7 @@ use crate::domain::repositories::{
     AgentRunRepository, ORPHANED_AGENT_RUN_ON_APP_RESTART, PRUNED_STALE_AGENT_RUN,
 };
 use crate::error::AppResult;
+use crate::infrastructure::agent_run_error_message::truncate_persisted_error_message;
 
 /// In-memory implementation of AgentRunRepository for testing
 pub struct MemoryAgentRunRepository {
@@ -249,9 +250,11 @@ impl AgentRunRepository for MemoryAgentRunRepository {
     }
 
     async fn fail(&self, id: &AgentRunId, error_message: &str) -> AppResult<()> {
+        // Same bound as the SQLite repo so both implementations record an equivalent cause.
+        let error_message = truncate_persisted_error_message(error_message);
         let mut runs = self.runs.write().await;
         if let Some(run) = runs.get_mut(id) {
-            run.fail(error_message);
+            run.fail(&error_message);
         }
         Ok(())
     }
