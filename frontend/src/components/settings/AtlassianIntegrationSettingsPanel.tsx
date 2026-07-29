@@ -6,7 +6,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
-import { useAtlassianIntegration } from "@/hooks/useAtlassianIntegration";
+import {
+  isAtlassianConnected,
+  useAtlassianIntegration,
+} from "@/hooks/useAtlassianIntegration";
 
 import {
   ErrorBanner,
@@ -109,7 +112,7 @@ export function AtlassianIntegrationSettingsPanel() {
     isCompletingOAuthLocalCallback ||
     isExchangingOAuthCode;
   const usingOAuth = form.authMethod === "oauth";
-  const connected = Boolean(settings?.enabled);
+  const connected = isAtlassianConnected(settings);
   const hasConnection = Boolean(
     settings?.enabled ||
       settings?.hasApiToken ||

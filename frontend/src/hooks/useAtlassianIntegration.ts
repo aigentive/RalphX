@@ -14,6 +14,13 @@ export const atlassianIntegrationKeys = {
   settings: () => [...atlassianIntegrationKeys.all, "settings"] as const,
 };
 
+/** Atlassian is connected once the integration is enabled. */
+export function isAtlassianConnected(
+  settings: AtlassianIntegrationSettings | undefined,
+): boolean {
+  return Boolean(settings?.enabled);
+}
+
 export function isConfluenceConnected(
   settings: AtlassianIntegrationSettings | undefined,
 ): boolean {

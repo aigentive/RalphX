@@ -74,7 +74,10 @@ vi.mock("@/hooks/useFeatureFlags", () => ({
   useFeatureFlags: () => ({ data: { atlassianOauth: false } }),
 }));
 
-vi.mock("@/hooks/useAtlassianIntegration", () => ({
+vi.mock("@/hooks/useAtlassianIntegration", async () => ({
+  ...(await vi.importActual<typeof import("@/hooks/useAtlassianIntegration")>(
+    "@/hooks/useAtlassianIntegration",
+  )),
   useAtlassianIntegration: () => ({
     ...atlassianHook.state,
     saveAsync: vi.fn(),

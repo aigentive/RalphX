@@ -1,3 +1,14 @@
+import {
+  Bell,
+  Blocks,
+  Bot,
+  Cpu,
+  GitBranch,
+  SlidersHorizontal,
+  Zap,
+  type LucideIcon,
+} from "lucide-react";
+
 export type SettingsSectionId =
   | "providers"
   | "agents"
@@ -12,6 +23,7 @@ export type SettingsSectionId =
   | "project-analysis"
   | "api-keys"
   | "external-mcp"
+  | "integrations-hub"
   | "integrations"
   | "github"
   | "linear"
@@ -22,57 +34,240 @@ export type SettingsSectionId =
   | "accessibility"
   | "notifications";
 
-export type SettingsGroupId =
-  | "harness"
-  | "general"
-  | "workspace"
-  | "access"
-  | "integrations"
-  | "preferences";
-
 export interface SettingsSectionMeta {
   id: SettingsSectionId;
+  /** Leaf tab label and page-header title. */
   label: string;
-  groupId: SettingsGroupId;
+  /** Page-header subtitle shown under the title. */
+  description: string;
 }
-
-export const SETTINGS_GROUPS: { id: SettingsGroupId; label: string }[] = [
-  { id: "harness", label: "Harness" },
-  { id: "workspace", label: "Workspace" },
-  { id: "general", label: "General" },
-  { id: "integrations", label: "Integrations" },
-  { id: "access", label: "External Access" },
-  { id: "preferences", label: "Preferences" },
-];
 
 export const DEFAULT_SETTINGS_SECTION: SettingsSectionId = "providers";
 
 export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
-  { id: "providers", groupId: "harness", label: "Providers" },
-  { id: "models", groupId: "harness", label: "Models" },
-  { id: "agents", groupId: "harness", label: "Agents" },
-  { id: "mcp", groupId: "harness", label: "MCP" },
-  { id: "repository", groupId: "workspace", label: "Repository" },
-  { id: "project-analysis", groupId: "workspace", label: "Setup & Validation" },
-  { id: "tasks", groupId: "general", label: "Tasks" },
-  { id: "planning", groupId: "general", label: "Planning" },
-  { id: "workspace", groupId: "general", label: "Workspace" },
-  { id: "capacity", groupId: "general", label: "Capacity" },
-  { id: "personas", groupId: "general", label: "Personas" },
-  { id: "capabilities", groupId: "general", label: "Capabilities" },
-  { id: "integrations", groupId: "integrations", label: "Atlassian" },
-  { id: "github", groupId: "integrations", label: "GitHub" },
-  { id: "linear", groupId: "integrations", label: "Linear" },
-  { id: "clickup", groupId: "integrations", label: "ClickUp" },
-  { id: "granola", groupId: "integrations", label: "Granola" },
-  { id: "api-keys", groupId: "access", label: "API Keys" },
-  { id: "external-mcp", groupId: "access", label: "External MCP" },
-  { id: "updates", groupId: "preferences", label: "Updates" },
-  { id: "accessibility", groupId: "preferences", label: "Accessibility" },
-  { id: "notifications", groupId: "preferences", label: "Notifications" },
+  {
+    id: "providers",
+    label: "Providers",
+    description:
+      "Validate CLI harnesses, enable agent providers, and choose the default used by new agent lanes.",
+  },
+  {
+    id: "models",
+    label: "Models",
+    description:
+      "Manage provider models and effort compatibility used by Agents and lane settings.",
+  },
+  {
+    id: "mcp",
+    label: "MCP",
+    description:
+      "Inherit provider-native MCP servers and apply RalphX server or tool restrictions.",
+  },
+  {
+    id: "agents",
+    label: "Roles",
+    description:
+      "Configure new-run behavior and backend-owned defaults for every agent role.",
+  },
+  {
+    id: "personas",
+    label: "Personas",
+    description:
+      "Conversation-bound behavior profiles for Project Agent conversations.",
+  },
+  {
+    id: "capabilities",
+    label: "Capabilities",
+    description:
+      "Opt-in Agent conversation capabilities that apply across the app.",
+  },
+  {
+    id: "tasks",
+    label: "Tasks",
+    description:
+      "Configure task enablement, review policy, and autonomous follow-up behavior.",
+  },
+  {
+    id: "planning",
+    label: "Planning",
+    description: "Configure acceptance-triggered automatic plan verification.",
+  },
+  {
+    id: "workspace",
+    label: "Workspace",
+    description: "Configure workspace publishing defaults and review behavior.",
+  },
+  {
+    id: "capacity",
+    label: "Capacity",
+    description:
+      "Configure project and global execution and ideation concurrency.",
+  },
+  {
+    id: "repository",
+    label: "Repository",
+    description: "Version control and GitHub integration.",
+  },
+  {
+    id: "project-analysis",
+    label: "Setup & Validation",
+    description: "Build system detection and validation commands.",
+  },
+  {
+    id: "integrations-hub",
+    label: "Integrations",
+    description:
+      "Connect RalphX to the issue trackers, note tools, and external clients your team already uses.",
+  },
+  {
+    id: "integrations",
+    label: "Atlassian",
+    description: "Jira and Confluence context for agent conversations.",
+  },
+  {
+    id: "github",
+    label: "GitHub",
+    description: "Local GitHub CLI connection.",
+  },
+  { id: "linear", label: "Linear", description: "Linear issue references." },
+  { id: "clickup", label: "ClickUp", description: "ClickUp ticket references." },
+  { id: "granola", label: "Granola", description: "Granola note references." },
+  {
+    id: "api-keys",
+    label: "API Keys",
+    description:
+      "Manage external API keys for accessing RalphX programmatically.",
+  },
+  {
+    id: "external-mcp",
+    label: "External MCP",
+    description:
+      "Configure external MCP server access (restart required to apply).",
+  },
+  {
+    id: "notifications",
+    label: "Notifications",
+    description: "Choose how RalphX gets your attention.",
+  },
+  {
+    id: "updates",
+    label: "Updates",
+    description: "Choose which RalphX release stream to check for updates.",
+  },
+  {
+    id: "accessibility",
+    label: "Accessibility",
+    description:
+      "Theme, motion, and typography preferences that apply across the entire app.",
+  },
 ];
 
-export type SettingsCompositeTab = "general" | "review-policy" | "autonomy-policy" | "review";
+export type SettingsNavId =
+  | "models-providers"
+  | "agents"
+  | "automation"
+  | "repository"
+  | "integrations"
+  | "notifications"
+  | "application";
+
+export interface SettingsNavMeta {
+  id: SettingsNavId;
+  label: string;
+  /** Secondary line rendered under the nav label. */
+  sublabel: string;
+  /** Page-header subtitle for every leaf under this entry. */
+  description: string;
+  icon: LucideIcon;
+  /** Leaf sections rendered as in-page tabs, in display order. */
+  leaves: SettingsSectionId[];
+  /**
+   * Landing leaf that replaces the tab bar with a hub grid. Only the
+   * Integrations nav uses one; its remaining leaves are drill-in pages.
+   */
+  hubLeaf?: SettingsSectionId;
+}
+
+export const SETTINGS_NAV: SettingsNavMeta[] = [
+  {
+    id: "models-providers",
+    label: "Models & Providers",
+    sublabel: "Harnesses, models, MCP",
+    description:
+      "Validate CLI harnesses, pick agent models, and control which MCP servers agents inherit.",
+    icon: Cpu,
+    leaves: ["providers", "models", "mcp"],
+  },
+  {
+    id: "agents",
+    label: "Agents",
+    sublabel: "Roles, personas, capabilities",
+    description:
+      "Backend-owned role defaults, conversation personas, and opt-in agent capabilities.",
+    icon: Bot,
+    leaves: ["agents", "personas", "capabilities"],
+  },
+  {
+    id: "automation",
+    label: "Automation",
+    sublabel: "Tasks, planning, capacity",
+    description:
+      "How tasks, plans, workspaces, and concurrency behave when agents run on their own.",
+    icon: Zap,
+    leaves: ["tasks", "planning", "workspace", "capacity"],
+  },
+  {
+    id: "repository",
+    label: "Repository",
+    sublabel: "Version control, validation",
+    description:
+      "Version control defaults and the build/validation commands agents run.",
+    icon: GitBranch,
+    leaves: ["repository", "project-analysis"],
+  },
+  {
+    id: "integrations",
+    label: "Integrations",
+    sublabel: "Trackers, notes, external access",
+    description:
+      "Connect RalphX to the issue trackers, note tools, and external clients your team already uses.",
+    icon: Blocks,
+    leaves: [
+      "integrations-hub",
+      "integrations",
+      "github",
+      "linear",
+      "clickup",
+      "granola",
+      "api-keys",
+      "external-mcp",
+    ],
+    hubLeaf: "integrations-hub",
+  },
+  {
+    id: "notifications",
+    label: "Notifications",
+    sublabel: "Alerts and attention",
+    description: "Choose how RalphX gets your attention.",
+    icon: Bell,
+    leaves: ["notifications"],
+  },
+  {
+    id: "application",
+    label: "Application",
+    sublabel: "Updates and accessibility",
+    description:
+      "Release stream, theme, motion, and typography preferences for the whole app.",
+    icon: SlidersHorizontal,
+    leaves: ["updates", "accessibility"],
+  },
+];
+
+export type SettingsCompositeTab =
+  | "general"
+  | "review-policy"
+  | "autonomy-policy"
+  | "review";
 
 export interface SettingsDestination {
   section: SettingsSectionId;
@@ -86,7 +281,24 @@ export function isSettingsSectionId(value: unknown): value is SettingsSectionId 
   );
 }
 
-export function resolveSettingsDestination(value: unknown): SettingsDestination | null {
+export function sectionMeta(
+  section: SettingsSectionId,
+): SettingsSectionMeta | null {
+  return SETTINGS_SECTIONS.find((meta) => meta.id === section) ?? null;
+}
+
+const DEFAULT_NAV =
+  SETTINGS_NAV.find((nav) => nav.leaves.includes(DEFAULT_SETTINGS_SECTION)) ??
+  (SETTINGS_NAV[0] as SettingsNavMeta);
+
+/** Nav entry owning `section`; falls back to the default section's nav. */
+export function navForSection(section: SettingsSectionId): SettingsNavMeta {
+  return SETTINGS_NAV.find((nav) => nav.leaves.includes(section)) ?? DEFAULT_NAV;
+}
+
+export function resolveSettingsDestination(
+  value: unknown,
+): SettingsDestination | null {
   if (value === "execution-harnesses" || value === "ideation-harnesses") {
     return { section: "agents" };
   }
@@ -97,6 +309,10 @@ export function resolveSettingsDestination(value: unknown): SettingsDestination 
     "workspace-review": { section: "workspace", tab: "review" },
     execution: { section: "workspace", tab: "general" },
     "global-execution": { section: "capacity" },
+    // The flat "integrations" nav entry became the Integrations hub; the
+    // Atlassian panel it used to open is one card away, or one alias away.
+    integrations: { section: "integrations-hub" },
+    atlassian: { section: "integrations" },
   };
   if (typeof value === "string" && legacy[value]) {
     return legacy[value];
@@ -104,6 +320,8 @@ export function resolveSettingsDestination(value: unknown): SettingsDestination 
   return isSettingsSectionId(value) ? { section: value } : null;
 }
 
-export function resolveSettingsSectionId(value: unknown): SettingsSectionId | null {
+export function resolveSettingsSectionId(
+  value: unknown,
+): SettingsSectionId | null {
   return resolveSettingsDestination(value)?.section ?? null;
 }

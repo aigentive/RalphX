@@ -99,6 +99,11 @@ const LazyCapabilitiesSection = lazy(() =>
     default: module.CapabilitiesSection,
   })),
 );
+const LazyIntegrationsHubSection = lazy(() =>
+  import("./IntegrationsHubSection").then((module) => ({
+    default: module.IntegrationsHubSection,
+  })),
+);
 
 function SettingsSectionLoading() {
   return (
@@ -121,6 +126,10 @@ interface SettingsSectionContentProps {
   disabled: boolean;
   isHydrated: boolean;
   onSettingsChange: (settings: ProjectSettings) => void;
+  /** Routes hub cards through the same section setter the nav rail uses. */
+  onNavigate: (section: SettingsSectionId) => void;
+  /** Preloads a drill-in panel's lazy module; deduped by the caller. */
+  onWarmSection: (section: SettingsSectionId) => void;
 }
 
 export function SettingsSectionContent({
@@ -130,6 +139,8 @@ export function SettingsSectionContent({
   disabled,
   isHydrated,
   onSettingsChange,
+  onNavigate,
+  onWarmSection,
 }: SettingsSectionContentProps) {
   const ideationController = useIdeationSettings(
     isHydrated && (section === "tasks" || section === "planning"),
@@ -175,6 +186,12 @@ export function SettingsSectionContent({
       )}
       {section === "repository" && <LazyRepositorySettingsSection />}
       {section === "project-analysis" && <LazyProjectAnalysisSection />}
+      {section === "integrations-hub" && (
+        <LazyIntegrationsHubSection
+          onNavigate={onNavigate}
+          onWarmSection={onWarmSection}
+        />
+      )}
       {section === "integrations" && <LazyAtlassianIntegrationSettingsPanel />}
       {section === "github" && <LazyGitHubIntegrationSettingsPanel />}
       {section === "linear" && <LazyLinearIntegrationSettingsPanel />}

@@ -4,7 +4,10 @@ import { KeyRound, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { useLinearIntegration } from "@/hooks/useLinearIntegration";
+import {
+  isLinearConnected,
+  useLinearIntegration,
+} from "@/hooks/useLinearIntegration";
 
 import {
   ErrorBanner,
@@ -49,12 +52,7 @@ export function LinearIntegrationSettingsPanel() {
     (saveSettingsError instanceof Error ? saveSettingsError.message : null) ??
     (validateError instanceof Error ? validateError.message : null) ??
     (disconnectError instanceof Error ? disconnectError.message : null);
-  const isApiConfigured = Boolean(
-    settings?.enabled &&
-    settings.hasApiToken &&
-    settings.validationStatus === "valid" &&
-    settings.issueSearchAvailable,
-  );
+  const isApiConfigured = isLinearConnected(settings);
   const hasConnection = Boolean(settings?.hasApiToken || settings?.enabled);
   const statusChips = [
     `API token ${settings?.hasApiToken ? "stored" : "missing"}`,
