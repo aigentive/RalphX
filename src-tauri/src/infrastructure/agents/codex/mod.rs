@@ -482,6 +482,8 @@ pub fn compose_codex_prompt_for_profile(
 pub struct CodexPromptComposition {
     /// Prompt delivered to the Codex CLI.
     pub prompt: String,
+    /// Exact structured skill names injected while composing `prompt`.
+    pub injected_skill_names: Vec<String>,
     /// Whether the resolved persona overlay is present in `prompt`.
     pub persona_injected: bool,
     /// Body-free reason when a requested persona overlay could not be composed.
@@ -587,6 +589,7 @@ fn compose_codex_prompt_for_profile_with_context(
     let Some(plugin_dir) = plugin_dir else {
         return CodexPromptComposition {
             prompt: prompt.to_string(),
+            injected_skill_names: Vec::new(),
             persona_injected: false,
             persona_injection_skipped_reason: persona_block
                 .map(|_| "codex_plugin_dir_unavailable"),
@@ -595,6 +598,7 @@ fn compose_codex_prompt_for_profile_with_context(
     let Some(agent_name) = agent_name else {
         return CodexPromptComposition {
             prompt: prompt.to_string(),
+            injected_skill_names: Vec::new(),
             persona_injected: false,
             persona_injection_skipped_reason: persona_block.map(|_| "codex_agent_unavailable"),
         };
@@ -610,6 +614,7 @@ fn compose_codex_prompt_for_profile_with_context(
     let Some(system_prompt) = system_prompt else {
         return CodexPromptComposition {
             prompt: prompt.to_string(),
+            injected_skill_names: Vec::new(),
             persona_injected: false,
             persona_injection_skipped_reason: persona_block
                 .map(|_| "codex_agent_prompt_unavailable"),
@@ -619,20 +624,17 @@ fn compose_codex_prompt_for_profile_with_context(
     let system_prompt = super::persona_overlay::apply_persona_overlay(system_prompt, persona_block);
     let runtime_profile_context =
         render_agent_runtime_profile_context(&project_root, agent_name, agent_profile);
-    let system_prompt = match inject_internal_skills_into_system_prompt_for_profile(
+    let injection = match inject_internal_skills_into_system_prompt_for_profile(
         &project_root,
         agent_name,
         agent_profile,
         &system_prompt,
         prompt,
     ) {
-        Ok(injection) => {
-            inject_pre_execution_learned_skills_into_existing_injection(
-                injection,
-                pre_execution_learned_skills,
-            )
-            .system_prompt
-        }
+        Ok(injection) => inject_pre_execution_learned_skills_into_existing_injection(
+            injection,
+            pre_execution_learned_skills,
+        ),
         Err(error) => {
             warn!(
                 agent = agent_name,
@@ -646,9 +648,10 @@ fn compose_codex_prompt_for_profile_with_context(
                 },
                 pre_execution_learned_skills,
             )
-            .system_prompt
         }
     };
+    let injected_skill_names = injection.injected_skill_names;
+    let system_prompt = injection.system_prompt;
     let system_prompt = match runtime_profile_context {
         Some(context) => format!("{system_prompt}\n\n{context}"),
         None => system_prompt,
@@ -658,6 +661,7 @@ fn compose_codex_prompt_for_profile_with_context(
         prompt: format!(
             "<ralphx_agent_instructions>\n{system_prompt}\n</ralphx_agent_instructions>\n\n{prompt}"
         ),
+        injected_skill_names,
         persona_injected,
         persona_injection_skipped_reason: None,
     }

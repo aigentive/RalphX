@@ -991,6 +991,21 @@ role: project_chat
     assert!(composed.contains("<ralphx_learned_skill_citations>"));
     assert!(composed.contains("skill-planning"));
     assert!(!composed.contains("skill-review"));
+    assert_eq!(composition.injected_skill_names, ["learned:skill-planning"]);
+}
+
+#[test]
+fn c2_codex_fallback_has_no_stale_injected_names() {
+    let composition = compose_codex_prompt_for_profile_with_learned_skills_and_outcome(
+        "Plan the domain change.",
+        None,
+        Some("ralphx-chat-project"),
+        None,
+        None,
+        None,
+    );
+
+    assert!(composition.injected_skill_names.is_empty());
 }
 
 #[test]

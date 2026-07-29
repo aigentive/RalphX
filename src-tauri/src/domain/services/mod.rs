@@ -69,13 +69,15 @@ pub use github_service::{
 };
 pub use index_rewriter::{IndexRewriter, RewriteResult};
 pub use learned_skill_substrate::{
-    new_empty_task_outcome, new_skill_usage_event, MemoryToProjectSkillPromotionService,
+    new_c2_skill_usage_event, new_empty_task_outcome, new_skill_usage_event,
+    MemoryToProjectSkillPromotionService,
     OutcomeLedgerService, ProjectSkillEvidenceLevel, ProjectSkillImportApplyInput,
     ProjectSkillImportApplyResult, ProjectSkillImportCandidate, ProjectSkillImportDecision,
     ProjectSkillImportPreview, ProjectSkillImportPreviewInput, ProjectSkillImportPreviewRow,
     ProjectSkillImportPreviewService, ProjectSkillReportCard, ProjectSkillReportOptions,
     ProjectSkillReportService, ProjectSkillService, PromoteMemoryToProjectSkillInput,
-    PromoteMemoryToProjectSkillResult, SkillUsageService, UpdateProjectSkillContentInput,
+    PromoteMemoryToProjectSkillResult, SkillUsageAttribution, SkillUsageService,
+    UpdateProjectSkillContentInput,
 };
 pub use project_skill_resolution::{
     import_title_resolution_identity, project_skill_resolution_identities,

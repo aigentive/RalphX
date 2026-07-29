@@ -1,7 +1,11 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use axum::{extract::State, http::StatusCode, Json};
+use axum::{
+    extract::State,
+    http::{HeaderMap, HeaderValue, StatusCode},
+    Json,
+};
 
 use super::learned_skills::*;
 use super::*;
@@ -12,7 +16,7 @@ use crate::domain::entities::{
     SkillUsageInjectionKind, TaskOutcomeClass, TaskOutcomeSource, TaskOutcomeStatus,
 };
 use crate::domain::repositories::{
-    ProjectSkillListOptions, TaskOutcomeListOptions, UpsertTaskOutcomeInput,
+    ProjectSkillListOptions, SkillUsageListOptions, TaskOutcomeListOptions, UpsertTaskOutcomeInput,
 };
 use crate::domain::services::{
     new_empty_task_outcome, new_skill_usage_event, ProjectSkillImportCandidate,
@@ -357,6 +361,7 @@ async fn get_project_skill_returns_none_and_rejects_cross_project_rows() {
 
     let missing = get_project_skill(
         State(test_state(app_state.clone())),
+        HeaderMap::new(),
         ProjectScope(Some(vec![project_id.clone()])),
         Json(GetProjectSkillRequest {
             project_id: project_id.as_str().to_string(),
@@ -371,6 +376,7 @@ async fn get_project_skill_returns_none_and_rejects_cross_project_rows() {
     let other_project = ProjectId::from_string("other-project".to_string());
     let mismatch = get_project_skill(
         State(test_state(app_state.clone())),
+        HeaderMap::new(),
         ProjectScope(Some(vec![project_id.clone(), other_project.clone()])),
         Json(GetProjectSkillRequest {
             project_id: other_project.as_str().to_string(),
@@ -383,6 +389,7 @@ async fn get_project_skill_returns_none_and_rejects_cross_project_rows() {
 
     let error = get_project_skill(
         State(test_state(app_state)),
+        HeaderMap::new(),
         ProjectScope(Some(vec![other_project])),
         Json(GetProjectSkillRequest {
             project_id: project_id.as_str().to_string(),
@@ -392,6 +399,144 @@ async fn get_project_skill_returns_none_and_rejects_cross_project_rows() {
     .await
     .expect_err("cross-project get should fail");
     assert_eq!(error.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn c2_get_project_skill_records_trusted_exact_and_bounded_full_loads() {
+    let app_state = Arc::new(AppState::new_test());
+    let project_id = ProjectId::from_string("project-c2-full-load".to_string());
+    let skill = staged_skill(project_id.clone());
+    app_state
+        .project_skill_repo
+        .create(skill.clone())
+        .await
+        .unwrap();
+    let conversation = app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project_id.clone()))
+        .await
+        .unwrap();
+    let mut run = crate::domain::entities::AgentRun::new(conversation.id);
+    run.harness = Some(crate::domain::agents::AgentHarnessKind::Codex);
+    let run = app_state.agent_run_repo.create(run).await.unwrap();
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "x-ralphx-conversation-id",
+        HeaderValue::from_str(&conversation.id.as_str()).unwrap(),
+    );
+    headers.insert(
+        "x-ralphx-agent-run-id",
+        HeaderValue::from_str(&run.id.as_str()).unwrap(),
+    );
+
+    for _ in 0..2 {
+        let _ = get_project_skill(
+            State(test_state(app_state.clone())),
+            headers.clone(),
+            ProjectScope(Some(vec![project_id.clone()])),
+            Json(GetProjectSkillRequest {
+                project_id: project_id.as_str().to_string(),
+                project_skill_id: skill.id.as_str().to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+    }
+    let usage = app_state
+        .skill_usage_event_repo
+        .list_by_project(&project_id, SkillUsageListOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(usage.len(), 1, "retry must deduplicate exact full load");
+    assert_eq!(
+        usage[0].agent_run_id.as_deref(),
+        Some(run.id.as_str().as_str())
+    );
+    assert_eq!(usage[0].metadata_json["scoring_eligible"], true);
+
+    let bounded_skill = staged_skill(project_id.clone());
+    app_state
+        .project_skill_repo
+        .create(bounded_skill.clone())
+        .await
+        .unwrap();
+    headers.remove("x-ralphx-agent-run-id");
+    let _ = get_project_skill(
+        State(test_state(app_state.clone())),
+        headers,
+        ProjectScope(Some(vec![project_id.clone()])),
+        Json(GetProjectSkillRequest {
+            project_id: project_id.as_str().to_string(),
+            project_skill_id: bounded_skill.id.as_str().to_string(),
+        }),
+    )
+    .await
+    .unwrap();
+    let usage = app_state
+        .skill_usage_event_repo
+        .list_by_project(&project_id, SkillUsageListOptions::default())
+        .await
+        .unwrap();
+    let bounded = usage
+        .iter()
+        .find(|event| event.project_skill_id == bounded_skill.id)
+        .expect("conversation-only load recorded");
+    assert_eq!(bounded.metadata_json["scoring_eligible"], true);
+    assert_eq!(bounded.agent_run_id, None);
+    assert_eq!(
+        bounded.metadata_json["outcome_linkage_policy"],
+        "bounded_conversation"
+    );
+}
+
+#[tokio::test]
+async fn c2_get_project_skill_suppresses_forged_stale_and_cross_project_context() {
+    let app_state = Arc::new(AppState::new_test());
+    let project_id = ProjectId::from_string("project-c2-suppressed".to_string());
+    let skill = staged_skill(project_id.clone());
+    app_state
+        .project_skill_repo
+        .create(skill.clone())
+        .await
+        .unwrap();
+    let other_project = ProjectId::from_string("project-c2-other".to_string());
+    let conversation = app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(other_project))
+        .await
+        .unwrap();
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "x-ralphx-conversation-id",
+        HeaderValue::from_str(&conversation.id.as_str()).unwrap(),
+    );
+    headers.insert(
+        "x-ralphx-agent-run-id",
+        HeaderValue::from_static("not-a-run-id"),
+    );
+
+    let response = get_project_skill(
+        State(test_state(app_state.clone())),
+        headers,
+        ProjectScope(Some(vec![project_id.clone()])),
+        Json(GetProjectSkillRequest {
+            project_id: project_id.as_str().to_string(),
+            project_skill_id: skill.id.as_str().to_string(),
+        }),
+    )
+    .await
+    .unwrap()
+    .0;
+    assert!(
+        response.skill.is_some(),
+        "telemetry rejection must not break the read"
+    );
+    assert!(app_state
+        .skill_usage_event_repo
+        .list_by_project(&project_id, SkillUsageListOptions::default())
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]

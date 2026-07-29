@@ -21,6 +21,9 @@ use crate::domain::repositories::{
     ProjectSkillResolutionOutcome, ProjectSkillStagingPolicy, SkillUsageEventRepository,
     SkillUsageListOptions, TaskOutcomeListOptions, TaskOutcomeRepository, UpsertTaskOutcomeInput,
 };
+use crate::domain::services::learned_skill_substrate::{
+    new_c2_skill_usage_event, SkillUsageAttribution,
+};
 use crate::domain::services::project_skill_resolution::import_title_resolution_identity;
 use crate::infrastructure::sqlite::run_migrations;
 
@@ -518,6 +521,86 @@ async fn project_skill_lifecycle_and_usage_round_trip() {
         .await
         .unwrap();
     assert_eq!(usage.len(), 1);
+}
+
+#[tokio::test]
+async fn c2_sqlite_usage_batch_dedupes_and_rolls_back_on_failure() {
+    let conn = shared_test_connection();
+    let skill_repo = SqliteProjectSkillRepository::from_shared(Arc::clone(&conn));
+    let usage_repo = SqliteSkillUsageEventRepository::from_shared(conn);
+    let project_id = ProjectId::from_string("project-1".to_string());
+    let skill = project_skill(
+        "C2 Usage Skill",
+        "execution",
+        "execution",
+        ProjectSkillLifecycleStatus::Approved,
+        Vec::new(),
+    );
+    let skill_id = skill.id.clone();
+    skill_repo.create(skill).await.unwrap();
+    let event = new_c2_skill_usage_event(
+        project_id.clone(),
+        skill_id.clone(),
+        SkillUsageInjectionKind::CompactIndex,
+        SkillUsageAttribution::ExactRun {
+            conversation_id: "conversation-1".to_string(),
+            agent_run_id: "run-1".to_string(),
+            provider_harness: "claude".to_string(),
+            stage: Some("execution".to_string()),
+            bucket: Some("execution".to_string()),
+        },
+    )
+    .unwrap();
+
+    usage_repo
+        .record_batch(vec![event.clone(), event])
+        .await
+        .unwrap();
+    assert_eq!(
+        usage_repo
+            .list_by_project(&project_id, SkillUsageListOptions::default())
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let valid = new_c2_skill_usage_event(
+        project_id.clone(),
+        skill_id,
+        SkillUsageInjectionKind::ComposerDirective,
+        SkillUsageAttribution::ExactRun {
+            conversation_id: "conversation-1".to_string(),
+            agent_run_id: "run-2".to_string(),
+            provider_harness: "codex".to_string(),
+            stage: Some("execution".to_string()),
+            bucket: Some("execution".to_string()),
+        },
+    )
+    .unwrap();
+    let invalid = new_c2_skill_usage_event(
+        project_id.clone(),
+        ProjectSkillId::from_string("missing-skill"),
+        SkillUsageInjectionKind::ComposerDirective,
+        SkillUsageAttribution::ExactRun {
+            conversation_id: "conversation-1".to_string(),
+            agent_run_id: "run-3".to_string(),
+            provider_harness: "codex".to_string(),
+            stage: Some("execution".to_string()),
+            bucket: Some("execution".to_string()),
+        },
+    )
+    .unwrap();
+    assert!(usage_repo.record_batch(vec![valid, invalid]).await.is_err());
+    assert_eq!(
+        usage_repo
+            .list_by_project(&project_id, SkillUsageListOptions::default())
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "failed SQLite batch must roll back earlier inserts"
+    );
 }
 
 #[tokio::test]
