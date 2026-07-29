@@ -2216,4 +2216,325 @@ crate::remote_commands! {
         call: async,
         result: fallible,
     },
+    // -----------------------------------------------------------------------------------
+    // PR 3.1-b batch 12 — census B5 (activity, automation, metrics, research).
+    //
+    // The reads first. Each is ledgered `Read` on a body audit that found NO repository write.
+    // Detector silence did not buy any of them, and this block is the reason that rule is worth
+    // keeping: detector (a) fires on `save_metrics_config`, a one-statement settings upsert,
+    // purely because the bare name `execute` collides with `AgentWorkflowRunner::execute`.
+    //
+    // Deliberately NOT here: `create_automation_draft`, `trigger_automation_run_now` and
+    // `retry_automation_judge` reach a real launch and are `host-denied-spawns-process`.
+    // -----------------------------------------------------------------------------------
+    "list_task_activity_events" => crate::commands::activity_commands::list_task_activity_events {
+        class: Read,
+        caps: [],
+        params: [
+            (arg task_id: String),
+            (arg cursor: Option<String>),
+            (arg limit: Option<u32>),
+            (arg filter: Option<crate::commands::activity_commands::ActivityEventFilterInput>),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "list_session_activity_events" => crate::commands::activity_commands::list_session_activity_events {
+        class: Read,
+        caps: [],
+        params: [
+            (arg session_id: String),
+            (arg cursor: Option<String>),
+            (arg limit: Option<u32>),
+            (arg filter: Option<crate::commands::activity_commands::ActivityEventFilterInput>),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "list_all_activity_events" => crate::commands::activity_commands::list_all_activity_events {
+        class: Read,
+        caps: [],
+        params: [
+            (arg cursor: Option<String>),
+            (arg limit: Option<u32>),
+            (arg filter: Option<crate::commands::activity_commands::ActivityEventFilterInput>),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "count_task_activity_events" => crate::commands::activity_commands::count_task_activity_events {
+        class: Read,
+        caps: [],
+        params: [
+            (arg task_id: String),
+            (arg filter: Option<crate::commands::activity_commands::ActivityEventFilterInput>),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "count_session_activity_events" => crate::commands::activity_commands::count_session_activity_events {
+        class: Read,
+        caps: [],
+        params: [
+            (arg session_id: String),
+            (arg filter: Option<crate::commands::activity_commands::ActivityEventFilterInput>),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "get_project_stats" => crate::commands::metrics_commands::get_project_stats {
+        class: Read,
+        caps: [],
+        params: [
+            (arg project_id: String),
+            (arg week_start_day: Option<u8>),
+            (arg tz_offset_minutes: Option<i32>),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "get_insights_stats" => crate::commands::metrics_commands::get_insights_stats {
+        class: Read,
+        caps: [],
+        params: [
+            (arg project_id: Option<String>),
+            (arg week_start_day: Option<u8>),
+            (arg tz_offset_minutes: Option<i32>),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "get_project_trends" => crate::commands::metrics_commands::get_project_trends {
+        class: Read,
+        caps: [],
+        params: [
+            (arg project_id: String),
+            (arg week_start_day: Option<u8>),
+            (arg tz_offset_minutes: Option<i32>),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "get_insights_trends" => crate::commands::metrics_commands::get_insights_trends {
+        class: Read,
+        caps: [],
+        params: [
+            (arg project_id: Option<String>),
+            (arg week_start_day: Option<u8>),
+            (arg tz_offset_minutes: Option<i32>),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "get_project_pr_insights" => crate::commands::metrics_commands::get_project_pr_insights {
+        class: Read,
+        caps: [],
+        params: [
+            (arg project_id: String),
+            (arg week_start_day: Option<u8>),
+            (arg tz_offset_minutes: Option<i32>),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "get_insights_pr_insights" => crate::commands::metrics_commands::get_insights_pr_insights {
+        class: Read,
+        caps: [],
+        params: [
+            (arg project_id: Option<String>),
+            (arg week_start_day: Option<u8>),
+            (arg tz_offset_minutes: Option<i32>),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "get_metrics_config" => crate::commands::metrics_commands::get_metrics_config {
+        class: Read,
+        caps: [],
+        params: [(arg project_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_task_metrics" => crate::commands::metrics_commands::get_task_metrics {
+        class: Read,
+        caps: [],
+        params: [(arg task_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    // Takes no AppState at all — a pure function over the preset table.
+    "get_research_presets" => crate::commands::research_commands::get_research_presets {
+        class: Read,
+        caps: [],
+        params: [],
+        call: async,
+        result: fallible,
+    },
+    "get_research_process" => crate::commands::research_commands::get_research_process {
+        class: Read,
+        caps: [],
+        params: [(arg id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_research_processes" => crate::commands::research_commands::get_research_processes {
+        class: Read,
+        caps: [],
+        params: [(arg status: Option<String>), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "list_automations" => crate::commands::automation_commands::list_automations {
+        class: Read,
+        caps: [],
+        params: [
+            (arg input: Option<crate::commands::automation_commands::ListAutomationsInput>),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "get_automation" => crate::commands::automation_commands::get_automation {
+        class: Read,
+        caps: [],
+        params: [
+            (arg input: crate::commands::automation_commands::AutomationIdInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    // The writers. Registered at `ui:agent` on a body audit, never dropped to Read.
+    "save_metrics_config" => crate::commands::metrics_commands::save_metrics_config {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [
+            (arg project_id: String),
+            (arg config: crate::commands::metrics_commands::MetricsConfig),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    // The research trio writes ResearchProcessStatus, which no production loop scans; the
+    // already-registered `start_research` reaches the same Running value on the same basis.
+    "pause_research" => crate::commands::research_commands::pause_research {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [(arg id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "resume_research" => crate::commands::research_commands::resume_research {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [(arg id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "stop_research" => crate::commands::research_commands::stop_research {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [(arg id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "pause_automation" => crate::commands::automation_commands::pause_automation {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [
+            (arg input: crate::commands::automation_commands::PauseAutomationInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "stop_automation" => crate::commands::automation_commands::stop_automation {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [
+            (arg input: crate::commands::automation_commands::AutomationIdInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "cancel_automation_run" => crate::commands::automation_commands::cancel_automation_run {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [
+            (arg input: crate::commands::automation_commands::AutomationRunScopedInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "update_automation_settings" => crate::commands::automation_commands::update_automation_settings {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [
+            (arg input: crate::commands::automation_commands::UpdateAutomationSettingsInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    // The four arming writes. Each flips `automations.status` to Active — the armed value
+    // `spawn_automation_scheduler` scans. Only `resume_automation_run` carries
+    // `SeedsSpawnTriggeringState`: that capability is defined as detector-(b) EVIDENCE by
+    // `seeds_spawn_triggering_state_tags_track_detector_b_evidence`, and it is the only one the
+    // detector flags. The other three arm just as really but invisibly, so they take AGENT plus a
+    // `DECLARED_MEMBERSHIPS` row — the mechanism batches 10 and 11 used for exactly this case.
+    "restart_automation" => crate::commands::automation_commands::restart_automation {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [
+            (arg input: crate::commands::automation_commands::AutomationIdInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "resume_automation_run" => crate::commands::automation_commands::resume_automation_run {
+        class: AgentControl,
+        caps: [SeedsSpawnTriggeringState],
+        params: [
+            (arg input: crate::commands::automation_commands::AutomationRunScopedInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "retry_automation_plan_judge" => crate::commands::automation_commands::retry_automation_plan_judge {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [
+            (arg input: crate::commands::automation_commands::AutomationIdInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "skip_automation_judge" => crate::commands::automation_commands::skip_automation_judge {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [
+            (arg input: crate::commands::automation_commands::AutomationRunScopedInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+
 }
