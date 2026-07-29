@@ -11,7 +11,6 @@ import {
 } from "@/api/managed-team";
 
 const RECOVERY_POLL_INTERVAL_MS = 12_000;
-const MAX_RECOVERY_POLLS = 3;
 
 export const managedTeamKeys = {
   all: ["managed-team"] as const,
@@ -34,6 +33,12 @@ function shouldRecoveryPoll(status: ManagedTeamStatus | null | undefined): boole
   );
 }
 
+export function managedTeamStatusRefetchInterval(
+  status: ManagedTeamStatus | null | undefined,
+): number | false {
+  return shouldRecoveryPoll(status) ? RECOVERY_POLL_INTERVAL_MS : false;
+}
+
 export function useManagedTeamStatus(
   conversationId: string | null | undefined,
   options: { enabled?: boolean } = {},
@@ -43,13 +48,7 @@ export function useManagedTeamStatus(
     queryFn: () => managedTeamApi.getStatus(conversationId!),
     enabled: Boolean(conversationId) && (options.enabled ?? true),
     staleTime: 5_000,
-    // Events are authoritative. A short, capped poll only repairs missed events
-    // while an active member can still change state.
-    refetchInterval: (query) =>
-      shouldRecoveryPoll(query.state.data) &&
-      query.state.dataUpdateCount < MAX_RECOVERY_POLLS + 1
-        ? RECOVERY_POLL_INTERVAL_MS
-        : false,
+    refetchInterval: (query) => managedTeamStatusRefetchInterval(query.state.data),
   });
 }
 
@@ -183,11 +182,7 @@ export function reconcileManagedTeamEvent(
   if (!activeConversationId || event.conversationId !== activeConversationId) {
     return false;
   }
-  if (
-    activeParentRunId &&
-    event.parentRunId &&
-    event.parentRunId !== activeParentRunId
-  ) {
+  if (activeParentRunId && event.parentRunId !== activeParentRunId) {
     return false;
   }
   const sequenceKey = managedTeamKeys.sequence(activeConversationId);

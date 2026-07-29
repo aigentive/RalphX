@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { ManagedTeamStatus } from "@/api/managed-team";
 import {
   managedTeamKeys,
+  managedTeamStatusRefetchInterval,
   reconcileManagedTeamEvent,
 } from "./useManagedTeam";
 
@@ -91,6 +92,64 @@ describe("reconcileManagedTeamEvent", () => {
         conversationId: "conversation-1",
         parentRunId: "run-2",
         sequence: 1,
+      }),
+    ).toBe(false);
+  });
+
+  it("fails closed when active run authority is present but the event has no run id", () => {
+    const client = createClient();
+    client.setQueryData(managedTeamKeys.status("conversation-1"), status());
+
+    expect(
+      reconcileManagedTeamEvent(client, "conversation-1", "run-1", {
+        conversationId: "conversation-1",
+        sequence: 1,
+      }),
+    ).toBe(false);
+  });
+
+  it("accepts matching run events and events without local run authority for the active conversation", () => {
+    const client = createClient();
+    client.setQueryData(managedTeamKeys.status("conversation-1"), status());
+
+    expect(
+      reconcileManagedTeamEvent(client, "conversation-1", "run-1", {
+        conversationId: "conversation-1",
+        parentRunId: "run-1",
+        sequence: 1,
+      }),
+    ).toBe(true);
+    expect(
+      reconcileManagedTeamEvent(client, "conversation-1", null, {
+        conversationId: "conversation-1",
+        sequence: 2,
+      }),
+    ).toBe(true);
+    expect(
+      reconcileManagedTeamEvent(client, "conversation-1", null, {
+        conversationId: "conversation-2",
+        sequence: 3,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("managedTeamStatusRefetchInterval", () => {
+  it("continues polling while an active Team member is in flight", () => {
+    expect(managedTeamStatusRefetchInterval(status())).toBe(false);
+    expect(
+      managedTeamStatusRefetchInterval({
+        ...status(),
+        members: [{ ...status().members[0]!, status: "working" }],
+      }),
+    ).toBe(12_000);
+  });
+
+  it("stops polling once no Team members are in flight", () => {
+    expect(
+      managedTeamStatusRefetchInterval({
+        ...status(),
+        members: [{ ...status().members[0]!, status: "idle" }],
       }),
     ).toBe(false);
   });

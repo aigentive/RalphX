@@ -51,7 +51,11 @@ export function TeamPanelContent({
   const authority = activeAgentRunId
     ? { conversationId, agentRunId: activeAgentRunId }
     : null;
-  const activeTasks = board.data?.filter((task) => task.state === "active").length ?? 0;
+  const boardSummary = board.isLoading
+    ? "Board loading…"
+    : board.isError
+      ? "Board unavailable"
+      : `${board.data?.filter((task) => task.state === "active").length ?? 0} active board tasks`;
 
   return (
     <div className="space-y-5 p-4" data-testid="agents-team-panel-content">
@@ -59,7 +63,7 @@ export function TeamPanelContent({
         <div>
           <h2 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>Team</h2>
           <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-            {team.members.length} members · {activeTasks} active board tasks
+            {team.members.length} members · {boardSummary}
           </p>
         </div>
         <StatusPill label={team.session.status} tone={team.session.status === "active" ? "accent" : "neutral"} live={team.session.status === "active"} />

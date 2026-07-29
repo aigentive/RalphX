@@ -22,6 +22,13 @@ export function TeamTaskBoard({
       agentTaskApi.listConversationTasks({ conversationId, projectId, includeDone: true }),
     staleTime: 5_000,
   });
+
+  if (tasks.isLoading) {
+    return <TeamTaskBoardPlaceholder label="Loading Team board…" />;
+  }
+  if (tasks.isError) {
+    return <TeamTaskBoardPlaceholder label="Could not load Team board tasks." error />;
+  }
   const taskList = tasks.data ?? [];
 
   return (
@@ -52,6 +59,30 @@ export function TeamTaskBoard({
           </section>
         );
       })}
+    </div>
+  );
+}
+
+function TeamTaskBoardPlaceholder({
+  label,
+  error = false,
+}: {
+  label: string;
+  error?: boolean;
+}) {
+  return (
+    <div
+      className="rounded-lg border px-3 py-2 text-xs"
+      data-testid={error ? "team-task-board-error" : "team-task-board-loading"}
+      style={{
+        backgroundColor: "var(--bg-base)",
+        borderColor: error ? "var(--status-error-border, #6e3737)" : "var(--border-subtle)",
+        borderStyle: "solid",
+        borderWidth: 1,
+        color: error ? "var(--status-error-text, #f0a0a0)" : "var(--text-muted)",
+      }}
+    >
+      {label}
     </div>
   );
 }

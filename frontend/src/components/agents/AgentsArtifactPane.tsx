@@ -790,7 +790,6 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         : [],
     [conversationData, conversation?.id, shouldLoadIdeationData],
   );
-  const conversationId = conversation?.id ?? workspace?.conversationId ?? null;
   const teamStoreKey = conversation ? getAgentConversationStoreKey(conversation) : null;
   const activeTeamRunId = useChatStore((state) =>
     teamStoreKey ? state.activeAgentRunIds[teamStoreKey] ?? null : null,
