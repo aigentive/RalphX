@@ -1922,4 +1922,298 @@ crate::remote_commands! {
         call: async,
         result: fallible,
     },
+
+    // -----------------------------------------------------------------------------------
+    // PR 3.1-b batch 11 — census B4 remainder (ideation, workflow, methodology).
+    //
+    // The reads first. Each is ledgered `Read` on a body audit that found NO repository write,
+    // not on detector silence — the whole B4 module sits at the conservative `AgentControl`
+    // default and every drop below it is an exception carrying its own reason.
+    //
+    // Deliberately NOT here, each on its own finding: `analyze_dependencies` is a read in name
+    // only and swallows the acknowledged-flag write; `export_ideation_session`,
+    // `create_task_proposal`, `create_cross_project_session` and `import_ideation_session` are
+    // fail-open; `get_agent_harness_availability` and `get_ideation_harness_availability` report
+    // an unavailable harness as available when a settings read fails; and twelve members reach a
+    // CLI resolver in their own closure and are `host-denied-spawns-process`. See
+    // `capability_ledger_tests`.
+    // -----------------------------------------------------------------------------------
+    "get_ideation_session" => crate::commands::ideation_commands::get_ideation_session {
+        class: Read,
+        caps: [],
+        params: [(arg id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_ideation_session_with_data" => crate::commands::ideation_commands::get_ideation_session_with_data {
+        class: Read,
+        caps: [],
+        params: [(arg id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    // The `*_for_app_state` seam here resolves the linked workspace from three repository reads.
+    // It is NOT the `agent_workspace_response_for_state` hydrator that forecloses the
+    // agent-conversation workspace reads, and there is no registered remote twin of this seam,
+    // so it registers on its own audit rather than as a twin.
+    "get_ideation_agent_workspace" => crate::commands::ideation_commands::get_ideation_agent_workspace {
+        class: Read,
+        caps: [],
+        params: [(arg session_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "list_ideation_sessions" => crate::commands::ideation_commands::list_ideation_sessions {
+        class: Read,
+        caps: [],
+        params: [(arg project_id: String), (arg purpose: Option<String>), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_session_group_counts" => crate::commands::ideation_commands::get_session_group_counts {
+        class: Read,
+        caps: [],
+        params: [(arg project_id: String), (arg search: Option<String>), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "list_sessions_by_group" => crate::commands::ideation_commands::list_sessions_by_group {
+        class: Read,
+        caps: [],
+        params: [
+            (arg project_id: String),
+            (arg group: String),
+            (arg offset: Option<u32>),
+            (arg limit: Option<u32>),
+            (arg search: Option<String>),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "get_child_sessions" => crate::commands::ideation_commands::get_child_sessions {
+        class: Read,
+        caps: [],
+        params: [(arg session_id: String), (arg purpose: Option<String>), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_latest_child_session_id" => crate::commands::ideation_commands::get_latest_child_session_id {
+        class: Read,
+        caps: [],
+        params: [
+            (arg session_id: String),
+            (arg purpose: Option<String>),
+            (arg include_archived: Option<bool>),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "get_task_proposal" => crate::commands::ideation_commands::get_task_proposal {
+        class: Read,
+        caps: [],
+        params: [(arg id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "list_session_proposals" => crate::commands::ideation_commands::list_session_proposals {
+        class: Read,
+        caps: [],
+        params: [(arg session_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_proposal_dependencies" => crate::commands::ideation_commands::get_proposal_dependencies {
+        class: Read,
+        caps: [],
+        params: [(arg proposal_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_proposal_dependents" => crate::commands::ideation_commands::get_proposal_dependents {
+        class: Read,
+        caps: [],
+        params: [(arg proposal_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_task_blockers" => crate::commands::ideation_commands::get_task_blockers {
+        class: Read,
+        caps: [],
+        params: [(arg task_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_blocked_tasks" => crate::commands::ideation_commands::get_blocked_tasks {
+        class: Read,
+        caps: [],
+        params: [(arg task_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    // The read half of the tasks-feature toggle pair. It aggregates counts and never emits or
+    // persists; its writing sibling `set_tasks_feature_enabled` reaches a CLI resolver and is
+    // `host-denied-spawns-process`.
+    "get_tasks_disable_impact" => crate::commands::ideation_commands::get_tasks_disable_impact {
+        class: Read,
+        caps: [],
+        params: [(app_state), (execution_state), (host_app_handle)],
+        call: async,
+        result: fallible,
+    },
+    "get_ideation_settings" => crate::commands::ideation_commands::get_ideation_settings {
+        class: Read,
+        caps: [],
+        params: [(app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_ideation_effort_settings" => crate::commands::ideation_commands::get_ideation_effort_settings {
+        class: Read,
+        caps: [],
+        params: [(arg project_id: Option<String>), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_ideation_model_settings" => crate::commands::ideation_commands::get_ideation_model_settings {
+        class: Read,
+        caps: [],
+        params: [(arg project_id: Option<String>), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_agent_lane_settings" => crate::commands::ideation_commands::get_agent_lane_settings {
+        class: Read,
+        caps: [],
+        params: [(arg project_id: Option<String>), (app_state)],
+        call: async,
+        result: fallible,
+    },
+
+    // The B4 writers, at `ui:agent`. A silent detector never licensed dropping these to Read.
+    "update_ideation_session_title" => crate::commands::ideation_commands::update_ideation_session_title {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [
+            (arg id: String),
+            (arg title: Option<String>),
+            (app_state),
+            (host_app_handle),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "reorder_proposals" => crate::commands::ideation_commands::reorder_proposals {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [(arg session_id: String), (arg proposal_ids: Vec<String>), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "assess_proposal_priority" => crate::commands::ideation_commands::assess_proposal_priority {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [(arg id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "assess_all_priorities" => crate::commands::ideation_commands::assess_all_priorities {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [(arg session_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "remove_proposal_dependency" => crate::commands::ideation_commands::remove_proposal_dependency {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [(arg proposal_id: String), (arg depends_on_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    // Declared `arms-auto-plan-verification`: no detector models the gate this writes.
+    "update_ideation_settings" => crate::commands::ideation_commands::update_ideation_settings {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [
+            (arg settings: crate::domain::ideation::IdeationSettings),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "update_ideation_effort_settings" => crate::commands::ideation_commands::update_ideation_effort_settings {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [
+            (arg input: crate::commands::ideation_commands::UpdateIdeationEffortInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "update_ideation_model_settings" => crate::commands::ideation_commands::update_ideation_model_settings {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [
+            (arg input: crate::commands::ideation_commands::UpdateIdeationModelInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    // Declared `arms-agent-spawn-harness`: this row picks the harness a live agent launches with.
+    "update_agent_lane_settings" => crate::commands::ideation_commands::update_agent_lane_settings {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [
+            (arg input: crate::commands::ideation_commands::UpdateAgentLaneSettingsInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "create_workflow" => crate::commands::workflow_commands::create_workflow {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [
+            (arg input: crate::commands::workflow_commands::CreateWorkflowInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "update_workflow" => crate::commands::workflow_commands::update_workflow {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [
+            (arg id: String),
+            (arg input: crate::commands::workflow_commands::UpdateWorkflowInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "set_default_workflow" => crate::commands::workflow_commands::set_default_workflow {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [(arg id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "activate_methodology" => crate::commands::methodology_commands::activate_methodology {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [(arg id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "deactivate_methodology" => crate::commands::methodology_commands::deactivate_methodology {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [(arg id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
 }
