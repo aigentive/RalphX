@@ -1247,6 +1247,52 @@ crate::remote_commands! {
     },
 
     // -----------------------------------------------------------------------------------
+    // The conversation-LIST seam split (batch 5). These complete PR 3.2's read surface: the
+    // transcript reads above are useless without a list to pick a conversation from.
+    //
+    // Unlike the transcript reads, the local list commands never fired detector (a) —
+    // `probe_conversation_list_arming_paths` reports NO ARMING HITS for them. Their
+    // disqualifier was that `list_agent_conversations` ACCEPTED `tauri::AppHandle` and
+    // `ExecutionState` in order to build a chat service whose invoked method is a straight
+    // repository delegation: authority carried, never used. (`list_agent_conversations_page`
+    // never took an `AppHandle` at all; batch 4's deferral note was wrong about that.)
+    //
+    // Both local commands now call the same `*_for_app_state` seams these do, so the
+    // extraction forks no logic (A-7) and drops two spawn-authority carriers from a read
+    // command rather than merely routing around them.
+    // -----------------------------------------------------------------------------------
+    "list_remote_agent_conversations"
+        => crate::commands::remote_transcript_commands::list_remote_agent_conversations {
+        class: Read,
+        caps: [],
+        params: [
+            (arg context_type: String),
+            (arg context_id: String),
+            (arg include_archived: Option<bool>),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "list_remote_agent_conversations_page"
+        => crate::commands::remote_transcript_commands::list_remote_agent_conversations_page {
+        class: Read,
+        caps: [],
+        params: [
+            (arg context_type: String),
+            (arg context_id: String),
+            (arg include_archived: Option<bool>),
+            (arg archived_only: Option<bool>),
+            (arg offset: Option<u32>),
+            (arg limit: Option<u32>),
+            (arg search: Option<String>),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+
+    // -----------------------------------------------------------------------------------
     // The B2 detector-silent getters (batch 4). Five of seventeen candidates; the other
     // twelve were refused or deferred — see `the_b2_getter_refusals_are_pinned`.
     // -----------------------------------------------------------------------------------

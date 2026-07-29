@@ -1038,6 +1038,35 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
             "pure repository read of a timeline page; no wake, no spawn; propagates read errors",
         ),
     },
+    // -----------------------------------------------------------------------------------
+    // Batch 5 — the conversation-LIST seam split. Completes PR 3.2's read surface.
+    //
+    // These carry conversation METADATA only (titles, counts, timestamps, runtime
+    // attribution) — no message text. The content step-up this batch does NOT repeat is the
+    // transcript one above.
+    //
+    // Every read on this path propagates: `filter_agent_list_visible_conversations`,
+    // `agent_conversation_responses_for_state`, and
+    // `latest_conversation_runtime_attribution` each `?` their repository errors. That was
+    // checked by hand rather than assumed, because a `Vec`-returning read is exactly the
+    // fail-open shape batch 4 refused four times.
+    // -----------------------------------------------------------------------------------
+    CommandOverride {
+        command: "list_remote_agent_conversations",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "pure repository read of a context's conversation metadata; no spawn carrier; propagates read errors",
+        ),
+    },
+    CommandOverride {
+        command: "list_remote_agent_conversations_page",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "pure repository read of a conversation-list page; no spawn carrier; propagates read errors",
+        ),
+    },
     CommandOverride {
         command: "get_agent_conversation_stats",
         policy: policy(

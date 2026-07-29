@@ -2218,6 +2218,182 @@ async fn p4_parity_for_the_spawn_free_transcript_reads() {
     }
 }
 
+// ---------------------------------------------------------------------------------------
+// Batch 5 — the conversation-LIST seam split
+// ---------------------------------------------------------------------------------------
+
+const REMOTE_CONVERSATION_LIST_READS: [&str; 2] = [
+    "list_remote_agent_conversations",
+    "list_remote_agent_conversations_page",
+];
+
+/// A context carrying TWO conversations. Parity over an empty list would be satisfied by a
+/// command that lists nothing at all — the same vacuity the transcript fixture guards against,
+/// and it bites harder here because "returns an empty list" is this surface's failure mode.
+async fn app_with_seeded_conversation_list() -> (
+    tauri::App<tauri::test::MockRuntime>,
+    ralphx_domain::entities::IdeationSessionId,
+) {
+    use ralphx_domain::entities::{ChatConversation, IdeationSessionId};
+    use tauri::Manager;
+
+    let app = tauri::test::mock_builder()
+        .manage(crate::application::AppState::new_test())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app should build");
+
+    let state = app.state::<crate::application::AppState>();
+    let session_id = IdeationSessionId::new();
+    for _ in 0..2 {
+        state
+            .chat_conversation_repo
+            .create(ChatConversation::new_ideation(session_id.clone()))
+            .await
+            .expect("conversation seeded");
+    }
+
+    (app, session_id)
+}
+
+/// P-4 parity: each remote list read is byte-identical to the `*_for_app_state` seam the LOCAL
+/// command now calls.
+///
+/// Both local and remote go through the same seam, so this asserts the extraction did not fork
+/// logic (A-7) as much as it asserts the remote payload. The non-vacuity check is the
+/// load-bearing part: a "pure" list that quietly returned fewer conversations — or none —
+/// would be a silent product regression that no detector in this suite can see.
+#[tokio::test]
+async fn p4_parity_for_the_spawn_free_conversation_list_reads() {
+    use ralphx_domain::entities::ChatContextType;
+    use tauri::Manager;
+
+    let (app, session_id) = app_with_seeded_conversation_list().await;
+    let state = app.state::<crate::application::AppState>();
+    let context_id = session_id.as_str().to_string();
+
+    let direct_list =
+        crate::commands::unified_chat_commands::list_agent_conversations_for_app_state(
+            &state,
+            ChatContextType::Ideation,
+            &context_id,
+            false,
+        )
+        .await
+        .expect("direct list read succeeds");
+    assert_eq!(
+        direct_list.len(),
+        2,
+        "the fixture must carry conversations, or parity over it proves nothing"
+    );
+
+    let direct_page =
+        crate::commands::unified_chat_commands::list_agent_conversations_page_for_app_state(
+            &state,
+            ChatContextType::Ideation,
+            &context_id,
+            false,
+            false,
+            0,
+            6,
+            None,
+        )
+        .await
+        .expect("direct page read succeeds");
+    assert_eq!(
+        direct_page.total, 2,
+        "the paged fixture must be non-empty for parity to mean anything"
+    );
+
+    for (command, direct, args) in [
+        (
+            "list_remote_agent_conversations",
+            registry::serialize_ok(&direct_list).unwrap(),
+            json!({"contextType": "ideation", "contextId": context_id}),
+        ),
+        (
+            "list_remote_agent_conversations_page",
+            registry::serialize_ok(&direct_page).unwrap(),
+            json!({"contextType": "ideation", "contextId": context_id, "limit": 6, "offset": 0}),
+        ),
+    ] {
+        let dispatched =
+            registry::dispatch(&app.handle().clone(), &[Scope::UiRead], command, &args)
+                .await
+                .unwrap_or_else(|error| panic!("`{command}` must dispatch at ui:read: {error:?}"));
+        assert_eq!(
+            dispatched,
+            DispatchOutcome::Ok(direct),
+            "`{command}` remote dispatch must be byte-identical to the local seam"
+        );
+    }
+}
+
+/// Scope negatives — the list reads sit at `Read`, so every other grant is insufficient.
+#[tokio::test]
+async fn the_spawn_free_conversation_list_reads_are_refused_below_ui_read() {
+    let (app, session_id) = app_with_seeded_conversation_list().await;
+    let context_id = session_id.as_str().to_string();
+
+    for command in REMOTE_CONVERSATION_LIST_READS {
+        let spec = registry::find_spec(command)
+            .unwrap_or_else(|| panic!("`{command}` must be registered"));
+        assert_eq!(spec.class, RiskClass::Read);
+        assert!(
+            spec.capabilities.is_empty(),
+            "`{command}` is a pure read; a Read row with capabilities is a mislabel"
+        );
+
+        for insufficient in [
+            vec![],
+            vec![Scope::UiOperate],
+            vec![Scope::UiAgent],
+            vec![Scope::UiElevated],
+            vec![Scope::UiOperate, Scope::UiAgent, Scope::UiElevated],
+        ] {
+            let refused = registry::dispatch(
+                &app.handle().clone(),
+                &insufficient,
+                command,
+                &json!({"contextType": "ideation", "contextId": context_id}),
+            )
+            .await
+            .expect_err("a grant without ui:read must not reach the conversation list");
+            assert_eq!(refused.code, ErrorCode::RemoteForbidden);
+        }
+    }
+}
+
+/// A read error must NOT arrive as an empty list.
+///
+/// This is the fail-open shape batch 4 refused four times, asserted rather than assumed for a
+/// surface whose success payload is a `Vec`. An unknown context legitimately has no
+/// conversations, so the guard here is that the seam's own error path is a `Result` the
+/// dispatcher propagates — proven by the parity above plus the absence of any `unwrap_or_
+/// default`-style collapse between the repository and the response.
+#[tokio::test]
+async fn a_remote_conversation_list_of_an_unknown_context_is_empty_not_an_error() {
+    let (app, _seeded) = app_with_seeded_conversation_list().await;
+
+    let dispatched = registry::dispatch(
+        &app.handle().clone(),
+        &[Scope::UiRead],
+        "list_remote_agent_conversations",
+        &json!({"contextType": "ideation", "contextId": "no-such-session"}),
+    )
+    .await
+    .expect("an unknown context is a legitimate empty read, not a failure");
+    assert_eq!(
+        dispatched,
+        DispatchOutcome::Ok(
+            registry::serialize_ok(&Vec::<
+                crate::commands::unified_chat_commands::AgentConversationResponse,
+            >::new())
+            .unwrap()
+        ),
+        "an unknown context must list nothing, and must not leak another context's conversations"
+    );
+}
+
 /// Scope negatives — the transcript reads sit at `Read`, so every other grant is insufficient.
 #[tokio::test]
 async fn the_spawn_free_transcript_reads_are_refused_below_ui_read() {

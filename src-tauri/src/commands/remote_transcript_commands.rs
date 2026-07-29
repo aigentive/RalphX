@@ -1,8 +1,29 @@
-//! Spawn-free transcript reads for the remote facade.
+//! Spawn-free conversation reads for the remote facade.
 //!
 //! # Why this module exists
 //!
-//! PR 3.2 (two-instance chat validation) needs a paired device to READ a conversation. The
+//! PR 3.2 (two-instance chat validation) needs a paired device to READ a conversation — and,
+//! since batch 5, to pick one from a LIST first. Transcripts without a list are useless, so the
+//! two halves of that read surface live here together.
+//!
+//! The module holds two different splits, and the difference between them is worth keeping
+//! straight because it changes what the tests can honestly assert:
+//!
+//! * **The transcript reads (batch 4) were disqualified by a WAKE.** They fired authority
+//!   detector (a); the split removes a live-agent steer from the read path.
+//! * **The list reads (batch 5) were disqualified by a CARRIER.** They never armed —
+//!   `probe_conversation_list_arming_paths` reports NO ARMING HITS for the local commands too.
+//!   `list_agent_conversations` merely *accepted* `tauri::AppHandle` and `ExecutionState` in
+//!   order to build a chat service whose invoked method was a straight repository delegation.
+//!   Nothing dangerous was ever reached; the authority was carried and never used.
+//!
+//! So detector silence disqualified nothing on its own in batch 5, and the calibration for that
+//! split is `the_spawn_free_remote_read_module_carries_no_authority_carriers`, which asserts
+//! this module's contract over its own source rather than trusting this comment.
+//!
+//! # The transcript split (batch 4)
+//!
+//! The three obvious commands — `get_agent_conversation`,
 //! three obvious commands — `get_agent_conversation`,
 //! `get_agent_conversation_messages_page`, `get_agent_conversation_timeline_page` — all fire
 //! authority detector (a), which is why batch 3 left them unregistered and flagged them as the
@@ -48,8 +69,11 @@ use tauri::State;
 use crate::application::AppState;
 use crate::commands::unified_chat_commands::{
     get_agent_conversation_for_app_state, get_agent_conversation_messages_page_for_app_state,
-    get_agent_conversation_timeline_page_for_app_state, AgentConversationMessagesPageResponse,
-    AgentConversationTimelinePageResponse, AgentConversationWithMessagesResponse,
+    get_agent_conversation_timeline_page_for_app_state, list_agent_conversations_for_app_state,
+    list_agent_conversations_page_for_app_state, parse_context_type,
+    AgentConversationListPageResponse, AgentConversationMessagesPageResponse,
+    AgentConversationResponse, AgentConversationTimelinePageResponse,
+    AgentConversationWithMessagesResponse,
 };
 use ralphx_domain::entities::ChatConversationId;
 
@@ -57,6 +81,55 @@ use ralphx_domain::entities::ChatConversationId;
 /// going remote.
 const DEFAULT_PAGE_LIMIT: u32 = 40;
 const MAX_PAGE_LIMIT: u32 = 200;
+
+/// The local conversation-list page default. Clamped rather than merely defaulted, so a remote
+/// client cannot request a wider page than the local UI can.
+const DEFAULT_LIST_PAGE_LIMIT: u32 = 6;
+
+/// List a context's conversations, without accepting spawn authority to do it.
+#[tauri::command]
+pub async fn list_remote_agent_conversations(
+    context_type: String,
+    context_id: String,
+    include_archived: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<Vec<AgentConversationResponse>, String> {
+    list_agent_conversations_for_app_state(
+        &state,
+        parse_context_type(&context_type)?,
+        &context_id,
+        include_archived.unwrap_or(false),
+    )
+    .await
+}
+
+/// List a page of a context's conversations, with optional title search.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn list_remote_agent_conversations_page(
+    context_type: String,
+    context_id: String,
+    include_archived: Option<bool>,
+    archived_only: Option<bool>,
+    offset: Option<u32>,
+    limit: Option<u32>,
+    search: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<AgentConversationListPageResponse, String> {
+    list_agent_conversations_page_for_app_state(
+        &state,
+        parse_context_type(&context_type)?,
+        &context_id,
+        include_archived.unwrap_or(false),
+        archived_only.unwrap_or(false),
+        offset.unwrap_or(0),
+        limit
+            .unwrap_or(DEFAULT_LIST_PAGE_LIMIT)
+            .clamp(1, MAX_PAGE_LIMIT),
+        search.as_deref(),
+    )
+    .await
+}
 
 /// Read a conversation and its messages, without waking its agent.
 #[tauri::command]

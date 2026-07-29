@@ -2523,6 +2523,24 @@
       "argumentSensitive": false,
       "capabilities": [],
       "class": "read",
+      "command": "list_remote_agent_conversations",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::remote_transcript_commands::list_remote_agent_conversations"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "list_remote_agent_conversations_page",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::remote_transcript_commands::list_remote_agent_conversations_page"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
       "command": "get_agent_conversation_summary",
       "pins": [],
       "scopeConfined": false,
@@ -6455,6 +6473,22 @@
       "command": "get_remote_agent_conversation_timeline_page",
       "module": "remote_transcript_commands",
       "reason": "pure repository read of a timeline page; no wake, no spawn; propagates read errors",
+      "registered": true
+    },
+    {
+      "capabilities": [],
+      "class": "read",
+      "command": "list_remote_agent_conversations",
+      "module": "remote_transcript_commands",
+      "reason": "pure repository read of a context's conversation metadata; no spawn carrier; propagates read errors",
+      "registered": true
+    },
+    {
+      "capabilities": [],
+      "class": "read",
+      "command": "list_remote_agent_conversations_page",
+      "module": "remote_transcript_commands",
+      "reason": "pure repository read of a conversation-list page; no spawn carrier; propagates read errors",
       "registered": true
     },
     {
