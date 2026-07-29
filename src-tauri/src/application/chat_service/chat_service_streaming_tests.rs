@@ -1,7 +1,7 @@
 use super::{
     agent_run_usage_from_codex_usage, capture_file_diff_baseline, codex_tool_call_content_block,
-    completion_tool_result_accepted, flush_content_before_error, format_agent_exit_stderr,
-    is_completion_tool_name, is_user_attended_turn_completion,
+    completion_tool_result_accepted, current_text_block_ordinal, flush_content_before_error,
+    format_agent_exit_stderr, is_completion_tool_name, is_user_attended_turn_completion,
     normalize_codex_cumulative_usage_for_persistence, normalize_codex_stream_usage_for_persistence,
     persist_assistant_message_snapshot, persist_message_text_timeline_item,
     persist_timeline_snapshot, persist_usage_capture_run_first, process_codex_stream_background,
@@ -58,6 +58,32 @@ fn completion_tool_result_accepts_success_payloads() {
     assert!(completion_tool_result_accepted(Some(
         &serde_json::json!({ "status": "ok" })
     )));
+}
+
+#[test]
+fn current_text_block_ordinal_counts_completed_text_blocks_only() {
+    let completed_blocks = vec![
+        ContentBlockItem::Text {
+            text: "before tool".to_string(),
+        },
+        ContentBlockItem::ToolUse {
+            id: Some("tool-1".to_string()),
+            name: "bash".to_string(),
+            arguments: serde_json::json!({}),
+            result: None,
+            parent_tool_use_id: None,
+            diff_context: None,
+        },
+    ];
+
+    assert_eq!(current_text_block_ordinal(&[]), 0);
+    assert_eq!(current_text_block_ordinal(&completed_blocks), 1);
+
+    let mut completed_blocks = completed_blocks;
+    completed_blocks.push(ContentBlockItem::Text {
+        text: "after tool".to_string(),
+    });
+    assert_eq!(current_text_block_ordinal(&completed_blocks), 2);
 }
 
 #[test]

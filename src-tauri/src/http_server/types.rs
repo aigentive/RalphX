@@ -1908,6 +1908,8 @@ pub struct ActiveStateResponse {
     /// Partial text content accumulated from agent:chunk events
     #[serde(skip_serializing_if = "String::is_empty")]
     pub partial_text: String,
+    /// Partial text content grouped by its text-block ordinal.
+    pub partial_text_segments: Vec<String>,
 }
 
 /// A tool call in the active state response.

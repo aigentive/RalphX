@@ -100,6 +100,7 @@ async fn test_get_active_state_returns_empty_for_inactive_conversation() {
     assert!(response.0.tool_calls.is_empty());
     assert!(response.0.streaming_tasks.is_empty());
     assert!(response.0.partial_text.is_empty());
+    assert!(response.0.partial_text_segments.is_empty());
 }
 
 #[tokio::test]
@@ -199,12 +200,12 @@ async fn test_get_active_state_returns_partial_text() {
     state
         .app_state
         .streaming_state_cache
-        .append_text(&conversation_id, "Hello ")
+        .append_text(&conversation_id, 0, "Hello ")
         .await;
     state
         .app_state
         .streaming_state_cache
-        .append_text(&conversation_id, "world!")
+        .append_text(&conversation_id, 1, "world!")
         .await;
 
     let response = get_conversation_active_state(State(state), Path(conversation_id))
@@ -212,6 +213,7 @@ async fn test_get_active_state_returns_partial_text() {
         .unwrap();
 
     assert_eq!(response.0.partial_text, "Hello world!");
+    assert_eq!(response.0.partial_text_segments, vec!["Hello ", "world!"]);
 }
 
 #[tokio::test]
@@ -314,7 +316,7 @@ async fn test_get_active_state_combines_all_data() {
     state
         .app_state
         .streaming_state_cache
-        .append_text(&conversation_id, "Analyzing...")
+        .append_text(&conversation_id, 0, "Analyzing...")
         .await;
 
     let response = get_conversation_active_state(State(state), Path(conversation_id))
