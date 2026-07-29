@@ -2675,7 +2675,8 @@
       "command": "greet",
       "module": "root",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -2683,7 +2684,8 @@
       "command": "health_check",
       "module": "health",
       "reason": "pure health read",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -2693,7 +2695,8 @@
       "command": "get_startup_status",
       "module": "startup_commands",
       "reason": "startup and log-management authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -2703,7 +2706,8 @@
       "command": "get_startup_diagnostics",
       "module": "startup_commands",
       "reason": "startup and log-management authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -2713,7 +2717,8 @@
       "command": "retry_startup",
       "module": "startup_commands",
       "reason": "startup and log-management authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -2723,7 +2728,8 @@
       "command": "open_startup_logs",
       "module": "startup_commands",
       "reason": "startup and log-management authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -2733,7 +2739,8 @@
       "command": "report_startup_frontend_milestone",
       "module": "startup_commands",
       "reason": "startup and log-management authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -2743,7 +2750,8 @@
       "command": "list_attention_items",
       "module": "notification_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -2753,7 +2761,8 @@
       "command": "set_dock_badge_count",
       "module": "notification_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -2763,7 +2772,8 @@
       "command": "get_notification_settings",
       "module": "notification_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -2773,7 +2783,8 @@
       "command": "update_notification_settings",
       "module": "notification_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -2783,7 +2794,8 @@
       "command": "list_notifications",
       "module": "notification_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -2793,7 +2805,8 @@
       "command": "mark_notification_read",
       "module": "notification_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -2803,7 +2816,8 @@
       "command": "mark_all_notifications_read",
       "module": "notification_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -2813,7 +2827,8 @@
       "command": "get_unread_notification_count",
       "module": "notification_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -2823,7 +2838,8 @@
       "command": "debug_send_test_notification",
       "module": "notification_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -2833,7 +2849,8 @@
       "command": "preview_remote_environment",
       "module": "remote_environment_commands",
       "reason": "remote environment authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -2843,7 +2860,8 @@
       "command": "pair_remote_environment",
       "module": "remote_environment_commands",
       "reason": "remote environment authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -2853,7 +2871,8 @@
       "command": "list_remote_environments",
       "module": "remote_environment_commands",
       "reason": "remote environment authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -2863,7 +2882,8 @@
       "command": "remove_remote_environment",
       "module": "remote_environment_commands",
       "reason": "remote environment authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -2873,7 +2893,8 @@
       "command": "get_active_environment",
       "module": "remote_environment_commands",
       "reason": "remote environment authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -2883,7 +2904,8 @@
       "command": "set_active_environment",
       "module": "remote_environment_commands",
       "reason": "remote environment authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -2893,7 +2915,8 @@
       "command": "remote_connect",
       "module": "remote_environment_commands",
       "reason": "remote environment authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -2903,7 +2926,8 @@
       "command": "remote_disconnect",
       "module": "remote_environment_commands",
       "reason": "remote environment authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -2913,7 +2937,8 @@
       "command": "remote_stream_send",
       "module": "remote_environment_commands",
       "reason": "remote environment authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -2923,7 +2948,8 @@
       "command": "remote_invoke",
       "module": "remote_environment_commands",
       "reason": "remote environment authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -2933,7 +2959,8 @@
       "command": "remote_fetch",
       "module": "remote_environment_commands",
       "reason": "remote environment authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -2943,7 +2970,8 @@
       "command": "start_remote_listener",
       "module": "remote_host_commands",
       "reason": "remote listener authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -2953,7 +2981,8 @@
       "command": "stop_remote_listener",
       "module": "remote_host_commands",
       "reason": "remote listener authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -2963,7 +2992,8 @@
       "command": "set_remote_exposure_mode",
       "module": "remote_host_commands",
       "reason": "remote listener authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -2973,7 +3003,8 @@
       "command": "get_remote_listener_status",
       "module": "remote_host_commands",
       "reason": "remote listener authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -2983,7 +3014,8 @@
       "command": "list_remote_advertised_endpoints",
       "module": "remote_host_commands",
       "reason": "resolves the Tailscale CLI to enumerate advertised endpoints",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -2993,7 +3025,8 @@
       "command": "generate_remote_pairing_code",
       "module": "remote_device_commands",
       "reason": "remote host/device authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -3003,7 +3036,8 @@
       "command": "list_remote_pairing_codes",
       "module": "remote_device_commands",
       "reason": "remote host/device authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [],
@@ -3011,7 +3045,8 @@
       "command": "list_remote_audit_entries",
       "module": "remote_device_commands",
       "reason": "remote audit read; AppHandle-ineligible until PR 3.1",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3021,7 +3056,8 @@
       "command": "revoke_remote_pairing_code",
       "module": "remote_device_commands",
       "reason": "remote host/device authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -3031,7 +3067,8 @@
       "command": "list_remote_devices",
       "module": "remote_device_commands",
       "reason": "remote host/device authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -3041,7 +3078,8 @@
       "command": "set_remote_device_agent_control",
       "module": "remote_device_commands",
       "reason": "remote host/device authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -3051,7 +3089,8 @@
       "command": "revoke_remote_device",
       "module": "remote_device_commands",
       "reason": "remote host/device authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -3061,7 +3100,8 @@
       "command": "list_remote_sessions",
       "module": "remote_device_commands",
       "reason": "remote host/device authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -3071,7 +3111,8 @@
       "command": "disconnect_remote_session",
       "module": "remote_device_commands",
       "reason": "remote host/device authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -3081,7 +3122,8 @@
       "command": "debug_start_remote_transport_cors_probe",
       "module": "remote_transport_spike_commands",
       "reason": "debug remote transport authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -3091,7 +3133,8 @@
       "command": "debug_stop_remote_transport_cors_probe",
       "module": "remote_transport_spike_commands",
       "reason": "debug remote transport authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -3101,7 +3144,8 @@
       "command": "debug_run_desktop_proxy_stub",
       "module": "remote_transport_spike_commands",
       "reason": "debug remote transport authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -3111,7 +3155,8 @@
       "command": "get_current_release_notes",
       "module": "release_notes_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3121,7 +3166,8 @@
       "command": "get_last_seen_release_notes_version",
       "module": "release_notes_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3131,7 +3177,8 @@
       "command": "mark_release_notes_seen",
       "module": "release_notes_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3141,7 +3188,8 @@
       "command": "list_release_notes_versions",
       "module": "release_notes_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3151,7 +3199,8 @@
       "command": "get_release_notes_for_version",
       "module": "release_notes_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3161,7 +3210,8 @@
       "command": "get_atlassian_integration_settings",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -3171,7 +3221,8 @@
       "command": "save_atlassian_integration_settings",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -3181,7 +3232,8 @@
       "command": "build_atlassian_oauth_authorization_url",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -3191,7 +3243,8 @@
       "command": "start_atlassian_oauth_local_callback",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -3201,7 +3254,8 @@
       "command": "complete_atlassian_oauth_local_callback",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -3211,7 +3265,8 @@
       "command": "exchange_atlassian_oauth_code",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -3221,7 +3276,8 @@
       "command": "validate_atlassian_integration",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -3231,7 +3287,8 @@
       "command": "disconnect_atlassian_integration",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -3241,7 +3298,8 @@
       "command": "search_atlassian_resources",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -3251,7 +3309,8 @@
       "command": "resolve_atlassian_resource_urls",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -3261,7 +3320,8 @@
       "command": "get_agent_conversation_jira_issue",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -3271,7 +3331,8 @@
       "command": "assign_agent_conversation_jira_issue",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -3281,7 +3342,8 @@
       "command": "refresh_agent_conversation_jira_issue",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -3291,7 +3353,8 @@
       "command": "assign_agent_conversation_jira_issue_to_me",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -3301,7 +3364,8 @@
       "command": "clear_agent_conversation_jira_issue",
       "module": "atlassian_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -3311,7 +3375,8 @@
       "command": "list_automations",
       "module": "automation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3321,7 +3386,8 @@
       "command": "get_automation",
       "module": "automation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3331,7 +3397,8 @@
       "command": "create_automation_draft",
       "module": "automation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3341,7 +3408,8 @@
       "command": "update_automation_settings",
       "module": "automation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3351,7 +3419,8 @@
       "command": "pause_automation",
       "module": "automation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3361,7 +3430,8 @@
       "command": "resume_automation",
       "module": "automation_commands",
       "reason": "detector-b: restores Active automation consumed by the automation scheduler",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3371,7 +3441,8 @@
       "command": "finalize_automation",
       "module": "automation_commands",
       "reason": "detector-b: completes automation arming state consumed by the automation scheduler",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3381,7 +3452,8 @@
       "command": "stop_automation",
       "module": "automation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3391,7 +3463,8 @@
       "command": "restart_automation",
       "module": "automation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3401,7 +3474,8 @@
       "command": "trigger_automation_run_now",
       "module": "automation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3411,7 +3485,8 @@
       "command": "retry_automation_judge",
       "module": "automation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3421,7 +3496,8 @@
       "command": "retry_automation_plan_judge",
       "module": "automation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3431,7 +3507,8 @@
       "command": "skip_automation_judge",
       "module": "automation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3441,7 +3518,8 @@
       "command": "cancel_automation_run",
       "module": "automation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3451,7 +3529,8 @@
       "command": "delete_automation_run",
       "module": "automation_commands",
       "reason": "deletes a durable entity",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -3461,7 +3540,8 @@
       "command": "resume_automation_run",
       "module": "automation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3471,7 +3551,8 @@
       "command": "delete_automation",
       "module": "automation_commands",
       "reason": "deletes a durable entity",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -3481,7 +3562,8 @@
       "command": "list_personas",
       "module": "persona_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3491,7 +3573,8 @@
       "command": "get_persona",
       "module": "persona_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3501,7 +3584,8 @@
       "command": "create_persona_draft",
       "module": "persona_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3511,7 +3595,8 @@
       "command": "update_persona_draft",
       "module": "persona_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3521,7 +3606,8 @@
       "command": "update_persona",
       "module": "persona_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3531,7 +3617,8 @@
       "command": "approve_persona",
       "module": "persona_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3541,7 +3628,8 @@
       "command": "reseed_persona_draft",
       "module": "persona_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3551,7 +3639,8 @@
       "command": "approve_persona_as_new",
       "module": "persona_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3561,7 +3650,8 @@
       "command": "archive_persona",
       "module": "persona_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3571,7 +3661,8 @@
       "command": "unarchive_persona",
       "module": "persona_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3581,7 +3672,8 @@
       "command": "list_persona_usage",
       "module": "persona_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3591,7 +3683,8 @@
       "command": "preview_persona_overlay",
       "module": "persona_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3601,7 +3694,8 @@
       "command": "delete_persona_draft",
       "module": "persona_commands",
       "reason": "deletes a durable entity",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -3611,7 +3705,8 @@
       "command": "get_agent_conversation_linear_issue",
       "module": "linear_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -3621,7 +3716,8 @@
       "command": "assign_agent_conversation_linear_issue",
       "module": "linear_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -3631,7 +3727,8 @@
       "command": "refresh_agent_conversation_linear_issue",
       "module": "linear_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -3641,7 +3738,8 @@
       "command": "clear_agent_conversation_linear_issue",
       "module": "linear_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [],
@@ -3649,7 +3747,8 @@
       "command": "list_tasks",
       "module": "task_commands",
       "reason": "task read",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -3657,7 +3756,8 @@
       "command": "get_task",
       "module": "task_commands",
       "reason": "task read",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -3665,7 +3765,8 @@
       "command": "create_task",
       "module": "task_commands",
       "reason": "Backlog-only by construction: CreateTaskInput carries no status field and Task::new_with_category sets InternalStatus::Backlog, so a created task cannot be born in a spawn-triggering state",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -3673,7 +3774,8 @@
       "command": "update_task",
       "module": "task_commands",
       "reason": "inert fields only at this class: category is a closed enum and priority an i32; title/description carry a conditional MutatesAgentConsumedContent discharged by update_task_authz, and internal_status is rejected by validate_update_task_input",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3683,7 +3785,8 @@
       "command": "answer_user_question",
       "module": "task_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3693,7 +3796,8 @@
       "command": "inject_task",
       "module": "task_commands",
       "reason": "detector-b: seeds internal_status=Ready consumed by the ready-task scheduler",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3704,7 +3808,8 @@
       "command": "move_task",
       "module": "task_commands",
       "reason": "detector-a plus content-surface: restart note is worker-consumed",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3714,7 +3819,8 @@
       "command": "archive_task",
       "module": "task_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3724,7 +3830,8 @@
       "command": "restore_task",
       "module": "task_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -3732,7 +3839,8 @@
       "command": "block_task",
       "module": "task_commands",
       "reason": "authority-reducing: transitions only to Blocked",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3742,7 +3850,8 @@
       "command": "unblock_task",
       "module": "task_commands",
       "reason": "authority-restoring transition",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3752,7 +3861,8 @@
       "command": "cleanup_task",
       "module": "task_commands",
       "reason": "destructive task cleanup",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -3762,7 +3872,8 @@
       "command": "cleanup_tasks_in_group",
       "module": "task_commands",
       "reason": "destructive task cleanup across a whole group",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [],
@@ -3770,7 +3881,8 @@
       "command": "cancel_tasks_in_group",
       "module": "task_commands",
       "reason": "authority-reducing: transitions only to Cancelled",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -3778,7 +3890,8 @@
       "command": "pause_tasks_in_group",
       "module": "task_commands",
       "reason": "authority-reducing: transitions only to Paused",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3788,7 +3901,8 @@
       "command": "resume_tasks_in_group",
       "module": "task_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3798,7 +3912,8 @@
       "command": "archive_tasks_in_group",
       "module": "task_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3808,7 +3923,8 @@
       "command": "pause_execution_plan",
       "module": "task_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3818,7 +3934,8 @@
       "command": "resume_execution_plan",
       "module": "task_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3828,7 +3945,8 @@
       "command": "stop_execution_plan",
       "module": "task_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -3836,7 +3954,8 @@
       "command": "pause_task",
       "module": "task_commands",
       "reason": "authority-reducing: transitions only to Paused",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3846,7 +3965,8 @@
       "command": "resume_task",
       "module": "task_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3856,7 +3976,8 @@
       "command": "retry_branch_update",
       "module": "task_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -3864,7 +3985,8 @@
       "command": "stop_task",
       "module": "task_commands",
       "reason": "authority-reducing: transitions only to Stopped",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -3872,7 +3994,8 @@
       "command": "get_archived_count",
       "module": "task_commands",
       "reason": "archived-task count: `task_repo.get_archived_count`, a scalar count read",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -3880,7 +4003,8 @@
       "command": "search_tasks",
       "module": "task_commands",
       "reason": "task read",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -3888,7 +4012,8 @@
       "command": "get_valid_transitions",
       "module": "task_commands",
       "reason": "state-machine metadata read",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -3896,7 +4021,8 @@
       "command": "get_tasks_awaiting_review",
       "module": "task_commands",
       "reason": "review-queue read: `task_repo.list_paginated` filtered to the four review statuses; selects rows and starts no review",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -3904,7 +4030,8 @@
       "command": "get_session_task_history_availability",
       "module": "task_commands",
       "reason": "session history availability: `task_repo.count_tasks` rendered as a bool plus a count",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -3912,7 +4039,8 @@
       "command": "get_task_state_transitions",
       "module": "task_commands",
       "reason": "status-history read: `task_repo.get_status_history` mapped to a response; reads transitions already taken and requests none",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -3920,7 +4048,8 @@
       "command": "get_task_dependency_graph",
       "module": "task_commands",
       "reason": "dependency-graph read: in-process traversal over `task_repo` rows; writes no edge and schedules nothing",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -3928,7 +4057,8 @@
       "command": "get_task_timeline_events",
       "module": "task_commands",
       "reason": "timeline read: derives events from `task_repo` rows in process",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3938,7 +4068,8 @@
       "command": "create_task_step",
       "module": "task_step_commands",
       "reason": "content-surface: creates worker-consumed task step",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -3946,7 +4077,8 @@
       "command": "get_task_steps",
       "module": "task_step_commands",
       "reason": "task-step read: `task_step_repo.get_by_task` mapped to responses",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3956,7 +4088,8 @@
       "command": "update_task_step",
       "module": "task_step_commands",
       "reason": "content-surface: updates worker-consumed task step",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3966,7 +4099,8 @@
       "command": "reorder_task_steps",
       "module": "task_step_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -3974,7 +4108,8 @@
       "command": "get_step_progress",
       "module": "task_step_commands",
       "reason": "step-progress read: `task_step_repo.get_by_task` summarised in process",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3985,7 +4120,8 @@
       "command": "start_step",
       "module": "task_step_commands",
       "reason": "detector-d: writes worker-consumed task step status",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -3996,7 +4132,8 @@
       "command": "complete_step",
       "module": "task_step_commands",
       "reason": "detector-d: writes worker-consumed task step status",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4007,7 +4144,8 @@
       "command": "skip_step",
       "module": "task_step_commands",
       "reason": "detector-d: writes worker-consumed task step status",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4018,7 +4156,8 @@
       "command": "fail_step",
       "module": "task_step_commands",
       "reason": "detector-d: writes worker-consumed task step status",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4028,7 +4167,8 @@
       "command": "list_projects",
       "module": "project_commands",
       "reason": "project git/gh and deferred shell authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -4038,7 +4178,8 @@
       "command": "get_project",
       "module": "project_commands",
       "reason": "project git/gh and deferred shell authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -4048,7 +4189,8 @@
       "command": "create_project",
       "module": "project_commands",
       "reason": "project git/gh and deferred shell authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -4058,7 +4200,8 @@
       "command": "update_project",
       "module": "project_commands",
       "reason": "project git/gh and deferred shell authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -4068,7 +4211,8 @@
       "command": "archive_project",
       "module": "project_commands",
       "reason": "project git/gh and deferred shell authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -4078,7 +4222,8 @@
       "command": "read_pr_template",
       "module": "project_commands",
       "reason": "project git/gh and deferred shell authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -4088,7 +4233,8 @@
       "command": "write_pr_template",
       "module": "project_commands",
       "reason": "project git/gh and deferred shell authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -4098,7 +4244,8 @@
       "command": "get_git_branches",
       "module": "project_commands",
       "reason": "spawns git over project-controlled state",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -4108,7 +4255,8 @@
       "command": "get_git_current_branch",
       "module": "project_commands",
       "reason": "project git/gh and deferred shell authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -4118,7 +4266,8 @@
       "command": "get_git_default_branch",
       "module": "project_commands",
       "reason": "project git/gh and deferred shell authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -4128,7 +4277,8 @@
       "command": "search_github_pull_requests",
       "module": "project_commands",
       "reason": "project git/gh and deferred shell authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -4138,7 +4288,8 @@
       "command": "reanalyze_project",
       "module": "project_commands",
       "reason": "spawns the project-analyzer agent",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4148,7 +4299,8 @@
       "command": "update_custom_analysis",
       "module": "project_commands",
       "reason": "executes the canonical deferred shell-authority shape",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -4158,7 +4310,8 @@
       "command": "get_git_remote_url",
       "module": "project_commands",
       "reason": "project git/gh and deferred shell authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -4168,7 +4321,8 @@
       "command": "get_git_auth_diagnostics",
       "module": "project_commands",
       "reason": "project git/gh and deferred shell authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -4178,7 +4332,8 @@
       "command": "switch_git_origin_to_ssh",
       "module": "project_commands",
       "reason": "changes repository origin authentication",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -4188,7 +4343,8 @@
       "command": "setup_gh_git_auth",
       "module": "project_commands",
       "reason": "configures git credential authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -4198,7 +4354,8 @@
       "command": "login_gh_with_browser",
       "module": "project_commands",
       "reason": "starts interactive GitHub authentication",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -4208,7 +4365,8 @@
       "command": "resume_deferred_git_startup",
       "module": "project_commands",
       "reason": "project git/gh and deferred shell authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -4218,7 +4376,8 @@
       "command": "check_gh_auth",
       "module": "project_commands",
       "reason": "project git/gh and deferred shell authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -4228,7 +4387,8 @@
       "command": "update_github_pr_enabled",
       "module": "project_commands",
       "reason": "project git/gh and deferred shell authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -4238,7 +4398,8 @@
       "command": "list_agent_profiles",
       "module": "agent_profile_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4248,7 +4409,8 @@
       "command": "get_agent_profile",
       "module": "agent_profile_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4258,7 +4420,8 @@
       "command": "get_agent_profiles_by_role",
       "module": "agent_profile_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4268,7 +4431,8 @@
       "command": "get_builtin_agent_profiles",
       "module": "agent_profile_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4278,7 +4442,8 @@
       "command": "get_custom_agent_profiles",
       "module": "agent_profile_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4288,7 +4453,8 @@
       "command": "seed_builtin_profiles",
       "module": "agent_profile_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -4296,7 +4462,8 @@
       "command": "list_agent_models",
       "module": "agent_model_commands",
       "reason": "built-in and custom model registry merge; propagates read errors",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4306,7 +4473,8 @@
       "command": "upsert_custom_agent_model",
       "module": "agent_model_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4316,7 +4484,8 @@
       "command": "delete_custom_agent_model",
       "module": "agent_model_commands",
       "reason": "deletes a durable entity",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -4326,7 +4495,8 @@
       "command": "search_agent_composer_entries",
       "module": "agent_composer_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4336,7 +4506,8 @@
       "command": "search_agent_composer_plan_references",
       "module": "agent_composer_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4346,7 +4517,8 @@
       "command": "list_agent_composer_skills",
       "module": "agent_composer_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4356,7 +4528,8 @@
       "command": "copy_agent_conversation_plan",
       "module": "agent_plan_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4366,7 +4539,8 @@
       "command": "import_agent_conversation_plan",
       "module": "agent_plan_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4376,7 +4550,8 @@
       "command": "activate_agent_task_pipeline",
       "module": "agent_plan_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4386,7 +4561,8 @@
       "command": "activate_agent_plan_direct_implementation",
       "module": "agent_plan_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4396,7 +4572,8 @@
       "command": "start_agent_task_pipeline",
       "module": "agent_plan_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4406,7 +4583,8 @@
       "command": "get_qa_settings",
       "module": "qa_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4416,7 +4594,8 @@
       "command": "update_qa_settings",
       "module": "qa_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4426,7 +4605,8 @@
       "command": "get_task_qa",
       "module": "qa_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4436,7 +4616,8 @@
       "command": "get_qa_results",
       "module": "qa_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4446,7 +4627,8 @@
       "command": "retry_qa",
       "module": "qa_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4456,7 +4638,8 @@
       "command": "skip_qa",
       "module": "qa_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4466,7 +4649,8 @@
       "command": "get_pending_reviews",
       "module": "review_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4476,7 +4660,8 @@
       "command": "get_review_by_id",
       "module": "review_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4486,7 +4671,8 @@
       "command": "get_reviews_by_task_id",
       "module": "review_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4496,7 +4682,8 @@
       "command": "get_task_state_history",
       "module": "review_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4506,7 +4693,8 @@
       "command": "approve_review",
       "module": "review_commands",
       "reason": "content-surface: writes worker-consumed review feedback",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4516,7 +4704,8 @@
       "command": "request_changes",
       "module": "review_commands",
       "reason": "content-surface: writes worker-consumed review feedback",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4526,7 +4715,8 @@
       "command": "reject_review",
       "module": "review_commands",
       "reason": "content-surface: writes worker-consumed review feedback",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4536,7 +4726,8 @@
       "command": "approve_fix_task",
       "module": "review_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4546,7 +4737,8 @@
       "command": "reject_fix_task",
       "module": "review_commands",
       "reason": "content-surface: writes worker-consumed fix feedback",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4556,7 +4748,8 @@
       "command": "get_fix_task_attempts",
       "module": "review_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4566,7 +4759,8 @@
       "command": "approve_task_for_review",
       "module": "review_commands",
       "reason": "content-surface: writes worker-consumed review note",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4576,7 +4770,8 @@
       "command": "request_task_changes_for_review",
       "module": "review_commands",
       "reason": "content-surface: writes worker-consumed review feedback",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4586,7 +4781,8 @@
       "command": "request_task_changes_from_reviewing",
       "module": "review_commands",
       "reason": "content-surface: writes worker-consumed review feedback",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4596,7 +4792,8 @@
       "command": "re_review_task_from_escalated",
       "module": "review_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4606,7 +4803,8 @@
       "command": "get_task_issues",
       "module": "review_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4616,7 +4814,8 @@
       "command": "get_issue_progress",
       "module": "review_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4627,7 +4826,8 @@
       "command": "verify_issue",
       "module": "review_commands",
       "reason": "detector-d: writes worker-consumed review issue state",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4638,7 +4838,8 @@
       "command": "reopen_issue",
       "module": "review_commands",
       "reason": "detector-d: writes worker-consumed review issue state",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4649,7 +4850,8 @@
       "command": "mark_issue_in_progress",
       "module": "review_commands",
       "reason": "detector-d: writes worker-consumed review issue state",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4660,7 +4862,8 @@
       "command": "mark_issue_addressed",
       "module": "review_commands",
       "reason": "detector-d: writes worker-consumed review issue state",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4670,7 +4873,8 @@
       "command": "get_review_settings",
       "module": "review_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4681,7 +4885,8 @@
       "command": "update_review_settings",
       "module": "review_commands",
       "reason": "detector-b: arms require_workspace_review consumed by the auto-review spawner",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4691,7 +4896,8 @@
       "command": "get_task_validation_summary",
       "module": "validation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4701,7 +4907,8 @@
       "command": "get_workspace_review_runtime_settings",
       "module": "workspace_review_settings_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4711,7 +4918,8 @@
       "command": "update_workspace_review_runtime_settings",
       "module": "workspace_review_settings_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4721,7 +4929,8 @@
       "command": "get_execution_status",
       "module": "execution_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -4729,7 +4938,8 @@
       "command": "pause_execution",
       "module": "execution_commands",
       "reason": "authority-reducing: gates scheduling and transitions agent-active tasks only to Paused",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4739,7 +4949,8 @@
       "command": "resume_execution",
       "module": "execution_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -4747,7 +4958,8 @@
       "command": "stop_execution",
       "module": "execution_commands",
       "reason": "authority-reducing: gates scheduling and transitions agent-active tasks only to Stopped",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4757,7 +4969,8 @@
       "command": "restart_task",
       "module": "execution_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4767,7 +4980,8 @@
       "command": "recover_task_execution",
       "module": "execution_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4777,7 +4991,8 @@
       "command": "resolve_recovery_prompt",
       "module": "execution_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4787,7 +5002,8 @@
       "command": "set_max_concurrent",
       "module": "execution_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -4795,7 +5011,8 @@
       "command": "get_execution_settings",
       "module": "execution_commands",
       "reason": "execution-settings read: `execution_settings_repo.get_settings`; reads the quota and changes none",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4805,7 +5022,8 @@
       "command": "update_execution_settings",
       "module": "execution_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4815,7 +5033,8 @@
       "command": "set_active_project",
       "module": "execution_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -4823,7 +5042,8 @@
       "command": "get_active_project",
       "module": "execution_commands",
       "reason": "active-project read: clones the in-memory `ActiveProjectState` id; the WRITE half (`set_active_project`) syncs the scheduler quota and stays AgentControl",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -4831,7 +5051,8 @@
       "command": "get_global_execution_settings",
       "module": "execution_commands",
       "reason": "global execution-settings read: `global_execution_settings_repo.get_settings`",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4841,7 +5062,8 @@
       "command": "update_global_execution_settings",
       "module": "execution_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4851,7 +5073,8 @@
       "command": "get_running_processes",
       "module": "execution_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4861,7 +5084,8 @@
       "command": "get_merge_pipeline",
       "module": "merge_pipeline_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4871,7 +5095,8 @@
       "command": "get_merge_progress",
       "module": "merge_pipeline_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4881,7 +5106,8 @@
       "command": "get_merge_phase_list",
       "module": "merge_pipeline_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -4889,7 +5115,8 @@
       "command": "get_agent_conversation_stats",
       "module": "conversation_stats_commands",
       "reason": "aggregates conversation/message/run repository reads into usage totals; propagates read errors",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -4897,7 +5124,8 @@
       "command": "get_insights_chat_usage_stats",
       "module": "conversation_stats_commands",
       "reason": "project-or-all-projects usage aggregation over repository reads; propagates read errors",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -4905,7 +5133,8 @@
       "command": "get_project_chat_usage_stats",
       "module": "conversation_stats_commands",
       "reason": "project-scoped usage aggregation over repository reads; propagates read errors",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -4913,7 +5142,8 @@
       "command": "get_task_chat_usage_stats",
       "module": "conversation_stats_commands",
       "reason": "task-scoped usage aggregation over repository reads; propagates read errors",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4923,7 +5153,8 @@
       "command": "build_agent_issue_report",
       "module": "agent_issue_report_commands",
       "reason": "spawns diagnostic report tooling",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -4933,7 +5164,8 @@
       "command": "submit_agent_issue_report",
       "module": "agent_issue_report_commands",
       "reason": "report construction may spawn diagnostics",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -4943,7 +5175,8 @@
       "command": "get_insights_stats",
       "module": "metrics_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4953,7 +5186,8 @@
       "command": "get_project_stats",
       "module": "metrics_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4963,7 +5197,8 @@
       "command": "get_insights_pr_insights",
       "module": "metrics_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4973,7 +5208,8 @@
       "command": "get_project_pr_insights",
       "module": "metrics_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4983,7 +5219,8 @@
       "command": "get_insights_trends",
       "module": "metrics_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -4993,7 +5230,8 @@
       "command": "get_project_trends",
       "module": "metrics_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5003,7 +5241,8 @@
       "command": "get_metrics_config",
       "module": "metrics_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5013,7 +5252,8 @@
       "command": "save_metrics_config",
       "module": "metrics_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5023,7 +5263,8 @@
       "command": "get_column_metrics",
       "module": "metrics_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5033,7 +5274,8 @@
       "command": "get_task_metrics",
       "module": "metrics_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5043,7 +5285,8 @@
       "command": "create_ideation_session",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5053,7 +5296,8 @@
       "command": "create_cross_project_session",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5063,7 +5307,8 @@
       "command": "migrate_proposals",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5073,7 +5318,8 @@
       "command": "get_ideation_session",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5083,7 +5329,8 @@
       "command": "get_ideation_session_with_data",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5093,7 +5340,8 @@
       "command": "get_ideation_agent_workspace",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5103,7 +5351,8 @@
       "command": "list_ideation_sessions",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5113,7 +5362,8 @@
       "command": "get_session_group_counts",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5123,7 +5373,8 @@
       "command": "list_sessions_by_group",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5133,7 +5384,8 @@
       "command": "archive_ideation_session",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5143,7 +5395,8 @@
       "command": "reopen_ideation_session",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5153,7 +5406,8 @@
       "command": "update_ideation_session_title",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5163,7 +5417,8 @@
       "command": "spawn_session_namer",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5173,7 +5428,8 @@
       "command": "get_child_sessions",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5183,7 +5439,8 @@
       "command": "get_latest_child_session_id",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5193,7 +5450,8 @@
       "command": "create_task_proposal",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5203,7 +5461,8 @@
       "command": "get_task_proposal",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5213,7 +5472,8 @@
       "command": "list_session_proposals",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5223,7 +5483,8 @@
       "command": "update_task_proposal",
       "module": "ideation_commands",
       "reason": "content-surface: updates worker-consumed task proposal",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5233,7 +5494,8 @@
       "command": "delete_task_proposal",
       "module": "ideation_commands",
       "reason": "deletes a durable entity",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -5243,7 +5505,8 @@
       "command": "toggle_proposal_selection",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5253,7 +5516,8 @@
       "command": "set_proposal_selection",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5263,7 +5527,8 @@
       "command": "reorder_proposals",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5273,7 +5538,8 @@
       "command": "assess_proposal_priority",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5283,7 +5549,8 @@
       "command": "assess_all_priorities",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5293,7 +5560,8 @@
       "command": "remove_proposal_dependency",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5303,7 +5571,8 @@
       "command": "get_proposal_dependencies",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5313,7 +5582,8 @@
       "command": "get_proposal_dependents",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5323,7 +5593,8 @@
       "command": "analyze_dependencies",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5333,7 +5604,8 @@
       "command": "apply_proposals_to_kanban",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5343,7 +5615,8 @@
       "command": "restart_ideation_implementation",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5353,7 +5626,8 @@
       "command": "get_task_blockers",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5363,7 +5637,8 @@
       "command": "get_blocked_tasks",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5373,7 +5648,8 @@
       "command": "send_chat_message",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5383,7 +5659,8 @@
       "command": "get_session_messages",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5393,7 +5670,8 @@
       "command": "get_recent_session_messages",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5403,7 +5681,8 @@
       "command": "get_project_messages",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5413,7 +5692,8 @@
       "command": "get_task_messages",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5423,7 +5703,8 @@
       "command": "delete_chat_message",
       "module": "ideation_commands",
       "reason": "deletes a durable entity",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -5433,7 +5714,8 @@
       "command": "delete_session_messages",
       "module": "ideation_commands",
       "reason": "deletes a durable entity",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -5443,7 +5725,8 @@
       "command": "count_session_messages",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5453,7 +5736,8 @@
       "command": "send_orchestrator_message",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5463,7 +5747,8 @@
       "command": "is_orchestrator_available",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5473,7 +5758,8 @@
       "command": "get_ideation_settings",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5483,7 +5769,8 @@
       "command": "update_ideation_settings",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5493,7 +5780,8 @@
       "command": "get_tasks_disable_impact",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5503,7 +5791,8 @@
       "command": "set_tasks_feature_enabled",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5513,7 +5802,8 @@
       "command": "get_agent_lane_settings",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5523,7 +5813,8 @@
       "command": "get_agent_harness_availability",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5533,7 +5824,8 @@
       "command": "get_ideation_harness_availability",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5543,7 +5835,8 @@
       "command": "update_agent_lane_settings",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5553,7 +5846,8 @@
       "command": "get_manual_role_defaults",
       "module": "manual_role_default_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5563,7 +5857,8 @@
       "command": "get_effective_manual_role_default",
       "module": "manual_role_default_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5573,7 +5868,8 @@
       "command": "get_start_composer_role_default",
       "module": "manual_role_default_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5583,7 +5879,8 @@
       "command": "get_agent_conversation_role_default",
       "module": "manual_role_default_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5593,7 +5890,8 @@
       "command": "reset_agent_conversation_role_default",
       "module": "manual_role_default_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5603,7 +5901,8 @@
       "command": "update_manual_role_default",
       "module": "manual_role_default_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5613,7 +5912,8 @@
       "command": "clear_manual_role_default",
       "module": "manual_role_default_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5623,7 +5923,8 @@
       "command": "get_agent_provider_settings",
       "module": "harness_provider_commands",
       "reason": "configures future provider process authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -5633,7 +5934,8 @@
       "command": "update_agent_provider_settings",
       "module": "harness_provider_commands",
       "reason": "configures future provider process authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -5643,7 +5945,8 @@
       "command": "get_mcp_catalog",
       "module": "mcp_policy_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5653,7 +5956,8 @@
       "command": "refresh_mcp_catalog",
       "module": "mcp_policy_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5663,7 +5967,8 @@
       "command": "retry_legacy_mcp_registration_repair",
       "module": "mcp_policy_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5673,7 +5978,8 @@
       "command": "update_mcp_server_override",
       "module": "mcp_policy_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5683,7 +5989,8 @@
       "command": "clear_mcp_server_override",
       "module": "mcp_policy_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5693,7 +6000,8 @@
       "command": "update_mcp_tool_override",
       "module": "mcp_policy_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5703,7 +6011,8 @@
       "command": "clear_mcp_tool_override",
       "module": "mcp_policy_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5713,7 +6022,8 @@
       "command": "get_managed_provider_cli_status",
       "module": "provider_cli_management_commands",
       "reason": "provider CLI installer surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -5723,7 +6033,8 @@
       "command": "install_or_update_managed_provider_cli",
       "module": "provider_cli_management_commands",
       "reason": "provider CLI installer surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -5733,7 +6044,8 @@
       "command": "auto_update_managed_provider_clis",
       "module": "provider_cli_management_commands",
       "reason": "provider CLI installer surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -5743,7 +6055,8 @@
       "command": "get_ideation_effort_settings",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5753,7 +6066,8 @@
       "command": "update_ideation_effort_settings",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5763,7 +6077,8 @@
       "command": "get_ideation_model_settings",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5773,7 +6088,8 @@
       "command": "update_ideation_model_settings",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5783,7 +6099,8 @@
       "command": "export_ideation_session",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5793,7 +6110,8 @@
       "command": "import_ideation_session",
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5803,7 +6121,8 @@
       "command": "get_workflows",
       "module": "workflow_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5813,7 +6132,8 @@
       "command": "get_workflow",
       "module": "workflow_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5823,7 +6143,8 @@
       "command": "create_workflow",
       "module": "workflow_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5833,7 +6154,8 @@
       "command": "update_workflow",
       "module": "workflow_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5843,7 +6165,8 @@
       "command": "set_default_workflow",
       "module": "workflow_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5853,7 +6176,8 @@
       "command": "get_active_workflow_columns",
       "module": "workflow_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5863,7 +6187,8 @@
       "command": "get_builtin_workflows",
       "module": "workflow_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5873,7 +6198,8 @@
       "command": "seed_builtin_workflows",
       "module": "workflow_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -5883,7 +6209,8 @@
       "command": "get_linear_integration_settings",
       "module": "linear_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -5893,7 +6220,8 @@
       "command": "get_linear_webhook_config",
       "module": "linear_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -5903,7 +6231,8 @@
       "command": "save_linear_integration_settings",
       "module": "linear_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -5913,7 +6242,8 @@
       "command": "save_linear_webhook_signing_secret",
       "module": "linear_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -5923,7 +6253,8 @@
       "command": "search_linear_issues",
       "module": "linear_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -5933,7 +6264,8 @@
       "command": "validate_linear_integration",
       "module": "linear_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -5943,7 +6275,8 @@
       "command": "disconnect_linear_integration",
       "module": "linear_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -5953,7 +6286,8 @@
       "command": "get_clickup_integration_settings",
       "module": "clickup_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -5963,7 +6297,8 @@
       "command": "save_clickup_integration_settings",
       "module": "clickup_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -5973,7 +6308,8 @@
       "command": "validate_clickup_integration",
       "module": "clickup_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -5983,7 +6319,8 @@
       "command": "disconnect_clickup_integration",
       "module": "clickup_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -5993,7 +6330,8 @@
       "command": "list_clickup_workspaces",
       "module": "clickup_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -6003,7 +6341,8 @@
       "command": "search_clickup_tasks",
       "module": "clickup_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -6013,7 +6352,8 @@
       "command": "assign_agent_conversation_granola_note",
       "module": "granola_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -6023,7 +6363,8 @@
       "command": "clear_agent_conversation_granola_note",
       "module": "granola_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -6033,7 +6374,8 @@
       "command": "get_agent_conversation_granola_note",
       "module": "granola_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -6043,7 +6385,8 @@
       "command": "get_granola_integration_settings",
       "module": "granola_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -6053,7 +6396,8 @@
       "command": "get_granola_note_detail",
       "module": "granola_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -6063,7 +6407,8 @@
       "command": "list_granola_notes",
       "module": "granola_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -6073,7 +6418,8 @@
       "command": "refresh_agent_conversation_granola_note",
       "module": "granola_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -6083,7 +6429,8 @@
       "command": "save_granola_integration_settings",
       "module": "granola_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -6093,7 +6440,8 @@
       "command": "validate_granola_integration_settings",
       "module": "granola_commands",
       "reason": "integration credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -6103,7 +6451,8 @@
       "command": "get_artifacts",
       "module": "artifact_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6113,7 +6462,8 @@
       "command": "get_artifact",
       "module": "artifact_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6123,7 +6473,8 @@
       "command": "get_artifact_at_version",
       "module": "artifact_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6133,7 +6484,8 @@
       "command": "create_artifact",
       "module": "artifact_commands",
       "reason": "content-surface: creates worker-consumed artifact of any kind",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6143,7 +6495,8 @@
       "command": "update_artifact",
       "module": "artifact_commands",
       "reason": "content-surface: updates worker-consumed artifact of any kind",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6153,7 +6506,8 @@
       "command": "archive_artifact",
       "module": "artifact_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6163,7 +6517,8 @@
       "command": "get_artifacts_by_bucket",
       "module": "artifact_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6173,7 +6528,8 @@
       "command": "get_artifacts_by_task",
       "module": "artifact_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6183,7 +6539,8 @@
       "command": "get_team_artifacts_by_session",
       "module": "artifact_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6193,7 +6550,8 @@
       "command": "get_artifact_version_history",
       "module": "artifact_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6203,7 +6561,8 @@
       "command": "get_buckets",
       "module": "artifact_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6213,7 +6572,8 @@
       "command": "create_bucket",
       "module": "artifact_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6223,7 +6583,8 @@
       "command": "get_system_buckets",
       "module": "artifact_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6233,7 +6594,8 @@
       "command": "add_artifact_relation",
       "module": "artifact_commands",
       "reason": "content-surface: changes worker-consumed artifact relations",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6243,7 +6605,8 @@
       "command": "get_artifact_relations",
       "module": "artifact_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6253,7 +6616,8 @@
       "command": "start_research",
       "module": "research_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6263,7 +6627,8 @@
       "command": "pause_research",
       "module": "research_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6273,7 +6638,8 @@
       "command": "resume_research",
       "module": "research_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6283,7 +6649,8 @@
       "command": "stop_research",
       "module": "research_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6293,7 +6660,8 @@
       "command": "get_research_processes",
       "module": "research_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6303,7 +6671,8 @@
       "command": "get_research_process",
       "module": "research_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6313,7 +6682,8 @@
       "command": "get_research_presets",
       "module": "research_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6323,7 +6693,8 @@
       "command": "get_methodologies",
       "module": "methodology_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6333,7 +6704,8 @@
       "command": "get_active_methodology",
       "module": "methodology_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6343,7 +6715,8 @@
       "command": "activate_methodology",
       "module": "methodology_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6353,7 +6726,8 @@
       "command": "deactivate_methodology",
       "module": "methodology_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6363,7 +6737,8 @@
       "command": "seed_test_data",
       "module": "test_data_commands",
       "reason": "test-data mutation is never remotely operable",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -6373,7 +6748,8 @@
       "command": "seed_visual_audit_data",
       "module": "test_data_commands",
       "reason": "test-data mutation is never remotely operable",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -6383,7 +6759,8 @@
       "command": "clear_test_data",
       "module": "test_data_commands",
       "reason": "test-data mutation is never remotely operable",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -6393,7 +6770,8 @@
       "command": "resolve_permission_request",
       "module": "permission_commands",
       "reason": "approve branch authorizes-live-tool-call; deny branch is authority-reducing",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6403,7 +6781,8 @@
       "command": "get_pending_permissions",
       "module": "permission_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -6411,7 +6790,8 @@
       "command": "list_pending_permission_gates",
       "module": "permission_commands",
       "reason": "pending permission-gate enumeration: fail-closed read of the pending repository plus the in-memory gate map; resolves no gate and arms no scheduling",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6421,7 +6801,8 @@
       "command": "resolve_user_question",
       "module": "question_commands",
       "reason": "steering-question",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6431,7 +6812,8 @@
       "command": "get_pending_questions",
       "module": "question_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -6439,7 +6821,8 @@
       "command": "list_pending_question_gates",
       "module": "question_commands",
       "reason": "pending question-gate enumeration: fail-closed read of the pending repository plus the in-memory gate map; answers no question and arms no scheduling",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6449,7 +6832,8 @@
       "command": "send_remote_chat_message",
       "module": "remote_chat_commands",
       "reason": "content-surface: queues a role-pinned user turn for a run that is already live; detector-silent on (a), (b) and (c) — it arms no scheduler, resolves no CLI path, and refuses when no live run would drain the row, so a message can never be persisted as sent yet delivered to nobody. The role is pinned to \"user\" at dispatch, so a remote client cannot forge an orchestrator speaker label",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -6457,7 +6841,8 @@
       "command": "get_remote_agent_conversation",
       "module": "remote_transcript_commands",
       "reason": "pure repository read of a conversation and its messages; no wake, no spawn; propagates read errors",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -6465,7 +6850,8 @@
       "command": "get_remote_agent_conversation_messages_page",
       "module": "remote_transcript_commands",
       "reason": "pure repository read of a message page; no wake, no spawn; propagates read errors",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -6473,7 +6859,8 @@
       "command": "get_remote_agent_conversation_timeline_page",
       "module": "remote_transcript_commands",
       "reason": "pure repository read of a timeline page; no wake, no spawn; propagates read errors",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -6481,7 +6868,8 @@
       "command": "list_remote_agent_conversations",
       "module": "remote_transcript_commands",
       "reason": "pure repository read of a context's conversation metadata; no spawn carrier; propagates read errors",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -6489,7 +6877,8 @@
       "command": "list_remote_agent_conversations_page",
       "module": "remote_transcript_commands",
       "reason": "pure repository read of a conversation-list page; no spawn carrier; propagates read errors",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6499,7 +6888,8 @@
       "command": "get_task_context",
       "module": "task_context_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6509,7 +6899,8 @@
       "command": "get_artifact_full",
       "module": "task_context_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6519,7 +6910,8 @@
       "command": "get_artifact_version",
       "module": "task_context_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6529,7 +6921,8 @@
       "command": "get_related_artifacts",
       "module": "task_context_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6539,7 +6932,8 @@
       "command": "search_artifacts",
       "module": "task_context_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -6547,7 +6941,8 @@
       "command": "get_task_agent_workspace",
       "module": "task_commands",
       "reason": "workspace-association read: joins the task's plan-branch and agent-conversation workspace rows; resolves no CLI and touches no filesystem",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6557,7 +6952,8 @@
       "command": "start_agent_conversation",
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6567,7 +6963,8 @@
       "command": "abort_seeded_agent_conversation",
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6577,7 +6974,8 @@
       "command": "fork_agent_conversation",
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6587,7 +6985,8 @@
       "command": "switch_agent_conversation_mode",
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6597,7 +6996,8 @@
       "command": "switch_agent_conversation_persona",
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6607,7 +7007,8 @@
       "command": "send_agent_message",
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6617,7 +7018,8 @@
       "command": "queue_agent_message",
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6627,7 +7029,8 @@
       "command": "get_queued_agent_messages",
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6637,7 +7040,8 @@
       "command": "delete_queued_agent_message",
       "module": "unified_chat_commands",
       "reason": "deletes a durable entity",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -6647,7 +7051,8 @@
       "command": "send_queued_agent_message_now",
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6657,7 +7062,8 @@
       "command": "list_agent_conversations",
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6667,7 +7073,8 @@
       "command": "list_agent_conversations_page",
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6677,7 +7084,8 @@
       "command": "list_agent_sidebar_conversations",
       "module": "agent_sidebar_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -6685,7 +7093,8 @@
       "command": "get_bulk_workspace_publication_states",
       "module": "agent_sidebar_commands",
       "reason": "publication state enum and label per conversation; propagates read errors",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6695,7 +7104,8 @@
       "command": "get_agent_conversation",
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -6703,7 +7113,8 @@
       "command": "get_agent_conversation_summary",
       "module": "unified_chat_commands",
       "reason": "conversation metadata without messages; propagates read errors",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6713,7 +7124,8 @@
       "command": "get_agent_conversation_messages_page",
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6723,7 +7135,8 @@
       "command": "get_agent_conversation_timeline_page",
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6733,7 +7146,8 @@
       "command": "get_agent_message_tool_call_detail",
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6743,7 +7157,8 @@
       "command": "get_agent_timeline_item_tool_call_detail",
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6753,7 +7168,8 @@
       "command": "get_agent_conversation_workspace",
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6764,7 +7180,8 @@
       "command": "set_agent_conversation_workspace_auto_publish",
       "module": "unified_chat_commands",
       "reason": "detector-b: arms auto_publish_enabled consumed by the auto-publish freshness scan",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6774,7 +7191,8 @@
       "command": "set_agent_conversation_workspace_pr_supervision",
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6784,7 +7202,8 @@
       "command": "list_agent_conversation_workspaces_by_project",
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -6792,7 +7211,8 @@
       "command": "list_agent_conversation_workspace_publication_events",
       "module": "unified_chat_commands",
       "reason": "workspace publication event history; propagates read errors",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6802,7 +7222,8 @@
       "command": "get_agent_conversation_workspace_freshness",
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6812,7 +7233,8 @@
       "command": "reconcile_agent_conversation_workspace_publication",
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6822,7 +7244,8 @@
       "command": "update_agent_conversation_workspace_from_base",
       "module": "unified_chat_commands",
       "reason": "rewrites an agent workspace checkout from its base branch",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -6832,7 +7255,8 @@
       "command": "publish_agent_conversation_workspace",
       "module": "unified_chat_commands",
       "reason": "publishes an agent conversation workspace",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -6842,7 +7266,8 @@
       "command": "commit_agent_conversation_workspace_locally",
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6852,7 +7277,8 @@
       "command": "precompute_agent_conversation_workspace_pr_description",
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6862,7 +7288,8 @@
       "command": "close_agent_workspace_pr",
       "module": "unified_chat_commands",
       "reason": "closes the remote pull request an agent workspace published",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -6872,7 +7299,8 @@
       "command": "create_agent_conversation",
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6882,7 +7310,8 @@
       "command": "update_agent_conversation_coordination_mode",
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6892,7 +7321,8 @@
       "command": "update_agent_conversation_title",
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6902,7 +7332,8 @@
       "command": "archive_agent_conversation",
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6912,7 +7343,8 @@
       "command": "restore_agent_conversation",
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6922,7 +7354,8 @@
       "command": "get_agent_run_status_unified",
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6932,7 +7365,8 @@
       "command": "is_chat_service_available",
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6942,7 +7376,8 @@
       "command": "stop_agent",
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6952,7 +7387,8 @@
       "command": "is_agent_running",
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6962,7 +7398,8 @@
       "command": "get_agent_running_states",
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6972,7 +7409,8 @@
       "command": "get_agent_conversation_runtime_statuses",
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -6980,7 +7418,8 @@
       "command": "get_agent_conversation_runtime_index",
       "module": "unified_chat_commands",
       "reason": "runtime lifecycle index via the non-mutating direct_agent_running_state_for_context path; propagates read errors",
-      "registered": true
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -6990,7 +7429,8 @@
       "command": "open_agent_terminal",
       "module": "agent_terminal_commands",
       "reason": "terminal PTY control",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -7000,7 +7440,8 @@
       "command": "write_agent_terminal",
       "module": "agent_terminal_commands",
       "reason": "terminal PTY control",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -7010,7 +7451,8 @@
       "command": "resize_agent_terminal",
       "module": "agent_terminal_commands",
       "reason": "terminal PTY control",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -7020,7 +7462,8 @@
       "command": "clear_agent_terminal",
       "module": "agent_terminal_commands",
       "reason": "terminal PTY control",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -7030,7 +7473,8 @@
       "command": "restart_agent_terminal",
       "module": "agent_terminal_commands",
       "reason": "terminal PTY control",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -7040,7 +7484,8 @@
       "command": "close_agent_terminal",
       "module": "agent_terminal_commands",
       "reason": "terminal PTY control",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -7050,7 +7495,8 @@
       "command": "upload_chat_attachment",
       "module": "chat_attachment_commands",
       "reason": "attachment filesystem surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -7060,7 +7506,8 @@
       "command": "link_attachments_to_message",
       "module": "chat_attachment_commands",
       "reason": "attachment filesystem surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -7070,7 +7517,8 @@
       "command": "list_conversation_attachments",
       "module": "chat_attachment_commands",
       "reason": "attachment filesystem surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -7080,7 +7528,8 @@
       "command": "list_message_attachments",
       "module": "chat_attachment_commands",
       "reason": "attachment filesystem surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -7090,7 +7539,8 @@
       "command": "delete_chat_attachment",
       "module": "chat_attachment_commands",
       "reason": "deletes a durable entity",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -7100,7 +7550,8 @@
       "command": "add_conversation_folder_reference",
       "module": "conversation_folder_reference_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -7110,7 +7561,8 @@
       "command": "remove_conversation_folder_reference",
       "module": "conversation_folder_reference_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -7120,7 +7572,8 @@
       "command": "list_conversation_folder_references",
       "module": "conversation_folder_reference_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -7130,7 +7583,8 @@
       "command": "list_task_activity_events",
       "module": "activity_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -7140,7 +7594,8 @@
       "command": "list_session_activity_events",
       "module": "activity_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -7150,7 +7605,8 @@
       "command": "list_all_activity_events",
       "module": "activity_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -7160,7 +7616,8 @@
       "command": "count_task_activity_events",
       "module": "activity_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -7170,7 +7627,8 @@
       "command": "count_session_activity_events",
       "module": "activity_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -7180,7 +7638,8 @@
       "command": "get_task_file_changes",
       "module": "diff_commands",
       "reason": "spawns git for task file changes",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -7190,7 +7649,8 @@
       "command": "get_file_diff",
       "module": "diff_commands",
       "reason": "spawns git for an arbitrary file diff",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -7200,7 +7660,8 @@
       "command": "get_agent_conversation_workspace_review",
       "module": "diff_commands",
       "reason": "diff getters may spawn git",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7210,7 +7671,8 @@
       "command": "get_agent_conversation_workspace_change_summary",
       "module": "diff_commands",
       "reason": "diff getters may spawn git",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7220,7 +7682,8 @@
       "command": "get_agent_conversation_workspace_repair_change_summary",
       "module": "diff_commands",
       "reason": "diff getters may spawn git",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7230,7 +7693,8 @@
       "command": "get_agent_conversation_workspace_pr_annotations",
       "module": "diff_commands",
       "reason": "diff getters may spawn git",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7240,7 +7704,8 @@
       "command": "get_agent_conversation_workspace_review_hunk_annotations",
       "module": "diff_commands",
       "reason": "diff getters may spawn git",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7250,7 +7715,8 @@
       "command": "get_agent_conversation_workspace_file_changes",
       "module": "diff_commands",
       "reason": "diff getters may spawn git",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7260,7 +7726,8 @@
       "command": "get_agent_conversation_workspace_file_diff",
       "module": "diff_commands",
       "reason": "diff getters may spawn git",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7270,7 +7737,8 @@
       "command": "get_agent_conversation_workspace_commits",
       "module": "diff_commands",
       "reason": "diff getters may spawn git",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7280,7 +7748,8 @@
       "command": "get_agent_conversation_workspace_commit_file_changes",
       "module": "diff_commands",
       "reason": "diff getters may spawn git",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7290,7 +7759,8 @@
       "command": "get_agent_conversation_workspace_commit_file_diff",
       "module": "diff_commands",
       "reason": "diff getters may spawn git",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7300,7 +7770,8 @@
       "command": "get_agent_conversation_workspace_staged_file_changes",
       "module": "diff_commands",
       "reason": "diff getters may spawn git",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7310,7 +7781,8 @@
       "command": "get_agent_conversation_workspace_unstaged_file_changes",
       "module": "diff_commands",
       "reason": "diff getters may spawn git",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7320,7 +7792,8 @@
       "command": "get_agent_conversation_workspace_staged_file_diff",
       "module": "diff_commands",
       "reason": "diff getters may spawn git",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7330,7 +7803,8 @@
       "command": "get_agent_conversation_workspace_unstaged_file_diff",
       "module": "diff_commands",
       "reason": "diff getters may spawn git",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7340,7 +7814,8 @@
       "command": "get_agent_conversation_workspace_repair_staged_file_changes",
       "module": "diff_commands",
       "reason": "diff getters may spawn git",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7350,7 +7825,8 @@
       "command": "get_agent_conversation_workspace_repair_unstaged_file_changes",
       "module": "diff_commands",
       "reason": "diff getters may spawn git",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7360,7 +7836,8 @@
       "command": "get_agent_conversation_workspace_repair_staged_file_diff",
       "module": "diff_commands",
       "reason": "diff getters may spawn git",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7370,7 +7847,8 @@
       "command": "get_agent_conversation_workspace_repair_unstaged_file_diff",
       "module": "diff_commands",
       "reason": "diff getters may spawn git",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7380,7 +7858,8 @@
       "command": "get_agent_conversation_workspace_repair_conflict_file_diff",
       "module": "diff_commands",
       "reason": "diff getters may spawn git",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7390,7 +7869,8 @@
       "command": "get_agent_conversation_workspace_cumulative_file_changes",
       "module": "diff_commands",
       "reason": "diff getters may spawn git",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7400,7 +7880,8 @@
       "command": "get_agent_conversation_workspace_cumulative_file_diff",
       "module": "diff_commands",
       "reason": "diff getters may spawn git",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7410,7 +7891,8 @@
       "command": "get_agent_conversation_workspace_file_diff_page",
       "module": "diff_commands",
       "reason": "diff getters may spawn git",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7420,7 +7902,8 @@
       "command": "get_agent_conversation_workspace_file_content_range",
       "module": "diff_commands",
       "reason": "diff getters may spawn git",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7430,7 +7913,8 @@
       "command": "get_commit_file_changes",
       "module": "diff_commands",
       "reason": "diff getters may spawn git",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7440,7 +7924,8 @@
       "command": "get_commit_file_diff",
       "module": "diff_commands",
       "reason": "diff getters may spawn git",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7450,7 +7935,8 @@
       "command": "detect_merge_conflicts",
       "module": "diff_commands",
       "reason": "diff getters may spawn git",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7460,7 +7946,8 @@
       "command": "get_conflict_file_diff",
       "module": "diff_commands",
       "reason": "diff getters may spawn git",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7470,7 +7957,8 @@
       "command": "get_task_commits",
       "module": "git_commands",
       "reason": "git process and worktree authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7480,7 +7968,8 @@
       "command": "get_task_diff_stats",
       "module": "git_commands",
       "reason": "git process and worktree authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7490,7 +7979,8 @@
       "command": "resolve_merge_conflict",
       "module": "git_commands",
       "reason": "destructive merge-conflict resolution",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -7500,7 +7990,8 @@
       "command": "retry_merge",
       "module": "git_commands",
       "reason": "git process and worktree authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7510,7 +8001,8 @@
       "command": "cleanup_task_branch",
       "module": "git_commands",
       "reason": "destructive task branch cleanup",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -7520,7 +8012,8 @@
       "command": "change_project_git_mode",
       "module": "git_commands",
       "reason": "changes project git authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -7530,7 +8023,8 @@
       "command": "get_github_branch_overview",
       "module": "github_commands",
       "reason": "GitHub CLI/network process authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7540,7 +8034,8 @@
       "command": "get_github_connection_status",
       "module": "github_commands",
       "reason": "GitHub CLI/network process authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7550,7 +8045,8 @@
       "command": "get_pull_request_detail",
       "module": "github_commands",
       "reason": "GitHub CLI/network process authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7560,7 +8056,8 @@
       "command": "get_repository_settings",
       "module": "repository_settings_commands",
       "reason": "configures repository process authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -7570,7 +8067,8 @@
       "command": "update_repository_settings",
       "module": "repository_settings_commands",
       "reason": "configures repository process authority",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -7580,7 +8078,8 @@
       "command": "get_update_channel",
       "module": "update_channel_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -7590,7 +8089,8 @@
       "command": "set_update_channel",
       "module": "update_channel_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -7600,7 +8100,8 @@
       "command": "get_plan_branch",
       "module": "plan_branch_commands",
       "reason": "branch operations spawn git",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7610,7 +8111,8 @@
       "command": "get_plan_branch_by_task_id",
       "module": "plan_branch_commands",
       "reason": "branch operations spawn git",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7620,7 +8122,8 @@
       "command": "get_project_plan_branches",
       "module": "plan_branch_commands",
       "reason": "branch operations spawn git",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7630,7 +8133,8 @@
       "command": "enable_feature_branch",
       "module": "plan_branch_commands",
       "reason": "branch operations spawn git",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7640,7 +8144,8 @@
       "command": "get_active_plan",
       "module": "plan_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -7650,7 +8155,8 @@
       "command": "set_active_plan",
       "module": "plan_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -7660,7 +8166,8 @@
       "command": "get_active_execution_plan",
       "module": "plan_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -7670,7 +8177,8 @@
       "command": "clear_active_plan",
       "module": "plan_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -7680,7 +8188,8 @@
       "command": "list_plan_selector_candidates",
       "module": "plan_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -7690,7 +8199,8 @@
       "command": "list_api_keys",
       "module": "api_key_commands",
       "reason": "credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -7700,7 +8210,8 @@
       "command": "create_api_key",
       "module": "api_key_commands",
       "reason": "credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -7710,7 +8221,8 @@
       "command": "revoke_api_key",
       "module": "api_key_commands",
       "reason": "credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -7720,7 +8232,8 @@
       "command": "rotate_api_key",
       "module": "api_key_commands",
       "reason": "credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -7730,7 +8243,8 @@
       "command": "update_api_key_projects",
       "module": "api_key_commands",
       "reason": "credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -7740,7 +8254,8 @@
       "command": "update_api_key_permissions",
       "module": "api_key_commands",
       "reason": "credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -7750,7 +8265,8 @@
       "command": "get_api_key_audit_log",
       "module": "api_key_commands",
       "reason": "credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -7760,7 +8276,8 @@
       "command": "get_agent_health",
       "module": "diagnostic_commands",
       "reason": "diagnostics may spawn provider CLIs",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7770,7 +8287,8 @@
       "command": "get_codex_cli_diagnostics",
       "module": "diagnostic_commands",
       "reason": "spawns the Codex CLI for diagnostics",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -7780,7 +8298,8 @@
       "command": "get_ui_feature_flags",
       "module": "ui_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -7790,7 +8309,8 @@
       "command": "update_ui_feature_flags",
       "module": "ui_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -7800,7 +8320,8 @@
       "command": "list_ticketing_providers",
       "module": "ticketing_commands",
       "reason": "ticket integration credential/network surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -7810,7 +8331,8 @@
       "command": "list_ticketing_containers",
       "module": "ticketing_commands",
       "reason": "ticket integration credential/network surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -7820,7 +8342,8 @@
       "command": "list_ticketing_columns",
       "module": "ticketing_commands",
       "reason": "ticket integration credential/network surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -7830,7 +8353,8 @@
       "command": "list_ticketing_status_catalog",
       "module": "ticketing_commands",
       "reason": "ticket integration credential/network surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -7840,7 +8364,8 @@
       "command": "refresh_ticketing_status_catalog",
       "module": "ticketing_commands",
       "reason": "ticket integration credential/network surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -7850,7 +8375,8 @@
       "command": "update_ticketing_status_presentation",
       "module": "ticketing_commands",
       "reason": "ticket integration credential/network surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -7860,7 +8386,8 @@
       "command": "list_tickets",
       "module": "ticketing_commands",
       "reason": "ticket integration credential/network surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -7870,7 +8397,8 @@
       "command": "list_ticket_filter_options",
       "module": "ticketing_commands",
       "reason": "ticket integration credential/network surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -7880,7 +8408,8 @@
       "command": "get_ticket_detail",
       "module": "ticketing_commands",
       "reason": "ticket integration credential/network surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -7890,7 +8419,8 @@
       "command": "list_ticket_transitions",
       "module": "ticketing_commands",
       "reason": "ticket integration credential/network surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -7900,7 +8430,8 @@
       "command": "get_ticket_associations",
       "module": "ticketing_commands",
       "reason": "ticket integration credential/network surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -7910,7 +8441,8 @@
       "command": "get_conversation_ticket",
       "module": "ticketing_commands",
       "reason": "ticket integration credential/network surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -7920,7 +8452,8 @@
       "command": "start_ralphx_work_from_ticket",
       "module": "ticketing_commands",
       "reason": "ticket integration credential/network surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -7930,7 +8463,8 @@
       "command": "refresh_tickets",
       "module": "ticketing_commands",
       "reason": "ticket integration credential/network surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -7940,7 +8474,8 @@
       "command": "transition_ticket_status",
       "module": "ticketing_commands",
       "reason": "ticket integration credential/network surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -7950,7 +8485,8 @@
       "command": "assign_ticket",
       "module": "ticketing_commands",
       "reason": "ticket integration credential/network surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -7960,7 +8496,8 @@
       "command": "clear_ticket_assignee",
       "module": "ticketing_commands",
       "reason": "ticket integration credential/network surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -7970,7 +8507,8 @@
       "command": "add_ticket_comment",
       "module": "ticketing_commands",
       "reason": "ticket integration credential/network surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -7980,7 +8518,8 @@
       "command": "set_ticket_labels",
       "module": "ticketing_commands",
       "reason": "ticket integration credential/network surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -7990,7 +8529,8 @@
       "command": "list_ticket_labels",
       "module": "ticketing_commands",
       "reason": "ticket integration credential/network surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -8000,7 +8540,8 @@
       "command": "list_workspace_open_targets",
       "module": "workspace_open_commands",
       "reason": "opens workspace in an external process",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -8010,7 +8551,8 @@
       "command": "open_agent_conversation_workspace",
       "module": "workspace_open_commands",
       "reason": "opens workspace in an external process",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -8020,7 +8562,8 @@
       "command": "open_agent_conversation_workspace_path",
       "module": "workspace_open_commands",
       "reason": "opens workspace in an external process",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -8030,7 +8573,8 @@
       "command": "get_external_mcp_config",
       "module": "external_mcp_commands",
       "reason": "external MCP credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -8040,7 +8584,8 @@
       "command": "get_external_mcp_readiness",
       "module": "external_mcp_commands",
       "reason": "external MCP credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [
@@ -8050,7 +8595,8 @@
       "command": "update_external_mcp_config",
       "module": "external_mcp_commands",
       "reason": "external MCP credential surface",
-      "registered": false
+      "registered": false,
+      "v1Resolution": "host-denied"
     }
   ],
   "schemaVersion": 2,
