@@ -1421,6 +1421,25 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
              `seed_builtin_workflows` is the write half and stays AgentControl",
         ),
     },
+    // PR 3.1-b batch 8 — census `B2`, the agent-conversation read cluster.
+    //
+    // `agent_composer_commands` defaults to `AgentControl` and STAYS there; the neighbouring
+    // `unified_chat_commands` holds `send_agent_message` (the detector-(a) steer sink), the
+    // workspace publish/`git push` surface, and the conversation lifecycle writes. This row is
+    // reclassified individually, never by module analogy.
+    //
+    // The reason, verified against the body rather than inherited: a pure read whose every
+    // repository error propagates via `map_err(...)?`, with no `AppHandle`, no
+    // `ExecutionState` and no chat service, so a read failure cannot reach a remote client as
+    // "no plans match".
+    CommandOverride {
+        command: "search_agent_composer_plan_references",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "plan-reference search: ideation sessions plus artifact resolution, ranked and              truncated to a capped limit; the resolver fail-open that once dropped sessions              silently was already removed, so a resolver outage now errors instead of              shipping a short list that looks complete",
+        ),
+    },
 ];
 
 pub const AUTHORITY_REDUCING_EXEMPTIONS: &[AuthorityReducingExemption] = &[

@@ -6,7 +6,7 @@
 ## 1. Scan state
 
 ```
-PASS: remote transport drift — 499 invoke command name(s), 0 dynamic, 0 seam bypasses; 191 manifest-classified; 233 unclassified (baseline, → 0 in PR 3.1).
+PASS: remote transport drift — 499 invoke command name(s), 0 dynamic, 0 seam bypasses; 191 manifest-classified; 232 unclassified (baseline, → 0 in PR 3.1).
 ```
 
 | Measure | Count | Source |
@@ -14,11 +14,11 @@ PASS: remote transport drift — 499 invoke command name(s), 0 dynamic, 0 seam b
 | Invoke command names in `frontend/src` | 499 | drift scan (AST) |
 | Dynamic / unresolvable expressions | 0 | drift scan — must stay 0 |
 | Transport seam bypasses | 0 | drift scan — must stay 0 |
-| Remote-registered (`remote_commands!`) | 80 | `docs/generated/remote-commands.json` |
+| Remote-registered (`remote_commands!`) | 81 | `docs/generated/remote-commands.json` |
 | Reason-coded local-only rows | 29 | `frontend/src/lib/remote/local-only-commands.ts` |
 | Ledger rows (exhaustive over `generate_handler!`) | 546 | `docs/generated/remote-commands.json` |
 | Manifest-classified (host-denied / v1-deferred) | 191 | `v1Resolution` in `docs/generated/remote-commands.json` |
-| **Unclassified — the 3.1 gap** | **233** | `scripts/remote-transport-drift-baseline.json` |
+| **Unclassified — the 3.1 gap** | **232** | `scripts/remote-transport-drift-baseline.json` |
 
 ## 2. What the gap is made of
 
@@ -26,15 +26,15 @@ Routing each name mechanically through the ledger splits it into very different 
 
 | Disposition | Count | Rule |
 |---|---|---|
-| register-candidate | 233 | ledgered AgentControl (or lower) with no SpawnsProcess capability — eligible for a hand-audited `remote_commands!` entry under `ui:agent` |
+| register-candidate | 232 | ledgered AgentControl (or lower) with no SpawnsProcess capability — eligible for a hand-audited `remote_commands!` entry under `ui:agent` |
 | host-denied (class: denied) | 0 | `class_permits` returns false for Denied at any capability set — registering it fails compilation. Resolves for P-11 through the manifest, never through a local-only reason (phase doc key point 6) |
 | host-denied (SpawnsProcess) | 0 | carries `SpawnsProcess`; `class_permits(AgentControl, [SpawnsProcess])` is false and Elevated is a v1 non-goal, so it is not exposable on the v1 facade at any scope (`remote_server/registry.rs` detector-(c) note) |
 | v1-deferred (Elevated) | 0 | ledgered Elevated without SpawnsProcess — reachable only under `ui:elevated`, which §1 excludes from v1; deferred, not denied |
 | orphan invoke (no local handler) | 0 | invoked by the frontend but absent from `generate_handler!` and from the ledger — it cannot be registered remotely because it does not exist locally either |
 
-**191 invoked names now resolve through the manifest** — host-side commands the facade denies or defers, classified by their ledger row's `v1Resolution` rather than by a registration or a client-local reason (phase-doc key point 6). B0 landed that mechanism and the gap fell 419 → 233 with zero registrations. **What remains in the baseline is registration work only**, so from here every batch's delta is exactly the count it registers.
+**191 invoked names now resolve through the manifest** — host-side commands the facade denies or defers, classified by their ledger row's `v1Resolution` rather than by a registration or a client-local reason (phase-doc key point 6). B0 landed that mechanism and the gap fell 419 → 232 with zero registrations. **What remains in the baseline is registration work only**, so from here every batch's delta is exactly the count it registers.
 
-**233 names are registration candidates**, and `register-candidate` means eligible for a hand audit, not approved: detector (c) has already rejected ledgered-`AgentControl` commands whose process authority the manifest cannot see (`resume_task`, `apply_proposals_to_kanban`, `set_agent_conversation_workspace_auto_publish`). Expect a non-empty rejection subset in every registration batch.
+**232 names are registration candidates**, and `register-candidate` means eligible for a hand audit, not approved: detector (c) has already rejected ledgered-`AgentControl` commands whose process authority the manifest cannot see (`resume_task`, `apply_proposals_to_kanban`, `set_agent_conversation_workspace_auto_publish`). Expect a non-empty rejection subset in every registration batch.
 
 ## 3. Recommended batch order
 
@@ -42,7 +42,7 @@ Routing each name mechanically through the ledger splits it into very different 
 |---|---|---|---|---|---|---|
 | 1 | `B0` | P-11 third-disposition mechanism (prerequisite, no registrations) | 0 | 0 | 0 | 0 |
 | 2 | `B1` | Task core — lifecycle, steps, execution, gates | 27 | 27 | 0 | 5 |
-| 3 | `B2` | Chat + agent conversation surface (unblocks PR 3.2) | 42 | 42 | 0 | 5 |
+| 3 | `B2` | Chat + agent conversation surface (unblocks PR 3.2) | 41 | 41 | 0 | 5 |
 | 4 | `B3` | Review, QA, merge pipeline, validation | 16 | 16 | 0 | 2 |
 | 5 | `B4` | Ideation, plans, methodology, workflow | 54 | 54 | 0 | 5 |
 | 6 | `B5` | Automation, research, metrics, activity | 34 | 34 | 0 | 4 |
@@ -101,7 +101,7 @@ Ordering logic: **B0 first** (nothing is measurable without the third dispositio
 
 ### 3. `B2` — Chat + agent conversation surface (unblocks PR 3.2)
 
-**Commands:** 42 · **Register-candidates:** 42 · **Risk classes:** register-candidate 42
+**Commands:** 41 · **Register-candidates:** 41 · **Risk classes:** register-candidate 41
 
 **Why here:** PR 3.2's whole premise is that chat send paths answer `REMOTE_FORBIDDEN` without `ui:agent` rather than `REMOTE_COMMAND_UNAVAILABLE` — which requires them registered. 2.6 shipped the honest interim (composer renders UNAVAILABLE remotely) and its product note says it 'flips with no client change when 3.1 registers them'. This is the batch that flips it, so it must land before 3.2 starts. It is also the highest-risk batch: `send_message` is a detector-(a) steer sink and the module contains the workspace-publish `git push` surface that stays denied.
 
@@ -116,7 +116,7 @@ Ordering logic: **B0 first** (nothing is measurable without the third dispositio
 
 <details><summary>Members by module</summary>
 
-- **`agent_composer_commands`** (3) — `list_agent_composer_skills`, `search_agent_composer_entries`, `search_agent_composer_plan_references`
+- **`agent_composer_commands`** (2) — `list_agent_composer_skills`, `search_agent_composer_entries`
 - **`agent_model_commands`** (1) — `upsert_custom_agent_model`
 - **`agent_sidebar_commands`** (1) — `list_agent_sidebar_conversations`
 - **`conversation_folder_reference_commands`** (3) — `add_conversation_folder_reference`, `list_conversation_folder_references`, `remove_conversation_folder_reference`
@@ -400,9 +400,9 @@ Ordering logic: **B0 first** (nothing is measurable without the third dispositio
 | Check | Result |
 |---|---|
 | Drift scan passes | yes (this file is not emitted otherwise) |
-| Scan unclassified count == baseline size | 233 == 233 |
-| Every gap command in exactly one batch | 233 / 233 |
-| Disposition totals sum to the gap | 233 == 233 |
+| Scan unclassified count == baseline size | 232 == 232 |
+| Every gap command in exactly one batch | 232 / 232 |
+| Disposition totals sum to the gap | 232 == 232 |
 | Batch plan claims no empty module and pins no absent command | enforced by the generator |
 
 Machine-readable companion for 3.1-b/c: [`remote-coverage-census.json`](./remote-coverage-census.json) — same batches, plus per-command `{batch, module, ledgerClass, capabilities, disposition}` rows.

@@ -7,16 +7,16 @@
     "dynamicExpressions": 0,
     "seamBypasses": 0,
     "manifestClassified": 191,
-    "unclassified": 233,
-    "line": "PASS: remote transport drift — 499 invoke command name(s), 0 dynamic, 0 seam bypasses; 191 manifest-classified; 233 unclassified (baseline, → 0 in PR 3.1)."
+    "unclassified": 232,
+    "line": "PASS: remote transport drift — 499 invoke command name(s), 0 dynamic, 0 seam bypasses; 191 manifest-classified; 232 unclassified (baseline, → 0 in PR 3.1)."
   },
   "totals": {
     "invokedCommandNames": 499,
-    "remoteRegistered": 80,
+    "remoteRegistered": 81,
     "localOnlyRows": 29,
     "ledgerRows": 546,
-    "unclassified": 233,
-    "assignedToBatches": 233,
+    "unclassified": 232,
+    "assignedToBatches": 232,
     "batches": 14
   },
   "dispositionModel": {
@@ -42,7 +42,7 @@
     }
   },
   "dispositionTotals": {
-    "registerCandidate": 233
+    "registerCandidate": 232
   },
   "batches": [
     {
@@ -177,7 +177,7 @@
         "DONE (PR 3.1-b batch 3): `conversation_stats_commands` — all four usage-aggregate reads registered at `ui:read`, so the module no longer appears in this batch's module list. Batch 3's `probe_b2_module_batch_audit` also published detector output for every remaining B2 member; start from it rather than re-deriving. Its headline finding: `get_agent_conversation`, `get_agent_conversation_messages_page` and `get_agent_conversation_timeline_page` — the three transcript reads PR 3.2 needs — all fire detector (a), so they are NOT free reads and need their own hand-trace."
       ],
       "gate": "P-17 green; C-9 dual-lens review recorded; the five 2.6-surfaced ops resolve per this census's `resolvedItems.unregisteredUiAgentOps`.",
-      "commandCount": 42,
+      "commandCount": 41,
       "modules": [
         "agent_composer_commands",
         "agent_model_commands",
@@ -186,15 +186,14 @@
         "unified_chat_commands"
       ],
       "dispositionCounts": {
-        "registerCandidate": 42
+        "registerCandidate": 41
       },
-      "registerCandidates": 42,
+      "registerCandidates": 41,
       "nonRegistering": 0,
       "commandsByModule": {
         "agent_composer_commands": [
           "list_agent_composer_skills",
-          "search_agent_composer_entries",
-          "search_agent_composer_plan_references"
+          "search_agent_composer_entries"
         ],
         "agent_model_commands": [
           "upsert_custom_agent_model"
@@ -275,7 +274,6 @@
         "remove_conversation_folder_reference",
         "restore_agent_conversation",
         "search_agent_composer_entries",
-        "search_agent_composer_plan_references",
         "send_agent_message",
         "send_queued_agent_message_now",
         "set_agent_conversation_workspace_auto_publish",
@@ -2925,17 +2923,6 @@
     },
     {
       "command": "search_agent_composer_entries",
-      "batch": "B2",
-      "module": "agent_composer_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "search_agent_composer_plan_references",
       "batch": "B2",
       "module": "agent_composer_commands",
       "ledgerClass": "agentControl",
