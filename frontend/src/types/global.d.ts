@@ -18,6 +18,8 @@ declare global {
     __mockChatApi?: MockChatController;
     __mockGitAuthDiagnostics?: GitAuthDiagnostics;
     __mockGhAuthStatus?: boolean;
+    /** Forces the first-run welcome state (no configured agent harness). */
+    __mockProviderRequiresOnboarding?: boolean;
     __mockUiFeatureFlags?: FeatureFlags;
     __queryClient?: QueryClient;
     __eventBus?: EventBus;

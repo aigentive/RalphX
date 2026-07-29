@@ -1,6 +1,8 @@
-# Merge Pipeline User Guide
+# Merge Pipeline
 
-RalphX automates the entire process of merging your task's code changes into the target branch. This guide explains what happens behind the scenes, what you'll see in the UI, and how to handle any issues that come up.
+**Audience: RalphX maintainers.** This is internals reference, not a user guide. For task-managed delivery from a user's perspective, see `docs/user-guides/`.
+
+RalphX automates the process of merging a task's code changes into the target branch. This document describes what happens at each stage, what surfaces in the UI, and how each failure mode is handled.
 
 ---
 

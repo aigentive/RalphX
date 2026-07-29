@@ -1003,6 +1003,34 @@ const mockWorkspaceCommits = [
   },
 ] as const;
 
+function mockGuideReviewArtifact(id: string) {
+  const contentById: Record<string, string> = {
+    "guide-release-review":
+      "# Overview\n\nThe release is close to ready. The workspace review found two concrete safeguards to resolve before publishing.\n\n## What is working\n\n- The release checklist now covers validation and handoff.\n- The workspace branch is ready for a final review pass.",
+    "guide-release-requested-changes":
+      "# Requested Changes\n\n- Add the final rollback owner to the checklist.\n- Confirm the migration validation command in CI.",
+  };
+  const content = contentById[id];
+  if (!content) return null;
+  return {
+    id,
+    name:
+      id === "guide-release-review"
+        ? "Release readiness review"
+        : "Requested Changes",
+    artifact_type: "workspace_review",
+    content_type: "inline",
+    content,
+    created_at: "2026-06-15T10:00:00.000Z",
+    created_by: "RalphX Workspace Review",
+    version: 1,
+    bucket_id: null,
+    task_id: null,
+    process_id: null,
+    derived_from: [],
+  };
+}
+
 function mockWorkspaceFileDiff(filePath: string) {
   const language = filePath.endsWith(".tsx")
     ? "tsx"
@@ -1278,6 +1306,8 @@ const commandHandlers: Record<
   list_workflows: async () => mockWorkflowsApi.list(),
   get_artifact_version_history: async (args) =>
     mockArtifactApi.getVersionHistory(args.id as string),
+  get_artifact: async (args) =>
+    mockGuideReviewArtifact(args.id as string),
 
   // Project commands
   list_projects: async () => mockProjectsApi.list(),
@@ -1369,7 +1399,10 @@ const commandHandlers: Record<
       },
     ],
   }),
-  get_agent_provider_settings: async () => mockAgentProviderSettings,
+  get_agent_provider_settings: async () =>
+    window.__mockProviderRequiresOnboarding
+      ? { providers: [], defaultProvider: null, requiresOnboarding: true }
+      : mockAgentProviderSettings,
   get_managed_provider_cli_status: async () => mockManagedProviderCliStatuses,
   get_mcp_catalog: async () => mockMcpCatalog,
   refresh_mcp_catalog: async () => mockMcpCatalog,

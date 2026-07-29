@@ -124,23 +124,27 @@ You still own your repo. RalphX manages the repetitive git and PR workflow aroun
 
 1. **Create a project** - Point RalphX at a git repository.
 2. **Start an agent conversation** - Use the Agents view for project-scoped chat, debugging, planning, or implementation help.
-3. **Use Ideation for larger work** - Describe the feature and let RalphX propose a plan and task breakdown.
-4. **Review proposals** - Edit, accept, or reject the generated tasks before execution.
-5. **Watch execution** - Tasks move through Kanban as agents implement, review, and merge.
-6. **Approve code before merge** - Review findings and decide whether the task should land or go back for changes.
+3. **Plan** - Choose Plan start mode and describe the work you want to do.
+4. **Approve Plan** - Review the plan and approve it when it is ready.
+5. **Implement Directly** - Let RalphX make the approved changes in an isolated worktree.
+6. **Workspace Review** - Inspect the changes and resolve any findings before publishing.
+7. **Commit & Publish** - Commit the work and open or update its pull request.
+8. **Review PR** - Use your normal GitHub review process before merging.
 
-For simple work, you can start directly from an agent conversation or a task. For larger work, Ideation turns a brief into a task graph.
+For simple work, start directly from an agent conversation. For tracked delivery with proposals, Kanban, and a dependency graph, select **Enable Tasks** in **Settings → General → Tasks**.
 
 ## Core Surfaces
 
 | Surface | What it is for |
 |---|---|
 | **Agents** | Project-scoped agent conversations, persistent history, search, workspace/terminal access |
-| **Ideation** | Turn a feature description into a plan, proposals, dependencies, and executable tasks |
-| **Kanban** | Live task execution state: backlog, ready, executing, review, approval, merge, done |
-| **Graph** | Plan dependencies, execution tiers, critical path, and timeline context |
-| **Activity** | Audit trail of state changes, agent events, review, and merge activity |
-| **Settings** | Repository settings, execution lanes, ideation lanes, harness/model controls, validation |
+| **Automations** | Run and monitor configured automated workflows |
+| **Ticketing** | Browse and work with connected tickets |
+| **GitHub** | Connect GitHub and work with pull requests |
+| **Granola** | Connect and use Granola context |
+| **Insights** | View project insights |
+| **Tasks** *(opt-in)* | Tracked delivery inside Agents, with Kanban and dependency graph modes; select **Enable Tasks** in **Settings → General → Tasks** |
+| **Settings** | Repository setup and validation, harness/provider/model controls, and general preferences |
 
 ## Safety And Ownership
 
@@ -169,10 +173,9 @@ To run RalphX:
 
 To build from source, see the [build from source guide](docs/development/build-from-source.md).
 
-Harness controls are exposed in the desktop app:
+New to RalphX? Start with the [user guides](docs/user-guides/README.md).
 
-- `Settings -> General -> Execution Agents` for worker, reviewer, re-executor, and merger lanes
-- `Settings -> Ideation -> Ideation Agents` for ideation, verifier, and specialist lanes
+Agent and lane controls are in `Settings → Harness → Agents`.
 
 ### Install
 

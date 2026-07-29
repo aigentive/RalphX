@@ -15,6 +15,8 @@
     "test:run": "vitest run",
     "test:check-warnings": "./scripts/check-vitest-warnings.sh",
     "test:visual": "playwright test tests/visual --workers=1",
+    "test:docs-capture": "playwright test --project=docs-capture --workers=1",
+    "test:docs-capture:update": "playwright test --project=docs-capture --workers=1 --update-snapshots=all",
     "test:coverage": "vitest run --coverage --testTimeout=15000 --retry=1",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",

@@ -8,8 +8,14 @@ import type {
   ChildSessionStatusResponse,
   QueuedMessageResponse,
 } from "@/api/chat";
+import { GUIDE_SCENARIO_FIXTURES } from "./guide-scenarios";
 
-export type MockChatScenarioName =
+/**
+ * Scenarios owned by the visual regression suite. Replay-context records are
+ * keyed off this union, not `MockChatScenarioName`, so registering a guide
+ * scenario can never make them demand a regression entry.
+ */
+export type MockChatRegressionScenarioName =
   | "ideation_db_widget_mix"
   | "ideation_widget_matrix"
   | "execution_db_compact"
@@ -17,6 +23,10 @@ export type MockChatScenarioName =
   | "review_widget_matrix"
   | "merge_db_compact"
   | "merge_widget_matrix";
+
+export type MockChatScenarioName =
+  | MockChatRegressionScenarioName
+  | keyof typeof GUIDE_SCENARIO_FIXTURES;
 
 export type MockChatScenario = {
   conversations: ChatConversation[];
@@ -70,7 +80,7 @@ export function getMockChatScenario(name: MockChatScenarioName): MockChatScenari
 }
 
 export const IDEATION_REPLAY_CONTEXTS: Record<
-  Extract<MockChatScenarioName, "ideation_db_widget_mix" | "ideation_widget_matrix">,
+  Extract<MockChatRegressionScenarioName, "ideation_db_widget_mix" | "ideation_widget_matrix">,
   {
     contextType: Extract<ContextType, "ideation">;
     contextId: string;
@@ -92,7 +102,7 @@ export const IDEATION_REPLAY_CONTEXTS: Record<
 export const IDEATION_REPLAY_CONTEXT = IDEATION_REPLAY_CONTEXTS.ideation_db_widget_mix;
 
 export const TASK_REPLAY_CONTEXTS: Record<
-  Exclude<MockChatScenarioName, "ideation_db_widget_mix" | "ideation_widget_matrix">,
+  Exclude<MockChatRegressionScenarioName, "ideation_db_widget_mix" | "ideation_widget_matrix">,
   {
     contextType: Extract<ContextType, "task_execution" | "review" | "merge">;
     contextId: string;
@@ -1295,4 +1305,5 @@ const chatScenarioFixtures: Record<MockChatScenarioName, MockChatScenario> = {
       ],
     },
   },
+  ...GUIDE_SCENARIO_FIXTURES,
 };

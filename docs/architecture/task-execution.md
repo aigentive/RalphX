@@ -1,6 +1,8 @@
-# Execution Pipeline User Guide
+# Task Execution Pipeline
 
-RalphX automates the entire process of implementing a task — from scheduling the worker agent through code review and human approval. This guide explains what happens behind the scenes, what you'll see in the UI, and how to handle any issues that come up.
+**Audience: RalphX maintainers.** This is internals reference, not a user guide. For task-managed delivery from a user's perspective, see `docs/user-guides/`.
+
+RalphX automates the process of implementing a task — from scheduling the worker agent through code review and human approval. This document describes what happens at each stage, what surfaces in the UI, and how each failure mode is handled.
 
 ---
 

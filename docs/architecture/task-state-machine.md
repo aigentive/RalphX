@@ -1,6 +1,8 @@
-# Task State Machine User Guide
+# Task State Machine
 
-Every task in RalphX is governed by a state machine. It defines exactly which states a task can be in, which transitions are allowed, what happens automatically, and where human decisions are required. This guide explains the full scope of that system — what each state means, how tasks move through them, and how to handle any situation that comes up.
+**Audience: RalphX maintainers.** This is internals reference, not a user guide. For task-managed delivery from a user's perspective, see `docs/user-guides/`.
+
+Every task in RalphX is governed by a state machine. It defines exactly which states a task can be in, which transitions are allowed, what happens automatically, and where human decisions are required. This document describes the full scope of that system — what each state means, how tasks move through them, and how each situation is handled.
 
 ---
 

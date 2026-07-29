@@ -1,5 +1,7 @@
 # Internal Skills
 
+**Audience: RalphX maintainers.** Internal skills are agent- and config-owned; there is no user-facing UI for them.
+
 Internal skills are RalphX-owned instruction packs that can be injected into an agent's runtime prompt when a turn needs specialized guidance.
 
 They are different from Claude or Codex native skills:
