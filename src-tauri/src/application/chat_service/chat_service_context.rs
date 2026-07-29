@@ -2426,6 +2426,9 @@ pub(super) fn apply_ralphx_env_vars(
     agent_name: &str,
     context_type: ChatContextType,
     context_id: &str,
+    conversation_id: Option<&str>,
+    parent_conversation_id: Option<&str>,
+    agent_run_id: Option<&str>,
     working_directory: &Path,
     entity_status: Option<&str>,
     project_id: Option<&str>,
@@ -2439,6 +2442,15 @@ pub(super) fn apply_ralphx_env_vars(
     cmd.env("RALPHX_AGENT_TYPE", mcp_agent_type(agent_name));
     cmd.env("RALPHX_CONTEXT_TYPE", &context_type.to_string());
     cmd.env("RALPHX_CONTEXT_ID", context_id);
+    if let Some(conversation_id) = conversation_id {
+        cmd.env("RALPHX_CONVERSATION_ID", conversation_id);
+    }
+    if let Some(parent_conversation_id) = parent_conversation_id {
+        cmd.env("RALPHX_PARENT_CONVERSATION_ID", parent_conversation_id);
+    }
+    if let Some(agent_run_id) = agent_run_id {
+        cmd.env("RALPHX_AGENT_RUN_ID", agent_run_id);
+    }
     match context_type {
         ChatContextType::Task
         | ChatContextType::TaskExecution
@@ -2948,6 +2960,9 @@ async fn build_command_from_resolved_settings(
         agent_name,
         conversation.context_type,
         &conversation.context_id,
+        Some(&conversation.id.as_str()),
+        mcp_lineage_parent_conversation_id(conversation).as_deref(),
+        None,
         working_directory,
         entity_status,
         project_id,
@@ -3050,6 +3065,9 @@ async fn build_recovery_command_from_resolved_settings(
         agent_name,
         context_type,
         context_id,
+        Some(conversation_id),
+        parent_conversation_id.as_deref(),
+        None,
         working_directory,
         entity_status,
         project_id,
@@ -3268,6 +3286,9 @@ pub async fn build_codex_command(
         agent_name,
         conversation.context_type,
         &conversation.context_id,
+        Some(&conversation.id.as_str()),
+        mcp_lineage_parent_conversation_id(conversation).as_deref(),
+        agent_run_id,
         working_directory,
         entity_status,
         project_id,
@@ -3917,6 +3938,9 @@ pub async fn build_interactive_command(
         agent_name,
         conversation.context_type,
         &conversation.context_id,
+        Some(&conversation.id.as_str()),
+        mcp_lineage_parent_conversation_id(conversation).as_deref(),
+        agent_run_id,
         working_directory,
         entity_status,
         project_id,
@@ -4072,7 +4096,7 @@ pub async fn build_resume_command(
         project_id,
         filesystem_read_roots,
         entity_status.as_deref(),
-        parent_conversation_id,
+        parent_conversation_id.clone(),
         artifact_repo,
         session_messages,
         total_available,
@@ -4164,6 +4188,9 @@ async fn build_resume_command_from_resolved_settings(
                 agent_name,
                 context_type,
                 context_id,
+                Some(conversation_id),
+                parent_conversation_id.as_deref(),
+                None,
                 working_directory,
                 entity_status,
                 project_id,
@@ -4256,7 +4283,7 @@ pub async fn build_codex_resume_command(
         project_id,
         filesystem_read_roots,
         None,
-        parent_conversation_id,
+        parent_conversation_id.clone(),
         effective_mode,
     );
     let config_overrides = build_codex_mcp_overrides_for_profile(
@@ -4324,14 +4351,15 @@ pub async fn build_codex_resume_command(
                 agent_name,
                 context_type,
                 context_id,
+                Some(conversation_id),
+                parent_conversation_id.as_deref(),
+                agent_run_id,
                 working_directory,
                 entity_status.as_deref(),
                 project_id,
                 Some(session_id),
                 ideation_subagent_model_cap,
             );
-            spawnable.env("RALPHX_CONVERSATION_ID", conversation_id);
-
             Ok(spawnable)
         }
         ProviderResumeMode::Recovery => {
@@ -4394,14 +4422,15 @@ pub async fn build_codex_resume_command(
                 agent_name,
                 context_type,
                 context_id,
+                Some(conversation_id),
+                parent_conversation_id.as_deref(),
+                agent_run_id,
                 working_directory,
                 entity_status.as_deref(),
                 project_id,
                 None,
                 ideation_subagent_model_cap,
             );
-            spawnable.env("RALPHX_CONVERSATION_ID", conversation_id);
-
             Ok(spawnable)
         }
     }

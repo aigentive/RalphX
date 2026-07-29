@@ -373,7 +373,8 @@ fn header_value(headers: &HeaderMap, header_name: &str, operation: &str) -> Resu
         .ok_or_else(|| format!("{operation} requires trusted runtime identity"))
 }
 
-fn resolve_scope(context: &AgentTaskContextFields) -> Result<AgentTaskScope, String> {
+#[doc(hidden)]
+pub fn resolve_scope(context: &AgentTaskContextFields) -> Result<AgentTaskScope, String> {
     let project_id = context.project_id.clone().map(ProjectId::from_string);
     if let (Some(scope_type), Some(scope_id)) = (&context.context_type, &context.context_id) {
         if scope_type.trim().is_empty() || scope_id.trim().is_empty() {
@@ -386,18 +387,10 @@ fn resolve_scope(context: &AgentTaskContextFields) -> Result<AgentTaskScope, Str
             actor_agent: context.actor_agent.clone(),
         });
     }
-    if let Some(project_id) = &context.project_id {
-        if project_id.trim().is_empty() {
-            return Err("Agent task project_id must be non-empty".to_string());
-        }
-        return Ok(AgentTaskScope {
-            project_id: Some(ProjectId::from_string(project_id.clone())),
-            scope_type: "project".to_string(),
-            scope_id: project_id.clone(),
-            actor_agent: context.actor_agent.clone(),
-        });
-    }
-    Err("Agent task context is required".to_string())
+    Err(
+        "Agent task context_type and context_id are required; explicit project scope must use context_type=project"
+            .to_string(),
+    )
 }
 
 fn mutation_success(result: AgentTaskMutationResult) -> AgentTaskMutationResponse {
