@@ -1466,9 +1466,45 @@ fn exemptions_and_declared_memberships_are_exact() {
     let permission = policy_for("resolve_permission_request", "permission_commands").unwrap();
     assert_eq!(permission.class, RiskClass::AgentControl);
     assert!(permission.reason.contains(DECLARED_MEMBERSHIPS[0].1));
+    // PR 3.1-b batch 10 relaxed this from a VERBATIM equality to the `contains` form its
+    // `resolve_permission_request` sibling four lines above already used, and the relaxation is
+    // the point rather than a convenience. The verbatim pin meant the row could carry the
+    // membership OR the finding, never both — which is exactly what left batch 9 unable to
+    // correct a class it had measured as wrong. `contains` keeps the membership mandatory while
+    // letting the row also state why it is classified as it is; the class is now asserted
+    // independently, so nothing is weakened by the change.
     let question = policy_for("resolve_user_question", "question_commands").unwrap();
-    assert_eq!(question.class, RiskClass::AgentControl);
-    assert_eq!(question.reason, DECLARED_MEMBERSHIPS[1].1);
+    assert_eq!(
+        question.class,
+        RiskClass::Elevated,
+        "batch 10 corrected the understated class; see \
+         batch10_closes_the_declared_membership_process_launch_gap"
+    );
+    assert!(question.reason.contains(DECLARED_MEMBERSHIPS[1].1));
+
+    // Every declared membership must be carried by the ledger row it describes, or the
+    // declaration and the policy could drift apart silently. Asserted over the whole table
+    // rather than per-row, so a future membership cannot be added without this holding.
+    let rows_by_command = census().into_iter().collect::<BTreeMap<_, _>>();
+    for (command, membership) in DECLARED_MEMBERSHIPS {
+        // Facade-only names (`approve_permission_request` is a pinned alias for
+        // `resolve_permission_request`, not a Tauri command) have no census row of their own,
+        // and their membership is asserted against the target row above.
+        let Some(module) = rows_by_command.get(*command) else {
+            assert!(
+                find_spec(command).is_some(),
+                "declared membership `{command}` is neither a census command nor a facade op"
+            );
+            continue;
+        };
+        let row = policy_for(command, module)
+            .unwrap_or_else(|| panic!("declared membership `{command}` is not ledgered"));
+        assert!(
+            row.reason.contains(membership),
+            "`{command}` declares membership `{membership}` but its ledger reason does not carry \
+             it; the declaration and the policy would drift apart with nothing failing"
+        );
+    }
 }
 
 #[test]
@@ -1512,10 +1548,16 @@ fn representative_capability_stripping_cannot_lower_membership() {
             "permission_commands",
             Capability::AgentControl,
         ),
+        // Batch 10 corrected this row from `AgentControl`/`AGENT` to `Elevated`/`SpawnsProcess`
+        // after measuring that answering a live gate resumes the agent turn through three CLI
+        // resolvers. The representative capability moves with it: `SpawnsProcess` is now the
+        // capability whose loss would lower the membership, and it is a STRONGER guard than the
+        // one it replaces — stripping it drops the row out of `host-denied-spawns-process`
+        // entirely rather than merely down a scope.
         (
             "resolve_user_question",
             "question_commands",
-            Capability::AgentControl,
+            Capability::SpawnsProcess,
         ),
     ] {
         let row = policy_for(command, module).expect("representative row");
@@ -2049,9 +2091,19 @@ fn b1_sibling_getters_that_audit_dirty_stay_above_read() {
         "set_active_project syncs the execution concurrency quota, which is how waiting \
          Ready tasks get picked up; it is not a getter"
     );
-    assert!(
-        find_spec("set_active_project").is_none(),
-        "set_active_project must not be registered"
+    // PR 3.1-b batch 10 REGISTERED it — at `ui:agent`, never at the `Read` class this test
+    // guards. The exclusion recorded above was always "not a getter", and that claim is
+    // unchanged and still asserted by the class check; what batch 10 added is the arming audit
+    // the row needed to be served at the arming scope. The surviving invariant is the one this
+    // test exists for: a scheduler-quota write must never be reachable from the default
+    // `ui:read`+`ui:operate` pairing.
+    let spec = find_spec("set_active_project")
+        .expect("batch 10 registered set_active_project at ui:agent");
+    assert_eq!(
+        spec.class,
+        RiskClass::AgentControl,
+        "set_active_project syncs the execution concurrency quota; registering it anywhere a \
+         default pairing can reach would expose scheduler arming to a viewer"
     );
 }
 
@@ -3759,6 +3811,14 @@ fn b3_members_that_audit_dirty_stay_unregistered() {
     //
     // (a) + (b): these three seed spawn-triggering state as well as transitioning, which is
     // the combination `update_review_settings` is flagged for and no registered row carries.
+    // PR 3.1-b batch 10 resolved all three, and deliberately NOT the same way — which is the
+    // point of keeping them in one loop. The detector profile they share (a AND b) was never
+    // the disqualifier; batch 9 proved the facade serves that profile. What separated them was
+    // a body finding, so two are registered at `ui:agent` and one is classified fail-open.
+    //
+    // The detector assertions are RETAINED for all three. They are what makes the split
+    // falsifiable: if (a) or (b) stopped firing, these are no longer the commands that were
+    // audited and every disposition below needs re-deriving.
     for command in [
         "request_task_changes_for_review",
         "request_task_changes_from_reviewing",
@@ -3767,16 +3827,33 @@ fn b3_members_that_audit_dirty_stay_unregistered() {
         let closure = graph.closure([command.to_string()]);
         assert!(
             closure_is_arming(&closure),
-            "`{command}` is excluded because detector (a) fires; if it no longer does, the \
-             exclusion needs a new reason"
+            "`{command}` was audited with detector (a) firing; if it no longer does, the \
+             disposition needs a new reason"
         );
         assert!(
             detector_b.contains(command),
-            "`{command}` is excluded because detector (b) fires alongside (a)"
+            "`{command}` was audited with detector (b) firing alongside (a)"
         );
-        assert!(
-            find_spec(command).is_none(),
-            "`{command}` must not be registered"
+    }
+    // The one that audits dirty: it reaches the same `RevisionNeeded` transition as its
+    // registered sibling, but first rewrites `task.metadata` through two `unwrap_or_else`
+    // fallbacks that replace an unparseable blob with a stub, dropping every other field while
+    // still returning `Ok`.
+    assert!(
+        find_spec("request_task_changes_from_reviewing").is_none(),
+        "`request_task_changes_from_reviewing` is classified fail-open and must not be registered"
+    );
+    assert!(
+        audit_refusal_for("request_task_changes_from_reviewing").is_some(),
+        "its refusal must be recorded, or it silently returns to the ratchet"
+    );
+    for command in ["request_task_changes_for_review", "re_review_task_from_escalated"] {
+        let spec = find_spec(command)
+            .unwrap_or_else(|| panic!("batch 10 registered `{command}` at ui:agent"));
+        assert_eq!(
+            spec.class,
+            RiskClass::AgentControl,
+            "`{command}` transitions a task and must never be reachable below the arming scope"
         );
     }
 
@@ -3796,7 +3873,15 @@ fn b3_members_that_audit_dirty_stay_unregistered() {
         );
     }
 
-    // (b): the write half of the settings pair whose READ half this batch registered.
+    // (b): the write half of the settings pair whose READ half batch 7 registered. PR 3.1-b
+    // batch 10 registered this half too, at `ui:agent` — the registered `inject_task`,
+    // `resume_automation` and `finalize_automation` all carry the same
+    // `SeedsSpawnTriggeringState` capability, so seeding spawn-triggering state was never the
+    // disqualifier here; the absence of an audit was.
+    //
+    // Both surviving invariants are still asserted: the capability must stay declared, and the
+    // row must stay at the arming class rather than drifting down toward its registered read
+    // half by module analogy.
     let review_settings =
         policy_for("update_review_settings", "review_commands").expect("ledgered");
     assert!(
@@ -3807,7 +3892,16 @@ fn b3_members_that_audit_dirty_stay_unregistered() {
          and this half must not be reclassified downward by module analogy"
     );
     assert!(detector_b.contains("update_review_settings"));
-    assert!(find_spec("update_review_settings").is_none());
+    let review_settings_spec = find_spec("update_review_settings")
+        .expect("batch 10 registered update_review_settings at ui:agent");
+    assert_eq!(review_settings_spec.class, RiskClass::AgentControl);
+    assert!(
+        review_settings_spec
+            .capabilities
+            .contains(&Capability::SeedsSpawnTriggeringState),
+        "the registered spec must declare the seeding capability its ledger row records, or a \
+         reader of the facade would not see why the op is arming"
+    );
 
     // No detector models this one, so it is a hand-audited exclusion recorded here. Detector
     // (b)'s surface covers persisted spawn-triggering state; `update_qa_settings` writes
@@ -3823,7 +3917,21 @@ fn b3_members_that_audit_dirty_stay_unregistered() {
         "update_qa_settings arms automatic QA through an in-memory settings surface detector \
          (b) does not model; it is not a getter"
     );
-    assert!(find_spec("update_qa_settings").is_none());
+    // Batch 10 REGISTERED it at `ui:agent`, with an explicit DECLARED_MEMBERSHIPS row
+    // (`arms-auto-qa`) precisely because no detector models the in-memory surface described
+    // above — without that row the generated P-17b suite could never prove a registered
+    // arming write is unreachable from a default pairing. The invariant this test keeps is
+    // the class: an auto-QA arming write must never be reachable below `ui:agent`.
+    let qa_spec =
+        find_spec("update_qa_settings").expect("batch 10 registered update_qa_settings");
+    assert_eq!(qa_spec.class, RiskClass::AgentControl);
+    assert!(
+        DECLARED_MEMBERSHIPS
+            .iter()
+            .any(|(command, _)| *command == "update_qa_settings"),
+        "a registered arming write that no detector models MUST carry a declared membership, \
+         or the generated negative suite will never cover it"
+    );
 
     // --- The batch-7 detector-(c) FALSE POSITIVE, now CLEARED (PR 3.1-b batch 8, ITEM 0).
     //
@@ -3855,7 +3963,13 @@ fn b3_members_that_audit_dirty_stay_unregistered() {
         "`reopen_issue` persists a status change through `review_issue_repo.update`; a cleared \
          detector does not turn a writer into a getter"
     );
-    assert!(find_spec("reopen_issue").is_none());
+    // Batch 10 registered it at `ui:agent` after the writer audit batch 7 said it needed:
+    // a `review_issue_repo.get_by_id` -> `status == Addressed` guard -> `review_issue_repo
+    // .update`, taking only `&AppState`, with every error propagated. The two assertions
+    // above are the ones that must survive registration — the cleared detector must stay
+    // cleared, and the row must never claim `SpawnsProcess` to buy a classification.
+    let reopen_spec = find_spec("reopen_issue").expect("batch 10 registered reopen_issue");
+    assert_eq!(reopen_spec.class, RiskClass::AgentControl);
 
     // --- `start_research` lost ALL THREE detectors to the same walk fix, and stays refused.
     //
@@ -3877,9 +3991,16 @@ fn b3_members_that_audit_dirty_stay_unregistered() {
         "start_research creates a research process row; it audits clean only because the \
          pre-fix closure was a same-name artefact, not because it reads"
     );
-    assert!(
-        find_spec("start_research").is_none(),
-        "start_research must not be registered"
+    // Batch 10 registered it at `ui:agent`, and the ledger reason records the honest limit
+    // of what that buys: the body ends at `process_repo.create`, no spawn is reached
+    // transitively, and NO production consumer scans for Running `ResearchProcess` rows. It
+    // is registered as a guarded durable write, never as a research launcher.
+    let research_spec = find_spec("start_research").expect("batch 10 registered start_research");
+    assert_eq!(
+        research_spec.class,
+        RiskClass::AgentControl,
+        "a durable write whose detectors are clear only because a same-name artefact was \
+         removed must still be registered at the arming class, not below it"
     );
 }
 
@@ -3988,8 +4109,17 @@ fn b4_members_that_audit_dirty_stay_unregistered() {
         "set_active_plan must not be registered"
     );
 
-    // The other two writers in the reclassified modules, held on the ordinary write/read
-    // split rather than on a fail-open finding.
+    // The other two writers in the reclassified modules were held here only on the ordinary
+    // write/read split — never on a finding — which is exactly the "no audit was done" state
+    // batch 9 named. PR 3.1-b batch 10 did the audit and registered both at `ui:agent`.
+    //
+    // `clear_active_plan` is the sharp one, and the contrast with `set_active_plan` above is
+    // the whole reason both live in this test: they are sibling writers of the same pointer,
+    // and only one of them swallows its errors. Holding them together would have implied the
+    // refusal was about the surface; the split proves it was about the body.
+    //
+    // The invariant this test still enforces is unchanged: neither may be reclassified DOWNWARD
+    // by module analogy into a scope a default pairing can reach.
     for (command, module) in [
         ("clear_active_plan", "plan_commands"),
         ("seed_builtin_workflows", "workflow_commands"),
@@ -4000,9 +4130,13 @@ fn b4_members_that_audit_dirty_stay_unregistered() {
             RiskClass::AgentControl,
             "`{command}` writes and must not be reclassified downward by module analogy"
         );
+        let spec = find_spec(command)
+            .unwrap_or_else(|| panic!("batch 10 registered `{command}` at ui:agent"));
+        assert_eq!(spec.class, RiskClass::AgentControl);
         assert!(
-            find_spec(command).is_none(),
-            "`{command}` must not be registered"
+            !row.reason.contains("conservative-module-default"),
+            "`{command}` is registered on the module-default placeholder rather than a \
+             reviewed reason"
         );
     }
 }
@@ -4443,51 +4577,87 @@ fn batch9_detector_c_refusals_declare_the_capability_they_reach() {
     }
 
     assert_eq!(
-        checked, 13,
-        "batch 9 classified thirteen detector-(c) refusals; a change to that count is a census \
-         decision and must be made deliberately"
+        checked, 14,
+        "batch 9 classified thirteen detector-(c) refusals and batch 10 closed the fourteenth \
+         (`resolve_user_question`); a change to that count is a census decision and must be made \
+         deliberately"
     );
 }
 
-/// PR 3.1-b batch 9 — the measured detector-(c) refusal batch 9 declined to classify.
+/// PR 3.1-b batch 10 — the batch-9 declared-membership shadowing gap, CLOSED.
 ///
-/// `resolve_user_question` reaches three CLI resolvers, so its `AgentControl`/`AGENT` row
-/// understates it exactly as the thirteen corrected rows did. It was left alone because
-/// `exemptions_and_declared_memberships_are_exact` pins its class AND its verbatim reason
-/// string as a declared membership, and rewriting a membership contract is not the retroactive
-/// closure of an unclassified refusal.
+/// Batch 9 measured `resolve_user_question` as the fourteenth detector-(c) refusal and could not
+/// act on it. Two things blocked a quiet fix, and both were gates doing their job:
 ///
-/// Recorded as an assertion rather than a comment so the gap cannot decay: if the launch path
-/// disappears there is nothing left to correct, and if the membership pin is ever relaxed the
-/// row should be reclassified in the same change.
+/// 1. the command already had a `CommandOverride`, so an APPENDED `process_refusal` row was
+///    silently shadowed by `policy_for`'s first-match lookup — the duplicate-override assert
+///    caught it, and the detector-(c) gate then failed on the shadowed row's class;
+/// 2. `exemptions_and_declared_memberships_are_exact` pinned the row's reason as VERBATIM equal
+///    to `DECLARED_MEMBERSHIPS[1].1`, so any reason carrying the finding broke the pin.
+///
+/// Batch 10 fixes it the only way that leaves one authoritative statement: the EXISTING row is
+/// corrected in place, and the pin is relaxed to the `contains` form its `resolve_permission_
+/// request` sibling already used. The declared membership itself is preserved and re-asserted
+/// below — it was never the false part, and it is what keeps the command in the P-17b suite and
+/// its `ANCHORS` list.
+///
+/// The correction is authority-INCREASING: the command moves from "unreachable from a default
+/// pairing" to "unreachable at every scope".
 #[test]
-fn batch9_records_the_declared_membership_process_launch_gap() {
+fn batch10_closes_the_declared_membership_process_launch_gap() {
     let graph = CallGraph::build(&load_production_sources());
     let closure = graph.closure(["resolve_user_question".to_string()]);
+    assert!(
+        !closure.visited.is_empty(),
+        "`resolve_user_question` did not resolve; this assertion would be vacuous"
+    );
     let launchers = PROCESS_LAUNCH_SINKS
         .iter()
         .filter(|sink| closure.tokens.contains(**sink))
         .collect::<Vec<_>>();
     assert!(
         !launchers.is_empty(),
-        "`resolve_user_question` no longer reaches a process-launch sink; the batch-9 successor \
-         gap is closed by the code and this test plus its ledger comment should be deleted"
+        "`resolve_user_question` no longer reaches a process-launch sink; the SpawnsProcess \
+         capability is no longer earned and the row must be re-audited rather than kept"
     );
 
     let row = policy_for("resolve_user_question", "question_commands").expect("ledgered");
     assert_eq!(
         row.class,
-        RiskClass::AgentControl,
-        "the declared-membership pin is what blocks the correction; if the class moved, finish \
-         the job and give the row its SpawnsProcess capability"
+        RiskClass::Elevated,
+        "the correction moves the row to the only class `class_permits` admits SpawnsProcess under"
     );
-    assert!(
-        !row.capabilities.contains(&Capability::SpawnsProcess),
-        "the row gained SpawnsProcess without moving to Elevated, which class_permits forbids"
+    assert_eq!(row.capabilities, &[Capability::SpawnsProcess]);
+    assert_eq!(
+        ralphx_remote_protocol::v1_resolution_with_audit(
+            row.class,
+            row.capabilities,
+            audit_refusal_for("resolve_user_question").is_some(),
+        ),
+        ralphx_remote_protocol::V1Resolution::HostDeniedSpawnsProcess,
+        "the gap is closed by the row resolving through the manifest, not by a comment"
     );
     assert!(
         find_spec("resolve_user_question").is_none(),
-        "the gap is a ledger understatement, not a registration"
+        "a host denial must not be registered"
+    );
+
+    // The half of the fix that is easiest to lose: correcting the class must NOT silently drop
+    // the declared membership, or the command would fall out of the generated `ui:agent` suite
+    // and out of its anchor list while looking more strictly classified than before.
+    let membership = DECLARED_MEMBERSHIPS
+        .iter()
+        .find(|(command, _)| *command == "resolve_user_question")
+        .expect("the declared membership is preserved by the correction, not replaced by it");
+    assert!(
+        row.reason.contains(membership.1),
+        "the corrected row must still carry the declared membership `{}`; it states what the \
+         command DOES, while the class states what authority it reaches",
+        membership.1
+    );
+    assert!(
+        row.reason.starts_with("detector-c:"),
+        "the row must state the finding that justifies the class"
     );
 }
 
@@ -4511,6 +4681,10 @@ fn batch9_audit_refusals_are_tied_to_a_live_pin() {
         "b4_members_that_audit_dirty_stay_unregistered",
         "b1_sibling_getters_that_audit_dirty_stay_above_read",
         "b1_read_reclassifications_are_reviewed_rather_than_module_defaults",
+        // Batch 10's disposition table is the pin for the seven members it classified: it names
+        // each one and re-measures the detector-(c) floor on it, so deleting the table takes the
+        // classifications down with it.
+        "batch10_closes_the_batch9_arming_and_write_block",
     ];
     let own_source = include_str!("capability_ledger_tests.rs");
     let pin_bodies = PINNED_REFUSAL_TESTS
@@ -4576,117 +4750,190 @@ fn batch9_audit_refusals_are_tied_to_a_live_pin() {
     }
     assert_eq!(
         AUDIT_REFUSALS.len(),
-        11,
-        "batch 9 recorded eleven audit refusals; changing that count is a census decision"
+        18,
+        "batch 9 recorded eleven audit refusals and batch 10 added seven; changing that count is \
+         a census decision"
     );
 }
 
-/// PR 3.1-b batch 9 ITEM 0 — the refusals that must STAY on the ratchet, and why.
+/// PR 3.1-b batch 10 — the batch-9 arming/write block, CLOSED.
 ///
-/// The batch-9 brief proposed mapping every arming/steering/write refusal onto a host-denied
-/// class. Measuring the facade refuted it: 83 registered ops include 16 at `agentControl`, four
-/// carrying `Capability::AgentControl` and three carrying `SeedsSpawnTriggeringState`. So the
-/// host demonstrably DOES grant arming authority in v1, and "detector (a) fires" or "it writes"
-/// cannot mean "the host denies it" — those refusals record which batch ran out of scope, not a
-/// property of the command.
+/// Batch 9 measured the facade and refused to map arming onto a host denial: 83 registered ops
+/// included 16 at `agentControl`, four carrying `Capability::AgentControl` and three carrying
+/// `SeedsSpawnTriggeringState`. So "detector (a) fires" or "it writes" recorded which batch ran
+/// out of scope, not a property of the command, and classifying the 25 anyway would have moved
+/// the ratchet by 25 while putting 25 false statements in the ledger.
 ///
-/// Classifying them anyway would have moved the ratchet by 25 while putting 25 false statements
-/// in the ledger, and the ratchet's only value is that its number is true. This test freezes the
-/// decision so a later batch re-deriving the tempting mapping meets the counter-evidence first.
+/// What that argument implied — and what batch 9 explicitly deferred — is that the block was
+/// blocked on an AUDIT, not on a mechanism. Batch 10 did the audit and this test records its
+/// result per member, so the block is closed by evidence rather than by the mapping batch 9
+/// refused. Seven members audited dirty and are classified on their own findings; none of the
+/// 25 was resolved by analogy to another command's verdict.
 #[test]
-fn batch9_arming_and_write_refusals_stay_on_the_ratchet() {
-    // Audited and refused in batches 1–8, deliberately NOT classified: every recorded finding is
-    // arming, steering, or an unaudited write, and the facade serves commands of that shape.
-    const STILL_UNRESOLVED: &[&str] = &[
-        // detector (a) and/or (b) fires — the same profile as registered `agentControl` ops.
-        "approve_fix_task",
-        "reject_fix_task",
-        "request_task_changes_for_review",
-        "request_task_changes_from_reviewing",
-        "re_review_task_from_escalated",
-        "update_review_settings",
-        "get_agent_conversation",
-        "get_agent_conversation_messages_page",
-        "get_agent_conversation_timeline_page",
-        // hand-found arming surfaces no detector models.
-        "update_qa_settings",
-        "set_active_project",
-        "archive_tasks_in_group",
-        "resolve_permission_request",
-        // repository writes behind a status guard; a writer audit for `ui:agent` was never done,
-        // and detector silence is not a substitute for one.
-        "reopen_issue",
-        "approve_review",
-        "request_changes",
-        "reject_review",
-        "verify_issue",
-        "mark_issue_in_progress",
-        "mark_issue_addressed",
-        "retry_qa",
-        "skip_qa",
-        "start_research",
-        "seed_builtin_workflows",
-        "clear_active_plan",
+fn batch10_closes_the_batch9_arming_and_write_block() {
+    // The 25 members of batch 9's block, each with the disposition batch 10's audit produced.
+    // `true` = registered at `ui:agent`; `false` = classified `v1-audit-refused`. There is no
+    // third column on purpose: the closed-loop rule is that an audited member leaves with a
+    // ratchet-moving disposition, so a member that is neither would fail both arms below.
+    const REGISTERED: &str = "registered";
+    const CLASSIFIED: &str = "classified";
+    const UNRESOLVED: &str = "unresolved";
+    const DISPOSITIONS: &[(&str, &str)] = &[
+        // --- Registered at `ui:agent`. Human gate decisions and guarded writes of exactly the
+        //     shape the facade already serves.
+        ("request_task_changes_for_review", REGISTERED),
+        ("re_review_task_from_escalated", REGISTERED),
+        ("update_review_settings", REGISTERED),
+        ("reopen_issue", REGISTERED),
+        ("verify_issue", REGISTERED),
+        ("mark_issue_in_progress", REGISTERED),
+        ("mark_issue_addressed", REGISTERED),
+        ("approve_review", REGISTERED),
+        ("reject_review", REGISTERED),
+        ("request_changes", REGISTERED),
+        ("retry_qa", REGISTERED),
+        ("update_qa_settings", REGISTERED),
+        ("clear_active_plan", REGISTERED),
+        ("seed_builtin_workflows", REGISTERED),
+        ("start_research", REGISTERED),
+        ("set_active_project", REGISTERED),
+        // --- Classified `v1-audit-refused`. Four surfaces the facade already answers under
+        //     another name, and three writes whose audit came back fail-open.
+        ("get_agent_conversation", CLASSIFIED),
+        ("get_agent_conversation_messages_page", CLASSIFIED),
+        ("get_agent_conversation_timeline_page", CLASSIFIED),
+        ("resolve_permission_request", CLASSIFIED),
+        ("archive_tasks_in_group", CLASSIFIED),
+        ("request_task_changes_from_reviewing", CLASSIFIED),
+        ("skip_qa", CLASSIFIED),
+        // --- Still on the ratchet, recorded rather than quietly dropped. The fix-task repair
+        //     pair is the one part of batch 9's block batch 10 could not close, and the reason
+        //     is a hard invariant rather than a missing audit:
+        //
+        //     `reject_fix_task` reaches `transition_task_corrective`. Corrective jumps are
+        //     repair-path-only and `no_registered_facade_target_reaches_a_corrective_transition`
+        //     forbids them on the facade at every scope — the audit was done and it FAILED.
+        //     It is not classified `v1-audit-refused` because no reason code in the closed
+        //     vocabulary states "reaches a corrective transition", and batch 9's standing rule
+        //     is that a classification may not be bought by reaching for an ill-fitting code.
+        //
+        //     `approve_fix_task` audits CLEAN — a Blocked→Ready transition in the registered
+        //     `unblock_task` shape — and is withheld anyway, on the pair argument: registering
+        //     the approve half alone would let a device unblock fix tasks with no remote way to
+        //     reject one, the brake-less asymmetry batch 3 closed for execution.
+        ("approve_fix_task", UNRESOLVED),
+        ("reject_fix_task", UNRESOLVED),
     ];
 
     let modules = census().into_iter().collect::<BTreeMap<_, _>>();
-    for command in STILL_UNRESOLVED {
+    let graph = CallGraph::build(&load_production_sources());
+
+    let mut registered = 0usize;
+    let mut classified = 0usize;
+    let mut unresolved = 0usize;
+    for (command, disposition) in DISPOSITIONS {
         let module = modules
             .get(*command)
             .unwrap_or_else(|| panic!("`{command}` left the census"));
-        assert!(
-            audit_refusal_for(command).is_none(),
-            "`{command}` was classified `v1-audit-refused`. Its recorded finding is arming, \
-             steering or an unaudited write — shapes the facade already serves — so the \
-             classification would be false. Register it after a real `ui:agent` audit, or leave \
-             it on the ratchet."
-        );
         let row = policy_for(command, module).expect("ledgered");
-        assert_eq!(
-            ralphx_remote_protocol::v1_resolution_with_audit(
-                row.class,
-                row.capabilities,
+
+        // The absolute floor, re-measured per member rather than inherited from batch 9's
+        // probe. Detector (c) outranks every scope decision: a command whose closure resolves a
+        // CLI binary is not registerable at ANY v1 scope, so if one of these ever grows a launch
+        // path the registration below must be withdrawn, not re-justified.
+        let closure = graph.closure([(*command).to_string()]);
+        assert!(
+            !closure.visited.is_empty(),
+            "`{command}` did not resolve; the floor check would be vacuous"
+        );
+        assert!(
+            !tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS),
+            "`{command}` now reaches a process-launch sink. The detector-(c) floor is absolute \
+             and is not a scope decision: withdraw the batch-10 disposition and reclassify the \
+             row `host-denied-spawns-process` rather than keeping it on the facade."
+        );
+
+        if *disposition == UNRESOLVED {
+            // Held members must stay COUNTABLE. The failure this forecloses is the quiet one:
+            // a member dropped from the block without being registered or classified would
+            // vanish from every batch report while still sitting on the ratchet.
+            unresolved += 1;
+            assert!(
+                find_spec(command).is_none(),
+                "`{command}` is recorded unresolved but is registered"
+            );
+            assert!(
+                audit_refusal_for(command).is_none(),
+                "`{command}` is recorded unresolved but carries an audit refusal"
+            );
+            assert_eq!(
+                ralphx_remote_protocol::v1_resolution_with_audit(
+                    row.class,
+                    row.capabilities,
+                    false,
+                ),
+                ralphx_remote_protocol::V1Resolution::Registerable,
+                "`{command}` must stay countable as unresolved"
+            );
+        } else if *disposition == REGISTERED {
+            registered += 1;
+            let spec = find_spec(command)
+                .unwrap_or_else(|| panic!("`{command}` is recorded registered but has no spec"));
+            assert_eq!(
+                spec.class,
+                RiskClass::AgentControl,
+                "`{command}` was registered below the arming class it was audited at"
+            );
+            assert!(
+                audit_refusal_for(command).is_none(),
+                "`{command}` is registered AND carries an audit refusal; the ledger and the \
+                 registry contradict each other"
+            );
+            assert_eq!(
+                row.reason.contains("conservative-module-default"),
+                false,
+                "`{command}` is registered on the module-default placeholder, which records that \
+                 no judgement was made. A registered command needs a reviewed reason."
+            );
+        } else {
+            classified += 1;
+            assert!(
                 audit_refusal_for(command).is_some(),
-            ),
-            ralphx_remote_protocol::V1Resolution::Registerable,
-            "`{command}` must stay countable as unresolved"
-        );
-        assert!(find_spec(command).is_none(), "`{command}` is not registered");
+                "`{command}` is recorded classified but carries no audit refusal, so it would \
+                 silently stay on the ratchet"
+            );
+            assert!(
+                find_spec(command).is_none(),
+                "`{command}` renders `v1-audit-refused` but is registered"
+            );
+            assert_eq!(
+                ralphx_remote_protocol::v1_resolution_with_audit(
+                    row.class,
+                    row.capabilities,
+                    true,
+                ),
+                ralphx_remote_protocol::V1Resolution::V1AuditRefused,
+            );
+        }
     }
 
-    // The sharpest form of the counter-evidence: for several refusals above, the facade ALREADY
-    // registers the near-twin. Asserted as pairs, because a reviewer who accepts "16 agentControl
-    // ops exist" in the abstract may still feel that a particular refusal is obviously deniable.
-    //
-    //   refused (stays on the ratchet)   | registered twin at ui:agent
-    //   ---------------------------------|---------------------------------
-    //   resolve_user_question            | answer_user_question
-    //   resolve_permission_request       | approve_permission_request
-    //   approve_review / reject_review   | approve_task_for_review
-    //   update_review_settings (det. b)  | inject_task (seedsSpawnTriggeringState)
-    //
-    // Calling any of the left column `host-denied` would assert that no v1 grant can reach it,
-    // while the host serves the right column at the same class and capability set.
-    for (refused, registered_twin) in [
-        ("resolve_user_question", "answer_user_question"),
-        ("resolve_permission_request", "approve_permission_request"),
-        ("approve_review", "approve_task_for_review"),
-        ("update_review_settings", "inject_task"),
-    ] {
-        assert!(
-            find_spec(refused).is_none(),
-            "`{refused}` is refused; if it was registered, update this pairing"
-        );
-        assert!(
-            find_spec(registered_twin).is_some(),
-            "`{registered_twin}` is the registered twin that makes refusing `{refused}` a \
-             scope decision rather than a host denial; if it was unregistered, batch 9's \
-             classification argument must be re-derived"
-        );
-    }
+    assert_eq!(registered, 16, "batch 10 registered sixteen of the block");
+    assert_eq!(classified, 7, "batch 10 classified seven of the block");
+    assert_eq!(
+        unresolved, 2,
+        "the fix-task repair pair is the only part of the block batch 10 left open; closing it \
+         needs `reject_fix_task` to stop reaching a corrective transition, not a new argument"
+    );
+    assert_eq!(
+        DISPOSITIONS.len(),
+        25,
+        "batch 9 left exactly 25 members; changing that count is a census decision"
+    );
 
-    // The counter-evidence itself, asserted rather than described: if the facade ever stops
-    // serving arming authority, this test's whole argument changes and it should fail loudly.
+    // Batch 9's counter-evidence, preserved rather than discarded. It is the reason this block
+    // was registerable at all: "detector (a) fires" or "it writes" cannot mean "the host denies
+    // it" while the facade serves arming authority. Batch 10 acted on that argument, so if the
+    // facade ever stops serving it, this test's premise is gone and it must fail loudly.
     let arming_ops = REMOTE_COMMANDS
         .iter()
         .filter(|spec| {
@@ -4700,7 +4947,45 @@ fn batch9_arming_and_write_refusals_stay_on_the_ratchet() {
     assert!(
         arming_ops >= 16,
         "the facade serves {arming_ops} agentControl ops; batch 9 refused to call arming \
-         authority `host-denied` BECAUSE the facade grants it. If that changed, re-derive the \
-         classification decision rather than editing this number."
+         authority `host-denied` BECAUSE the facade grants it, and batch 10 registered 18 more \
+         on that argument. If that changed, re-derive the decision rather than editing this \
+         number."
     );
+}
+
+/// Retained from batch 9 as the record of WHY the block was registerable, now that batch 10 has
+/// acted on it. The pairing table is the sharpest form of the counter-evidence and outlives the
+/// block it justified: each left-column command is served by the facade under the right-column
+/// name, so calling any of them `host-denied` would have been false.
+#[test]
+fn the_registered_twin_pairings_that_justified_the_batch10_registrations_hold() {
+    for (refused, registered_twin) in [
+        // Twin-classified by batch 10: the facade answers the query under the right-hand name.
+        ("resolve_permission_request", "approve_permission_request"),
+        ("get_agent_conversation", "get_remote_agent_conversation"),
+        (
+            "get_agent_conversation_messages_page",
+            "get_remote_agent_conversation_messages_page",
+        ),
+        (
+            "get_agent_conversation_timeline_page",
+            "get_remote_agent_conversation_timeline_page",
+        ),
+        ("list_agent_conversations", "list_remote_agent_conversations"),
+        // Host-denied, and still the standing proof that a denial needs a MECHANISM: this pair
+        // sits at the same declared membership, and only the detector-(c) launch path separates
+        // them.
+        ("resolve_user_question", "answer_user_question"),
+    ] {
+        assert!(
+            find_spec(refused).is_none(),
+            "`{refused}` is refused; if it was registered, update this pairing"
+        );
+        assert!(
+            find_spec(registered_twin).is_some(),
+            "`{registered_twin}` is the registered answer that makes refusing `{refused}` a \
+             seam decision rather than a capability gap; if it was unregistered, the twin \
+             classification must be re-derived"
+        );
+    }
 }

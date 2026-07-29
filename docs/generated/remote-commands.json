@@ -2089,6 +2089,14 @@
     {
       "command": "send_remote_chat_message",
       "reason": "steers-live-agent-turn"
+    },
+    {
+      "command": "update_qa_settings",
+      "reason": "arms-auto-qa"
+    },
+    {
+      "command": "set_active_project",
+      "reason": "arms-scheduler-quota"
     }
   ],
   "facade_ops": [
@@ -2500,6 +2508,187 @@
       ],
       "scopeConfined": false,
       "target": "crate::commands::remote_chat_commands::send_remote_chat_message"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "mutatesAgentConsumedContent"
+      ],
+      "class": "agentControl",
+      "command": "request_task_changes_for_review",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::review_commands::request_task_changes_for_review"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "re_review_task_from_escalated",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::review_commands::re_review_task_from_escalated"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl",
+        "seedsSpawnTriggeringState"
+      ],
+      "class": "agentControl",
+      "command": "update_review_settings",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::review_commands::update_review_settings"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl",
+        "mutatesAgentConsumedContent"
+      ],
+      "class": "agentControl",
+      "command": "reopen_issue",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::review_commands::reopen_issue"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl",
+        "mutatesAgentConsumedContent"
+      ],
+      "class": "agentControl",
+      "command": "verify_issue",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::review_commands::verify_issue"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl",
+        "mutatesAgentConsumedContent"
+      ],
+      "class": "agentControl",
+      "command": "mark_issue_in_progress",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::review_commands::mark_issue_in_progress"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl",
+        "mutatesAgentConsumedContent"
+      ],
+      "class": "agentControl",
+      "command": "mark_issue_addressed",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::review_commands::mark_issue_addressed"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "mutatesAgentConsumedContent"
+      ],
+      "class": "agentControl",
+      "command": "approve_review",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::review_commands::approve_review"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "mutatesAgentConsumedContent"
+      ],
+      "class": "agentControl",
+      "command": "reject_review",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::review_commands::reject_review"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "mutatesAgentConsumedContent"
+      ],
+      "class": "agentControl",
+      "command": "request_changes",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::review_commands::request_changes"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "retry_qa",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::qa_commands::retry_qa"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "update_qa_settings",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::qa_commands::update_qa_settings"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "clear_active_plan",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::plan_commands::clear_active_plan"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "seed_builtin_workflows",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::workflow_commands::seed_builtin_workflows"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "start_research",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::research_commands::start_research"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "set_active_project",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::execution_commands::set_active_project"
     },
     {
       "argumentSensitive": false,
@@ -4130,6 +4319,11 @@
       "v1Resolution": "registerable"
     },
     {
+      "auditRefusal": {
+        "batch": "3 refused, audited and classified 10",
+        "finding": "task_commands/mutation.rs:2242 swallows each per-task archive error with tracing::warn! and continues the loop, so the command returns Ok(BulkArchiveResponse { archived_count }) with a count silently short of the group and no way for the caller to learn which tasks survived. Compounded by the standing authority-OBSCURING finding: archive writes only archived_at, there is no InternalStatus::Archived, and get_by_status filters `archived_at IS NULL`, so a partially-failed sweep leaves Executing tasks holding their agent process while invisible to the reconciler; fix by propagating the per-task error",
+        "reason": "fail-open-until-fixed"
+      },
       "capabilities": [
         "agentControl"
       ],
@@ -4138,7 +4332,7 @@
       "module": "task_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "v1-audit-refused"
     },
     {
       "capabilities": [
@@ -4819,8 +5013,8 @@
       "class": "agentControl",
       "command": "update_qa_settings",
       "module": "qa_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "arms-auto-qa: applies only the Some(..) fields of the input to the in-memory AppState::qa_settings write guard, so it can enable auto-QA. Detector-silent by construction — the surface is a RwLock, not a repository — which is why it also carries an explicit DECLARED_MEMBERSHIPS row. The READ half (`get_qa_settings`) is already registered at Read",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -4848,11 +5042,16 @@
       "class": "agentControl",
       "command": "retry_qa",
       "module": "qa_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "reads task_qa_repo.get_by_task_id and writes a fresh all-Pending QAResults through update_results; every error propagates with `?`. Its sibling `skip_qa` is REFUSED — skip writes a verdict that does not mean what its name promises, while retry writes the unambiguous Pending reset",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
+      "auditRefusal": {
+        "batch": "7 refused, audited and classified 10",
+        "finding": "the command promises a QA bypass and does not deliver one: it writes every step as QAStepResult::skipped, but QAResults::from_results derives Passed only when passed_steps == total_steps and skipped steps increment skipped_steps, so overall_status resolves to Pending, not Passed — contradicting the body's own `// Mark all steps as passed (skipped behavior)` comment. A caller is told the skip succeeded while the verdict it wanted was never written; fix by deciding the intended verdict and making from_results express it",
+        "reason": "fail-open-until-fixed"
+      },
       "capabilities": [
         "agentControl"
       ],
@@ -4861,7 +5060,7 @@
       "module": "qa_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "v1-audit-refused"
     },
     {
       "capabilities": [],
@@ -4907,7 +5106,7 @@
       "command": "approve_review",
       "module": "review_commands",
       "reason": "content-surface: writes worker-consumed review feedback",
-      "registered": false,
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -4918,7 +5117,7 @@
       "command": "request_changes",
       "module": "review_commands",
       "reason": "content-surface: writes worker-consumed review feedback",
-      "registered": false,
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -4929,7 +5128,7 @@
       "command": "reject_review",
       "module": "review_commands",
       "reason": "content-surface: writes worker-consumed review feedback",
-      "registered": false,
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -4939,7 +5138,7 @@
       "class": "agentControl",
       "command": "approve_fix_task",
       "module": "review_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-a: guards internal_status == Blocked, then transitions the fix task to Ready through TaskTransitionService. Authority-RESTORING in exactly the registered `unblock_task` shape — a human gate decision that lets scheduling resume, with the guard and every repository error propagated. Audited CLEAN by batch 10 and deliberately NOT registered: its paired half `reject_fix_task` reaches transition_task_corrective, which the facade forbids at every scope, and exposing the approve half alone would give a device fix-task unblocking with no remote way to reject. Held on the pair, not on a finding of its own",
       "registered": false,
       "v1Resolution": "registerable"
     },
@@ -4982,10 +5181,15 @@
       "command": "request_task_changes_for_review",
       "module": "review_commands",
       "reason": "content-surface: writes worker-consumed review feedback",
-      "registered": false,
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
+      "auditRefusal": {
+        "batch": "audited and classified 10",
+        "finding": "the idempotency-flag write degrades destructively: review_commands.rs:675 reads the task's metadata with parse_metadata(&task).unwrap_or_else(|| json!({})) and :683 re-serialises it with unwrap_or_else(|_| r#\"{\\\"request_changes_initiated\\\":true}\"#), so an unparseable or unserialisable blob is REPLACED by a stub and every other metadata field is dropped — while the command returns Ok. Its sibling request_task_changes_for_review reaches the same RevisionNeeded transition with no such write and is registered instead; fix by propagating both serde errors",
+        "reason": "fail-open-until-fixed"
+      },
       "capabilities": [
         "mutatesAgentConsumedContent"
       ],
@@ -4994,7 +5198,7 @@
       "module": "review_commands",
       "reason": "content-surface: writes worker-consumed review feedback",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "v1-audit-refused"
     },
     {
       "capabilities": [
@@ -5003,8 +5207,8 @@
       "class": "agentControl",
       "command": "re_review_task_from_escalated",
       "module": "review_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "detector-a/b: guards internal_status == Escalated, optionally restores a stale worktree path (errors propagated with `?`), then transitions to PendingReview, which dispatches the AI reviewer. A user-initiated gate decision of precisely the shape `ui:agent` exists for",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -5034,7 +5238,7 @@
       "command": "verify_issue",
       "module": "review_commands",
       "reason": "detector-d: writes worker-consumed review issue state",
-      "registered": false,
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -5046,7 +5250,7 @@
       "command": "reopen_issue",
       "module": "review_commands",
       "reason": "detector-d: writes worker-consumed review issue state",
-      "registered": false,
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -5058,7 +5262,7 @@
       "command": "mark_issue_in_progress",
       "module": "review_commands",
       "reason": "detector-d: writes worker-consumed review issue state",
-      "registered": false,
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -5070,7 +5274,7 @@
       "command": "mark_issue_addressed",
       "module": "review_commands",
       "reason": "detector-d: writes worker-consumed review issue state",
-      "registered": false,
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -5091,7 +5295,7 @@
       "command": "update_review_settings",
       "module": "review_commands",
       "reason": "detector-b: arms require_workspace_review consumed by the auto-review spawner",
-      "registered": false,
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -5238,8 +5442,8 @@
       "class": "agentControl",
       "command": "set_active_project",
       "module": "execution_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "arms-scheduler-quota: calls sync_quota_from_project, which writes the runtime ExecutionState max_concurrent and project_ideation_max atomics that can_start_task reads. Deliberately NOT declared SeedsSpawnTriggeringState: unlike its siblings set_max_concurrent and update_execution_settings, this command never calls schedule_ready_tasks_for_project, so it raises the ceiling without itself dispatching anything. Detector-silent, hence the DECLARED_MEMBERSHIPS row",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -6389,8 +6593,8 @@
       "class": "agentControl",
       "command": "seed_builtin_workflows",
       "module": "workflow_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "idempotent built-in workflow seed: for each of the three builtins, creates it only when workflow_repo.get_by_id returns None, so re-running is a no-op returning Ok(0) and a customised builtin is never overwritten; every error propagates with `?`",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -6807,8 +7011,8 @@
       "class": "agentControl",
       "command": "start_research",
       "module": "research_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "durable row write only: builds a ResearchProcess, marks it Running and persists it via process_repo.create with errors propagated. Recorded honestly — no spawn is reached, transitively or otherwise, and no production consumer scans for Running ResearchProcess rows, so this arms nothing today; it is registered as a guarded write, NOT as a research launcher",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -6951,6 +7155,11 @@
       "v1Resolution": "host-denied"
     },
     {
+      "auditRefusal": {
+        "batch": "1.5 split, classified 10",
+        "finding": "the facade already registers this exact fn twice — approve_permission_request (AgentControl) and deny_permission_request (Operate) both target it with the decision field server-pinned. Registering the raw name would move branch selection from the command name to a client-supplied argument and collapse the Operate/AgentControl split that pinning exists to enforce",
+        "reason": "seam-resolved-via-remote-twin"
+      },
       "capabilities": [
         "agentControl"
       ],
@@ -6959,7 +7168,7 @@
       "module": "permission_commands",
       "reason": "approve branch authorizes-live-tool-call; deny branch is authority-reducing",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "v1-audit-refused"
     },
     {
       "auditRefusal": {
@@ -6988,14 +7197,14 @@
     },
     {
       "capabilities": [
-        "agentControl"
+        "spawnsProcess"
       ],
-      "class": "agentControl",
+      "class": "elevated",
       "command": "resolve_user_question",
       "module": "question_commands",
-      "reason": "steering-question",
+      "reason": "detector-c: steering-question — answering a live gate resumes the agent turn, so the closure resolves resolve_git_cli_path, resolve_node_cli_path and find_codex_cli_candidates",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "auditRefusal": {
@@ -7029,7 +7238,7 @@
       "class": "agentControl",
       "command": "send_remote_chat_message",
       "module": "remote_chat_commands",
-      "reason": "content-surface: queues a role-pinned user turn for a run that is already live; detector-silent on (a), (b) and (c) — it arms no scheduler, resolves no CLI path, and refuses when no live run would drain the row, so a message can never be persisted as sent yet delivered to nobody. The role is pinned to \"user\" at dispatch, so a remote client cannot forge an orchestrator speaker label",
+      "reason": "content-surface, declared membership steers-live-agent-turn: queues a role-pinned user turn for a run that is already live; detector-silent on (a), (b) and (c) — it arms no scheduler, resolves no CLI path, and refuses when no live run would drain the row, so a message can never be persisted as sent yet delivered to nobody. The role is pinned to \"user\" at dispatch, so a remote client cannot forge an orchestrator speaker label",
       "registered": true,
       "v1Resolution": "registerable"
     },
@@ -7310,6 +7519,11 @@
       "v1Resolution": "registerable"
     },
     {
+      "auditRefusal": {
+        "batch": "4, classified 10",
+        "finding": "batch 4 split the seam; both this command and the registered get_remote_agent_conversation delegate to the SAME get_agent_conversation_for_app_state seam and return the same payload, so the only difference is that the local name first calls wake_agent_workspace_for_bridge_events — whose error it discards with tracing::warn! and reads anyway. Registering it would put two facade paths on one query while dragging the wake's steer sink onto the facade for no payload",
+        "reason": "seam-resolved-via-remote-twin"
+      },
       "capabilities": [
         "agentControl"
       ],
@@ -7318,7 +7532,7 @@
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "v1-audit-refused"
     },
     {
       "capabilities": [],
@@ -7330,6 +7544,11 @@
       "v1Resolution": "registerable"
     },
     {
+      "auditRefusal": {
+        "batch": "4, classified 10",
+        "finding": "same split seam and the same discarded wake; get_remote_agent_conversation_messages_page is the registered answer and applies identical limit clamping (unwrap_or(40).clamp(1, 200))",
+        "reason": "seam-resolved-via-remote-twin"
+      },
       "capabilities": [
         "agentControl"
       ],
@@ -7338,9 +7557,14 @@
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "v1-audit-refused"
     },
     {
+      "auditRefusal": {
+        "batch": "4, classified 10",
+        "finding": "same split seam and the same discarded wake; get_remote_agent_conversation_timeline_page is the registered answer",
+        "reason": "seam-resolved-via-remote-twin"
+      },
       "capabilities": [
         "agentControl"
       ],
@@ -7349,7 +7573,7 @@
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "v1-audit-refused"
     },
     {
       "auditRefusal": {
@@ -8410,8 +8634,8 @@
       "class": "agentControl",
       "command": "clear_active_plan",
       "module": "plan_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "authority-reducing plan clear: a single active_plan_repo.clear whose error propagates through map_err. Registered where its WRITE sibling `set_active_plan` is refused, and the asymmetry is the whole finding — set_active_plan additionally derives an execution_plan_id behind `if let Ok(Some(ep))` and discards the follow-up write with `let _ =`; clear touches execution_plan_id not at all",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {

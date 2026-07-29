@@ -382,7 +382,8 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
         policy: policy(
             RiskClass::AgentControl,
             MUTATES_CONTENT,
-            "content-surface: queues a role-pinned user turn for a run that is already live; \
+            "content-surface, declared membership steers-live-agent-turn: queues a role-pinned \
+             user turn for a run that is already live; \
              detector-silent on (a), (b) and (c) — it arms no scheduler, resolves no CLI path, \
              and refuses when no live run would drain the row, so a message can never be \
              persisted as sent yet delivered to nobody. The role is pinned to \"user\" at \
@@ -1157,9 +1158,40 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
             "approve branch authorizes-live-tool-call; deny branch is authority-reducing",
         ),
     },
+    // PR 3.1-b batch 10 — the batch-9 shadowing gap, closed in the ONE authoritative row.
+    //
+    // Batch 9 measured this command as the fifteenth detector-(c) refusal: answering a live gate
+    // resumes the agent turn, so its closure resolves the git, node and Codex CLIs exactly as the
+    // thirteen corrected rows did. It could not append a `process_refusal` for it, because
+    // `policy_for` is a FIRST-MATCH lookup and this row already existed — the appended row was
+    // silently shadowed, and the duplicate-override assert plus the new detector-(c) gate both
+    // fired on the shadowed copy. Batch 9 recorded the gap rather than half-fixing it.
+    //
+    // The fix is not a second row. It is this row, corrected in place, so there is exactly one
+    // authoritative statement about the command.
+    //
+    // The declared membership is PRESERVED and is a substring of the reason. That is deliberate:
+    // the membership was never the false part. "steering-question" is a true claim about what the
+    // command does and it is what keeps the command in the P-17b `ui:agent` negative suite and in
+    // its ANCHORS list. What was false was the CLASS — `AgentControl`/`AGENT` understated a
+    // closure that resolves three CLI binaries. Correcting the class is authority-INCREASING and
+    // strictly strengthens the guarantee: the command moves from "unreachable from a default
+    // pairing" to "unreachable at every scope", which
+    // `manifest_classified_commands_stay_unreachable_at_every_scope` proves.
+    //
+    // `exemptions_and_declared_memberships_are_exact` was pinning this row's reason as VERBATIM
+    // equal to `DECLARED_MEMBERSHIPS[1].1`, which is what made the correction a contract change.
+    // Batch 10 relaxes that pin to the `contains` form its `resolve_permission_request` sibling
+    // already used — the membership must still be carried, but the row may also state the finding.
     CommandOverride {
         command: "resolve_user_question",
-        policy: policy(RiskClass::AgentControl, AGENT, "steering-question"),
+        policy: policy(
+            RiskClass::Elevated,
+            PROCESS,
+            "detector-c: steering-question — answering a live gate resumes the agent turn, so the \
+             closure resolves resolve_git_cli_path, resolve_node_cli_path and \
+             find_codex_cli_candidates",
+        ),
     },
     // The approve half of the pinned permission split. Its sibling `deny_permission_request`
     // carries an authority-reducing exemption down to Operate; this half gets none, because
@@ -1441,6 +1473,119 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
         ),
     },
     // ---------------------------------------------------------------------------------------
+    // PR 3.1-b batch 10 — reviewed rows for the arming/steering writes this batch REGISTERS.
+    //
+    // Each of these was on the ratchet carrying the `agent_default` placeholder
+    // ("conservative-module-default: may steer or arm autonomous work"), which records that no
+    // judgement was made. Batch 9 measured every one of them detector-(c) SILENT, so the absolute
+    // floor does not reach them, and then declined to classify them because the finding behind
+    // each refusal was arming or steering — a shape the facade demonstrably serves at `ui:agent`.
+    //
+    // Batch 10 did the registration audit batch 9 said they needed. Each row below states what
+    // the audit FOUND, not what the module guessed. The commands whose audit came back dirty are
+    // in `AUDIT_REFUSALS` instead; nothing here is registered on detector silence alone.
+    //
+    // Capability sets are deliberately conservative and unchanged where a reviewed row already
+    // existed. `AgentControl` is the class ceiling for v1 in every case, so these capability
+    // lists document WHY the class is required; they never lower it.
+    // ---------------------------------------------------------------------------------------
+    CommandOverride {
+        command: "approve_fix_task",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "detector-a: guards internal_status == Blocked, then transitions the fix task to \
+             Ready through TaskTransitionService. Authority-RESTORING in exactly the registered \
+             `unblock_task` shape — a human gate decision that lets scheduling resume, with the \
+             guard and every repository error propagated. Audited CLEAN by batch 10 and \
+             deliberately NOT registered: its paired half `reject_fix_task` reaches \
+             transition_task_corrective, which the facade forbids at every scope, and exposing \
+             the approve half alone would give a device fix-task unblocking with no remote way \
+             to reject. Held on the pair, not on a finding of its own",
+        ),
+    },
+    CommandOverride {
+        command: "re_review_task_from_escalated",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "detector-a/b: guards internal_status == Escalated, optionally restores a stale \
+             worktree path (errors propagated with `?`), then transitions to PendingReview, which \
+             dispatches the AI reviewer. A user-initiated gate decision of precisely the shape \
+             `ui:agent` exists for",
+        ),
+    },
+    CommandOverride {
+        command: "retry_qa",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "reads task_qa_repo.get_by_task_id and writes a fresh all-Pending QAResults through \
+             update_results; every error propagates with `?`. Its sibling `skip_qa` is REFUSED — \
+             skip writes a verdict that does not mean what its name promises, while retry writes \
+             the unambiguous Pending reset",
+        ),
+    },
+    CommandOverride {
+        command: "update_qa_settings",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "arms-auto-qa: applies only the Some(..) fields of the input to the in-memory \
+             AppState::qa_settings write guard, so it can enable auto-QA. Detector-silent by \
+             construction — the surface is a RwLock, not a repository — which is why it also \
+             carries an explicit DECLARED_MEMBERSHIPS row. The READ half (`get_qa_settings`) is \
+             already registered at Read",
+        ),
+    },
+    CommandOverride {
+        command: "set_active_project",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "arms-scheduler-quota: calls sync_quota_from_project, which writes the runtime ExecutionState \
+             max_concurrent and project_ideation_max atomics that can_start_task reads. \
+             Deliberately NOT declared SeedsSpawnTriggeringState: unlike its siblings \
+             set_max_concurrent and update_execution_settings, this command never calls \
+             schedule_ready_tasks_for_project, so it raises the ceiling without itself \
+             dispatching anything. Detector-silent, hence the DECLARED_MEMBERSHIPS row",
+        ),
+    },
+    CommandOverride {
+        command: "clear_active_plan",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "authority-reducing plan clear: a single active_plan_repo.clear whose error \
+             propagates through map_err. Registered where its WRITE sibling `set_active_plan` is \
+             refused, and the asymmetry is the whole finding — set_active_plan additionally \
+             derives an execution_plan_id behind `if let Ok(Some(ep))` and discards the follow-up \
+             write with `let _ =`; clear touches execution_plan_id not at all",
+        ),
+    },
+    CommandOverride {
+        command: "seed_builtin_workflows",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "idempotent built-in workflow seed: for each of the three builtins, creates it only \
+             when workflow_repo.get_by_id returns None, so re-running is a no-op returning Ok(0) \
+             and a customised builtin is never overwritten; every error propagates with `?`",
+        ),
+    },
+    CommandOverride {
+        command: "start_research",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "durable row write only: builds a ResearchProcess, marks it Running and persists it \
+             via process_repo.create with errors propagated. Recorded honestly — no spawn is \
+             reached, transitively or otherwise, and no production consumer scans for Running \
+             ResearchProcess rows, so this arms nothing today; it is registered as a guarded \
+             write, NOT as a research launcher",
+        ),
+    },
+    // ---------------------------------------------------------------------------------------
     // PR 3.1-b batch 9 ITEM 0 — the detector-(c) refusals, given the capability they actually
     // carry.
     //
@@ -1656,6 +1801,111 @@ pub const AUDIT_REFUSALS: &[AuditRefusal] = &[
         finding: "same split seam; list_remote_agent_conversations_page is the registered answer",
         batch: "5, re-affirmed 8",
     },
+    // -----------------------------------------------------------------------------------
+    // PR 3.1-b batch 10 — the twin surfaces.
+    //
+    // Batch 9's bar is unchanged: a row belongs here only if the finding disqualifies the command
+    // at EVERY v1 scope. These four clear it for a reason that has nothing to do with arming —
+    // the facade ALREADY answers each query, so a second name would add a facade path and no
+    // capability. That is the batch-5/8 precedent (`list_agent_conversations`), applied to the
+    // three transcript reads batch 4 split and to the permission gate batch 1.5 split.
+    // -----------------------------------------------------------------------------------
+    AuditRefusal {
+        command: "get_agent_conversation",
+        reason: AuditRefusalReason::SeamResolvedViaRemoteTwin,
+        finding: "batch 4 split the seam; both this command and the registered \
+                  get_remote_agent_conversation delegate to the SAME \
+                  get_agent_conversation_for_app_state seam and return the same payload, so the \
+                  only difference is that the local name first calls \
+                  wake_agent_workspace_for_bridge_events — whose error it discards with \
+                  tracing::warn! and reads anyway. Registering it would put two facade paths on \
+                  one query while dragging the wake's steer sink onto the facade for no payload",
+        batch: "4, classified 10",
+    },
+    AuditRefusal {
+        command: "get_agent_conversation_messages_page",
+        reason: AuditRefusalReason::SeamResolvedViaRemoteTwin,
+        finding: "same split seam and the same discarded wake; \
+                  get_remote_agent_conversation_messages_page is the registered answer and \
+                  applies identical limit clamping (unwrap_or(40).clamp(1, 200))",
+        batch: "4, classified 10",
+    },
+    AuditRefusal {
+        command: "get_agent_conversation_timeline_page",
+        reason: AuditRefusalReason::SeamResolvedViaRemoteTwin,
+        finding: "same split seam and the same discarded wake; \
+                  get_remote_agent_conversation_timeline_page is the registered answer",
+        batch: "4, classified 10",
+    },
+    // The sharpest twin in the census, and the reason it is a DENIAL rather than a scope call:
+    // the facade does not merely answer this query elsewhere, it already registers this exact
+    // Rust fn twice. `approve_permission_request` and `deny_permission_request` are not separate
+    // functions — both rows target `permission_commands::resolve_permission_request` and differ
+    // only in a server-minted `pins: [("args", "decision", ...)]`. The Operate/AgentControl split
+    // between them is therefore enforced by the COMMAND NAME, which the client cannot choose the
+    // semantics of. Registering the raw name would hand the client the `decision` field, so a
+    // device holding only the default `ui:operate` grant could send `"decision": "allow"` and
+    // reach the AgentControl-gated authorize-a-live-tool-call effect. There is no v1 scope at
+    // which that is servable: at `ui:operate` it is an escalation, and at `ui:agent` it is a
+    // duplicate of a row that already exists.
+    AuditRefusal {
+        command: "resolve_permission_request",
+        reason: AuditRefusalReason::SeamResolvedViaRemoteTwin,
+        finding: "the facade already registers this exact fn twice — approve_permission_request \
+                  (AgentControl) and deny_permission_request (Operate) both target it with the \
+                  decision field server-pinned. Registering the raw name would move branch \
+                  selection from the command name to a client-supplied argument and collapse the \
+                  Operate/AgentControl split that pinning exists to enforce",
+        batch: "1.5 split, classified 10",
+    },
+    // -----------------------------------------------------------------------------------
+    // PR 3.1-b batch 10 — the writes whose `ui:agent` audit FAILED.
+    //
+    // These three were on the ratchet as "repository write behind a status guard, writer audit
+    // never done". Batch 10 did the audit, and it came back dirty. Recorded here rather than
+    // registered, and deliberately NOT recorded as arming findings — each is a host failure or a
+    // missing effect rendered to the caller as success, which is the fail-open shape no scope
+    // serves honestly.
+    // -----------------------------------------------------------------------------------
+    AuditRefusal {
+        command: "archive_tasks_in_group",
+        reason: AuditRefusalReason::FailOpenUntilFixed,
+        finding: "task_commands/mutation.rs:2242 swallows each per-task archive error with \
+                  tracing::warn! and continues the loop, so the command returns \
+                  Ok(BulkArchiveResponse { archived_count }) with a count silently short of the \
+                  group and no way for the caller to learn which tasks survived. Compounded by \
+                  the standing authority-OBSCURING finding: archive writes only archived_at, \
+                  there is no InternalStatus::Archived, and get_by_status filters \
+                  `archived_at IS NULL`, so a partially-failed sweep leaves Executing tasks \
+                  holding their agent process while invisible to the reconciler; fix by \
+                  propagating the per-task error",
+        batch: "3 refused, audited and classified 10",
+    },
+    AuditRefusal {
+        command: "request_task_changes_from_reviewing",
+        reason: AuditRefusalReason::FailOpenUntilFixed,
+        finding: "the idempotency-flag write degrades destructively: review_commands.rs:675 reads \
+                  the task's metadata with parse_metadata(&task).unwrap_or_else(|| json!({})) and \
+                  :683 re-serialises it with unwrap_or_else(|_| r#\"{\\\"request_changes_\
+                  initiated\\\":true}\"#), so an unparseable or unserialisable blob is REPLACED by \
+                  a stub and every other metadata field is dropped — while the command returns \
+                  Ok. Its sibling request_task_changes_for_review reaches the same \
+                  RevisionNeeded transition with no such write and is registered instead; fix by \
+                  propagating both serde errors",
+        batch: "audited and classified 10",
+    },
+    AuditRefusal {
+        command: "skip_qa",
+        reason: AuditRefusalReason::FailOpenUntilFixed,
+        finding: "the command promises a QA bypass and does not deliver one: it writes every step \
+                  as QAStepResult::skipped, but QAResults::from_results derives Passed only when \
+                  passed_steps == total_steps and skipped steps increment skipped_steps, so \
+                  overall_status resolves to Pending, not Passed — contradicting the body's own \
+                  `// Mark all steps as passed (skipped behavior)` comment. A caller is told the \
+                  skip succeeded while the verdict it wanted was never written; fix by deciding \
+                  the intended verdict and making from_results express it",
+        batch: "7 refused, audited and classified 10",
+    },
 ];
 
 /// The audit refusal recorded for a command, if any.
@@ -1808,6 +2058,22 @@ pub const DECLARED_MEMBERSHIPS: &[(&str, &str)] = &[
     // live agent would otherwise never be proved unreachable from a default pairing —
     // the one class of member the generator cannot find by itself.
     ("send_remote_chat_message", "steers-live-agent-turn"),
+    // PR 3.1-b batch 10 — the two registered arming writes NO detector models.
+    //
+    // Same reasoning as `send_remote_chat_message` above, and the same failure it prevents. The
+    // P-17b negative suite is generated from `agent_control_floor` (detector (a) ∪ detector (b))
+    // ∪ `declared_memberships`. Both commands arm through a surface neither detector watches —
+    // `update_qa_settings` writes an in-memory `RwLock`, not a repository, and
+    // `set_active_project` writes `ExecutionState` atomics rather than an `InternalStatus` — so
+    // each is detector-silent and would otherwise be REGISTERED at `ui:agent` while never being
+    // proved unreachable from a default `ui:read`+`ui:operate` pairing. That is precisely the
+    // hole the chat-send row exists to close, and registering an arming write without one would
+    // reopen it.
+    //
+    // Appended, never inserted: `exemptions_and_declared_memberships_are_exact` indexes
+    // `DECLARED_MEMBERSHIPS[0]` and `[1]` positionally.
+    ("update_qa_settings", "arms-auto-qa"),
+    ("set_active_project", "arms-scheduler-quota"),
 ];
 
 /// Expands the module policy and command overrides into one effective command row.

@@ -1109,18 +1109,28 @@ async fn the_b1_step_and_execution_reads_are_refused_below_ui_read() {
     }
 
     // The detector-(c) finding, pinned: these look like sibling getters and are NOT
-    // registered, because both resolve a process-inspection CLI. `set_active_project` is
-    // excluded for a different reason — it syncs the runtime scheduler quota.
-    for command in [
-        "get_execution_status",
-        "get_running_processes",
-        "set_active_project",
-    ] {
+    // registered, because both resolve a process-inspection CLI.
+    for command in ["get_execution_status", "get_running_processes"] {
         assert!(
             registry::find_spec(command).is_none(),
             "`{command}` must not be registered by sibling analogy"
         );
     }
+
+    // `set_active_project` was listed above for a DIFFERENT reason — it syncs the runtime
+    // scheduler quota — and PR 3.1-b batch 10 registered it at `ui:agent` after auditing that
+    // arming surface. The invariant this test guards is unchanged and is what is asserted now:
+    // it is a WRITE wearing a getter's name, so it must never be reachable from the read/operate
+    // grants swept above. Its class is the enforcement, and the sweep at the top of this test
+    // covers it because `ui:agent` is absent from every scope set exercised there.
+    let spec = registry::find_spec("set_active_project")
+        .expect("batch 10 registered set_active_project at ui:agent");
+    assert_eq!(
+        spec.class,
+        RiskClass::AgentControl,
+        "`set_active_project` syncs the execution concurrency quota; registering it at read or \
+         operate would hand a viewer scheduler arming under a getter's name"
+    );
 }
 
 // ---------------------------------------------------------------------------------------
