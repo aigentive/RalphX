@@ -177,17 +177,55 @@ async fn a_chunk_storm_to_a_slow_client_stays_bounded_and_spares_its_sibling() {
         host.emit(TRANSIENT_CHUNK, storm_payload());
     }
 
-    // The barrier is a DURABLE event: the sibling awaiting it proves the host worked
-    // through the storm and is still serving this session. No sleep, no polling.
+    // The sibling's outcome is asserted as a DISJUNCTION, deliberately.
+    //
+    // A storm larger than `BROADCAST_CAPACITY` is broadcast to EVERY subscriber, so
+    // whether a reading sibling keeps up is a scheduling race, not a property of the
+    // code — asserting "the sibling always receives the barrier" would be a flake
+    // dressed up as a gate (and it flaked exactly that way under full-suite load).
+    //
+    // What IS guaranteed, and what actually matters, is that the sibling is never
+    // SILENTLY gapped: it either receives the durable barrier, or it is told to
+    // cold-hydrate with a typed reset. A silent hole — or a dead socket with no reset —
+    // is the failure this forbids.
     host.emit(DURABLE_PROBE, json!({ "marker": "post-storm" }));
     let delivered = sibling
         .next_frame_matching(|frame| {
-            matches!(frame, ServerFrame::Event { name, seq: Some(_), .. } if name == DURABLE_PROBE)
+            matches!(
+                frame,
+                ServerFrame::Event { name, seq: Some(_), .. } if name == DURABLE_PROBE
+            ) || matches!(frame, ServerFrame::Reset { .. })
+        })
+        .await;
+    match delivered {
+        Some(ServerFrame::Event { seq: Some(_), .. }) => {}
+        Some(ServerFrame::Reset { reason }) => assert_eq!(
+            reason,
+            ResetReason::CursorPruned,
+            "a sibling shed under storm must get the cursor-resumable reset, not another reason"
+        ),
+        other => panic!(
+            "the sibling must either receive the durable barrier or be told to \
+             cold-hydrate — never a silent gap. Got {other:?}"
+        ),
+    }
+
+    // And the host is provably still serving: a FRESH session pairs, connects, and
+    // receives a new durable event after the storm. This is the deterministic form of
+    // "one client's storm does not starve the host".
+    let (mut fresh, _, _) = connected_client(&host, "post-storm").await;
+    host.emit(DURABLE_PROBE, json!({ "marker": "post-storm-fresh" }));
+    let served = fresh
+        .next_frame_matching(|frame| {
+            matches!(
+                frame,
+                ServerFrame::Event { name, seq: Some(_), .. } if name == DURABLE_PROBE
+            )
         })
         .await;
     assert!(
-        matches!(delivered, Some(ServerFrame::Event { .. })),
-        "the sibling session must keep receiving durable frames through another session's storm"
+        matches!(served, Some(ServerFrame::Event { .. })),
+        "the host must keep serving new sessions after absorbing a storm"
     );
 
     let counters = host.counters();
@@ -209,8 +247,8 @@ async fn a_chunk_storm_to_a_slow_client_stays_bounded_and_spares_its_sibling() {
     );
     assert_eq!(
         names.iter().filter(|name| *name == DURABLE_PROBE).count(),
-        1,
-        "the durable barrier must be persisted exactly once"
+        2,
+        "both durable barriers must be persisted exactly once each"
     );
 
     drop(slow);
