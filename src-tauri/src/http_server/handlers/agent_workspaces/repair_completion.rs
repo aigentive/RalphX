@@ -549,7 +549,7 @@ pub(crate) async fn complete_agent_workspace_repair_for_trusted_run(
             return stale_completion_transition_response(state, &conversation_id, &run_id).await;
         }
     };
-    complete_reserved_agent_workspace_repair(
+    Box::pin(complete_reserved_agent_workspace_repair(
         state,
         &conversation_id,
         &run_id,
@@ -557,7 +557,7 @@ pub(crate) async fn complete_agent_workspace_repair_for_trusted_run(
         reserved,
         req.summary.trim(),
         resurrecting,
-    )
+    ))
     .await
 }
 
