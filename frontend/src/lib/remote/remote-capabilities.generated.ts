@@ -44,6 +44,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: ["agentControl"],
     pins: [],
   },
+  "approve_fix_task": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl"],
+    pins: [],
+  },
   "approve_permission_request": {
     opClass: "agentControl",
     argumentSensitive: false,
@@ -84,6 +90,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     opClass: "agentControl",
     argumentSensitive: false,
     capabilities: ["mutatesAgentConsumedContent"],
+    pins: [],
+  },
+  "archive_task": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl"],
     pins: [],
   },
   "assess_all_priorities": {
@@ -144,6 +156,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     opClass: "read",
     argumentSensitive: false,
     capabilities: [],
+    pins: [],
+  },
+  "create_agent_conversation": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl"],
     pins: [],
   },
   "create_artifact": {
@@ -225,6 +243,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     pins: [],
   },
   "get_active_workflow_columns": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_agent_conversation_role_default": {
     opClass: "read",
     argumentSensitive: false,
     capabilities: [],
@@ -626,6 +650,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: [],
     pins: [],
   },
+  "get_start_composer_role_default": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
   "get_step_progress": {
     opClass: "read",
     argumentSensitive: false,
@@ -765,6 +795,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     pins: [],
   },
   "get_workflows": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_workspace_review_runtime_settings": {
     opClass: "read",
     argumentSensitive: false,
     capabilities: [],
@@ -1034,6 +1070,18 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: ["agentControl"],
     pins: [],
   },
+  "restore_agent_conversation": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl"],
+    pins: [],
+  },
+  "restore_task": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl"],
+    pins: [],
+  },
   "resume_automation": {
     opClass: "agentControl",
     argumentSensitive: false,
@@ -1166,6 +1214,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: ["agentControl"],
     pins: [],
   },
+  "update_agent_conversation_title": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl"],
+    pins: [],
+  },
   "update_agent_lane_settings": {
     opClass: "agentControl",
     argumentSensitive: false,
@@ -1275,6 +1329,18 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     pins: [],
   },
   "update_workflow": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl"],
+    pins: [],
+  },
+  "update_workspace_review_runtime_settings": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl"],
+    pins: [],
+  },
+  "upsert_custom_agent_model": {
     opClass: "agentControl",
     argumentSensitive: false,
     capabilities: ["agentControl"],

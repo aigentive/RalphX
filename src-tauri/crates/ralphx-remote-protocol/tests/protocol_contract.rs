@@ -376,11 +376,19 @@ fn audit_refusal_overlays_registerable_and_never_masks_a_mechanical_refusal() {
             json!("constructs-spawn-capable-service"),
             json!("transport-shape-deferred"),
             json!("seam-resolved-via-remote-twin"),
+            json!("reaches-corrective-transition"),
         ]
     );
     // Deliberately absent, and the absence is the point: there is no reason code for "it arms",
     // "it steers" or "it writes". The facade serves `agentControl` ops carrying exactly those
     // capabilities, so such a refusal is a batch's scope limit, not a host denial.
-    assert_eq!(AUDIT_REFUSAL_REASONS.len(), 4);
+    //
+    // `reaches-corrective-transition` (batch 14) is NOT a breach of that: it names one specific
+    // mechanism that is separately CI-enforced by
+    // `no_registered_facade_target_reaches_a_corrective_transition`, not a general class of
+    // authority. Extending a closed vocabulary with a reviewed, specific, falsifiable code is
+    // the sanctioned move when the alternative is filing a false reason; minting a generic
+    // arming/steering code would not be.
+    assert_eq!(AUDIT_REFUSAL_REASONS.len(), 5);
     assert!(AUDIT_REFUSAL_REASONS.contains(&AuditRefusalReason::FailOpenUntilFixed));
 }

@@ -203,6 +203,23 @@ pub enum AuditRefusalReason {
     /// Registering the local name would put two facade paths on one query for no new
     /// capability, so the refusal is architectural rather than pending anything.
     SeamResolvedViaRemoteTwin,
+    /// The command reaches `transition_task_corrective` / `apply_corrective_transition`, the
+    /// repair-path-only state-machine jump.
+    ///
+    /// Added by PR 3.1-b batch 14 to close the ratchet honestly rather than mis-file
+    /// `reject_fix_task` under one of the four reasons above, none of which is true of it: it
+    /// does not fail open, it constructs no spawn-capable service to serve a read, its payload
+    /// crosses the facade fine, and no registered twin answers it.
+    ///
+    /// The bar this clears, and why it is not the generic "it arms / it steers" code the
+    /// vocabulary deliberately withholds: this names ONE specific mechanism that is already a
+    /// hard, separately CI-enforced invariant
+    /// (`no_registered_facade_target_reaches_a_corrective_transition`), so the refusal is
+    /// mechanically falsifiable in both directions — a pin asserts the closure DOES reach a
+    /// corrective sink, and the refusal fails loudly if the body is ever fixed. A corrective
+    /// jump lets a caller pick a repair destination the ordinary state machine forbids, which
+    /// no v1 scope can accommodate.
+    ReachesCorrectiveTransition,
 }
 
 pub const AUDIT_REFUSAL_REASONS: &[AuditRefusalReason] = &[
@@ -210,6 +227,7 @@ pub const AUDIT_REFUSAL_REASONS: &[AuditRefusalReason] = &[
     AuditRefusalReason::ConstructsSpawnCapableService,
     AuditRefusalReason::TransportShapeDeferred,
     AuditRefusalReason::SeamResolvedViaRemoteTwin,
+    AuditRefusalReason::ReachesCorrectiveTransition,
 ];
 
 /// Resolve a ledger row that also carries an audit refusal.

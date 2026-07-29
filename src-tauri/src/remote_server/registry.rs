@@ -2959,4 +2959,146 @@ crate::remote_commands! {
         call: async,
         result: fallible,
     },
+
+    // -----------------------------------------------------------------------------------
+    // PR 3.1-b batch 14 — THE FINAL BATCH. These eleven take the P-11 ratchet to ZERO.
+    //
+    // The other 37 members are manifest-classified: 25 at the `host-denied-spawns-process`
+    // floor (thirteen of them hand-traced past a SILENT detector (c) — see the ledger's M1/M2/M3
+    // note), 3 as `v1-deferred` on `ConfiguresFutureProcessAuthority`, and 9 as
+    // `v1-audit-refused` (seven on one shared non-Serialize error contract, one fail-open, and
+    // `reject_fix_task` on the batch's newly minted `reaches-corrective-transition` reason).
+    //
+    // Nothing here is registered on detector silence. Detector (c) was silent on 36 of the 48
+    // and WRONG about 13, so silence carried no weight in this batch at all; every row below
+    // was hand-traced to its repository call and to its distance from the four workspace
+    // helper families that make its module siblings spawn.
+    // -----------------------------------------------------------------------------------
+
+    // The reads, at `ui:read`.
+    "get_start_composer_role_default"
+        => crate::commands::manual_role_default_commands::get_start_composer_role_default {
+        class: Read,
+        caps: [],
+        params: [
+            (arg input: crate::commands::manual_role_default_commands::StartComposerRoleDefaultInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "get_agent_conversation_role_default"
+        => crate::commands::manual_role_default_commands::get_agent_conversation_role_default {
+        class: Read,
+        caps: [],
+        params: [
+            (arg input: crate::commands::manual_role_default_commands::AgentConversationRoleDefaultInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    // Registered where its own module sibling `get_manual_role_defaults` is REFUSED, and the
+    // split is this batch's sharpest read finding: that one turns a resolution error into a
+    // fabricated Claude provider default and computes the UI's control availability against it.
+    // These two never touch `catalog_entry`.
+    "get_workspace_review_runtime_settings"
+        => crate::commands::workspace_review_settings_commands::get_workspace_review_runtime_settings {
+        class: Read,
+        caps: [],
+        params: [(arg project_id: Option<String>), (app_state)],
+        call: async,
+        result: fallible,
+    },
+
+    // The writers, at `ui:agent`.
+    "archive_task" => crate::commands::task_commands::mutation::archive_task {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [(arg task_id: String), (app_state), (host_app_handle)],
+        call: async,
+        result: fallible,
+    },
+    "restore_task" => crate::commands::task_commands::mutation::restore_task {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [(arg task_id: String), (app_state), (host_app_handle)],
+        call: async,
+        result: fallible,
+    },
+    "create_agent_conversation"
+        => crate::commands::unified_chat_commands::create_agent_conversation {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [
+            (arg input: crate::commands::unified_chat_commands::CreateAgentConversationInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "restore_agent_conversation"
+        => crate::commands::unified_chat_commands::restore_agent_conversation {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [(arg conversation_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "update_agent_conversation_title"
+        => crate::commands::unified_chat_commands::update_agent_conversation_title {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [
+            (arg input: crate::commands::unified_chat_commands::UpdateAgentConversationTitleInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    // Two BOUNDED deferred-authority writes, each carrying a `DECLARED_MEMBERSHIPS` row
+    // (`configures-future-agent-runtime`) because no detector watches the surface they arm.
+    // They pick which MODEL a later agent runs; this batch's three Elevated rows configure the
+    // containment boundary itself, which is the whole of the difference.
+    "update_workspace_review_runtime_settings"
+        => crate::commands::workspace_review_settings_commands::update_workspace_review_runtime_settings {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [
+            (arg input: crate::commands::workspace_review_settings_commands::UpdateWorkspaceReviewRuntimeSettingsInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    // Registered only after this batch fixed the fabricated-timestamp fail-open in its return
+    // path (`sqlite_agent_model_registry_repo.rs`); the pre-fix body would have been an
+    // `AUDIT_REFUSALS` row.
+    "upsert_custom_agent_model"
+        => crate::commands::agent_model_commands::upsert_custom_agent_model {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [
+            (arg input: crate::commands::agent_model_commands::UpsertCustomAgentModelInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    // THE STANDING HELD COMMAND, released after four batches. Its partner `reject_fix_task` is
+    // refused on the new `reaches-corrective-transition` reason; the pair argument that held
+    // THIS half does not survive the current registry, because `block_task` and `stop_task`
+    // are both registered, so the remote brake exists. See the ledger row.
+    "approve_fix_task" => crate::commands::review_commands::approve_fix_task {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [
+            (arg input: crate::commands::review_commands_types::ApproveFixTaskInput),
+            (app_state),
+            (execution_state),
+            (host_app_handle),
+        ],
+        call: async,
+        result: fallible,
+    },
 }

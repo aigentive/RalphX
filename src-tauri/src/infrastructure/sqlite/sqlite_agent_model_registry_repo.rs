@@ -30,14 +30,23 @@ impl SqliteAgentModelRegistryRepository {
     }
 }
 
-fn parse_datetime(value: &str) -> DateTime<Utc> {
+/// Parse a stored timestamp, or fail.
+///
+/// PR 3.1-b batch 14: this used to fall through to `Utc::now()` on unparseable text, which
+/// presented a FABRICATED timestamp as the row's real `created_at`/`updated_at`. Paired with
+/// the `.ok()` that swallowed the column read (see `parse_model_row`), a storage fault was
+/// rendered to the caller as a plausible, current row. `upsert_custom_agent_model` is
+/// registered on the remote facade only because both halves are now fail-closed.
+fn parse_datetime(value: &str) -> AppResult<DateTime<Utc>> {
     if let Ok(dt) = DateTime::parse_from_rfc3339(value) {
-        return dt.with_timezone(&Utc);
+        return Ok(dt.with_timezone(&Utc));
     }
     if let Ok(ndt) = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S") {
-        return Utc.from_utc_datetime(&ndt);
+        return Ok(Utc.from_utc_datetime(&ndt));
     }
-    Utc::now()
+    Err(AppError::Database(format!(
+        "Invalid agent model registry timestamp '{value}'"
+    )))
 }
 
 fn parse_efforts(value: &str) -> AppResult<Vec<LogicalEffort>> {
@@ -81,14 +90,18 @@ fn parse_model_row(row: &rusqlite::Row<'_>) -> AppResult<AgentModelDefinition> {
             )))
         }
     };
+    // A NULL column is legitimately absent; a FAILED read is not, and must not look like
+    // absence. Every other column in this fn already propagates, and these two now match.
     let created_at = row
-        .get::<_, String>("created_at")
-        .ok()
-        .map(|value| parse_datetime(&value));
+        .get::<_, Option<String>>("created_at")
+        .map_err(|error| AppError::Database(error.to_string()))?
+        .map(|value| parse_datetime(&value))
+        .transpose()?;
     let updated_at = row
-        .get::<_, String>("updated_at")
-        .ok()
-        .map(|value| parse_datetime(&value));
+        .get::<_, Option<String>>("updated_at")
+        .map_err(|error| AppError::Database(error.to_string()))?
+        .map(|value| parse_datetime(&value))
+        .transpose()?;
 
     Ok(AgentModelDefinition {
         provider,

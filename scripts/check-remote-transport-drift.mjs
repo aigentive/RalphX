@@ -34,10 +34,12 @@
  * `local-only-commands.ts` with a reason, or carrying a host-denied/deferred
  * `v1Resolution` in `docs/generated/remote-commands.json` (P-11 batch B0: commands
  * the facade denies or defers are not client-local and must not claim to be).
- * Anything else is "unclassified" and must appear in the checked-in baseline. New
- * unclassified names fail; names that became classified must be pruned (run with
- * --update-baseline). The count reaches zero in PR 3.1, after which the baseline
- * file goes away.
+ * Anything else is "unclassified". P-11 COMPLETED in PR 3.1-b batch 14: the count is now ZERO
+ * and the gate is permanent. The scan fails if any unclassified name appears, AND if the
+ * checked-in baseline is non-empty — a recorded entry is a suppression, and the phase doc's
+ * exit criterion is zero unclassified names with zero suppressions. `--update-baseline` is
+ * correspondingly refused while unclassified names exist, so the list cannot quietly regrow;
+ * the only way forward is to resolve each name.
  *
  * Usage:
  *   node scripts/check-remote-transport-drift.mjs [repoRoot]
@@ -309,6 +311,31 @@ function parameterIndex(fn, identifier) {
 
 // ---------------------------------------------------------------------------
 // Detectors (pure — exercised by --self-test)
+
+/// The P-11 exit criterion as a pure predicate (PR 3.1-b batch 14).
+///
+/// Returns the violation messages, empty when P-11 holds. Pure so `--self-test` can prove the
+/// gate FAILS on a regrown baseline — a gate whose failure path is never exercised is not a
+/// gate, and this one's whole job is to fail on a state that no longer occurs in the repo.
+export function p11ExitViolations(unclassified, baselineSet) {
+  const violations = [];
+  if (unclassified.length > 0) {
+    violations.push(
+      `FAIL: P-11 requires zero unclassified invoke command names; ${unclassified.length} found:\n` +
+        unclassified.map((command) => `    ${command}`).join("\n")
+    );
+  }
+  if (baselineSet.size > 0) {
+    violations.push(
+      `FAIL: the P-11 baseline must be EMPTY; ${baselineSet.size} entr(ies) are recorded:\n` +
+        [...baselineSet].sort().map((command) => `    ${command}`).join("\n") +
+        "\n  P-11 completed in PR 3.1-b batch 14. A recorded baseline entry is a suppression," +
+        "\n  and the phase doc's exit criterion is zero unclassified names with zero suppressions."
+    );
+  }
+  return violations;
+}
+
 // ---------------------------------------------------------------------------
 
 /**
@@ -897,6 +924,24 @@ function runSelfTest() {
     }).size === 0
   );
 
+  // --- P-11 exit criterion (batch 14): the permanent zero -------------------
+  check(
+    "P-11 passes only when BOTH the live count and the baseline are empty",
+    p11ExitViolations([], new Set()).length === 0
+  );
+  check(
+    "P-11 fails on a live unclassified name",
+    p11ExitViolations(["newly_invoked"], new Set()).length === 1
+  );
+  check(
+    "P-11 fails on a REGROWN baseline even when the live count is zero — the suppression case",
+    p11ExitViolations([], new Set(["quietly_suppressed"])).length === 1
+  );
+  check(
+    "P-11 reports both violations independently",
+    p11ExitViolations(["a"], new Set(["b"])).length === 2
+  );
+
   if (failures.length > 0) {
     console.error("FAIL: drift-scan self-test");
     failures.forEach((failure) => console.error(`  ${failure}`));
@@ -990,12 +1035,42 @@ const baseline = fs.existsSync(baselinePath)
   : { unclassifiedCommands: [] };
 const baselineSet = new Set(baseline.unclassifiedCommands ?? []);
 
+// ---------------------------------------------------------------------------------------
+// P-11 EXIT CRITERION (PR 3.1-b batch 14). The ratchet reached zero; from here the gate is
+// permanent and absolute.
+//
+// Until now this script only failed on ADDITIONS relative to a checked-in baseline, which is
+// what a ratchet needs while it is still being driven down. That is no longer sufficient: a
+// non-empty baseline is itself the failure, because `--update-baseline` would otherwise let a
+// future change record new unclassified names "deliberately" and quietly regrow the list. The
+// phase doc's P-11 requirement is zero unclassified names with zero suppressions, so both the
+// live count and the recorded baseline are asserted empty, and the escape hatch is closed.
+// ---------------------------------------------------------------------------------------
+const P11_COMPLETE_NOTE =
+  "P-11 COMPLETE (PR 3.1-b batch 14). Every invoke command name resolves to a registration, a " +
+  "reason-coded local-only row, or a host-denied/deferred/audit-refused ledger row. This list " +
+  "MUST stay empty — it is no longer a ratchet, it is a permanent zero.";
+
+if (updateBaseline && unclassified.length > 0) {
+  console.error(
+    "FAIL: --update-baseline refused. P-11 is complete and the baseline is a permanent zero;\n" +
+      `  it cannot be regrown to record ${unclassified.length} unclassified command(s):`
+  );
+  unclassified.forEach((command) => console.error(`    ${command}`));
+  console.error(
+    "  Resolve each one instead: register it on the host facade, add it to local-only-commands.ts\n" +
+      "  with a reason, or classify it in capability_ledger.rs (Denied/Elevated/AUDIT_REFUSALS)\n" +
+      "  and regenerate docs/generated/remote-commands.json."
+  );
+  process.exit(1);
+}
+
 if (updateBaseline) {
   fs.writeFileSync(
     baselinePath,
     `${JSON.stringify(
       {
-        note: "P-11 ratchet. Commands invoked by the frontend that are remote-registered by nothing, local-only by nothing, and carry no host-denied/deferred ledger row in docs/generated/remote-commands.json. This list may only shrink; PR 3.1 drives it to zero and deletes this file.",
+        note: P11_COMPLETE_NOTE,
         unclassifiedCommands: unclassified,
       },
       null,
@@ -1035,8 +1110,46 @@ if (added.length > 0 || stale.length > 0) {
   process.exit(1);
 }
 
+// The P-11 exit criterion, asserted on every run. `added`/`stale` above compare against the
+// baseline; these compare against ZERO, which is the only value either may now hold.
+for (const violation of p11ExitViolations(unclassified, baselineSet)) {
+  console.error(violation);
+  process.exit(1);
+}
+
+// The census statement: every invoke name the AST scan resolved has a reviewed disposition.
+//
+// Reported as a genuine PARTITION, in the precedence the resolver itself uses. The three source
+// sets overlap — a registered command also carries a ledger row, so it appears in
+// `manifestClassified` too — and adding the raw sizes would exceed the name count and look like
+// a coverage claim nobody made. Each name is counted exactly once, and the four buckets sum to
+// `commands.length` by construction because `unclassified` is their complement.
+const registeredSet = registered ?? new Set();
+let registeredCount = 0;
+let localOnlyCount = 0;
+let manifestOnlyCount = 0;
+for (const command of commands) {
+  if (registeredSet.has(command)) registeredCount += 1;
+  else if (localOnly.has(command)) localOnlyCount += 1;
+  else if (manifestClassified.has(command)) manifestOnlyCount += 1;
+}
+const dispositioned =
+  registeredCount + localOnlyCount + manifestOnlyCount + unclassified.length;
+if (dispositioned !== commands.length) {
+  console.error(
+    `FAIL: P-11 census does not partition — ${dispositioned} dispositions for ` +
+      `${commands.length} names. The four buckets must be exhaustive and disjoint.`
+  );
+  process.exit(1);
+}
+
 console.log(
   `PASS: remote transport drift — ${commands.length} invoke command name(s), 0 dynamic, ` +
     `0 seam bypasses; ${manifestResolvedCount} manifest-classified; ` +
-    `${unclassified.length} unclassified (baseline, → 0 in PR 3.1).`
+    `${unclassified.length} unclassified (P-11 COMPLETE — permanent zero).`
+);
+console.log(
+  `      P-11 census: all ${commands.length} names have a reviewed disposition — ` +
+    `${registeredCount} remote-registered, ${localOnlyCount} reason-coded local-only, ` +
+    `${manifestOnlyCount} manifest-classified only, 0 unclassified, 0 suppressions.`
 );

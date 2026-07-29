@@ -1,12 +1,16 @@
-# PR 3.1 — Facade coverage census (P-11 gap work manifest)
+# PR 3.1 — Facade coverage census (**P-11 COMPLETE**)
 
 > GENERATED — do not edit by hand. Regenerate: `node scripts/generate-remote-coverage-census.mjs`. Staleness gate: `--check`.
 > This is the PR 3.1-a planning artifact. It registers nothing. Every class here is the ledger's CURRENT value; the per-command hand audit (§3.3) and the P-17 detector run own the final one.
 
+> **P-11 is COMPLETE.** All 499 production invoke command names across `frontend/src` carry a reviewed disposition: remote-registered, reason-coded local-only, or manifest-classified (host-denied / v1-deferred / v1-audit-refused). **0 unclassified, 0 dynamic expressions, 0 suppressions.**
+> The ratchet baseline `scripts/remote-transport-drift-baseline.json` is now a PERMANENT ZERO — `check-remote-transport-drift.mjs` fails if it is non-empty and refuses `--update-baseline` when unclassified names exist, so the list cannot quietly regrow. The work-batch sections below are kept as the audit record of how the 499 were resolved.
+
 ## 1. Scan state
 
 ```
-PASS: remote transport drift — 499 invoke command name(s), 0 dynamic, 0 seam bypasses; 248 manifest-classified; 48 unclassified (baseline, → 0 in PR 3.1).
+PASS: remote transport drift — 499 invoke command name(s), 0 dynamic, 0 seam bypasses; 285 manifest-classified; 0 unclassified (P-11 COMPLETE — permanent zero).
+      P-11 census: all 499 names have a reviewed disposition — 213 remote-registered, 29 reason-coded local-only, 257 manifest-classified only, 0 unclassified, 0 suppressions.
 ```
 
 | Measure | Count | Source |
@@ -14,11 +18,11 @@ PASS: remote transport drift — 499 invoke command name(s), 0 dynamic, 0 seam b
 | Invoke command names in `frontend/src` | 499 | drift scan (AST) |
 | Dynamic / unresolvable expressions | 0 | drift scan — must stay 0 |
 | Transport seam bypasses | 0 | drift scan — must stay 0 |
-| Remote-registered (`remote_commands!`) | 208 | `docs/generated/remote-commands.json` |
+| Remote-registered (`remote_commands!`) | 219 | `docs/generated/remote-commands.json` |
 | Reason-coded local-only rows | 29 | `frontend/src/lib/remote/local-only-commands.ts` |
 | Ledger rows (exhaustive over `generate_handler!`) | 546 | `docs/generated/remote-commands.json` |
-| Manifest-classified (host-denied / v1-deferred) | 248 | `v1Resolution` in `docs/generated/remote-commands.json` |
-| **Unclassified — the 3.1 gap** | **48** | `scripts/remote-transport-drift-baseline.json` |
+| Manifest-classified (host-denied / v1-deferred) | 285 | `v1Resolution` in `docs/generated/remote-commands.json` |
+| **Unclassified — the 3.1 gap** | **0** | `scripts/remote-transport-drift-baseline.json` |
 
 ## 2. What the gap is made of
 
@@ -26,28 +30,28 @@ Routing each name mechanically through the ledger splits it into very different 
 
 | Disposition | Count | Rule |
 |---|---|---|
-| register-candidate | 48 | ledgered AgentControl (or lower) with no SpawnsProcess capability — eligible for a hand-audited `remote_commands!` entry under `ui:agent` |
+| register-candidate | 0 | ledgered AgentControl (or lower) with no SpawnsProcess capability — eligible for a hand-audited `remote_commands!` entry under `ui:agent` |
 | host-denied (class: denied) | 0 | `class_permits` returns false for Denied at any capability set — registering it fails compilation. Resolves for P-11 through the manifest, never through a local-only reason (phase doc key point 6) |
 | host-denied (SpawnsProcess) | 0 | carries `SpawnsProcess`; `class_permits(AgentControl, [SpawnsProcess])` is false and Elevated is a v1 non-goal, so it is not exposable on the v1 facade at any scope (`remote_server/registry.rs` detector-(c) note) |
 | v1-deferred (Elevated) | 0 | ledgered Elevated without SpawnsProcess — reachable only under `ui:elevated`, which §1 excludes from v1; deferred, not denied |
 | v1-audit-refused (per-command finding) | 0 | the class/capability pair would admit a v1 scope, but a recorded audit found a property of the command AS IT STANDS that no v1 scope can accommodate — fail-open, spawn-capable machinery built to serve a read, an unrenderable transport shape, or a registered remote twin that already answers the query. Never used for arming/steering/write refusals: the facade serves 16 `agentControl` ops, so those stay register-candidates |
 | orphan invoke (no local handler) | 0 | invoked by the frontend but absent from `generate_handler!` and from the ledger — it cannot be registered remotely because it does not exist locally either |
 
-**248 invoked names now resolve through the manifest** — host-side commands the facade denies or defers, classified by their ledger row's `v1Resolution` rather than by a registration or a client-local reason (phase-doc key point 6). B0 landed that mechanism and the gap fell 419 → 48 with zero registrations. **What remains in the baseline is registration work only**, so from here every batch's delta is exactly the count it registers.
+**285 invoked names now resolve through the manifest** — host-side commands the facade denies or defers, classified by their ledger row's `v1Resolution` rather than by a registration or a client-local reason (phase-doc key point 6). B0 landed that mechanism and the gap fell 419 → 0 with zero registrations. **The baseline is now empty**: batches B1–B7, D1–D3, R1, A1 and the 3.1-b registration batches resolved every remaining name.
 
-**48 names are registration candidates**, and `register-candidate` means eligible for a hand audit, not approved: detector (c) has already rejected ledgered-`AgentControl` commands whose process authority the manifest cannot see (`resume_task`, `apply_proposals_to_kanban`, `set_agent_conversation_workspace_auto_publish`). Expect a non-empty rejection subset in every registration batch.
+**0 names are registration candidates** — the gap is closed. The rejection subset this section predicted was real and large: detector (c) refused ledgered-`AgentControl` commands whose process authority the manifest could not see (`resume_task`, `apply_proposals_to_kanban`, `set_agent_conversation_workspace_auto_publish`), and PR 3.1-b batch 14 additionally hand-traced THIRTEEN launches detector (c) could not see at all — `Command::new(<resolved path>)` names no resolver, which is how every agent launch in the codebase is written. Detector silence was never sufficient evidence to register.
 
 ## 3. Recommended batch order
 
 | # | Batch | Title | Cmds | Register-candidates | Not registering | Modules |
 |---|---|---|---|---|---|---|
 | 1 | `B0` | P-11 third-disposition mechanism (prerequisite, no registrations) | 0 | 0 | 0 | 0 |
-| 2 | `B1` | Task core — lifecycle, steps, execution, gates | 19 | 19 | 0 | 3 |
-| 3 | `B2` | Chat + agent conversation surface (unblocks PR 3.2) | 19 | 19 | 0 | 3 |
-| 4 | `B3` | Review, QA, merge pipeline, validation | 2 | 2 | 0 | 1 |
+| 2 | `B1` | Task core — lifecycle, steps, execution, gates | 0 | 0 | 0 | 0 |
+| 3 | `B2` | Chat + agent conversation surface (unblocks PR 3.2) | 0 | 0 | 0 | 0 |
+| 4 | `B3` | Review, QA, merge pipeline, validation | 0 | 0 | 0 | 0 |
 | 5 | `B4` | Ideation, plans, methodology, workflow | 0 | 0 | 0 | 0 |
 | 6 | `B5` | Automation, research, metrics, activity | 0 | 0 | 0 | 0 |
-| 7 | `B6` | Personas, role defaults, MCP policy, review settings | 8 | 8 | 0 | 2 |
+| 7 | `B6` | Personas, role defaults, MCP policy, review settings | 0 | 0 | 0 | 0 |
 | 8 | `B7` | Artifacts, task context, notifications, app chrome | 0 | 0 | 0 | 0 |
 | 9 | `D1` | Credential + integration surface (disposition only, no registrations) | 0 | 0 | 0 | 0 |
 | 10 | `D2` | Process-launch getters and git/gh surface (disposition only) | 0 | 0 | 0 | 0 |
@@ -78,7 +82,7 @@ Ordering logic: **B0 first** (nothing is measurable without the third dispositio
 
 ### 2. `B1` — Task core — lifecycle, steps, execution, gates
 
-**Commands:** 19 · **Register-candidates:** 19 · **Risk classes:** register-candidate 19
+**Commands:** 0 · **Register-candidates:** 0 · **Risk classes:** —
 
 **Why here:** The 1.5-A surface already registered the neighbouring commands (`move_task`, `unblock_task`, `answer_user_question`, the brakes), so the injection table, the `authz:` predicate shape and the P-4 parity rows for these argument shapes are proven on this exact module family. Lowest parity risk, highest reuse — the right batch to shake out the per-batch harness before it meets 41-command modules.
 
@@ -91,17 +95,9 @@ Ordering logic: **B0 first** (nothing is measurable without the third dispositio
 
 **Gate:** P-17 suite green; P-17b generated scope entries exist for every new AgentControl member; C-9 dual-lens review recorded.
 
-<details><summary>Members by module</summary>
-
-- **`execution_commands`** (6) — `recover_task_execution`, `resolve_recovery_prompt`, `restart_task`, `resume_execution`, `update_execution_settings`, `update_global_execution_settings`
-- **`task_commands`** (8) — `archive_task`, `pause_execution_plan`, `restore_task`, `resume_execution_plan`, `resume_task`, `resume_tasks_in_group`, `retry_branch_update`, `stop_execution_plan`
-- **`task_step_commands`** (5) — `complete_step`, `fail_step`, `reorder_task_steps`, `skip_step`, `start_step`
-
-</details>
-
 ### 3. `B2` — Chat + agent conversation surface (unblocks PR 3.2)
 
-**Commands:** 19 · **Register-candidates:** 19 · **Risk classes:** register-candidate 19
+**Commands:** 0 · **Register-candidates:** 0 · **Risk classes:** —
 
 **Why here:** PR 3.2's whole premise is that chat send paths answer `REMOTE_FORBIDDEN` without `ui:agent` rather than `REMOTE_COMMAND_UNAVAILABLE` — which requires them registered. 2.6 shipped the honest interim (composer renders UNAVAILABLE remotely) and its product note says it 'flips with no client change when 3.1 registers them'. This is the batch that flips it, so it must land before 3.2 starts. It is also the highest-risk batch: `send_message` is a detector-(a) steer sink and the module contains the workspace-publish `git push` surface that stays denied.
 
@@ -116,17 +112,9 @@ Ordering logic: **B0 first** (nothing is measurable without the third dispositio
 
 **Gate:** P-17 green; C-9 dual-lens review recorded; the five 2.6-surfaced ops resolve per this census's `resolvedItems.unregisteredUiAgentOps`.
 
-<details><summary>Members by module</summary>
-
-- **`agent_model_commands`** (1) — `upsert_custom_agent_model`
-- **`conversation_folder_reference_commands`** (2) — `add_conversation_folder_reference`, `remove_conversation_folder_reference`
-- **`unified_chat_commands`** (16) — `abort_seeded_agent_conversation`, `archive_agent_conversation`, `commit_agent_conversation_workspace_locally`, `create_agent_conversation`, `fork_agent_conversation`, `precompute_agent_conversation_workspace_pr_description`, `reconcile_agent_conversation_workspace_publication`, `restore_agent_conversation`, `send_queued_agent_message_now`, `set_agent_conversation_workspace_auto_publish`, `set_agent_conversation_workspace_pr_supervision`, `stop_agent`, `switch_agent_conversation_mode`, `switch_agent_conversation_persona`, `update_agent_conversation_coordination_mode`, `update_agent_conversation_title`
-
-</details>
-
 ### 4. `B3` — Review, QA, merge pipeline, validation
 
-**Commands:** 2 · **Register-candidates:** 2 · **Risk classes:** register-candidate 2
+**Commands:** 0 · **Register-candidates:** 0 · **Risk classes:** —
 
 **Why here:** Approval/review commands write the agent-consumed content surface (`MutatesAgentConsumedContent` already appears on 6 of them), which is exactly the capability whose floor P-17d enforces. Grouping them keeps that audit in one review rather than spread across batches.
 
@@ -140,12 +128,6 @@ Ordering logic: **B0 first** (nothing is measurable without the third dispositio
 - DONE (PR 3.1-b batch 10): `qa_commands` is fully classified and no longer appears in this batch's module list. `retry_qa` and `update_qa_settings` registered at `ui:agent` — the latter with a declared `arms-auto-qa` membership, because it arms through an in-memory `RwLock` that no detector watches — and `skip_qa` is `v1-audit-refused`: it writes every step as `QAStepResult::skipped`, but `QAResults::from_results` then derives `Pending` rather than `Passed`, contradicting the body's own comment. That discrepancy is a live product bug, not only a facade finding.
 
 **Gate:** P-17d floor diff clean; C-9 review recorded.
-
-<details><summary>Members by module</summary>
-
-- **`review_commands`** (2) — `approve_fix_task`, `reject_fix_task`
-
-</details>
 
 ### 5. `B4` — Ideation, plans, methodology, workflow
 
@@ -185,7 +167,7 @@ Ordering logic: **B0 first** (nothing is measurable without the third dispositio
 
 ### 7. `B6` — Personas, role defaults, MCP policy, review settings
 
-**Commands:** 8 · **Register-candidates:** 8 · **Risk classes:** register-candidate 8
+**Commands:** 0 · **Register-candidates:** 0 · **Risk classes:** —
 
 **Why here:** Configuration-of-future-authority shapes cluster here: a persona/role/policy write does not act now but changes what a later spawn is allowed to do. This is the `update_custom_analysis` family of risk (§3.3 backstop-1 residual), so it gets one focused dual-lens review instead of being sprinkled across batches.
 
@@ -198,13 +180,6 @@ Ordering logic: **B0 first** (nothing is measurable without the third dispositio
 - READ FIRST — `get_mcp_catalog` and `refresh_mcp_catalog` are REFUSED at the floor. They are reads by intent, but `build_catalog -> discover_provider_catalog -> resolve_codex_catalog_cli_path` launches the Codex app-server to answer. `retry_legacy_mcp_registration_repair` is ALSO refused, and detector (c) does NOT see it: it runs `claude mcp remove ralphx -s user` through `tokio::process::Command::new`, hidden by a `spawn_blocking(bare_fn)` call shape that creates no edge plus a spawn on an already-resolved path that names no resolver. Pinned by `batch13_detector_gap_is_measured_not_inherited`.
 
 **Gate:** P-17 green; C-9 review recorded with the deferred-authority lens explicitly exercised.
-
-<details><summary>Members by module</summary>
-
-- **`manual_role_default_commands`** (6) — `clear_manual_role_default`, `get_agent_conversation_role_default`, `get_manual_role_defaults`, `get_start_composer_role_default`, `reset_agent_conversation_role_default`, `update_manual_role_default`
-- **`workspace_review_settings_commands`** (2) — `get_workspace_review_runtime_settings`, `update_workspace_review_runtime_settings`
-
-</details>
 
 ### 8. `B7` — Artifacts, task context, notifications, app chrome
 
@@ -387,9 +362,9 @@ Ordering logic: **B0 first** (nothing is measurable without the third dispositio
 | Check | Result |
 |---|---|
 | Drift scan passes | yes (this file is not emitted otherwise) |
-| Scan unclassified count == baseline size | 48 == 48 |
-| Every gap command in exactly one batch | 48 / 48 |
-| Disposition totals sum to the gap | 48 == 48 |
+| Scan unclassified count == baseline size | 0 == 0 |
+| Every gap command in exactly one batch | 0 / 0 |
+| Disposition totals sum to the gap | 0 == 0 |
 | Batch plan claims no empty module and pins no absent command | enforced by the generator |
 
 Machine-readable companion for 3.1-b/c: [`remote-coverage-census.json`](./remote-coverage-census.json) — same batches, plus per-command `{batch, module, ledgerClass, capabilities, disposition}` rows.

@@ -444,6 +444,20 @@ const scan = {
 
 const baseline = JSON.parse(fs.readFileSync(baselinePath, "utf8"));
 const gap = [...(baseline.unclassifiedCommands ?? [])].sort();
+
+/**
+ * P-11 terminal state (PR 3.1-b batch 14).
+ *
+ * This census is a WORK MANIFEST: its validations assert that every declared batch still owns
+ * outstanding gap members, which is exactly right while the ratchet is being driven down and
+ * exactly wrong once it hits zero. At zero every batch is legitimately empty and none of them
+ * is "retired by" a mechanism batch — they are DONE, which is a different fact.
+ *
+ * So the emptiness validations are scoped to the pre-terminal state. Everything else — the
+ * baseline/scan agreement above, the manifest cross-checks, the staleness gate — still runs, so
+ * completion relaxes the assertions that no longer have a subject and nothing else.
+ */
+const p11Complete = gap.length === 0;
 if (gap.length !== scan.unclassified) {
   fail(
     `baseline holds ${gap.length} unclassified command(s) but the scan reports ${scan.unclassified}`
@@ -514,33 +528,41 @@ const batchIsEmpty = (batch) =>
     records.some((record) => record.command === command)
   );
 
-for (const batch of BATCHES) {
-  const empty = batchIsEmpty(batch);
-  if (batch.retiredBy && !empty) {
-    fail(
-      `batch ${batch.id} is marked retired by ${batch.retiredBy}, but some of its members are still unclassified`
-    );
+if (!p11Complete) {
+  for (const batch of BATCHES) {
+    const empty = batchIsEmpty(batch);
+    if (batch.retiredBy && !empty) {
+      fail(
+        `batch ${batch.id} is marked retired by ${batch.retiredBy}, but some of its members are still unclassified`
+      );
+    }
+    if (!batch.retiredBy && empty && (batch.modules?.length || batch.commands?.length)) {
+      fail(
+        `batch ${batch.id} claims modules/commands that have no unclassified commands — mark it retiredBy if a mechanism batch resolved them`
+      );
+    }
   }
-  if (!batch.retiredBy && empty && (batch.modules?.length || batch.commands?.length)) {
-    fail(
-      `batch ${batch.id} claims modules/commands that have no unclassified commands — mark it retiredBy if a mechanism batch resolved them`
-    );
-  }
-}
 
-for (const [module, batchId] of moduleOwner) {
-  const batch = BATCHES.find((candidate) => candidate.id === batchId);
-  if (batch?.retiredBy) continue;
-  if (!records.some((record) => record.module === module)) {
-    fail(`batch ${batchId} claims module ${module}, which has no unclassified commands`);
+  for (const [module, batchId] of moduleOwner) {
+    const batch = BATCHES.find((candidate) => candidate.id === batchId);
+    if (batch?.retiredBy) continue;
+    if (!records.some((record) => record.module === module)) {
+      fail(`batch ${batchId} claims module ${module}, which has no unclassified commands`);
+    }
   }
-}
-for (const [command, batchId] of pinned) {
-  const batch = BATCHES.find((candidate) => candidate.id === batchId);
-  if (batch?.retiredBy) continue;
-  if (!records.some((record) => record.command === command)) {
-    fail(`batch ${batchId} pins ${command}, which is not in the gap`);
+  for (const [command, batchId] of pinned) {
+    const batch = BATCHES.find((candidate) => candidate.id === batchId);
+    if (batch?.retiredBy) continue;
+    if (!records.some((record) => record.command === command)) {
+      fail(`batch ${batchId} pins ${command}, which is not in the gap`);
+    }
   }
+} else if (records.length > 0) {
+  // The terminal state has its own falsifiable condition, so completion is not simply a hole
+  // in the checks: an empty baseline must produce an empty record set.
+  fail(
+    `P-11 reports complete but the census still holds ${records.length} gap record(s)`
+  );
 }
 
 const dispositionTotals = {};
@@ -707,7 +729,12 @@ function mdTable(headers, rows) {
 function renderMarkdown(data) {
   const d = data.dispositionTotals;
   const lines = [];
-  lines.push("# PR 3.1 — Facade coverage census (P-11 gap work manifest)");
+  const complete = data.totals.unclassified === 0;
+  lines.push(
+    complete
+      ? "# PR 3.1 — Facade coverage census (**P-11 COMPLETE**)"
+      : "# PR 3.1 — Facade coverage census (P-11 gap work manifest)"
+  );
   lines.push("");
   lines.push(
     "> GENERATED — do not edit by hand. Regenerate: `node scripts/generate-remote-coverage-census.mjs`. Staleness gate: `--check`."
@@ -716,6 +743,21 @@ function renderMarkdown(data) {
     "> This is the PR 3.1-a planning artifact. It registers nothing. Every class here is the ledger's CURRENT value; the per-command hand audit (§3.3) and the P-17 detector run own the final one."
   );
   lines.push("");
+  if (complete) {
+    lines.push(
+      `> **P-11 is COMPLETE.** All ${data.totals.invokedCommandNames} production invoke command ` +
+        "names across `frontend/src` carry a reviewed disposition: remote-registered, " +
+        "reason-coded local-only, or manifest-classified (host-denied / v1-deferred / " +
+        "v1-audit-refused). **0 unclassified, 0 dynamic expressions, 0 suppressions.**"
+    );
+    lines.push(
+      "> The ratchet baseline `scripts/remote-transport-drift-baseline.json` is now a PERMANENT " +
+        "ZERO — `check-remote-transport-drift.mjs` fails if it is non-empty and refuses " +
+        "`--update-baseline` when unclassified names exist, so the list cannot quietly regrow. " +
+        "The work-batch sections below are kept as the audit record of how the 499 were resolved."
+    );
+    lines.push("");
+  }
   lines.push("## 1. Scan state");
   lines.push("");
   lines.push("```");
@@ -756,11 +798,16 @@ function renderMarkdown(data) {
   );
   lines.push("");
   lines.push(
-    `**${data.scan.manifestClassified} invoked names now resolve through the manifest** — host-side commands the facade denies or defers, classified by their ledger row's \`v1Resolution\` rather than by a registration or a client-local reason (phase-doc key point 6). B0 landed that mechanism and the gap fell 419 → ${data.totals.unclassified} with zero registrations. **What remains in the baseline is registration work only**, so from here every batch's delta is exactly the count it registers.`
+    `**${data.scan.manifestClassified} invoked names now resolve through the manifest** — host-side commands the facade denies or defers, classified by their ledger row's \`v1Resolution\` rather than by a registration or a client-local reason (phase-doc key point 6). B0 landed that mechanism and the gap fell 419 → ${data.totals.unclassified} with zero registrations.` +
+      (complete
+        ? " **The baseline is now empty**: batches B1–B7, D1–D3, R1, A1 and the 3.1-b registration batches resolved every remaining name."
+        : " **What remains in the baseline is registration work only**, so from here every batch's delta is exactly the count it registers.")
   );
   lines.push("");
   lines.push(
-    `**${d.registerCandidate ?? 0} names are registration candidates**, and \`register-candidate\` means eligible for a hand audit, not approved: detector (c) has already rejected ledgered-\`AgentControl\` commands whose process authority the manifest cannot see (\`resume_task\`, \`apply_proposals_to_kanban\`, \`set_agent_conversation_workspace_auto_publish\`). Expect a non-empty rejection subset in every registration batch.`
+    complete
+      ? "**0 names are registration candidates** — the gap is closed. The rejection subset this section predicted was real and large: detector (c) refused ledgered-`AgentControl` commands whose process authority the manifest could not see (`resume_task`, `apply_proposals_to_kanban`, `set_agent_conversation_workspace_auto_publish`), and PR 3.1-b batch 14 additionally hand-traced THIRTEEN launches detector (c) could not see at all — `Command::new(<resolved path>)` names no resolver, which is how every agent launch in the codebase is written. Detector silence was never sufficient evidence to register."
+      : `**${d.registerCandidate ?? 0} names are registration candidates**, and \`register-candidate\` means eligible for a hand audit, not approved: detector (c) has already rejected ledgered-\`AgentControl\` commands whose process authority the manifest cannot see (\`resume_task\`, \`apply_proposals_to_kanban\`, \`set_agent_conversation_workspace_auto_publish\`). Expect a non-empty rejection subset in every registration batch.`
   );
   lines.push("");
   lines.push("## 3. Recommended batch order");
