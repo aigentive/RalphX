@@ -2624,19 +2624,11 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                                 let completion_applied = if turn_completion_applied {
                                     true
                                 } else {
-                                    agent_run_repo
-                                        .complete_if_running(&AgentRunId::from_string(
-                                            queued_run_id.clone(),
-                                        ))
-                                        .await
-                                        .unwrap_or_else(|error| {
-                                            tracing::error!(
-                                                error = %error,
-                                                queued_run_id,
-                                                "Queue: guarded run completion failed"
-                                            );
-                                            false
-                                        })
+                                    super::chat_service_run_finalization::finalize_run_completed(
+                                        agent_run_repo,
+                                        &AgentRunId::from_string(queued_run_id.clone()),
+                                    )
+                                    .await
                                 };
                                 if completion_applied
                                     && ((meaningful_output && assistant_message_persisted)

@@ -9,7 +9,9 @@ use crate::domain::entities::{
     AgentRun, AgentRunActionKind, AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage,
     ChatConversationId, InterruptedConversation, UsageCapture,
 };
-use crate::domain::repositories::{AgentRunRepository, ORPHANED_AGENT_RUN_ON_APP_RESTART};
+use crate::domain::repositories::{
+    AgentRunRepository, ORPHANED_AGENT_RUN_ON_APP_RESTART, PRUNED_STALE_AGENT_RUN,
+};
 use crate::error::AppResult;
 
 /// In-memory implementation of AgentRunRepository for testing
@@ -232,6 +234,20 @@ impl AgentRunRepository for MemoryAgentRunRepository {
         Ok(true)
     }
 
+    async fn complete_if_prune_cancelled(&self, id: &AgentRunId) -> AppResult<bool> {
+        let mut runs = self.runs.write().await;
+        let Some(run) = runs.get_mut(id) else {
+            return Ok(false);
+        };
+        if run.status != AgentRunStatus::Cancelled
+            || run.error_message.as_deref() != Some(PRUNED_STALE_AGENT_RUN)
+        {
+            return Ok(false);
+        }
+        run.complete();
+        Ok(true)
+    }
+
     async fn fail(&self, id: &AgentRunId, error_message: &str) -> AppResult<()> {
         let mut runs = self.runs.write().await;
         if let Some(run) = runs.get_mut(id) {
@@ -244,6 +260,18 @@ impl AgentRunRepository for MemoryAgentRunRepository {
         let mut runs = self.runs.write().await;
         if let Some(run) = runs.get_mut(id) {
             run.cancel();
+        }
+        Ok(())
+    }
+
+    async fn cancel_with_reason(&self, id: &AgentRunId, reason: &str) -> AppResult<()> {
+        let mut runs = self.runs.write().await;
+        if let Some(run) = runs
+            .get_mut(id)
+            .filter(|run| run.status == AgentRunStatus::Running)
+        {
+            run.cancel();
+            run.error_message = Some(reason.to_string());
         }
         Ok(())
     }

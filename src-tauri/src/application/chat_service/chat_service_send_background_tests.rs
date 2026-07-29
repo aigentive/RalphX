@@ -26,11 +26,12 @@ use crate::domain::entities::{
 use crate::domain::repositories::PersonaRepository;
 use crate::domain::repositories::{
     AgentProviderSettingsRepository, AgentRunRepository, QueuedMessageRepository,
+    PRUNED_STALE_AGENT_RUN,
 };
 use crate::domain::services::{QueueKey, RunningAgentKey};
 use crate::infrastructure::agents::claude::{ContentBlockItem, ToolCall};
 use crate::infrastructure::memory::{
-    MemoryAgentProviderSettingsRepository, MemoryPersonaRepository,
+    MemoryAgentProviderSettingsRepository, MemoryAgentRunRepository, MemoryPersonaRepository,
 };
 use chrono::Utc;
 use std::path::Path;
@@ -38,6 +39,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{Listener, Manager};
 use tokio::io::AsyncWriteExt;
+
+use super::super::chat_service_run_finalization::{
+    finalize_run_completed, run_completed_event_is_authorized,
+};
 
 fn test_tool_call(name: &str) -> ToolCall {
     ToolCall {
@@ -182,12 +187,20 @@ impl AgentRunRepository for CreateFailingAgentRunRepository {
         self.inner.complete_if_running(id).await
     }
 
+    async fn complete_if_prune_cancelled(&self, id: &AgentRunId) -> crate::AppResult<bool> {
+        self.inner.complete_if_prune_cancelled(id).await
+    }
+
     async fn fail(&self, id: &AgentRunId, error_message: &str) -> crate::AppResult<()> {
         self.inner.fail(id, error_message).await
     }
 
     async fn cancel(&self, id: &AgentRunId) -> crate::AppResult<()> {
         self.inner.cancel(id).await
+    }
+
+    async fn cancel_with_reason(&self, id: &AgentRunId, reason: &str) -> crate::AppResult<()> {
+        self.inner.cancel_with_reason(id, reason).await
     }
 
     async fn delete(&self, id: &AgentRunId) -> crate::AppResult<()> {
@@ -1253,18 +1266,10 @@ fn message_attribution_preserves_provider_metadata() {
     assert_eq!(attribution.effective_effort.as_deref(), Some("high"));
 }
 
-/// Verifies the warning condition for zero-processed queue scenarios.
-///
-/// When `will_process_queue=true` (queue had items + session available), the
-/// pre-queue `run_completed` is skipped. If `total_processed=0` (race, spawn
-/// failure, or cancellation), the old `if total_processed > 0` guard would
-/// have silently dropped `run_completed` entirely — leaving the UI stuck in
-/// `generating` state forever.
-///
-/// The fix: always emit `run_completed` after queue processing; only log a
-/// warning when `total_processed=0` but `initial_queue_count>0`.
+/// Zero processed queued messages still trigger diagnostics, but terminal event
+/// authority must come from the persisted terminal run rather than queue counts.
 #[test]
-fn run_completed_emitted_when_queue_had_items_but_none_processed() {
+fn zero_processed_queue_warns_without_granting_completion_authority() {
     use crate::domain::entities::ChatContextType;
     use crate::domain::services::MessageQueue;
 
@@ -1292,16 +1297,62 @@ fn run_completed_emitted_when_queue_had_items_but_none_processed() {
     // Simulate spawn failure: total_processed stays 0
     let total_processed: usize = 0;
 
-    // Old guard `if total_processed > 0` would have skipped run_completed here.
-    // New code: always emit; log warning when this condition is true.
     let should_warn = total_processed == 0 && initial_queue_count > 0;
     assert!(
         should_warn,
         "Warning condition must trigger for race/spawn failure/cancellation case"
     );
+}
 
-    // run_completed is always emitted — not gated on total_processed > 0.
-    // The unconditional emission path is the fix (tested at call site in production code).
+#[tokio::test]
+async fn finalizer_completes_running_run_and_authorizes_completion_event() {
+    let concrete = Arc::new(MemoryAgentRunRepository::new());
+    let repo: Arc<dyn AgentRunRepository> = concrete.clone();
+    let run = AgentRun::new(ChatConversationId::new());
+    let run_id = run.id;
+    repo.create(run).await.unwrap();
+
+    assert!(finalize_run_completed(&repo, &run_id).await);
+    assert!(run_completed_event_is_authorized(&repo, &run_id).await);
+    assert_eq!(
+        repo.get_by_id(&run_id).await.unwrap().unwrap().status,
+        AgentRunStatus::Completed
+    );
+}
+
+#[tokio::test]
+async fn finalizer_repairs_only_prune_cancelled_run_and_authorizes_completion_event() {
+    let concrete = Arc::new(MemoryAgentRunRepository::new());
+    let repo: Arc<dyn AgentRunRepository> = concrete.clone();
+    let mut run = AgentRun::new(ChatConversationId::new());
+    run.status = AgentRunStatus::Cancelled;
+    run.completed_at = Some(Utc::now());
+    run.error_message = Some(PRUNED_STALE_AGENT_RUN.to_string());
+    let run_id = run.id;
+    repo.create(run).await.unwrap();
+
+    assert!(finalize_run_completed(&repo, &run_id).await);
+    assert!(run_completed_event_is_authorized(&repo, &run_id).await);
+    let persisted = repo.get_by_id(&run_id).await.unwrap().unwrap();
+    assert_eq!(persisted.status, AgentRunStatus::Completed);
+    assert!(persisted.error_message.is_none());
+}
+
+#[tokio::test]
+async fn finalizer_preserves_user_cancel_and_suppresses_completion_event() {
+    let concrete = Arc::new(MemoryAgentRunRepository::new());
+    let repo: Arc<dyn AgentRunRepository> = concrete.clone();
+    let mut run = AgentRun::new(ChatConversationId::new());
+    run.cancel();
+    let run_id = run.id;
+    repo.create(run).await.unwrap();
+
+    assert!(!finalize_run_completed(&repo, &run_id).await);
+    assert!(!run_completed_event_is_authorized(&repo, &run_id).await);
+    assert_eq!(
+        repo.get_by_id(&run_id).await.unwrap().unwrap().status,
+        AgentRunStatus::Cancelled
+    );
 }
 
 #[test]

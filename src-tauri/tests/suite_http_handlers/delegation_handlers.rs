@@ -514,11 +514,21 @@ impl AgentRunRepository for FailCancelAgentRunRepository {
         self.inner.complete_if_running(id).await
     }
 
+    async fn complete_if_prune_cancelled(&self, id: &AgentRunId) -> AppResult<bool> {
+        self.inner.complete_if_prune_cancelled(id).await
+    }
+
     async fn fail(&self, id: &AgentRunId, error_message: &str) -> AppResult<()> {
         self.inner.fail(id, error_message).await
     }
 
     async fn cancel(&self, _id: &AgentRunId) -> AppResult<()> {
+        Err(AppError::Infrastructure(
+            "injected agent-run cancellation failure".to_string(),
+        ))
+    }
+
+    async fn cancel_with_reason(&self, _id: &AgentRunId, _reason: &str) -> AppResult<()> {
         Err(AppError::Infrastructure(
             "injected agent-run cancellation failure".to_string(),
         ))

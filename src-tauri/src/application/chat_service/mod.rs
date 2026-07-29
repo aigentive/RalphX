@@ -29,6 +29,7 @@ mod resolved_conversation_spawn_context;
 pub use chat_service_recovery::attempt_session_recovery;
 mod chat_service_replay;
 mod chat_service_repository;
+mod chat_service_run_finalization;
 mod chat_service_selection_snapshot;
 mod chat_service_send_background;
 mod chat_service_streaming;
