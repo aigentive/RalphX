@@ -69,7 +69,9 @@ function renderSwitcher(props: Partial<Parameters<typeof EnvironmentSwitcher>[0]
 }
 
 async function openSwitcher(): Promise<void> {
-  await userEvent.click(screen.getByRole("button", { name: "Switch environment" }));
+  // Prefix match: the accessible name grows a background-notification clause when a
+  // badge is present (PR 3.3-a), so an exact match would only find the empty case.
+  await userEvent.click(screen.getByRole("button", { name: /^Switch environment/ }));
 }
 
 describe("EnvironmentSwitcher", () => {
@@ -241,6 +243,74 @@ describe("EnvironmentSwitcher", () => {
     // A silent revert would leave the user with an unexplained remount flicker.
     expect(toast.error).toHaveBeenCalledWith("Could not switch to Remote 0", {
       description: "REMOTE_FORBIDDEN",
+    });
+  });
+  describe("background notification badges (PR 3.3-a)", () => {
+    it("shows no badge when nothing has been observed", async () => {
+      seed(["connected", "health_only"]);
+      renderSwitcher();
+
+      expect(screen.queryByTestId("environment-switcher-badge")).not.toBeInTheDocument();
+      await openSwitcher();
+      expect(screen.queryByTestId("environment-badge-env-1")).not.toBeInTheDocument();
+    });
+
+    it("shows a per-environment count in the list", async () => {
+      seed(["connected", "health_only"]);
+      act(() => {
+        useEnvironmentStore.setState({ notificationBadges: { "env-1": 3 } });
+      });
+      renderSwitcher();
+
+      await openSwitcher();
+      expect(screen.getByTestId("environment-badge-env-1")).toHaveTextContent("3");
+      expect(screen.queryByTestId("environment-badge-env-0")).not.toBeInTheDocument();
+    });
+
+    it("caps the glyph at 9+ but keeps the exact count in the accessible name", async () => {
+      seed(["connected", "health_only"]);
+      act(() => {
+        useEnvironmentStore.setState({ notificationBadges: { "env-1": 42 } });
+      });
+      renderSwitcher();
+
+      await openSwitcher();
+      const badge = screen.getByTestId("environment-badge-env-1");
+      expect(badge).toHaveTextContent("9+");
+      // A screen reader must hear the real number, not the truncation glyph.
+      expect(badge).toHaveAttribute("aria-label", "42 new notifications");
+    });
+
+    it("sums background environments on the collapsed trigger and names the total", () => {
+      seed(["connected", "health_only", "health_only"]);
+      act(() => {
+        useEnvironmentStore.setState({
+          notificationBadges: { "env-1": 2, "env-2": 3 },
+        });
+      });
+      renderSwitcher();
+
+      expect(screen.getByTestId("environment-switcher-badge")).toHaveTextContent("5");
+      expect(
+        screen.getByRole("button", {
+          name: "Switch environment, 5 new notifications in other environments",
+        }),
+      ).toBeInTheDocument();
+    });
+
+    it("excludes the active environment from the trigger total", () => {
+      seed(["connected", "health_only"]);
+      act(() => {
+        useEnvironmentStore.setState({
+          activeEnvironmentId: "env-0",
+          notificationBadges: { "env-0": 4, "env-1": 1 },
+        });
+      });
+      renderSwitcher();
+
+      // The active environment is projecting: its notifications already reached its
+      // own cache and its own bell, so counting them here would double-report them.
+      expect(screen.getByTestId("environment-switcher-badge")).toHaveTextContent("1");
     });
   });
 });

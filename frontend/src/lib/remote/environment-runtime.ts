@@ -22,6 +22,7 @@ import {
 } from "@/stores/environmentStore";
 import { useUiStore } from "@/stores/uiStore";
 
+import { countsTowardBadge } from "./badge-observation";
 import { clearEnvScopedStorage } from "./env-scoped-storage";
 import { getClientOwnedFeatureFlag } from "./feature-flag-authority";
 
@@ -243,12 +244,24 @@ export function initializeEnvironmentRuntime(): () => void {
     detachRelay(runtime);
     const target: RemoteStreamTarget = {
       environmentId: () => runtime.entry.id,
-      handleFrame: () => {
-        // Every frame drops: full background projection is a v1 non-goal, and the
-        // heartbeat ack is NOT this relay's job. The Rust relay already acks each
-        // heartbeat on the socket it owns (`remote_event_relay.rs`), precisely so a
-        // busy webview can never starve the host's 2-unacked budget. Acking again from
-        // here sent a second `heartbeatAck` per beat for every background environment.
+      handleFrame: (frame) => {
+        // OBSERVE, NEVER PROJECT (A-12, §6.4). This relay counts; it does not apply.
+        //
+        // The frame is not handed to `runtime.bus`, so nothing here can advance
+        // `lastSeq`, send a `cursorAck`, or reach the environment's retained
+        // QueryClient — reactivation stays a full `H = hello.maxSeq` cold hydrate. The
+        // count is a UI affordance derived from traffic already on a socket this
+        // environment holds, which is why it needs no invoke and cannot erode P-26.
+        //
+        // Full background projection remains a v1 non-goal, and the heartbeat ack is
+        // still NOT this relay's job: the Rust relay already acks each heartbeat on
+        // the socket it owns (`remote_event_relay.rs`), precisely so a busy webview
+        // can never starve the host's 2-unacked budget.
+        if (countsTowardBadge(frame)) {
+          useEnvironmentStore
+            .getState()
+            .observeNotificationBadge(runtime.entry.id);
+        }
       },
       handleStreamClosed: () => {
         runtime.socketLive = false;
@@ -390,11 +403,23 @@ export function initializeEnvironmentRuntime(): () => void {
       },
       refreshScopes: async () => {
         if (useEnvironmentStore.getState().activeEnvironmentId !== environmentId) {
-          // PR 3.3 owns background introspection. Until then, never make an
-          // active-env-bound session request: retain confirmed or pairing-time scopes.
-          return (
-            getConfirmedScopes(environmentId) ?? runtime.entry.remote?.scopes ?? []
-          );
+          // P-28 BACKGROUND HALF (PR 3.3): a background environment reconnects
+          // without re-reading `GET /remote/v1/session`, and it must NEVER widen.
+          //
+          // It cannot re-read: `authorize_proxy_target` authorizes only the health ops
+          // (descriptor + health) for a non-active environment (P-26,
+          // `remote_environment_service.rs`). Session introspection is not a health op,
+          // so asking would be denied — and widening the proxy to permit it is exactly
+          // the erosion this slice is forbidden to cause.
+          //
+          // So the refresh NARROWS to what was last CONFIRMED, and to the empty set
+          // when nothing ever was. Falling back to `entry.remote.scopes` — the
+          // pairing-time snapshot — was the fail-open hole: that snapshot records what
+          // the host granted when the environment was added and can be arbitrarily
+          // stale, so a device whose `ui:agent` grant was revoked would have had it
+          // restored by a background reconnect. An empty set fails closed; the real
+          // grant is re-confirmed by the full attempt that activation forces.
+          return getConfirmedScopes(environmentId) ?? [];
         }
         const response = await networkFetch(environmentId, SESSION_PATH);
         if (!response.ok) {
@@ -454,6 +479,10 @@ export function initializeEnvironmentRuntime(): () => void {
     // -old data as current — for `local` (which has no supervisor to re-hydrate it)
     // and for any remote environment whose supervisor is parked in backoff/blocked.
     void getQueryClient(environmentId).invalidateQueries();
+    // The observed tally has done its job the moment this environment starts
+    // projecting: the cold hydrate above re-reads real notification state, so keeping
+    // the count would render it a second time on top of the hydrated truth.
+    useEnvironmentStore.getState().clearNotificationBadge(environmentId);
     if (demoted) {
       // The demoted environment stops projecting the instant it loses the bus, so its
       // badge must stop claiming a live stream even though its FSM state is unchanged.

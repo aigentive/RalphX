@@ -14,12 +14,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  RETRY_LADDER_MS,
   SUPERVISOR_TRANSITIONS,
   type SupervisorState,
 } from "./supervisor-transition-table";
 import {
   ConnectAttemptError,
   ConnectionSupervisor,
+  BLOCKED_FOREGROUND_RETRY_MS,
   SUSPEND_DEBOUNCE_MS,
   type EnvironmentDescriptorView,
   type SupervisorDeps,
@@ -385,6 +387,177 @@ describe("P-10: version skew parks in blocked with zero retries", () => {
 
     expect(r.spies.fetchDescriptor).not.toHaveBeenCalled();
     expect(r.supervisor.currentState()).toBe("blocked");
+  });
+
+  /**
+   * Review-4 item 3: a version-skewed host leaves the environment `blocked`, and every
+   * foreground took the `blocked -> resume -> connecting` edge — which carries
+   * `resetAttempts`, so the backoff ladder never applied. A user tabbing between apps
+   * therefore burned a descriptor fetch, a ws-ticket, and a per-device session slot per
+   * switch, against a host that is not going to change its mind on this timescale.
+   *
+   * The fix is a floor on the FOREGROUND wakeup only. It must not touch the wakeups
+   * that carry new information.
+   */
+  describe("blocked environments rate-limit the foreground wakeup", () => {
+    async function blockedRig(): Promise<Rig> {
+      const r = rig({
+        fetchDescriptor: vi.fn(async () => ({ ...DESCRIPTOR, minClientProtocol: 2 })),
+      });
+      await connect(r);
+      expect(r.supervisor.currentState()).toBe("blocked");
+      r.spies.fetchDescriptor.mockClear();
+      return r;
+    }
+
+    it("re-attempts on the first foreground after blocking", async () => {
+      const r = await blockedRig();
+
+      r.supervisor.visibilityChanged(false);
+      await settle();
+
+      expect(r.spies.fetchDescriptor).toHaveBeenCalledTimes(1);
+    });
+
+    it("suppresses a second foreground inside the interval", async () => {
+      const r = await blockedRig();
+      r.supervisor.visibilityChanged(false);
+      await settle();
+      r.spies.fetchDescriptor.mockClear();
+
+      // Three app switches in quick succession — the churn case.
+      r.supervisor.visibilityChanged(false);
+      await settle();
+      await vi.advanceTimersByTimeAsync(BLOCKED_FOREGROUND_RETRY_MS / 2);
+      r.supervisor.visibilityChanged(false);
+      await settle();
+
+      expect(r.spies.fetchDescriptor).not.toHaveBeenCalled();
+      expect(r.supervisor.currentState()).toBe("blocked");
+    });
+
+    it("re-attempts once the interval has elapsed", async () => {
+      const r = await blockedRig();
+      r.supervisor.visibilityChanged(false);
+      await settle();
+      r.spies.fetchDescriptor.mockClear();
+
+      await vi.advanceTimersByTimeAsync(BLOCKED_FOREGROUND_RETRY_MS);
+      r.supervisor.visibilityChanged(false);
+      await settle();
+
+      expect(r.spies.fetchDescriptor).toHaveBeenCalledTimes(1);
+    });
+
+    it("still arms no timer of its own while suppressed (A-5)", async () => {
+      const r = await blockedRig();
+      r.supervisor.visibilityChanged(false);
+      await settle();
+      r.spies.fetchDescriptor.mockClear();
+      r.supervisor.visibilityChanged(false);
+      await settle();
+
+      // The floor is a stamp comparison, not a scheduled retry: the supervisor must
+      // stay the sole retry owner and a blocked FSM must still arm nothing.
+      expect(r.supervisor.armedTimers()).toEqual([]);
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(r.spies.fetchDescriptor).not.toHaveBeenCalled();
+    });
+
+    it("never rate-limits an explicit user retry", async () => {
+      const r = await blockedRig();
+      r.supervisor.visibilityChanged(false);
+      await settle();
+      r.spies.fetchDescriptor.mockClear();
+
+      r.supervisor.retryNow();
+      await settle();
+
+      // The user asked. Refusing because a tab switch happened moments ago would make
+      // the retry button silently dead.
+      expect(r.spies.fetchDescriptor).toHaveBeenCalledTimes(1);
+    });
+
+    it("never rate-limits a credentials change or a network return", async () => {
+      const r = await blockedRig();
+      r.supervisor.visibilityChanged(false);
+      await settle();
+      r.spies.fetchDescriptor.mockClear();
+
+      // Both carry genuinely new information; the host's answer may differ now.
+      r.supervisor.credentialsChanged();
+      await settle();
+      expect(r.spies.fetchDescriptor).toHaveBeenCalledTimes(1);
+
+      r.spies.fetchDescriptor.mockClear();
+      r.supervisor.networkChanged(true);
+      await settle();
+      expect(r.spies.fetchDescriptor).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps the floor across the re-block its own attempt causes", async () => {
+      const r = await blockedRig();
+
+      // The allowed foreground runs `blocked -> connecting -> blocked`. If re-entry
+      // reset the stamp, this attempt would clear the very floor it just set and the
+      // next app switch would spend another attempt — the exact churn being fixed.
+      r.supervisor.visibilityChanged(false);
+      await settle();
+      expect(r.supervisor.currentState()).toBe("blocked");
+      r.spies.fetchDescriptor.mockClear();
+
+      r.supervisor.visibilityChanged(false);
+      await settle();
+
+      expect(r.spies.fetchDescriptor).not.toHaveBeenCalled();
+    });
+
+    it("clears the floor once the environment actually connects", async () => {
+      let minClientProtocol = 2;
+      const r = rig({
+        fetchDescriptor: vi.fn(async () => ({ ...DESCRIPTOR, minClientProtocol })),
+      });
+      await connect(r);
+      expect(r.supervisor.currentState()).toBe("blocked");
+      r.supervisor.visibilityChanged(false);
+      await settle();
+
+      // The host is upgraded; the user retries and the environment comes up.
+      minClientProtocol = 1;
+      r.supervisor.retryNow();
+      await settle();
+      expect(r.supervisor.currentState()).toBe("connected");
+
+      // A later, unrelated block must get its own immediate foreground attempt rather
+      // than inheriting a stamp from the episode before the successful connection.
+      minClientProtocol = 2;
+      r.supervisor.streamLost();
+      await settle();
+      await vi.advanceTimersByTimeAsync(RETRY_LADDER_MS[0] + 10);
+      await settle();
+      expect(r.supervisor.currentState()).toBe("blocked");
+      r.spies.fetchDescriptor.mockClear();
+
+      r.supervisor.visibilityChanged(false);
+      await settle();
+
+      expect(r.spies.fetchDescriptor).toHaveBeenCalledTimes(1);
+    });
+
+    it("leaves a non-blocked environment's foreground untouched", async () => {
+      const r = rig();
+      await connect(r);
+      expect(r.supervisor.currentState()).toBe("connected");
+      r.spies.probe.mockClear();
+
+      r.supervisor.visibilityChanged(false);
+      await settle();
+      r.supervisor.visibilityChanged(false);
+      await settle();
+
+      // `connected` foregrounds probe every time; the floor is scoped to `blocked`.
+      expect(r.spies.probe).toHaveBeenCalledTimes(2);
+    });
   });
 
   it("blocks when hello reports a protocol older than this client accepts", async () => {
