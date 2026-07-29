@@ -50,6 +50,39 @@ fn transition_cas_requires_the_exact_attempt_generation_and_phase() {
 }
 
 #[test]
+fn transition_cas_rejects_settled_or_cross_conversation_attempts() {
+    let current = attempt();
+    let mut updated = current.clone();
+    updated.phase = AgentWorkspaceRepairPhase::Dispatching;
+
+    let transition = AgentWorkspaceRepairAttemptTransition {
+        attempt: updated.clone(),
+        expected_phase: AgentWorkspaceRepairPhase::Requested,
+        expected_updated_at: current.updated_at,
+        next_phase: AgentWorkspaceRepairPhase::Dispatching,
+        compatibility_projection: None,
+        events: Vec::new(),
+    };
+
+    let mut settled_current = current.clone();
+    settled_current.settled_at = Some(Utc::now());
+    assert!(!transition.matches_attempt(&settled_current));
+
+    let mut cross_conversation = current.clone();
+    cross_conversation.conversation_id =
+        ChatConversationId::from_string("5b46a460-1699-47e6-a687-71305f4e5675");
+    assert!(!transition.matches_attempt(&cross_conversation));
+
+    let mut settled_request = updated;
+    settled_request.settled_at = Some(Utc::now());
+    let settled_transition = AgentWorkspaceRepairAttemptTransition {
+        attempt: settled_request,
+        ..transition
+    };
+    assert!(!settled_transition.matches_attempt(&current));
+}
+
+#[test]
 fn compatibility_projection_keeps_workspace_projection_and_events_explicit() {
     let projection = AgentWorkspaceRepairCompatibilityProjection {
         publication_push_status: Some("needs_agent".to_string()),

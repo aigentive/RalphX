@@ -163,7 +163,7 @@ describe("useAgentWorkspaceBaseUpdate", () => {
     },
   );
 
-  it("keeps a refreshed active operation open and falls back to info when refresh fails", async () => {
+  it("settles an unverified disappeared operation without claiming completion", async () => {
     const queryClient = createTestQueryClient();
     const activeWorkspace = conversationWorkspaceFixture({
       maintenanceOperation: {
@@ -201,11 +201,19 @@ describe("useAgentWorkspaceBaseUpdate", () => {
     });
     await waitFor(() =>
       expect(toastInfoMock).toHaveBeenCalledWith(
-        "Workspace operation completed",
+        "Couldn't verify workspace operation",
         expect.objectContaining({
+          description: expect.stringContaining(
+            "Check the workspace publish panel, then retry after reconnecting.",
+          ),
           id: "agent-workspace-maintenance:conversation-1:operation-active-refresh",
         }),
       ),
+    );
+    expect(toastSuccessMock).not.toHaveBeenCalled();
+    expect(toastInfoMock).not.toHaveBeenCalledWith(
+      "Workspace operation completed",
+      expect.anything(),
     );
   });
 

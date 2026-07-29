@@ -282,7 +282,8 @@ impl AgentWorkspaceRepairRepository for MemoryAgentConversationWorkspaceReposito
         let Some(current_snapshot) = attempts.get(&request.attempt_id).cloned() else {
             return Ok(AgentWorkspaceRepairAttemptTransitionOutcome::Missing);
         };
-        if current_snapshot.generation != request.generation
+        if current_snapshot.settled_at.is_some()
+            || current_snapshot.generation != request.generation
             || current_snapshot.phase != request.expected_phase
             || current_snapshot.updated_at != request.expected_updated_at
         {

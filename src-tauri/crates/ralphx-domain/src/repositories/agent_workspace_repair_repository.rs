@@ -63,11 +63,16 @@ pub struct AgentWorkspaceRepairAttemptTransition {
 }
 
 impl AgentWorkspaceRepairAttemptTransition {
+    /// Matches only the same current, unsettled attempt in the same conversation. A settled
+    /// attempt cannot be revived and a request cannot redirect its durable identity.
     pub fn matches_attempt(&self, current: &AgentWorkspaceRepairAttempt) -> bool {
         current.id == self.attempt.id
             && current.generation == self.attempt.generation
             && current.phase == self.expected_phase
             && current.updated_at == self.expected_updated_at
+            && current.settled_at.is_none()
+            && current.conversation_id == self.attempt.conversation_id
+            && self.attempt.settled_at.is_none()
             && self.attempt.phase == self.next_phase
     }
 }

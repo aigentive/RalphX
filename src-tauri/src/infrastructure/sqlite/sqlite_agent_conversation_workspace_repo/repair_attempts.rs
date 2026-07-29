@@ -17,6 +17,21 @@ use crate::domain::repositories::{
     StartOrJoinAgentWorkspaceRepairAttemptOutcome,
 };
 
+fn invalid_repair_row_value(
+    column: usize,
+    value_type: rusqlite::types::Type,
+    message: impl std::fmt::Display,
+) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        column,
+        value_type,
+        Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            message.to_string(),
+        )),
+    )
+}
+
 fn row_to_repair_attempt(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentWorkspaceRepairAttempt> {
     let source: String = row.get("source")?;
     let phase: String = row.get("phase")?;
@@ -29,24 +44,27 @@ fn row_to_repair_attempt(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentWorks
     Ok(AgentWorkspaceRepairAttempt {
         id: AgentWorkspaceRepairAttemptId::from_string(row.get::<_, String>("id")?),
         conversation_id: ChatConversationId::from_string(row.get::<_, String>("conversation_id")?),
-        generation: u64::try_from(row.get::<_, i64>("generation")?).unwrap_or_default(),
+        generation: u64::try_from(row.get::<_, i64>("generation")?)
+            .map_err(|error| invalid_repair_row_value(2, rusqlite::types::Type::Integer, error))?,
         source: AgentWorkspaceRepairSource::from_str(&source)
-            .unwrap_or(AgentWorkspaceRepairSource::Legacy),
+            .map_err(|error| invalid_repair_row_value(3, rusqlite::types::Type::Text, error))?,
         phase: AgentWorkspaceRepairPhase::from_str(&phase)
-            .unwrap_or(AgentWorkspaceRepairPhase::Blocked),
+            .map_err(|error| invalid_repair_row_value(4, rusqlite::types::Type::Text, error))?,
         continuation: AgentWorkspaceRepairContinuation::from_str(&continuation)
-            .unwrap_or(AgentWorkspaceRepairContinuation::Manual),
+            .map_err(|error| invalid_repair_row_value(5, rusqlite::types::Type::Text, error))?,
         reserved_agent_run_id: row
             .get::<_, Option<String>>("reserved_agent_run_id")?
             .map(crate::domain::entities::AgentRunId::from_string),
         target_base_ref: row.get("target_base_ref")?,
         target_base_commit: row.get("target_base_commit")?,
-        pending_reasons: serde_json::from_str(&pending_reasons_json).unwrap_or_default(),
+        pending_reasons: serde_json::from_str(&pending_reasons_json)
+            .map_err(|error| invalid_repair_row_value(9, rusqlite::types::Type::Text, error))?,
         review_required: row.get("review_required")?,
         auto_publish_enabled: row.get("auto_publish_enabled")?,
         auto_merge_desired: row.get("auto_merge_desired")?,
         auto_merge_method: row.get("auto_merge_method")?,
-        dispatch_count: u32::try_from(row.get::<_, i64>("dispatch_count")?).unwrap_or_default(),
+        dispatch_count: u32::try_from(row.get::<_, i64>("dispatch_count")?)
+            .map_err(|error| invalid_repair_row_value(15, rusqlite::types::Type::Integer, error))?,
         next_dispatch_at: row
             .get::<_, Option<String>>("next_dispatch_at")?
             .map(|value| parse_datetime(&value)),
@@ -57,13 +75,19 @@ fn row_to_repair_attempt(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentWorks
         target_ref: row.get("target_ref")?,
         target_identity_version: row
             .get::<_, Option<i64>>("target_identity_version")?
-            .and_then(|value| u64::try_from(value).ok()),
+            .map(u64::try_from)
+            .transpose()
+            .map_err(|error| invalid_repair_row_value(21, rusqlite::types::Type::Integer, error))?,
         target_lease_epoch: row
             .get::<_, Option<i64>>("target_lease_epoch")?
-            .and_then(|value| u64::try_from(value).ok()),
+            .map(u64::try_from)
+            .transpose()
+            .map_err(|error| invalid_repair_row_value(22, rusqlite::types::Type::Integer, error))?,
         outcome: outcome
             .as_deref()
-            .and_then(|value| AgentWorkspaceRepairOutcome::from_str(value).ok()),
+            .map(AgentWorkspaceRepairOutcome::from_str)
+            .transpose()
+            .map_err(|error| invalid_repair_row_value(23, rusqlite::types::Type::Text, error))?,
         created_at: parse_datetime(&created_at),
         updated_at: parse_datetime(&updated_at),
         settled_at: row
@@ -82,9 +106,9 @@ fn row_to_repair_effect(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentWorksp
         id: AgentWorkspaceRepairEffectId::from_string(row.get::<_, String>("id")?),
         attempt_id: AgentWorkspaceRepairAttemptId::from_string(row.get::<_, String>("attempt_id")?),
         kind: crate::domain::entities::AgentWorkspaceRepairEffectKind::from_str(&kind)
-            .unwrap_or(crate::domain::entities::AgentWorkspaceRepairEffectKind::PushBranch),
+            .map_err(|error| invalid_repair_row_value(2, rusqlite::types::Type::Text, error))?,
         status: AgentWorkspaceRepairEffectStatus::from_str(&status)
-            .unwrap_or(AgentWorkspaceRepairEffectStatus::Failed),
+            .map_err(|error| invalid_repair_row_value(3, rusqlite::types::Type::Text, error))?,
         idempotency_key: row.get("idempotency_key")?,
         intended_head_oid: row.get("intended_head_oid")?,
         expected_remote_oid: row.get("expected_remote_oid")?,
@@ -647,7 +671,8 @@ impl AgentWorkspaceRepairRepository for SqliteAgentConversationWorkspaceReposito
                 let Some(mut current) = load_repair_attempt(conn, attempt_id.as_str())? else {
                     return Ok(AgentWorkspaceRepairAttemptTransitionOutcome::Missing);
                 };
-                if current.generation != request.generation
+                if current.settled_at.is_some()
+                    || current.generation != request.generation
                     || current.phase != request.expected_phase
                     || current.updated_at != request.expected_updated_at
                 {
@@ -666,7 +691,8 @@ impl AgentWorkspaceRepairRepository for SqliteAgentConversationWorkspaceReposito
                     "UPDATE agent_workspace_repair_attempts
                      SET reserved_agent_run_id = ?4, updated_at = ?5
                      WHERE id = ?1 AND generation = ?2 AND phase = ?3
-                       AND updated_at = ?6 AND reserved_agent_run_id IS NULL",
+                       AND updated_at = ?6 AND reserved_agent_run_id IS NULL
+                       AND settled_at IS NULL",
                     rusqlite::params![
                         current.id.as_str(),
                         i64::try_from(request.generation).map_err(|_| {
@@ -715,7 +741,7 @@ impl AgentWorkspaceRepairRepository for SqliteAgentConversationWorkspaceReposito
                     &request.attempt,
                     request.expected_phase,
                     Some(request.expected_updated_at),
-                    false,
+                    true,
                 )? {
                     let latest =
                         load_repair_attempt(conn, attempt_id.as_str())?.ok_or_else(|| {

@@ -136,7 +136,10 @@ export function useAgentWorkspaceBaseUpdate({
               );
             })
             .catch(() => {
-              current.toast.info("Workspace operation completed");
+              current.toast.info("Couldn't verify workspace operation", {
+                detail:
+                  "Check the workspace publish panel, then retry after reconnecting.",
+              });
             });
         }
         return;

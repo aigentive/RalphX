@@ -4,12 +4,16 @@ use super::SqliteAgentConversationWorkspaceRepository;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentWorkspaceRepairAttempt,
-    AgentWorkspaceRepairContinuation, AgentWorkspaceRepairOutcome, AgentWorkspaceRepairPhase,
-    AgentWorkspaceRepairSource, ChatConversationId, IdeationAnalysisBaseRefKind, ProjectId,
+    AgentWorkspaceRepairContinuation, AgentWorkspaceRepairEffect, AgentWorkspaceRepairEffectKind,
+    AgentWorkspaceRepairOutcome, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
+    ChatConversationId, IdeationAnalysisBaseRefKind, ProjectId,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentWorkspaceRepairAttemptTransition,
-    AgentWorkspaceRepairRepository, SettleAndStartAgentWorkspaceRepairSuccessor,
+    AgentWorkspaceRepairAttemptTransitionOutcome, AgentWorkspaceRepairRepository,
+    BindAgentWorkspaceRepairAttemptRun, CreateAgentWorkspaceRepairEffect,
+    CreateAgentWorkspaceRepairEffectOutcome, SettleAgentWorkspaceRepairAttempt,
+    SettleAgentWorkspaceRepairAttemptOutcome, SettleAndStartAgentWorkspaceRepairSuccessor,
     SettleAndStartAgentWorkspaceRepairSuccessorOutcome, StartOrJoinAgentWorkspaceRepairAttempt,
     StartOrJoinAgentWorkspaceRepairAttemptOutcome,
 };
@@ -32,6 +36,182 @@ pub(super) fn setup_repo() -> (
     });
     let repo = SqliteAgentConversationWorkspaceRepository::from_shared(db.shared_conn());
     (db, repo, conversation_id)
+}
+
+#[tokio::test]
+async fn settled_and_cross_conversation_attempts_cannot_transition_or_bind_runs() {
+    let (_db, repo, conversation_id) = setup_repo();
+    let dispatching = start_dispatching(&repo, conversation_id.clone()).await;
+    let settled = match repo
+        .settle_repair_attempt(SettleAgentWorkspaceRepairAttempt {
+            attempt_id: dispatching.id.clone(),
+            generation: dispatching.generation,
+            expected_phase: dispatching.phase,
+            expected_updated_at: dispatching.updated_at,
+            outcome: AgentWorkspaceRepairOutcome::Succeeded,
+            settled_at: dispatching.updated_at + Duration::seconds(1),
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("settle attempt")
+    {
+        SettleAgentWorkspaceRepairAttemptOutcome::Applied(attempt) => attempt,
+        outcome => panic!("expected settled attempt, got {outcome:?}"),
+    };
+
+    let mut revive = settled.clone();
+    revive.phase = AgentWorkspaceRepairPhase::Repairing;
+    revive.settled_at = None;
+    revive.outcome = None;
+    revive.updated_at += Duration::seconds(1);
+    let transition = repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: revive,
+            expected_phase: settled.phase,
+            expected_updated_at: settled.updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Repairing,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("reject settled transition");
+    assert!(matches!(
+        transition,
+        AgentWorkspaceRepairAttemptTransitionOutcome::Stale(ref attempt)
+            if attempt.settled_at == settled.settled_at && attempt.outcome == settled.outcome
+    ));
+
+    let bound = repo
+        .bind_repair_attempt_run(BindAgentWorkspaceRepairAttemptRun {
+            attempt_id: settled.id.clone(),
+            generation: settled.generation,
+            expected_phase: settled.phase,
+            expected_updated_at: settled.updated_at,
+            run_id: crate::domain::entities::AgentRunId::from_string("settled-sqlite-run"),
+            updated_at: settled.updated_at + Duration::seconds(2),
+        })
+        .await
+        .expect("reject settled run binding");
+    assert!(matches!(
+        bound,
+        AgentWorkspaceRepairAttemptTransitionOutcome::Stale(ref attempt)
+            if attempt.reserved_agent_run_id == settled.reserved_agent_run_id
+    ));
+
+    let (cross_db, cross_repo, active_conversation) = setup_repo();
+    let active = start_dispatching(&cross_repo, active_conversation.clone()).await;
+    let other_conversation =
+        ChatConversationId::from_string("5b9171f8-3e63-4e7e-a462-5f2eef0b32ca");
+    cross_db.with_connection(|conn| {
+        conn.execute(
+            "INSERT INTO chat_conversations (id, context_type, context_id, created_at, updated_at)
+             VALUES (?1, 'project', 'project-repair-fencing', ?2, ?2)",
+            rusqlite::params![other_conversation.as_str(), Utc::now().to_rfc3339()],
+        )
+        .expect("seed other conversation");
+    });
+    cross_repo
+        .create_or_update(workspace(other_conversation.clone()))
+        .await
+        .expect("persist other workspace");
+    let before_other_workspace = cross_repo
+        .get_by_conversation_id(&other_conversation)
+        .await
+        .expect("load other workspace")
+        .expect("other workspace exists");
+    let mut cross_conversation = active.clone();
+    cross_conversation.conversation_id = other_conversation.clone();
+    cross_conversation.phase = AgentWorkspaceRepairPhase::Repairing;
+    cross_conversation.updated_at += Duration::seconds(1);
+    let outcome = cross_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: cross_conversation,
+            expected_phase: active.phase,
+            expected_updated_at: active.updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Repairing,
+            compatibility_projection: Some(
+                crate::domain::repositories::AgentWorkspaceRepairCompatibilityProjection {
+                    publication_push_status: Some("must-not-project".to_string()),
+                    pr_supervision_status: None,
+                    pr_supervision_summary: None,
+                    pr_supervision_updated_at: None,
+                    pr_auto_merge_current: None,
+                    base_commit: None,
+                },
+            ),
+            events: vec![event(other_conversation.clone(), "cross-conversation")],
+        })
+        .await
+        .expect("reject cross-conversation transition");
+    let AgentWorkspaceRepairAttemptTransitionOutcome::Stale(stale) = outcome else {
+        panic!("cross-conversation transition must be stale")
+    };
+    assert_eq!(stale.conversation_id, active_conversation);
+    assert_eq!(
+        cross_repo
+            .get_by_conversation_id(&other_conversation)
+            .await
+            .expect("reload other workspace"),
+        Some(before_other_workspace)
+    );
+    assert!(cross_repo
+        .list_publication_events(&other_conversation)
+        .await
+        .expect("list other events")
+        .is_empty());
+}
+
+#[tokio::test]
+async fn corrupt_repair_attempt_phase_and_effect_kind_fail_closed_on_read() {
+    let (db, repo, conversation_id) = setup_repo();
+    let dispatching = start_dispatching(&repo, conversation_id).await;
+    db.with_connection(|conn| {
+        conn.execute_batch("PRAGMA ignore_check_constraints = ON;")
+            .expect("permit corrupt test row");
+        conn.execute(
+            "UPDATE agent_workspace_repair_attempts SET phase = 'unknown_phase' WHERE id = ?1",
+            rusqlite::params![dispatching.id.as_str()],
+        )
+        .expect("corrupt repair attempt phase");
+    });
+    assert!(repo.get_repair_attempt(&dispatching.id).await.is_err());
+
+    let (db, repo, conversation_id) = setup_repo();
+    let dispatching = start_dispatching(&repo, conversation_id).await;
+    let effect = AgentWorkspaceRepairEffect::new(
+        dispatching.id.clone(),
+        AgentWorkspaceRepairEffectKind::PushBranch,
+        "corrupt-effect-kind",
+        dispatching.updated_at,
+    );
+    assert!(matches!(
+        repo.create_repair_effect(CreateAgentWorkspaceRepairEffect {
+            attempt_id: dispatching.id.clone(),
+            generation: dispatching.generation,
+            expected_phase: dispatching.phase,
+            expected_attempt_updated_at: dispatching.updated_at,
+            effect: effect.clone(),
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("create effect"),
+        CreateAgentWorkspaceRepairEffectOutcome::Created(_)
+    ));
+    db.with_connection(|conn| {
+        conn.execute_batch("PRAGMA ignore_check_constraints = ON;")
+            .expect("permit corrupt test row");
+        conn.execute(
+            "UPDATE agent_workspace_repair_effects SET kind = 'unknown_kind' WHERE id = ?1",
+            rusqlite::params![effect.id.as_str()],
+        )
+        .expect("corrupt repair effect kind");
+    });
+    assert!(repo
+        .get_repair_effect_by_idempotency_key(&effect.idempotency_key)
+        .await
+        .is_err());
 }
 
 fn workspace(conversation_id: ChatConversationId) -> AgentConversationWorkspace {

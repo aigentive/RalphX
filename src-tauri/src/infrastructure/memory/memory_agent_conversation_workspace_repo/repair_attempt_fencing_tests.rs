@@ -9,7 +9,9 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentWorkspaceRepairAttemptTransition,
-    AgentWorkspaceRepairRepository, SettleAndStartAgentWorkspaceRepairSuccessor,
+    AgentWorkspaceRepairAttemptTransitionOutcome, AgentWorkspaceRepairRepository,
+    BindAgentWorkspaceRepairAttemptRun, SettleAgentWorkspaceRepairAttempt,
+    SettleAgentWorkspaceRepairAttemptOutcome, SettleAndStartAgentWorkspaceRepairSuccessor,
     SettleAndStartAgentWorkspaceRepairSuccessorOutcome, StartOrJoinAgentWorkspaceRepairAttempt,
     StartOrJoinAgentWorkspaceRepairAttemptOutcome,
 };
@@ -26,6 +28,125 @@ fn workspace(conversation_id: ChatConversationId) -> AgentConversationWorkspace 
         "ralphx/project-repair-fencing/agent".to_string(),
         "/tmp/ralphx/project-repair-fencing/agent".to_string(),
     )
+}
+
+#[tokio::test]
+async fn settled_and_cross_conversation_attempts_cannot_transition_or_bind_runs() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("memory-repair-settled-fence");
+    let dispatching = start_dispatching(&repo, conversation_id.clone()).await;
+    let settled = match repo
+        .settle_repair_attempt(SettleAgentWorkspaceRepairAttempt {
+            attempt_id: dispatching.id.clone(),
+            generation: dispatching.generation,
+            expected_phase: dispatching.phase,
+            expected_updated_at: dispatching.updated_at,
+            outcome: AgentWorkspaceRepairOutcome::Succeeded,
+            settled_at: dispatching.updated_at + Duration::seconds(1),
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("settle attempt")
+    {
+        SettleAgentWorkspaceRepairAttemptOutcome::Applied(attempt) => attempt,
+        outcome => panic!("expected settled attempt, got {outcome:?}"),
+    };
+
+    let mut revive = settled.clone();
+    revive.phase = AgentWorkspaceRepairPhase::Repairing;
+    revive.settled_at = None;
+    revive.outcome = None;
+    revive.updated_at += Duration::seconds(1);
+    let transition = repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: revive,
+            expected_phase: settled.phase,
+            expected_updated_at: settled.updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Repairing,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("reject settled transition");
+    assert!(matches!(
+        transition,
+        AgentWorkspaceRepairAttemptTransitionOutcome::Stale(ref attempt)
+            if attempt.settled_at == settled.settled_at && attempt.outcome == settled.outcome
+    ));
+
+    let bound = repo
+        .bind_repair_attempt_run(BindAgentWorkspaceRepairAttemptRun {
+            attempt_id: settled.id.clone(),
+            generation: settled.generation,
+            expected_phase: settled.phase,
+            expected_updated_at: settled.updated_at,
+            run_id: crate::domain::entities::AgentRunId::from_string("settled-memory-run"),
+            updated_at: settled.updated_at + Duration::seconds(2),
+        })
+        .await
+        .expect("reject settled run binding");
+    assert!(matches!(
+        bound,
+        AgentWorkspaceRepairAttemptTransitionOutcome::Stale(ref attempt)
+            if attempt.reserved_agent_run_id == settled.reserved_agent_run_id
+    ));
+
+    let cross_repo = MemoryAgentConversationWorkspaceRepository::new();
+    let active_conversation =
+        ChatConversationId::from_string("e211b0b8-2bb1-4b5f-89a4-9e906e3f4f1d");
+    let active = start_dispatching(&cross_repo, active_conversation.clone()).await;
+    let other_conversation =
+        ChatConversationId::from_string("2e06a490-c8cb-4867-a30c-88a50781f92c");
+    cross_repo
+        .create_or_update(workspace(other_conversation.clone()))
+        .await
+        .expect("persist other workspace");
+    let before_other_workspace = cross_repo
+        .get_by_conversation_id(&other_conversation)
+        .await
+        .expect("load other workspace")
+        .expect("other workspace exists");
+    let mut cross_conversation = active.clone();
+    cross_conversation.conversation_id = other_conversation.clone();
+    cross_conversation.phase = AgentWorkspaceRepairPhase::Repairing;
+    cross_conversation.updated_at += Duration::seconds(1);
+    let outcome = cross_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: cross_conversation,
+            expected_phase: active.phase,
+            expected_updated_at: active.updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Repairing,
+            compatibility_projection: Some(
+                crate::domain::repositories::AgentWorkspaceRepairCompatibilityProjection {
+                    publication_push_status: Some("must-not-project".to_string()),
+                    pr_supervision_status: None,
+                    pr_supervision_summary: None,
+                    pr_supervision_updated_at: None,
+                    pr_auto_merge_current: None,
+                    base_commit: None,
+                },
+            ),
+            events: vec![event(other_conversation.clone(), "cross-conversation")],
+        })
+        .await
+        .expect("reject cross-conversation transition");
+    let AgentWorkspaceRepairAttemptTransitionOutcome::Stale(stale) = outcome else {
+        panic!("cross-conversation transition must be stale")
+    };
+    assert_eq!(stale.conversation_id, active_conversation);
+    assert_eq!(
+        cross_repo
+            .get_by_conversation_id(&other_conversation)
+            .await
+            .expect("reload other workspace"),
+        Some(before_other_workspace)
+    );
+    assert!(cross_repo
+        .list_publication_events(&other_conversation)
+        .await
+        .expect("list other events")
+        .is_empty());
 }
 
 pub(super) fn repair_attempt(conversation_id: ChatConversationId) -> AgentWorkspaceRepairAttempt {
