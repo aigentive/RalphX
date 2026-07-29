@@ -3354,9 +3354,14 @@ fn the_b2_getters_are_reviewed_read_rows() {
 fn the_b2_getter_refusals_are_pinned() {
     for command in [
         // Fail-open: swallows a repository/filesystem error into an empty-but-successful
-        // result. `get_agent_running_states` returns `HashMap`, not `Result`, so a failed
-        // registry list is reported to the client as "nothing is running" — the false-success
-        // shape this ledger exists to prevent.
+        // result — the false-success shape this ledger exists to prevent.
+        //
+        // MECHANISM UPDATED (B0 lane): the fail-open itself is FIXED. The trait method now
+        // returns `Result`, so a failed registry list propagates instead of reporting "nothing
+        // is running"; `ipc_contract_bulk_running_states_propagates_a_registry_read_failure`
+        // pins that. These stay refused because the fail-open was never the only reason — the
+        // per-command audit that would clear them for the facade has not been done, and a
+        // repaired error path is not a registration decision.
         "get_agent_running_states",
         "get_agent_conversation_runtime_statuses",
         "list_agent_composer_skills",

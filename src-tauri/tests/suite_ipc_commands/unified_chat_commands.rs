@@ -5642,3 +5642,37 @@ mod ipc_contract {
             .expect("archive should succeed even without workspace");
     }
 }
+
+/// A failed registry read must NOT render as "every agent is idle".
+///
+/// This is the fail-open shape the batch-4/5 refusal pins named: the bulk read swallowed its
+/// error into a pre-seeded all-idle map, so a broken registry and a quiet system produced the
+/// same response. The local sidebar reads that map to decide whether to show running
+/// indicators, so the lie was visible to the user, not merely to a remote caller.
+#[tokio::test]
+async fn ipc_contract_bulk_running_states_propagates_a_registry_read_failure() {
+    let registry = Arc::new(MemoryRunningAgentRegistry::new());
+    registry
+        .fail_bulk_list("registry backing store is unavailable")
+        .await;
+
+    let app = tauri::test::mock_builder()
+        .manage(AppState::new_sqlite_test_with_registry(registry))
+        .manage(Arc::new(ExecutionState::new()))
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app should build");
+
+    let result = ralphx_lib::commands::unified_chat_commands::get_agent_running_states(
+        "project".to_string(),
+        vec!["conv-a".to_string(), "conv-b".to_string()],
+        app.state::<AppState>(),
+        app.state::<Arc<ExecutionState>>(),
+    )
+    .await;
+
+    let error = result.expect_err("a failed registry read must not report an all-idle map");
+    assert!(
+        error.contains("registry backing store is unavailable"),
+        "the refusal must carry the underlying cause, got: {error}"
+    );
+}

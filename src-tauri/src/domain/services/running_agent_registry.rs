@@ -786,6 +786,10 @@ pub fn kill_orphaned_mcp_servers() -> u32 {
 pub struct MemoryRunningAgentRegistry {
     agents: Arc<Mutex<HashMap<RunningAgentKey, RunningAgentInfo>>>,
     process_ops: ProcessOps,
+    /// Fault injection for the bulk read. Callers that must distinguish "the registry broke"
+    /// from "nothing is running" need a way to produce the first case; without it the only
+    /// reachable outcome is an empty list, which is exactly the ambiguity being tested.
+    bulk_list_failure: Arc<Mutex<Option<String>>>,
 }
 
 impl Default for MemoryRunningAgentRegistry {
@@ -805,7 +809,14 @@ impl MemoryRunningAgentRegistry {
         Self {
             agents: Arc::new(Mutex::new(HashMap::new())),
             process_ops,
+            bulk_list_failure: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Make `list_by_context_type` fail with `message`, so a caller's error handling is
+    /// reachable in a test.
+    pub async fn fail_bulk_list(&self, message: impl Into<String>) {
+        *self.bulk_list_failure.lock().await = Some(message.into());
     }
 
     /// Insert a running agent entry for test setup.
@@ -959,6 +970,9 @@ impl RunningAgentRegistry for MemoryRunningAgentRegistry {
         &self,
         context_type: &str,
     ) -> Result<Vec<(RunningAgentKey, RunningAgentInfo)>, String> {
+        if let Some(message) = self.bulk_list_failure.lock().await.clone() {
+            return Err(message);
+        }
         let agents = self.agents.lock().await;
         let results = agents
             .iter()

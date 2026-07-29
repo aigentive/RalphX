@@ -9774,9 +9774,10 @@ pub async fn get_agent_running_states_for_service(
 ) -> Result<HashMap<String, AgentRunningState>, String> {
     let context_type = parse_context_type(&context_type)?;
 
-    Ok(service
+    service
         .get_agent_running_states(context_type, &context_ids)
-        .await)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -9998,7 +9999,8 @@ async fn add_ideation_runtime_item(
             ChatContextType::Ideation,
             std::slice::from_ref(&session_id_str),
         )
-        .await;
+        .await
+        .map_err(|error| error.to_string())?;
     let running_state = states
         .get(&session_id_str)
         .copied()
@@ -10138,13 +10140,16 @@ async fn add_task_runtime_items(
         .collect::<Vec<_>>();
     let execution_states = service
         .get_agent_running_states(ChatContextType::TaskExecution, &task_id_strings)
-        .await;
+        .await
+        .map_err(|error| error.to_string())?;
     let review_states = service
         .get_agent_running_states(ChatContextType::Review, &task_id_strings)
-        .await;
+        .await
+        .map_err(|error| error.to_string())?;
     let merge_states = service
         .get_agent_running_states(ChatContextType::Merge, &task_id_strings)
-        .await;
+        .await
+        .map_err(|error| error.to_string())?;
 
     for task in tasks {
         let candidates = [
