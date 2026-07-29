@@ -4336,29 +4336,40 @@ pub async fn list_agent_conversations(
     context_id: String,
     include_archived: Option<bool>,
     state: State<'_, AppState>,
-    execution_state: State<'_, Arc<ExecutionState>>,
-    app: tauri::AppHandle,
 ) -> Result<Vec<AgentConversationResponse>, String> {
-    let context_type_enum = parse_context_type(&context_type)?;
+    list_agent_conversations_for_app_state(
+        state.inner(),
+        parse_context_type(&context_type)?,
+        &context_id,
+        include_archived.unwrap_or(false),
+    )
+    .await
+}
 
-    let include_archived = include_archived.unwrap_or(false);
-    let conversations = if include_archived {
-        state
-            .chat_conversation_repo
-            .get_by_context_filtered(context_type_enum, &context_id, true)
-            .await
-            .map_err(|e| e.to_string())?
-    } else {
-        let service = create_chat_service(&state, app, &execution_state);
-        service
-            .list_conversations(context_type_enum, &context_id)
-            .await
-            .map_err(|e| e.to_string())?
-    };
-
-    let conversations =
-        filter_agent_list_visible_conversations(state.inner(), conversations).await?;
-    agent_conversation_responses_for_state(state.inner(), conversations).await
+/// Pure-`&AppState` seam for the conversation list.
+///
+/// Takes no `tauri::AppHandle`, no `ExecutionState`, and builds no chat service, so the absence
+/// of spawn/steer authority is checkable from the signature. See `remote_transcript_commands`.
+///
+/// This seam is a mechanical extraction, not a rewrite. The command previously built a chat
+/// service purely to call its `list_conversations`, which is a straight delegation to
+/// `chat_conversation_repo.get_by_context` — and `get_by_context(t, c)` is the same query as
+/// `get_by_context_filtered(t, c, false)` in both the SQLite and in-memory repositories
+/// (identical predicate, identical ordering). Collapsing the two branches therefore changes no
+/// result, and drops two spawn-authority carriers from a read command.
+pub async fn list_agent_conversations_for_app_state(
+    state: &AppState,
+    context_type: ChatContextType,
+    context_id: &str,
+    include_archived: bool,
+) -> Result<Vec<AgentConversationResponse>, String> {
+    let conversations = state
+        .chat_conversation_repo
+        .get_by_context_filtered(context_type, context_id, include_archived)
+        .await
+        .map_err(|e| e.to_string())?;
+    let conversations = filter_agent_list_visible_conversations(state, conversations).await?;
+    agent_conversation_responses_for_state(state, conversations).await
 }
 
 /// List a page of conversations for a context with optional title search.
@@ -4373,25 +4384,47 @@ pub async fn list_agent_conversations_page(
     search: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<AgentConversationListPageResponse, String> {
-    let context_type_enum = parse_context_type(&context_type)?;
-    let archived_only = archived_only.unwrap_or(false);
-    let include_archived = include_archived.unwrap_or(false) || archived_only;
-    let offset = offset.unwrap_or(0);
-    let limit = limit.unwrap_or(6);
+    list_agent_conversations_page_for_app_state(
+        state.inner(),
+        parse_context_type(&context_type)?,
+        &context_id,
+        include_archived.unwrap_or(false),
+        archived_only.unwrap_or(false),
+        offset.unwrap_or(0),
+        limit.unwrap_or(6),
+        search.as_deref(),
+    )
+    .await
+}
+
+/// Pure-`&AppState` seam for the paged conversation list. See the note on
+/// `list_agent_conversations_for_app_state` for why this carries no spawn authority.
+#[allow(clippy::too_many_arguments)]
+pub async fn list_agent_conversations_page_for_app_state(
+    state: &AppState,
+    context_type: ChatContextType,
+    context_id: &str,
+    include_archived: bool,
+    archived_only: bool,
+    offset: u32,
+    limit: u32,
+    search: Option<&str>,
+) -> Result<AgentConversationListPageResponse, String> {
+    let include_archived = include_archived || archived_only;
 
     let mut conversations = state
         .chat_conversation_repo
-        .get_by_context_filtered(context_type_enum, &context_id, include_archived)
+        .get_by_context_filtered(context_type, context_id, include_archived)
         .await
         .map_err(|e| e.to_string())?;
-    conversations = filter_agent_list_visible_conversations(state.inner(), conversations)
+    conversations = filter_agent_list_visible_conversations(state, conversations)
         .await?
         .into_iter()
         .filter(|conversation| {
             if archived_only && !conversation.is_archived() {
                 return false;
             }
-            conversation_matches_agent_list_search(conversation, search.as_deref())
+            conversation_matches_agent_list_search(conversation, search)
         })
         .collect();
     let total = i64::try_from(conversations.len()).unwrap_or(i64::MAX);
@@ -4405,7 +4438,7 @@ pub async fn list_agent_conversations_page(
     let has_more = i64::from(offset.saturating_add(limit)) < total;
 
     Ok(AgentConversationListPageResponse {
-        conversations: agent_conversation_responses_for_state(state.inner(), conversations).await?,
+        conversations: agent_conversation_responses_for_state(state, conversations).await?,
         total,
         limit,
         offset,

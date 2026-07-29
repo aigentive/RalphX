@@ -868,7 +868,9 @@ fn detector_b_is_calibrated_and_floor_enforced() {
         // 541 -> 544: batch 4's three spawn-free transcript reads. Bumped because commands were
         // ADDED to the census, not because the detector changed; all three are detector-silent
         // by construction and `remote_transcript_reads_never_reach_the_wake` proves it.
-        544,
+        // 544 -> 546: batch 5's two spawn-free conversation-list reads, same reasoning, with
+        // `remote_conversation_list_reads_carry_no_spawn_authority` as the proof.
+        546,
         "review the detector against the full command census"
     );
     let flagged = spawn_triggering_writers(
@@ -2691,6 +2693,81 @@ fn probe_transcript_read_arming_paths() {
     }
 }
 
+/// Diagnostic: the same walk as `probe_transcript_read_arming_paths`, for the conversation
+/// LIST reads batch 4 deferred (batch 5 item 1).
+///
+/// A transcript read without a list to pick from is useless, so these two complete PR 3.2's
+/// read surface. Batch 4 deferred them on the `tauri::AppHandle` carrier; this walk is what
+/// establishes where — and whether — the arming edge actually enters.
+#[test]
+#[ignore = "diagnostic probe"]
+fn probe_conversation_list_arming_paths() {
+    use super::authority_audit::{verdict_for, HitVerdict};
+    use std::collections::VecDeque;
+
+    let graph = CallGraph::build(&load_production_sources());
+    let sinks: BTreeSet<String> = TRANSITION_SINKS
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect::<BTreeSet<_>>();
+
+    for command in [
+        "list_agent_conversations",
+        "list_agent_conversations_page",
+        // The pure seams this batch extracts.
+        "list_agent_conversations_for_app_state",
+        "list_agent_conversations_page_for_app_state",
+        // Shared helpers both list reads funnel through.
+        "filter_agent_list_visible_conversations",
+        "agent_conversation_responses_for_state",
+        "create_chat_service",
+    ] {
+        eprintln!("\n===== {command} =====");
+        let roots = graph.roots_named(command);
+        eprintln!("roots: {roots:?}");
+
+        let mut parent: BTreeMap<String, String> = BTreeMap::new();
+        let mut visited: BTreeSet<String> = BTreeSet::new();
+        let mut queue: VecDeque<String> = roots.iter().cloned().collect();
+        for r in &roots {
+            visited.insert(r.clone());
+        }
+        let mut arming_nodes: Vec<(String, String)> = Vec::new();
+        while let Some(name) = queue.pop_front() {
+            let Some(node) = graph.nodes.get(&name) else {
+                continue;
+            };
+            for hit in &node.sink_hits {
+                if verdict_for(hit) == HitVerdict::Arming {
+                    arming_nodes.push((name.clone(), format!("{}{:?}", hit.sink, hit.targets)));
+                }
+            }
+            for callee in &node.callees {
+                if sinks.contains(callee.as_str()) || visited.contains(callee) {
+                    continue;
+                }
+                visited.insert(callee.clone());
+                parent.insert(callee.clone(), name.clone());
+                queue.push_back(callee.clone());
+            }
+        }
+
+        if arming_nodes.is_empty() {
+            eprintln!("  NO ARMING HITS");
+        }
+        for (node, hit) in &arming_nodes {
+            let mut path = vec![node.clone()];
+            let mut cur = node.clone();
+            while let Some(p) = parent.get(&cur) {
+                path.push(p.clone());
+                cur = p.clone();
+            }
+            path.reverse();
+            eprintln!("  ARMING sink={hit}\n    path: {}", path.join(" -> "));
+        }
+    }
+}
+
 /// The scope-confinement annotation and its predicate are inseparable (batch 4).
 ///
 /// Mirrors `conditional_capabilities_are_discharged_by_a_live_predicate`. Asserted in BOTH
@@ -2886,6 +2963,137 @@ fn the_remote_transcript_reads_are_reviewed_read_rows() {
 }
 
 // ---------------------------------------------------------------------------------------
+// Batch 5 — the conversation-LIST seam split (completes PR 3.2's read surface)
+// ---------------------------------------------------------------------------------------
+
+const REMOTE_CONVERSATION_LIST_READS: &[&str] = &[
+    "list_remote_agent_conversations",
+    "list_remote_agent_conversations_page",
+];
+
+const LOCAL_CONVERSATION_LIST_READS: &[&str] =
+    &["list_agent_conversations", "list_agent_conversations_page"];
+
+/// The registered list reads reach no spawn/steer authority.
+///
+/// NOTE ON THE SHAPE, because it differs from batch 4 and the difference is the finding:
+/// `probe_conversation_list_arming_paths` reports NO ARMING HITS for the LOCAL list commands
+/// too. Unlike the transcript reads, these never had a wake on their path. So the
+/// arming-calibration batch 4 used ("the local ones still arm") is unavailable here, and
+/// asserting it would be a false statement about this code. The disqualifier was carrier-
+/// shaped, not wake-shaped, and the calibration that matches it is
+/// `the_spawn_free_remote_read_module_carries_no_authority_carriers` below.
+#[test]
+fn remote_conversation_list_reads_carry_no_spawn_authority() {
+    let graph = CallGraph::build(&load_production_sources());
+
+    for command in REMOTE_CONVERSATION_LIST_READS {
+        let closure = graph.closure([(*command).to_string()]);
+        assert!(
+            !closure.visited.is_empty(),
+            "`{command}` resolved to an empty closure; the graph did not find its body and \
+             this assertion would be vacuous"
+        );
+        assert!(
+            !closure_is_arming(&closure),
+            "`{command}` reaches an arming sink"
+        );
+        assert!(
+            !tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS),
+            "`{command}` reaches a process-launch sink"
+        );
+        assert!(
+            !tokens_reach_any(&closure.tokens, TRANSITION_SINKS),
+            "`{command}` reaches a transition sink"
+        );
+    }
+}
+
+/// CALIBRATION for the batch-5 split: the spawn-free read module holds none of the three
+/// authority carriers, asserted over SOURCE rather than left as prose.
+///
+/// This is what makes the list registration safe. The list commands were never disqualified
+/// by a detector — `list_agent_conversations` was disqualified because it accepted
+/// `tauri::AppHandle` and `ExecutionState` purely to build a `ChatService` whose invoked
+/// method (`list_conversations`) is a straight repository delegation. A seam that drops those
+/// carriers is only meaningful if the carriers genuinely cannot re-enter, so the module's
+/// stated contract is checked mechanically here. Batch 4 asserted this contract in prose only.
+#[test]
+fn the_spawn_free_remote_read_module_carries_no_authority_carriers() {
+    let sources = load_production_sources();
+    let (_, module) = sources
+        .iter()
+        .find(|(file, _)| file == "commands/remote_transcript_commands.rs")
+        .expect("the spawn-free remote read module must exist");
+
+    // Comments are stripped: the module doc NAMES the carriers in order to explain why they are
+    // absent, and the contract is about code, not prose.
+    let code = module
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        code.contains("pub async fn list_remote_agent_conversations"),
+        "comment stripping ate the module body; this assertion would be vacuous"
+    );
+
+    for carrier in [
+        "AppHandle",
+        "ExecutionState",
+        "create_chat_service",
+        "build_chat_service",
+    ] {
+        assert!(
+            !code.contains(carrier),
+            "`remote_transcript_commands` mentions `{carrier}`. The whole contract of this \
+             module is that the spawn/steer authority carriers are absent by construction, \
+             which is what lets its commands sit at `ui:read` with no capability."
+        );
+    }
+}
+
+/// The local list commands stay unregistered; the registered answer is the `*_remote_*` twin.
+#[test]
+fn the_local_conversation_lists_stay_unregistered() {
+    for command in LOCAL_CONVERSATION_LIST_READS {
+        assert!(
+            find_spec(command).is_none(),
+            "`{command}` is a Tauri-extractor-shaped local command and must not be remotely \
+             reachable; the registered answer is its `list_remote_*` twin"
+        );
+    }
+}
+
+/// The registered list reads are reviewed `Read` rows, not module-default inheritance.
+#[test]
+fn the_remote_conversation_list_reads_are_reviewed_read_rows() {
+    let rows = census().into_iter().collect::<BTreeMap<_, _>>();
+
+    for command in REMOTE_CONVERSATION_LIST_READS {
+        let module = rows
+            .get(*command)
+            .unwrap_or_else(|| panic!("`{command}` must be a live Tauri command"));
+        assert_eq!(module, "remote_transcript_commands");
+        let row = policy_for(command, module).expect("ledgered");
+        assert_eq!(row.class, RiskClass::Read);
+        assert!(
+            row.capabilities.is_empty(),
+            "`{command}` is a pure read; a Read row with capabilities is a mislabel"
+        );
+        assert!(
+            !row.reason.contains("conservative-module-default"),
+            "`{command}` still carries the module-default reason; it was not reviewed"
+        );
+        assert!(
+            row.reason.contains("propagates read errors"),
+            "`{command}` must record that its reads fail closed"
+        );
+        assert!(find_spec(command).is_some());
+    }
+}
+
+// ---------------------------------------------------------------------------------------
 // Batch 4 — the B2 detector-silent getters
 // ---------------------------------------------------------------------------------------
 
@@ -2973,9 +3181,14 @@ fn the_b2_getter_refusals_are_pinned() {
         // Fail-open on enrichment: model fields go silently null when the lookup errors, so
         // the cluster's "propagates read errors" invariant does not hold.
         "get_agent_run_status_unified",
-        // Deferred, NOT refused: both take `tauri::AppHandle`, the spawn-authority carrier.
-        // They are detector-silent and otherwise clean, and they want the same seam split the
-        // transcript reads got rather than a registration of the carrier itself.
+        // Batch 4 deferred `list_agent_conversations` / `_page` here and batch 5 resolved them
+        // via the seam split, so they now live in `the_local_conversation_lists_stay_
+        // unregistered` with their `list_remote_*` twins registered. They stay listed here
+        // because the local commands themselves are still refused, and the reason is unchanged.
+        //
+        // Batch 4's note said "both take `tauri::AppHandle`". That was true only of
+        // `list_agent_conversations`; `list_agent_conversations_page` never took one — its
+        // only barrier was the `State<'_, AppState>` extractor. Corrected in batch 5.
         "list_agent_conversations",
         "list_agent_conversations_page",
     ] {
