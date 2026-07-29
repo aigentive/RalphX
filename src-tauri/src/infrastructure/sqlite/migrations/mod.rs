@@ -1837,6 +1837,8 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260728120000,
         name: "remote_request_dedup",
         migrate: v20260728120000_remote_request_dedup::migrate,
+    },
+    Migration {
         version: 20260728155615,
         name: "agent_conversation_mutes",
         migrate: v20260728155615_agent_conversation_mutes::migrate,
