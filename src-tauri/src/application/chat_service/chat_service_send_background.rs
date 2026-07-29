@@ -13,13 +13,15 @@ use super::chat_service_context;
 use super::chat_service_helpers::get_assistant_role;
 use super::chat_service_run_finalization::{
     finalize_run_completed_by_id, queue_run_completed_event_authority as queue_authority,
-    run_completed_without_queue_is_authorized,
+    run_completed_event_is_authorized, run_completed_without_queue_is_authorized,
+    terminal_failure_reason,
 };
 use super::chat_service_streaming::{
     completion_tool_result_accepted, is_completion_tool_name, process_stream_background,
 };
 use super::chat_service_types::{
-    AgentMessageCreatedPayload, AgentMessageRenderReadyPayload, AgentRunCompletedPayload,
+    AgentErrorPayload, AgentMessageCreatedPayload, AgentMessageRenderReadyPayload,
+    AgentRunCompletedPayload,
 };
 use super::{event_context, has_meaningful_output, EventContextPayload, StreamingStateCache};
 use crate::application::interactive_process_registry::{
@@ -1774,8 +1776,16 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     let conv_id_str = conversation_id.as_str();
                     streaming_state_cache.clear(&conv_id_str).await;
 
+                    // Authority is the persisted terminal status, not whether this call
+                    // happened to apply the completion write: another writer (TurnComplete
+                    // finalizer, HTTP completion handlers) may legitimately own it.
+                    let completion_authorized = run_completed_event_is_authorized(
+                        &agent_run_repo,
+                        &AgentRunId::from_string(&agent_run_id),
+                    )
+                    .await;
                     let will_emit_run_completed = run_completed_without_queue_is_authorized(
-                        completion_applied,
+                        completion_authorized,
                         skip_post_loop_finalization,
                         outcome.silent_interactive_exit,
                     );
@@ -1834,6 +1844,27 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                                     effective_session_id.clone(),
                                     run_chain_id.clone(),
                                 ),
+                            );
+                        }
+                    } else if let Some(reason) =
+                        terminal_failure_reason(&agent_run_repo, &AgentRunId::from_string(&agent_run_id))
+                            .await
+                    {
+                        // The stream ended without an error, but the run was classified as
+                        // failed afterwards (persist failure / zero-output autonomous run).
+                        // handle_stream_error never runs here, so emit the terminal event
+                        // ourselves instead of leaving the UI generating until the watchdog.
+                        if let Some(ref handle) = app_handle {
+                            let _ = handle.emit(
+                                "agent:error",
+                                AgentErrorPayload {
+                                    conversation_id: Some(conversation_id.as_str().to_string()),
+                                    context_type: context_type.to_string(),
+                                    context_id: context_id.clone(),
+                                    agent_run_id: Some(agent_run_id.clone()),
+                                    error: reason.clone(),
+                                    stderr: Some(reason),
+                                },
                             );
                         }
                     }
@@ -1961,6 +1992,28 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                             terminal_run_id,
                             "[QUEUE] Suppressing run_completed because persisted terminal authority is not Completed"
                         );
+                        // Suppressing the success event must not leave the UI without any
+                        // terminal event; surface the persisted failure instead.
+                        if let Some(reason) = terminal_failure_reason(
+                            &agent_run_repo,
+                            &AgentRunId::from_string(&terminal_run_id),
+                        )
+                        .await
+                        {
+                            if let Some(ref handle) = app_handle {
+                                let _ = handle.emit(
+                                    "agent:error",
+                                    AgentErrorPayload {
+                                        conversation_id: Some(conversation_id.as_str().to_string()),
+                                        context_type: context_type.to_string(),
+                                        context_id: context_id.clone(),
+                                        agent_run_id: Some(terminal_run_id),
+                                        error: reason.clone(),
+                                        stderr: Some(reason),
+                                    },
+                                );
+                            }
+                        }
                     }
 
                     // Trigger memory pipelines after queue processing completes

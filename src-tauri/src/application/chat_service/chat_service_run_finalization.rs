@@ -5,6 +5,9 @@ use crate::domain::repositories::AgentRunRepository;
 
 use super::chat_service_queue::QueueProcessingOutcome;
 
+/// Fallback error text for a persisted failed run without a stored message.
+pub(super) const UNSPECIFIED_RUN_FAILURE: &str = "Agent run failed without a recorded reason";
+
 pub(super) async fn finalize_run_completed_by_id(
     repo: &Arc<dyn AgentRunRepository>,
     run_id: &str,
@@ -79,12 +82,43 @@ pub(super) async fn run_completed_event_is_authorized(
     }
 }
 
+/// Reason to surface as `agent:error` when the terminal run is persisted as failed.
+///
+/// Returns `None` for every non-`Failed` status, a missing run, and read errors:
+/// user cancels are already covered by `agent:stopped`, and an unrepaired
+/// prune cancel is the pre-existing crash case rather than a failed run.
+pub(super) async fn terminal_failure_reason(
+    repo: &Arc<dyn AgentRunRepository>,
+    run_id: &AgentRunId,
+) -> Option<String> {
+    match repo.get_by_id(run_id).await {
+        Ok(Some(run)) if run.status == AgentRunStatus::Failed => Some(
+            run.error_message
+                .unwrap_or_else(|| UNSPECIFIED_RUN_FAILURE.to_string()),
+        ),
+        Ok(_) => None,
+        Err(error) => {
+            tracing::error!(
+                %error,
+                run_id = %run_id,
+                "Could not read terminal run status for failure event"
+            );
+            None
+        }
+    }
+}
+
+/// Structural gate for the no-queue `run_completed` emission.
+///
+/// `completion_authorized` MUST come from persisted-status authority
+/// (`run_completed_event_is_authorized`), not from whether this call happened to
+/// apply the completion write.
 pub(super) fn run_completed_without_queue_is_authorized(
-    completion_applied: bool,
+    completion_authorized: bool,
     skip_post_loop_finalization: bool,
     silent_interactive_exit: bool,
 ) -> bool {
-    completion_applied && (!skip_post_loop_finalization || silent_interactive_exit)
+    completion_authorized && (!skip_post_loop_finalization || silent_interactive_exit)
 }
 
 pub(super) async fn queue_run_completed_event_authority(

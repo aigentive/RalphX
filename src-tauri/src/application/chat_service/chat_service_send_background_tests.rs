@@ -43,6 +43,7 @@ use tokio::io::AsyncWriteExt;
 use super::super::chat_service_run_finalization::{
     finalize_run_completed, finalize_run_completed_by_id, queue_run_completed_event_authority,
     run_completed_event_is_authorized, run_completed_without_queue_is_authorized,
+    terminal_failure_reason,
 };
 
 fn test_tool_call(name: &str) -> ToolCall {
@@ -1504,6 +1505,97 @@ async fn queue_completion_event_authority_suppresses_non_completed_parent_fallba
 
     assert_eq!(terminal_run_id, parent_run_id.as_str());
     assert!(!authorized);
+}
+
+/// Zero processed queued messages must still emit run_completed when the terminal
+/// run really is Completed (race / spawn failure / cancellation diagnostics only).
+#[tokio::test]
+async fn queue_completion_event_authority_granted_when_zero_processed_but_run_completed() {
+    let repo: Arc<dyn AgentRunRepository> = Arc::new(MemoryAgentRunRepository::new());
+    let mut parent_run = AgentRun::new(ChatConversationId::new());
+    parent_run.complete();
+    let parent_run_id = parent_run.id;
+    repo.create(parent_run).await.unwrap();
+
+    let initial_queue_count = 2usize;
+    let outcome = super::super::chat_service_queue::QueueProcessingOutcome {
+        total_processed: 0,
+        last_run_id: None,
+    };
+    assert!(outcome.total_processed == 0 && initial_queue_count > 0);
+
+    let (terminal_run_id, authorized) =
+        queue_run_completed_event_authority(&repo, &outcome, &parent_run_id.as_str()).await;
+
+    assert_eq!(terminal_run_id, parent_run_id.as_str());
+    assert!(
+        authorized,
+        "zero processed queued messages must not suppress a genuinely Completed run"
+    );
+}
+
+#[tokio::test]
+async fn terminal_failure_reason_reports_persisted_failure_and_denies_completion_event() {
+    let repo: Arc<dyn AgentRunRepository> = Arc::new(MemoryAgentRunRepository::new());
+    let mut run = AgentRun::new(ChatConversationId::new());
+    run.fail("Agent completed with no output");
+    let run_id = run.id;
+    repo.create(run).await.unwrap();
+
+    assert_eq!(
+        terminal_failure_reason(&repo, &run_id).await.as_deref(),
+        Some("Agent completed with no output")
+    );
+    assert!(!run_completed_event_is_authorized(&repo, &run_id).await);
+}
+
+#[tokio::test]
+async fn completion_event_authority_granted_when_another_writer_completed_the_run() {
+    let repo: Arc<dyn AgentRunRepository> = Arc::new(MemoryAgentRunRepository::new());
+    let run = AgentRun::new(ChatConversationId::new());
+    let run_id = run.id;
+    repo.create(run).await.unwrap();
+
+    // First writer (e.g. the TurnComplete finalizer or an HTTP completion handler).
+    assert!(finalize_run_completed(&repo, &run_id).await);
+    // Second call loses the CAS but the run is genuinely Completed.
+    assert!(!finalize_run_completed(&repo, &run_id).await);
+
+    assert!(
+        run_completed_event_is_authorized(&repo, &run_id).await,
+        "persisted Completed status must authorize the event even when this call did not apply it"
+    );
+    assert!(terminal_failure_reason(&repo, &run_id).await.is_none());
+}
+
+#[tokio::test]
+async fn terminal_failure_reason_ignores_user_cancelled_run() {
+    let repo: Arc<dyn AgentRunRepository> = Arc::new(MemoryAgentRunRepository::new());
+    let mut run = AgentRun::new(ChatConversationId::new());
+    run.cancel();
+    let run_id = run.id;
+    repo.create(run).await.unwrap();
+
+    assert!(
+        terminal_failure_reason(&repo, &run_id).await.is_none(),
+        "user cancels are covered by agent:stopped and must not emit a duplicate agent:error"
+    );
+    assert!(!run_completed_event_is_authorized(&repo, &run_id).await);
+}
+
+#[tokio::test]
+async fn terminal_failure_reason_fails_closed_when_read_errors() {
+    let inner: Arc<dyn AgentRunRepository> = Arc::new(MemoryAgentRunRepository::new());
+    let failing = Arc::new(CreateFailingAgentRunRepository::new(Arc::clone(&inner)));
+    let repo: Arc<dyn AgentRunRepository> = failing.clone();
+    let mut run = AgentRun::new(ChatConversationId::new());
+    run.fail("boom");
+    let run_id = run.id;
+    inner.create(run).await.unwrap();
+    failing.fail_run_reads();
+
+    assert!(terminal_failure_reason(&repo, &run_id).await.is_none());
+    assert!(!run_completed_event_is_authorized(&repo, &run_id).await);
 }
 
 #[test]
