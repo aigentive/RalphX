@@ -3268,19 +3268,37 @@ fn the_b2_workspace_read_refusals_are_pinned() {
         "the reconciliation scheduler vanished; re-audit `get_agent_conversation_workspace`"
     );
 
-    // MECHANISM 5 — the composer search is the FAIL-OPEN shape batch 4 refused four times,
-    // and it is the sibling of `search_agent_composer_plan_references` which batch 4 refused
-    // for exactly this. A failed `git ls-files` silently becomes a filesystem walk, so a
-    // remote client cannot distinguish "these are the project's files" from "git failed".
+    // MECHANISM 5 — the composer search WAS the fail-open shape batch 4 refused four times.
+    //
+    // MECHANISM UPDATED (B0 lane): the fail-open is FIXED. `collect_git_entries` is now
+    // tri-state — `Ok(None)` only when git RAN and said "not a checkout", `Err` when git could
+    // not be consulted — so a broken git no longer renders as a complete file list. The old
+    // assertion pinned the broken shape by source text and would now fail, which is exactly the
+    // re-audit it asked for; this is that re-audit's result.
+    //
+    // The refusal STANDS on the two reasons that survive: the command launches a process
+    // (`SpawnsProcess`, unexposable at any v1 scope) and it discloses host absolute paths. The
+    // repaired error path removes one argument for refusal, not the disqualifying ones.
     let (_, project_entries) = sources
         .iter()
         .find(|(file, _)| file == "commands/agent_composer_commands/project_entries.rs")
         .expect("the composer entry module must exist");
     assert!(
-        project_entries
+        !project_entries
             .contains("collect_git_entries(root).unwrap_or_else(|| collect_fs_entries(root))"),
-        "the composer search's fail-open fallback changed shape; re-audit whether it now \
-         propagates its errors, in which case it may become registrable"
+        "the composer search's fail-open fallback came back; it was repaired in the B0 lane"
+    );
+    assert!(
+        project_entries.contains(
+            "fn collect_git_entries(root: &Path) -> Result<Option<Vec<IndexedEntry>>, String>"
+        ),
+        "the composer search's git probe is no longer tri-state; a two-state probe cannot \
+         distinguish `not a checkout` from `git failed`, which is the fail-open returning"
+    );
+    assert!(
+        project_entries.contains("Command::new(resolve_git_cli_path())"),
+        "the composer search no longer launches git; if the process launch is gone, re-audit \
+         whether SpawnsProcess still disqualifies it"
     );
 }
 
