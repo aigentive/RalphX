@@ -202,8 +202,7 @@ export const SETTINGS_NAV: SettingsNavMeta[] = [
     id: "agents",
     label: "Agents",
     sublabel: "Roles, personas, capabilities",
-    description:
-      "Backend-owned role defaults, conversation personas, and opt-in agent capabilities.",
+    description: "Role defaults, reusable personas, and opt-in capabilities.",
     icon: Bot,
     leaves: ["agents", "personas", "capabilities"],
   },
