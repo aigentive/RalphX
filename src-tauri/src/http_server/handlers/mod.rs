@@ -5,6 +5,8 @@ use crate::infrastructure::agents::claude::format_stream_json_input;
 pub mod agent_followups;
 pub mod agent_issues;
 pub mod agent_tasks;
+#[cfg(test)]
+mod agent_tasks_tests;
 pub mod agent_workflows;
 #[cfg(test)]
 mod agent_workflows_tests;

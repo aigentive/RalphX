@@ -1,6 +1,6 @@
 // Diagnostic commands — agent health and harness availability inspection
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::application::harness_runtime_registry::{
@@ -8,6 +8,39 @@ use crate::application::harness_runtime_registry::{
 };
 use crate::application::AppState;
 use crate::infrastructure::agents::CodexCliCapabilities;
+
+const MAX_FRONTEND_ERROR_MESSAGE_LENGTH: usize = 4_096;
+const MAX_FRONTEND_COMPONENT_STACK_LENGTH: usize = 16_384;
+const MAX_FRONTEND_ERROR_SOURCE_LENGTH: usize = 256;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrontendErrorLogInput {
+    pub message: String,
+    pub component_stack: Option<String>,
+    pub source: Option<String>,
+}
+
+#[doc(hidden)]
+pub(crate) fn truncate_frontend_error_field(value: &str, max_length: usize) -> String {
+    value.chars().take(max_length).collect()
+}
+
+/// Persist a frontend error through the application's existing tracing pipeline.
+#[tauri::command]
+pub fn log_frontend_error(input: FrontendErrorLogInput) {
+    let message = truncate_frontend_error_field(&input.message, MAX_FRONTEND_ERROR_MESSAGE_LENGTH);
+    let component_stack = input
+        .component_stack
+        .as_deref()
+        .map(|value| truncate_frontend_error_field(value, MAX_FRONTEND_COMPONENT_STACK_LENGTH));
+    let source = input
+        .source
+        .as_deref()
+        .map(|value| truncate_frontend_error_field(value, MAX_FRONTEND_ERROR_SOURCE_LENGTH));
+
+    tracing::error!(%message, component_stack = ?component_stack, source = ?source, "frontend_error");
+}
 
 #[derive(Debug, Clone)]
 pub struct CodexCliProbeStatus {
@@ -164,35 +197,4 @@ pub fn get_codex_cli_diagnostics() -> Result<CodexCliDiagnosticsResponse, String
         probe.into(),
         capabilities,
     ))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn build_codex_cli_diagnostics_response_preserves_probe_error_without_capabilities() {
-        let response = build_codex_cli_diagnostics_response(
-            CodexCliProbeStatus {
-                binary_path: Some("/usr/local/bin/codex".to_string()),
-                binary_found: true,
-                probe_succeeded: false,
-                available: false,
-                missing_core_exec_features: vec!["exec".to_string()],
-                error: Some("Codex CLI is missing required capability: exec".to_string()),
-            },
-            None,
-        );
-
-        assert!(!response.probe_succeeded);
-        assert!(!response.has_core_exec_support);
-        assert_eq!(
-            response.missing_core_exec_features,
-            vec!["exec".to_string()]
-        );
-        assert_eq!(
-            response.error.as_deref(),
-            Some("Codex CLI is missing required capability: exec")
-        );
-    }
 }

@@ -15,6 +15,7 @@ import { useUiStore } from "@/stores/uiStore";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { IntegratedChatPanel } from "./IntegratedChatPanel";
 import {
+  createDeltaReplayConversationFixture,
   createReplayConversationFixture,
   type ReplayLiveEvent,
   type ReplayStepId,
@@ -396,5 +397,91 @@ describe("IntegratedChatPanel live replay/recovery parity", () => {
         text: "Live turn two begins before remount.",
       },
     ]);
+  });
+
+  it("recovers a delta-streamed turn mid-segment without concatenating text segments", async () => {
+    const delta = createDeltaReplayConversationFixture();
+    backendStep = "turn-2-edit-started";
+    transport.getConversationTimelinePage.mockImplementation(async () => delta.timelinePage(backendStep));
+    transport.getConversationActiveState.mockImplementation(async () => delta.activeState(backendStep));
+    const panel = renderReplayPanel();
+
+    await waitFor(() => {
+      const transcript = captureTranscriptSnapshot(panel.container);
+      const textRows = transcript.filter((row) => row.kind === "text");
+      expect(textRows).toEqual(expect.arrayContaining([
+        // Snapshot helper trims captured text; segment identity is what matters.
+        expect.objectContaining({ text: "First segment survives the switch." }),
+        expect.objectContaining({ text: "Second segment resumes from its mid-stream tail." }),
+      ]));
+      expect(textRows.some((row) => row.text.includes(
+        "First segment survives the switch. Second segment resumes",
+      ))).toBe(false);
+    });
+  });
+
+  it("keeps block order when late events race recovery", async () => {
+    let resolveActiveState: ((value: ReturnType<typeof fixture.activeState>) => void) | undefined;
+    transport.getConversationActiveState.mockImplementation(() => new Promise((resolve) => {
+      resolveActiveState = resolve;
+    }));
+    backendStep = "turn-2-edit-started";
+    const panel = renderReplayPanel();
+    await waitFor(() => expect(eventBus.subscribe).toHaveBeenCalledWith("agent:tool_call", expect.any(Function)));
+    await waitFor(() => expect(transport.getConversationActiveState).toHaveBeenCalled());
+    await act(async () => resolveActiveState?.(fixture.activeState(backendStep)));
+    // Hydration-recovered live rows carry no receivedAt timestamps.
+    await waitFor(() => expect(liveRowKeys(panel.container).length).toBeGreaterThan(0));
+    // Late live events land with wall-clock receivedAt while every recovered
+    // row has none — the RC1 mixed-sort-key regime. The chunk opens a new
+    // text block after the recovered tool group, so pre-fix wall-clock
+    // sorting would float it above the recovered tail.
+    await emit([
+      { name: "agent:tool_call", payload: {
+        conversation_id: "conversation-replay", context_id: "project-replay", context_type: "project",
+        run_id: "run-replay", seq: 98, tool_name: "Write", tool_id: "late-tool",
+        arguments: { file_path: "frontend/src/replay/late-write.ts" }, result: "ok",
+      } },
+      { name: "agent:chunk", payload: {
+        conversation_id: "conversation-replay", context_id: "project-replay", context_type: "project",
+        run_id: "run-replay", seq: 99, append_to_previous: true, block_index: 5,
+        text: "Late text lands after the recovered tools.",
+      } },
+    ]);
+    await waitFor(() => {
+      // Live groups may already be expanded; only expand collapsed toggles.
+      within(panel.container)
+        .queryAllByTestId("tool-call-group-toggle")
+        .filter((toggle) => toggle.getAttribute("aria-expanded") === "false")
+        .forEach((toggle) => fireEvent.click(toggle));
+      const transcript = captureTranscriptSnapshot(panel.container);
+      const lateTextIndex = transcript.findIndex(
+        (row) => row.text === "Late text lands after the recovered tools.",
+      );
+      const editIndex = transcript.findIndex((row) => row.key.startsWith("tool:edit"));
+      expect(editIndex).toBeGreaterThan(-1);
+      // The late live row joins the contiguous live tail after every
+      // recovered row instead of wall-clock-sorting above it (RC1).
+      expect(lateTextIndex).toBeGreaterThan(editIndex);
+      expect(lateTextIndex).toBe(transcript.length - 1);
+    });
+  });
+
+  it("stale timeline page does not corrupt recovery", async () => {
+    const delta = createDeltaReplayConversationFixture();
+    backendStep = "turn-2-edit-started";
+    let timelineCalls = 0;
+    transport.getConversationTimelinePage.mockImplementation(async () => {
+      timelineCalls += 1;
+      return delta.timelinePage(timelineCalls === 1 ? "turn-2-grep-result" : backendStep);
+    });
+    transport.getConversationActiveState.mockImplementation(async () => delta.activeState(backendStep));
+    const panel = renderReplayPanel();
+    await waitFor(() => {
+      expect(panel.container.textContent).toContain("Second segment resumes from its mid-stream tail.");
+      expect(captureTranscriptSnapshot(panel.container)).toEqual(
+        expect.arrayContaining([expect.objectContaining({ text: "First segment survives the switch." })]),
+      );
+    });
   });
 });

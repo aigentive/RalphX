@@ -72,12 +72,7 @@ fn verification_started_emits_reviewing_snapshot() {
 fn pending_confirmation_emits_dialog_payload() {
     let sink = RecordingEventSink::new();
 
-    emit_verification_pending_confirmation(
-        &sink,
-        "session-pending",
-        "Plan title",
-        "artifact-1",
-    );
+    emit_verification_pending_confirmation(&sink, "session-pending", "Plan title", "artifact-1");
 
     let events = sink.events();
     assert_eq!(events.len(), 1);

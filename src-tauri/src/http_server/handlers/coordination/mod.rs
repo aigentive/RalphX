@@ -840,5 +840,5 @@ pub(crate) use native_delegation::{
 pub use native_delegation::{
     build_delegated_task_completed_payload, build_delegated_task_started_payload, cancel_delegate,
     get_delegated_session_status, start_delegate, start_delegate_with_runtime_context,
-    wait_delegate,
+    wait_delegate, DELEGATION_INVALID_RUN_IDENTITY_ERROR, DELEGATION_MISSING_RUN_IDENTITY_ERROR,
 };

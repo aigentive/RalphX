@@ -417,6 +417,7 @@ fn test_payloads_serialize_with_seq() {
     let chunk = AgentChunkPayload {
         text: "test".to_string(),
         run_id: Some("run-1".to_string()),
+        block_index: Some(1),
         conversation_id: "conv-1".to_string(),
         context_type: "task".to_string(),
         context_id: "task-1".to_string(),
@@ -427,6 +428,10 @@ fn test_payloads_serialize_with_seq() {
     assert!(
         json.contains("\"seq\":0"),
         "AgentChunkPayload should serialize with seq field"
+    );
+    assert!(
+        json.contains("\"block_index\":1"),
+        "AgentChunkPayload should serialize with its text-block identity"
     );
 
     // Verify AgentToolCallPayload includes seq field

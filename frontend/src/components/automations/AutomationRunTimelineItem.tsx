@@ -1,121 +1,38 @@
-import { memo, type ReactNode, useCallback, useState } from "react";
+import { memo, useCallback, useState } from "react";
 import { ChevronDown, ChevronRight, ChevronUp, FileText, Play, Trash2, XCircle } from "lucide-react";
 
 import type { Automation, AutomationRun } from "@/api/automations";
 import {
-  describeAutomationRunPrState,
   describeRunFailure,
   isOpenAutomationRun,
 } from "@/components/automations/automationStage";
 import type { AutomationGoalItem } from "@/components/automations/automationGoalItems";
 import { AutomationPlanDialog } from "@/components/automations/AutomationPlanDialog";
+import { AutomationRunMilestoneList } from "@/components/automations/AutomationRunMilestoneList";
 import { AutomationRunStatusHeader } from "@/components/automations/AutomationRunStatusHeader";
 import { AutomationRunTaskLedger } from "@/components/automations/AutomationRunTaskLedger";
 import type { AutomationRunOpenTarget } from "@/components/automations/automationRunNavigation";
 import { Button } from "@/components/ui/button";
-import { CopyableRef } from "@/components/ui/copyable-ref";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
-import { formatDate, numberField, parseRecord, stringField } from "./automationDetailFormat";
 import {
-  getAutomationRunJudgeLabel,
+  formatDate,
+  formatDuration,
+  numberField,
+  parseRecord,
+  stringField,
+} from "./automationDetailFormat";
+import {
   isAutomationRunDeletable,
   isAutomationRunResumable,
   runTimelineHighlight,
 } from "./automationRunView";
+import { RunFactsRow } from "./AutomationRunFacts";
 import { ExpandableText, FieldLabel, Pill } from "./automationDetailShared";
-const PROMPT_AUTHOR_LABELS: Record<AutomationRun["promptAuthor"], string> = {
-  setup_agent: "Setup agent", judge: "Judge", skip_judge_template: "Skip-judge template",
-};
-function formatDiffStats(value: string | null): string | null {
-  const stats = parseRecord(value);
-  const files = numberField(stats, "filesChanged") ?? numberField(stats, "files_changed");
-  const additions = numberField(stats, "additions");
-  const deletions = numberField(stats, "deletions");
-  if (files === null && additions === null && deletions === null) {
-    return null;
-  }
-  return `${files ?? 0} files, +${additions ?? 0} / -${deletions ?? 0}`;
-}
 function summaryTeaserLine(summary: string | null): string | null {
   const firstLine = summary?.trim().split(/\r?\n/)[0]?.trim();
   return firstLine ? firstLine : null;
-}
-interface RunFact { label: string; content: ReactNode; testId?: string }
-function RunFactsRow({ run, ownerAgent }: { run: AutomationRun; ownerAgent: string | null }) {
-  const facts: RunFact[] = [];
-  if (run.finishedAt) {
-    facts.push({ label: "Finished", content: formatDate(run.finishedAt) });
-  }
-  if (ownerAgent) {
-    facts.push({
-      label: "Agent",
-      content: (
-        <span className="block truncate font-mono text-[0.8125rem]" title={ownerAgent}
-          data-testid={`automation-run-${run.id}-agent`}>
-          {ownerAgent}
-        </span>
-      ),
-    });
-  }
-  if (run.branchName) {
-    facts.push({
-      label: "Branch",
-      content: (
-        <CopyableRef value={run.branchName} ariaLabel="Copy branch"
-          testId={`automation-run-${run.id}-branch`} />
-      ),
-    });
-  }
-  const base = run.baseRefUsed || run.baseRefKind;
-  if (base) {
-    facts.push({
-      label: "Base",
-      content: (
-        <CopyableRef value={base} ariaLabel="Copy base ref"
-          testId={`automation-run-${run.id}-base`} />
-      ),
-    });
-  }
-  if (run.judgeState === "done" || run.judgeState === "skipped") {
-    const judgeLabel = getAutomationRunJudgeLabel(run);
-    if (judgeLabel) {
-      facts.push({ label: "Judge", content: judgeLabel,
-        testId: `automation-run-${run.id}-judge-fact` });
-    }
-  }
-  const diff = formatDiffStats(run.diffStatsJson);
-  if (diff) {
-    facts.push({ label: "Diff", content: diff });
-  }
-  facts.push({ label: "Prompt", content: PROMPT_AUTHOR_LABELS[run.promptAuthor] });
-  if (run.prNumber || run.prUrl) {
-    facts.push({ label: "PR", content: describeAutomationRunPrState(run),
-      testId: `automation-run-${run.id}-pr-state` });
-  }
-  return (
-    <div
-      className="mt-4 grid grid-cols-[5rem_minmax(0,1fr)] gap-x-3 gap-y-1.5 pt-3 text-sm sm:grid-cols-[5rem_minmax(0,1fr)_5rem_minmax(0,1fr)] sm:gap-x-4"
-      style={{
-        borderTopColor: "var(--border-subtle, #2e2e36)",
-        borderTopStyle: "solid",
-        borderTopWidth: "1px",
-      }}
-      data-testid={`automation-run-${run.id}-facts`}
-    >
-      {facts.map((fact) => (
-        <div key={fact.label} className="contents">
-          <FieldLabel className="self-center">{fact.label}</FieldLabel>
-          <span className="min-w-0 truncate tabular-nums"
-            style={{ color: "var(--text-secondary, #c7c7cc)" }}
-            {...(fact.testId ? { "data-testid": fact.testId } : {})}>
-            {fact.content}
-          </span>
-        </div>
-      ))}
-    </div>
-  );
 }
 function JudgeVerdictCard({ run }: { run: AutomationRun }) {
   const [expanded, setExpanded] = useState(false);
@@ -177,7 +94,7 @@ export const RunTimelineItem = memo(function RunTimelineItem({
   projectId,
   defaultExpanded,
   activeGoalItem,
-  isLatest, onDeleteRun, onResumeRun,
+  isLatest, isLastInTimeline = false, onDeleteRun, onResumeRun,
   onOpenRunConversation,
   onOpenAutomationRun,
   setupConversationId,
@@ -188,6 +105,8 @@ export const RunTimelineItem = memo(function RunTimelineItem({
   defaultExpanded: boolean;
   activeGoalItem: AutomationGoalItem | null;
   isLatest?: boolean;
+  /** Suppresses the spine connector on the oldest card so the rail ends cleanly. */
+  isLastInTimeline?: boolean;
   onDeleteRun?: (run: AutomationRun) => void;
   onResumeRun?: (run: AutomationRun) => void;
   onOpenRunConversation?: (projectId: string, conversationId: string) => void;
@@ -208,6 +127,8 @@ export const RunTimelineItem = memo(function RunTimelineItem({
   );
   const failureReason = describeRunFailure(run);
   const highlight = runTimelineHighlight(run);
+  // Settled runs only: a live run has no end bound, and we do not tick a clock here.
+  const duration = formatDuration(run.startedAt, run.finishedAt);
   // The annotation prevents type-guard aliasing from narrowing the negated branch.
   const runIsOpen: boolean = isOpenAutomationRun(run);
   const summaryTeaser = !expanded && !runIsOpen ? summaryTeaserLine(run.agentSummary) : null;
@@ -248,24 +169,39 @@ export const RunTimelineItem = memo(function RunTimelineItem({
   ]);
 
   return (
-    <div className="relative pl-6" data-testid={`automation-run-${run.id}`}>
+    <div className="flex min-w-0 gap-3" data-testid={`automation-run-${run.id}`}>
+      {/* Timeline spine: status marker plus the connector down to the next run. */}
+      <div className="flex w-2.5 shrink-0 flex-col items-center" aria-hidden="true">
+        <span
+          className={cn(
+            "mt-[1.0625rem] h-2.5 w-2.5 shrink-0 rounded-full",
+            highlight.live && "animate-pulse",
+          )}
+          style={{ backgroundColor: highlight.markerColor }}
+          data-testid={`automation-run-${run.id}-marker`}
+        />
+        {!isLastInTimeline ? (
+          <span
+            className="mt-1 w-px flex-1"
+            style={{ backgroundColor: "var(--border-subtle, #2e2e36)" }}
+            data-testid={`automation-run-${run.id}-connector`}
+          />
+        ) : null}
+      </div>
       <div
-        className="absolute left-[0.5px] top-[1.125rem] h-2.5 w-2.5 rounded-full"
+        className={cn("min-w-0 flex-1 rounded-lg", expanded ? "p-4" : "px-4 py-3")}
         style={{
-          backgroundColor: highlight.markerColor,
-          borderColor: "var(--app-content-bg, #18181d)",
-          borderStyle: "solid",
-          borderWidth: "2px",
-        }}
-        data-testid={`automation-run-${run.id}-marker`}
-      />
-      <div
-        className={cn("rounded-md", expanded ? "p-4" : "p-3")}
-        style={{
+          // Per-side longhands: WKWebView drops mixed shorthand/longhand borders.
           backgroundColor: highlight.backgroundColor,
-          borderColor: highlight.borderColor,
           borderStyle: "solid",
-          borderWidth: "1px",
+          borderTopColor: highlight.borderColor,
+          borderRightColor: highlight.borderColor,
+          borderBottomColor: highlight.borderColor,
+          borderTopWidth: "1px",
+          borderRightWidth: "1px",
+          borderBottomWidth: "1px",
+          borderLeftColor: highlight.accentColor,
+          borderLeftWidth: "3px",
         }}
         data-testid={`automation-run-${run.id}-card`}
       >
@@ -295,7 +231,19 @@ export const RunTimelineItem = memo(function RunTimelineItem({
             )}
             testId={`automation-run-${run.id}-header`}
           />
-          <span className="pointer-events-none relative z-10 ml-auto flex shrink-0 items-center gap-1">
+          <span className="pointer-events-none relative z-10 ml-auto flex shrink-0 items-center gap-2.5">
+            {duration ? (
+              <span
+                className={cn(
+                  "whitespace-nowrap tabular-nums",
+                  expanded ? "text-xs" : "text-[0.6875rem]",
+                )}
+                style={{ color: "var(--text-subtle, #6a6a72)" }}
+                data-testid={`automation-run-${run.id}-duration`}
+              >
+                {duration}
+              </span>
+            ) : null}
             <span
               className={cn("whitespace-nowrap", expanded ? "text-xs" : "text-[0.6875rem]")}
               style={{ color: "var(--text-muted)" }}
@@ -365,6 +313,10 @@ export const RunTimelineItem = memo(function RunTimelineItem({
               </div>
             )}
             <RunFactsRow run={run} ownerAgent={ownerAgent} />
+            <div className="mt-4">
+              <FieldLabel>Progress</FieldLabel>
+              <AutomationRunMilestoneList run={run} />
+            </div>
             {run.conversationId && (
               <div className="mt-4">
                 <AutomationRunTaskLedger

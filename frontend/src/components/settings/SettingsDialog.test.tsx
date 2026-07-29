@@ -16,7 +16,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import SettingsDialog from "./SettingsDialog";
 import { invoke } from "@tauri-apps/api/core";
 import { DEFAULT_PROJECT_SETTINGS } from "@/types/settings";
-import { SETTINGS_SECTIONS } from "./settings-registry";
+import {
+  SETTINGS_NAV,
+  SETTINGS_SECTIONS,
+  navForSection,
+  sectionMeta,
+} from "./settings-registry";
 import { sectionModuleLoaders } from "./SettingsDialog.performance";
 
 const featureFlags = vi.hoisted(() => ({ agentPersonas: false }));
@@ -242,12 +247,9 @@ describe("SettingsDialog", () => {
   // Deep-link section initialization
   // --------------------------------------------------------------------------
 
-  it("registers Personas in the static General settings registry", () => {
-    expect(SETTINGS_SECTIONS).toContainEqual({
-      id: "personas",
-      groupId: "general",
-      label: "Personas",
-    });
+  it("registers Personas as a leaf of the Agents nav entry", () => {
+    expect(sectionMeta("personas")?.label).toBe("Personas");
+    expect(navForSection("personas").id).toBe("agents");
   });
 
   it("keeps Personas available through the deferred settings-section loader", async () => {
@@ -255,22 +257,16 @@ describe("SettingsDialog", () => {
   });
 
   it("registers and defers the Capabilities settings section", async () => {
-    expect(SETTINGS_SECTIONS).toContainEqual({
-      id: "capabilities",
-      groupId: "general",
-      label: "Capabilities",
-    });
+    expect(sectionMeta("capabilities")?.label).toBe("Capabilities");
+    expect(navForSection("capabilities").id).toBe("agents");
     await expect(sectionModuleLoaders.capabilities()).resolves.toHaveProperty(
       "CapabilitiesSection",
     );
   });
 
-  it("registers Updates under Preferences and keeps its module lazy", async () => {
-    expect(SETTINGS_SECTIONS).toContainEqual({
-      id: "updates",
-      groupId: "preferences",
-      label: "Updates",
-    });
+  it("registers Updates under Application and keeps its module lazy", async () => {
+    expect(sectionMeta("updates")?.label).toBe("Updates");
+    expect(navForSection("updates").id).toBe("application");
     await expect(sectionModuleLoaders.updates()).resolves.toHaveProperty(
       "UpdatesSettingsSection",
     );
@@ -283,11 +279,8 @@ describe("SettingsDialog", () => {
   });
 
   it("consolidates the legacy agent pages into one lazy Agents section", async () => {
-    expect(SETTINGS_SECTIONS).toContainEqual({
-      id: "agents",
-      groupId: "harness",
-      label: "Agents",
-    });
+    expect(sectionMeta("agents")?.label).toBe("Roles");
+    expect(navForSection("agents").id).toBe("agents");
     expect(SETTINGS_SECTIONS.some((section) => section.id === "execution-harnesses")).toBe(false);
     expect(SETTINGS_SECTIONS.some((section) => section.id === "ideation-harnesses")).toBe(false);
     await expect(sectionModuleLoaders.agents()).resolves.toHaveProperty(
@@ -295,17 +288,10 @@ describe("SettingsDialog", () => {
     );
   });
 
-  it("registers External MCP under External Access and preserves the deep link", async () => {
-    expect(SETTINGS_SECTIONS).toContainEqual({
-      id: "mcp",
-      groupId: "harness",
-      label: "MCP",
-    });
-    expect(SETTINGS_SECTIONS).toContainEqual({
-      id: "external-mcp",
-      groupId: "access",
-      label: "External MCP",
-    });
+  it("registers External MCP under Integrations and preserves the deep link", async () => {
+    expect(navForSection("mcp").id).toBe("models-providers");
+    expect(sectionMeta("external-mcp")?.label).toBe("External MCP");
+    expect(navForSection("external-mcp").id).toBe("integrations");
     await expect(sectionModuleLoaders.mcp()).resolves.toHaveProperty("McpSettingsSection");
 
     uiState.activeModal = "settings";
@@ -396,10 +382,9 @@ describe("SettingsDialog", () => {
     uiState.modalContext = { section: "execution" };
     render(<SettingsDialog {...defaultProps} />);
 
-    expect(screen.getByRole("button", { name: "Tasks" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Planning" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Workspace" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Capacity" })).toBeInTheDocument();
+    for (const leaf of ["Tasks", "Planning", "Workspace", "Capacity"]) {
+      expect(screen.getByRole("tab", { name: leaf })).toBeInTheDocument();
+    }
     expect(await screen.findByTestId("workspace-section")).toHaveTextContent("general");
   });
 
@@ -408,19 +393,29 @@ describe("SettingsDialog", () => {
   // --------------------------------------------------------------------------
 
   describe("Sidebar order and section persistence", () => {
-    it("shows Harness first with Providers as the first sidebar item", () => {
+    it("renders the seven consolidated nav entries in registry order", () => {
       uiState.activeModal = "settings";
       render(<SettingsDialog {...defaultProps} />);
 
       const navigation = screen.getByRole("navigation");
-      const groupLabels = within(navigation)
-        .getAllByText(/Harness|Workspace|General|External Access|Preferences/)
-        .map((element) => element.textContent);
-
-      expect(groupLabels.slice(0, 2)).toEqual(["Harness", "Workspace"]);
+      expect(
+        within(navigation)
+          .getAllByRole("button")
+          .map((element) => element.getAttribute("data-nav")),
+      ).toEqual(SETTINGS_NAV.map((nav) => nav.id));
       expect(within(navigation).getAllByRole("button")[0]).toHaveAccessibleName(
-        "Providers",
+        "Models & Providers",
       );
+    });
+
+    it("shows each nav entry's sublabel", () => {
+      uiState.activeModal = "settings";
+      render(<SettingsDialog {...defaultProps} />);
+
+      const navigation = screen.getByRole("navigation");
+      for (const nav of SETTINGS_NAV) {
+        expect(within(navigation).getByText(nav.sublabel)).toBeInTheDocument();
+      }
     });
 
     it("uses the v30 settings modal shell classes and active nav treatment", () => {
@@ -432,13 +427,11 @@ describe("SettingsDialog", () => {
 
       const navigation = screen.getByRole("navigation");
       expect(navigation).toHaveClass("settings-nav");
-      expect(within(navigation).getByRole("button", { name: "Providers" })).toHaveClass(
-        "settings-nav__item",
-      );
-      expect(within(navigation).getByRole("button", { name: "Providers" })).toHaveAttribute(
-        "aria-current",
-        "page",
-      );
+      const active = within(navigation).getByRole("button", {
+        name: "Models & Providers",
+      });
+      expect(active).toHaveClass("settings-nav__item");
+      expect(active).toHaveAttribute("aria-current", "page");
     });
 
     it("renders the settings layer above global toasts", () => {
@@ -454,7 +447,12 @@ describe("SettingsDialog", () => {
       render(<SettingsDialog {...defaultProps} />);
 
       expect(screen.getByTestId("settings-dialog")).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Providers" })).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Models & Providers" }),
+      ).toBeInTheDocument();
+      expect(screen.getByTestId("settings-page-title")).toHaveTextContent(
+        "Models & Providers",
+      );
       expect(screen.getByTestId("settings-section-loading")).toBeInTheDocument();
       expect(screen.queryByTestId("providers-section")).not.toBeInTheDocument();
     });
@@ -465,7 +463,7 @@ describe("SettingsDialog", () => {
       featureFlags.agentPersonas = false;
       render(<SettingsDialog {...defaultProps} />);
 
-      expect(screen.getByRole("button", { name: "Personas" })).toBeInTheDocument();
+      expect(screen.getByRole("tab", { name: "Personas" })).toBeInTheDocument();
       expect(screen.queryByTestId("personas-section")).not.toBeInTheDocument();
       expect(invoke).not.toHaveBeenCalledWith("list_personas", { input: {} });
     });
@@ -477,7 +475,7 @@ describe("SettingsDialog", () => {
 
       expect(await screen.findByTestId("providers-section")).toBeInTheDocument();
 
-      await user.click(screen.getByRole("button", { name: "Tasks" }));
+      await user.click(screen.getByRole("button", { name: "Automation" }));
       expect(await screen.findByTestId("tasks-section")).toBeInTheDocument();
       await waitFor(() =>
         expect(localStorage.getItem("ralphx-settings-active-section")).toBe(
@@ -506,8 +504,10 @@ describe("SettingsDialog", () => {
 
       expect(await screen.findByTestId("providers-section")).toBeInTheDocument();
 
-      const tasksNavItem = screen.getByRole("button", { name: "Tasks" });
-      await user.click(tasksNavItem);
+      const automationNavItem = screen.getByRole("button", {
+        name: "Automation",
+      });
+      await user.click(automationNavItem);
 
       expect(screen.queryByTestId("providers-section")).not.toBeInTheDocument();
       expect(await screen.findByTestId("tasks-section")).toBeInTheDocument();
@@ -518,8 +518,10 @@ describe("SettingsDialog", () => {
       uiState.activeModal = "settings";
       render(<SettingsDialog {...defaultProps} />);
 
-      const tasksNavItem = screen.getByRole("button", { name: "Tasks" });
-      tasksNavItem.focus();
+      const automationNavItem = screen.getByRole("button", {
+        name: "Automation",
+      });
+      automationNavItem.focus();
       await user.keyboard("{Enter}");
 
       expect(await screen.findByTestId("tasks-section")).toBeInTheDocument();
@@ -539,6 +541,139 @@ describe("SettingsDialog", () => {
         expect(() => render(<SettingsDialog {...defaultProps} />)).not.toThrow();
       }
     );
+  });
+
+  // --------------------------------------------------------------------------
+  // Nav consolidation must not strand any pre-existing leaf
+  // --------------------------------------------------------------------------
+
+  describe("Leaf reachability after nav consolidation", () => {
+    /** Every leaf id that existed before the seven-entry nav landed. */
+    const LEGACY_LEAF_IDS = SETTINGS_SECTIONS.map((s) => s.id).filter(
+      (id) => id !== "integrations-hub",
+    );
+
+    it.each(LEGACY_LEAF_IDS)(
+      "keeps %s reachable from its nav entry",
+      async (id) => {
+        const user = userEvent.setup();
+        uiState.activeModal = "settings";
+        render(<SettingsDialog {...defaultProps} />);
+
+        const nav = navForSection(id);
+        await user.click(screen.getByRole("button", { name: nav.label }));
+
+        if (nav.hubLeaf === id) {
+          expect(await screen.findByTestId("integrations-hub")).toBeInTheDocument();
+          return;
+        }
+
+        if (nav.hubLeaf) {
+          // Drill-in: reached from a hub card, and the back button returns.
+          const card = await screen.findByTestId(`integration-card-${id}`);
+          await user.click(within(card).getByRole("button"));
+          await waitFor(() =>
+            expect(
+              screen.getByTestId("settings-drill-in-back"),
+            ).toBeInTheDocument(),
+          );
+          await user.click(screen.getByTestId("settings-drill-in-back"));
+          expect(await screen.findByTestId("integrations-hub")).toBeInTheDocument();
+          return;
+        }
+
+        if (nav.leaves.length > 1) {
+          const label = sectionMeta(id)?.label as string;
+          await user.click(screen.getByRole("tab", { name: label }));
+          expect(screen.getByRole("tab", { name: label })).toHaveAttribute(
+            "aria-selected",
+            "true",
+          );
+        }
+
+        await waitFor(() =>
+          expect(localStorage.getItem("ralphx-settings-active-section")).toBe(id),
+        );
+      },
+    );
+
+    it.each(LEGACY_LEAF_IDS)(
+      "still honours the openModal deep link for %s",
+      async (id) => {
+        uiState.activeModal = "settings";
+        uiState.modalContext = { section: id };
+        render(<SettingsDialog {...defaultProps} />);
+
+        // The legacy flat "integrations" id now lands on the hub by design;
+        // every other id restores its own leaf.
+        const expected = id === "integrations" ? "integrations-hub" : id;
+        await waitFor(() =>
+          expect(localStorage.getItem("ralphx-settings-active-section")).toBe(
+            expected,
+          ),
+        );
+        expect(screen.getByTestId("settings-dialog")).toBeInTheDocument();
+      },
+    );
+
+    it("reaches the Atlassian panel through the explicit alias", async () => {
+      uiState.activeModal = "settings";
+      uiState.modalContext = { section: "atlassian" };
+      render(<SettingsDialog {...defaultProps} />);
+
+      await waitFor(() =>
+        expect(localStorage.getItem("ralphx-settings-active-section")).toBe(
+          "integrations",
+        ),
+      );
+      expect(screen.getByTestId("settings-drill-in-back")).toBeInTheDocument();
+    });
+
+    it("navigates and persists when a search result carries a composite tab", async () => {
+      const user = userEvent.setup();
+      uiState.activeModal = "settings";
+      render(<SettingsDialog {...defaultProps} />);
+
+      await user.type(
+        screen.getByRole("searchbox", { name: "Search settings" }),
+        "review policy",
+      );
+      await user.click(screen.getByRole("option", { name: /review policy/i }));
+
+      // The composite tab rides along in state while persistence stores the
+      // leaf id, exactly as a nav click would.
+      await waitFor(() =>
+        expect(localStorage.getItem("ralphx-settings-active-section")).toBe(
+          "tasks",
+        ),
+      );
+      expect(
+        within(screen.getByTestId("settings-nav-automation")).getByText("Automation"),
+      ).toBeInTheDocument();
+      expect(screen.getByTestId("settings-nav-automation")).toHaveAttribute(
+        "aria-current",
+        "page",
+      );
+    });
+
+    it("navigates from a tabless search result", async () => {
+      const user = userEvent.setup();
+      uiState.activeModal = "settings";
+      render(<SettingsDialog {...defaultProps} />);
+
+      await user.type(
+        screen.getByRole("searchbox", { name: "Search settings" }),
+        "granola",
+      );
+      const [firstResult] = screen.getAllByRole("option");
+      await user.click(firstResult as HTMLElement);
+
+      await waitFor(() =>
+        expect(localStorage.getItem("ralphx-settings-active-section")).toBe(
+          "granola",
+        ),
+      );
+    });
   });
 
   // --------------------------------------------------------------------------

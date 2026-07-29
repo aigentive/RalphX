@@ -60,6 +60,13 @@ use super::{
 use crate::utils::truncate_str;
 use crate::AppState;
 
+fn current_text_block_ordinal(completed_blocks: &[ContentBlockItem]) -> u64 {
+    completed_blocks
+        .iter()
+        .filter(|block| matches!(block, ContentBlockItem::Text { .. }))
+        .count() as u64
+}
+
 #[doc(hidden)]
 pub(crate) fn stream_mode_for_harness(harness: AgentHarnessKind) -> HarnessStreamMode {
     standard_harness_behavior(harness).stream_mode
@@ -1711,9 +1718,10 @@ pub async fn process_stream_background<R: Runtime>(
 
                 match event {
                     StreamEvent::TextChunk(text) => {
+                        let ordinal = current_text_block_ordinal(&processor.content_blocks);
                         // Update streaming state cache
                         streaming_state_cache
-                            .append_text(&conversation_id_str, &text)
+                            .append_text(&conversation_id_str, ordinal as usize, &text)
                             .await;
 
                         // Persist text-only turns as they stream so a remount can recover the
@@ -1742,6 +1750,7 @@ pub async fn process_stream_background<R: Runtime>(
                                 AgentChunkPayload {
                                     text: text.clone(),
                                     run_id: agent_run_id.clone(),
+                                    block_index: Some(ordinal),
                                     conversation_id: conversation_id_str.clone(),
                                     context_type: context_type_str.clone(),
                                     context_id: context_id_str.clone(),
@@ -2225,16 +2234,11 @@ pub async fn process_stream_background<R: Runtime>(
                         let completion_applied = if let (Some(ref repo), Some(ref run_id)) =
                             (&agent_run_repo, &agent_run_id)
                         {
-                            repo.complete_if_running(&AgentRunId::from_string(run_id))
-                                .await
-                                .unwrap_or_else(|error| {
-                                    tracing::error!(
-                                        error = %error,
-                                        run_id,
-                                        "TurnComplete: guarded run completion failed"
-                                    );
-                                    false
-                                })
+                            super::chat_service_run_finalization::finalize_run_completed(
+                                repo,
+                                &AgentRunId::from_string(run_id),
+                            )
+                            .await
                         } else {
                             false
                         };
@@ -3511,6 +3515,7 @@ async fn process_codex_stream_background<R: Runtime>(
             }
 
             if let Some(text) = extract_codex_agent_message(&event) {
+                let ordinal = current_text_block_ordinal(&content_blocks);
                 if !response_text.is_empty() {
                     response_text.push_str("\n\n");
                 }
@@ -3540,6 +3545,7 @@ async fn process_codex_stream_background<R: Runtime>(
                         AgentChunkPayload {
                             text,
                             run_id: agent_run_id.clone(),
+                            block_index: Some(ordinal),
                             conversation_id: conversation_id_str.clone(),
                             context_type: context_type_str.clone(),
                             context_id: context_id_str.clone(),

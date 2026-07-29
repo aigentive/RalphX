@@ -11,6 +11,13 @@ function settingsThemeSelector(page: import("@playwright/test").Page) {
   return page.getByTestId("settings-dialog").getByTestId("theme-selector");
 }
 
+/** Accessibility is a leaf of the consolidated "Application" nav entry. */
+async function openAccessibilitySection(page: import("@playwright/test").Page) {
+  const settingsDialog = page.getByTestId("settings-dialog");
+  await settingsDialog.getByTestId("settings-nav-application").click();
+  await settingsDialog.getByTestId("settings-leaf-accessibility").click();
+}
+
 async function selectSettingsTheme(
   page: import("@playwright/test").Page,
   label: string,
@@ -37,7 +44,7 @@ test("stored HC switches to Dark via the theme selector only", async ({ page }) 
     uiStore?.getState().openModal("settings");
   });
   await page.waitForSelector('[data-testid="settings-dialog"]', { timeout: 10000 });
-  await page.locator("text=Accessibility").first().click();
+  await openAccessibilitySection(page);
   await page.waitForTimeout(300);
 
   await expect(page.locator('[data-testid="theme-high-contrast"]')).toHaveCount(0);
@@ -69,7 +76,7 @@ test("Dark→HC→Dark roundtrip stays dropdown-only and ends on Dark", async ({
     uiStore?.getState().openModal("settings");
   });
   await page.waitForSelector('[data-testid="settings-dialog"]', { timeout: 10000 });
-  await page.locator("text=Accessibility").first().click();
+  await openAccessibilitySection(page);
   await page.waitForTimeout(300);
 
   await expect(page.locator('[data-testid="theme-high-contrast"]')).toHaveCount(0);

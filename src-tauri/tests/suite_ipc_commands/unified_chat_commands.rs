@@ -19,16 +19,18 @@ use ralphx_lib::application::{
 };
 use ralphx_lib::commands::unified_chat_commands::{
     agent_workspace_post_repair_action_from_events, create_agent_conversation,
-    get_agent_running_states_for_service, mark_agent_workspace_publish_failure, parse_context_type,
+    get_agent_running_states_for_service, mark_agent_workspace_publish_failure,
+    mark_agent_workspace_publish_failure_with_target, parse_context_type,
     send_agent_workspace_publish_repair_message, switch_agent_conversation_mode_for_state,
     switch_agent_conversation_mode_for_state_allowing_running,
     switch_agent_conversation_mode_for_state_stopping_running_agent,
     switch_agent_conversation_persona_for_state_stopping_running_agent,
     switch_agent_conversation_persona_for_state_with_provider_session_reset,
     update_agent_conversation_coordination_mode, validate_persona_builder_team_intent_for_send,
-    AgentConversationResponse, AgentRunStatusResponse, AgentWorkspacePostRepairAction,
-    AgentWorkspaceRepairRuntimeOverrides, CreateAgentConversationInput, ModeSwitchInitiator,
-    QueuedMessageResponse, SendAgentMessageResponse, SwitchAgentConversationModeInput,
+    AgentConversationResponse, AgentConversationWorkspaceRepairTarget, AgentRunStatusResponse,
+    AgentWorkspacePostRepairAction, AgentWorkspaceRepairRuntimeOverrides,
+    CreateAgentConversationInput, ModeSwitchInitiator, QueuedMessageResponse,
+    SendAgentMessageResponse, SwitchAgentConversationModeInput,
     SwitchAgentConversationPersonaInput, UpdateAgentConversationCoordinationModeInput,
     AUTOMATION_RUN_MODE_LOCKED_ERROR_CODE,
 };
@@ -200,6 +202,26 @@ fn test_agent_workspace() -> AgentConversationWorkspace {
         "ralphx/ralphx/agent-1234".to_string(),
         "/tmp/agent-1234".to_string(),
     )
+}
+
+fn test_agent_workspace_with_git_target() -> (
+    tempfile::TempDir,
+    AgentConversationWorkspace,
+    AgentConversationWorkspaceRepairTarget,
+) {
+    let temp = tempfile::tempdir().expect("repair target tempdir should exist");
+    let repository_path = temp.path().join("repair-target");
+    setup_publish_repo(&repository_path);
+    git(&repository_path, &["branch", "ralphx/ralphx/agent-1234"]);
+    let mut workspace = test_agent_workspace();
+    workspace.worktree_path = repository_path.to_string_lossy().to_string();
+    let target = AgentConversationWorkspaceRepairTarget {
+        branch_name: workspace.branch_name.clone(),
+        base_ref: workspace.base_ref.clone(),
+        base_display_name: workspace.base_display_name.clone(),
+        worktree_path: Some(repository_path),
+    };
+    (temp, workspace, target)
 }
 
 async fn seed_mode_switch_workspace(
@@ -2158,13 +2180,14 @@ async fn ipc_contract_agent_workspace_poller_cleans_merged_pr_artifacts() {
         Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
         Arc::clone(&state.plan_branch_repo),
     );
-    registry.start_agent_workspace_polling(
+    registry.start_agent_workspace_polling_with_repair_repo(
         conversation_id,
         303,
         project.clone(),
         repo_path.clone(),
         Arc::clone(&state.agent_conversation_workspace_repo),
         Arc::clone(&state.agent_run_repo),
+        Arc::clone(&state.agent_workspace_repair_repo),
         Arc::new(MockChatService::new()),
     );
 
@@ -2243,13 +2266,14 @@ async fn ipc_contract_agent_workspace_poller_cleans_closed_pr_artifacts() {
         Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
         Arc::clone(&state.plan_branch_repo),
     );
-    registry.start_agent_workspace_polling(
+    registry.start_agent_workspace_polling_with_repair_repo(
         conversation_id,
         405,
         project,
         repo_path.clone(),
         Arc::clone(&state.agent_conversation_workspace_repo),
         Arc::clone(&state.agent_run_repo),
+        Arc::clone(&state.agent_workspace_repair_repo),
         Arc::new(MockChatService::new()),
     );
 
@@ -2400,19 +2424,20 @@ async fn workspace_publish_repair_message_wakes_same_agent_conversation() {
 async fn workspace_publish_fixable_failure_is_routed_by_backend() {
     let state = AppState::new_test();
     let service = MockChatService::new();
-    let workspace = test_agent_workspace();
+    let (_temp, workspace, target) = test_agent_workspace_with_git_target();
     state
         .agent_conversation_workspace_repo
         .create_or_update(workspace.clone())
         .await
         .expect("workspace should seed");
 
-    mark_agent_workspace_publish_failure(
+    mark_agent_workspace_publish_failure_with_target(
         &state,
         &workspace,
         "Failed to commit workspace changes: typecheck failed",
         None,
         &service,
+        &target,
     )
     .await;
 
@@ -2426,7 +2451,7 @@ async fn workspace_publish_fixable_failure_is_routed_by_backend() {
 async fn workspace_publish_repair_defers_to_role_runtime_but_starts_fresh_session() {
     let state = AppState::new_test();
     let service = MockChatService::new();
-    let workspace = test_agent_workspace();
+    let (_temp, workspace, target) = test_agent_workspace_with_git_target();
     state
         .agent_conversation_workspace_repo
         .create_or_update(workspace.clone())
@@ -2456,12 +2481,13 @@ async fn workspace_publish_repair_defers_to_role_runtime_but_starts_fresh_sessio
         .await
         .expect("run should seed");
 
-    mark_agent_workspace_publish_failure(
+    mark_agent_workspace_publish_failure_with_target(
         &state,
         &workspace,
         "Failed to commit workspace changes: merge conflict",
         None,
         &service,
+        &target,
     )
     .await;
 
@@ -2953,7 +2979,10 @@ mod ipc_contract {
             .expect("workspace response should load")
             .expect("workspace response should exist");
 
-        assert_eq!(response.publication_push_status.as_deref(), Some("failed"));
+        assert_eq!(
+            response.publication_push_status.as_deref(),
+            Some("needs_agent")
+        );
     }
 
     #[tokio::test]
@@ -3008,7 +3037,10 @@ mod ipc_contract {
             .expect("workspace lookup should succeed")
             .expect("workspace should exist");
 
-        assert_eq!(refreshed.publication_push_status.as_deref(), Some("failed"));
+        assert_eq!(
+            refreshed.publication_push_status.as_deref(),
+            Some("needs_agent")
+        );
     }
 
     #[tokio::test]
@@ -3139,6 +3171,138 @@ mod ipc_contract {
             .expect("workspace lookup should succeed")
             .expect("workspace should exist");
         assert_eq!(stored.base_ref, "feature/deleted-base");
+    }
+
+    async fn seed_blocked_repair_generation(
+        state: &AppState,
+        conversation_id: &ChatConversationId,
+    ) -> ralphx_lib::domain::entities::AgentWorkspaceRepairAttempt {
+        use ralphx_lib::domain::entities::{
+            AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation,
+            AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
+        };
+        use ralphx_lib::domain::repositories::{
+            AgentWorkspaceRepairAttemptTransition, AgentWorkspaceRepairAttemptTransitionOutcome,
+            StartOrJoinAgentWorkspaceRepairAttempt, StartOrJoinAgentWorkspaceRepairAttemptOutcome,
+        };
+
+        let started = state
+            .agent_workspace_repair_repo
+            .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+                attempt: AgentWorkspaceRepairAttempt::new(
+                    *conversation_id,
+                    AgentWorkspaceRepairSource::Publish,
+                    AgentWorkspaceRepairContinuation::Publish,
+                    "feature/deleted-base",
+                    false,
+                    true,
+                    false,
+                    None,
+                    chrono::Utc::now(),
+                ),
+                reason: "seed blocked repair generation".to_string(),
+                verified_newer_base: false,
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("blocked repair generation should start");
+        let StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(mut blocked) = started else {
+            panic!("blocked repair generation must start fresh");
+        };
+        let expected_updated_at = blocked.updated_at;
+        blocked.phase = AgentWorkspaceRepairPhase::Blocked;
+        blocked.blocker = Some("stale recovery blocker".to_string());
+        blocked.updated_at += chrono::Duration::microseconds(1);
+        match state
+            .agent_workspace_repair_repo
+            .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+                attempt: blocked,
+                expected_phase: AgentWorkspaceRepairPhase::Requested,
+                expected_updated_at,
+                next_phase: AgentWorkspaceRepairPhase::Blocked,
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("seeded repair generation should block")
+        {
+            AgentWorkspaceRepairAttemptTransitionOutcome::Applied(blocked) => blocked,
+            other => panic!("expected blocked repair generation, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn ipc_contract_explicit_publish_retry_supersedes_blocked_repair_generation() {
+        use ralphx_lib::domain::entities::AgentWorkspaceRepairPhase;
+
+        let github = std::sync::Arc::new(crate::common::MockGithubService::new());
+        let (_temp, state, conversation_id, _github) =
+            super::setup_ipc_workspace_state("publish-retry-blocked", true, None, github).await;
+        let execution_state = std::sync::Arc::new(super::ExecutionState::new());
+        let blocked = seed_blocked_repair_generation(&state, &conversation_id).await;
+
+        let _ = ralphx_lib::commands::unified_chat_commands::publish_agent_conversation_workspace_for_app_state_with_repair_intent(
+            &state,
+            &execution_state,
+            conversation_id,
+            true,
+            true,
+        )
+        .await;
+
+        let current = state
+            .agent_workspace_repair_repo
+            .get_current_repair_attempt(&conversation_id)
+            .await
+            .expect("current repair generation should load")
+            .expect("explicit retry must leave a live successor generation");
+        assert_ne!(
+            current.id, blocked.id,
+            "explicit publish retry supersedes the blocked generation"
+        );
+        assert_ne!(
+            current.phase,
+            AgentWorkspaceRepairPhase::Blocked,
+            "successor generation must start unblocked: {current:?}"
+        );
+        assert!(current.settled_at.is_none());
+        assert!(
+            current.reserved_agent_run_id.is_some() || current.next_dispatch_at.is_some(),
+            "successor must be dispatched or durably schedulable: {current:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ipc_contract_background_publish_cannot_supersede_blocked_repair_generation() {
+        use ralphx_lib::domain::entities::AgentWorkspaceRepairPhase;
+
+        let github = std::sync::Arc::new(crate::common::MockGithubService::new());
+        let (_temp, state, conversation_id, _github) =
+            super::setup_ipc_workspace_state("publish-background-blocked", true, None, github)
+                .await;
+        let execution_state = std::sync::Arc::new(super::ExecutionState::new());
+        let blocked = seed_blocked_repair_generation(&state, &conversation_id).await;
+
+        let _ = publish_agent_conversation_workspace_for_app_state(
+            &state,
+            &execution_state,
+            conversation_id,
+            true,
+        )
+        .await;
+
+        let current = state
+            .agent_workspace_repair_repo
+            .get_current_repair_attempt(&conversation_id)
+            .await
+            .expect("current repair generation should load")
+            .expect("blocked generation must remain current");
+        assert_eq!(
+            current.id, blocked.id,
+            "background publish must not supersede a blocked repair generation"
+        );
+        assert_eq!(current.phase, AgentWorkspaceRepairPhase::Blocked);
     }
 
     #[tokio::test]

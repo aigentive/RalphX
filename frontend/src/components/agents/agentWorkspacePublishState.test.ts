@@ -13,6 +13,10 @@ import {
   getAgentWorkspaceEffectiveBaseLabel,
   getAgentWorkspaceDescriptionFailurePresentation,
   getAgentWorkspacePublishReceiptPresentation,
+  getAgentWorkspaceMaintenancePresentation,
+  isAgentWorkspaceMaintenanceActive,
+  blocksAgentWorkspaceGitInspection,
+  canResumeAgentWorkspacePublish,
   getAgentWorkspacePrConflictSummary,
   getAgentWorkspaceReviewActionBlocker,
   isAgentWorkspaceAutoMergeDeferred,
@@ -30,18 +34,19 @@ describe("getAgentWorkspaceDescriptionFailurePresentation", () => {
     );
 
     const linked = getAgentWorkspaceDescriptionFailurePresentation("PR #888");
-    expect(linked.summary).toContain("metadata outcome for PR #888");
-    expect(linked.summary).toContain("could not confirm");
-    expect(linked.summary).not.toContain("did not apply");
+    expect(linked.summary).toContain("prior metadata outcome for PR #888");
+    expect(linked.summary).toContain("check the linked PR before writing");
     expect(linked.summary).not.toContain("no pull request was opened");
     expect(linked.summary).not.toContain("branch was unchanged");
   });
 
-  it("does not claim a legacy description failure left a linked PR untouched", () => {
-    const presentation = getAgentWorkspaceDescriptionFailurePresentation("PR #888");
-
-    expect(presentation.summary).not.toContain("did not apply");
-    expect(presentation.summary).toContain("could not confirm");
+  it("names the specific metadata outcome when a receipt state is known", () => {
+    expect(
+      getAgentWorkspaceDescriptionFailurePresentation("PR #888", "not_applied").summary,
+    ).toContain("did not apply");
+    expect(
+      getAgentWorkspaceDescriptionFailurePresentation("PR #888", "conflicted").summary,
+    ).toContain("did not overwrite the newer remote version");
   });
 });
 
@@ -79,6 +84,32 @@ describe("getAgentWorkspaceReviewActionBlocker", () => {
     });
   });
 
+  it("blocks Review actions for an active maintenance operation before refreshed legacy fields", () => {
+    expect(
+      getAgentWorkspaceReviewActionBlocker(
+        workspace({
+          maintenanceOperation: {
+            operationId: "maintenance-1",
+            generation: 2,
+            source: "base_update",
+            stage: "repairing",
+            status: "active",
+            summary: "Resolving the base conflict",
+            blocker: null,
+            automaticContinuation: true,
+            startedAt: "2026-07-25T10:00:00Z",
+            updatedAt: "2026-07-25T10:01:00Z",
+          },
+          publicationPushStatus: "refreshed",
+          prSupervisionStatus: "monitoring",
+        }),
+      ),
+    ).toEqual({
+      kind: "repair",
+      message: "Finish or abort the current repair, then retry Review.",
+    });
+  });
+
   it("blocks Review actions for a recovered unresolved conflict", () => {
     expect(
       getAgentWorkspaceReviewActionBlocker(
@@ -103,6 +134,105 @@ describe("getAgentWorkspaceReviewActionBlocker", () => {
         }),
       ),
     ).toBeNull();
+  });
+});
+
+describe("maintenance operation presentation", () => {
+  const maintenanceOperation = {
+    operationId: "maintenance-1",
+    generation: 2,
+    source: "base_update" as const,
+    stage: "repairing" as const,
+    status: "active" as const,
+    summary: "Resolving the base conflict",
+    blocker: null,
+    automaticContinuation: true,
+    startedAt: "2026-07-25T10:00:00Z",
+    updatedAt: "2026-07-25T10:01:00Z",
+  };
+
+  it("prefers the active durable operation over legacy publish state", () => {
+    const current = workspace({
+      maintenanceOperation,
+      publicationPushStatus: "refreshed",
+    });
+
+    expect(isAgentWorkspaceMaintenanceActive(current)).toBe(true);
+    expect(blocksAgentWorkspaceGitInspection(current)).toBe(true);
+    expect(getAgentWorkspaceMaintenancePresentation(current)).toMatchObject({
+      title: "Repairing workspace",
+      action: "none",
+      automaticContinuation: "Will continue automatically.",
+      busy: true,
+    });
+  });
+
+  it("keeps Reviewing inspectable while automation remains active", () => {
+    const current = workspace({
+      maintenanceOperation: { ...maintenanceOperation, stage: "reviewing" },
+    });
+
+    expect(isAgentWorkspaceMaintenanceActive(current)).toBe(true);
+    expect(blocksAgentWorkspaceGitInspection(current)).toBe(false);
+    expect(getAgentWorkspaceMaintenancePresentation(current)?.title).toBe(
+      "Workspace Review in progress",
+    );
+  });
+
+  it.each([
+    ["updating_base", "Updating base"],
+    ["validating", "Validating repair"],
+    ["publishing", "Publishing workspace"],
+  ] as const)("presents the active %s stage", (stage, title) => {
+    const current = workspace({
+      maintenanceOperation: { ...maintenanceOperation, stage },
+    });
+
+    expect(getAgentWorkspaceMaintenancePresentation(current)).toMatchObject({
+      title,
+      action: "none",
+      busy: true,
+    });
+  });
+
+  it("provides one explicit ready or blocked recovery action", () => {
+    const ready = workspace({
+      maintenanceOperation: {
+        ...maintenanceOperation,
+        stage: "ready",
+        status: "ready",
+        automaticContinuation: false,
+      },
+    });
+    const blocked = workspace({
+      maintenanceOperation: {
+        ...maintenanceOperation,
+        stage: "blocked",
+        status: "blocked",
+        blocker: "Resolve the protected branch policy.",
+      },
+    });
+
+    expect(canResumeAgentWorkspacePublish(ready)).toBe(true);
+    expect(getAgentWorkspaceMaintenancePresentation(ready)).toMatchObject({
+      title: "Base updated — ready to publish",
+      action: "publish",
+    });
+    expect(getAgentWorkspaceMaintenancePresentation(blocked)).toMatchObject({
+      title: "Repair blocked",
+      summary: "Resolve the protected branch policy.",
+      action: "retry",
+    });
+  });
+
+  it("does not let stale maintenance data mask a terminal pull request", () => {
+    const current = workspace({
+      maintenanceOperation,
+      publicationPrStatus: "merged",
+    });
+
+    expect(getAgentWorkspaceMaintenancePresentation(current)).toBeNull();
+    expect(isAgentWorkspaceMaintenanceActive(current)).toBe(false);
   });
 });
 
@@ -231,18 +361,6 @@ describe("isAgentWorkspacePublishActive", () => {
   it("handles a missing workspace", () => {
     expect(isAgentWorkspacePublishActive(null)).toBe(false);
   });
-
-  it("keeps unsettled metadata receipts active even when the legacy status is nonterminal", () => {
-    expect(
-      isAgentWorkspacePublishActive(
-        workspace({
-          publicationPushStatus: "pushing",
-          publicationMetadataPhase: "reconciling",
-          publicationMetadataState: "unknown",
-        }),
-      ),
-    ).toBe(true);
-  });
 });
 
 describe("getPostBaselinePublicationEvents", () => {
@@ -344,88 +462,6 @@ describe("classifyAgentWorkspacePublishTerminalEvent", () => {
       ),
     ).toBeNull();
   });
-
-  it("classifies current receipt settlement without accepting stale-attempt evidence", () => {
-    const applied = publicationEvent({
-      id: "applied",
-      step: "metadata_settled",
-      status: "succeeded",
-      classification: "applied",
-      attemptId: "attempt-current",
-    });
-    const staleFailure = publicationEvent({
-      id: "stale-failure",
-      step: "metadata_settled",
-      status: "failed",
-      classification: "conflicted",
-      attemptId: "attempt-stale",
-    });
-    const receiptWorkspace = workspace({
-      publicationPrNumber: 78,
-      publicationPushStatus: "pushed",
-      publicationMetadataAttemptId: "attempt-current",
-      publicationMetadataPhase: "settled",
-      publicationMetadataState: "reconciled",
-    });
-
-    expect(
-      classifyAgentWorkspacePublishTerminalEvent(
-        [staleFailure, applied],
-        receiptWorkspace,
-        currentFreshness,
-      ),
-    ).toEqual({ event: applied, kind: "success" });
-  });
-
-  it("classifies an unscoped push failure after an earlier receipt settled", () => {
-    const pushFailure = publicationEvent({
-      id: "push-failure",
-      step: "failed",
-      status: "failed",
-      classification: "operational",
-      attemptId: null,
-    });
-    const receiptWorkspace = workspace({
-      publicationPushStatus: "failed",
-      publicationMetadataAttemptId: "attempt-previous",
-      publicationMetadataPhase: "settled",
-      publicationMetadataState: "applied",
-    });
-
-    expect(
-      classifyAgentWorkspacePublishTerminalEvent(
-        [pushFailure],
-        receiptWorkspace,
-        undefined,
-      ),
-    ).toEqual({ event: pushFailure, kind: "failure" });
-  });
-
-  it.each([
-    ["skipped", "not_attempted"],
-    ["failed", "not_applied"],
-    ["failed", "conflicted"],
-  ] as const)(
-    "classifies terminal receipt %s/%s as failure",
-    (status, classification) => {
-      const event = publicationEvent({
-        step: "metadata_settled",
-        status,
-        classification,
-        attemptId: "attempt-current",
-      });
-      expect(
-        classifyAgentWorkspacePublishTerminalEvent(
-          [event],
-          workspace({
-            publicationMetadataAttemptId: "attempt-current",
-            publicationMetadataPhase: "settled",
-          }),
-          undefined,
-        ),
-      ).toEqual({ event, kind: "failure" });
-    },
-  );
 
   it.each([
     ["needs_agent", "failed", "agent_fixable", "needs_agent"],

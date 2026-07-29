@@ -148,6 +148,8 @@ pub struct ConversationStreamingState {
     pub streaming_tasks: Vec<CachedStreamingTask>,
     /// Partial text content accumulated from agent:chunk events
     pub partial_text: String,
+    /// Partial text content accumulated per text block in stream order.
+    pub partial_text_segments: Vec<String>,
     /// When this state was last updated
     pub updated_at: DateTime<Utc>,
 }
@@ -160,6 +162,7 @@ impl ConversationStreamingState {
             tool_calls: Vec::new(),
             streaming_tasks: Vec::new(),
             partial_text: String::new(),
+            partial_text_segments: Vec::new(),
             updated_at: Utc::now(),
         }
     }
@@ -195,6 +198,7 @@ impl StreamingStateCache {
             state.tool_calls.clear();
             state.streaming_tasks.clear();
             state.partial_text.clear();
+            state.partial_text_segments.clear();
         }
         state.run_id = run_id;
         state.updated_at = Utc::now();
@@ -439,7 +443,7 @@ impl StreamingStateCache {
     }
 
     /// Append text to the partial content buffer.
-    pub async fn append_text(&self, conversation_id: &str, text: &str) {
+    pub async fn append_text(&self, conversation_id: &str, segment_index: usize, text: &str) {
         let mut states = self.states.lock().await;
         let state = states
             .entry(conversation_id.to_string())
@@ -452,11 +456,18 @@ impl StreamingStateCache {
                 ConversationStreamingState::new()
             });
 
-        state.partial_text.push_str(text);
+        if state.partial_text_segments.len() <= segment_index {
+            state
+                .partial_text_segments
+                .resize(segment_index + 1, String::new());
+        }
+        state.partial_text_segments[segment_index].push_str(text);
+        state.partial_text = state.partial_text_segments.concat();
         state.updated_at = Utc::now();
         tracing::trace!(
             conversation_id,
             text_len = text.len(),
+            segment_index,
             total_len = state.partial_text.len(),
             "StreamingStateCache: appended text"
         );

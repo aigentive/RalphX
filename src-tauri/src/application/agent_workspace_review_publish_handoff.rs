@@ -1,9 +1,11 @@
 use std::future::Future;
 use std::sync::Arc;
 
+#[cfg(any(test, feature = "test-utils"))]
+use crate::domain::entities::AgentWorkspaceReviewMonitorStatus;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspacePublicationEvent,
-    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
+    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::error::AppResult;
@@ -136,6 +138,7 @@ impl WorkspaceReviewAuthorizationKind {
     }
 }
 
+#[cfg(any(test, feature = "test-utils"))]
 pub(crate) fn workspace_review_monitor_keeps_pr_fix_publish_handoff(
     monitor: Option<&AgentWorkspaceReviewMonitor>,
     current_target: Option<&AgentWorkspaceReviewTarget>,
@@ -156,6 +159,7 @@ pub(crate) fn workspace_review_monitor_keeps_pr_fix_publish_handoff(
     }
 }
 
+#[cfg(any(test, feature = "test-utils"))]
 pub(crate) fn has_open_pr_fix_workspace_review_publish_handoff(
     events: &[AgentConversationWorkspacePublicationEvent],
     monitor: Option<&AgentWorkspaceReviewMonitor>,

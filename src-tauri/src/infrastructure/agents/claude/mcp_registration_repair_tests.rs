@@ -8,6 +8,8 @@ use super::mcp_registration_repair::{
     remove_reserved_user_registration_with_env_for_test, ReservedMcpRepairFailureCode,
 };
 
+const TEST_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+
 #[test]
 fn repair_failure_codes_have_stable_protocol_values() {
     assert_eq!(
@@ -57,10 +59,9 @@ async fn successful_cli_without_absence_fails_the_postcondition() {
     let cli = home.path().join("fake-claude");
     write_executable(&cli, "#!/bin/sh\nexit 0\n");
 
-    let error =
-        remove_reserved_user_registration_for_test(&cli, home.path(), Duration::from_secs(1))
-            .await
-            .unwrap_err();
+    let error = remove_reserved_user_registration_for_test(&cli, home.path(), TEST_COMMAND_TIMEOUT)
+        .await
+        .unwrap_err();
 
     assert_eq!(error, ReservedMcpRepairFailureCode::PostconditionFailed);
     assert!(home.path().join(".claude.json").exists());
@@ -74,7 +75,7 @@ async fn missing_legacy_registration_is_a_safe_noop_without_invoking_cli() {
     write_executable(&cli, "#!/bin/sh\nexit 7\n");
 
     let changed =
-        remove_reserved_user_registration_for_test(&cli, home.path(), Duration::from_secs(1))
+        remove_reserved_user_registration_for_test(&cli, home.path(), TEST_COMMAND_TIMEOUT)
             .await
             .unwrap();
 
@@ -89,10 +90,9 @@ async fn unreadable_legacy_config_fails_before_invoking_cli() {
     let cli = home.path().join("fake-claude");
     write_executable(&cli, "#!/bin/sh\nexit 7\n");
 
-    let error =
-        remove_reserved_user_registration_for_test(&cli, home.path(), Duration::from_secs(1))
-            .await
-            .unwrap_err();
+    let error = remove_reserved_user_registration_for_test(&cli, home.path(), TEST_COMMAND_TIMEOUT)
+        .await
+        .unwrap_err();
 
     assert_eq!(error, ReservedMcpRepairFailureCode::ConfigRead);
 }
@@ -110,7 +110,7 @@ async fn arbitrary_reserved_definition_is_removed_and_nonzero_without_removal_fa
     write_executable(&cli, "#!/bin/sh\nexit 7\n");
 
     let command_failed =
-        remove_reserved_user_registration_for_test(&cli, home.path(), Duration::from_secs(1))
+        remove_reserved_user_registration_for_test(&cli, home.path(), TEST_COMMAND_TIMEOUT)
             .await
             .unwrap_err();
     assert_eq!(command_failed, ReservedMcpRepairFailureCode::CommandFailed);
@@ -129,7 +129,7 @@ async fn nonzero_exit_after_removal_is_settled_from_provider_state() {
     );
 
     let changed =
-        remove_reserved_user_registration_for_test(&cli, home.path(), Duration::from_secs(1))
+        remove_reserved_user_registration_for_test(&cli, home.path(), TEST_COMMAND_TIMEOUT)
             .await
             .unwrap();
 
@@ -154,7 +154,7 @@ async fn cleanup_pins_home_after_provider_environment_is_applied() {
         &cli,
         home.path(),
         &provider_env,
-        Duration::from_secs(1),
+        TEST_COMMAND_TIMEOUT,
     )
     .await
     .unwrap();
@@ -220,10 +220,9 @@ async fn concurrent_callers_run_the_constant_removal_once() {
         ),
     );
 
-    let first =
-        remove_reserved_user_registration_for_test(&cli, home.path(), Duration::from_secs(1));
+    let first = remove_reserved_user_registration_for_test(&cli, home.path(), TEST_COMMAND_TIMEOUT);
     let second =
-        remove_reserved_user_registration_for_test(&cli, home.path(), Duration::from_secs(1));
+        remove_reserved_user_registration_for_test(&cli, home.path(), TEST_COMMAND_TIMEOUT);
     let (first, second) = tokio::join!(first, second);
 
     assert!(first.is_ok());

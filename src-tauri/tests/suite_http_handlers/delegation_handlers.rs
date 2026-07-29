@@ -536,11 +536,21 @@ impl AgentRunRepository for FailCancelAgentRunRepository {
         self.inner.complete_if_running(id).await
     }
 
+    async fn complete_if_prune_cancelled(&self, id: &AgentRunId) -> AppResult<bool> {
+        self.inner.complete_if_prune_cancelled(id).await
+    }
+
     async fn fail(&self, id: &AgentRunId, error_message: &str) -> AppResult<()> {
         self.inner.fail(id, error_message).await
     }
 
     async fn cancel(&self, _id: &AgentRunId) -> AppResult<()> {
+        Err(AppError::Infrastructure(
+            "injected agent-run cancellation failure".to_string(),
+        ))
+    }
+
+    async fn cancel_with_reason(&self, _id: &AgentRunId, _reason: &str) -> AppResult<()> {
         Err(AppError::Infrastructure(
             "injected agent-run cancellation failure".to_string(),
         ))
@@ -3719,10 +3729,10 @@ async fn test_routed_delegate_start_requires_trusted_parent_run_context() {
     .unwrap_err();
 
     assert_eq!(error.0, axum::http::StatusCode::BAD_REQUEST);
-    assert!(error.1 .0["error"]
-        .as_str()
-        .unwrap_or_default()
-        .contains("requires trusted parent agent run context"));
+    assert_eq!(
+        error.1 .0["error"].as_str().unwrap_or_default(),
+        ralphx_lib::http_server::handlers::DELEGATION_MISSING_RUN_IDENTITY_ERROR,
+    );
 }
 
 #[tokio::test]

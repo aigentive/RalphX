@@ -111,7 +111,9 @@ fn row_to_agent_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentRun> {
         persona_skipped_reason: row.get("persona_skipped_reason")?,
     })
 }
-use crate::domain::repositories::{AgentRunRepository, ORPHANED_AGENT_RUN_ON_APP_RESTART};
+use crate::domain::repositories::{
+    AgentRunRepository, ORPHANED_AGENT_RUN_ON_APP_RESTART, PRUNED_STALE_AGENT_RUN,
+};
 use crate::error::AppResult;
 
 use super::DbConnection;
@@ -647,6 +649,21 @@ impl AgentRunRepository for SqliteAgentRunRepository {
             .await
     }
 
+    async fn complete_if_prune_cancelled(&self, id: &AgentRunId) -> AppResult<bool> {
+        let id = id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let changed = conn.execute(
+                    "UPDATE agent_runs
+                     SET status = 'completed', completed_at = ?1, error_message = NULL
+                     WHERE id = ?2 AND status = 'cancelled' AND error_message = ?3",
+                    rusqlite::params![Utc::now().to_rfc3339(), id, PRUNED_STALE_AGENT_RUN],
+                )?;
+                Ok(changed == 1)
+            })
+            .await
+    }
+
     async fn fail(&self, id: &AgentRunId, error_message: &str) -> AppResult<()> {
         let id = id.as_str().to_string();
         let error_message = error_message.to_string();
@@ -668,6 +685,20 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                 conn.execute(
                     "UPDATE agent_runs SET status = 'cancelled', completed_at = ?1, error_message = NULL WHERE id = ?2",
                     rusqlite::params![Utc::now().to_rfc3339(), id],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    async fn cancel_with_reason(&self, id: &AgentRunId, reason: &str) -> AppResult<()> {
+        let id = id.as_str().to_string();
+        let reason = reason.to_string();
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE agent_runs SET status = 'cancelled', completed_at = ?1, error_message = ?2 WHERE id = ?3 AND status = 'running'",
+                    rusqlite::params![Utc::now().to_rfc3339(), reason, id],
                 )?;
                 Ok(())
             })

@@ -153,6 +153,50 @@ async fn claimed_merge_repository() -> (
     (git_repository, repository, tasks, projects, identity)
 }
 
+async fn claimed_repair_repository() -> (
+    tempfile::TempDir,
+    Arc<SqliteBranchUpdateRepository>,
+    Arc<SqliteTaskRepository>,
+    Arc<SqliteProjectRepository>,
+    crate::domain::entities::GitTargetIdentity,
+) {
+    let git_repository = init_repository();
+    let db = SqliteTestDb::new("git-repair-mutation-recovery");
+    let project = db.seed_project("project");
+    let task = db.seed_task(project.id, "task");
+    let shared = db.shared_conn();
+    let repository = Arc::new(SqliteBranchUpdateRepository::from_shared(Arc::clone(
+        &shared,
+    )));
+    let tasks = Arc::new(SqliteTaskRepository::from_shared(Arc::clone(&shared)));
+    let projects = Arc::new(SqliteProjectRepository::from_shared(shared));
+    let identity = GitService::canonical_target_identity(git_repository.path(), "main")
+        .await
+        .unwrap();
+    let owner = GitTargetLeaseOwner::agent_workspace_repair("durable-repair-attempt");
+    let AcquireGitTargetLeaseOutcome::Acquired { fencing_epoch } = repository
+        .acquire_target_lease(AcquireGitTargetLease {
+            identity: identity.clone(),
+            owner: owner.clone(),
+        })
+        .await
+        .unwrap()
+    else {
+        panic!("repair attempt should acquire target authority");
+    };
+    repository
+        .begin_git_mutation(BeginGitMutation {
+            identity: identity.clone(),
+            owner,
+            fencing_epoch,
+            claim_id: format!("repair-recovery-claim:{}", task.id),
+            kind: GitMutationKind::Push,
+        })
+        .await
+        .unwrap();
+    (git_repository, repository, tasks, projects, identity)
+}
+
 #[tokio::test]
 async fn recovery_clears_claim_only_after_a_clean_workspace_inspection() {
     let workspace = init_repository();
@@ -219,6 +263,25 @@ async fn recovery_clears_clean_merge_attempt_claim_for_pending_merge_retry() {
         .unwrap()
         .active_mutation()
         .is_none());
+}
+
+#[tokio::test]
+async fn generic_recovery_leaves_repair_owned_mutation_for_durable_attempt_reconciliation() {
+    let (_git_repository, repository, tasks, projects, identity) =
+        claimed_repair_repository().await;
+
+    let outcomes = recover_in_flight_git_mutations(repository.clone(), tasks, projects)
+        .await
+        .unwrap();
+
+    assert!(outcomes.is_empty());
+    assert!(repository
+        .get_target_lease(&identity)
+        .await
+        .unwrap()
+        .unwrap()
+        .active_mutation()
+        .is_some());
 }
 
 #[tokio::test]

@@ -28,7 +28,7 @@ export type StreamingTaskProviderStatus = StreamingTaskStatus | "cancelled";
  * order for interleaving live rows with user messages sent during streaming.
  */
 export type StreamingContentBlock =
-  | { type: "text"; text: string; seq?: number; receivedAt?: number }
+  | { type: "text"; text: string; blockIndex?: number; seq?: number; receivedAt?: number }
   | { type: "tool_use"; toolCall: ToolCall; seq?: number; receivedAt?: number }
   | { type: "task"; toolUseId: string; seq?: number; receivedAt?: number };
 

@@ -1,6 +1,4 @@
-
 use super::*;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path as StdPath, PathBuf};
 use std::pin::Pin;
 use std::process::Command;
@@ -71,6 +69,16 @@ fn test_http_state(app_state: Arc<AppState>) -> HttpServerState {
         execution_state: Arc::new(ExecutionState::new()),
         delegation_service: Default::default(),
     }
+}
+
+/// Legacy fixture coverage remains isolated from the production compatibility endpoint, which
+/// delegates exclusively through the durable repair coordinator.
+async fn complete_agent_workspace_pr_fix(
+    state: State<HttpServerState>,
+    conversation_id: Path<String>,
+    request: Json<CompleteAgentWorkspacePrFixRequest>,
+) -> Result<Json<CompleteAgentWorkspacePrFixResponse>, JsonError> {
+    super::complete_agent_workspace_pr_fix_legacy_for_test(state, conversation_id, request).await
 }
 
 fn open_review_pr_health() -> PrHealth {
@@ -784,6 +792,177 @@ fn test_workspace(conversation_id: ChatConversationId) -> AgentConversationWorks
 }
 
 #[tokio::test]
+async fn stale_repair_target_lease_rejects_completion_before_git_validation_or_publish() {
+    use crate::domain::entities::{
+        AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation, AgentWorkspaceRepairPhase,
+        AgentWorkspaceRepairSource, GitTargetIdentity, GitTargetLeaseOwner,
+    };
+    use crate::domain::repositories::{
+        AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, AgentWorkspaceRepairAttemptTransition,
+        AgentWorkspaceRepairAttemptTransitionOutcome, GitAuthorityCasOutcome,
+        StartOrJoinAgentWorkspaceRepairAttempt, StartOrJoinAgentWorkspaceRepairAttemptOutcome,
+    };
+
+    let mut app_state = AppState::new_test();
+    let github = Arc::new(MockGithubService::new());
+    app_state.github_service = Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>);
+    let conversation_id = ChatConversationId::new();
+    let workspace = test_workspace(conversation_id.clone());
+    app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    let run = AgentRun::new(conversation_id.clone());
+    let run_id = run.id.clone();
+    app_state
+        .agent_run_repo
+        .create(run)
+        .await
+        .expect("trusted running repair agent should persist");
+
+    let repair_repo = Arc::clone(&app_state.agent_workspace_repair_repo);
+    let started = match repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                conversation_id.clone(),
+                AgentWorkspaceRepairSource::Publish,
+                AgentWorkspaceRepairContinuation::Publish,
+                "main",
+                false,
+                true,
+                false,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: "completion stale authority fixture".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("repair attempt should start")
+    {
+        StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(attempt) => attempt,
+        outcome => panic!("expected new repair attempt, got {outcome:?}"),
+    };
+    let target_identity = GitTargetIdentity::new(
+        std::path::PathBuf::from(&workspace.worktree_path),
+        format!("refs/heads/{}", workspace.branch_name),
+    )
+    .expect("test workspace branch should form a canonical target identity");
+    let repair_owner = GitTargetLeaseOwner::agent_workspace_repair(started.id.as_str());
+    let AcquireGitTargetLeaseOutcome::Acquired { fencing_epoch } = app_state
+        .branch_update_repo
+        .acquire_target_lease(AcquireGitTargetLease {
+            identity: target_identity.clone(),
+            owner: repair_owner.clone(),
+        })
+        .await
+        .expect("repair lease should acquire")
+    else {
+        panic!("repair attempt should own its initial canonical target lease");
+    };
+    let mut repairing = started.clone();
+    repairing.phase = AgentWorkspaceRepairPhase::Repairing;
+    repairing.reserved_agent_run_id = Some(run_id.clone());
+    repairing.git_common_dir = Some(
+        target_identity
+            .git_common_dir()
+            .to_string_lossy()
+            .to_string(),
+    );
+    repairing.target_ref = Some(target_identity.full_ref().to_string());
+    repairing.target_identity_version = Some(1);
+    repairing.target_lease_epoch = Some(fencing_epoch);
+    repairing.updated_at += chrono::Duration::microseconds(1);
+    let repairing = match repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: repairing,
+            expected_phase: AgentWorkspaceRepairPhase::Requested,
+            expected_updated_at: started.updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Repairing,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("checkpoint repairing target authority")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("expected repairing checkpoint, got {outcome:?}"),
+    };
+    assert!(matches!(
+        app_state
+            .branch_update_repo
+            .release_target_lease(&target_identity, &repair_owner, fencing_epoch)
+            .await
+            .expect("release stale repair authority"),
+        GitAuthorityCasOutcome::Applied { .. }
+    ));
+    let foreign_owner = GitTargetLeaseOwner::branch_update("newer-task", "newer-update");
+    assert!(matches!(
+        app_state
+            .branch_update_repo
+            .acquire_target_lease(AcquireGitTargetLease {
+                identity: target_identity.clone(),
+                owner: foreign_owner.clone(),
+            })
+            .await
+            .expect("newer owner should acquire canonical target"),
+        AcquireGitTargetLeaseOutcome::Acquired { .. }
+    ));
+
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        "x-ralphx-agent-run-id",
+        axum::http::HeaderValue::from_str(&run_id.to_string()).expect("run header"),
+    );
+    headers.insert(
+        "x-ralphx-conversation-id",
+        axum::http::HeaderValue::from_str(&conversation_id.as_str()).expect("conversation header"),
+    );
+    let state = test_http_state(Arc::new(app_state));
+    let Err(response) = complete_agent_workspace_repair(
+        axum::extract::State(state.clone()),
+        axum::extract::Path(conversation_id.to_string()),
+        headers,
+        axum::Json(CompleteAgentWorkspaceRepairRequest {
+            summary: "repair is complete".to_string(),
+            blocker: None,
+        }),
+    )
+    .await
+    else {
+        panic!("stale authority must fail at the transport boundary");
+    };
+    assert_eq!(response.0, axum::http::StatusCode::CONFLICT);
+    let current = state
+        .app_state
+        .agent_workspace_repair_repo
+        .get_repair_attempt(&repairing.id)
+        .await
+        .expect("repair attempt should load")
+        .expect("repair attempt should remain durable");
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Blocked);
+    assert_eq!(github.state().push_branch_calls, 0);
+    assert_eq!(
+        github
+            .state()
+            .push_branch_with_expected_remote_oid_lease_calls,
+        0
+    );
+    let lease = state
+        .app_state
+        .branch_update_repo
+        .get_target_lease(&target_identity)
+        .await
+        .expect("foreign lease should remain readable")
+        .expect("foreign lease should remain");
+    assert_eq!(lease.owner(), &foreign_owner);
+    assert!(!lease.is_released());
+}
+
+#[tokio::test]
 async fn review_pr_rejects_fixer_context_and_completion_before_github_reads() {
     let mut app_state = AppState::new_test();
     let github = Arc::new(MockGithubService::new());
@@ -879,7 +1058,7 @@ fn mark_monitor_current_passed(
     monitor.review_artifact_id = Some(ArtifactId::from_string("review-artifact"));
     monitor.review_artifact_version = Some(1);
     monitor.review_requested_changes_artifact_id =
-        Some(ArtifactId::from_string("requested-changes-artifact"));
+        Some(ArtifactId::from_string("review-requested-changes-artifact"));
     monitor.review_requested_changes_artifact_version = Some(1);
     monitor.reviewed_target_scope = Some(target.scope);
     monitor.reviewed_head_sha = target.head_sha.clone();
@@ -1088,6 +1267,14 @@ async fn setup_pr_fix_workspace_with_review_gate(
     git(repo.path(), &["add", "README.md"]);
     git(repo.path(), &["commit", "-m", "base"]);
     let base_sha = git(repo.path(), &["rev-parse", "HEAD"]);
+    let remote_path = worktrees.path().join("origin.git");
+    let remote_path = remote_path.to_string_lossy().to_string();
+    git(repo.path(), &["init", "--bare", remote_path.as_str()]);
+    git(
+        repo.path(),
+        &["remote", "add", "origin", remote_path.as_str()],
+    );
+    git(repo.path(), &["push", "-u", "origin", "main"]);
 
     let github = Arc::new(MockGithubService::new());
     let mut state = AppState::new_test();
@@ -1258,6 +1445,7 @@ async fn current_pr_fixer_refreshes_base_then_completes_and_publishes_refreshed_
         fixture._repo.path(),
         &["commit", "-m", "advance base while fixer runs"],
     );
+    git(fixture._repo.path(), &["push", "origin", "main"]);
 
     let Json(update_response) = update_agent_workspace_from_base(
         State(test_http_state(Arc::clone(&fixture.app_state))),
@@ -2346,7 +2534,7 @@ async fn complete_pr_fix_already_completed_is_a_side_effect_free_noop() {
 }
 
 #[tokio::test]
-async fn complete_pr_fix_current_authority_with_stale_claim_schedules_recovery_without_effects() {
+async fn complete_pr_fix_current_authority_with_stale_claim_is_side_effect_free() {
     let fixture = setup_pr_fix_workspace_with_review_gate(
         "stale-current-claim",
         AgentWorkspaceReviewGateStatus::Blocking,
@@ -2392,13 +2580,7 @@ async fn complete_pr_fix_current_authority_with_stale_claim_schedules_recovery_w
     assert!(body["error"]
         .as_str()
         .is_some_and(|message| message.contains("claim is no longer current")));
-    for _ in 0..100 {
-        if fixture.github.state().check_pr_sync_state_calls >= 1 {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    assert_eq!(fixture.github.state().check_pr_sync_state_calls, 1);
+    assert_eq!(fixture.github.state().check_pr_sync_state_calls, 0);
     {
         let github_state = fixture.github.state();
         assert_eq!(github_state.check_pr_status_calls, 0);
@@ -3572,50 +3754,25 @@ async fn setup_workspace_for_review_completion(
     std::fs::write(repo.path().join("README.md"), "base\n").expect("write base file");
     git(repo.path(), &["add", "README.md"]);
     git(repo.path(), &["commit", "-m", "base"]);
-    let fake_remote = worktrees.path().join("github-remote.git");
+    let base_sha = git(repo.path(), &["rev-parse", "HEAD"]);
+    let remote_path = worktrees.path().join("origin.git");
+    let remote_path = remote_path.to_string_lossy().to_string();
+    git(repo.path(), &["init", "--bare", remote_path.as_str()]);
     git(
         repo.path(),
-        &[
-            "clone",
-            "--bare",
-            repo.path().to_str().expect("repo path should be UTF-8"),
-            fake_remote.to_str().expect("remote path should be UTF-8"),
-        ],
+        &["remote", "add", "origin", remote_path.as_str()],
     );
-    let fake_ssh = worktrees.path().join("fake-github-ssh");
-    std::fs::write(
-            &fake_ssh,
-            format!(
-                "#!/bin/sh\nif [ \"$1\" = \"-G\" ]; then exit 0; fi\ncase \"$*\" in\n  *git-upload-pack*) exec git-upload-pack '{}' ;;\n  *git-receive-pack*) exec git-receive-pack '{}' ;;\nesac\nexit 2\n",
-                fake_remote.display(),
-                fake_remote.display(),
-            ),
-        )
-        .expect("fake GitHub SSH transport should be written");
-    let mut permissions = std::fs::metadata(&fake_ssh)
-        .expect("fake GitHub SSH transport metadata should load")
-        .permissions();
-    permissions.set_mode(0o755);
-    std::fs::set_permissions(&fake_ssh, permissions)
-        .expect("fake GitHub SSH transport should be executable");
-    git(
-        repo.path(),
-        &[
-            "config",
-            "core.sshCommand",
-            fake_ssh.to_str().expect("SSH path should be UTF-8"),
-        ],
-    );
+    git(repo.path(), &["push", "-u", "origin", "main"]);
     git(
         repo.path(),
         &[
             "remote",
-            "add",
+            "set-url",
+            "--push",
             "origin",
-            "git@github.com:ralphx/test-repository.git",
+            "git@github.com:owner/repo.git",
         ],
     );
-    let base_sha = git(repo.path(), &["rev-parse", "HEAD"]);
 
     let github = Arc::new(MockGithubService::new());
     // When we expect the resume to publish, let the mock create a PR so publish completes
@@ -3636,8 +3793,8 @@ async fn setup_workspace_for_review_completion(
         repo.path().to_string_lossy().to_string(),
     );
     project.base_branch = Some("main".to_string());
-    project.worktree_parent_directory = Some(worktrees.path().to_string_lossy().to_string());
     project.github_pr_enabled = true;
+    project.worktree_parent_directory = Some(worktrees.path().to_string_lossy().to_string());
     app_state
         .project_repo
         .create(project.clone())
@@ -3852,7 +4009,11 @@ async fn passed_review_resumes_initial_auto_publish_when_armed() {
         "armed initial auto-publish should resume on a passed gate"
     );
     // Publish was invoked exactly once and created the initial PR.
-    assert_eq!(fixture.github.state().create_draft_pr_calls, 1);
+    assert_eq!(
+        fixture.github.state().create_draft_pr_calls,
+        1,
+        "publication events: {events:#?}"
+    );
     let persisted = fixture
         .app_state
         .agent_conversation_workspace_repo
@@ -3918,13 +4079,17 @@ async fn human_bypass_resumes_armed_initial_publish_for_the_exact_blocking_snaps
     assert_eq!(response.monitor.review_outcome, "blocking");
     assert_eq!(response.monitor.review_gate_status, "passed");
     assert!(response.monitor.review_gate_bypassed_at.is_some());
-    assert_eq!(fixture.github.state().create_draft_pr_calls, 1);
     let events = fixture
         .app_state
         .agent_conversation_workspace_repo
         .list_publication_events(&fixture.conversation_id)
         .await
         .unwrap();
+    assert_eq!(
+        fixture.github.state().create_draft_pr_calls,
+        1,
+        "publication events: {events:#?}"
+    );
     assert!(events.iter().any(|event| {
         event.step == "workspace_review_approved_anyway"
             && event.classification.as_deref() == Some("workspace_review_approved_anyway")

@@ -124,3 +124,12 @@ fn operation_continuation_and_phase_are_closed_wire_contracts() {
     assert!("merged".parse::<BranchUpdateContinuation>().is_err());
     assert!("unknown".parse::<BranchUpdatePhase>().is_err());
 }
+
+#[test]
+fn workspace_repair_lease_owner_is_unscoped_to_a_task() {
+    let owner = GitTargetLeaseOwner::agent_workspace_repair("repair-attempt-1");
+
+    assert_eq!(owner.kind, GitTargetLeaseOwnerKind::AgentWorkspaceRepair);
+    assert_eq!(owner.task_id, None);
+    assert_eq!(owner.owner_id, "repair-attempt-1");
+}

@@ -13,7 +13,9 @@ import {
 } from "./agentWorkspacePublishState";
 import {
   type AgentWorkspaceOperationToast,
+  agentWorkspaceMaintenanceOperationToastId,
   agentWorkspaceOperationToastId,
+  maintenanceOperationToastLabel,
   publishPipelineToastLabel,
   startAgentWorkspaceOperationToast,
 } from "./agentWorkspaceOperationToast";
@@ -44,9 +46,11 @@ export interface ActivePublishAttempt extends PublishAttemptState {
 }
 
 export type PublishFinalResult =
+  | { detail?: string; kind: "blocked" }
   | { detail?: string; kind: "failure" }
   | { detail?: string; kind: "needs_agent" }
   | { detail?: string; kind: "no_changes" }
+  | { detail?: string; kind: "ready" }
   | { detail?: string; kind: "success"; workspace: AgentConversationWorkspace }
   | { detail?: string; kind: "terminal"; status: "closed" | "merged" };
 
@@ -139,6 +143,34 @@ export async function readAgentWorkspaceDurablePublishResult(
   if (terminalStatus) {
     return { kind: "terminal", status: terminalStatus };
   }
+  const maintenanceOperation = workspace.maintenanceOperation;
+  if (maintenanceOperation?.status === "active") {
+    attempt.controller.update({
+      detail: maintenanceOperation.blocker ?? maintenanceOperation.summary,
+      id: agentWorkspaceMaintenanceOperationToastId(
+        workspace.conversationId,
+        maintenanceOperation.operationId,
+      ),
+      startedAtMs: new Date(maintenanceOperation.startedAt).getTime(),
+      title: maintenanceOperationToastLabel(maintenanceOperation.stage),
+    });
+    return null;
+  }
+  if (maintenanceOperation?.status === "ready") {
+    return {
+      kind: "ready",
+      ...(maintenanceOperation.summary
+        ? { detail: maintenanceOperation.summary }
+        : {}),
+    };
+  }
+  if (maintenanceOperation?.status === "blocked") {
+    const detail = maintenanceOperation.blocker ?? maintenanceOperation.summary;
+    return {
+      kind: "blocked",
+      ...(detail ? { detail } : {}),
+    };
+  }
   let freshness;
   if (
     suffix.some(
@@ -202,6 +234,12 @@ export function renderAgentWorkspacePublishResult(
     attempt.controller.info("No changes to publish", {
       detail: result.detail ?? null,
     });
+  } else if (result.kind === "ready") {
+    attempt.controller.info("Base updated — ready to publish", {
+      detail: result.detail ?? null,
+    });
+  } else if (result.kind === "blocked") {
+    attempt.controller.error("Repair blocked", { detail: result.detail ?? null });
   } else {
     attempt.controller.info(
       result.status === "merged"

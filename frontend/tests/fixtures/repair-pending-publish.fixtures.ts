@@ -3,8 +3,7 @@ import type { Page } from "@playwright/test";
 /**
  * Seeds a workspace stuck in the repair-pending publish state: the backend has
  * routed it back to the agent (`needs_agent`) and PR supervision is blocked.
- * Reproduces the action-strip state the design fix targets (calm status chip
- * beside the "PR supervision blocked" pill).
+ * Active maintenance must replace that stale PR-supervision presentation.
  */
 export async function seedRepairPendingWorkspace(
   page: Page,

@@ -838,7 +838,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                     contextId: RALPHX_CONTEXT_ID,
                     projectId: RALPHX_PROJECT_ID,
                     actorAgent: AGENT_TYPE,
+                    conversationId: RALPHX_CONVERSATION_ID,
                     parentConversationId: RALPHX_PARENT_CONVERSATION_ID,
+                    agentRunId: RALPHX_AGENT_RUN_ID,
                 }));
             }
         }

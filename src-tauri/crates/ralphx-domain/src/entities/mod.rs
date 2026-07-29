@@ -9,6 +9,9 @@ pub mod agent_conversation_workspace;
 mod agent_conversation_workspace_tests;
 #[cfg(test)]
 mod agent_conversation_workspace_review_monitor_tests;
+pub mod agent_workspace_repair;
+#[cfg(test)]
+mod agent_workspace_repair_tests;
 pub mod agent_workspace_pr_metadata;
 #[cfg(test)]
 mod agent_workspace_pr_metadata_tests;
@@ -134,6 +137,14 @@ pub use agent_conversation_workspace::{
     AgentWorkspaceReviewRuntimeState,
     AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest,
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+};
+pub use agent_workspace_repair::{
+    AgentWorkspaceRepairAttempt, AgentWorkspaceRepairAttemptId,
+    AgentWorkspaceRepairCompletionAuthority, AgentWorkspaceRepairContinuation,
+    AgentWorkspaceRepairEffect, AgentWorkspaceRepairEffectId, AgentWorkspaceRepairEffectKind,
+    AgentWorkspaceRepairEffectStatus, AgentWorkspaceRepairOperationSnapshot,
+    AgentWorkspaceRepairOperationStage, AgentWorkspaceRepairOperationStatus,
+    AgentWorkspaceRepairOutcome, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
 };
 pub use agent_workspace_pr_metadata::AgentWorkspacePrMetadataDecision;
 pub use agent_run::{

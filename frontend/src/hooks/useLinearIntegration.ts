@@ -12,6 +12,21 @@ export const linearIntegrationKeys = {
   settings: () => [...linearIntegrationKeys.all, "settings"] as const,
 };
 
+/**
+ * A Linear connection is usable once the token is stored, validated, and the
+ * backend reports issue search is available.
+ */
+export function isLinearConnected(
+  settings: LinearIntegrationSettings | undefined,
+): boolean {
+  return Boolean(
+    settings?.enabled &&
+      settings.hasApiToken &&
+      settings.validationStatus === "valid" &&
+      settings.issueSearchAvailable,
+  );
+}
+
 function updateSettingsAndRefreshTicketing(
   queryClient: ReturnType<typeof useQueryClient>,
   settings: LinearIntegrationSettings,

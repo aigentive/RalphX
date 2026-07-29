@@ -21,12 +21,18 @@ import type { StreamingContentBlock, StreamingTask } from "@/types/streaming-tas
 export function projectPersistedStreamingContentBlocks(
   messages: readonly ChatMessageResponse[],
 ): StreamingContentBlock[] {
+  let textBlockIndex = 0;
   return messages.flatMap((message) => {
     if (message.timelineStatus !== "streaming") return [];
     const seq = message.timelineSequence ?? undefined;
     return (message.contentBlocks ?? []).flatMap((block): StreamingContentBlock[] => {
       if (block.type === "text") {
-        return [{ type: "text", text: block.text ?? "", ...(seq != null ? { seq } : {}) }];
+        return [{
+          type: "text",
+          text: block.text ?? "",
+          blockIndex: textBlockIndex++,
+          ...(seq != null ? { seq } : {}),
+        }];
       }
       if (block.type !== "tool_use") return [];
 
@@ -55,8 +61,13 @@ export function removePersistedStreamingPrefix(
   const persistedToolIds = new Set(persistedBlocks.flatMap((block) =>
     block.type === "tool_use" ? [block.toolCall.id] : []
   ));
-  const persistedTexts = persistedBlocks.flatMap((block) =>
-    block.type === "text" ? [block.text] : []
+  const persistedTextsByBlockIndex = new Map(persistedBlocks.flatMap((block) =>
+    block.type === "text" && block.blockIndex != null
+      ? [[block.blockIndex, block.text] as const]
+      : []
+  ));
+  const legacyPersistedTexts = persistedBlocks.flatMap((block) =>
+    block.type === "text" && block.blockIndex == null ? [block.text] : []
   );
   let persistedTextIndex = 0;
 
@@ -71,11 +82,13 @@ export function removePersistedStreamingPrefix(
       return [block];
     }
 
-    const persistedText = persistedTexts[persistedTextIndex];
+    const persistedText = block.blockIndex != null
+      ? persistedTextsByBlockIndex.get(block.blockIndex)
+      : legacyPersistedTexts[persistedTextIndex];
     if (persistedText == null || !block.text.startsWith(persistedText)) {
       return [block];
     }
-    persistedTextIndex += 1;
+    if (block.blockIndex == null) persistedTextIndex += 1;
     const tail = block.text.slice(persistedText.length);
     return tail.length > 0 ? [{ ...block, text: tail }] : [];
   });
@@ -459,6 +472,49 @@ function mergePartialTextBlock(
   return next;
 }
 
+function mergePartialTextSegments(
+  previous: StreamingContentBlock[],
+  segments: readonly string[],
+): StreamingContentBlock[] {
+  const next = [...previous];
+
+  for (const [blockIndex, segment] of segments.entries()) {
+    if (segment.length === 0) continue;
+
+    let textIndex = next.findIndex((block) =>
+      block.type === "text" && block.blockIndex === blockIndex
+    );
+    if (textIndex < 0 && !next.some((block) =>
+      block.type === "text" && block.blockIndex != null
+    )) {
+      textIndex = next.flatMap((block, index) =>
+        block.type === "text" ? [index] : []
+      )[blockIndex] ?? -1;
+    }
+
+    if (textIndex < 0) {
+      next.push({ type: "text", text: segment, blockIndex });
+      continue;
+    }
+
+    const existing = next[textIndex] as Extract<StreamingContentBlock, { type: "text" }>;
+    const mergedText = mergeStreamingTextSnapshot(segment, existing.text);
+    // A segment anchor identifies one precise provider text block. When its
+    // snapshot and a recovered indexed block are disjoint, the snapshot wins:
+    // the recovered block belongs to an older projection, not another segment.
+    const text = existing.blockIndex != null
+      && !segment.includes(existing.text)
+      && !existing.text.includes(segment)
+      && longestSuffixPrefixOverlap(segment, existing.text) === 0
+      && longestSuffixPrefixOverlap(existing.text, segment) === 0
+        ? segment
+        : mergedText;
+    next[textIndex] = { ...existing, text, blockIndex };
+  }
+
+  return next;
+}
+
 function mergePartialTextIntoBlock(
   blocks: StreamingContentBlock[],
   textIndex: number,
@@ -534,11 +590,14 @@ export function mergeActiveStreamingContentBlocks(
   previous: StreamingContentBlock[],
   activeState: {
     partial_text: string;
+    partial_text_segments?: string[];
     tool_calls: unknown[];
     streaming_tasks: ActiveStreamingTaskResponse[];
   },
 ): StreamingContentBlock[] {
-  let next = mergePartialTextBlock(previous, activeState.partial_text);
+  let next = activeState.partial_text_segments != null && activeState.partial_text_segments.length > 0
+    ? mergePartialTextSegments(previous, activeState.partial_text_segments)
+    : mergePartialTextBlock(previous, activeState.partial_text);
   const aliases = activeDelegationAliases(
     activeState.tool_calls,
     activeState.streaming_tasks,

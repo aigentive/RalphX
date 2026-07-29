@@ -14,8 +14,10 @@ import { normalizePrStatus } from "@/components/pr/PullRequestDetailUtils";
 import { PullRequestStatusStrip } from "@/components/pr/PullRequestStatusStrip";
 
 import {
+  blocksAgentWorkspaceGitInspection,
   canInspectAgentWorkspaceBaseFreshness,
   getAgentWorkspaceEffectiveBaseLabel,
+  getAgentWorkspaceMaintenancePresentation,
   getAgentWorkspacePrConflictSummary,
   getAgentWorkspaceTerminalPublicationStatus,
   isPipelineOwnedAgentWorkspace,
@@ -45,6 +47,7 @@ function workspaceModeLabel(workspace: AgentConversationWorkspace): string {
 
 function workspaceSyncLabel({
   workspace,
+  maintenancePresentation,
   isRepairPending,
   hasPrConflict,
   baseBlocked,
@@ -52,6 +55,7 @@ function workspaceSyncLabel({
   terminalPrStatus,
 }: {
   workspace: AgentConversationWorkspace;
+  maintenancePresentation: ReturnType<typeof getAgentWorkspaceMaintenancePresentation>;
   isRepairPending: boolean;
   hasPrConflict: boolean;
   baseBlocked: boolean;
@@ -59,7 +63,8 @@ function workspaceSyncLabel({
   terminalPrStatus: "merged" | "closed" | null;
 }): string | null {
   let value: string | null | undefined;
-  if (!terminalPrStatus && isRepairPending) value = "Repair pending";
+  if (!terminalPrStatus && maintenancePresentation) value = maintenancePresentation.title;
+  else if (!terminalPrStatus && isRepairPending) value = "Repair pending";
   else if (!terminalPrStatus && hasPrConflict) value = "Conflicting";
   else if (!terminalPrStatus && baseBlocked) value = "Base unavailable";
   else if (!terminalPrStatus && isBehindBase) value = "Behind base";
@@ -85,6 +90,7 @@ function selectorKey(
 
 interface WorkspaceSyncState {
   workspace: AgentConversationWorkspace;
+  maintenancePresentation: ReturnType<typeof getAgentWorkspaceMaintenancePresentation>;
   isRepairPending: boolean;
   hasPrConflict: boolean;
   baseBlocked: boolean;
@@ -186,8 +192,12 @@ export function AgentWorkspaceToolbar({
   );
   const terminalPrStatus =
     getAgentWorkspaceTerminalPublicationStatus(workspace);
+  const maintenancePresentation = getAgentWorkspaceMaintenancePresentation(workspace);
+  const blocksGitInspection = blocksAgentWorkspaceGitInspection(workspace);
   const isRepairPending = Boolean(
-    workspace?.publicationPushStatus === "needs_agent" && !terminalPrStatus,
+    !workspace?.maintenanceOperation &&
+      workspace?.publicationPushStatus === "needs_agent" &&
+      !terminalPrStatus,
   );
   const fullFreshnessQuery = useAgentWorkspaceFullFreshness(
     workspace?.conversationId ?? null,
@@ -195,6 +205,7 @@ export function AgentWorkspaceToolbar({
       enabled: Boolean(
         shouldHydrateFullFreshness &&
         workspace &&
+        !blocksGitInspection &&
         !isRepairPending &&
         canInspectAgentWorkspaceBaseFreshness(workspace) &&
         !terminalPrStatus,
@@ -260,6 +271,7 @@ export function AgentWorkspaceToolbar({
   );
   const syncState: WorkspaceSyncState = {
     workspace,
+    maintenancePresentation,
     isRepairPending,
     hasPrConflict,
     baseBlocked,

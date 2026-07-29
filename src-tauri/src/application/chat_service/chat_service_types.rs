@@ -202,6 +202,8 @@ pub struct AgentChunkPayload {
     pub text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub block_index: Option<u64>,
     pub conversation_id: String,
     pub context_type: String,
     pub context_id: String,

@@ -6,8 +6,10 @@ export function resolveAgentTaskContext(runtimeContext) {
     const parentConversationId = nonEmpty(runtimeContext.parentConversationId);
     const projectId = nonEmpty(runtimeContext.projectId);
     const actorAgent = nonEmpty(runtimeContext.actorAgent);
+    const conversationId = nonEmpty(runtimeContext.conversationId);
     const contextType = nonEmpty(runtimeContext.contextType);
     const contextId = nonEmpty(runtimeContext.contextId);
+    const agentRunId = nonEmpty(runtimeContext.agentRunId);
     if (contextType === "delegation" && contextId) {
         return {
             context_type: contextType,
@@ -16,15 +18,16 @@ export function resolveAgentTaskContext(runtimeContext) {
             ...(actorAgent ? { actor_agent: actorAgent } : {}),
         };
     }
-    if (parentConversationId) {
+    const ledgerConversationId = parentConversationId ?? conversationId;
+    if (ledgerConversationId) {
         return {
             context_type: "conversation",
-            context_id: parentConversationId,
+            context_id: ledgerConversationId,
             ...(projectId ? { project_id: projectId } : {}),
             ...(actorAgent ? { actor_agent: actorAgent } : {}),
         };
     }
-    if (contextType && contextId) {
+    if (contextType && contextId && contextType !== "project") {
         return {
             context_type: contextType,
             context_id: contextId,
@@ -32,8 +35,18 @@ export function resolveAgentTaskContext(runtimeContext) {
             ...(actorAgent ? { actor_agent: actorAgent } : {}),
         };
     }
+    if (agentRunId) {
+        return {
+            context_type: "agent_run",
+            context_id: agentRunId,
+            ...(projectId ? { project_id: projectId } : {}),
+            ...(actorAgent ? { actor_agent: actorAgent } : {}),
+        };
+    }
+    if (contextType === "project" || projectId) {
+        throw new Error("Agent task ledger requires conversation identity; refusing shared project scope.");
+    }
     return {
-        ...(projectId ? { project_id: projectId } : {}),
         ...(actorAgent ? { actor_agent: actorAgent } : {}),
     };
 }

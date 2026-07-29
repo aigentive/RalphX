@@ -1,20 +1,22 @@
 use std::sync::Arc;
 
-use crate::application::agent_conversation_workspace::resolve_effective_agent_conversation_workspace_path;
+#[cfg(any(test, feature = "test-utils"))]
 use crate::application::agent_workspace_pr_autofix_attempt::{
     load_latest_exact_pr_autofix_run_for_pr, load_pr_autofix_attempt_decision,
     PrAutofixAttemptDecision,
 };
-use crate::application::agent_workspace_pr_metadata_reconciliation::AgentWorkspacePrMetadataReconciliationService;
+#[cfg(any(test, feature = "test-utils"))]
 use crate::application::agent_workspace_publish_repair_state::{
     abort_agent_workspace_pr_fix_review_handoff, claim_agent_workspace_repair,
     reconcile_active_agent_workspace_repair, restore_refreshed_agent_workspace_pr_fix_claim,
     settle_terminal_agent_workspace_repair, terminal_run_authorizes_repair_recovery,
     AgentWorkspaceRepairClaim,
 };
+#[cfg(any(test, feature = "test-utils"))]
 use crate::application::agent_workspace_review::{
     resolve_review_target, AgentWorkspaceReviewTarget,
 };
+#[cfg(any(test, feature = "test-utils"))]
 use crate::application::agent_workspace_review_publish_handoff::{
     has_open_pr_fix_workspace_review_publish_handoff,
     has_pending_pr_fix_workspace_review_publish_handoff,
@@ -22,41 +24,58 @@ use crate::application::agent_workspace_review_publish_handoff::{
 use crate::application::AppState;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspacePublicationEvent,
-    AgentWorkspacePublicationMetadataPhase,
 };
-use crate::domain::repositories::{
-    AgentConversationWorkspaceRepository, AgentRunRepository, ProjectRepository,
-};
-use crate::error::{AppError, AppResult};
+use crate::domain::repositories::AgentConversationWorkspaceRepository;
+#[cfg(any(test, feature = "test-utils"))]
+use crate::domain::repositories::{AgentRunRepository, ProjectRepository};
+#[cfg(any(test, feature = "test-utils"))]
+use crate::error::AppError;
+use crate::error::AppResult;
 
+#[cfg(any(test, feature = "test-utils"))]
 pub(super) const STALE_REPAIR_RECOVERED_STEP: &str = "stale_repair_recovered";
+#[cfg(any(test, feature = "test-utils"))]
 pub(super) const STALE_NEEDS_AGENT_CLASSIFICATION: &str = "stale_needs_agent";
+#[cfg(any(test, feature = "test-utils"))]
 pub(super) const STALE_REPAIR_BLOCKED_SUMMARY: &str =
     "Recovered stale workspace repair state; no active repair run is running.";
 pub(super) const STALE_TRANSIENT_RECOVERED_STEP: &str = "stale_transient_recovered";
 pub(super) const STALE_TRANSIENT_CLASSIFICATION: &str = "stale_transient_status";
 pub const STALE_TRANSIENT_STATUS_STALE_SECS: u64 = 300;
+mod durable_attempt_recovery;
+
+#[cfg(any(test, feature = "test-utils"))]
+pub use durable_attempt_recovery::recover_agent_workspace_repair_after_terminal_run;
+#[cfg(not(any(test, feature = "test-utils")))]
+pub(crate) use durable_attempt_recovery::recover_agent_workspace_repair_after_terminal_run;
+pub(crate) use durable_attempt_recovery::recover_agent_workspace_repair_attempts_for_state;
+use durable_attempt_recovery::recover_stale_publish_repair_for_workspace_in_state_result;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StalePublishRepairRecoveryOutcome {
     Noop,
+    #[cfg(any(test, feature = "test-utils"))]
     ActiveReplacement,
     ActiveRepairReconciled,
     RetryEligible,
     Manual,
+    #[cfg(any(test, feature = "test-utils"))]
     HandoffPreserved,
+    #[cfg(any(test, feature = "test-utils"))]
     TerminalRecovered,
 }
 
 impl StalePublishRepairRecoveryOutcome {
     fn was_recovered(self) -> bool {
-        matches!(
-            self,
-            Self::RetryEligible | Self::Manual | Self::TerminalRecovered
-        )
+        #[cfg(any(test, feature = "test-utils"))]
+        if matches!(self, Self::TerminalRecovered) {
+            return true;
+        }
+        matches!(self, Self::RetryEligible | Self::Manual)
     }
 }
 
+#[cfg(any(test, feature = "test-utils"))]
 pub async fn recover_stale_agent_workspace_publish_repairs_on_startup(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
@@ -96,6 +115,7 @@ pub async fn recover_stale_agent_workspace_publish_repairs_on_startup_for_state(
     }
 }
 
+#[cfg(any(test, feature = "test-utils"))]
 pub async fn recover_stale_agent_workspace_publish_repairs(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
@@ -121,11 +141,11 @@ pub async fn recover_stale_agent_workspace_publish_repairs(
 pub async fn recover_stale_agent_workspace_publish_repairs_for_state(
     state: &AppState,
 ) -> AppResult<u32> {
+    let mut recovered = recover_agent_workspace_repair_attempts_for_state(state).await?;
     let workspaces = state
         .agent_conversation_workspace_repo
         .list_active_needs_agent_workspaces()
         .await?;
-    let mut recovered = 0u32;
 
     for workspace in workspaces {
         let (_workspace, outcome) =
@@ -147,22 +167,6 @@ pub async fn recover_stale_publish_repair_for_workspace_in_state(
         .map(|(workspace, _)| workspace)
 }
 
-async fn recover_stale_publish_repair_for_workspace_in_state_result(
-    state: &AppState,
-    workspace: AgentConversationWorkspace,
-) -> AppResult<(
-    AgentConversationWorkspace,
-    StalePublishRepairRecoveryOutcome,
-)> {
-    recover_stale_publish_repair_for_workspace_with_project_repo_outcome(
-        Arc::clone(&state.agent_conversation_workspace_repo),
-        Arc::clone(&state.agent_run_repo),
-        Arc::clone(&state.project_repo),
-        workspace,
-    )
-    .await
-}
-
 #[cfg(test)]
 pub(crate) async fn recover_stale_publish_repair_for_workspace_with_project_repo(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
@@ -180,6 +184,7 @@ pub(crate) async fn recover_stale_publish_repair_for_workspace_with_project_repo
     .map(|(workspace, outcome)| (workspace, outcome.was_recovered()))
 }
 
+#[cfg(any(test, feature = "test-utils"))]
 pub(crate) async fn recover_stale_publish_repair_for_workspace_with_project_repo_outcome(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
@@ -263,6 +268,7 @@ pub(crate) async fn recover_stale_publish_repair_for_workspace_with_project_repo
     .await
 }
 
+#[cfg(any(test, feature = "test-utils"))]
 async fn abort_invalid_pr_fix_review_handoff(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     workspace: AgentConversationWorkspace,
@@ -294,6 +300,7 @@ async fn abort_invalid_pr_fix_review_handoff(
     ))
 }
 
+#[cfg(any(test, feature = "test-utils"))]
 pub async fn recover_stale_publish_repair_for_workspace_and_reload(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
@@ -310,6 +317,7 @@ pub async fn recover_stale_publish_repair_for_workspace_and_reload(
     Ok(workspace)
 }
 
+#[cfg(any(test, feature = "test-utils"))]
 pub(crate) async fn recover_stale_publish_repair_for_workspace_and_reload_with_review_target(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
@@ -346,6 +354,7 @@ pub(crate) async fn recover_stale_publish_repair_for_workspace_and_reload_with_r
     Ok((workspace, recovered))
 }
 
+#[cfg(any(test, feature = "test-utils"))]
 async fn current_pr_fix_review_handoff_target(
     project_repo: &dyn ProjectRepository,
     workspace: &AgentConversationWorkspace,
@@ -356,6 +365,7 @@ async fn current_pr_fix_review_handoff_target(
     resolve_review_target(workspace, &project).await
 }
 
+#[cfg(any(test, feature = "test-utils"))]
 pub async fn recover_stale_publish_repair_for_workspace(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
@@ -371,6 +381,7 @@ pub async fn recover_stale_publish_repair_for_workspace(
     .map(StalePublishRepairRecoveryOutcome::was_recovered)
 }
 
+#[cfg(any(test, feature = "test-utils"))]
 async fn recover_stale_publish_repair_for_workspace_with_review_target(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
@@ -540,6 +551,7 @@ async fn recover_stale_publish_repair_for_workspace_with_review_target(
     Ok(outcome)
 }
 
+#[cfg(any(test, feature = "test-utils"))]
 fn legacy_pr_autofix_tuple(
     workspace: &AgentConversationWorkspace,
     publication_events: &[AgentConversationWorkspacePublicationEvent],
@@ -569,27 +581,6 @@ pub async fn recover_stale_transient_publish_statuses(
     let mut recovered = 0u32;
 
     for workspace in workspaces {
-        match workspace_repo
-            .get_publication_metadata_receipt(&workspace.conversation_id)
-            .await
-        {
-            Ok(_) => {}
-            Err(_) => {
-                tracing::warn!(
-                    conversation_id = workspace.conversation_id.as_str(),
-                    "Skipped stale transient publish recovery because metadata receipt authority is unreadable"
-                );
-                continue;
-            }
-        }
-        if has_nonterminal_publication_metadata_receipt(&workspace) {
-            tracing::info!(
-                conversation_id = workspace.conversation_id.as_str(),
-                metadata_phase = ?workspace.publication_metadata_phase,
-                "Skipped stale transient publish recovery because metadata receipt authority is nonterminal"
-            );
-            continue;
-        }
         let stuck_status = workspace
             .publication_push_status
             .clone()
@@ -625,165 +616,6 @@ pub async fn recover_stale_transient_publish_statuses(
     Ok(recovered)
 }
 
-fn has_nonterminal_metadata_receipt_phase(
-    receipt: &crate::domain::entities::AgentWorkspacePublicationMetadataReceipt,
-) -> bool {
-    has_nonterminal_metadata_phase(receipt.phase)
-}
-
-fn has_nonterminal_metadata_phase(phase: AgentWorkspacePublicationMetadataPhase) -> bool {
-    matches!(
-        phase,
-        AgentWorkspacePublicationMetadataPhase::Prepared
-            | AgentWorkspacePublicationMetadataPhase::Mutating
-            | AgentWorkspacePublicationMetadataPhase::Reconciling
-    )
-}
-
-fn has_nonterminal_publication_metadata_receipt(workspace: &AgentConversationWorkspace) -> bool {
-    workspace
-        .publication_metadata_phase
-        .is_some_and(has_nonterminal_metadata_phase)
-}
-
-/// Reconciles durable, unfinished existing-PR metadata receipts without retrying a mutation.
-///
-/// Receipt candidates are selected independently from generic stale recovery because receipt
-/// preparation owns `pushing`, which the generic stale writer must never downgrade.
-pub async fn recover_pending_agent_workspace_pr_metadata_receipts_for_state(
-    state: &AppState,
-    stale_older_than_secs: u64,
-) -> AppResult<u32> {
-    let workspaces = state
-        .agent_conversation_workspace_repo
-        .list_active_pending_publication_metadata_receipt_workspaces(stale_older_than_secs)
-        .await?;
-    let Some(github) = state.github_service.as_ref() else {
-        if workspaces
-            .iter()
-            .any(has_nonterminal_publication_metadata_receipt)
-        {
-            tracing::warn!(
-                candidate_count = workspaces.len(),
-                "Skipped pending PR metadata receipt recovery because GitHub is unavailable"
-            );
-        }
-        return Ok(0);
-    };
-
-    let service = AgentWorkspacePrMetadataReconciliationService::new(
-        &state.agent_conversation_workspace_repo,
-        github,
-    );
-    let mut reconciled = 0u32;
-    for workspace in workspaces {
-        let receipt = match state
-            .agent_conversation_workspace_repo
-            .get_publication_metadata_receipt(&workspace.conversation_id)
-            .await
-        {
-            Ok(Some(receipt)) if has_nonterminal_metadata_receipt_phase(&receipt) => receipt,
-            Ok(_) => continue,
-            Err(_) => {
-                tracing::warn!(
-                    conversation_id = workspace.conversation_id.as_str(),
-                    "Skipped pending PR metadata receipt recovery because receipt authority is unreadable"
-                );
-                continue;
-            }
-        };
-        let project = match state.project_repo.get_by_id(&workspace.project_id).await {
-            Ok(Some(project)) => project,
-            Ok(None) => {
-                tracing::warn!(
-                    conversation_id = workspace.conversation_id.as_str(),
-                    "Skipped pending PR metadata receipt recovery because its project is unavailable"
-                );
-                continue;
-            }
-            Err(_) => {
-                tracing::warn!(
-                    conversation_id = workspace.conversation_id.as_str(),
-                    "Skipped pending PR metadata receipt recovery because its project could not be loaded"
-                );
-                continue;
-            }
-        };
-        let working_directory = if receipt.phase == AgentWorkspacePublicationMetadataPhase::Prepared
-        {
-            None
-        } else {
-            match resolve_effective_agent_conversation_workspace_path(
-                &project,
-                &workspace,
-                state.plan_branch_repo.as_ref(),
-            )
-            .await
-            {
-                Ok(resolved) => Some(resolved.path),
-                Err(error) => {
-                    tracing::warn!(
-                        conversation_id = workspace.conversation_id.as_str(),
-                        error = %error,
-                        "Skipped pending PR metadata receipt recovery because its workspace path is invalid"
-                    );
-                    continue;
-                }
-            }
-        };
-        let working_directory = working_directory
-            .as_deref()
-            .unwrap_or_else(|| std::path::Path::new(""));
-        match service
-            .recover(working_directory, &workspace.conversation_id)
-            .await
-        {
-            Ok(Some(outcome)) => {
-                if !matches!(
-                    outcome,
-                    crate::application::agent_workspace_pr_metadata_reconciliation::AgentWorkspacePrMetadataReconciliationOutcome::Unknown
-                        | crate::application::agent_workspace_pr_metadata_reconciliation::AgentWorkspacePrMetadataReconciliationOutcome::Stale
-                ) {
-                    reconciled += 1;
-                }
-                tracing::info!(
-                    conversation_id = workspace.conversation_id.as_str(),
-                    outcome = ?outcome,
-                    "Recovered pending PR metadata receipt without repeating a mutation"
-                );
-            }
-            Ok(None) => {}
-            Err(_) => {
-                tracing::warn!(
-                    conversation_id = workspace.conversation_id.as_str(),
-                    "Pending PR metadata receipt recovery failed closed"
-                );
-            }
-        }
-    }
-
-    Ok(reconciled)
-}
-
-pub async fn recover_pending_agent_workspace_pr_metadata_receipts_on_startup_for_state(
-    state: &AppState,
-) {
-    match recover_pending_agent_workspace_pr_metadata_receipts_for_state(state, 0).await {
-        Ok(count) if count > 0 => {
-            tracing::info!(
-                count,
-                "Recovered pending agent workspace PR metadata receipts on startup"
-            );
-        }
-        Ok(_) => {}
-        Err(_) => {
-            tracing::warn!(
-                "Failed to load pending agent workspace PR metadata receipts on startup"
-            );
-        }
-    }
-}
-
 pub async fn run_periodic_workspace_publish_recovery(state: AppState) {
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(120)).await;
@@ -792,18 +624,6 @@ pub async fn run_periodic_workspace_publish_recovery(state: AppState) {
             tracing::warn!(
                 error = %err,
                 "Periodic recovery: failed to recover stale needs_agent workspace repairs"
-            );
-        }
-
-        if let Err(err) = recover_pending_agent_workspace_pr_metadata_receipts_for_state(
-            &state,
-            STALE_TRANSIENT_STATUS_STALE_SECS,
-        )
-        .await
-        {
-            tracing::warn!(
-                error = %err,
-                "Periodic recovery: failed to reconcile pending PR metadata receipts"
             );
         }
 

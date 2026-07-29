@@ -207,7 +207,7 @@ interface AgentSessionState {
   sidebarGroupBy: AgentSidebarGroupBy;
   sidebarProjectFilterIds: string[];
   sidebarPublicationStateFilters: AgentSidebarPublicationState[];
-  sidebarInboxCollapsedLanes: AgentSidebarAttentionLane[];
+  sidebarInboxActiveLane: AgentSidebarAttentionLane;
   pinnedConversationIds: Record<string, true>;
   artifactByConversationId: Record<string, AgentArtifactState>;
   taskArtifactFocusRequestByConversationId: Record<
@@ -253,7 +253,7 @@ interface AgentSessionActions {
   toggleSidebarPublicationStateFilter: (
     state: AgentSidebarPublicationState
   ) => void;
-  toggleSidebarInboxLane: (lane: AgentSidebarAttentionLane) => void;
+  setSidebarInboxActiveLane: (lane: AgentSidebarAttentionLane) => void;
   togglePinnedConversation: (conversationId: string) => void;
   setArtifactOpen: (conversationId: string, isOpen: boolean) => void;
   setArtifactTab: (conversationId: string, tab: AgentArtifactTab) => void;
@@ -320,6 +320,21 @@ const DEFAULT_SHOW_EMPTY_PROJECT_GROUPS = true;
 // The Agents sidebar opens on the triage inbox: attention lanes are the landing
 // view, and project grouping is one of the alternatives behind Group.
 const DEFAULT_SIDEBAR_GROUP_BY: AgentSidebarGroupBy = "inbox";
+// The inbox is a lane switcher: exactly one lane is visible at a time, and the
+// one that opens by default is the one that actually needs the user.
+const DEFAULT_SIDEBAR_INBOX_ACTIVE_LANE: AgentSidebarAttentionLane = "needs";
+const SIDEBAR_INBOX_LANES: readonly AgentSidebarAttentionLane[] = [
+  "needs",
+  "working",
+  "stale",
+  "done",
+];
+
+function normalizeSidebarInboxActiveLane(value: unknown): AgentSidebarAttentionLane {
+  return SIDEBAR_INBOX_LANES.includes(value as AgentSidebarAttentionLane)
+    ? (value as AgentSidebarAttentionLane)
+    : DEFAULT_SIDEBAR_INBOX_ACTIVE_LANE;
+}
 export const DEFAULT_SIDEBAR_PUBLICATION_STATE_FILTERS: AgentSidebarPublicationState[] = [
   "active",
   "draft",
@@ -328,7 +343,7 @@ export const DEFAULT_SIDEBAR_PUBLICATION_STATE_FILTERS: AgentSidebarPublicationS
   "uncommitted",
   "unpushed",
 ];
-const AGENT_SESSION_STORE_VERSION = 11;
+const AGENT_SESSION_STORE_VERSION = 12;
 
 type LegacyAgentArtifactTab = AgentArtifactTab | "proposal";
 
@@ -559,10 +574,17 @@ export function migrateAgentSessionStore(
   }
 
   if (version < 11) {
-    nextState.sidebarInboxCollapsedLanes = [];
     // The inbox did not exist below v11, so no persisted grouping here was ever
     // a choice against it — every pre-inbox store lands on the new default.
     nextState.sidebarGroupBy = DEFAULT_SIDEBAR_GROUP_BY;
+  }
+
+  if (version < 12) {
+    // The inbox became a lane switcher: one selected lane replaces the set of
+    // collapsed lanes. A collapsed-set has no honest projection onto a single
+    // selection, so drop it rather than guessing which lane the user wanted.
+    delete nextState.sidebarInboxCollapsedLanes;
+    nextState.sidebarInboxActiveLane = DEFAULT_SIDEBAR_INBOX_ACTIVE_LANE;
   }
 
   return nextState;
@@ -584,6 +606,9 @@ export function mergeAgentSessionStore(
     ),
     roleRuntimeOverridesByConversationId: normalizeRoleRuntimeOverrides(
       persisted.roleRuntimeOverridesByConversationId,
+    ),
+    sidebarInboxActiveLane: normalizeSidebarInboxActiveLane(
+      persisted.sidebarInboxActiveLane,
     ),
   };
 }
@@ -660,7 +685,7 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
       sidebarGroupBy: DEFAULT_SIDEBAR_GROUP_BY,
       sidebarProjectFilterIds: [],
       sidebarPublicationStateFilters: [...DEFAULT_SIDEBAR_PUBLICATION_STATE_FILTERS],
-      sidebarInboxCollapsedLanes: [],
+      sidebarInboxActiveLane: DEFAULT_SIDEBAR_INBOX_ACTIVE_LANE,
       pinnedConversationIds: {},
       artifactByConversationId: {},
       taskArtifactFocusRequestByConversationId: {},
@@ -802,15 +827,9 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
           state.sidebarPublicationStateFilters = Array.from(current);
         }),
 
-      toggleSidebarInboxLane: (lane) =>
+      setSidebarInboxActiveLane: (lane) =>
         set((state) => {
-          const current = new Set(state.sidebarInboxCollapsedLanes);
-          if (current.has(lane)) {
-            current.delete(lane);
-          } else {
-            current.add(lane);
-          }
-          state.sidebarInboxCollapsedLanes = Array.from(current);
+          state.sidebarInboxActiveLane = lane;
         }),
 
       togglePinnedConversation: (conversationId) =>
@@ -1030,7 +1049,7 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
         sidebarGroupBy: state.sidebarGroupBy,
         sidebarProjectFilterIds: state.sidebarProjectFilterIds,
         sidebarPublicationStateFilters: state.sidebarPublicationStateFilters,
-        sidebarInboxCollapsedLanes: state.sidebarInboxCollapsedLanes,
+        sidebarInboxActiveLane: state.sidebarInboxActiveLane,
         pinnedConversationIds: state.pinnedConversationIds,
         artifactByConversationId: state.artifactByConversationId,
         runtimeByConversationId: state.runtimeByConversationId,

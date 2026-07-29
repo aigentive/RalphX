@@ -60,6 +60,11 @@ type ActiveStateSnapshot = Pick<
   "is_active" | "tool_calls" | "streaming_tasks" | "partial_text"
 >;
 
+/** Test-only forward-compatible shape for the Phase 0 delta replay contract. */
+type DeltaActiveStateSnapshot = ActiveStateSnapshot & {
+  partial_text_segments?: string[];
+};
+
 type ReplayStep = {
   id: ReplayStepId;
   persisted?: PersistedTimelineEntry[];
@@ -694,6 +699,61 @@ export function createReplayConversationFixture(): ReplayConversationFixture {
       return STEPS
         .slice(fromIndex + 1, toIndex + 1)
         .flatMap((step) => step.events ?? []);
+    },
+  };
+}
+
+/**
+ * Claude-style delta stream used by the mid-stream conversation-switch tests.
+ * The production response has not gained `partial_text_segments` yet, so this
+ * fixture intentionally carries the forward-compatible field at its boundary.
+ */
+export function createDeltaReplayConversationFixture(): ReplayConversationFixture {
+  const legacy = createReplayConversationFixture();
+  const segmentA = "First segment survives the switch. ";
+  const segmentB = "Second segment resumes from its mid-stream tail.";
+  const activeSnapshots = new Map<ReplayStepId, DeltaActiveStateSnapshot>([
+    ["turn-2-text-delta", {
+      is_active: true,
+      tool_calls: [],
+      streaming_tasks: [],
+      partial_text: segmentA,
+      partial_text_segments: [segmentA],
+    }],
+    ["turn-2-edit-started", {
+      is_active: true,
+      tool_calls: [{
+        id: TURN_TWO_GREP_ID,
+        name: "Grep",
+        arguments: { pattern: "delta", path: "frontend/src/hooks" },
+        result: "frontend/src/hooks/useChatRecovery.ts",
+      }],
+      streaming_tasks: [],
+      partial_text: segmentA + segmentB,
+      partial_text_segments: [segmentA, segmentB],
+    }],
+  ]);
+
+  return {
+    ...legacy,
+    activeState(step) {
+      const snapshot = activeSnapshots.get(step);
+      return snapshot
+        ? ({ ...legacy.activeState(step), ...snapshot } as ConversationActiveStateResponse)
+        : legacy.activeState(step);
+    },
+    events(fromStep, toStep) {
+      const events = legacy.events(fromStep, toStep);
+      return events.map((event) => event.name !== "agent:chunk" ? event : {
+        ...event,
+        payload: {
+          ...event.payload,
+          // block_index is the 0-based ordinal among TEXT blocks of the turn
+          // (backend current_text_block_ordinal), not the content-block index.
+          block_index: (event.payload.seq as number) >= 11 ? 1 : 0,
+          append_to_previous: true,
+        },
+      });
     },
   };
 }

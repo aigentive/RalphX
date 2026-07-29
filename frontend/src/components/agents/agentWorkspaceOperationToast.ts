@@ -47,6 +47,24 @@ export function agentWorkspaceOperationToastId(
   return `agent-workspace-operation:${conversationId}:${kind}`;
 }
 
+export function agentWorkspaceMaintenanceOperationToastId(
+  conversationId: string,
+  operationId: string,
+): string {
+  return `agent-workspace-maintenance:${conversationId}:${operationId}`;
+}
+
+export function maintenanceOperationToastLabel(stage: string): string {
+  if (stage === "updating_base") return "Updating base";
+  if (stage === "repairing") return "Repairing workspace";
+  if (stage === "validating") return "Validating repair";
+  if (stage === "reviewing") return "Workspace Review in progress";
+  if (stage === "publishing") return "Publishing workspace";
+  if (stage === "ready") return "Base updated — ready to publish";
+  if (stage === "blocked") return "Repair blocked";
+  return "Continuing workspace operation";
+}
+
 export function publishPipelineToastLabel(status: string | null): string {
   if (status === "committing") {
     return "Commit changes";
