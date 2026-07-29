@@ -117,7 +117,7 @@ impl RemoteInvokeError {
     /// `RemoteCommandUnavailable`: that code is reserved for a `find_spec` miss and the client
     /// treats it as "this host does not support the command at all", which is terminal and
     /// about to gate remote affordances.
-    fn bad_args(message: impl Into<String>) -> Self {
+    pub fn bad_args(message: impl Into<String>) -> Self {
         Self {
             code: ErrorCode::RemoteInvalidArguments,
             message: message.into(),
@@ -380,8 +380,11 @@ macro_rules! remote_commands {
             // (d) scope → authz → validate, all before dispatch.
             $crate::remote_server::registry::enforce_scope(spec, granted, args)?;
             if let Some(validate) = spec.validate {
+                // An argument-shape refusal, NOT `forbidden`: the device's grant is sufficient
+                // and re-pairing at a higher scope would not help. Saying `forbidden` here
+                // would send the client to the pairing flow for a fixable request.
                 validate(args).map_err(|message| {
-                    $crate::remote_server::registry::RemoteInvokeError::forbidden(message)
+                    $crate::remote_server::registry::RemoteInvokeError::bad_args(message)
                 })?;
             }
 
@@ -590,6 +593,47 @@ pub fn update_task_authz(args: &Value) -> Scope {
         Scope::UiAgent
     } else {
         Scope::UiOperate
+    }
+}
+
+/// Refusal message for a brake dispatched without an explicit project scope.
+pub const BRAKE_REQUIRES_PROJECT_SCOPE: &str =
+    "This command requires an explicit non-null `projectId` when invoked remotely.";
+
+/// The brake-scope predicate: a remote halt must name the project it halts.
+///
+/// `pause_execution`/`stop_execution` accept `project_id: Option<String>`. Locally the `None`
+/// arm is a convenience — it falls back to the active project, and then to *every* project via
+/// `project_repo.get_all()`. Remotely that same arm is a one-call sweep of the whole host from a
+/// device in the DEFAULT `ui:operate` pairing, so the facade requires the argument.
+///
+/// # What this confines, and what it does not
+///
+/// Confined: the per-task transition sweep. With an explicit `projectId` the command transitions
+/// only that project's agent-active tasks to `Paused`/`Stopped`.
+///
+/// NOT confined, and deliberately recorded rather than implied: `execution_state.pause()`,
+/// `persist_execution_halt_mode`, `running_agent_registry.stop_all()` and
+/// `interactive_process_registry.clear()` are process-global in `execution_commands::lifecycle`
+/// and run before the project is ever resolved. A scoped remote brake still halts host-wide
+/// scheduling. The predicate narrows blast radius and forces the caller to state an intent; it
+/// is not a per-project halt, and
+/// `the_brake_scope_predicate_does_not_confine_the_global_pause_flag` pins that limit so the
+/// confinement cannot be read as stronger than it is.
+///
+/// This is facade-layer only: local callers reach the command fn directly and are unaffected.
+pub fn require_explicit_project_scope(args: &Value) -> Result<(), String> {
+    match args.get("projectId").or_else(|| args.get("project_id")) {
+        // Absent or explicitly null are the SAME failure: both deserialize to `None` and reach
+        // the all-projects arm, so accepting one would leave the sweep open.
+        None | Some(Value::Null) => Err(BRAKE_REQUIRES_PROJECT_SCOPE.to_string()),
+        Some(Value::String(id)) if id.trim().is_empty() => {
+            Err(BRAKE_REQUIRES_PROJECT_SCOPE.to_string())
+        }
+        Some(Value::String(_)) => Ok(()),
+        // A non-string is an argument-shape error; refusing here keeps the predicate from
+        // passing a value the target fn would reject anyway.
+        Some(_) => Err(BRAKE_REQUIRES_PROJECT_SCOPE.to_string()),
     }
 }
 
@@ -979,6 +1023,7 @@ crate::remote_commands! {
         ],
         call: async,
         result: fallible,
+        validate: crate::remote_server::registry::require_explicit_project_scope,
     },
     "stop_execution" => crate::commands::execution_commands::stop_execution {
         class: Operate,
@@ -991,6 +1036,7 @@ crate::remote_commands! {
         ],
         call: async,
         result: fallible,
+        validate: crate::remote_server::registry::require_explicit_project_scope,
     },
     "cancel_tasks_in_group"
         => crate::commands::task_commands::mutation::cancel_tasks_in_group {
@@ -1146,6 +1192,117 @@ crate::remote_commands! {
         call: async,
         result: fallible,
         pins: [("input", "role", "user")],
+    },
+
+
+    // -----------------------------------------------------------------------------------
+    // The spawn-free transcript reads (batch 4) — the PR 3.2 dependency.
+    //
+    // The LOCAL `get_agent_conversation` and its two page reads stay ABSENT, and their
+    // absence is asserted rather than merely omitted (see
+    // `the_local_transcript_reads_stay_unregistered`). Each of them opens by waking the
+    // conversation's agent workspace, which reaches the `send_message` STEER sink; the wake
+    // is incidental to the read (the local commands discard its error and read anyway), so
+    // the answer is a seam split rather than a reclassification.
+    //
+    // These three delegate to the same `*_for_app_state` seams the local commands use, take
+    // only `&AppState`, and therefore cannot reach the wake.
+    // -----------------------------------------------------------------------------------
+    "get_remote_agent_conversation"
+        => crate::commands::remote_transcript_commands::get_remote_agent_conversation {
+        class: Read,
+        caps: [],
+        params: [
+            (arg conversation_id: String),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "get_remote_agent_conversation_messages_page"
+        => crate::commands::remote_transcript_commands::get_remote_agent_conversation_messages_page {
+        class: Read,
+        caps: [],
+        params: [
+            (arg conversation_id: String),
+            (arg limit: Option<u32>),
+            (arg offset: Option<u32>),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "get_remote_agent_conversation_timeline_page"
+        => crate::commands::remote_transcript_commands::get_remote_agent_conversation_timeline_page {
+        class: Read,
+        caps: [],
+        params: [
+            (arg conversation_id: String),
+            (arg limit: Option<u32>),
+            (arg before_sequence: Option<i64>),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+
+    // -----------------------------------------------------------------------------------
+    // The B2 detector-silent getters (batch 4). Five of seventeen candidates; the other
+    // twelve were refused or deferred — see `the_b2_getter_refusals_are_pinned`.
+    // -----------------------------------------------------------------------------------
+    "get_agent_conversation_summary"
+        => crate::commands::unified_chat_commands::get_agent_conversation_summary {
+        class: Read,
+        caps: [],
+        params: [
+            (arg conversation_id: String),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "get_agent_conversation_runtime_index"
+        => crate::commands::unified_chat_commands::get_agent_conversation_runtime_index {
+        class: Read,
+        caps: [],
+        params: [
+            (arg conversation_id: String),
+            (app_state),
+            (execution_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "list_agent_conversation_workspace_publication_events"
+        => crate::commands::unified_chat_commands::list_agent_conversation_workspace_publication_events {
+        class: Read,
+        caps: [],
+        params: [
+            (arg conversation_id: String),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "get_bulk_workspace_publication_states"
+        => crate::commands::agent_sidebar_commands::get_bulk_workspace_publication_states {
+        class: Read,
+        caps: [],
+        params: [
+            (arg conversation_ids: Vec<String>),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "list_agent_models" => crate::commands::agent_model_commands::list_agent_models {
+        class: Read,
+        caps: [],
+        params: [
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
     },
 
     // Agent-consumed content surface.

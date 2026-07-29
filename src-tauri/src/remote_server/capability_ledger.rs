@@ -205,6 +205,10 @@ pub const MODULE_DEFAULTS: &[ModuleDefault] = &[
     // ChatService), but the default stays conservative: a future member must earn a
     // narrower row rather than inherit one.
     agent_default("remote_chat_commands"),
+    // Same construction and the same conservative default as `remote_chat_commands`: the
+    // module cannot spawn (no AppHandle, no ExecutionState, no ChatService), but a future
+    // member must still earn its own row rather than inherit a narrow one.
+    agent_default("remote_transcript_commands"),
     elevated_default(
         "remote_device_commands",
         HOST,
@@ -931,6 +935,109 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
     // per-model and per-effort buckets. No message text, no prompt, no tool input. This is a
     // usage-reporting surface, not the transcript surface; the transcript reads stay at the
     // module default and are the next batch's problem.
+    // -----------------------------------------------------------------------------------
+    // Batch 4 — the B2 detector-silent getters.
+    //
+    // Method, unchanged from batches 2 and 3: start from live detector output
+    // (`probe_b2_module_batch_audit`, all 56 members), then hand-trace every candidate body,
+    // because detector silence is necessary and never sufficient. Batches 2 and 3 each found
+    // one detector-silent command that had to be refused; this pass found SEVEN, which is why
+    // only five of seventeen candidates are registered here.
+    //
+    // Every row below satisfies the same three properties, each asserted:
+    //   1. propagates read errors — no `unwrap_or_default`/`.ok()`/`Ok(vec![])` on an Err
+    //      branch. A remote client is never told "no data" when the truth is "the query
+    //      failed"; that fail-open shape is what disqualified two batch-1 candidates and four
+    //      of this batch's.
+    //   2. no write of any kind, including in-memory registry cleanup.
+    //   3. takes `&AppState` only — no `tauri::AppHandle`, the spawn-authority carrier.
+    CommandOverride {
+        command: "get_agent_conversation_summary",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "conversation metadata without messages; propagates read errors",
+        ),
+    },
+    CommandOverride {
+        command: "get_agent_conversation_runtime_index",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "runtime lifecycle index via the non-mutating direct_agent_running_state_for_context path; propagates read errors",
+        ),
+    },
+    CommandOverride {
+        command: "list_agent_conversation_workspace_publication_events",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "workspace publication event history; propagates read errors",
+        ),
+    },
+    CommandOverride {
+        command: "get_bulk_workspace_publication_states",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "publication state enum and label per conversation; propagates read errors",
+        ),
+    },
+    CommandOverride {
+        command: "list_agent_models",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "built-in and custom model registry merge; propagates read errors",
+        ),
+    },
+    // -----------------------------------------------------------------------------------
+    // Batch 4 — the spawn-free transcript reads (the PR 3.2 dependency).
+    //
+    // The LOCAL `get_agent_conversation` / `..._messages_page` / `..._timeline_page` all fire
+    // detector (a) and stay unregistered. `probe_transcript_read_arming_paths` shows why: each
+    // opens with `wake_agent_workspace_for_bridge_events*`, which reaches the `send_message`
+    // STEER sink. The wake is incidental to the read — the local commands themselves discard
+    // its error with `tracing::warn!` and read anyway — so the answer is a seam split, not a
+    // reclassification of the local command.
+    //
+    // These three are the pure-read variants. Each delegates to an existing `*_for_app_state`
+    // seam, forks no logic, and takes only `&AppState`, so the wake is unreachable by
+    // construction rather than by review. `remote_transcript_reads_never_reach_the_wake`
+    // asserts that mechanically against the same call graph the detector uses.
+    //
+    // Content note, made explicitly because it is the reason these are the batch's most
+    // scrutinised rows: unlike the B2 stats cluster, these payloads DO carry message text and
+    // tool call/result blocks. That is the whole point — a remote transcript view is what PR
+    // 3.2 exists to validate — and it is why they sit at `ui:read` and carry no capability,
+    // rather than being folded into a lower-visibility batch. The page reads apply the same
+    // `preview_tool_payloads_for_message` truncation the local UI gets; the un-truncated
+    // escape hatches (`get_agent_message_tool_call_detail` and its timeline twin) are
+    // deliberately NOT registered.
+    CommandOverride {
+        command: "get_remote_agent_conversation",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "pure repository read of a conversation and its messages; no wake, no spawn; propagates read errors",
+        ),
+    },
+    CommandOverride {
+        command: "get_remote_agent_conversation_messages_page",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "pure repository read of a message page; no wake, no spawn; propagates read errors",
+        ),
+    },
+    CommandOverride {
+        command: "get_remote_agent_conversation_timeline_page",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "pure repository read of a timeline page; no wake, no spawn; propagates read errors",
+        ),
+    },
     CommandOverride {
         command: "get_agent_conversation_stats",
         policy: policy(
@@ -1133,6 +1240,44 @@ pub const CONDITIONAL_CAPABILITIES: &[ConditionalCapability] = &[ConditionalCapa
     capability: Capability::MutatesAgentConsumedContent,
     condition: "conditional: title,description — discharged by update_task_authz",
 }];
+
+/// A registered command whose remote form is confined to an explicit scope argument.
+///
+/// Some commands are safe remotely only in a narrowed form. The brakes are the canonical case:
+/// `pause_execution`/`stop_execution` take `project_id: Option<String>`, and the `None` arm
+/// falls back to the LOCAL user's active project or, failing that, to `project_repo.get_all()`
+/// — so a default-paired phone could sweep every project on the host in one call. A remote
+/// device must name the project it is halting.
+///
+/// Recorded here rather than left implicit in the macro so the annotation and the `validate:`
+/// predicate are inseparable: `scope_confinements_are_enforced_by_a_live_predicate` asserts the
+/// tie in BOTH directions, so removing the predicate while the annotation stands (or the
+/// reverse) fails CI. Mirrors [`ConditionalCapability`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScopeConfinement {
+    pub command: &'static str,
+    /// The wire argument that must be present and non-null.
+    pub argument: &'static str,
+    /// What the confinement buys, and — honestly — what it does not.
+    pub reason: &'static str,
+}
+
+pub const SCOPE_CONFINEMENTS: &[ScopeConfinement] = &[
+    ScopeConfinement {
+        command: "pause_execution",
+        argument: "projectId",
+        reason: "null projectId sweeps every project via project_repo.get_all(); \
+                 confines the task-transition sweep, NOT the global pause flag — \
+                 discharged by require_explicit_project_scope",
+    },
+    ScopeConfinement {
+        command: "stop_execution",
+        argument: "projectId",
+        reason: "null projectId sweeps every project via project_repo.get_all(); \
+                 confines the task-transition sweep, NOT the global pause flag — \
+                 discharged by require_explicit_project_scope",
+    },
+];
 
 pub const DECLARED_MEMBERSHIPS: &[(&str, &str)] = &[
     ("approve_permission_request", "authorizes-live-tool-call"),

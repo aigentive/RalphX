@@ -2089,6 +2089,7 @@
       "class": "read",
       "command": "health_check",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::health::health_check"
     },
     {
@@ -2097,6 +2098,7 @@
       "class": "read",
       "command": "list_tasks",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::task_commands::query::list_tasks"
     },
     {
@@ -2105,6 +2107,7 @@
       "class": "read",
       "command": "get_task",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::task_commands::query::get_task"
     },
     {
@@ -2113,6 +2116,7 @@
       "class": "read",
       "command": "search_tasks",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::task_commands::query::search_tasks"
     },
     {
@@ -2121,6 +2125,7 @@
       "class": "read",
       "command": "get_valid_transitions",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::task_commands::query::get_valid_transitions"
     },
     {
@@ -2129,6 +2134,7 @@
       "class": "read",
       "command": "list_pending_permission_gates",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::permission_commands::list_pending_permission_gates"
     },
     {
@@ -2137,6 +2143,7 @@
       "class": "read",
       "command": "list_pending_question_gates",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::question_commands::list_pending_question_gates"
     },
     {
@@ -2145,6 +2152,7 @@
       "class": "read",
       "command": "get_archived_count",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::task_commands::query::get_archived_count"
     },
     {
@@ -2153,6 +2161,7 @@
       "class": "read",
       "command": "get_tasks_awaiting_review",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::task_commands::query::get_tasks_awaiting_review"
     },
     {
@@ -2161,6 +2170,7 @@
       "class": "read",
       "command": "get_session_task_history_availability",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::task_commands::query::get_session_task_history_availability"
     },
     {
@@ -2169,6 +2179,7 @@
       "class": "read",
       "command": "get_task_state_transitions",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::task_commands::query::get_task_state_transitions"
     },
     {
@@ -2177,6 +2188,7 @@
       "class": "read",
       "command": "get_task_dependency_graph",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::task_commands::query::get_task_dependency_graph"
     },
     {
@@ -2185,6 +2197,7 @@
       "class": "read",
       "command": "get_task_timeline_events",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::task_commands::query::get_task_timeline_events"
     },
     {
@@ -2193,6 +2206,7 @@
       "class": "read",
       "command": "get_task_agent_workspace",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::task_commands::query::get_task_agent_workspace"
     },
     {
@@ -2201,6 +2215,7 @@
       "class": "read",
       "command": "get_task_steps",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::task_step_commands::get_task_steps"
     },
     {
@@ -2209,6 +2224,7 @@
       "class": "read",
       "command": "get_step_progress",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::task_step_commands::get_step_progress"
     },
     {
@@ -2217,6 +2233,7 @@
       "class": "read",
       "command": "get_execution_settings",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::execution_commands::get_execution_settings"
     },
     {
@@ -2225,6 +2242,7 @@
       "class": "read",
       "command": "get_global_execution_settings",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::execution_commands::get_global_execution_settings"
     },
     {
@@ -2233,6 +2251,7 @@
       "class": "read",
       "command": "get_active_project",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::execution_commands::get_active_project"
     },
     {
@@ -2241,6 +2260,7 @@
       "class": "read",
       "command": "get_agent_conversation_stats",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::conversation_stats_commands::get_agent_conversation_stats"
     },
     {
@@ -2249,6 +2269,7 @@
       "class": "read",
       "command": "get_project_chat_usage_stats",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::conversation_stats_commands::get_project_chat_usage_stats"
     },
     {
@@ -2257,6 +2278,7 @@
       "class": "read",
       "command": "get_task_chat_usage_stats",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::conversation_stats_commands::get_task_chat_usage_stats"
     },
     {
@@ -2265,6 +2287,7 @@
       "class": "read",
       "command": "get_insights_chat_usage_stats",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::conversation_stats_commands::get_insights_chat_usage_stats"
     },
     {
@@ -2273,6 +2296,7 @@
       "class": "operate",
       "command": "update_task",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::task_commands::mutation::update_task"
     },
     {
@@ -2281,6 +2305,7 @@
       "class": "operate",
       "command": "create_task",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::task_commands::mutation::create_task"
     },
     {
@@ -2289,6 +2314,7 @@
       "class": "operate",
       "command": "pause_task",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::task_commands::mutation::pause_task"
     },
     {
@@ -2297,6 +2323,7 @@
       "class": "operate",
       "command": "block_task",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::task_commands::mutation::block_task"
     },
     {
@@ -2305,6 +2332,7 @@
       "class": "operate",
       "command": "stop_task",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::task_commands::mutation::stop_task"
     },
     {
@@ -2313,6 +2341,7 @@
       "class": "operate",
       "command": "pause_tasks_in_group",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::task_commands::mutation::pause_tasks_in_group"
     },
     {
@@ -2321,6 +2350,7 @@
       "class": "operate",
       "command": "pause_execution",
       "pins": [],
+      "scopeConfined": true,
       "target": "crate::commands::execution_commands::pause_execution"
     },
     {
@@ -2329,6 +2359,7 @@
       "class": "operate",
       "command": "stop_execution",
       "pins": [],
+      "scopeConfined": true,
       "target": "crate::commands::execution_commands::stop_execution"
     },
     {
@@ -2337,6 +2368,7 @@
       "class": "operate",
       "command": "cancel_tasks_in_group",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::task_commands::mutation::cancel_tasks_in_group"
     },
     {
@@ -2351,6 +2383,7 @@
           "value": "deny"
         }
       ],
+      "scopeConfined": false,
       "target": "crate::commands::permission_commands::resolve_permission_request"
     },
     {
@@ -2362,6 +2395,7 @@
       "class": "agentControl",
       "command": "move_task",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::task_commands::mutation::move_task"
     },
     {
@@ -2372,6 +2406,7 @@
       "class": "agentControl",
       "command": "unblock_task",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::task_commands::mutation::unblock_task"
     },
     {
@@ -2382,6 +2417,7 @@
       "class": "agentControl",
       "command": "answer_user_question",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::task_commands::mutation::answer_user_question"
     },
     {
@@ -2392,6 +2428,7 @@
       "class": "agentControl",
       "command": "approve_task_for_review",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::review_commands::approve_task_for_review"
     },
     {
@@ -2402,6 +2439,7 @@
       "class": "agentControl",
       "command": "reanalyze_project",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::project_commands::reanalyze_project"
     },
     {
@@ -2412,6 +2450,7 @@
       "class": "agentControl",
       "command": "inject_task",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::task_commands::mutation::inject_task"
     },
     {
@@ -2422,6 +2461,7 @@
       "class": "agentControl",
       "command": "resume_automation",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::automation_commands::resume_automation"
     },
     {
@@ -2432,6 +2472,7 @@
       "class": "agentControl",
       "command": "finalize_automation",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::automation_commands::finalize_automation"
     },
     {
@@ -2448,7 +2489,80 @@
           "value": "user"
         }
       ],
+      "scopeConfined": false,
       "target": "crate::commands::remote_chat_commands::send_remote_chat_message"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_remote_agent_conversation",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::remote_transcript_commands::get_remote_agent_conversation"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_remote_agent_conversation_messages_page",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::remote_transcript_commands::get_remote_agent_conversation_messages_page"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_remote_agent_conversation_timeline_page",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::remote_transcript_commands::get_remote_agent_conversation_timeline_page"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_agent_conversation_summary",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::unified_chat_commands::get_agent_conversation_summary"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_agent_conversation_runtime_index",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::unified_chat_commands::get_agent_conversation_runtime_index"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "list_agent_conversation_workspace_publication_events",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::unified_chat_commands::list_agent_conversation_workspace_publication_events"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_bulk_workspace_publication_states",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::agent_sidebar_commands::get_bulk_workspace_publication_states"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "list_agent_models",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::agent_model_commands::list_agent_models"
     },
     {
       "argumentSensitive": false,
@@ -2458,6 +2572,7 @@
       "class": "agentControl",
       "command": "create_task_step",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::task_step_commands::create_task_step"
     },
     {
@@ -2468,6 +2583,7 @@
       "class": "agentControl",
       "command": "update_task_step",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::task_step_commands::update_task_step"
     },
     {
@@ -2478,6 +2594,7 @@
       "class": "agentControl",
       "command": "create_artifact",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::artifact_commands::create_artifact"
     },
     {
@@ -2488,6 +2605,7 @@
       "class": "agentControl",
       "command": "update_artifact",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::artifact_commands::update_artifact"
     },
     {
@@ -2498,6 +2616,7 @@
       "class": "agentControl",
       "command": "add_artifact_relation",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::artifact_commands::add_artifact_relation"
     },
     {
@@ -2508,6 +2627,7 @@
       "class": "agentControl",
       "command": "update_task_proposal",
       "pins": [],
+      "scopeConfined": false,
       "target": "crate::commands::ideation_commands::update_task_proposal"
     },
     {
@@ -2524,6 +2644,7 @@
           "value": "allow"
         }
       ],
+      "scopeConfined": false,
       "target": "crate::commands::permission_commands::resolve_permission_request"
     }
   ],
@@ -4152,14 +4273,12 @@
       "registered": false
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "list_agent_models",
       "module": "agent_model_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "built-in and custom model registry merge; propagates read errors",
+      "registered": true
     },
     {
       "capabilities": [
@@ -6315,6 +6434,30 @@
       "registered": true
     },
     {
+      "capabilities": [],
+      "class": "read",
+      "command": "get_remote_agent_conversation",
+      "module": "remote_transcript_commands",
+      "reason": "pure repository read of a conversation and its messages; no wake, no spawn; propagates read errors",
+      "registered": true
+    },
+    {
+      "capabilities": [],
+      "class": "read",
+      "command": "get_remote_agent_conversation_messages_page",
+      "module": "remote_transcript_commands",
+      "reason": "pure repository read of a message page; no wake, no spawn; propagates read errors",
+      "registered": true
+    },
+    {
+      "capabilities": [],
+      "class": "read",
+      "command": "get_remote_agent_conversation_timeline_page",
+      "module": "remote_transcript_commands",
+      "reason": "pure repository read of a timeline page; no wake, no spawn; propagates read errors",
+      "registered": true
+    },
+    {
       "capabilities": [
         "agentControl"
       ],
@@ -6503,14 +6646,12 @@
       "registered": false
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_bulk_workspace_publication_states",
       "module": "agent_sidebar_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "publication state enum and label per conversation; propagates read errors",
+      "registered": true
     },
     {
       "capabilities": [
@@ -6523,14 +6664,12 @@
       "registered": false
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_agent_conversation_summary",
       "module": "unified_chat_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "conversation metadata without messages; propagates read errors",
+      "registered": true
     },
     {
       "capabilities": [
@@ -6614,14 +6753,12 @@
       "registered": false
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "list_agent_conversation_workspace_publication_events",
       "module": "unified_chat_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "workspace publication event history; propagates read errors",
+      "registered": true
     },
     {
       "capabilities": [
@@ -6804,14 +6941,12 @@
       "registered": false
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_agent_conversation_runtime_index",
       "module": "unified_chat_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false
+      "reason": "runtime lifecycle index via the non-mutating direct_agent_running_state_for_context path; propagates read errors",
+      "registered": true
     },
     {
       "capabilities": [
@@ -7885,6 +8020,18 @@
     }
   ],
   "schemaVersion": 2,
+  "scope_confinements": [
+    {
+      "argument": "projectId",
+      "command": "pause_execution",
+      "reason": "null projectId sweeps every project via project_repo.get_all(); confines the task-transition sweep, NOT the global pause flag — discharged by require_explicit_project_scope"
+    },
+    {
+      "argument": "projectId",
+      "command": "stop_execution",
+      "reason": "null projectId sweeps every project via project_repo.get_all(); confines the task-transition sweep, NOT the global pause flag — discharged by require_explicit_project_scope"
+    }
+  ],
   "spawn_triggering_state_surface": [
     {
       "armedValue": "Ready",

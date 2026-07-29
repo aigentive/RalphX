@@ -9223,8 +9223,30 @@ pub async fn get_agent_conversation(
         );
     }
 
-    let conversation = service
-        .get_conversation_with_messages(&conversation_id)
+    get_agent_conversation_for_app_state(&state, conversation_id).await
+}
+
+/// The pure-read half of [`get_agent_conversation`].
+///
+/// Mechanically extracted so the remote facade has a transcript read that provably never
+/// reaches the agent-wake sink. Behaviour is unchanged for the local command above: the
+/// `AppChatService::get_conversation_with_messages` this replaces is itself a straight
+/// delegation to the same `chat_service_repository` free function, so no repository call,
+/// ordering, or error mapping differs.
+///
+/// Takes `&AppState` and nothing else — no `AppHandle`, no `ExecutionState`, no `ChatService`
+/// — which is what makes the absence of spawn/steer authority checkable by reading the
+/// signature. See `remote_transcript_commands`.
+pub async fn get_agent_conversation_for_app_state(
+    state: &AppState,
+    conversation_id: ChatConversationId,
+) -> Result<Option<AgentConversationWithMessagesResponse>, String> {
+    let conversation =
+        crate::application::chat_service::chat_service_repository::get_conversation_with_messages(
+            std::sync::Arc::clone(&state.chat_conversation_repo),
+            std::sync::Arc::clone(&state.chat_message_repo),
+            &conversation_id,
+        )
         .await
         .map_err(|e| e.to_string())?;
 
@@ -9272,8 +9294,7 @@ pub async fn get_agent_conversation(
     }
 
     Ok(Some(AgentConversationWithMessagesResponse {
-        conversation: agent_conversation_response_for_state(state.inner(), cwm.conversation)
-            .await?,
+        conversation: agent_conversation_response_for_state(state, cwm.conversation).await?,
         messages,
     }))
 }

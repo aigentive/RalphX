@@ -1165,6 +1165,19 @@ async fn p4_parity_for_the_batch3_execution_brakes() {
         [("pause_execution", "paused"), ("stop_execution", "stopped")]
     {
         let app = app_with_brake_state();
+
+        // Batch 4: the facade half of this row now needs a real project to name.
+        let parity_project = ralphx_domain::entities::Project::new(
+            "parity-fixture".to_string(),
+            "/tmp/parity-fixture".to_string(),
+        );
+        let parity_project_id = parity_project.id.clone();
+        app.state::<crate::application::AppState>()
+            .project_repo
+            .create(parity_project)
+            .await
+            .expect("fixture project is seeded");
+
         let execution_state =
             app.state::<std::sync::Arc<crate::commands::execution_commands::ExecutionState>>();
 
@@ -1208,11 +1221,15 @@ async fn p4_parity_for_the_batch3_execution_brakes() {
             "`{command}` must leave the runtime unable to start work"
         );
 
+        // Batch 4: the facade now requires an explicit project scope, so the parity row names
+        // one. The DIRECT call above still passes `None` — that asymmetry is the point of the
+        // predicate (local keeps the convenience arm, remote does not), and parity still holds
+        // because both reach the same global halt.
         let outcome = registry::dispatch(
             &app.handle().clone(),
             &[Scope::UiOperate],
             command,
-            &json!({"projectId": null}),
+            &json!({"projectId": parity_project_id.as_str()}),
         )
         .await
         .unwrap_or_else(|error| panic!("`{command}` must dispatch at ui:operate: {error:?}"));
@@ -1858,6 +1875,402 @@ async fn the_b2_stats_reads_are_refused_below_ui_read() {
         assert!(
             registry::find_spec(command).is_none(),
             "`{command}` fires at least one authority detector and must stay unregistered"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// Batch 4 — the brake-scope predicate
+//
+// Batch 3 registered `pause_execution`/`stop_execution` at `ui:operate` and flagged, in its own
+// review, the one row worth arguing about: both accept `projectId: null`, which reaches
+// `project_repo.get_all()` and halts EVERY project, and `ui:operate` is in the DEFAULT pairing.
+// The ruling was to confine it. A remote device must now name the project it halts.
+// ---------------------------------------------------------------------------------------
+
+/// The predicate itself, over every spelling that collapses to `None` at the target fn.
+///
+/// Explicit null, absent, empty, whitespace-only and wrong-typed all deserialize to
+/// `project_id: None` and reach the `project_repo.get_all()` arm, so all five must be refused
+/// identically. Accepting any one of them would leave the all-projects sweep reachable.
+#[test]
+fn the_brake_scope_predicate_refuses_every_spelling_of_an_absent_project() {
+    for args in [
+        json!({"projectId": null}),
+        json!({}),
+        json!({"projectId": ""}),
+        json!({"projectId": "   "}),
+        json!({"projectId": 17}),
+        json!({"projectId": ["a"]}),
+    ] {
+        registry::require_explicit_project_scope(&args).expect_err(&format!(
+            "{args} must be refused: it reaches the all-projects arm"
+        ));
+    }
+
+    // Positive, and in both accepted spellings — Tauri takes either for a flat param, so a
+    // client written against the local IPC contract must not break remotely.
+    registry::require_explicit_project_scope(&json!({"projectId": "p-1"}))
+        .expect("an explicit camelCase projectId is accepted");
+    registry::require_explicit_project_scope(&json!({"project_id": "p-1"}))
+        .expect("an explicit snake_case project_id is accepted");
+}
+
+/// Both brakes carry the predicate, and no OTHER registered command silently acquired one.
+#[test]
+fn the_brake_scope_predicate_is_wired_to_exactly_the_brakes() {
+    let carriers = registry::REMOTE_COMMANDS
+        .iter()
+        .filter(|spec| spec.validate.is_some())
+        .map(|spec| spec.name)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        carriers,
+        ["pause_execution", "stop_execution"].into_iter().collect(),
+        "the `validate:` carriers drifted; every one needs a SCOPE_CONFINEMENTS row"
+    );
+}
+
+/// The refusal above, checked for its code and — critically — for its EFFECT.
+///
+/// A predicate that returned the right error code but ran after the halt would be worthless.
+/// This asserts the runtime is still unpaused afterwards, so the refusal is proven to precede
+/// the side effect rather than merely accompany it.
+#[tokio::test]
+async fn the_refused_brake_never_reaches_the_halt() {
+    use tauri::Manager;
+
+    for command in ["pause_execution", "stop_execution"] {
+        for args in [json!({"projectId": null}), json!({})] {
+            let app = app_with_brake_state();
+            let execution_state =
+                app.state::<std::sync::Arc<crate::commands::execution_commands::ExecutionState>>();
+            assert!(
+                !execution_state.is_paused(),
+                "fixture must start unpaused or the assertion below is vacuous"
+            );
+
+            let error =
+                registry::dispatch(&app.handle().clone(), &[Scope::UiOperate], command, &args)
+                    .await
+                    .expect_err("an unscoped remote brake must be refused");
+
+            assert_eq!(
+                error.code,
+                ErrorCode::RemoteInvalidArguments,
+                "`{command}` with {args} must be an argument error, not an authorization one"
+            );
+            assert_eq!(
+                status_for_error_code(error.code),
+                StatusCode::BAD_REQUEST,
+                "the refusal is a 4xx the client can fix by resending, not a pairing signal"
+            );
+            assert_ne!(
+                error.code,
+                ErrorCode::RemoteForbidden,
+                "a sufficient grant must never be reported as insufficient"
+            );
+
+            // The whole point: the halt did not happen.
+            assert!(
+                !execution_state.is_paused(),
+                "`{command}` was refused but the runtime is paused — the predicate ran too late"
+            );
+        }
+    }
+}
+
+/// The positive direction: an explicit `projectId` still dispatches.
+///
+/// Without this the predicate could be satisfied by a function that refuses everything, and
+/// the brakes would be silently dead remotely.
+#[tokio::test]
+async fn a_remote_brake_with_an_explicit_project_scope_still_halts() {
+    use tauri::Manager;
+
+    for (command, expected_halt_mode) in
+        [("pause_execution", "paused"), ("stop_execution", "stopped")]
+    {
+        let app = app_with_brake_state();
+        let app_state = app.state::<crate::application::AppState>();
+
+        let project = ralphx_domain::entities::Project::new(
+            "brake-scope-fixture".to_string(),
+            "/tmp/brake-scope-fixture".to_string(),
+        );
+        let project_id = project.id.clone();
+        app_state
+            .project_repo
+            .create(project)
+            .await
+            .expect("fixture project is seeded");
+
+        let execution_state =
+            app.state::<std::sync::Arc<crate::commands::execution_commands::ExecutionState>>();
+        assert!(
+            !execution_state.is_paused(),
+            "fixture must start unpaused for the halt assertion to mean anything"
+        );
+
+        let outcome = registry::dispatch(
+            &app.handle().clone(),
+            &[Scope::UiOperate],
+            command,
+            &json!({"projectId": project_id.as_str()}),
+        )
+        .await
+        .unwrap_or_else(|error| {
+            panic!("`{command}` with an explicit projectId must dispatch: {error:?}")
+        });
+
+        let DispatchOutcome::Ok(value) = outcome else {
+            panic!("`{command}` with an explicit projectId must succeed, got {outcome:?}");
+        };
+        assert_eq!(
+            value["status"]["halt_mode"], expected_halt_mode,
+            "`{command}` must record its own halt mode"
+        );
+        assert!(
+            execution_state.is_paused(),
+            "`{command}` with an explicit projectId must actually halt"
+        );
+    }
+}
+
+/// The confinement's honest limit, pinned.
+///
+/// `require_explicit_project_scope` confines the per-task transition sweep. It does NOT confine
+/// `execution_state.pause()`, `persist_execution_halt_mode`, `stop_all()` or the interactive
+/// registry clear — those run in `execution_commands::lifecycle` before the project is resolved
+/// and are process-global. A reader who assumed "scoped brake" meant "only that project is
+/// affected" would be wrong, and a future change that quietly made the scoping weaker would not
+/// be caught by the positive tests above.
+///
+/// So this asserts the limit directly: halting project A leaves the GLOBAL flag set, which is
+/// simultaneously the proof that the confinement is partial and the reason the row is still
+/// only `ui:operate` rather than something weaker.
+#[tokio::test]
+async fn the_brake_scope_predicate_does_not_confine_the_global_pause_flag() {
+    use tauri::Manager;
+
+    let app = app_with_brake_state();
+    let app_state = app.state::<crate::application::AppState>();
+
+    let scoped =
+        ralphx_domain::entities::Project::new("scoped".to_string(), "/tmp/scoped".to_string());
+    let bystander = ralphx_domain::entities::Project::new(
+        "bystander".to_string(),
+        "/tmp/bystander".to_string(),
+    );
+    let scoped_id = scoped.id.clone();
+    app_state.project_repo.create(scoped).await.expect("seeded");
+    app_state
+        .project_repo
+        .create(bystander)
+        .await
+        .expect("seeded");
+
+    let execution_state =
+        app.state::<std::sync::Arc<crate::commands::execution_commands::ExecutionState>>();
+
+    registry::dispatch(
+        &app.handle().clone(),
+        &[Scope::UiOperate],
+        "pause_execution",
+        &json!({"projectId": scoped_id.as_str()}),
+    )
+    .await
+    .expect("a scoped brake dispatches");
+
+    assert!(
+        execution_state.is_paused(),
+        "the scheduler pause flag is PROCESS-GLOBAL: a project-scoped remote brake still halts \
+         host-wide scheduling. This is the documented limit of the confinement, not a bug — \
+         but it must never be described as a per-project halt."
+    );
+    assert!(
+        !execution_state.can_start_task(),
+        "the bystander project cannot start work either; the confinement is over the task \
+         transition sweep only"
+    );
+}
+
+// ---------------------------------------------------------------------------------------
+// Batch 4 — the spawn-free transcript reads (the PR 3.2 dependency)
+// ---------------------------------------------------------------------------------------
+
+const REMOTE_TRANSCRIPT_READS: [&str; 3] = [
+    "get_remote_agent_conversation",
+    "get_remote_agent_conversation_messages_page",
+    "get_remote_agent_conversation_timeline_page",
+];
+
+/// A conversation with real messages. Parity over an EMPTY transcript would be satisfied by a
+/// command that returns nothing at all, which is the vacuity batch 2 called out by name.
+async fn app_with_seeded_transcript() -> (
+    tauri::App<tauri::test::MockRuntime>,
+    ralphx_domain::entities::ChatConversationId,
+) {
+    use ralphx_domain::entities::{ChatConversation, ChatMessage, IdeationSessionId};
+    use tauri::Manager;
+
+    let app = tauri::test::mock_builder()
+        .manage(crate::application::AppState::new_test())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app should build");
+
+    let state = app.state::<crate::application::AppState>();
+    let session_id = IdeationSessionId::new();
+    let conversation = ChatConversation::new_ideation(session_id.clone());
+    let conversation_id = conversation.id.clone();
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("conversation seeded");
+
+    for content in ["first user turn", "second user turn"] {
+        let mut message = ChatMessage::user_in_session(session_id.clone(), content);
+        message.conversation_id = Some(conversation_id.clone());
+        state
+            .chat_message_repo
+            .create(message)
+            .await
+            .expect("message seeded");
+    }
+
+    (app, conversation_id)
+}
+
+/// P-4 parity: each remote transcript read is byte-identical to the local `*_for_app_state`
+/// seam the local command uses after its wake.
+///
+/// This is the assertion that makes the seam split honest. The split is only safe if the
+/// remote variant returns the SAME data as the local read; a "pure" read that quietly returns
+/// less would be a silent product regression that no detector would catch.
+#[tokio::test]
+async fn p4_parity_for_the_spawn_free_transcript_reads() {
+    use tauri::Manager;
+
+    let (app, conversation_id) = app_with_seeded_transcript().await;
+    let state = app.state::<crate::application::AppState>();
+
+    // Non-vacuity: the fixture really does carry messages, and the reads really do return them.
+    let direct_full = crate::commands::unified_chat_commands::get_agent_conversation_for_app_state(
+        &state,
+        conversation_id.clone(),
+    )
+    .await
+    .expect("direct full read succeeds")
+    .expect("the seeded conversation resolves");
+    assert_eq!(
+        direct_full.messages.len(),
+        2,
+        "the fixture must carry messages, or parity over it proves nothing"
+    );
+    assert_eq!(direct_full.messages[0].content, "first user turn");
+
+    let direct_page =
+        crate::commands::unified_chat_commands::get_agent_conversation_messages_page_for_app_state(
+            &state,
+            conversation_id.clone(),
+            40,
+            0,
+        )
+        .await
+        .expect("direct page read succeeds");
+    let direct_timeline =
+        crate::commands::unified_chat_commands::get_agent_conversation_timeline_page_for_app_state(
+            &state,
+            conversation_id.clone(),
+            40,
+            None,
+        )
+        .await
+        .expect("direct timeline read succeeds");
+
+    for (command, direct, args) in [
+        (
+            "get_remote_agent_conversation",
+            registry::serialize_ok(&Some(direct_full)).unwrap(),
+            json!({"conversationId": conversation_id.as_str()}),
+        ),
+        (
+            "get_remote_agent_conversation_messages_page",
+            registry::serialize_ok(&direct_page).unwrap(),
+            json!({"conversationId": conversation_id.as_str(), "limit": 40, "offset": 0}),
+        ),
+        (
+            "get_remote_agent_conversation_timeline_page",
+            registry::serialize_ok(&direct_timeline).unwrap(),
+            json!({"conversationId": conversation_id.as_str(), "limit": 40}),
+        ),
+    ] {
+        let dispatched =
+            registry::dispatch(&app.handle().clone(), &[Scope::UiRead], command, &args)
+                .await
+                .unwrap_or_else(|error| panic!("`{command}` must dispatch at ui:read: {error:?}"));
+        assert_eq!(
+            dispatched,
+            DispatchOutcome::Ok(direct),
+            "`{command}` remote dispatch must be byte-identical to the local seam"
+        );
+    }
+}
+
+/// Scope negatives — the transcript reads sit at `Read`, so every other grant is insufficient.
+#[tokio::test]
+async fn the_spawn_free_transcript_reads_are_refused_below_ui_read() {
+    let (app, conversation_id) = app_with_seeded_transcript().await;
+
+    for command in REMOTE_TRANSCRIPT_READS {
+        let spec = registry::find_spec(command)
+            .unwrap_or_else(|| panic!("`{command}` must be registered"));
+        assert_eq!(spec.class, RiskClass::Read);
+        assert!(
+            spec.capabilities.is_empty(),
+            "`{command}` is a pure read; a Read row with capabilities is a mislabel"
+        );
+
+        for insufficient in [
+            vec![],
+            vec![Scope::UiOperate],
+            vec![Scope::UiAgent],
+            vec![Scope::UiElevated],
+            vec![Scope::UiOperate, Scope::UiAgent, Scope::UiElevated],
+        ] {
+            let refused = registry::dispatch(
+                &app.handle().clone(),
+                &insufficient,
+                command,
+                &json!({"conversationId": conversation_id.as_str()}),
+            )
+            .await
+            .expect_err("a grant without ui:read must not reach the transcript");
+            assert_eq!(refused.code, ErrorCode::RemoteForbidden);
+        }
+    }
+}
+
+/// An unknown conversation is `null`, not an error, and NOT another conversation's transcript.
+#[tokio::test]
+async fn a_remote_transcript_read_of_an_unknown_conversation_returns_nothing() {
+    let (app, _seeded) = app_with_seeded_transcript().await;
+    let unknown = ralphx_domain::entities::ChatConversationId::new();
+
+    for command in REMOTE_TRANSCRIPT_READS {
+        let outcome = registry::dispatch(
+            &app.handle().clone(),
+            &[Scope::UiRead],
+            command,
+            &json!({"conversationId": unknown.as_str()}),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("`{command}` must dispatch: {error:?}"));
+        assert_eq!(
+            outcome,
+            DispatchOutcome::Ok(serde_json::Value::Null),
+            "`{command}` must not resolve an unknown conversation to someone else's transcript"
         );
     }
 }

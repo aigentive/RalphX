@@ -6,16 +6,16 @@
     "invokedCommands": 499,
     "dynamicExpressions": 0,
     "seamBypasses": 0,
-    "unclassified": 424,
-    "line": "PASS: remote transport drift — 499 invoke command name(s), 0 dynamic, 0 seam bypasses; 424 unclassified (baseline, → 0 in PR 3.1)."
+    "unclassified": 419,
+    "line": "PASS: remote transport drift — 499 invoke command name(s), 0 dynamic, 0 seam bypasses; 419 unclassified (baseline, → 0 in PR 3.1)."
   },
   "totals": {
     "invokedCommandNames": 499,
-    "remoteRegistered": 47,
+    "remoteRegistered": 55,
     "localOnlyRows": 29,
-    "ledgerRows": 541,
-    "unclassified": 424,
-    "assignedToBatches": 424,
+    "ledgerRows": 544,
+    "unclassified": 419,
+    "assignedToBatches": 419,
     "batches": 14
   },
   "dispositionModel": {
@@ -41,7 +41,7 @@
     }
   },
   "dispositionTotals": {
-    "registerCandidate": 262,
+    "registerCandidate": 257,
     "v1DeferredElevated": 26,
     "hostDeniedSpawn": 49,
     "hostDeniedClass": 87
@@ -177,7 +177,7 @@
         "DONE (PR 3.1-b batch 3): `conversation_stats_commands` — all four usage-aggregate reads registered at `ui:read`, so the module no longer appears in this batch's module list. Batch 3's `probe_b2_module_batch_audit` also published detector output for every remaining B2 member; start from it rather than re-deriving. Its headline finding: `get_agent_conversation`, `get_agent_conversation_messages_page` and `get_agent_conversation_timeline_page` — the three transcript reads PR 3.2 needs — all fire detector (a), so they are NOT free reads and need their own hand-trace."
       ],
       "gate": "P-17 green; C-9 dual-lens review recorded; the five 2.6-surfaced ops resolve per this census's `resolvedItems.unregisteredUiAgentOps`.",
-      "commandCount": 52,
+      "commandCount": 47,
       "modules": [
         "agent_composer_commands",
         "agent_model_commands",
@@ -186,10 +186,10 @@
         "unified_chat_commands"
       ],
       "dispositionCounts": {
-        "registerCandidate": 47,
+        "registerCandidate": 42,
         "hostDeniedClass": 5
       },
-      "registerCandidates": 47,
+      "registerCandidates": 42,
       "nonRegistering": 5,
       "commandsByModule": {
         "agent_composer_commands": [
@@ -199,11 +199,9 @@
         ],
         "agent_model_commands": [
           "delete_custom_agent_model",
-          "list_agent_models",
           "upsert_custom_agent_model"
         ],
         "agent_sidebar_commands": [
-          "get_bulk_workspace_publication_states",
           "list_agent_sidebar_conversations"
         ],
         "conversation_folder_reference_commands": [
@@ -221,9 +219,7 @@
           "fork_agent_conversation",
           "get_agent_conversation",
           "get_agent_conversation_messages_page",
-          "get_agent_conversation_runtime_index",
           "get_agent_conversation_runtime_statuses",
-          "get_agent_conversation_summary",
           "get_agent_conversation_timeline_page",
           "get_agent_conversation_workspace",
           "get_agent_conversation_workspace_freshness",
@@ -234,7 +230,6 @@
           "get_queued_agent_messages",
           "is_agent_running",
           "is_chat_service_available",
-          "list_agent_conversation_workspace_publication_events",
           "list_agent_conversation_workspaces_by_project",
           "list_agent_conversations",
           "list_agent_conversations_page",
@@ -267,9 +262,7 @@
         "fork_agent_conversation",
         "get_agent_conversation",
         "get_agent_conversation_messages_page",
-        "get_agent_conversation_runtime_index",
         "get_agent_conversation_runtime_statuses",
-        "get_agent_conversation_summary",
         "get_agent_conversation_timeline_page",
         "get_agent_conversation_workspace",
         "get_agent_conversation_workspace_freshness",
@@ -277,16 +270,13 @@
         "get_agent_run_status_unified",
         "get_agent_running_states",
         "get_agent_timeline_item_tool_call_detail",
-        "get_bulk_workspace_publication_states",
         "get_queued_agent_messages",
         "is_agent_running",
         "is_chat_service_available",
         "list_agent_composer_skills",
-        "list_agent_conversation_workspace_publication_events",
         "list_agent_conversation_workspaces_by_project",
         "list_agent_conversations",
         "list_agent_conversations_page",
-        "list_agent_models",
         "list_agent_sidebar_conversations",
         "list_conversation_folder_references",
         "precompute_agent_conversation_workspace_pr_description",
@@ -2355,29 +2345,7 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "get_agent_conversation_runtime_index",
-      "batch": "B2",
-      "module": "unified_chat_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
       "command": "get_agent_conversation_runtime_statuses",
-      "batch": "B2",
-      "module": "unified_chat_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_agent_conversation_summary",
       "batch": "B2",
       "module": "unified_chat_commands",
       "ledgerClass": "agentControl",
@@ -2886,17 +2854,6 @@
       "command": "get_builtin_workflows",
       "batch": "B4",
       "module": "workflow_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_bulk_workspace_publication_states",
-      "batch": "B2",
-      "module": "agent_sidebar_commands",
       "ledgerClass": "agentControl",
       "capabilities": [
         "agentControl"
@@ -4005,17 +3962,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "list_agent_conversation_workspace_publication_events",
-      "batch": "B2",
-      "module": "unified_chat_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
       "command": "list_agent_conversation_workspaces_by_project",
       "batch": "B2",
       "module": "unified_chat_commands",
@@ -4041,17 +3987,6 @@
       "command": "list_agent_conversations_page",
       "batch": "B2",
       "module": "unified_chat_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "list_agent_models",
-      "batch": "B2",
-      "module": "agent_model_commands",
       "ledgerClass": "agentControl",
       "capabilities": [
         "agentControl"

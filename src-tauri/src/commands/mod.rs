@@ -78,6 +78,7 @@ pub mod question_commands;
 mod question_commands_tests;
 pub mod registry;
 pub mod remote_chat_commands;
+pub mod remote_transcript_commands;
 #[cfg(test)]
 mod remote_chat_commands_tests;
 pub mod release_notes_commands;

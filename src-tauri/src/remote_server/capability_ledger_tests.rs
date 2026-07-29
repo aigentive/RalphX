@@ -10,7 +10,7 @@ use super::authority_audit::{
 };
 use super::capability_ledger::{
     policy_for, AUTHORITY_REDUCING_EXEMPTIONS, COMMAND_OVERRIDES, CONDITIONAL_CAPABILITIES,
-    DECLARED_MEMBERSHIPS, MODULE_DEFAULTS,
+    DECLARED_MEMBERSHIPS, MODULE_DEFAULTS, SCOPE_CONFINEMENTS,
 };
 use super::registry::{find_spec, REMOTE_COMMANDS};
 
@@ -450,6 +450,10 @@ fn generated_manifest() -> serde_json::Value {
                 "class": spec.class,
                 "capabilities": spec.capabilities,
                 "argumentSensitive": spec.authz.is_some(),
+                // A registered command can also refuse a well-scoped device for an argument
+                // reason. Published for the same reason `pins` is: a refusal reachable on the
+                // wire must be discoverable from the manifest, not only from the source.
+                "scopeConfined": spec.validate.is_some(),
                 "pins": spec.pins.iter().map(|pin| serde_json::json!({
                     "param": pin.param,
                     "field": pin.field,
@@ -469,11 +473,23 @@ fn generated_manifest() -> serde_json::Value {
         })
         .collect::<Vec<_>>();
 
+    let scope_confinements = SCOPE_CONFINEMENTS
+        .iter()
+        .map(|entry| {
+            serde_json::json!({
+                "command": entry.command,
+                "argument": entry.argument,
+                "reason": entry.reason,
+            })
+        })
+        .collect::<Vec<_>>();
+
     serde_json::json!({
         "schemaVersion": 2,
         "background_loop_inventory": background_loop_inventory,
         "facade_ops": facade_ops,
         "conditional_capabilities": conditional_capabilities,
+        "scope_confinements": scope_confinements,
         "spawn_triggering_state_surface": spawn_triggering_state_surface,
         "agent_consumed_content_surface": {
             "reads": agent_content_reads(),
@@ -849,7 +865,10 @@ fn detector_b_is_calibrated_and_floor_enforced() {
     let rows = census();
     assert_eq!(
         rows.len(),
-        541,
+        // 541 -> 544: batch 4's three spawn-free transcript reads. Bumped because commands were
+        // ADDED to the census, not because the detector changed; all three are detector-silent
+        // by construction and `remote_transcript_reads_never_reach_the_wake` proves it.
+        544,
         "review the detector against the full command census"
     );
     let flagged = spawn_triggering_writers(
@@ -2595,4 +2614,434 @@ fn b2_stats_reclassifications_are_reviewed_rather_than_module_defaults() {
         .find(|entry| entry.module == "unified_chat_commands")
         .expect("module has a default");
     assert_eq!(chat_default.policy.class, RiskClass::AgentControl);
+}
+
+/// Diagnostic: shortest call path from a command root to each ARMING sink hit.
+///
+/// Detector (a) reports only a boolean. For the PR 3.2 transcript reads the question is not
+/// *whether* they arm but *where* the arming edge enters, so this walks the same graph the
+/// detector walks and prints the path.
+#[test]
+#[ignore = "diagnostic probe"]
+fn probe_transcript_read_arming_paths() {
+    use super::authority_audit::{verdict_for, HitVerdict};
+    use std::collections::VecDeque;
+
+    let graph = CallGraph::build(&load_production_sources());
+    let sinks: BTreeSet<String> = TRANSITION_SINKS
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect::<BTreeSet<_>>();
+
+    for command in [
+        "get_agent_conversation",
+        "get_agent_conversation_messages_page",
+        "get_agent_conversation_timeline_page",
+        "get_agent_conversation_summary", // negative calibration: detector-silent sibling
+        // The pure-read seams the split registers.
+        "get_agent_conversation_messages_page_for_app_state",
+        "get_agent_conversation_timeline_page_for_app_state",
+        "get_conversation_with_messages",
+        "wake_agent_workspace_for_bridge_events",
+    ] {
+        eprintln!("\n===== {command} =====");
+        let roots = graph.roots_named(command);
+        eprintln!("roots: {roots:?}");
+
+        // BFS with parent tracking, mirroring `CallGraph::closure`'s cut behaviour.
+        let mut parent: BTreeMap<String, String> = BTreeMap::new();
+        let mut visited: BTreeSet<String> = BTreeSet::new();
+        let mut queue: VecDeque<String> = roots.iter().cloned().collect();
+        for r in &roots {
+            visited.insert(r.clone());
+        }
+        let mut arming_nodes: Vec<(String, String)> = Vec::new();
+        while let Some(name) = queue.pop_front() {
+            let Some(node) = graph.nodes.get(&name) else {
+                continue;
+            };
+            for hit in &node.sink_hits {
+                if verdict_for(hit) == HitVerdict::Arming {
+                    arming_nodes.push((name.clone(), format!("{}{:?}", hit.sink, hit.targets)));
+                }
+            }
+            for callee in &node.callees {
+                if sinks.contains(callee.as_str()) || visited.contains(callee) {
+                    continue;
+                }
+                visited.insert(callee.clone());
+                parent.insert(callee.clone(), name.clone());
+                queue.push_back(callee.clone());
+            }
+        }
+
+        if arming_nodes.is_empty() {
+            eprintln!("  NO ARMING HITS");
+        }
+        for (node, hit) in &arming_nodes {
+            let mut path = vec![node.clone()];
+            let mut cur = node.clone();
+            while let Some(p) = parent.get(&cur) {
+                path.push(p.clone());
+                cur = p.clone();
+            }
+            path.reverse();
+            eprintln!("  ARMING sink={hit}\n    path: {}", path.join(" -> "));
+        }
+    }
+}
+
+/// The scope-confinement annotation and its predicate are inseparable (batch 4).
+///
+/// Mirrors `conditional_capabilities_are_discharged_by_a_live_predicate`. Asserted in BOTH
+/// directions so neither half can be dropped alone:
+///
+/// * annotation → predicate: every `SCOPE_CONFINEMENTS` row is registered and carries a
+///   `validate:` predicate. An annotation over a command with no predicate is a comment.
+/// * predicate → annotation: every registered spec carrying a `validate:` predicate has a
+///   `SCOPE_CONFINEMENTS` row. A predicate with no annotation is an undocumented refusal that
+///   a client author cannot discover.
+#[test]
+fn scope_confinements_are_enforced_by_a_live_predicate() {
+    for entry in SCOPE_CONFINEMENTS {
+        let spec = find_spec(entry.command).unwrap_or_else(|| {
+            panic!(
+                "`{}` is annotated scope-confined but is not registered; \
+                 an annotation on an unreachable command proves nothing",
+                entry.command
+            )
+        });
+        assert!(
+            spec.validate.is_some(),
+            "`{}` is annotated scope-confined but has no `validate:` predicate — the annotation \
+             would be the only thing standing between a default-paired device and the \
+             all-projects sweep",
+            entry.command
+        );
+        // The reason must record the limit, not just the win. A confinement described as
+        // total when it is partial is the false-success shape this ledger exists to prevent.
+        assert!(
+            entry.reason.contains("NOT"),
+            "`{}`'s reason must state what the confinement does NOT cover",
+            entry.command
+        );
+    }
+
+    let annotated = SCOPE_CONFINEMENTS
+        .iter()
+        .map(|entry| entry.command)
+        .collect::<BTreeSet<_>>();
+    for spec in REMOTE_COMMANDS
+        .iter()
+        .filter(|spec| spec.validate.is_some())
+    {
+        assert!(
+            annotated.contains(spec.name),
+            "`{}` carries a `validate:` predicate with no SCOPE_CONFINEMENTS row; a silent \
+             refusal is undiscoverable to a client author",
+            spec.name
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// Batch 4 — the transcript-read seam split (the PR 3.2 dependency)
+// ---------------------------------------------------------------------------------------
+
+const REMOTE_TRANSCRIPT_READS: &[&str] = &[
+    "get_remote_agent_conversation",
+    "get_remote_agent_conversation_messages_page",
+    "get_remote_agent_conversation_timeline_page",
+];
+
+const LOCAL_TRANSCRIPT_READS: &[&str] = &[
+    "get_agent_conversation",
+    "get_agent_conversation_messages_page",
+    "get_agent_conversation_timeline_page",
+];
+
+/// The split is real: the registered reads reach no arming sink, and the local ones still do.
+///
+/// Both halves matter. Without the second, this test would keep passing if the wake were
+/// removed from the local commands entirely — a much larger behavioural change — and the
+/// "split" would be proving nothing about a split. The local commands are the CALIBRATION:
+/// they establish that the detector still fires on this exact code shape, so the registered
+/// variants' silence is a property of the seam and not of a detector that stopped working.
+#[test]
+fn remote_transcript_reads_never_reach_the_wake() {
+    let graph = CallGraph::build(&load_production_sources());
+
+    for command in REMOTE_TRANSCRIPT_READS {
+        let closure = graph.closure([(*command).to_string()]);
+        assert!(
+            !closure.visited.is_empty(),
+            "`{command}` resolved to an empty closure; the graph did not find its body and \
+             this assertion would be vacuous"
+        );
+        assert!(
+            !closure_is_arming(&closure),
+            "`{command}` reaches an arming sink; the spawn-free seam has been broken"
+        );
+        assert!(
+            !tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS),
+            "`{command}` reaches a process-launch sink"
+        );
+        assert!(
+            !tokens_reach_any(&closure.tokens, TRANSITION_SINKS),
+            "`{command}` reaches a transition sink"
+        );
+        // The wake is the specific edge this split removes; name it, so a future re-introduction
+        // fails with the reason rather than with a generic detector message.
+        assert!(
+            !closure
+                .visited
+                .iter()
+                .any(|node| node.contains("wake_agent_workspace_for_bridge_events")),
+            "`{command}` reaches `wake_agent_workspace_for_bridge_events`; the whole point of \
+             this module is that it cannot"
+        );
+    }
+
+    for command in LOCAL_TRANSCRIPT_READS {
+        let closure = graph.closure([(*command).to_string()]);
+        assert!(
+            closure_is_arming(&closure),
+            "`{command}` no longer arms. If the wake was deliberately removed from the local \
+             read, delete the seam split instead of keeping a module that justifies itself by \
+             a hazard that no longer exists."
+        );
+    }
+}
+
+/// The local transcript reads stay unregistered, asserted rather than merely omitted.
+#[test]
+fn the_local_transcript_reads_stay_unregistered() {
+    for command in LOCAL_TRANSCRIPT_READS {
+        assert!(
+            find_spec(command).is_none(),
+            "`{command}` reaches the agent-wake steer sink and must not be remotely reachable; \
+             the registered answer is its `get_remote_*` twin"
+        );
+    }
+
+    // The un-truncated tool-payload escape hatches are deliberately NOT part of this batch:
+    // they return raw tool arguments and results (file contents, command output) and their
+    // reconciliation crosses the conversation boundary. Pinned so a later batch has to argue
+    // for them explicitly.
+    for command in [
+        "get_agent_message_tool_call_detail",
+        "get_agent_timeline_item_tool_call_detail",
+    ] {
+        assert!(
+            find_spec(command).is_none(),
+            "`{command}` returns un-truncated tool payloads and must stay unregistered"
+        );
+    }
+}
+
+/// The registered reads are reviewed `Read` rows, not module-default inheritance.
+#[test]
+fn the_remote_transcript_reads_are_reviewed_read_rows() {
+    let rows = census().into_iter().collect::<BTreeMap<_, _>>();
+
+    for command in REMOTE_TRANSCRIPT_READS {
+        let module = rows
+            .get(*command)
+            .unwrap_or_else(|| panic!("`{command}` must be a live Tauri command"));
+        assert_eq!(module, "remote_transcript_commands");
+        let row = policy_for(command, module).expect("ledgered");
+        assert_eq!(row.class, RiskClass::Read);
+        assert!(
+            row.capabilities.is_empty(),
+            "`{command}` is a pure read; a Read row with capabilities is a mislabel"
+        );
+        assert!(
+            !row.reason.contains("conservative-module-default"),
+            "`{command}` still carries the module-default reason; it was not reviewed"
+        );
+        assert!(
+            row.reason.contains("propagates read errors"),
+            "`{command}` must record that its reads fail closed"
+        );
+        assert!(
+            row.reason.contains("no wake"),
+            "`{command}`'s reason must record the property the seam exists to guarantee"
+        );
+        assert!(find_spec(command).is_some());
+    }
+
+    // The module default stays conservative: these three are EXCEPTIONS to it.
+    let default = MODULE_DEFAULTS
+        .iter()
+        .find(|entry| entry.module == "remote_transcript_commands")
+        .expect("module has a default");
+    assert_eq!(default.policy.class, RiskClass::AgentControl);
+
+    // `unified_chat_commands`, which owns the local twins, is untouched.
+    let chat_default = MODULE_DEFAULTS
+        .iter()
+        .find(|entry| entry.module == "unified_chat_commands")
+        .expect("module has a default");
+    assert_eq!(chat_default.policy.class, RiskClass::AgentControl);
+}
+
+// ---------------------------------------------------------------------------------------
+// Batch 4 — the B2 detector-silent getters
+// ---------------------------------------------------------------------------------------
+
+const B2_REGISTERED_GETTERS: &[&str] = &[
+    "get_agent_conversation_summary",
+    "get_agent_conversation_runtime_index",
+    "list_agent_conversation_workspace_publication_events",
+    "get_bulk_workspace_publication_states",
+    "list_agent_models",
+];
+
+/// The five registered getters are reviewed `Read` rows, not module-default inheritance.
+#[test]
+fn the_b2_getters_are_reviewed_read_rows() {
+    let rows = census().into_iter().collect::<BTreeMap<_, _>>();
+
+    for command in B2_REGISTERED_GETTERS {
+        let module = rows
+            .get(*command)
+            .unwrap_or_else(|| panic!("`{command}` must be a live Tauri command"));
+        let row = policy_for(command, module).expect("ledgered");
+        assert_eq!(row.class, RiskClass::Read, "`{command}`");
+        assert!(
+            row.capabilities.is_empty(),
+            "`{command}` is a pure read; a Read row with capabilities is a mislabel"
+        );
+        assert!(
+            !row.reason.contains("conservative-module-default"),
+            "`{command}` still carries the module-default reason; it was not reviewed"
+        );
+        // The shared structural claim of the whole cluster.
+        assert!(
+            row.reason.contains("propagates read errors"),
+            "`{command}` must record that its reads fail closed"
+        );
+        assert!(
+            find_spec(command).is_some(),
+            "`{command}` must be registered"
+        );
+    }
+
+    // Every module the five come from keeps its conservative default; these are EXCEPTIONS.
+    for module in [
+        "unified_chat_commands",
+        "agent_sidebar_commands",
+        "agent_model_commands",
+    ] {
+        let default = MODULE_DEFAULTS
+            .iter()
+            .find(|entry| entry.module == module)
+            .unwrap_or_else(|| panic!("`{module}` has a default"));
+        assert_eq!(
+            default.policy.class,
+            RiskClass::AgentControl,
+            "`{module}`'s default weakened; its members were registered as exceptions to it"
+        );
+    }
+}
+
+/// The twelve candidates that were NOT registered, with their reasons pinned by class.
+///
+/// Absence alone is not evidence of review — an unregistered command looks identical whether
+/// it was audited and refused or simply never examined. Each group below asserts the specific
+/// property that disqualified it, so a future change that removes the hazard fails this test
+/// and forces the command back through review rather than letting the refusal go stale.
+#[test]
+fn the_b2_getter_refusals_are_pinned() {
+    for command in [
+        // Fail-open: swallows a repository/filesystem error into an empty-but-successful
+        // result. `get_agent_running_states` returns `HashMap`, not `Result`, so a failed
+        // registry list is reported to the client as "nothing is running" — the false-success
+        // shape this ledger exists to prevent.
+        "get_agent_running_states",
+        "get_agent_conversation_runtime_statuses",
+        "list_agent_composer_skills",
+        "search_agent_composer_plan_references",
+        // In-memory registry WRITE from a nominally read-only command.
+        "is_agent_running",
+        // Raw un-truncated content: pending prompt text, or full tool arguments/results.
+        "get_queued_agent_messages",
+        "get_agent_message_tool_call_detail",
+        "get_agent_timeline_item_tool_call_detail",
+        // Host path disclosure: returns absolute directories from the operator's machine.
+        "list_conversation_folder_references",
+        // Fail-open on enrichment: model fields go silently null when the lookup errors, so
+        // the cluster's "propagates read errors" invariant does not hold.
+        "get_agent_run_status_unified",
+        // Deferred, NOT refused: both take `tauri::AppHandle`, the spawn-authority carrier.
+        // They are detector-silent and otherwise clean, and they want the same seam split the
+        // transcript reads got rather than a registration of the carrier itself.
+        "list_agent_conversations",
+        "list_agent_conversations_page",
+    ] {
+        assert!(
+            find_spec(command).is_none(),
+            "`{command}` was audited and refused/deferred in batch 4; registering it needs a \
+             new argument, not a quiet re-add"
+        );
+    }
+
+    // The registry-writing pair must keep reaching the cleanup path. If a future change makes
+    // them genuinely read-only, this fails and the refusal returns to review instead of
+    // persisting as folklore.
+    //
+    // Asserted over SOURCE rather than the call graph, and that is itself the finding: the
+    // command bodies call `service.is_agent_running(..)` through the `ChatService` trait, and
+    // the graph does not resolve trait dispatch. The write is two levels below a body that
+    // reads as a pure delegation, which is precisely why every detector was silent on these
+    // and why the hand-trace — not the probe — is what disqualified them.
+    let chat_service = load_production_sources()
+        .into_iter()
+        .find(|(file, _)| file == "application/chat_service/mod.rs")
+        .map(|(_, source)| source)
+        .expect("chat_service source is loaded");
+
+    for caller in ["\"is_agent_running\"", "\"get_agent_running_states\""] {
+        assert!(
+            chat_service.contains(caller),
+            "`AppChatService` no longer passes {caller} as a registry-cleanup source; the \
+             stated reason these are unregistered has changed — re-audit rather than leaving \
+             a stale refusal."
+        );
+    }
+    assert!(
+        chat_service.contains("cleanup_stale_registry_block")
+            && chat_service.contains("cleanup_inactive_registry_block")
+            && chat_service.contains("RegistryCleanupCaller::ReadOnly"),
+        "the read-only registry-cleanup path is gone; re-audit `is_agent_running` and \
+         `get_agent_running_states`"
+    );
+
+    // Honesty about the strength of this refusal, recorded where it cannot be lost: the
+    // cleanup is liveness-GUARDED. `registry_entry_blocks_send_but_is_stale` requires
+    // `!is_process_alive(pid)`, and the `ReadOnly` arm of
+    // `registry_entry_blocks_send_because_run_inactive` bails out when the process is alive.
+    // So the write reaps a dead entry; it cannot evict a live agent's concurrency gate. These
+    // two are refused on the judgement that a `Read` row must not write at all, NOT on a
+    // proven hazard — and the guard is pinned so a future change that REMOVES it makes this
+    // a genuine hazard loudly rather than quietly.
+    assert!(
+        chat_service.contains("!is_process_alive(info.pid)"),
+        "the staleness guard on read-only registry cleanup is gone; the refusal of \
+         `is_agent_running` was based on a GUARDED reap, and an unguarded one is a much \
+         stronger hazard that needs its own review"
+    );
+
+    // Calibration: a registered sibling from the SAME module is not implicated, so the
+    // criterion above discriminates rather than matching all of `unified_chat_commands`.
+    let graph = CallGraph::build(&load_production_sources());
+    let clean = graph.closure(["get_agent_conversation_summary".to_string()]);
+    assert!(
+        !clean.visited.is_empty(),
+        "calibration closure is empty and proves nothing"
+    );
+    assert!(
+        !closure_is_arming(&clean),
+        "`get_agent_conversation_summary` arms; it should not have been registered"
+    );
 }
