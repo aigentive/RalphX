@@ -49,8 +49,7 @@ impl WebhookService {
         let project_ids_json = serde_json::to_string(&effective_project_ids)
             .map_err(|e| AppError::Infrastructure(e.to_string()))?;
 
-        let event_types_json = event_types
-            .map(|ev| serde_json::to_string(&ev).unwrap_or_default());
+        let event_types_json = event_types.map(|ev| serde_json::to_string(&ev).unwrap_or_default());
 
         // Generate new id and secret (used only if this is a new registration)
         let new_id = uuid::Uuid::new_v4().to_string();

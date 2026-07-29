@@ -103,6 +103,8 @@ timeouts:
     max_wall_clock_secs: 1800 # Env: RALPHX_STREAM_MAX_WALL_CLOCK_SECS
     # chat_service_handlers.rs — slack for agent run start recorded before execution status history
     execution_attempt_start_tolerance_secs: 1 # Env: RALPHX_STREAM_EXECUTION_ATTEMPT_START_TOLERANCE_SECS
+    # process exit → stream drain/finalizer grace before a dead-PID registry entry is pruned
+    completion_grace_secs: 60 # Env: RALPHX_STREAM_COMPLETION_GRACE_SECS
     # running-agent launch reservation — renewed during pre-spawn preparation; expired reservations are pruned centrally
     launch_reservation_lease_secs: 30 # Env: RALPHX_STREAM_LAUNCH_RESERVATION_LEASE_SECS
     # notification_service.rs — batch eligible desktop notifications before delivery

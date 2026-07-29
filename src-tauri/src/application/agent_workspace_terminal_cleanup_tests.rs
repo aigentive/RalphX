@@ -1114,6 +1114,10 @@ impl AgentRunRepository for ControlledAgentRunRepo {
         Ok(())
     }
 
+    async fn complete_if_prune_cancelled(&self, _id: &AgentRunId) -> AppResult<bool> {
+        Ok(false)
+    }
+
     async fn fail(&self, _id: &AgentRunId, _error_message: &str) -> AppResult<()> {
         self.fail_result
             .lock()
@@ -1123,6 +1127,10 @@ impl AgentRunRepository for ControlledAgentRunRepo {
     }
 
     async fn cancel(&self, _id: &AgentRunId) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn cancel_with_reason(&self, _id: &AgentRunId, _reason: &str) -> AppResult<()> {
         Ok(())
     }
 

@@ -61,4 +61,27 @@ test.describe("Agents terminal publish history", () => {
       },
     );
   });
+
+  test("durable repair operation renders one live status action", async ({ page }) => {
+    await dismissProviderCliUpdateToasts(page);
+    const publish = new AgentsPublishPage(page);
+    await publish.openMaintenanceRepairScenario();
+
+    const actionbar = page.getByTestId("agents-publish-actionbar");
+    await expect(
+      actionbar.getByRole("heading", { name: "Repairing workspace" }),
+    ).toBeVisible();
+    await expect(actionbar.getByRole("status")).toContainText(
+      "Will continue automatically.",
+    );
+    const operation = actionbar.getByTestId("agents-publish-maintenance-active");
+    await expect(operation).toBeDisabled();
+    await expect(actionbar.getByTestId("agents-publish-confirm")).toHaveCount(0);
+    await expect(publish.prSupervisionStatus).toHaveCount(0);
+
+    await expect(actionbar).toHaveScreenshot(
+      "agents-publish-maintenance-repairing-strip.png",
+      { maxDiffPixelRatio: 0.01 },
+    );
+  });
 });

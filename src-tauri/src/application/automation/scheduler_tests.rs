@@ -65,7 +65,7 @@ use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, ArtifactRepository,
     AutomationConfigPatch, AutomationRepository, AutomationRunRepository, AutomationSettingsPatch,
     ChatConversationRepository, IdeationSessionRepository, PlanApprovalActor, PlanArtifactApproval,
-    PlanArtifactApprovalRepository,
+    PlanArtifactApprovalRepository, PRUNED_STALE_AGENT_RUN,
 };
 use crate::domain::services::github_service::{PrHealth, PrMergeableState, PrStatus, PrSyncState};
 use crate::domain::services::GithubServiceTrait;
@@ -406,6 +406,12 @@ impl AgentRunRepository for FailingLatestAgentRunRepository {
         ))
     }
 
+    async fn complete_if_prune_cancelled(&self, _id: &AgentRunId) -> AppResult<bool> {
+        Err(AppError::Infrastructure(
+            "agent run repository unavailable".to_string(),
+        ))
+    }
+
     async fn fail(&self, _id: &AgentRunId, _error_message: &str) -> AppResult<()> {
         Err(AppError::Infrastructure(
             "agent run repository unavailable".to_string(),
@@ -413,6 +419,12 @@ impl AgentRunRepository for FailingLatestAgentRunRepository {
     }
 
     async fn cancel(&self, _id: &AgentRunId) -> AppResult<()> {
+        Err(AppError::Infrastructure(
+            "agent run repository unavailable".to_string(),
+        ))
+    }
+
+    async fn cancel_with_reason(&self, _id: &AgentRunId, _reason: &str) -> AppResult<()> {
         Err(AppError::Infrastructure(
             "agent run repository unavailable".to_string(),
         ))
@@ -1309,12 +1321,20 @@ impl ParkedPlanGateScenario {
         conversation_id
     }
 
-    async fn seed_current_ideation_agent_run(&self, status: AgentRunStatus) {
+    async fn seed_current_ideation_agent_run_with_error(
+        &self,
+        status: AgentRunStatus,
+        error_message: Option<&str>,
+    ) {
         let conversation_id = self.seed_ideation_conversation().await;
-        self.agent_run_repo
-            .create(agent_run_with_status(conversation_id, status))
-            .await
-            .unwrap();
+        let mut agent_run = agent_run_with_status(conversation_id, status);
+        agent_run.error_message = error_message.map(str::to_string);
+        self.agent_run_repo.create(agent_run).await.unwrap();
+    }
+
+    async fn seed_current_ideation_agent_run(&self, status: AgentRunStatus) {
+        self.seed_current_ideation_agent_run_with_error(status, None)
+            .await;
     }
 
     async fn make_current_run_started_at(&self, started_at: chrono::DateTime<Utc>) {
@@ -1623,14 +1643,33 @@ async fn prepare_edit_phase(scenario: &ParkedPlanGateScenario) -> chrono::DateTi
     phase_started_at
 }
 
-async fn seed_restart_orphan(scenario: &ParkedPlanGateScenario, started_at: chrono::DateTime<Utc>) {
+async fn seed_system_cancelled_run(
+    scenario: &ParkedPlanGateScenario,
+    started_at: chrono::DateTime<Utc>,
+    reason: &str,
+) {
     let mut orphan =
         agent_run_with_status(scenario.conversation_id.clone(), AgentRunStatus::Cancelled);
     orphan.started_at = started_at;
     orphan.completed_at = Some(started_at);
-    orphan.error_message =
-        Some(crate::domain::repositories::ORPHANED_AGENT_RUN_ON_APP_RESTART.to_string());
+    orphan.error_message = Some(reason.to_string());
     scenario.agent_run_repo.create(orphan).await.unwrap();
+}
+
+async fn seed_restart_orphan(scenario: &ParkedPlanGateScenario, started_at: chrono::DateTime<Utc>) {
+    seed_system_cancelled_run(
+        scenario,
+        started_at,
+        crate::domain::repositories::ORPHANED_AGENT_RUN_ON_APP_RESTART,
+    )
+    .await;
+}
+
+async fn seed_prune_cancelled_run(
+    scenario: &ParkedPlanGateScenario,
+    started_at: chrono::DateTime<Utc>,
+) {
+    seed_system_cancelled_run(scenario, started_at, PRUNED_STALE_AGENT_RUN).await;
 }
 
 fn agent_run_with_status(conversation_id: ChatConversationId, status: AgentRunStatus) -> AgentRun {
@@ -3734,6 +3773,40 @@ async fn automation_scheduler_redelivers_restart_orphaned_plan_run_at_zero_remin
 }
 
 #[tokio::test]
+async fn automation_scheduler_redelivers_prune_cancelled_plan_run() {
+    let scenario =
+        ParkedPlanGateScenario::new_running(AutomationStatus::Active, "plan-artifact-1").await;
+    let phase_started_at = Utc::now() - chrono::Duration::minutes(5);
+    scenario
+        .run_repo
+        .set_agent_phase_started_at(
+            &AutomationRunId::from_string("run-1"),
+            Some(phase_started_at),
+        )
+        .await
+        .unwrap();
+    seed_prune_cancelled_run(&scenario, phase_started_at).await;
+    let scheduler = scenario.scheduler();
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.failed_runs, 0);
+    let run = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(run.status, AutomationRunStatus::Running);
+    assert!(run.error_code.is_none());
+    assert_eq!(scenario.resumer.prompts().len(), 1);
+    assert_eq!(
+        scenario.resumer.prompts()[0].1,
+        AUTOMATION_PLAN_REMINDER_PROMPT
+    );
+}
+
+#[tokio::test]
 async fn automation_scheduler_queued_plan_reminder_purge_keeps_run_running_without_reminder_count()
 {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
@@ -5204,6 +5277,37 @@ async fn automation_scheduler_fails_running_ideation_bridge_when_child_agent_can
         run.error_code.as_deref(),
         Some("ideation_bridge_agent_failed")
     );
+}
+
+#[tokio::test]
+async fn automation_scheduler_redelivers_prune_cancelled_ideation_bridge() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.configure_ideation_bridge(true).await;
+    scenario.approve("plan-artifact-1", 1);
+    let scheduler = scenario.scheduler();
+    scheduler.tick_once().await.unwrap();
+    scenario
+        .seed_current_ideation_agent_run_with_error(
+            AgentRunStatus::Cancelled,
+            Some(PRUNED_STALE_AGENT_RUN),
+        )
+        .await;
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.failed_runs, 0);
+    let run = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(run.status, AutomationRunStatus::Running);
+    assert!(run.error_code.is_none());
+    let prompts = scenario.resumer.ideation_prompts();
+    assert_eq!(prompts.len(), 2);
+    assert!(prompts[1].1.contains("<auto-propose>"));
 }
 
 #[tokio::test]
@@ -8382,6 +8486,29 @@ async fn automation_scheduler_recovers_pr_merged_restart_orphan_in_edit_phase() 
                 .unwrap(),
         )
     );
+}
+
+#[tokio::test]
+async fn automation_scheduler_recovers_prune_cancelled_run_in_edit_phase() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.approve("plan-artifact-1", 1);
+    let phase_started_at = prepare_edit_phase(&scenario).await;
+    seed_prune_cancelled_run(&scenario, phase_started_at).await;
+    let scheduler = scenario.scheduler();
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.failed_runs, 0);
+    let run = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(run.status, AutomationRunStatus::Running);
+    assert!(run.error_code.is_none());
+    assert_eq!(scenario.resumer.prompts().len(), 1);
 }
 
 #[tokio::test]

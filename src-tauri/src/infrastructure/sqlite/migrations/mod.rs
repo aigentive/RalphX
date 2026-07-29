@@ -551,6 +551,9 @@ mod v20260724141500_workspace_review_requested_changes_tests;
 mod v20260724222347_agent_task_assignment_planned_run_identity;
 #[cfg(test)]
 mod v20260724222347_agent_task_assignment_planned_run_identity_tests;
+mod v20260725164704_agent_workspace_repair_attempts;
+#[cfg(test)]
+mod v20260725164704_agent_workspace_repair_attempts_tests;
 mod v20260727115037_agent_workspace_publication_metadata_receipts;
 #[cfg(test)]
 mod v20260727115037_agent_workspace_publication_metadata_receipts_tests;
@@ -1784,6 +1787,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260724222347,
         name: "agent_task_assignment_planned_run_identity",
         migrate: v20260724222347_agent_task_assignment_planned_run_identity::migrate,
+    },
+    Migration {
+        version: 20260725164704,
+        name: "agent_workspace_repair_attempts",
+        migrate: v20260725164704_agent_workspace_repair_attempts::migrate,
     },
     Migration {
         version: 20260727115037,

@@ -107,6 +107,7 @@ function renderItem(
   candidate: AutomationRun,
   options: {
     isLatest?: boolean;
+    isLastInTimeline?: boolean;
     onDeleteRun?: (run: AutomationRun) => void;
     onResumeRun?: (run: AutomationRun) => void;
     projectId?: string | null;
@@ -128,6 +129,9 @@ function renderItem(
           activeGoalItem={null}
           setupConversationId={null}
           {...(options.isLatest !== undefined && { isLatest: options.isLatest })}
+          {...(options.isLastInTimeline !== undefined && {
+            isLastInTimeline: options.isLastInTimeline,
+          })}
           {...(options.onDeleteRun && { onDeleteRun: options.onDeleteRun })}
           {...(options.onResumeRun && { onResumeRun: options.onResumeRun })}
           {...(options.onOpenRunConversation && {
@@ -165,19 +169,55 @@ describe("RunTimelineItem run deletion", () => {
     expect(expandButton).not.toContainElement(prLink);
   });
 
-  it("uses a centered compact marker and a soft darker edge for failed runs", () => {
+  it("uses a compact spine marker and a soft darker edge for failed runs", () => {
     renderItem(run());
 
-    expect(screen.getByTestId("automation-run-run-10-marker")).toHaveClass(
-      "left-[0.5px]",
-      "h-2.5",
-      "w-2.5",
-    );
+    const marker = screen.getByTestId("automation-run-run-10-marker");
+    expect(marker).toHaveClass("h-2.5", "w-2.5");
+    expect(marker).not.toHaveClass("animate-pulse");
     const card = screen.getByTestId("automation-run-run-10-card");
     expect(card.style.backgroundColor).toContain("--bg-surface");
-    expect(card.style.borderColor).toContain("--border-default");
+    expect(card.style.borderTopColor).toContain("--border-default");
     expect(card.style.borderStyle).toBe("solid");
-    expect(card.style.borderWidth).toBe("1px");
+    expect(card.style.borderTopWidth).toBe("1px");
+    // Status also reads from the left edge rule, per the runs-tab timeline design.
+    expect(card.style.borderLeftColor).toContain("--status-error-strong");
+    expect(card.style.borderLeftWidth).toBe("3px");
+  });
+
+  it("pulses the marker and accents the edge only while the run is live", () => {
+    renderItem(run({ status: "running", judgeState: "none", errorCode: null, errorDetail: null, finishedAt: null }));
+
+    expect(screen.getByTestId("automation-run-run-10-marker")).toHaveClass("animate-pulse");
+    expect(
+      screen.getByTestId("automation-run-run-10-card").style.borderLeftColor,
+    ).toContain("--accent-primary");
+  });
+
+  it("draws the spine connector for every run except the oldest", () => {
+    const { unmount } = renderItem(run());
+    expect(screen.getByTestId("automation-run-run-10-connector")).toBeInTheDocument();
+    unmount();
+
+    renderItem(run(), { isLastInTimeline: true });
+    expect(
+      screen.queryByTestId("automation-run-run-10-connector"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows a settled run's duration next to its timestamp and omits it while live", () => {
+    const { unmount } = renderItem(run({
+      startedAt: "2026-07-22T00:00:00Z",
+      finishedAt: "2026-07-22T00:28:00Z",
+    }));
+
+    expect(screen.getByTestId("automation-run-run-10-duration")).toHaveTextContent("28m");
+    unmount();
+
+    renderItem(run({ status: "running", judgeState: "none", finishedAt: null }));
+    expect(
+      screen.queryByTestId("automation-run-run-10-duration"),
+    ).not.toBeInTheDocument();
   });
 
   it("keeps collapsed failures to one compact unboxed outcome line", () => {
@@ -192,7 +232,7 @@ describe("RunTimelineItem run deletion", () => {
     expect(outcome).toHaveTextContent("Agent exited");
     expect(outcome).toHaveTextContent("The agent stopped after the first step.");
     expect(outcome.style.backgroundColor).toBe("");
-    expect(screen.getByTestId("automation-run-run-10-card")).toHaveClass("p-3");
+    expect(screen.getByTestId("automation-run-run-10-card")).toHaveClass("px-4", "py-3");
   });
 
   it("offers deletion for the latest failed run and passes that run to the handler", async () => {

@@ -25,7 +25,7 @@ async fn register_without_project_ids_stores_empty_array() {
             "key-1",
             "https://example.com/hook",
             None,
-            vec![], // no project_ids requested
+            vec![],                                        // no project_ids requested
             &["proj-a".to_string(), "proj-b".to_string()], // authorized scope
         )
         .await
@@ -53,8 +53,7 @@ async fn register_with_explicit_project_ids_stores_them() {
         .await
         .expect("registration should succeed");
 
-    let stored: Vec<String> =
-        serde_json::from_str(&registration.project_ids).expect("valid JSON");
+    let stored: Vec<String> = serde_json::from_str(&registration.project_ids).expect("valid JSON");
     assert_eq!(stored, vec!["proj-a"]);
 }
 
@@ -64,15 +63,9 @@ async fn match_all_webhook_returned_for_any_project() {
     let svc = make_service(Arc::clone(&repo));
 
     // Register without project_ids → match-all (empty '[]')
-    svc.register(
-        "key-1",
-        "https://example.com/hook",
-        None,
-        vec![],
-        &[],
-    )
-    .await
-    .expect("registration should succeed");
+    svc.register("key-1", "https://example.com/hook", None, vec![], &[])
+        .await
+        .expect("registration should succeed");
 
     // Should match project-x even though it wasn't specified
     let for_x = repo
@@ -144,8 +137,7 @@ async fn register_reregistration_refreshes_project_ids() {
         .expect("first registration should succeed");
 
     let first_id = first.id.clone();
-    let stored_first: Vec<String> =
-        serde_json::from_str(&first.project_ids).expect("valid JSON");
+    let stored_first: Vec<String> = serde_json::from_str(&first.project_ids).expect("valid JSON");
     assert_eq!(stored_first, vec!["proj-a"]);
 
     // Second registration (same URL+api_key): expand scope to include proj-b
@@ -161,10 +153,12 @@ async fn register_reregistration_refreshes_project_ids() {
         .expect("re-registration should succeed");
 
     // Same id preserved
-    assert_eq!(second.id, first_id, "Re-registration must preserve webhook id");
+    assert_eq!(
+        second.id, first_id,
+        "Re-registration must preserve webhook id"
+    );
     // project_ids refreshed to include proj-b
-    let stored_second: Vec<String> =
-        serde_json::from_str(&second.project_ids).expect("valid JSON");
+    let stored_second: Vec<String> = serde_json::from_str(&second.project_ids).expect("valid JSON");
     assert!(
         stored_second.contains(&"proj-b".to_string()),
         "Re-registration must include newly-added project in project_ids"

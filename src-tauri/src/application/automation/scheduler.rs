@@ -1861,11 +1861,11 @@ impl AutomationScheduler {
         let latest_agent_run = self
             .latest_agent_run_for_current_phase(conversation_id, run)
             .await?;
-        let latest_agent_run_is_restart_orphan = latest_agent_run
+        let latest_agent_run_is_system_cancelled = latest_agent_run
             .as_ref()
-            .is_some_and(agent_run_is_restart_orphan);
+            .is_some_and(agent_run_is_system_cancelled);
 
-        if latest_agent_run.is_none() || latest_agent_run_is_restart_orphan {
+        if latest_agent_run.is_none() || latest_agent_run_is_system_cancelled {
             self.redeliver_plan_approval_after_crashed_resume(
                 run,
                 workspace.as_ref(),
@@ -1903,7 +1903,7 @@ impl AutomationScheduler {
                     .await?;
                     return Ok(());
                 }
-                Some(AgentRunStatus::Cancelled) if latest_agent_run_is_restart_orphan => {
+                Some(AgentRunStatus::Cancelled) if latest_agent_run_is_system_cancelled => {
                     // Recover in place (F2); the approval redelivery above owns this orphan.
                     return Ok(());
                 }
@@ -2011,7 +2011,7 @@ impl AutomationScheduler {
                     // `Completed` case instead.
                     // Recover in place (F2) before treating a restart orphan as terminal.
                     if matches!(status, AgentRunStatus::Failed | AgentRunStatus::Cancelled)
-                        && !latest_agent_run_is_restart_orphan
+                        && !latest_agent_run_is_system_cancelled
                     {
                         self.fail_running_run(
                             run,
@@ -2127,9 +2127,9 @@ impl AutomationScheduler {
             }
             None => None,
         };
-        let restart_orphan = bridge_agent_run
+        let system_cancelled = bridge_agent_run
             .as_ref()
-            .is_some_and(agent_run_is_restart_orphan);
+            .is_some_and(agent_run_is_system_cancelled);
         match bridge_agent_run.as_ref().map(|agent_run| agent_run.status) {
             Some(AgentRunStatus::Failed) => {
                 self.fail_running_run(
@@ -2140,7 +2140,7 @@ impl AutomationScheduler {
                 )
                 .await?;
             }
-            Some(AgentRunStatus::Cancelled) if !restart_orphan => {
+            Some(AgentRunStatus::Cancelled) if !system_cancelled => {
                 self.fail_running_run(
                     run,
                     "ideation_bridge_agent_failed",
@@ -2207,9 +2207,9 @@ impl AutomationScheduler {
             .latest_agent_run_for_current_phase(conversation_id, run)
             .await?;
 
-        let latest_agent_run_is_restart_orphan = latest_agent_run
+        let latest_agent_run_is_system_cancelled = latest_agent_run
             .as_ref()
-            .is_some_and(agent_run_is_restart_orphan);
+            .is_some_and(agent_run_is_system_cancelled);
 
         match latest_agent_run.as_ref().map(|agent_run| agent_run.status) {
             Some(AgentRunStatus::Failed) => {
@@ -2221,7 +2221,7 @@ impl AutomationScheduler {
                 )
                 .await?;
             }
-            Some(AgentRunStatus::Cancelled) if latest_agent_run_is_restart_orphan => {
+            Some(AgentRunStatus::Cancelled) if latest_agent_run_is_system_cancelled => {
                 self.observe_recoverable_plan_phase_running_run(
                     run,
                     conversation_id,
@@ -2409,7 +2409,7 @@ impl AutomationScheduler {
         latest_agent_run: Option<&AgentRun>,
         summary: &mut AutomationSchedulerTickSummary,
     ) -> AppResult<()> {
-        if latest_agent_run.is_some_and(|agent_run| !agent_run_is_restart_orphan(agent_run)) {
+        if latest_agent_run.is_some_and(|agent_run| !agent_run_is_system_cancelled(agent_run)) {
             return Ok(());
         }
         if run.agent_phase_started_at.is_none() {
@@ -4329,10 +4329,11 @@ fn agent_run_is_current_for_phase(run: &AutomationRun, agent_run: &AgentRun) -> 
         .is_none_or(|phase_started_at| agent_run.started_at >= phase_started_at)
 }
 
-fn agent_run_is_restart_orphan(agent_run: &AgentRun) -> bool {
+fn agent_run_is_system_cancelled(agent_run: &AgentRun) -> bool {
+    let reason = agent_run.error_message.as_deref();
     agent_run.status == AgentRunStatus::Cancelled
-        && agent_run.error_message.as_deref()
-            == Some(crate::domain::repositories::ORPHANED_AGENT_RUN_ON_APP_RESTART)
+        && (reason == Some(crate::domain::repositories::ORPHANED_AGENT_RUN_ON_APP_RESTART)
+            || reason == Some(crate::domain::repositories::PRUNED_STALE_AGENT_RUN))
 }
 
 fn first_merged_run_requires_integration_pr(

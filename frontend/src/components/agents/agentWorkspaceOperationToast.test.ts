@@ -2,9 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   agentWorkspaceOperationErrorDetail,
+  agentWorkspaceMaintenanceOperationToastId,
   agentWorkspaceOperationResultDetail,
   agentWorkspaceOperationToastId,
   publishPipelineToastLabel,
+  maintenanceOperationToastLabel,
   startAgentWorkspaceOperationToast,
 } from "./agentWorkspaceOperationToast";
 
@@ -68,6 +70,20 @@ describe("agentWorkspaceOperationToast", () => {
     ["unknown", "Check workspace"],
   ])("maps publish status %s to %s", (status, label) => {
     expect(publishPipelineToastLabel(status)).toBe(label);
+  });
+
+  it("uses one durable toast id and stage label for a maintenance operation", () => {
+    expect(
+      agentWorkspaceMaintenanceOperationToastId("conversation-1", "operation-1"),
+    ).toBe("agent-workspace-maintenance:conversation-1:operation-1");
+    expect(maintenanceOperationToastLabel("repairing")).toBe("Repairing workspace");
+    expect(maintenanceOperationToastLabel("ready")).toBe(
+      "Base updated — ready to publish",
+    );
+    expect(maintenanceOperationToastLabel("blocked")).toBe("Repair blocked");
+    expect(maintenanceOperationToastLabel("future-stage")).toBe(
+      "Continuing workspace operation",
+    );
   });
 
   it("strips raw agent output from operation error details", () => {

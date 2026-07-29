@@ -85,10 +85,16 @@ fn write_creates_parent_and_overwrites_exact_content() {
         std::fs::read_to_string(template_path(root.path())).unwrap(),
         "# First\n\n"
     );
-    assert_eq!(actual_template_names(root.path()), ["pull_request_template.md"]);
+    assert_eq!(
+        actual_template_names(root.path()),
+        ["pull_request_template.md"]
+    );
 
     project_pr_template::write_pr_template(root.path(), "").unwrap();
-    assert_eq!(std::fs::read_to_string(template_path(root.path())).unwrap(), "");
+    assert_eq!(
+        std::fs::read_to_string(template_path(root.path())).unwrap(),
+        ""
+    );
 }
 
 #[test]
@@ -103,7 +109,10 @@ fn write_overwrites_existing_uppercase_filename() {
         std::fs::read_to_string(uppercase_template_path(root.path())).unwrap(),
         "New\n"
     );
-    assert_eq!(actual_template_names(root.path()), ["PULL_REQUEST_TEMPLATE.md"]);
+    assert_eq!(
+        actual_template_names(root.path()),
+        ["PULL_REQUEST_TEMPLATE.md"]
+    );
 }
 
 #[test]

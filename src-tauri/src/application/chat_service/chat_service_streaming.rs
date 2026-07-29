@@ -2234,16 +2234,11 @@ pub async fn process_stream_background<R: Runtime>(
                         let completion_applied = if let (Some(ref repo), Some(ref run_id)) =
                             (&agent_run_repo, &agent_run_id)
                         {
-                            repo.complete_if_running(&AgentRunId::from_string(run_id))
-                                .await
-                                .unwrap_or_else(|error| {
-                                    tracing::error!(
-                                        error = %error,
-                                        run_id,
-                                        "TurnComplete: guarded run completion failed"
-                                    );
-                                    false
-                                })
+                            super::chat_service_run_finalization::finalize_run_completed(
+                                repo,
+                                &AgentRunId::from_string(run_id),
+                            )
+                            .await
                         } else {
                             false
                         };

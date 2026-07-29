@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use tokio::sync::Notify;
 
 use ralphx_lib::domain::services::github_service::{
     validate_pr_metadata_patch, GithubServiceTrait, PrDetail, PrMergeStateStatus, PrMergeableState,
@@ -36,6 +37,7 @@ pub struct MockGithubService {
     pub check_pr_sync_state_calls: Arc<Mutex<u32>>,
     pub check_pr_review_feedback_calls: Arc<Mutex<u32>>,
     pub push_branch_calls: Arc<Mutex<u32>>,
+    pub push_branch_with_expected_remote_oid_lease_calls: Arc<Mutex<u32>>,
     pub create_draft_pr_calls: Arc<Mutex<u32>>,
     pub mark_pr_ready_calls: Arc<Mutex<u32>>,
     pub update_pr_details_calls: Arc<Mutex<u32>>,
@@ -47,7 +49,12 @@ pub struct MockGithubService {
     pub fetch_pr_detail_calls: Arc<Mutex<u32>>,
     pub fetch_pr_review_thread_calls: Arc<Mutex<u32>>,
     pub submit_pr_review_calls: Arc<Mutex<u32>>,
+    pub push_branch_with_expected_remote_oid_lease_delay_ms: Arc<Mutex<u64>>,
+    pub push_branch_with_expected_remote_oid_lease_started: Arc<Mutex<Option<Arc<Notify>>>>,
+    pub push_branch_delay_ms: Arc<Mutex<u64>>,
+    pub push_branch_started: Arc<Mutex<Option<Arc<Notify>>>>,
     push_branch_result: Arc<Mutex<Option<AppResult<()>>>>,
+    push_branch_with_expected_remote_oid_lease_result: Arc<Mutex<Option<AppResult<()>>>>,
     #[allow(clippy::type_complexity)]
     create_draft_pr_result: Arc<Mutex<Option<AppResult<(i64, String)>>>>,
     mark_pr_ready_result: Arc<Mutex<Option<AppResult<()>>>>,
@@ -74,6 +81,7 @@ impl MockGithubService {
             check_pr_sync_state_calls: Arc::new(Mutex::new(0)),
             check_pr_review_feedback_calls: Arc::new(Mutex::new(0)),
             push_branch_calls: Arc::new(Mutex::new(0)),
+            push_branch_with_expected_remote_oid_lease_calls: Arc::new(Mutex::new(0)),
             create_draft_pr_calls: Arc::new(Mutex::new(0)),
             mark_pr_ready_calls: Arc::new(Mutex::new(0)),
             update_pr_details_calls: Arc::new(Mutex::new(0)),
@@ -85,7 +93,12 @@ impl MockGithubService {
             fetch_pr_detail_calls: Arc::new(Mutex::new(0)),
             fetch_pr_review_thread_calls: Arc::new(Mutex::new(0)),
             submit_pr_review_calls: Arc::new(Mutex::new(0)),
+            push_branch_with_expected_remote_oid_lease_delay_ms: Arc::new(Mutex::new(0)),
+            push_branch_with_expected_remote_oid_lease_started: Arc::new(Mutex::new(None)),
+            push_branch_delay_ms: Arc::new(Mutex::new(0)),
+            push_branch_started: Arc::new(Mutex::new(None)),
             push_branch_result: Arc::new(Mutex::new(None)),
+            push_branch_with_expected_remote_oid_lease_result: Arc::new(Mutex::new(None)),
             create_draft_pr_result: Arc::new(Mutex::new(None)),
             mark_pr_ready_result: Arc::new(Mutex::new(None)),
             update_pr_details_result: Arc::new(Mutex::new(None)),
@@ -130,6 +143,14 @@ impl MockGithubService {
     /// Make the next `push_branch` call fail with the given message.
     pub fn will_fail_push(&self, msg: impl Into<String>) {
         *self.push_branch_result.lock().unwrap() = Some(Err(AppError::Infrastructure(msg.into())));
+    }
+
+    /// Make the next exact-lease repair push fail with the given message.
+    pub fn will_fail_exact_lease_push(&self, msg: impl Into<String>) {
+        *self
+            .push_branch_with_expected_remote_oid_lease_result
+            .lock()
+            .unwrap() = Some(Err(AppError::Infrastructure(msg.into())));
     }
 
     /// Make the next `create_draft_pr` call fail with the given message.
@@ -414,7 +435,50 @@ impl GithubServiceTrait for MockGithubService {
 
     async fn push_branch(&self, _wd: &Path, _branch: &str) -> AppResult<()> {
         *self.push_branch_calls.lock().unwrap() += 1;
+        if let Some(started) = self.push_branch_started.lock().unwrap().as_ref() {
+            started.notify_one();
+        }
+        let delay_ms = *self.push_branch_delay_ms.lock().unwrap();
+        if delay_ms > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+        }
         if let Some(result) = self.push_branch_result.lock().unwrap().take() {
+            return result;
+        }
+        Ok(())
+    }
+
+    async fn push_branch_with_expected_remote_oid_lease(
+        &self,
+        _working_dir: &Path,
+        _local_ref: &str,
+        _expected_remote_oid: &str,
+    ) -> AppResult<()> {
+        *self
+            .push_branch_with_expected_remote_oid_lease_calls
+            .lock()
+            .unwrap() += 1;
+        if let Some(started) = self
+            .push_branch_with_expected_remote_oid_lease_started
+            .lock()
+            .unwrap()
+            .as_ref()
+        {
+            started.notify_one();
+        }
+        let delay_ms = *self
+            .push_branch_with_expected_remote_oid_lease_delay_ms
+            .lock()
+            .unwrap();
+        if delay_ms > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+        }
+        if let Some(result) = self
+            .push_branch_with_expected_remote_oid_lease_result
+            .lock()
+            .unwrap()
+            .take()
+        {
             return result;
         }
         Ok(())

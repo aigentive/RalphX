@@ -11,11 +11,17 @@ use tracing::Instrument;
 
 use super::chat_service_context;
 use super::chat_service_helpers::get_assistant_role;
+use super::chat_service_run_finalization::{
+    finalize_run_completed_by_id, queue_run_completed_event_authority as queue_authority,
+    run_completed_event_is_authorized, run_completed_without_queue_is_authorized,
+    terminal_failure_reason,
+};
 use super::chat_service_streaming::{
     completion_tool_result_accepted, is_completion_tool_name, process_stream_background,
 };
 use super::chat_service_types::{
-    AgentMessageCreatedPayload, AgentMessageRenderReadyPayload, AgentRunCompletedPayload,
+    AgentErrorPayload, AgentMessageCreatedPayload, AgentMessageRenderReadyPayload,
+    AgentRunCompletedPayload,
 };
 use super::{event_context, has_meaningful_output, EventContextPayload, StreamingStateCache};
 use crate::application::interactive_process_registry::{
@@ -1334,19 +1340,8 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                             )
                             .await;
                     } else {
-                        match agent_run_repo
-                            .complete_if_running(&AgentRunId::from_string(&agent_run_id))
-                            .await
-                        {
-                            Ok(applied) => completion_applied = applied,
-                            Err(error) => {
-                                tracing::error!(
-                                    error = %error,
-                                    run_id = %agent_run_id,
-                                    "Stream exit: guarded run completion failed"
-                                );
-                            }
-                        }
+                        completion_applied =
+                            finalize_run_completed_by_id(&agent_run_repo, &agent_run_id).await;
                     }
                 }
 
@@ -1781,7 +1776,19 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     let conv_id_str = conversation_id.as_str();
                     streaming_state_cache.clear(&conv_id_str).await;
 
-                    let will_emit_run_completed = !skip_post_loop_finalization || outcome.silent_interactive_exit;
+                    // Authority is the persisted terminal status, not whether this call
+                    // happened to apply the completion write: another writer (TurnComplete
+                    // finalizer, HTTP completion handlers) may legitimately own it.
+                    let completion_authorized = run_completed_event_is_authorized(
+                        &agent_run_repo,
+                        &AgentRunId::from_string(&agent_run_id),
+                    )
+                    .await;
+                    let will_emit_run_completed = run_completed_without_queue_is_authorized(
+                        completion_authorized,
+                        skip_post_loop_finalization,
+                        outcome.silent_interactive_exit,
+                    );
                     tracing::info!(
                         context_type = %context_type,
                         context_id = %context_id,
@@ -1837,6 +1844,27 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                                     effective_session_id.clone(),
                                     run_chain_id.clone(),
                                 ),
+                            );
+                        }
+                    } else if let Some(reason) =
+                        terminal_failure_reason(&agent_run_repo, &AgentRunId::from_string(&agent_run_id))
+                            .await
+                    {
+                        // The stream ended without an error, but the run was classified as
+                        // failed afterwards (persist failure / zero-output autonomous run).
+                        // handle_stream_error never runs here, so emit the terminal event
+                        // ourselves instead of leaving the UI generating until the watchdog.
+                        if let Some(ref handle) = app_handle {
+                            let _ = handle.emit(
+                                "agent:error",
+                                AgentErrorPayload {
+                                    conversation_id: Some(conversation_id.as_str().to_string()),
+                                    context_type: context_type.to_string(),
+                                    context_id: context_id.clone(),
+                                    agent_run_id: Some(agent_run_id.clone()),
+                                    error: reason.clone(),
+                                    stderr: Some(reason),
+                                },
                             );
                         }
                     }
@@ -1910,11 +1938,12 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     )
                     .await;
                     let total_processed = queue_outcome.total_processed;
+                    let (terminal_run_id, will_emit_run_completed) =
+                        queue_authority(&agent_run_repo, &queue_outcome, &agent_run_id).await;
 
                     // After ALL queue processing is done, emit the final run_completed.
-                    // Always emit regardless of total_processed — if will_process_queue=true,
-                    // the pre-queue run_completed was skipped. We must emit here even when
-                    // total_processed=0 (race, spawn failure, or cancellation).
+                    // Queue counts never grant success authority; the terminal persisted
+                    // run must be Completed before this success event is emitted.
                     tracing::info!(
                         context_type = %context_type,
                         context_id = %context_id,
@@ -1922,7 +1951,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                         skip_post_loop_finalization,
                         will_process_queue,
                         total_processed,
-                        will_emit_run_completed = true,
+                        will_emit_run_completed,
                         "[LIFECYCLE] run_completed emission decision (queue path)"
                     );
                     if total_processed == 0 && initial_queue_count > 0 {
@@ -1930,28 +1959,61 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                             context_type = %context_type,
                             context_id = %context_id,
                             initial_queue_count,
-                            "[LIFECYCLE] run_completed emitting after queue processing but total_processed=0 (race/spawn failure/cancellation)"
+                            "[LIFECYCLE] queue processing ended with total_processed=0 (race/spawn failure/cancellation)"
                         );
                     }
-                    tracing::info!("[QUEUE] Emitting final run_completed after processing {} queued messages", total_processed);
 
                     // Clear streaming state cache - queue processing completed
                     let conv_id_str = conversation_id.as_str();
                     streaming_state_cache.clear(&conv_id_str).await;
 
-                    if let Some(ref handle) = app_handle {
-                        let _ = handle.emit(
-                            "agent:run_completed",
-                            AgentRunCompletedPayload::with_provider_session_and_run_id(
-                                Some(queue_outcome.terminal_run_id(&agent_run_id)),
-                                conversation_id.as_str().to_string(),
-                                context_type.to_string(),
-                                context_id.clone(),
-                                Some(harness),
-                                Some(sess_id.clone()),
-                                run_chain_id.clone(),
-                            ),
+                    if will_emit_run_completed {
+                        tracing::info!(
+                            total_processed,
+                            terminal_run_id,
+                            "[QUEUE] Emitting final run_completed after queue processing"
                         );
+                        if let Some(ref handle) = app_handle {
+                            let _ = handle.emit(
+                                "agent:run_completed",
+                                AgentRunCompletedPayload::with_provider_session_and_run_id(
+                                    Some(terminal_run_id),
+                                    conversation_id.as_str().to_string(),
+                                    context_type.to_string(),
+                                    context_id.clone(),
+                                    Some(harness),
+                                    Some(sess_id.clone()),
+                                    run_chain_id.clone(),
+                                ),
+                            );
+                        }
+                    } else {
+                        tracing::warn!(
+                            terminal_run_id,
+                            "[QUEUE] Suppressing run_completed because persisted terminal authority is not Completed"
+                        );
+                        // Suppressing the success event must not leave the UI without any
+                        // terminal event; surface the persisted failure instead.
+                        if let Some(reason) = terminal_failure_reason(
+                            &agent_run_repo,
+                            &AgentRunId::from_string(&terminal_run_id),
+                        )
+                        .await
+                        {
+                            if let Some(ref handle) = app_handle {
+                                let _ = handle.emit(
+                                    "agent:error",
+                                    AgentErrorPayload {
+                                        conversation_id: Some(conversation_id.as_str().to_string()),
+                                        context_type: context_type.to_string(),
+                                        context_id: context_id.clone(),
+                                        agent_run_id: Some(terminal_run_id),
+                                        error: reason.clone(),
+                                        stderr: Some(reason),
+                                    },
+                                );
+                            }
+                        }
                     }
 
                     // Trigger memory pipelines after queue processing completes

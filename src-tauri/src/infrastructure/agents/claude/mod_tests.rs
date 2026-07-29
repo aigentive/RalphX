@@ -1740,6 +1740,61 @@ fn test_materialize_generated_plugin_dir_prefers_root_canonical_claude_disallowe
 }
 
 #[test]
+fn generated_workspace_repair_prompt_keeps_identity_transport_owned_and_tools_live() {
+    let (_dir, root, plugin_dir, _runtime_guard) = make_isolated_live_project_plugin_dir();
+    let generated_dir =
+        materialize_generated_plugin_dir(&plugin_dir).expect("materialize generated plugin dir");
+    let generated_prompt =
+        read_test_file(generated_dir.join("agents/ralphx-agent-workspace-repair.md"));
+    let (frontmatter, body) = split_frontmatter(&generated_prompt);
+    let definition = load_canonical_agent_definition(&root, "ralphx-agent-workspace-repair")
+        .expect("workspace repair canonical definition should exist");
+
+    let named_workflow_tools = body
+        .split('`')
+        .enumerate()
+        .filter(|(index, _)| index % 2 == 1)
+        .map(|(_, segment)| segment.split_once('(').map_or(segment, |(name, _)| name))
+        .filter(|name| name.contains('_'))
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
+    let expected_workflow_tools = ["complete_agent_workspace_repair", "get_artifact"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
+
+    assert_eq!(named_workflow_tools, expected_workflow_tools);
+    assert_eq!(
+        get_agent_config("ralphx-agent-workspace-repair")
+            .expect("workspace repair runtime config should exist")
+            .allowed_mcp_tools,
+        definition.capabilities.mcp_tools,
+        "generated repair prompt must expose only the canonical live MCP tool surface"
+    );
+    assert_eq!(
+        frontmatter_tools_set(&frontmatter),
+        expected_frontmatter_tools("ralphx-agent-workspace-repair"),
+        "generated repair prompt frontmatter must match the live repair tool surface"
+    );
+    for transport_bookkeeping in [
+        "conversation_id",
+        "conversation ID",
+        "run_id",
+        "run ID",
+        "commit SHA",
+        "generation",
+        "lease",
+        "effect",
+        "migration",
+    ] {
+        assert!(
+            !body.contains(transport_bookkeeping),
+            "generated repair prompt must not expose transport-owned bookkeeping: {transport_bookkeeping}"
+        );
+    }
+}
+
+#[test]
 fn test_materialize_generated_plugin_dir_omits_removed_supervisor_agent() {
     let (_dir, _root, plugin_dir, _runtime_guard) = make_isolated_live_project_plugin_dir();
     let generated_dir =

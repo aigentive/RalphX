@@ -2,6 +2,7 @@ import type {
   AgentConversationWorkspace,
   AgentConversationWorkspaceFreshness,
   AgentConversationWorkspacePublicationEvent,
+  AgentWorkspaceMaintenanceOperation,
 } from "@/api/chat";
 
 const PUBLISH_EVENT_START_SKEW_MS = 5_000;
@@ -139,6 +140,139 @@ export function getAgentWorkspaceTerminalPublicationLabel(
   return null;
 }
 
+export type AgentWorkspaceMaintenancePresentation = {
+  action: "none" | "publish" | "retry";
+  automaticContinuation: string | null;
+  busy: boolean;
+  summary: string;
+  title: string;
+  tone: "error" | "neutral" | "warning";
+};
+
+export function getAgentWorkspaceMaintenanceOperation(
+  workspace: AgentConversationWorkspace | null | undefined,
+): AgentWorkspaceMaintenanceOperation | null {
+  return workspace?.maintenanceOperation ?? null;
+}
+
+export function isAgentWorkspaceMaintenanceActive(
+  workspace: AgentConversationWorkspace | null | undefined,
+): boolean {
+  return Boolean(
+    !getAgentWorkspaceTerminalPublicationStatus(workspace ?? null) &&
+      getAgentWorkspaceMaintenanceOperation(workspace)?.status === "active",
+  );
+}
+
+export function blocksAgentWorkspaceGitInspection(
+  workspace: AgentConversationWorkspace | null | undefined,
+): boolean {
+  if (!isAgentWorkspaceMaintenanceActive(workspace)) {
+    return false;
+  }
+  const stage = getAgentWorkspaceMaintenanceOperation(workspace)?.stage;
+  return (
+    stage === "updating_base" ||
+    stage === "repairing" ||
+    stage === "validating" ||
+    stage === "publishing"
+  );
+}
+
+export function canResumeAgentWorkspacePublish(
+  workspace: AgentConversationWorkspace | null | undefined,
+): boolean {
+  const operation = getAgentWorkspaceMaintenanceOperation(workspace);
+  return Boolean(
+    !getAgentWorkspaceTerminalPublicationStatus(workspace ?? null) &&
+      operation?.status === "ready" &&
+      operation.stage === "ready",
+  );
+}
+
+export function getAgentWorkspaceMaintenancePresentation(
+  workspace: AgentConversationWorkspace | null | undefined,
+): AgentWorkspaceMaintenancePresentation | null {
+  if (getAgentWorkspaceTerminalPublicationStatus(workspace ?? null)) {
+    return null;
+  }
+  const operation = getAgentWorkspaceMaintenanceOperation(workspace);
+  if (!operation) {
+    return null;
+  }
+
+  const automaticContinuation =
+    operation.status === "active" && operation.automaticContinuation
+      ? "Will continue automatically."
+      : null;
+  const summary = operation.blocker ?? operation.summary ?? "RalphX is continuing this workspace operation.";
+  switch (operation.stage) {
+    case "updating_base":
+      return {
+        title: "Updating base",
+        summary,
+        tone: "neutral",
+        busy: true,
+        action: "none",
+        automaticContinuation,
+      };
+    case "repairing":
+      return {
+        title: "Repairing workspace",
+        summary,
+        tone: "warning",
+        busy: true,
+        action: "none",
+        automaticContinuation,
+      };
+    case "validating":
+      return {
+        title: "Validating repair",
+        summary,
+        tone: "neutral",
+        busy: true,
+        action: "none",
+        automaticContinuation,
+      };
+    case "reviewing":
+      return {
+        title: "Workspace Review in progress",
+        summary,
+        tone: "neutral",
+        busy: true,
+        action: "none",
+        automaticContinuation,
+      };
+    case "publishing":
+      return {
+        title: "Publishing workspace",
+        summary,
+        tone: "neutral",
+        busy: true,
+        action: "none",
+        automaticContinuation,
+      };
+    case "ready":
+      return {
+        title: "Base updated — ready to publish",
+        summary,
+        tone: "warning",
+        busy: false,
+        action: "publish",
+        automaticContinuation: null,
+      };
+    case "blocked":
+      return {
+        title: "Repair blocked",
+        summary,
+        tone: "error",
+        busy: false,
+        action: "retry",
+        automaticContinuation: null,
+      };
+  }
+}
+
 export function isAgentWorkspacePublishActive(
   workspace: AgentConversationWorkspace | null | undefined,
 ): boolean {
@@ -211,6 +345,12 @@ export function getAgentWorkspaceReviewActionBlocker(
 ): AgentWorkspaceReviewActionBlocker | null {
   if (!workspace || getAgentWorkspaceTerminalPublicationStatus(workspace)) {
     return null;
+  }
+  if (isAgentWorkspaceMaintenanceActive(workspace)) {
+    return {
+      kind: "repair",
+      message: "Finish or abort the current repair, then retry Review.",
+    };
   }
   const pushStatus = normalizePublicationStatus(workspace.publicationPushStatus);
   const supervisionStatus = normalizePublicationStatus(workspace.prSupervisionStatus);
