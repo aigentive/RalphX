@@ -8,6 +8,7 @@ import {
 import { seedRepairPendingWorkspace } from "../../fixtures/repair-pending-publish.fixtures";
 import { setupApp } from "../../fixtures/setup.fixtures";
 import { seedMergedWorkspace } from "../../fixtures/terminal-publish.fixtures";
+import { revealAgentInboxConversation } from "../../helpers/agents-inbox.helpers";
 import {
   expectNoPaneOverflow,
   expectPrimaryActionContained,
@@ -178,13 +179,10 @@ export class AgentsPublishPage extends BasePage {
         queryKey: ["agents", "sidebar-conversations"],
       }),
     );
-    const conversation = this.page.getByTestId(
-      `agents-session-${REPAIR_CONVERSATION_ID}`,
+    const conversation = await revealAgentInboxConversation(
+      this.page,
+      REPAIR_CONVERSATION_ID,
     );
-    // The sidebar list is repopulated by an async refetch after
-    // invalidateQueries, which can exceed the default assertion timeout when
-    // the suite runs under load.
-    await expect(conversation).toBeVisible({ timeout: 15000 });
     await conversation.getByRole("button").first().click();
     await this.page.evaluate(async (conversationId) => {
       const { mockGetAgentConversationWorkspace } = await import(
@@ -245,13 +243,10 @@ export class AgentsPublishPage extends BasePage {
         queryKey: ["agents", "sidebar-conversations"],
       }),
     );
-    const conversation = this.page.getByTestId(
-      `agents-session-${TERMINAL_CONVERSATION_ID}`,
+    const conversation = await revealAgentInboxConversation(
+      this.page,
+      TERMINAL_CONVERSATION_ID,
     );
-    // The sidebar list is repopulated by an async refetch after
-    // invalidateQueries, which can exceed the default assertion timeout when
-    // the suite runs under load.
-    await expect(conversation).toBeVisible({ timeout: 15000 });
     await conversation.getByRole("button").first().click();
     await this.page.evaluate(async (conversationId) => {
       const { mockGetAgentConversationWorkspace } = await import("/src/api-mock/chat");
@@ -393,8 +388,10 @@ export class AgentsPublishPage extends BasePage {
     await this.page.getByTestId("nav-agents").click();
     await expect(this.page.getByTestId("agents-view")).toBeVisible();
     await this.page.evaluate(() => window.__queryClient?.invalidateQueries({ queryKey: ["agents", "sidebar-conversations"] }));
-    const conversation = this.page.getByTestId(`agents-session-${REVIEW_WALKTHROUGH_CONVERSATION_ID}`);
-    await expect(conversation).toBeVisible({ timeout: 15000 });
+    const conversation = await revealAgentInboxConversation(
+      this.page,
+      REVIEW_WALKTHROUGH_CONVERSATION_ID,
+    );
     await conversation.getByRole("button").first().click();
     await this.page.evaluate(async (conversationId) => {
       const { mockGetAgentConversationWorkspace } = await import("/src/api-mock/chat");
