@@ -308,13 +308,10 @@ function canContinueToolCallGroup(
 }
 
 function liveTranscriptRowSortTime(
-  row: LiveTranscriptRow,
+  _row: LiveTranscriptRow,
   rowIndex: number,
   rowCount: number,
 ): number {
-  if (row.receivedAt != null) {
-    return row.receivedAt;
-  }
   return Number.MAX_SAFE_INTEGER - rowCount + rowIndex - 1;
 }
 
