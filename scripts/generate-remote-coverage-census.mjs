@@ -188,11 +188,14 @@ why: "LANDED (PR 3.1-b batch B0). The drift scan used to admit two answers — r
   {
     id: "B3",
     title: "Review, QA, merge pipeline, validation",
-    modules: ["review_commands", "qa_commands", "merge_pipeline_commands", "validation_commands"],
+    modules: ["review_commands", "qa_commands"],
     why: "Approval/review commands write the agent-consumed content surface (`MutatesAgentConsumedContent` already appears on 6 of them), which is exactly the capability whose floor P-17d enforces. Grouping them keeps that audit in one review rather than spread across batches.",
     work: [
       "Confirm every content-surface writer keeps `MutatesAgentConsumedContent` and lands at or above the AgentControl floor.",
       "Check the merge-pipeline members against the destructive-git deny list (`cleanup_task_branch`, `resolve_merge_conflict` are Denied and must not ride in on module similarity).",
+      "DONE (PR 3.1-b batch 7): `merge_pipeline_commands` — all three hydration/projection reads registered at `ui:read`; `validation_commands` — `get_task_validation_summary` resolved as `host-denied-spawns-process`. Neither module appears in this batch's module list any more. Batch 7 also registered the `review_commands`/`qa_commands` read cluster (11 rows) and published `probe_b3_module_batch_audit`; start from its detector output rather than re-deriving.",
+      "READ FIRST — batch 7's audit-graph fix changes what a clean probe means. `resolve_dispatch` used to drop every call inside a `commands/` file whose name matched a registered command, which deleted the command→same-named-service delegation edge and made detectors (a)/(b)/(c) vacuously silent for 92 command names. Verdicts taken before that fix are not evidence. `get_task_validation_summary` is the worked example: clean on all three detectors, and shelling out to `git rev-parse HEAD` the whole time.",
+      "OPEN — a second scanner-scope gap is recorded but NOT fixed: `load_production_sources` walks `src-tauri/src` only, so entity methods defined in the `ralphx-domain` crate are invisible and every call to one falls into the resolver's all-same-name fallback. That is what makes `reopen_issue` read as a detector-(c) spawner when its body is a repository read plus an update. It is refused rather than registered, and deliberately NOT ledgered `SpawnsProcess`, so it stays in the gap until the crate scope is widened.",
     ],
     gate: "P-17d floor diff clean; C-9 review recorded.",
   },

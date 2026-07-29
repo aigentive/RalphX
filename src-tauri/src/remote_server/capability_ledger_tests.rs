@@ -1710,12 +1710,39 @@ fn detector_c_floors_process_spawn_authority() {
         "get_execution_settings",
         "get_global_execution_settings",
         "get_active_project",
+        // PR 3.1-b batch 7 — census `B3` read cluster. `get_task_validation_summary` is
+        // deliberately ABSENT and asserted as a spawner just below: detector (c) fires on it
+        // once same-name delegation edges are kept, which is exactly why it is not here.
+        "get_pending_reviews",
+        "get_review_by_id",
+        "get_reviews_by_task_id",
+        "get_task_state_history",
+        "get_fix_task_attempts",
+        "get_task_issues",
+        "get_issue_progress",
+        "get_review_settings",
+        "get_qa_settings",
+        "get_task_qa",
+        "get_qa_results",
+        "get_merge_pipeline",
+        "get_merge_progress",
+        "get_merge_phase_list",
     ] {
         assert!(
             !spawners.contains(command),
             "detector (c) false-positive on registered read {command}"
         );
     }
+
+    // PR 3.1-b batch 7 — the member the corrected call graph rejected. Calibration in the
+    // positive direction: if this ever stops firing, either the census §5.1 caching remedy
+    // landed (and the row can be reclassified) or the delegation edge was lost again.
+    assert!(
+        spawners.contains("get_task_validation_summary"),
+        "detector (c) must fire on `get_task_validation_summary`: it delegates to \
+         `TaskValidationService::get_task_validation_summary`, which shells out to \
+         `git rev-parse HEAD` for the head-sha stamp"
+    );
 }
 
 #[test]
@@ -2079,6 +2106,99 @@ fn probe_chat_send_trio_sink_paths() {
                 .collect::<Vec<_>>();
             if !hits.is_empty() {
                 eprintln!("PROBE-TRIO   {command} {} -> {hits:?}", sinks.0);
+            }
+        }
+    }
+}
+
+/// Calibration probe for census `B4` — ideation, plans, methodology, workflow.
+///
+/// Same shape as [`probe_b3_module_batch_audit`]. Worth re-running rather than reusing any
+/// pre-batch-7 output: before the same-name delegation fix, `ideation_commands` and
+/// `workflow_commands` were among the heaviest users of the command → identically-named
+/// service shape, so their old detector verdicts were vacuous.
+#[test]
+#[ignore = "calibration probe"]
+fn probe_b4_module_batch_audit() {
+    const B4_MODULES: &[&str] = &[
+        "agent_plan_commands",
+        "ideation_commands",
+        "methodology_commands",
+        "plan_commands",
+        "workflow_commands",
+    ];
+    let graph = CallGraph::build(&load_production_sources());
+    let rows = census();
+    let commands = rows.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>();
+    let detector_b = spawn_triggering_writers(&graph, commands, SPAWN_TRIGGERING_STATE_SURFACE);
+
+    for (command, module) in &rows {
+        if !B4_MODULES.contains(&module.as_str()) {
+            continue;
+        }
+        let closure = graph.closure([command.clone()]);
+        let a = closure_is_arming(&closure);
+        let b = detector_b.contains(command);
+        let c = tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS);
+        let row = policy_for(command, module).expect("ledgered");
+        eprintln!(
+            "PROBE-B4 {module} {command} a={a} b={b} c={c} class={:?} caps={:?} registered={}",
+            row.class,
+            row.capabilities,
+            find_spec(command).is_some(),
+        );
+    }
+}
+
+/// Calibration probe for census `B3` — review, QA, merge pipeline, validation.
+///
+/// Same shape as [`probe_b1_module_batch_audit`]: prints the live detector (a)/(b)/(c) verdict
+/// per member alongside its ledger row, plus the concrete sink tokens behind every hit so the
+/// hand audit can be argued against a path rather than a boolean. Run before the batch decides
+/// which members register and which are refused.
+#[test]
+#[ignore = "calibration probe"]
+fn probe_b3_module_batch_audit() {
+    const B3_MODULES: &[&str] = &[
+        "merge_pipeline_commands",
+        "qa_commands",
+        "review_commands",
+        "validation_commands",
+    ];
+    let graph = CallGraph::build(&load_production_sources());
+    let rows = census();
+    let commands = rows.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>();
+    let detector_b = spawn_triggering_writers(&graph, commands, SPAWN_TRIGGERING_STATE_SURFACE);
+
+    for (command, module) in &rows {
+        if !B3_MODULES.contains(&module.as_str()) {
+            continue;
+        }
+        let closure = graph.closure([command.clone()]);
+        let a = closure_is_arming(&closure);
+        let b = detector_b.contains(command);
+        let c = tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS);
+        let row = policy_for(command, module).expect("ledgered");
+        eprintln!(
+            "PROBE-B3 {module} {command} a={a} b={b} c={c} class={:?} caps={:?} registered={}",
+            row.class,
+            row.capabilities,
+            find_spec(command).is_some(),
+        );
+        for sinks in [
+            ("STEER", &super::authority_audit::STEER_SINKS[..]),
+            ("SCHEDULER", &super::authority_audit::SCHEDULER_SINKS[..]),
+            ("TRANSITION", &super::authority_audit::TRANSITION_SINKS[..]),
+            ("LAUNCH", PROCESS_LAUNCH_SINKS),
+        ] {
+            let hits = closure
+                .tokens
+                .iter()
+                .filter(|t| tokens_reach_any(&std::iter::once((*t).clone()).collect(), sinks.1))
+                .cloned()
+                .collect::<Vec<_>>();
+            if !hits.is_empty() {
+                eprintln!("PROBE-B3   {command} {} -> {hits:?}", sinks.0);
             }
         }
     }
@@ -3471,4 +3591,331 @@ fn the_b2_getter_refusals_are_pinned() {
         !closure_is_arming(&clean),
         "`get_agent_conversation_summary` arms; it should not have been registered"
     );
+}
+
+// ---------------------------------------------------------------------------------------
+// PR 3.1-b batch 7 — census `B3` (review, QA, merge pipeline, validation).
+// ---------------------------------------------------------------------------------------
+
+/// The `B3` rows reclassified to `Read` carry a reviewed reason, not a module default, and
+/// audit clean on all three detectors.
+///
+/// The mechanical half of the claim: a future refactor that routes any of these through a
+/// transition, a spawn-arming write or a CLI resolution fails here rather than shipping a
+/// `ui:read` registration over authority it acquired later.
+#[test]
+fn b3_read_reclassifications_are_reviewed_rather_than_module_defaults() {
+    const RECLASSIFIED: &[(&str, &str)] = &[
+        ("get_pending_reviews", "review_commands"),
+        ("get_review_by_id", "review_commands"),
+        ("get_reviews_by_task_id", "review_commands"),
+        ("get_task_state_history", "review_commands"),
+        ("get_fix_task_attempts", "review_commands"),
+        ("get_task_issues", "review_commands"),
+        ("get_issue_progress", "review_commands"),
+        ("get_review_settings", "review_commands"),
+        ("get_qa_settings", "qa_commands"),
+        ("get_task_qa", "qa_commands"),
+        ("get_qa_results", "qa_commands"),
+        ("get_merge_pipeline", "merge_pipeline_commands"),
+        ("get_merge_progress", "merge_pipeline_commands"),
+        ("get_merge_phase_list", "merge_pipeline_commands"),
+    ];
+
+    let graph = CallGraph::build(&load_production_sources());
+    let rows = census();
+    let commands = rows
+        .iter()
+        .map(|(command, _)| command.clone())
+        .collect::<Vec<_>>();
+    let detector_b = spawn_triggering_writers(&graph, commands, SPAWN_TRIGGERING_STATE_SURFACE);
+
+    for (command, module) in RECLASSIFIED {
+        let row = policy_for(command, module).expect("reclassified row is ledgered");
+        assert_eq!(
+            row.class,
+            RiskClass::Read,
+            "`{command}` is registered at `ui:read` and must be ledgered `Read`"
+        );
+        assert!(
+            row.capabilities.is_empty(),
+            "`{command}` is a read and must declare no capability; got {:?}",
+            row.capabilities
+        );
+        assert!(
+            !row.reason.contains("conservative-module-default"),
+            "`{command}` still carries the module-default placeholder as its reason; a `Read` \
+             row below its module default needs a reviewed structural reason"
+        );
+
+        let closure = graph.closure([(*command).to_string()]);
+        assert!(
+            !closure_is_arming(&closure),
+            "detector (a): `{command}` reaches a transition/steer sink and cannot be `Read`"
+        );
+        assert!(
+            !detector_b.contains(*command),
+            "detector (b): `{command}` writes spawn-triggering state and cannot be `Read`"
+        );
+        assert!(
+            !tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS),
+            "detector (c): `{command}` resolves a CLI and cannot be `Read`"
+        );
+
+        let spec = find_spec(command).expect("reclassified row is registered");
+        assert_eq!(spec.class, RiskClass::Read);
+        assert!(spec.capabilities.is_empty());
+    }
+}
+
+/// The `B3` members this batch declined to register, each pinned to its OWN finding.
+///
+/// A registration sweep is only as trustworthy as the rows it declines to move, and every
+/// member below sits in a module whose getters were just reclassified — so "it is in a
+/// reclassified module" must never be sufficient grounds in either direction.
+#[test]
+fn b3_members_that_audit_dirty_stay_unregistered() {
+    let graph = CallGraph::build(&load_production_sources());
+    let rows = census();
+    let commands = rows
+        .iter()
+        .map(|(command, _)| command.clone())
+        .collect::<Vec<_>>();
+    let detector_b = spawn_triggering_writers(&graph, commands, SPAWN_TRIGGERING_STATE_SURFACE);
+
+    // --- (c): a getter that shells out. Not registerable at any v1 scope, and resolved
+    // through the manifest rather than a client-local reason: it is a host command the
+    // facade denies, not one the client handles.
+    let validation =
+        policy_for("get_task_validation_summary", "validation_commands").expect("ledgered");
+    assert_eq!(validation.class, RiskClass::Elevated);
+    assert_eq!(validation.capabilities, &[Capability::SpawnsProcess]);
+    assert_eq!(
+        ralphx_remote_protocol::v1_resolution(validation.class, validation.capabilities),
+        ralphx_remote_protocol::V1Resolution::HostDeniedSpawnsProcess,
+        "`get_task_validation_summary` must resolve through the manifest, not a local-only row"
+    );
+
+    // --- (a): the human review transitions. `approve_task_for_review` is registered with the
+    // same detector-(a) profile, so the transition sink alone is not what excludes these —
+    // each is held back on its own additional finding, recorded per group below.
+    //
+    // (a) + (b): these three seed spawn-triggering state as well as transitioning, which is
+    // the combination `update_review_settings` is flagged for and no registered row carries.
+    for command in [
+        "request_task_changes_for_review",
+        "request_task_changes_from_reviewing",
+        "re_review_task_from_escalated",
+    ] {
+        let closure = graph.closure([command.to_string()]);
+        assert!(
+            closure_is_arming(&closure),
+            "`{command}` is excluded because detector (a) fires; if it no longer does, the \
+             exclusion needs a new reason"
+        );
+        assert!(
+            detector_b.contains(command),
+            "`{command}` is excluded because detector (b) fires alongside (a)"
+        );
+        assert!(
+            find_spec(command).is_none(),
+            "`{command}` must not be registered"
+        );
+    }
+
+    // (a) alone, plus corrective-transition authority: `reject_fix_task` reaches
+    // `transition_task_corrective`, the nonstandard repair jump, and `approve_fix_task` is its
+    // paired half. Registering one half of a repair pair remotely while the other is held is
+    // worse than holding both, so both wait for a batch that audits the pair together.
+    for command in ["approve_fix_task", "reject_fix_task"] {
+        let closure = graph.closure([command.to_string()]);
+        assert!(
+            closure_is_arming(&closure),
+            "`{command}` is excluded because detector (a) fires"
+        );
+        assert!(
+            find_spec(command).is_none(),
+            "`{command}` must not be registered"
+        );
+    }
+
+    // (b): the write half of the settings pair whose READ half this batch registered.
+    let review_settings =
+        policy_for("update_review_settings", "review_commands").expect("ledgered");
+    assert!(
+        review_settings
+            .capabilities
+            .contains(&Capability::SeedsSpawnTriggeringState),
+        "`update_review_settings` seeds spawn-triggering state; its read half is registered \
+         and this half must not be reclassified downward by module analogy"
+    );
+    assert!(detector_b.contains("update_review_settings"));
+    assert!(find_spec("update_review_settings").is_none());
+
+    // No detector models this one, so it is a hand-audited exclusion recorded here. Detector
+    // (b)'s surface covers persisted spawn-triggering state; `update_qa_settings` writes
+    // `AppState::qa_settings` IN MEMORY, and `qa_enabled` / `auto_qa_for_ui_tasks` /
+    // `auto_qa_for_api_tasks` are precisely what decide whether QA is armed automatically.
+    // That is the same authority detector (b) flags `update_review_settings` for, reached
+    // through a surface the detector does not model — so the read half is registered and the
+    // write half is not.
+    let qa_settings = policy_for("update_qa_settings", "qa_commands").expect("ledgered");
+    assert_eq!(
+        qa_settings.class,
+        RiskClass::AgentControl,
+        "update_qa_settings arms automatic QA through an in-memory settings surface detector \
+         (b) does not model; it is not a getter"
+    );
+    assert!(find_spec("update_qa_settings").is_none());
+
+    // --- A detector-(c) FALSE POSITIVE, recorded rather than worked around.
+    //
+    // `reopen_issue`'s body is a `review_issue_repo` read + `update` with a status guard: no
+    // transition, no CLI. The hit comes from `issue.reopen(reason)`, whose real target is
+    // `ReviewIssueEntity::reopen` in the `ralphx-domain` CRATE — outside the tree
+    // `load_production_sources` walks. With no same-arity candidate visible, the resolver
+    // falls back to every method named `reopen` (the documented conservative
+    // over-approximation) and picks up `SessionReopenService::reopen`, which does reach git.
+    //
+    // The honest disposition is therefore NEITHER: it must not be registered while the
+    // detector-(c) floor fires on it, and it must not be ledgered `SpawnsProcess`, because it
+    // does not spawn. It stays unclassified in the P-11 baseline until the scanner's crate
+    // scope is widened — a change with its own blast radius and its own batch.
+    let closure = graph.closure(["reopen_issue".to_string()]);
+    assert!(
+        tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS),
+        "`reopen_issue` is held back by a detector (c) hit; if it no longer fires, the domain \
+         crate entered the scanned tree and this row can be re-audited"
+    );
+    let reopen = policy_for("reopen_issue", "review_commands").expect("ledgered");
+    assert!(
+        !reopen.capabilities.contains(&Capability::SpawnsProcess),
+        "`reopen_issue` does not spawn a process; declaring `SpawnsProcess` to buy a manifest \
+         classification would put a false statement in the ledger"
+    );
+    assert!(find_spec("reopen_issue").is_none());
+}
+
+/// The `B4` rows reclassified to `Read` carry a reviewed reason and audit clean, exactly as
+/// the `B3` cluster does.
+#[test]
+fn b4_read_reclassifications_are_reviewed_rather_than_module_defaults() {
+    const RECLASSIFIED: &[(&str, &str)] = &[
+        ("get_active_plan", "plan_commands"),
+        ("get_active_execution_plan", "plan_commands"),
+        ("list_plan_selector_candidates", "plan_commands"),
+        ("get_methodologies", "methodology_commands"),
+        ("get_active_methodology", "methodology_commands"),
+        ("get_workflows", "workflow_commands"),
+        ("get_workflow", "workflow_commands"),
+        ("get_builtin_workflows", "workflow_commands"),
+        ("get_active_workflow_columns", "workflow_commands"),
+    ];
+
+    let graph = CallGraph::build(&load_production_sources());
+    let rows = census();
+    let commands = rows
+        .iter()
+        .map(|(command, _)| command.clone())
+        .collect::<Vec<_>>();
+    let detector_b = spawn_triggering_writers(&graph, commands, SPAWN_TRIGGERING_STATE_SURFACE);
+
+    for (command, module) in RECLASSIFIED {
+        let row = policy_for(command, module).expect("reclassified row is ledgered");
+        assert_eq!(
+            row.class,
+            RiskClass::Read,
+            "`{command}` must be ledgered Read"
+        );
+        assert!(
+            row.capabilities.is_empty(),
+            "`{command}` is a read and must declare no capability; got {:?}",
+            row.capabilities
+        );
+        assert!(
+            !row.reason.contains("conservative-module-default"),
+            "`{command}` still carries the module-default placeholder as its reason"
+        );
+
+        let closure = graph.closure([(*command).to_string()]);
+        assert!(
+            !closure_is_arming(&closure),
+            "detector (a): `{command}` reaches a transition/steer sink and cannot be `Read`"
+        );
+        assert!(
+            !detector_b.contains(*command),
+            "detector (b): `{command}` writes spawn-triggering state and cannot be `Read`"
+        );
+        assert!(
+            !tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS),
+            "detector (c): `{command}` resolves a CLI and cannot be `Read`"
+        );
+
+        let spec = find_spec(command).expect("reclassified row is registered");
+        assert_eq!(spec.class, RiskClass::Read);
+        assert!(spec.capabilities.is_empty());
+    }
+}
+
+/// `set_active_plan` audits clean on all three detectors and is still refused.
+///
+/// No detector models this: the body swallows TWO errors. The execution-plan lookup is
+/// `if let Ok(Some(ep))`, so a repository failure is indistinguishable from "this session has
+/// no execution plan", and the follow-up `set_execution_plan_id` write is discarded with
+/// `let _ =`. Both failures leave `Ok(())` on the wire, so a remote client is told the active
+/// plan was set while the derived execution-plan id silently did not move — and the execution
+/// plan id is what the Kanban/Graph filters and the scheduler read.
+///
+/// This is the same fail-open disqualification batch 2 applied to
+/// `get_pending_permissions`/`get_pending_questions`, in the write direction. Registered
+/// siblings in the same module do not license it; the fix is to propagate both errors, and
+/// until then the honest answer is that it stays out of the facade.
+#[test]
+fn b4_members_that_audit_dirty_stay_unregistered() {
+    let graph = CallGraph::build(&load_production_sources());
+    let rows = census();
+    let commands = rows
+        .iter()
+        .map(|(command, _)| command.clone())
+        .collect::<Vec<_>>();
+    let detector_b = spawn_triggering_writers(&graph, commands, SPAWN_TRIGGERING_STATE_SURFACE);
+
+    let closure = graph.closure(["set_active_plan".to_string()]);
+    assert!(
+        !closure_is_arming(&closure)
+            && !detector_b.contains("set_active_plan")
+            && !tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS),
+        "`set_active_plan` is a HAND-audited exclusion; if a detector now fires on it, the \
+         reason recorded here is no longer the operative one and must be re-derived"
+    );
+    let row = policy_for("set_active_plan", "plan_commands").expect("ledgered");
+    assert_eq!(
+        row.class,
+        RiskClass::AgentControl,
+        "set_active_plan swallows the execution-plan lookup error and the \
+         set_execution_plan_id write error, so it can report success on a partial write; its \
+         read siblings being registered does not license reclassifying it"
+    );
+    assert!(
+        find_spec("set_active_plan").is_none(),
+        "set_active_plan must not be registered"
+    );
+
+    // The other two writers in the reclassified modules, held on the ordinary write/read
+    // split rather than on a fail-open finding.
+    for (command, module) in [
+        ("clear_active_plan", "plan_commands"),
+        ("seed_builtin_workflows", "workflow_commands"),
+    ] {
+        let row = policy_for(command, module).expect("ledgered");
+        assert_eq!(
+            row.class,
+            RiskClass::AgentControl,
+            "`{command}` writes and must not be reclassified downward by module analogy"
+        );
+        assert!(
+            find_spec(command).is_none(),
+            "`{command}` must not be registered"
+        );
+    }
 }

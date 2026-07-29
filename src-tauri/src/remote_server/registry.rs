@@ -1432,4 +1432,212 @@ crate::remote_commands! {
         result: fallible,
         pins: [("args", "decision", "allow")],
     },
+
+    // -----------------------------------------------------------------------------------
+    // PR 3.1-b batch 7 — census `B3`, the review / QA / merge-pipeline read cluster, at
+    // `ui:read`.
+    //
+    // Reclassifications, not newly-permissive rows: each sat at `AgentControl` only because
+    // `review_commands` / `qa_commands` / `merge_pipeline_commands` default there, and those
+    // defaults are conservative because the same modules hold the human approval actions,
+    // `retry_qa`, and the review-settings write. The per-command audit — detectors (a), (b)
+    // and (c) all silent, bodies hand-traced to repository or in-memory-store reads whose
+    // errors propagate — is recorded in `capability_ledger` and pinned by the detector
+    // calibration lists.
+    //
+    // The audit that authorized these ran AFTER this batch's `resolve_dispatch` fix. Before
+    // it, any command delegating to an identically-named service had an empty closure and
+    // read "detector-clean" vacuously; `get_task_validation_summary` is the member that
+    // failed on the corrected graph and is NOT here.
+    // -----------------------------------------------------------------------------------
+    "get_pending_reviews" => crate::commands::review_commands::get_pending_reviews {
+        class: Read,
+        caps: [],
+        params: [(arg project_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_review_by_id" => crate::commands::review_commands::get_review_by_id {
+        class: Read,
+        caps: [],
+        params: [(arg review_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_reviews_by_task_id" => crate::commands::review_commands::get_reviews_by_task_id {
+        class: Read,
+        caps: [],
+        params: [(arg task_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_task_state_history" => crate::commands::review_commands::get_task_state_history {
+        class: Read,
+        caps: [],
+        params: [(arg task_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_fix_task_attempts" => crate::commands::review_commands::get_fix_task_attempts {
+        class: Read,
+        caps: [],
+        params: [(arg task_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_task_issues" => crate::commands::review_commands::get_task_issues {
+        class: Read,
+        caps: [],
+        params: [
+            (arg task_id: String),
+            (arg status_filter: Option<String>),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "get_issue_progress" => crate::commands::review_commands::get_issue_progress {
+        class: Read,
+        caps: [],
+        params: [(arg task_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_review_settings" => crate::commands::review_commands::get_review_settings {
+        class: Read,
+        caps: [],
+        params: [(app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_qa_settings" => crate::commands::qa_commands::get_qa_settings {
+        class: Read,
+        caps: [],
+        params: [(app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_task_qa" => crate::commands::qa_commands::get_task_qa {
+        class: Read,
+        caps: [],
+        params: [(arg task_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_qa_results" => crate::commands::qa_commands::get_qa_results {
+        class: Read,
+        caps: [],
+        params: [(arg task_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_merge_pipeline" => crate::commands::merge_pipeline_commands::get_merge_pipeline {
+        class: Read,
+        caps: [],
+        params: [
+            (arg project_id: Option<String>),
+            (active_project_state),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "get_merge_progress" => crate::commands::merge_pipeline_commands::get_merge_progress {
+        class: Read,
+        caps: [],
+        params: [(arg task_id: String)],
+        call: async,
+        result: fallible,
+    },
+    "get_merge_phase_list" => crate::commands::merge_pipeline_commands::get_merge_phase_list {
+        class: Read,
+        caps: [],
+        params: [(arg task_id: String)],
+        call: async,
+        result: fallible,
+    },
+
+    // -----------------------------------------------------------------------------------
+    // PR 3.1-b batch 7 — census `B4`, the plan / methodology / workflow read cluster, at
+    // `ui:read`.
+    //
+    // Same reclassification shape as the `B3` cluster above: `AgentControl` by module default
+    // only. `plan_commands` defaults conservatively because it also holds `set_active_plan`
+    // and `clear_active_plan`, which steer which plan the Kanban/Graph surfaces and the
+    // scheduler read; `workflow_commands` because it holds the workflow writers.
+    //
+    // `set_active_plan` is NOT here and is not merely "the write half": its body swallows two
+    // errors (`if let Ok(Some(ep))` on the execution-plan lookup, `let _ =` on the
+    // `set_execution_plan_id` write), so a partial application reports success. A fail-open
+    // shape gets fixed or refused, never registered — see `b4_members_that_audit_dirty...`.
+    // -----------------------------------------------------------------------------------
+    "get_active_plan" => crate::commands::plan_commands::get_active_plan {
+        class: Read,
+        caps: [],
+        params: [(arg project_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_active_execution_plan" => crate::commands::plan_commands::get_active_execution_plan {
+        class: Read,
+        caps: [],
+        params: [(arg project_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "list_plan_selector_candidates"
+        => crate::commands::plan_commands::list_plan_selector_candidates {
+        class: Read,
+        caps: [],
+        params: [
+            (arg project_id: String),
+            (arg query: Option<String>),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "get_methodologies" => crate::commands::methodology_commands::get_methodologies {
+        class: Read,
+        caps: [],
+        params: [(app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_active_methodology" => crate::commands::methodology_commands::get_active_methodology {
+        class: Read,
+        caps: [],
+        params: [(app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_workflows" => crate::commands::workflow_commands::get_workflows {
+        class: Read,
+        caps: [],
+        params: [(app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_workflow" => crate::commands::workflow_commands::get_workflow {
+        class: Read,
+        caps: [],
+        params: [(arg id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_builtin_workflows" => crate::commands::workflow_commands::get_builtin_workflows {
+        class: Read,
+        caps: [],
+        params: [],
+        call: async,
+        result: fallible,
+    },
+    "get_active_workflow_columns"
+        => crate::commands::workflow_commands::get_active_workflow_columns {
+        class: Read,
+        caps: [],
+        params: [(app_state)],
+        call: async,
+        result: fallible,
+    },
 }

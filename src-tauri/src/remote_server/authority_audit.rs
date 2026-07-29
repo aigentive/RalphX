@@ -433,14 +433,11 @@ impl CallGraph {
                 let Some((kind, bare, arity, owner)) = parse_pending_call(&callee) else {
                     continue;
                 };
-                if source_is_command && registered.contains(bare) {
-                    continue;
-                }
                 if all_cut_sinks().contains(bare) {
                     continue;
                 }
                 if let Some(targets) = definitions.get(bare) {
-                    let resolved = dispatch_candidates(
+                    let mut resolved = dispatch_candidates(
                         targets,
                         arity,
                         owner,
@@ -449,6 +446,20 @@ impl CallGraph {
                         &definition_owners,
                         &definition_methods,
                     );
+                    // Commands must not fuse into one another: inside a `commands/` file a call
+                    // naming a registered command is the IPC name, not an edge. Drop only the
+                    // candidates that are THEMSELVES command definitions — the rule exists to
+                    // stop command→command fusion, and dropping the whole call site also
+                    // deleted the codebase's most common delegation shape (a thin command
+                    // calling an identically-named application service), which silenced
+                    // detectors (a)/(b)/(c) for every such command. PR 3.1-b batch 7.
+                    if source_is_command && registered.contains(bare) {
+                        resolved.retain(|target| {
+                            !node_files
+                                .get(target)
+                                .is_some_and(|file| file.starts_with("commands/"))
+                        });
+                    }
                     if resolved.len() > 1 {
                         unresolved_dispatch
                             .entry(format!("{node_name} -> {bare}/{arity}"))
@@ -489,6 +500,21 @@ impl CallGraph {
             }
         }
         self.unresolved_dispatch = unresolved_dispatch;
+    }
+
+    /// Every bare name the walk defined, mapped to its qualified definition nodes.
+    pub fn definitions_snapshot(&self) -> &BTreeMap<String, BTreeSet<String>> {
+        &self.definitions
+    }
+
+    /// The `generate_handler!` command names parsed out of `commands/registry.rs`.
+    pub fn registered_commands_snapshot(&self) -> &BTreeSet<String> {
+        &self.registered_commands
+    }
+
+    /// The source file a qualified definition node came from.
+    pub fn file_of(&self, node: &str) -> Option<&str> {
+        self.node_files.get(node).map(String::as_str)
     }
 
     pub fn roots_named(&self, name: &str) -> BTreeSet<String> {

@@ -461,3 +461,131 @@ fn probe_paths() {
     fanout.sort_by(|a, b| b.0.cmp(&a.0));
     eprintln!("PROBE top-fanout {:?}", &fanout[..20.min(fanout.len())]);
 }
+
+// ---------------------------------------------------------------------------------------
+// PR 3.1-b batch 7 — same-name delegation must stay in the closure.
+//
+// `resolve_dispatch` refuses to fuse two sibling commands whose bodies mention each other's
+// registered name. That rule is right, but dropping the edge unconditionally also deletes the
+// most common delegation shape in this codebase: a thin Tauri command calling an
+// identically-named application-service function. For those commands every detector reads
+// silent no matter what the delegate does — a MASKING fault, the direction batch 6 pinned as
+// the one fixtures and graph shortcuts must never move a verdict in.
+// ---------------------------------------------------------------------------------------
+
+/// A command delegating to a same-named NON-command definition keeps the edge; a command
+/// naming a sibling COMMAND still does not.
+#[test]
+fn same_name_delegation_to_a_non_command_stays_in_the_closure() {
+    let files = vec![
+        (
+            "commands/registry.rs".to_string(),
+            r#"
+            pub fn handlers() {
+                tauri::generate_handler![
+                    commands::alpha::do_thing,
+                    commands::alpha::other_thing,
+                ]
+            }
+            "#
+            .to_string(),
+        ),
+        (
+            "commands/alpha.rs".to_string(),
+            r#"
+            #[tauri::command]
+            pub async fn do_thing(id: String, state: State<'_, AppState>) -> Result<(), String> {
+                ThingService::do_thing(&state, &id).await.map_err(|e| e.to_string())
+            }
+
+            #[tauri::command]
+            pub async fn other_thing(id: String, state: State<'_, AppState>) -> Result<(), String> {
+                do_thing(id, state).await
+            }
+            "#
+            .to_string(),
+        ),
+        (
+            "application/thing_service.rs".to_string(),
+            r#"
+            impl ThingService {
+                pub async fn do_thing(state: &AppState, id: &TaskId) -> AppResult<()> {
+                    let path = resolve_git_cli_path().await?;
+                    let _ = path;
+                    Ok(())
+                }
+            }
+            "#
+            .to_string(),
+        ),
+    ];
+
+    let graph = CallGraph::build(&files);
+
+    // The delegation edge survives, so the launch sink in the service body is visible.
+    let delegating = graph.closure(["do_thing".to_string()]);
+    assert!(
+        tokens_reach_any(&delegating.tokens, PROCESS_LAUNCH_SINKS),
+        "`do_thing` delegates to `ThingService::do_thing`, which resolves a git CLI path; \
+         dropping that edge makes detector (c) vacuous for every delegating command. \
+         tokens={:?}",
+        delegating.tokens
+    );
+
+    // The anti-fusion rule it was defending still holds: naming a SIBLING COMMAND creates no
+    // edge, so `other_thing` does not inherit `do_thing`'s authority.
+    let sibling = graph.closure(["other_thing".to_string()]);
+    assert!(
+        !tokens_reach_any(&sibling.tokens, PROCESS_LAUNCH_SINKS),
+        "`other_thing` names the sibling command `do_thing`; commands must not fuse. \
+         tokens={:?}",
+        sibling.tokens
+    );
+}
+
+/// The live regression this found: `get_task_validation_summary` reaches a `git rev-parse`
+/// through `TaskValidationService::get_task_validation_summary` → `GitService::get_head_sha`.
+/// Pinned against the real tree so the general rule above cannot pass while the case that
+/// motivated it regresses.
+#[test]
+fn validation_summary_command_reaches_its_service_delegate() {
+    let graph = CallGraph::build(&load_production_sources());
+    let closure = graph.closure(["get_task_validation_summary".to_string()]);
+    assert!(
+        closure.tokens.contains("get_head_sha"),
+        "`get_task_validation_summary` must reach `GitService::get_head_sha` through its \
+         same-named service delegate; a closure that stops at the command body reports every \
+         detector clean. tokens={:?}",
+        closure.tokens
+    );
+    assert!(
+        tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS),
+        "detector (c) must fire on `get_task_validation_summary`: its delegate shells out to \
+         `git rev-parse HEAD`"
+    );
+}
+
+#[test]
+#[ignore = "calibration probe"]
+fn probe_same_name_delegation_blast_radius() {
+    let files = load_production_sources();
+    let graph = CallGraph::build(&files);
+    let mut affected = Vec::new();
+    for (name, targets) in graph.definitions_snapshot() {
+        if !graph.registered_commands_snapshot().contains(name) {
+            continue;
+        }
+        let non_command: Vec<_> = targets
+            .iter()
+            .filter(|t| !graph.file_of(t).is_some_and(|f| f.starts_with("commands/")))
+            .cloned()
+            .collect();
+        if !non_command.is_empty() {
+            affected.push((name, non_command));
+        }
+    }
+    eprintln!("PROBE-DELEGATION affected_commands={}", affected.len());
+    for (name, targets) in &affected {
+        eprintln!("PROBE-DELEGATION   {name} -> {targets:?}");
+    }
+}

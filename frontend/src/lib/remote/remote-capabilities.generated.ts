@@ -92,7 +92,31 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: ["seedsSpawnTriggeringState"],
     pins: [],
   },
+  "get_active_execution_plan": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_active_methodology": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_active_plan": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
   "get_active_project": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_active_workflow_columns": {
     opClass: "read",
     argumentSensitive: false,
     capabilities: [],
@@ -122,6 +146,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: [],
     pins: [],
   },
+  "get_builtin_workflows": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
   "get_bulk_workspace_publication_states": {
     opClass: "read",
     argumentSensitive: false,
@@ -129,6 +159,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     pins: [],
   },
   "get_execution_settings": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_fix_task_attempts": {
     opClass: "read",
     argumentSensitive: false,
     capabilities: [],
@@ -146,7 +182,55 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: [],
     pins: [],
   },
+  "get_issue_progress": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_merge_phase_list": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_merge_pipeline": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_merge_progress": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_methodologies": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_pending_reviews": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
   "get_project_chat_usage_stats": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_qa_results": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_qa_settings": {
     opClass: "read",
     argumentSensitive: false,
     capabilities: [],
@@ -165,6 +249,24 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     pins: [],
   },
   "get_remote_agent_conversation_timeline_page": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_review_by_id": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_review_settings": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_reviews_by_task_id": {
     opClass: "read",
     argumentSensitive: false,
     capabilities: [],
@@ -206,6 +308,24 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: [],
     pins: [],
   },
+  "get_task_issues": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_task_qa": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_task_state_history": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
   "get_task_state_transitions": {
     opClass: "read",
     argumentSensitive: false,
@@ -231,6 +351,18 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     pins: [],
   },
   "get_valid_transitions": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_workflow": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_workflows": {
     opClass: "read",
     argumentSensitive: false,
     capabilities: [],
@@ -267,6 +399,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     pins: [],
   },
   "list_pending_question_gates": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "list_plan_selector_candidates": {
     opClass: "read",
     argumentSensitive: false,
     capabilities: [],

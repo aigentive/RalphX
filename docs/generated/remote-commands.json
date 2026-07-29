@@ -469,6 +469,11 @@
     "resume_automation_run",
     "create_persona_draft",
     "update_persona_draft",
+    "update_persona",
+    "approve_persona",
+    "reseed_persona_draft",
+    "approve_persona_as_new",
+    "archive_persona",
     "delete_persona_draft",
     "assign_agent_conversation_linear_issue",
     "refresh_agent_conversation_linear_issue",
@@ -523,6 +528,7 @@
     "validate_linear_integration",
     "validate_clickup_integration",
     "list_clickup_workspaces",
+    "search_clickup_tasks",
     "assign_agent_conversation_granola_note",
     "get_granola_note_detail",
     "list_granola_notes",
@@ -531,6 +537,7 @@
     "start_research",
     "resolve_user_question",
     "start_agent_conversation",
+    "abort_seeded_agent_conversation",
     "switch_agent_conversation_mode",
     "send_agent_message",
     "queue_agent_message",
@@ -563,6 +570,11 @@
     "get_ticket_detail",
     "list_ticket_transitions",
     "start_ralphx_work_from_ticket",
+    "transition_ticket_status",
+    "assign_ticket",
+    "clear_ticket_assignee",
+    "add_ticket_comment",
+    "set_ticket_labels",
     "list_ticket_labels"
   ],
   "authority_reducing_exemptions": [
@@ -2664,6 +2676,213 @@
       ],
       "scopeConfined": false,
       "target": "crate::commands::permission_commands::resolve_permission_request"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_pending_reviews",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::review_commands::get_pending_reviews"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_review_by_id",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::review_commands::get_review_by_id"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_reviews_by_task_id",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::review_commands::get_reviews_by_task_id"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_task_state_history",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::review_commands::get_task_state_history"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_fix_task_attempts",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::review_commands::get_fix_task_attempts"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_task_issues",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::review_commands::get_task_issues"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_issue_progress",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::review_commands::get_issue_progress"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_review_settings",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::review_commands::get_review_settings"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_qa_settings",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::qa_commands::get_qa_settings"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_task_qa",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::qa_commands::get_task_qa"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_qa_results",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::qa_commands::get_qa_results"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_merge_pipeline",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::merge_pipeline_commands::get_merge_pipeline"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_merge_progress",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::merge_pipeline_commands::get_merge_progress"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_merge_phase_list",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::merge_pipeline_commands::get_merge_phase_list"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_active_plan",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::plan_commands::get_active_plan"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_active_execution_plan",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::plan_commands::get_active_execution_plan"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "list_plan_selector_candidates",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::plan_commands::list_plan_selector_candidates"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_methodologies",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::methodology_commands::get_methodologies"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_active_methodology",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::methodology_commands::get_active_methodology"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_workflows",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::workflow_commands::get_workflows"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_workflow",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::workflow_commands::get_workflow"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_builtin_workflows",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::workflow_commands::get_builtin_workflows"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_active_workflow_columns",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::workflow_commands::get_active_workflow_columns"
     }
   ],
   "ledger": [
@@ -4576,14 +4795,12 @@
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_qa_settings",
       "module": "qa_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "QA settings read: clones the in-memory `AppState::qa_settings` behind a read guard; the WRITE half (`update_qa_settings`) arms auto-QA and stays AgentControl",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -4598,25 +4815,21 @@
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_task_qa",
       "module": "qa_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "per-task QA record: `task_qa_repo.get_by_task_id` mapped to a response",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_qa_results",
       "module": "qa_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "QA test results: `task_qa_repo.get_by_task_id` projected to its `test_results`; retries nothing and resets no result",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -4642,47 +4855,39 @@
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_pending_reviews",
       "module": "review_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "pending-review enumeration: `review_repo.get_pending` mapped to responses; selects rows and starts no review",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_review_by_id",
       "module": "review_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "single-review read: `review_repo.get_by_id`, an Option-returning row read whose repository error propagates rather than reading as absent",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_reviews_by_task_id",
       "module": "review_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "per-task review list: `review_repo.get_by_task_id` mapped to responses",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_task_state_history",
       "module": "review_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "review-note history: `review_repo.get_notes_by_task_id`; reads notes already written and writes none",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -4741,14 +4946,12 @@
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_fix_task_attempts",
       "module": "review_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "fix-attempt count: `review_repo.count_fix_actions` rendered as a scalar",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -4796,25 +4999,21 @@
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_task_issues",
       "module": "review_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "issue list: `review_issue_repo.get_open_by_task_id`/`get_by_task_id` selected by a status filter; both halves propagate their repository error",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_issue_progress",
       "module": "review_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "issue progress summary: `review_issue_repo.get_summary`, an aggregate read",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -4866,14 +5065,12 @@
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_review_settings",
       "module": "review_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "review policy read: `review_settings_repo.get_settings`; the WRITE half (`update_review_settings`) seeds spawn-triggering state and stays AgentControl",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -4890,14 +5087,14 @@
     },
     {
       "capabilities": [
-        "agentControl"
+        "spawnsProcess"
       ],
-      "class": "agentControl",
+      "class": "elevated",
       "command": "get_task_validation_summary",
       "module": "validation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "resolves the git CLI through `GitService::get_head_sha` to stamp the validation summary with the current HEAD sha",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -5077,36 +5274,30 @@
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_merge_pipeline",
       "module": "merge_pipeline_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "merge-pipeline projection: batched `project_repo`/`task_repo`/`plan_branch_repo`/`agent_conversation_workspace_repo` reads bucketed by `InternalStatus`; every repository error propagates and no merge is started, deferred or resolved",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_merge_progress",
       "module": "merge_pipeline_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "merge-progress hydration: clones accumulated events out of the in-memory `MERGE_PROGRESS_STORE`. The empty default is absence of emitted events, not a swallowed error — the store read cannot fail",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_merge_phase_list",
       "module": "merge_pipeline_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "merge phase-list hydration: clones the stored phase list out of the in-memory `MERGE_PHASE_LIST_STORE`; returns `None` when nothing was emitted",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -6114,25 +6305,21 @@
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_workflows",
       "module": "workflow_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "workflow list: `workflow_repo.get_all` mapped to responses",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_workflow",
       "module": "workflow_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "single workflow read: `workflow_repo.get_by_id`, Option-returning with the repository error propagated rather than read as absent",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -6169,25 +6356,21 @@
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_active_workflow_columns",
       "module": "workflow_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "active column set: `workflow_repo.get_default` with its error propagated, falling back to the built-in RalphX columns only when no default is SET; `seed_builtin_workflows` is the write half and stays AgentControl",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_builtin_workflows",
       "module": "workflow_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "built-in workflow schemas: constructs three in-process constants and touches no state at all — the command takes no `AppState`",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -6686,25 +6869,21 @@
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_methodologies",
       "module": "methodology_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "methodology list: `methodology_repo.get_all` mapped to responses",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_active_methodology",
       "module": "methodology_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "active methodology read: `methodology_repo.get_active`; the ACTIVATE half writes the active row and stays AgentControl",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -8137,14 +8316,12 @@
       "v1Resolution": "host-denied-spawns-process"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_active_plan",
       "module": "plan_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "active-plan read: `active_plan_repo.get` rendered as an Option<String>; selects no plan and records no selection",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -8159,14 +8336,12 @@
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_active_execution_plan",
       "module": "plan_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "active execution-plan id read: `active_plan_repo.get_execution_plan_id`",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -8181,14 +8356,12 @@
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "list_plan_selector_candidates",
       "module": "plan_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "plan selector candidates: `ideation_session_repo.get_by_project` filtered to Accepted, joined per session with `task_repo.get_by_ideation_session` and scored in process; every repository error propagates",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
