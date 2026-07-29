@@ -102,6 +102,7 @@ import {
   isAgentWorkspaceAutoMergeRequestPending,
   getAgentWorkspacePrConflictSummary,
   getAgentWorkspaceDescriptionFailurePresentation,
+  getAgentWorkspacePublishReceiptPresentation,
   getAgentWorkspaceTerminalPublicationLabel,
   getAgentWorkspaceTerminalPublicationStatus,
   getAgentWorkspaceEffectiveBaseLabel,
@@ -153,11 +154,15 @@ const PUBLISH_PIPELINE_EVENT_STEPS = new Set([
 function latestPublicationEventForActivePublish(
   events: AgentConversationWorkspacePublicationEvent[],
   publishStartedAtMs: number | null,
+  currentAttemptId: string | null,
 ): AgentConversationWorkspacePublicationEvent | null {
+  const attemptEvents = currentAttemptId
+    ? events.filter((event) => event.attemptId === currentAttemptId)
+    : events;
   const candidates =
     publishStartedAtMs === null
-      ? events
-      : events.filter((event) => {
+      ? attemptEvents
+      : attemptEvents.filter((event) => {
           const createdAtMs = new Date(event.createdAt).getTime();
           return (
             Number.isNaN(createdAtMs) ||
@@ -804,11 +809,14 @@ export function AgentPublishPanel({
   const publishHistoryCount = selectPublishHistory(
     publicationEvents,
     effectivePublishing,
+    workspace.publicationMetadataAttemptId,
   ).visibleEvents.length;
   const isDescriptionFailed = workspace.publicationPushStatus === "description_failed";
+  const receiptPresentation = getAgentWorkspacePublishReceiptPresentation(workspace);
   const latestActivePublishEvent = latestPublicationEventForActivePublish(
     publicationEvents,
     publishStartedAtMs,
+    workspace.publicationMetadataAttemptId,
   );
   const eventPipelineStatus = isPublishingThisWorkspace
     ? pipelineStatusFromPublicationEvent(latestActivePublishEvent)
@@ -1095,9 +1103,13 @@ export function AgentPublishPanel({
         tone: "neutral" as const,
       };
     }
+    if (receiptPresentation) {
+      return receiptPresentation;
+    }
     if (isDescriptionFailed) {
       const descriptionFailure = getAgentWorkspaceDescriptionFailurePresentation(
         publishTargetPullRequestLabel,
+        workspace.publicationMetadataState,
       );
       return {
         ...descriptionFailure,
@@ -1833,6 +1845,8 @@ export function AgentPublishPanel({
             autoMergeDesired={prAutoMergeDesired}
             className="mt-0"
             prSupervisionStatus={prSupervisionStatus}
+            receiptPhase={workspace.publicationMetadataPhase}
+            receiptState={workspace.publicationMetadataState}
             targetPullRequestLabel={publishTargetPullRequestLabel}
             status={pipelineStatus}
             isPublishing={effectivePublishing}
@@ -1932,6 +1946,7 @@ export function AgentPublishPanel({
               events={publicationEvents}
               isLoading={isPublicationEventsLoading}
               isPublishing={effectivePublishing}
+              currentAttemptId={workspace.publicationMetadataAttemptId}
             />
           </TabsContent>
         )}

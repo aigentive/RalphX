@@ -12,6 +12,7 @@ import {
   getPostBaselinePublicationEvents,
   getAgentWorkspaceEffectiveBaseLabel,
   getAgentWorkspaceDescriptionFailurePresentation,
+  getAgentWorkspacePublishReceiptPresentation,
   getAgentWorkspaceMaintenancePresentation,
   isAgentWorkspaceMaintenanceActive,
   blocksAgentWorkspaceGitInspection,
@@ -37,6 +38,34 @@ describe("getAgentWorkspaceDescriptionFailurePresentation", () => {
     expect(linked.summary).toContain("check the linked PR before writing");
     expect(linked.summary).not.toContain("no pull request was opened");
     expect(linked.summary).not.toContain("branch was unchanged");
+  });
+
+  it("names the specific metadata outcome when a receipt state is known", () => {
+    expect(
+      getAgentWorkspaceDescriptionFailurePresentation("PR #888", "not_applied").summary,
+    ).toContain("did not apply");
+    expect(
+      getAgentWorkspaceDescriptionFailurePresentation("PR #888", "conflicted").summary,
+    ).toContain("did not overwrite the newer remote version");
+  });
+});
+
+describe("getAgentWorkspacePublishReceiptPresentation", () => {
+  it.each([
+    ["prepared", "not_attempted", /Updating PR metadata/i],
+    ["reconciling", "unknown", /may have applied the description/i],
+    ["settled", "not_applied", /did not apply the requested description/i],
+    ["settled", "conflicted", /did not overwrite the newer remote version/i],
+  ] as const)("renders truthful %s/%s evidence", (phase, state, summary) => {
+    expect(
+      getAgentWorkspacePublishReceiptPresentation(
+        workspace({
+          publicationMetadataPhase: phase,
+          publicationMetadataState: state,
+          publicationPrNumber: 888,
+        }),
+      )?.summary,
+    ).toMatch(summary);
   });
 });
 
