@@ -23,6 +23,7 @@ FULL_INTEGRATION_TESTS=(
   suite_sqlite_repos
   suite_transition_git
   plan_selector_performance
+  remote_e2e
 )
 
 CURRENT_TOPLEVEL="$(git -C "${PWD}" rev-parse --show-toplevel 2>/dev/null || true)"
