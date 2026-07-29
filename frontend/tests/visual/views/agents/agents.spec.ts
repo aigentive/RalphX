@@ -480,10 +480,30 @@ async function seedConversationWithWorkspace(
   );
 }
 
+// The inbox grouping is a lane switcher: only the selected lane renders rows,
+// so a fixture conversation may sit behind a chip the sidebar did not open on.
+async function revealInboxLaneForConversation(page: Page, conversationId: string) {
+  const row = page.getByTestId(`agents-session-${conversationId}`);
+  if (await row.isVisible()) {
+    return;
+  }
+  const chips = page.getByTestId("agents-inbox-lane-chips");
+  if ((await chips.count()) === 0) {
+    return;
+  }
+  for (const lane of ["needs", "working", "stale", "done"] as const) {
+    await page.getByTestId(`agents-inbox-lane-chip-${lane}`).click();
+    if (await row.isVisible()) {
+      return;
+    }
+  }
+}
+
 async function selectAgentConversation(
   page: Page,
   conversationId: string,
 ) {
+  await revealInboxLaneForConversation(page, conversationId);
   const row = page.getByTestId(`agents-session-${conversationId}`);
   await expect(row).toBeVisible();
   await row.getByRole("button").first().click();
@@ -1813,6 +1833,7 @@ test.describe("Agents View", () => {
     await expect(page.getByTestId("agents-filter-popover")).toHaveCount(0);
     // Static "Recent" block is now hidden ("Coming soon") on the polished sidebar — present in DOM but aria-hidden + display:none.
     await expect(page.getByTestId("agents-static-recent")).toHaveAttribute("aria-hidden", "true");
+    await revealInboxLaneForConversation(page, editConversationId);
     await expect(page.getByTestId(`agents-session-${editConversationId}`)).toBeVisible();
     await expect(page.getByTestId(`agents-session-${archivedConversationId}`)).toHaveCount(0);
 

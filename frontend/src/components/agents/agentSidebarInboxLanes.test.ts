@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   AGENT_SIDEBAR_INBOX_LANES,
+  describeInboxLaneCount,
+  formatInboxLaneCount,
   getAgeEscalation,
   shouldEscalateAge,
   summarizeInboxLaneCounts,
@@ -19,6 +21,30 @@ describe("AGENT_SIDEBAR_INBOX_LANES", () => {
       { lane: "stale", label: "Stale", emptyLabel: "Nothing stale" },
       { lane: "done", label: "Done", emptyLabel: "Nothing done" },
     ]);
+  });
+});
+
+describe("formatInboxLaneCount", () => {
+  it("renders exact counts up to the cap", () => {
+    expect(formatInboxLaneCount(0)).toBe("0");
+    expect(formatInboxLaneCount(99)).toBe("99");
+  });
+
+  it("caps counts above 99 so lane labels keep their width", () => {
+    expect(formatInboxLaneCount(100)).toBe("99+");
+    expect(formatInboxLaneCount(486)).toBe("99+");
+  });
+});
+
+describe("describeInboxLaneCount", () => {
+  it("keeps the exact count in the accessible name past the cap", () => {
+    expect(describeInboxLaneCount("Done", 486)).toBe("Done, 486 conversations");
+  });
+
+  it("uses the singular noun for one conversation", () => {
+    expect(describeInboxLaneCount("Needs you", 1)).toBe(
+      "Needs you, 1 conversation",
+    );
   });
 });
 
