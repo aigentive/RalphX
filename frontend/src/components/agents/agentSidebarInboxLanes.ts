@@ -46,6 +46,19 @@ export function getAgeEscalation(
   };
 }
 
+const INBOX_LANE_COUNT_CAP = 99;
+
+// Lane chip counts are the only cross-lane signal left in the switcher, so they
+// have to stay legible in a 268px row: four uncapped totals wrap the labels.
+// The exact number stays in the chip tooltip and accessible name.
+export function formatInboxLaneCount(count: number): string {
+  return count > INBOX_LANE_COUNT_CAP ? `${INBOX_LANE_COUNT_CAP}+` : `${count}`;
+}
+
+export function describeInboxLaneCount(label: string, count: number): string {
+  return `${label}, ${count} ${count === 1 ? "conversation" : "conversations"}`;
+}
+
 export function shouldEscalateAge(lane: AgentSidebarAttentionLane): boolean {
   return lane !== "working" && lane !== "done";
 }

@@ -1011,6 +1011,7 @@ describe("AgentsSidebar", () => {
       showEmptyProjectGroups: true,
       projectSort: "latest",
       sidebarGroupBy: "project",
+      sidebarInboxActiveLane: "needs",
       sidebarProjectFilterIds: [],
       sidebarPublicationStateFilters: [
         "active",
@@ -1020,7 +1021,6 @@ describe("AgentsSidebar", () => {
         "uncommitted",
         "unpushed",
       ],
-      sidebarInboxCollapsedLanes: [],
       pinnedConversationIds: {},
     });
   });
@@ -2916,7 +2916,11 @@ describe("AgentsSidebar", () => {
     expect(screen.getByTestId("agents-filter-toolbar").getAttribute("style")).toContain(
       "background-color: var(--bg-surface)",
     );
-    expect(screen.getByTestId("agents-group-trigger")).toHaveTextContent("Group");
+    expect(screen.getByTestId("agents-group-trigger")).toHaveTextContent("Project");
+    expect(screen.getByTestId("agents-group-trigger")).toHaveAttribute(
+      "aria-label",
+      "Group conversations: Project"
+    );
     expect(screen.getByTestId("agents-filters-trigger")).toHaveTextContent("Filters");
     expect(screen.getByTestId("agents-sort-trigger")).toHaveTextContent("Sort");
     expect(screen.getByTestId("agents-bulk-archive-trigger")).toHaveAccessibleName(
@@ -2964,12 +2968,26 @@ describe("AgentsSidebar", () => {
         "Sort conversations: Latest"
       )
     );
+    expect(screen.getByTestId("agents-group-trigger")).toHaveTextContent(
+      "Publication state"
+    );
     await user.click(screen.getByRole("radio", { name: "Automations" }));
     await waitFor(() =>
       expect(screen.getByTestId("agents-sort-trigger")).toHaveAttribute(
         "aria-label",
         "Sort automations: Latest"
       )
+    );
+    expect(screen.getByTestId("agents-group-trigger")).toHaveTextContent(
+      "Automations"
+    );
+    expect(screen.getByTestId("agents-group-trigger")).toHaveAttribute(
+      "aria-label",
+      "Group conversations: Automations"
+    );
+    await user.click(screen.getByRole("radio", { name: "Inbox" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-group-trigger")).toHaveTextContent("Inbox")
     );
 
     await user.click(screen.getByTestId("agents-filters-trigger"));
@@ -5040,7 +5058,7 @@ describe("AgentsSidebar", () => {
     expect(onRenameConversation).not.toHaveBeenCalled();
   });
 
-  it("selects Inbox and renders its four lanes in fixed order", async () => {
+  it("selects Inbox and renders its four lane chips in fixed order", async () => {
     const user = userEvent.setup();
     const lanes = ["needs", "working", "stale", "done"] as const;
     const conversations = lanes.map((lane) => {
@@ -5055,48 +5073,173 @@ describe("AgentsSidebar", () => {
     await user.click(screen.getByRole("radio", { name: "Inbox" }));
 
     await waitFor(() => {
-      expect(screen.getByTestId("agents-inbox-lane-needs")).toBeInTheDocument();
+      expect(screen.getByTestId("agents-inbox-lane-chips")).toBeInTheDocument();
     });
     expect(
       screen
-        .getAllByTestId(/^agents-inbox-lane-(needs|working|stale|done)$/)
+        .getAllByRole("tab")
         .map((element) => element.dataset.testid)
-    ).toEqual(lanes.map((lane) => `agents-inbox-lane-${lane}`));
+    ).toEqual(lanes.map((lane) => `agents-inbox-lane-chip-${lane}`));
     expect(screen.getByTestId("agents-inbox-footer")).toHaveTextContent("1 waiting on you");
   });
 
-  it("honors empty-lane visibility and uses the needs-you zero state", async () => {
-    useAgentSessionStore.setState({
-      sidebarGroupBy: "inbox",
-      showEmptyProjectGroups: false,
-    });
-    renderSidebar();
-    expect(screen.queryByTestId("agents-inbox-lane-needs")).not.toBeInTheDocument();
-
-    act(() => {
-      useAgentSessionStore.setState({ showEmptyProjectGroups: true });
-    });
-    await waitFor(() => {
-      expect(screen.getByTestId("agents-inbox-lane-needs")).toBeInTheDocument();
-    });
-    expect(screen.getByTestId("agents-inbox-lane-needs")).toHaveTextContent(
-      "Nothing waiting on you"
-    );
-    expect(screen.getByTestId("agents-inbox-lane-working")).toHaveTextContent(
-      "Nothing working"
-    );
-  });
-
-  it("keeps inbox lanes independently collapsible and preserves verb and publication metadata", async () => {
+  it("renders only the selected lane's rows behind a single sidebar scroller", async () => {
     const user = userEvent.setup();
     const needs = conversation({ id: "conversation-needs", title: "Needs review" });
     const working = conversation({ id: "conversation-working", title: "Working review" });
     inboxLaneByConversationId.set(needs.id, { lane: "needs", actionVerb: "Review" });
     inboxLaneByConversationId.set(working.id, { lane: "working", actionVerb: "Publish" });
     conversationsByProject.set("project-1", { data: [needs, working], isLoading: false });
+    useAgentSessionStore.setState({ sidebarGroupBy: "inbox" });
+
+    renderSidebar();
+
+    expect(
+      screen.getByTestId("agents-sidebar-session-list-inbox-needs")
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-sidebar-session-list-inbox-working")
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-inbox-lane-panel-needs")).toBeInTheDocument();
+    // The lane list owns the pane's only scroller, so the body must not scroll too.
+    expect(screen.getByTestId("agents-sidebar-body")).not.toHaveClass("overflow-y-auto");
+    expect(screen.getByTestId("agents-sidebar-body")).toHaveClass("overflow-hidden");
+
+    await user.click(screen.getByTestId("agents-inbox-lane-chip-working"));
+
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("agents-sidebar-session-list-inbox-working")
+      ).toBeInTheDocument();
+    });
+    expect(
+      screen.queryByTestId("agents-sidebar-session-list-inbox-needs")
+    ).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(useAgentSessionStore.getState().sidebarInboxActiveLane).toBe("working");
+    });
+  });
+
+  it("keeps zero-count lane chips selectable and shows the lane's own empty copy", async () => {
+    const user = userEvent.setup();
+    useAgentSessionStore.setState({ sidebarGroupBy: "inbox" });
+
+    renderSidebar();
+
+    expect(screen.getByTestId("agents-inbox-lane-chip-needs")).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+    expect(screen.getByTestId("agents-inbox-lane-empty-needs")).toHaveTextContent(
+      "Nothing waiting on you"
+    );
+
+    await user.click(screen.getByTestId("agents-inbox-lane-chip-working"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("agents-inbox-lane-empty-working")).toHaveTextContent(
+        "Nothing working"
+      );
+    });
+    expect(
+      screen.queryByTestId("agents-inbox-lane-empty-needs")
+    ).not.toBeInTheDocument();
+  });
+
+  it("repaints the selected lane chip before persisting the selection", async () => {
+    useAgentSessionStore.setState({ sidebarGroupBy: "inbox" });
+
+    renderSidebar();
+
+    act(() => {
+      fireEvent.click(screen.getByTestId("agents-inbox-lane-chip-done"));
+    });
+
+    // Visible selection flips in the click commit; the store write is deferred
+    // past the paint so serializing the sidebar store never blocks the switch.
+    expect(screen.getByTestId("agents-inbox-lane-chip-done")).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+    expect(useAgentSessionStore.getState().sidebarInboxActiveLane).toBe("needs");
+
+    await waitFor(() => {
+      expect(useAgentSessionStore.getState().sidebarInboxActiveLane).toBe("done");
+    });
+  });
+
+  it("caps lane chip counts at 99+ while keeping the exact total accessible", async () => {
+    const conversations = Array.from({ length: 120 }, (_, index) => {
+      const value = conversation({
+        id: `conversation-needs-${index}`,
+        title: `Needs ${index}`,
+      });
+      inboxLaneByConversationId.set(value.id, { lane: "needs", actionVerb: "Review" });
+      return value;
+    });
+    conversationsByProject.set("project-1", { data: conversations, isLoading: false });
+    useAgentSessionStore.setState({ sidebarGroupBy: "inbox" });
+
+    renderSidebar();
+
+    const needsChip = await screen.findByTestId("agents-inbox-lane-chip-needs");
+    await waitFor(() => {
+      expect(needsChip).toHaveTextContent("99+");
+    });
+    expect(needsChip).toHaveAccessibleName("Needs you, 120 conversations");
+    expect(needsChip).toHaveAttribute("title", "Needs you, 120 conversations");
+  });
+
+  it("moves lane selection with arrow keys and restores the selection after remount", async () => {
+    const user = userEvent.setup();
+    useAgentSessionStore.setState({ sidebarGroupBy: "inbox" });
+
+    const { unmount } = renderSidebar();
+
+    const needsChip = screen.getByTestId("agents-inbox-lane-chip-needs");
+    expect(needsChip).toHaveAttribute("tabindex", "0");
+    expect(screen.getByTestId("agents-inbox-lane-chip-done")).toHaveAttribute(
+      "tabindex",
+      "-1"
+    );
+
+    needsChip.focus();
+    await user.keyboard("{ArrowRight}");
+
+    await waitFor(() => {
+      expect(screen.getByTestId("agents-inbox-lane-chip-working")).toHaveAttribute(
+        "aria-selected",
+        "true"
+      );
+    });
+
+    await user.keyboard("{ArrowLeft}{ArrowLeft}");
+    await waitFor(() => {
+      expect(screen.getByTestId("agents-inbox-lane-chip-done")).toHaveAttribute(
+        "aria-selected",
+        "true"
+      );
+    });
+    await waitFor(() => {
+      expect(useAgentSessionStore.getState().sidebarInboxActiveLane).toBe("done");
+    });
+
+    unmount();
+    renderSidebar();
+
+    expect(screen.getByTestId("agents-inbox-lane-chip-done")).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+    expect(screen.getByTestId("agents-inbox-lane-panel-done")).toBeInTheDocument();
+  });
+
+  it("preserves inbox verb and publication metadata and drops it when leaving the inbox", async () => {
+    const needs = conversation({ id: "conversation-needs", title: "Needs review" });
+    inboxLaneByConversationId.set(needs.id, { lane: "needs", actionVerb: "Review" });
+    conversationsByProject.set("project-1", { data: [needs], isLoading: false });
     workspacesByProject.set("project-1", [
       workspace({ conversationId: needs.id, publicationPrStatus: "draft" }),
-      workspace({ conversationId: working.id }),
     ]);
     useAgentSessionStore.setState({ sidebarGroupBy: "inbox" });
 
@@ -5108,19 +5251,10 @@ describe("AgentsSidebar", () => {
       "draft"
     );
 
-    await user.click(screen.getByTestId("agents-inbox-lane-row-needs"));
-    await waitFor(() => {
-      expect(screen.getByTestId("agents-inbox-lane-row-needs")).toHaveAttribute(
-        "aria-expanded",
-        "false"
-      );
+    act(() => {
+      useAgentSessionStore.setState({ sidebarGroupBy: "project" });
     });
-    expect(screen.getByTestId("agents-inbox-lane-row-working")).toHaveAttribute(
-      "aria-expanded",
-      "true"
-    );
-
-    useAgentSessionStore.setState({ sidebarGroupBy: "project" });
     expect(screen.queryByText("Review")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agents-inbox-lane-chips")).not.toBeInTheDocument();
   });
 });

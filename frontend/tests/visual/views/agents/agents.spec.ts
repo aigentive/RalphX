@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 
 import { seedAutomationRuntimeVisualState } from "../../../fixtures/agents-automation-runtime.fixtures";
 import { setupApp } from "../../../fixtures/setup.fixtures";
+import { revealAgentInboxConversation } from "../../../helpers/agents-inbox.helpers";
 import {
   AgentsPublishPage,
   type WorkspaceReviewVisualState,
@@ -484,8 +485,7 @@ async function selectAgentConversation(
   page: Page,
   conversationId: string,
 ) {
-  const row = page.getByTestId(`agents-session-${conversationId}`);
-  await expect(row).toBeVisible();
+  const row = await revealAgentInboxConversation(page, conversationId);
   await row.getByRole("button").first().click();
 
   await page.evaluate(
@@ -1813,7 +1813,7 @@ test.describe("Agents View", () => {
     await expect(page.getByTestId("agents-filter-popover")).toHaveCount(0);
     // Static "Recent" block is now hidden ("Coming soon") on the polished sidebar — present in DOM but aria-hidden + display:none.
     await expect(page.getByTestId("agents-static-recent")).toHaveAttribute("aria-hidden", "true");
-    await expect(page.getByTestId(`agents-session-${editConversationId}`)).toBeVisible();
+    await revealAgentInboxConversation(page, editConversationId);
     await expect(page.getByTestId(`agents-session-${archivedConversationId}`)).toHaveCount(0);
 
     await expect(page).toHaveScreenshot("agents-v27-sidebar-recent.png", {
