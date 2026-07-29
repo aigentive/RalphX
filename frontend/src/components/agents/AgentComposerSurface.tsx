@@ -1174,15 +1174,36 @@ export function AgentComposerSurface({
     (integrationQuery.trim()
       ? "No matching integration items"
       : "Type to search Jira, Linear, ClickUp, Granola, or Confluence");
+  // A failed search is NOT an empty project. These three commands used to swallow their
+  // backend errors into an empty-but-successful result; that fail-open is fixed on the host,
+  // and rendering the rejection as "No matching files or folders" would reinstate exactly the
+  // same lie one layer up. Same shape as the integration error label directly above.
+  const pathSearchErrorLabel = pathEntriesQuery.isError
+    ? `File search failed: ${extractErrorMessage(
+        pathEntriesQuery.error,
+        "Unable to search project files",
+      )}`
+    : null;
+  const planSearchErrorLabel = planReferencesQuery.isError
+    ? `Plan search failed: ${extractErrorMessage(
+        planReferencesQuery.error,
+        "Unable to search plans",
+      )}`
+    : null;
+  const skillSearchErrorLabel = skillsQuery.isError
+    ? `Skill search failed: ${extractErrorMessage(
+        skillsQuery.error,
+        "Unable to list skills",
+      )}`
+    : null;
   const menuEmptyLabel =
     activeTrigger?.kind === "path"
-      ? "No matching files or folders"
+      ? (pathSearchErrorLabel ?? "No matching files or folders")
       : activeTrigger?.kind === "plan"
-        ? planQuery.trim()
-          ? "No matching plans"
-          : "Type to search plans"
+        ? (planSearchErrorLabel ??
+          (planQuery.trim() ? "No matching plans" : "Type to search plans"))
         : activeTrigger?.kind === "skill"
-          ? "No matching skills"
+          ? (skillSearchErrorLabel ?? "No matching skills")
           : activeTrigger?.kind === "integration"
             ? integrationEmptyLabel
             : "No matching commands";

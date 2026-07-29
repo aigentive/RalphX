@@ -465,6 +465,33 @@ describe("AgentComposerSurface", () => {
     );
   });
 
+  it("says the file search failed instead of showing an empty project", async () => {
+    vi.mocked(invoke).mockImplementation((cmd) => {
+      if (cmd === "search_agent_composer_entries") {
+        return Promise.reject(new Error("git ls-files could not be run"));
+      }
+      return Promise.resolve(defaultComposerInvokeResponse(cmd as string));
+    });
+    renderComposer({ conversationId: "conversation-path-error" });
+
+    const textarea = screen.getByLabelText(
+      "Message input",
+    ) as HTMLTextAreaElement;
+    fireEvent.focus(textarea);
+    fireEvent.change(textarea, { target: { value: "@src" } });
+    textarea.setSelectionRange(4, 4);
+    fireEvent.keyUp(textarea);
+
+    // The whole point of the host-side fail-open repair: a failed search must not be
+    // indistinguishable from a project with no matching files.
+    expect(
+      await screen.findByText(/File search failed: git ls-files could not be run/),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("No matching files or folders"),
+    ).not.toBeInTheDocument();
+  });
+
   it("shows the full folder path from the keyboard-focusable persisted chip", async () => {
     const references = [
       {
