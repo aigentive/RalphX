@@ -32,7 +32,10 @@ const linearHook = vi.hoisted(() => ({
   },
 }));
 
-vi.mock("@/hooks/useLinearIntegration", () => ({
+vi.mock("@/hooks/useLinearIntegration", async () => ({
+  ...(await vi.importActual<typeof import("@/hooks/useLinearIntegration")>(
+    "@/hooks/useLinearIntegration",
+  )),
   useLinearIntegration: () => ({
     ...linearHook.state,
     saveSettingsAsync: linearHook.saveSettingsAsync,

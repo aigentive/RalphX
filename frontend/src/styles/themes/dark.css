@@ -142,6 +142,7 @@ html[data-theme="dark"] main {
   --dialog-nav-active-bg: #2A2A31;
   --dialog-nav-active-border: #393940;
   --dialog-toggle-off-bg: #393940;
+  --dialog-toggle-knob-bg: #E6E6EB;
   --dialog-warn: #E0B341;
   --dialog-warn-bg: rgba(224,179,65,.10);
   --dialog-warn-card-bg: rgba(224,179,65,.06);

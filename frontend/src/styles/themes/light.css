@@ -228,6 +228,7 @@ html[data-theme="light"] body {
   --dialog-nav-active-bg: #F1F1F4;
   --dialog-nav-active-border: #D9D9DD;
   --dialog-toggle-off-bg: #C8C8CD;
+  --dialog-toggle-knob-bg: #FFFFFF;
   --dialog-warn: #A66F00;
   --dialog-warn-bg: rgba(166,111,0,.08);
   --dialog-warn-card-bg: rgba(201,150,46,.06);

@@ -336,6 +336,7 @@ html[data-theme="high-contrast"] main {
   --dialog-nav-active-bg: #2A2A2A;
   --dialog-nav-active-border: #999999;
   --dialog-toggle-off-bg: #999999;
+  --dialog-toggle-knob-bg: #FFFFFF;
   --dialog-warn: #FFD93D;
   --dialog-warn-bg: rgba(255,217,61,.18);
   --dialog-warn-card-bg: rgba(255,217,61,.10);
