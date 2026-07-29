@@ -88,6 +88,8 @@ Claude plugin: `plugins/app/` | Canonical agent capabilities: `agents/<agent>/ag
 | 24 | **Frontend interaction performance (NON-NEGOTIABLE):** User-triggered panes/drawers/widgets must paint a lightweight shell before lazy imports, fetches, persistence, process startup, or heavy mount/unmount work; warm up likely heavy paths on safe intent/idle; fix safe current-scope opportunities with TDD. Details: `.claude/rules/frontend-interaction-performance.md` |
 | 25 | **Stateful workflow review (NON-NEGOTIABLE):** For completion/cache/retry/recovery/state-machine changes, prove current-attempt authority, fail-closed reads, event ordering, prompt/schema alignment, path containment, and production-path tests. Details: `.claude/rules/stateful-workflow-review.md` |
 | 26 | **Big-PR review checklist:** Before merging any large feature/refactor PR, run the 12 falsifiable checks in `.claude/rules/big-pr-review-checklist.md` — they target the 11 failure classes big PRs here actually ship (scope leaks, stale-metadata trust, competing UI writers, UI-inferred state, recovery-path divergence, …) |
+| 27 | **Remote command registration (NON-NEGOTIABLE):** Every `:3849`-reachable command is a hand-audited `remote_server/registry.rs` allowlist entry with a `capability_ledger.rs` class; never a passthrough, a `generate_handler!` edit, or a command fork. Details: `docs/architecture/remote-protocol.md` |
+| 28 | **Remote event fan-out (NON-NEGOTIABLE):** Remote events travel by classification-table delivery class — Durable rides the sequencer, Transient broadcasts with no seq and is never persisted, LocalOnly never leaves the host. ❌ Re-deriving remote event sources from `EventSink`/`AppState.events` |
 
 ## Adversarial Plan Convergence (NON-NEGOTIABLE)
 
@@ -107,6 +109,7 @@ style={{ boxShadow: "none", outline: "none" }}
 - **Session Recovery** — Expired Claude session recovery with history preservation. Docs: `docs/features/session-recovery.md`
 - **Plan Verification** — Automated adversarial review loop for ideation plans. Docs: `docs/features/plan-verification.md` | Architecture: `.claude/rules/ideation-verification-architecture.md`
 - **Agent Personas** — Conversation-bound prompt-only behavior profiles for Project Agent conversations. Docs: `docs/features/agent-personas.md`
+- **Remote Access** — Two-instance host/client mode over an authenticated `:3849` listener. Docs: `docs/features/remote-access.md` | Protocol: `docs/architecture/remote-protocol.md`
 
 ## Git Conventions
 ❌ git init/push/remotes | Prefixes: `docs:` | `feat:` | `fix:` | `chore:`

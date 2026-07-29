@@ -145,6 +145,9 @@ New pattern → add one-liner here. Pattern name + rule only.
 | SQLite write transactions | `DbConnection::run_transaction()` uses `BEGIN IMMEDIATE`; keep read-then-write sync-helper flows inside it to avoid WAL upgrade failures surfaced as `database is locked` |
 | Tokio spawn | `tokio::spawn` → async fn ONLY. Sync code → `std::thread::spawn` \| `tauri::async_runtime::spawn`. See `.claude/rules/tokio-runtime-safety.md` |
 | Rust std API stability | Avoid unstable std APIs in production code (e.g., `is_multiple_of`) — use stable equivalents (e.g., `%`). See `.claude/rules/rust-stable-apis.md` |
+| Remote facade registration | `:3849` commands are allowlisted in `remote_server/registry.rs` against existing command fns with a `capability_ledger.rs` class; a `Denied`/over-privileged entry fails compilation |
+| Remote event classification | Delivery class comes from the checked-in classification table (`ralphx-remote-protocol`); Durable → sequencer + `remote_event_log`, Transient → broadcast, no seq, never persisted |
+| Remote two-instance fixture | Tests needing a real host boot `remote_server::harness` (`test-utils`): production constructors, real loopback listener, `RemoteHostHarness` + `ScriptedClient`. ❌ Hand-rolled routers or auth bypasses |
 
 ## Code Quality
 Keep work inside the requested feature/refactor/polish scope. File limits + migration rules: `.claude/rules/code-quality-standards.md`.
