@@ -10,7 +10,7 @@ use super::authority_audit::{
 };
 use super::capability_ledger::{
     policy_for, AUTHORITY_REDUCING_EXEMPTIONS, COMMAND_OVERRIDES, CONDITIONAL_CAPABILITIES,
-    DECLARED_MEMBERSHIPS, MODULE_DEFAULTS,
+    DECLARED_MEMBERSHIPS, MODULE_DEFAULTS, SCOPE_CONFINEMENTS,
 };
 use super::registry::{find_spec, REMOTE_COMMANDS};
 
@@ -450,6 +450,10 @@ fn generated_manifest() -> serde_json::Value {
                 "class": spec.class,
                 "capabilities": spec.capabilities,
                 "argumentSensitive": spec.authz.is_some(),
+                // A registered command can also refuse a well-scoped device for an argument
+                // reason. Published for the same reason `pins` is: a refusal reachable on the
+                // wire must be discoverable from the manifest, not only from the source.
+                "scopeConfined": spec.validate.is_some(),
                 "pins": spec.pins.iter().map(|pin| serde_json::json!({
                     "param": pin.param,
                     "field": pin.field,
@@ -469,11 +473,23 @@ fn generated_manifest() -> serde_json::Value {
         })
         .collect::<Vec<_>>();
 
+    let scope_confinements = SCOPE_CONFINEMENTS
+        .iter()
+        .map(|entry| {
+            serde_json::json!({
+                "command": entry.command,
+                "argument": entry.argument,
+                "reason": entry.reason,
+            })
+        })
+        .collect::<Vec<_>>();
+
     serde_json::json!({
         "schemaVersion": 2,
         "background_loop_inventory": background_loop_inventory,
         "facade_ops": facade_ops,
         "conditional_capabilities": conditional_capabilities,
+        "scope_confinements": scope_confinements,
         "spawn_triggering_state_surface": spawn_triggering_state_surface,
         "agent_consumed_content_surface": {
             "reads": agent_content_reads(),
@@ -2595,4 +2611,132 @@ fn b2_stats_reclassifications_are_reviewed_rather_than_module_defaults() {
         .find(|entry| entry.module == "unified_chat_commands")
         .expect("module has a default");
     assert_eq!(chat_default.policy.class, RiskClass::AgentControl);
+}
+
+/// Diagnostic: shortest call path from a command root to each ARMING sink hit.
+///
+/// Detector (a) reports only a boolean. For the PR 3.2 transcript reads the question is not
+/// *whether* they arm but *where* the arming edge enters, so this walks the same graph the
+/// detector walks and prints the path.
+#[test]
+#[ignore = "diagnostic probe"]
+fn probe_transcript_read_arming_paths() {
+    use super::authority_audit::{verdict_for, HitVerdict};
+    use std::collections::VecDeque;
+
+    let graph = CallGraph::build(&load_production_sources());
+    let sinks: BTreeSet<String> = TRANSITION_SINKS
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect::<BTreeSet<_>>();
+
+    for command in [
+        "get_agent_conversation",
+        "get_agent_conversation_messages_page",
+        "get_agent_conversation_timeline_page",
+        "get_agent_conversation_summary", // negative calibration: detector-silent sibling
+        // The pure-read seams the split registers.
+        "get_agent_conversation_messages_page_for_app_state",
+        "get_agent_conversation_timeline_page_for_app_state",
+        "get_conversation_with_messages",
+        "wake_agent_workspace_for_bridge_events",
+    ] {
+        eprintln!("\n===== {command} =====");
+        let roots = graph.roots_named(command);
+        eprintln!("roots: {roots:?}");
+
+        // BFS with parent tracking, mirroring `CallGraph::closure`'s cut behaviour.
+        let mut parent: BTreeMap<String, String> = BTreeMap::new();
+        let mut visited: BTreeSet<String> = BTreeSet::new();
+        let mut queue: VecDeque<String> = roots.iter().cloned().collect();
+        for r in &roots {
+            visited.insert(r.clone());
+        }
+        let mut arming_nodes: Vec<(String, String)> = Vec::new();
+        while let Some(name) = queue.pop_front() {
+            let Some(node) = graph.nodes.get(&name) else {
+                continue;
+            };
+            for hit in &node.sink_hits {
+                if verdict_for(hit) == HitVerdict::Arming {
+                    arming_nodes.push((name.clone(), format!("{}{:?}", hit.sink, hit.targets)));
+                }
+            }
+            for callee in &node.callees {
+                if sinks.contains(callee.as_str()) || visited.contains(callee) {
+                    continue;
+                }
+                visited.insert(callee.clone());
+                parent.insert(callee.clone(), name.clone());
+                queue.push_back(callee.clone());
+            }
+        }
+
+        if arming_nodes.is_empty() {
+            eprintln!("  NO ARMING HITS");
+        }
+        for (node, hit) in &arming_nodes {
+            let mut path = vec![node.clone()];
+            let mut cur = node.clone();
+            while let Some(p) = parent.get(&cur) {
+                path.push(p.clone());
+                cur = p.clone();
+            }
+            path.reverse();
+            eprintln!("  ARMING sink={hit}\n    path: {}", path.join(" -> "));
+        }
+    }
+}
+
+/// The scope-confinement annotation and its predicate are inseparable (batch 4).
+///
+/// Mirrors `conditional_capabilities_are_discharged_by_a_live_predicate`. Asserted in BOTH
+/// directions so neither half can be dropped alone:
+///
+/// * annotation → predicate: every `SCOPE_CONFINEMENTS` row is registered and carries a
+///   `validate:` predicate. An annotation over a command with no predicate is a comment.
+/// * predicate → annotation: every registered spec carrying a `validate:` predicate has a
+///   `SCOPE_CONFINEMENTS` row. A predicate with no annotation is an undocumented refusal that
+///   a client author cannot discover.
+#[test]
+fn scope_confinements_are_enforced_by_a_live_predicate() {
+    for entry in SCOPE_CONFINEMENTS {
+        let spec = find_spec(entry.command).unwrap_or_else(|| {
+            panic!(
+                "`{}` is annotated scope-confined but is not registered; \
+                 an annotation on an unreachable command proves nothing",
+                entry.command
+            )
+        });
+        assert!(
+            spec.validate.is_some(),
+            "`{}` is annotated scope-confined but has no `validate:` predicate — the annotation \
+             would be the only thing standing between a default-paired device and the \
+             all-projects sweep",
+            entry.command
+        );
+        // The reason must record the limit, not just the win. A confinement described as
+        // total when it is partial is the false-success shape this ledger exists to prevent.
+        assert!(
+            entry.reason.contains("NOT"),
+            "`{}`'s reason must state what the confinement does NOT cover",
+            entry.command
+        );
+    }
+
+    let annotated = SCOPE_CONFINEMENTS
+        .iter()
+        .map(|entry| entry.command)
+        .collect::<BTreeSet<_>>();
+    for spec in REMOTE_COMMANDS
+        .iter()
+        .filter(|spec| spec.validate.is_some())
+    {
+        assert!(
+            annotated.contains(spec.name),
+            "`{}` carries a `validate:` predicate with no SCOPE_CONFINEMENTS row; a silent \
+             refusal is undiscoverable to a client author",
+            spec.name
+        );
+    }
 }

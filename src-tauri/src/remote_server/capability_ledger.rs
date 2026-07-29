@@ -1134,6 +1134,44 @@ pub const CONDITIONAL_CAPABILITIES: &[ConditionalCapability] = &[ConditionalCapa
     condition: "conditional: title,description — discharged by update_task_authz",
 }];
 
+/// A registered command whose remote form is confined to an explicit scope argument.
+///
+/// Some commands are safe remotely only in a narrowed form. The brakes are the canonical case:
+/// `pause_execution`/`stop_execution` take `project_id: Option<String>`, and the `None` arm
+/// falls back to the LOCAL user's active project or, failing that, to `project_repo.get_all()`
+/// — so a default-paired phone could sweep every project on the host in one call. A remote
+/// device must name the project it is halting.
+///
+/// Recorded here rather than left implicit in the macro so the annotation and the `validate:`
+/// predicate are inseparable: `scope_confinements_are_enforced_by_a_live_predicate` asserts the
+/// tie in BOTH directions, so removing the predicate while the annotation stands (or the
+/// reverse) fails CI. Mirrors [`ConditionalCapability`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScopeConfinement {
+    pub command: &'static str,
+    /// The wire argument that must be present and non-null.
+    pub argument: &'static str,
+    /// What the confinement buys, and — honestly — what it does not.
+    pub reason: &'static str,
+}
+
+pub const SCOPE_CONFINEMENTS: &[ScopeConfinement] = &[
+    ScopeConfinement {
+        command: "pause_execution",
+        argument: "projectId",
+        reason: "null projectId sweeps every project via project_repo.get_all(); \
+                 confines the task-transition sweep, NOT the global pause flag — \
+                 discharged by require_explicit_project_scope",
+    },
+    ScopeConfinement {
+        command: "stop_execution",
+        argument: "projectId",
+        reason: "null projectId sweeps every project via project_repo.get_all(); \
+                 confines the task-transition sweep, NOT the global pause flag — \
+                 discharged by require_explicit_project_scope",
+    },
+];
+
 pub const DECLARED_MEMBERSHIPS: &[(&str, &str)] = &[
     ("approve_permission_request", "authorizes-live-tool-call"),
     ("resolve_user_question", "steering-question"),
