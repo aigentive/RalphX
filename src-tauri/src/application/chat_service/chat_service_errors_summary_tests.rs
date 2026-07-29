@@ -318,7 +318,7 @@ fn codex_oversized_multibyte_diagnostics_never_split_a_codepoint() {
         "fixture must exceed the diagnostic bound"
     );
 
-    let result = classify_codex_stream_failure(&[], &[blob.clone()], Some(0), false)
+    let result = classify_codex_stream_failure(&[], std::slice::from_ref(&blob), Some(0), false)
         .expect("oversized diagnostics must still classify");
 
     let StreamError::LocalToolFailed { message } = result else {
