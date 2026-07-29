@@ -44,6 +44,8 @@ pub use webhook_http_client::{
 pub use webhook_publisher::WebhookPublisher as ConcreteWebhookPublisher;
 
 #[cfg(test)]
+mod agent_run_error_message_tests;
+#[cfg(test)]
 mod atlassian_client_tests;
 #[cfg(test)]
 mod jira_agile_client_tests;
