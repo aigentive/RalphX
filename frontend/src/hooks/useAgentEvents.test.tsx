@@ -1277,6 +1277,42 @@ describe("useAgentEvents", () => {
 
       expect(useChatStore.getState().agentStatus["merge:task-123"]).toBeUndefined();
     });
+
+    // Backend suppresses run_completed for a run persisted as Failed (zero-output or
+    // assistant-persist failure on an otherwise successful stream) and emits
+    // agent:error instead. That substitute event must still terminate the UI state.
+    it.each([
+      ["task_execution", "task_execution:task-123"],
+      ["review", "review:task-123"],
+    ])(
+      "clears generating for %s when the run failed without a stream error",
+      (contextType, storeKey) => {
+        const wrapper = createWrapper();
+
+        act(() => {
+          useChatStore.setState({
+            activeConversationIds: { [storeKey]: "conv-1" },
+            activeAgentRunIds: { [storeKey]: "run-1" },
+            agentStatus: { [storeKey]: "generating" },
+          });
+        });
+
+        renderHook(() => useAgentEvents("conv-1"), { wrapper });
+
+        act(() => {
+          emitEvent("agent:error", {
+            agent_run_id: "run-1",
+            context_type: contextType,
+            context_id: "task-123",
+            conversation_id: "conv-1",
+            error: "Agent completed with no output",
+            stderr: "Agent completed with no output",
+          });
+        });
+
+        expect(useChatStore.getState().agentStatus[storeKey]).toBeUndefined();
+      }
+    );
   });
 
   describe("agent:turn_completed", () => {

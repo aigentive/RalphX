@@ -3,13 +3,16 @@ use std::sync::Arc;
 use crate::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessRegistry,
 };
-use crate::application::prune_engine::should_defer_terminal_settlement_prune;
+use crate::application::prune_engine::{
+    should_defer_pid_missing_prune, should_defer_terminal_settlement_prune,
+};
 use crate::application::{AppState, PruneEngine};
 use crate::commands::execution_commands::ExecutionState;
 use crate::domain::entities::{
     AgentRun, AgentRunId, AgentRunStatus, ChatContextType, ChatConversationId, InternalStatus,
     Project, Task,
 };
+use crate::domain::repositories::PRUNED_STALE_AGENT_RUN;
 use crate::domain::services::{RunningAgentInfo, RunningAgentKey};
 use crate::utils::path_safety::{require_under_root, validate_absolute_non_root_path};
 
@@ -263,7 +266,34 @@ async fn evaluate_and_prune_healthy_entry_not_pruned() {
 }
 
 #[tokio::test]
-async fn evaluate_and_prune_dead_pid_prunes_and_cancels_run() {
+async fn evaluate_and_prune_dead_pid_with_fresh_heartbeat_waits_for_completion() {
+    let app_state = AppState::new_test();
+    let run_id = create_running_agent_run(&app_state).await;
+    let key = RunningAgentKey::new("project", "fresh-stream-drain");
+    register_stale_entry(&app_state, &key, &run_id, None).await;
+
+    let engine = build_engine(&app_state, None);
+    let info = app_state.running_agent_registry.get(&key).await.unwrap();
+
+    let pruned = engine.evaluate_and_prune(&key, &info, false).await;
+
+    assert!(
+        !pruned,
+        "fresh dead-PID entry should receive completion grace"
+    );
+    assert!(app_state.running_agent_registry.is_running(&key).await);
+    let run = app_state
+        .agent_run_repo
+        .get_by_id(&run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(run.status, AgentRunStatus::Running);
+    assert!(run.error_message.is_none());
+}
+
+#[tokio::test]
+async fn evaluate_and_prune_dead_pid_after_grace_marks_and_cancels_run() {
     let app_state = AppState::new_test();
 
     let project = Project::new("P".to_string(), "/test".to_string());
@@ -279,12 +309,24 @@ async fn evaluate_and_prune_dead_pid_prunes_and_cancels_run() {
     let run_id = create_running_agent_run(&app_state).await;
     let key = RunningAgentKey::new("task_execution", task.id.as_str());
     register_stale_entry(&app_state, &key, &run_id, None).await;
+    let grace_secs = i64::try_from(
+        crate::infrastructure::agents::claude::stream_timeouts().completion_grace_secs,
+    )
+    .unwrap();
+    assert!(app_state
+        .running_agent_registry
+        .update_heartbeat(
+            &key,
+            &run_id.as_str(),
+            chrono::Utc::now() - chrono::Duration::seconds(grace_secs + 1),
+        )
+        .await
+        .unwrap());
 
     let engine = build_engine(&app_state, None);
-    let entries = app_state.running_agent_registry.list_all().await;
-    let (_, info) = entries.iter().find(|(k, _)| k == &key).unwrap();
+    let info = app_state.running_agent_registry.get(&key).await.unwrap();
 
-    let pruned = engine.evaluate_and_prune(&key, info, false).await;
+    let pruned = engine.evaluate_and_prune(&key, &info, false).await;
 
     assert!(pruned, "dead-PID entry should be pruned");
     assert!(
@@ -302,6 +344,11 @@ async fn evaluate_and_prune_dead_pid_prunes_and_cancels_run() {
         run.status,
         AgentRunStatus::Cancelled,
         "running agent_run should be cancelled after prune"
+    );
+    assert_eq!(
+        run.error_message.as_deref(),
+        Some(PRUNED_STALE_AGENT_RUN),
+        "dead-PID prune should remain attributable to the system pruner"
     );
 }
 
@@ -396,6 +443,41 @@ async fn evaluate_and_prune_task_status_mismatch_prunes() {
     let pruned = engine.evaluate_and_prune(&key, info, false).await;
     assert!(pruned, "task status mismatch should trigger prune");
     assert!(!app_state.running_agent_registry.is_running(&key).await);
+}
+
+#[tokio::test]
+async fn evaluate_and_prune_live_task_status_mismatch_cancel_stays_unmarked() {
+    let app_state = AppState::new_test();
+
+    let project = Project::new("P".to_string(), "/test".to_string());
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    let mut task = Task::new(project.id.clone(), "T".to_string());
+    task.internal_status = InternalStatus::Merged;
+    app_state.task_repo.create(task.clone()).await.unwrap();
+
+    let run_id = create_running_agent_run(&app_state).await;
+    let key = RunningAgentKey::new("task_execution", task.id.as_str());
+    register_stale_entry(&app_state, &key, &run_id, None).await;
+
+    let engine = build_engine(&app_state, None);
+    let info = app_state.running_agent_registry.get(&key).await.unwrap();
+    assert!(engine.evaluate_and_prune(&key, &info, true).await);
+
+    let run = app_state
+        .agent_run_repo
+        .get_by_id(&run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(run.status, AgentRunStatus::Cancelled);
+    assert!(
+        run.error_message.is_none(),
+        "deliberate live-process stop must not become repairable"
+    );
 }
 
 #[tokio::test]
@@ -674,6 +756,19 @@ async fn evaluate_and_prune_merge_context_removes_worktree_dir() {
             None,
         )
         .await;
+    let grace_secs = i64::try_from(
+        crate::infrastructure::agents::claude::stream_timeouts().completion_grace_secs,
+    )
+    .unwrap();
+    assert!(app_state
+        .running_agent_registry
+        .update_heartbeat(
+            &key,
+            &run_id.as_str(),
+            chrono::Utc::now() - chrono::Duration::seconds(grace_secs + 1),
+        )
+        .await
+        .unwrap());
 
     let engine = build_engine(&app_state, None);
     let entries = app_state.running_agent_registry.list_all().await;
@@ -687,6 +782,17 @@ async fn evaluate_and_prune_merge_context_removes_worktree_dir() {
     assert!(
         !worktree_path_owned.exists(),
         "merge worktree directory should be removed after prune"
+    );
+    let run = app_state
+        .agent_run_repo
+        .get_by_id(&run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(run.status, AgentRunStatus::Cancelled);
+    assert!(
+        run.error_message.is_none(),
+        "merge cleanup cancellation must not become repairable"
     );
 }
 
@@ -837,8 +943,9 @@ async fn coverage_regression_expired_running_reservation_is_pruned_and_cancelled
             .await
             .unwrap()
             .unwrap()
-            .status,
-        AgentRunStatus::Cancelled
+            .error_message
+            .as_deref(),
+        Some(PRUNED_STALE_AGENT_RUN)
     );
 }
 
@@ -1067,6 +1174,31 @@ mod terminal_settlement_prune_tests {
             &missing_heartbeat,
             Some(&run),
             true,
+        ));
+    }
+
+    #[test]
+    fn pid_missing_prune_defers_only_the_fresh_running_shape() {
+        let info = running_info(Some(chrono::Utc::now()));
+        let run = running_run();
+
+        assert!(should_defer_pid_missing_prune(
+            &["pid_missing"],
+            &info,
+            Some(&run),
+        ));
+        assert!(!should_defer_pid_missing_prune(
+            &["pid_missing", "task_status_mismatch"],
+            &info,
+            Some(&run),
+        ));
+
+        let mut cancelled = running_run();
+        cancelled.cancel();
+        assert!(!should_defer_pid_missing_prune(
+            &["pid_missing"],
+            &info,
+            Some(&cancelled),
         ));
     }
 }

@@ -98,7 +98,9 @@ pub use mcp_policy_repository::McpPolicyRepository;
 pub use agent_model_registry_repository::AgentModelRegistryRepository;
 pub use agent_profile_repository::{AgentProfileId, AgentProfileRepository};
 pub use agent_provider_settings_repository::AgentProviderSettingsRepository;
-pub use agent_run_repository::{AgentRunRepository, ORPHANED_AGENT_RUN_ON_APP_RESTART};
+pub use agent_run_repository::{
+    AgentRunRepository, ORPHANED_AGENT_RUN_ON_APP_RESTART, PRUNED_STALE_AGENT_RUN,
+};
 pub use agent_task_repository::{AgentTaskListOptions, AgentTaskRepository};
 pub use agent_workflow_repository::AgentWorkflowRepository;
 pub use agent_workspace_repair_repository::{

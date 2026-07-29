@@ -28,7 +28,9 @@ use crate::application::interactive_process_registry::{
 use crate::domain::entities::{
     AgentRun, AgentRunId, AgentRunStatus, ChatContextType, InternalStatus, TaskId,
 };
-use crate::domain::repositories::{AgentRunRepository, ProjectRepository, TaskRepository};
+use crate::domain::repositories::{
+    AgentRunRepository, ProjectRepository, TaskRepository, PRUNED_STALE_AGENT_RUN,
+};
 use crate::domain::services::{RunningAgentInfo, RunningAgentKey, RunningAgentRegistry};
 use crate::infrastructure::agents::claude::stream_timeouts;
 
@@ -72,6 +74,24 @@ pub(super) fn should_defer_terminal_settlement_prune(
     };
     let grace_secs = i64::try_from(stream_timeouts().completion_grace_secs).unwrap_or(i64::MAX);
     let age = chrono::Utc::now().signed_duration_since(last_active_at);
+    age.num_seconds() <= grace_secs
+}
+
+pub(super) fn should_defer_pid_missing_prune(
+    reasons: &[&'static str],
+    info: &RunningAgentInfo,
+    run: Option<&AgentRun>,
+) -> bool {
+    if reasons != ["pid_missing"] {
+        return false;
+    }
+    if !matches!(run, Some(agent_run) if agent_run.status == AgentRunStatus::Running) {
+        return false;
+    }
+
+    let grace_secs = i64::try_from(stream_timeouts().completion_grace_secs).unwrap_or(i64::MAX);
+    let last_activity = info.last_active_at.unwrap_or(info.started_at);
+    let age = chrono::Utc::now().signed_duration_since(last_activity);
     age.num_seconds() <= grace_secs
 }
 
@@ -213,7 +233,10 @@ impl PruneEngine {
                 if agent_run.status == AgentRunStatus::Running {
                     let _ = self
                         .agent_run_repo
-                        .cancel(&AgentRunId::from_string(&info.agent_run_id))
+                        .cancel_with_reason(
+                            &AgentRunId::from_string(&info.agent_run_id),
+                            PRUNED_STALE_AGENT_RUN,
+                        )
                         .await;
                 }
             }
@@ -295,6 +318,16 @@ impl PruneEngine {
             return false;
         }
 
+        if should_defer_pid_missing_prune(&reasons, info, run.as_ref()) {
+            tracing::debug!(
+                context_type = key.context_type,
+                context_id = key.context_id,
+                run_id = info.agent_run_id,
+                "Deferring pid_missing prune within completion grace"
+            );
+            return false;
+        }
+
         // Merge cleanup retains the exact owner reservation until the worktree side
         // effect is complete, so a replacement cannot claim and reuse the path.
         let merge_cleanup = context_type == Some(ChatContextType::Merge);
@@ -321,10 +354,15 @@ impl PruneEngine {
 
         if let Some(agent_run) = run {
             if agent_run.status == AgentRunStatus::Running {
-                let _ = self
-                    .agent_run_repo
-                    .cancel(&AgentRunId::from_string(&info.agent_run_id))
-                    .await;
+                let run_id = AgentRunId::from_string(&info.agent_run_id);
+                if !merge_cleanup && !pid_alive {
+                    let _ = self
+                        .agent_run_repo
+                        .cancel_with_reason(&run_id, PRUNED_STALE_AGENT_RUN)
+                        .await;
+                } else {
+                    let _ = self.agent_run_repo.cancel(&run_id).await;
+                }
             }
         }
 
