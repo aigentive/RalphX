@@ -545,6 +545,7 @@ export interface ConversationActiveStateResponse {
   tool_calls: unknown[];
   streaming_tasks: ActiveStreamingTaskResponse[];
   partial_text: string;
+  partial_text_segments?: string[];
 }
 
 const ConversationActiveStateResponseSchema = z.object({
@@ -564,6 +565,7 @@ const ConversationActiveStateResponseSchema = z.object({
       && (record.seq == null || (typeof record.seq === "number" && Number.isFinite(record.seq)));
   })).default([]),
   partial_text: z.string().default(""),
+  partial_text_segments: z.array(z.string()).default([]),
 });
 
 /**
@@ -590,6 +592,11 @@ export async function getConversationActiveState(
     tool_calls: parsed.tool_calls,
     streaming_tasks: parsed.streaming_tasks,
     partial_text: parsed.partial_text,
+    partial_text_segments: parsed.partial_text_segments.length > 0
+      ? parsed.partial_text_segments
+      : parsed.partial_text.length > 0
+        ? [parsed.partial_text]
+        : [],
   };
 }
 

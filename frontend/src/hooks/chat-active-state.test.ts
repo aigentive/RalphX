@@ -231,6 +231,67 @@ describe("chat-active-state helpers", () => {
     ]);
   });
 
+  it("projects partial_text_segments into distinct text blocks when recovery has no live blocks", () => {
+    const next = mergeActiveStreamingContentBlocks([], {
+      partial_text: "Alpha before tool. Beta after tool.",
+      partial_text_segments: ["Alpha before tool. ", "Beta after tool."],
+      streaming_tasks: [],
+      tool_calls: [],
+    } as Parameters<typeof mergeActiveStreamingContentBlocks>[1]);
+
+    expect(next).toEqual([
+      { type: "text", text: "Alpha before tool. ", blockIndex: 0 },
+      { type: "text", text: "Beta after tool.", blockIndex: 1 },
+    ]);
+  });
+
+  it("uses partial_text_segments to retain anchored text around a tool and a mid-segment live tail", () => {
+    const next = mergeActiveStreamingContentBlocks([
+      { type: "text", text: "Alpha before tool. ", blockIndex: 0 },
+      { type: "tool_use", toolCall: { id: "grep-1", name: "Grep", arguments: {} } },
+      { type: "text", text: "tail.", blockIndex: 1 },
+    ] as StreamingContentBlock[], {
+      partial_text: "Alpha before tool. Beta after tool.",
+      partial_text_segments: ["Alpha before tool. ", "Beta after tool."],
+      streaming_tasks: [],
+      tool_calls: [],
+    } as Parameters<typeof mergeActiveStreamingContentBlocks>[1]);
+
+    expect(next).toEqual([
+      { type: "text", text: "Alpha before tool. ", blockIndex: 0 },
+      { type: "tool_use", toolCall: { id: "grep-1", name: "Grep", arguments: {} } },
+      { type: "text", text: "Beta after tool.", blockIndex: 1 },
+    ]);
+  });
+
+  it("creates a gap-safe segment when partial_text_segments advances beyond recovered anchors", () => {
+    const next = mergeActiveStreamingContentBlocks([
+      { type: "text", text: "Alpha", blockIndex: 0 },
+    ] as StreamingContentBlock[], {
+      partial_text: "AlphaGamma",
+      partial_text_segments: ["Alpha", "", "Gamma"],
+      streaming_tasks: [],
+      tool_calls: [],
+    } as Parameters<typeof mergeActiveStreamingContentBlocks>[1]);
+
+    expect(next).toEqual([
+      { type: "text", text: "Alpha", blockIndex: 0 },
+      { type: "text", text: "Gamma", blockIndex: 2 },
+    ]);
+  });
+
+  it("keeps the legacy cumulative partial_text merge when segment metadata is absent", () => {
+    const next = mergeActiveStreamingContentBlocks([
+      { type: "text", text: "Alpha" },
+    ], {
+      partial_text: "AlphaBeta",
+      streaming_tasks: [],
+      tool_calls: [],
+    });
+
+    expect(next).toEqual([{ type: "text", text: "AlphaBeta" }]);
+  });
+
   it("hydrates provider and synthetic lifecycle aliases into one provider-keyed delegation", () => {
     const toolCalls = [{
       id: "provider-tool",

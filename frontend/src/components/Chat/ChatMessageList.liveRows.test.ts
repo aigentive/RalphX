@@ -66,6 +66,21 @@ describe("ChatMessageList live transcript rows", () => {
     expect(rows[1]).toMatchObject({ kind: "text", receivedAt: 3_000 });
   });
 
+  it("keeps recovered rows in their source-array order when only some rows carry receipt times", () => {
+    const rows = buildLiveTranscriptRows([
+      { type: "text", text: "Recovered first", seq: 1 },
+      { type: "tool_use", toolCall: { id: "grep", name: "Grep", arguments: {} }, receivedAt: 50_000 },
+      { type: "text", text: "Recovered after tool", seq: 3 },
+      { type: "tool_use", toolCall: { id: "late", name: "Write", arguments: {} }, receivedAt: 60_000 },
+    ], new Map());
+
+    // TimelineItem sorting must preserve this projection order; wall-clock
+    // receipt times are not chronology for hydration-recovered rows.
+    expect(rows.map((row) => row.kind)).toEqual([
+      "text", "tool_group", "text", "tool_group",
+    ]);
+  });
+
   it("keeps every live text row available instead of tail-clipping raw blocks", () => {
     const blocks = Array.from({ length: 45 }, (_, index) =>
       textBlock(index + 1)

@@ -989,6 +989,80 @@ describe("useChatEvents", () => {
       expect(result[0]).toEqual({ type: "text", text: "First block" });
       expect(result[1]).toMatchObject({ type: "text", text: "Second block" });
     });
+
+    it("creates a distinct text block for a new block_index even when the chunk is a continuation", () => {
+      const props = makeProps();
+      renderAndClear(props);
+      act(() => fireEvent("agent:chunk", {
+        text: "Second segment", conversation_id: CONV_ID, context_id: CTX_ID,
+        append_to_previous: true, block_index: 2, seq: 4,
+      }));
+
+      const result = executeUpdater<StreamingContentBlock[]>(props.setStreamingContentBlocks, [
+        { type: "text", text: "First segment", blockIndex: 0 },
+      ] as StreamingContentBlock[]);
+      expect(result[0]).toEqual({ type: "text", text: "First segment", blockIndex: 0 });
+      // New indexed blocks carry display-only receivedAt per the payload contract.
+      expect(result[1]).toMatchObject({ type: "text", text: "Second segment", blockIndex: 2, seq: 4 });
+      expect(result).toHaveLength(2);
+    });
+
+    it("appends chunks with the same block_index and retains the greatest sequence", () => {
+      const props = makeProps();
+      renderAndClear(props);
+      act(() => fireEvent("agent:chunk", {
+        text: " tail", conversation_id: CONV_ID, context_id: CTX_ID,
+        append_to_previous: true, block_index: 2, seq: 9,
+      }));
+      const result = executeUpdater<StreamingContentBlock[]>(props.setStreamingContentBlocks, [
+        { type: "text", text: "Head", blockIndex: 2, seq: 7 },
+      ] as StreamingContentBlock[]);
+      expect(result).toEqual([{ type: "text", text: "Head tail", blockIndex: 2, seq: 9 }]);
+    });
+
+    it("drops a chunk whose sequence is not newer than the last seen chunk sequence", () => {
+      const props = makeProps();
+      renderAndClear(props);
+      act(() => fireEvent("agent:chunk", {
+        text: "Fresh", conversation_id: CONV_ID, context_id: CTX_ID,
+        append_to_previous: true, block_index: 0, seq: 5,
+      }));
+      act(() => fireEvent("agent:chunk", {
+        text: " stale", conversation_id: CONV_ID, context_id: CTX_ID,
+        append_to_previous: true, block_index: 0, seq: 4,
+      }));
+      // The stale/duplicate chunk must not produce a state update at all.
+      // Block seq values are not the guard: recovered anchors carry
+      // timelineSequence, which is not comparable to chunk seq.
+      expect(props.setStreamingContentBlocks).toHaveBeenCalledTimes(1);
+      expect(executeUpdater<StreamingContentBlock[]>(props.setStreamingContentBlocks, [])).toEqual([
+        { type: "text", text: "Fresh", blockIndex: 0, seq: 5, receivedAt: expect.any(Number) },
+      ]);
+    });
+
+    it("appends a fresh chunk to a recovered anchor whose timelineSequence exceeds the chunk seq", () => {
+      const props = makeProps();
+      renderAndClear(props);
+      act(() => fireEvent("agent:chunk", {
+        text: " tail", conversation_id: CONV_ID, context_id: CTX_ID,
+        append_to_previous: true, block_index: 1, seq: 3,
+      }));
+      const result = executeUpdater<StreamingContentBlock[]>(props.setStreamingContentBlocks, [
+        { type: "text", text: "Recovered", blockIndex: 1, seq: 41 },
+      ] as StreamingContentBlock[]);
+      expect(result).toEqual([{ type: "text", text: "Recovered tail", blockIndex: 1, seq: 41 }]);
+    });
+
+    it("keeps the last-text-block heuristic for chunks without block_index", () => {
+      const props = makeProps();
+      renderAndClear(props);
+      act(() => fireEvent("agent:chunk", {
+        text: " legacy", conversation_id: CONV_ID, context_id: CTX_ID, append_to_previous: true,
+      }));
+      expect(executeUpdater<StreamingContentBlock[]>(props.setStreamingContentBlocks, [
+        { type: "text", text: "Legacy" },
+      ])).toEqual([{ type: "text", text: "Legacy legacy" }]);
+    });
   });
 
   // --------------------------------------------------------------------------

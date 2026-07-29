@@ -539,6 +539,7 @@ export function useChatEvents({
   const streamingToolCallsRef = useRef(streamingToolCalls);
   const streamingContentBlocksRef = useRef(streamingContentBlocks);
   const streamingTasksRef = useRef(streamingTasks);
+  const lastChunkSeqRef = useRef<number | null>(null);
 
   useEffect(() => {
     streamingToolCallsRef.current = streamingToolCalls;
@@ -579,6 +580,7 @@ export function useChatEvents({
   useEffect(() => {
     // Clear streaming state immediately when conversation changes to ensure clean slate
     // This runs BEFORE subscribing to new events, preventing stale state from previous conversation
+    lastChunkSeqRef.current = null;
     setStreamingToolCalls(prev => prev.length === 0 ? prev : []);
     setStreamingContentBlocks(prev => prev.length === 0 ? prev : []);
     setStreamingTasks(prev => prev.size === 0 ? prev : new Map());
@@ -1370,29 +1372,54 @@ export function useChatEvents({
           context_type?: string;
           seq?: number;
           append_to_previous?: boolean;
+          block_index?: number;
         }>(
           "agent:chunk", (payload) => {
             const receivedAt = Date.now();
             if (!isRelevant(payload)) return;
+            if (
+              payload.seq != null
+              && lastChunkSeqRef.current != null
+              && payload.seq <= lastChunkSeqRef.current
+            ) return;
+            if (payload.seq != null) {
+              lastChunkSeqRef.current = payload.seq;
+            }
             setStreamingContentBlocks((prev) => {
               const lastBlock = prev[prev.length - 1];
               const shouldAppend = payload.append_to_previous ?? true;
+              // Staleness is guarded by lastChunkSeqRef above; block seq values
+              // are not comparable to chunk seq — recovered anchors carry
+              // timelineSequence, a different counter.
+              const hasBlockIndex = payload.block_index != null;
               // If last block is text and the backend says this chunk extends it, append.
               // Codex agent_message events are already logical text blocks, so they set
               // append_to_previous=false to preserve live block boundaries.
-              if (shouldAppend && lastBlock?.type === "text") {
+              const shouldAppendToIndexedBlock = hasBlockIndex
+                && lastBlock?.type === "text"
+                && lastBlock.blockIndex === payload.block_index;
+              const shouldAppendToLegacyBlock = !hasBlockIndex && lastBlock?.type === "text";
+              if (shouldAppend && (shouldAppendToIndexedBlock || shouldAppendToLegacyBlock)) {
                 const updated = [...prev];
-                // Preserve existing seq/timestamp when appending to block.
                 const appendBlock = {
                   ...lastBlock,
                   text: lastBlock.text + payload.text,
+                  ...(payload.seq != null && {
+                    seq: Math.max(lastBlock.seq ?? payload.seq, payload.seq),
+                  }),
                 };
                 updated[updated.length - 1] = appendBlock;
                 return updated;
               }
               // New text block: use seq from payload
-              const newBlock = { type: "text" as const, text: payload.text, receivedAt };
-              return [...prev, payload.seq != null ? { ...newBlock, seq: payload.seq } : newBlock];
+              const newBlock = {
+                type: "text" as const,
+                text: payload.text,
+                receivedAt,
+                ...(payload.block_index != null && { blockIndex: payload.block_index }),
+                ...(payload.seq != null && { seq: payload.seq }),
+              };
+              return [...prev, newBlock];
             });
           }
         )
