@@ -558,19 +558,57 @@ describe("environment runtime composition", () => {
     expect(local).toHaveBeenCalled();
   });
 
-  it("uses pairing scopes in background without a session fetch and records them", async () => {
+  /**
+   * P-28 BACKGROUND HALF (PR 3.3-a). A background environment cannot re-read
+   * `GET /remote/v1/session`: `authorize_proxy_target` authorizes only the health ops
+   * for a non-active environment (P-26), and widening the proxy to permit it is
+   * exactly the erosion the badge slice is forbidden to cause.
+   *
+   * So the background refresh NARROWS. It previously fell back to
+   * `entry.remote.scopes` — the PAIRING-TIME snapshot — which is a fail-open hole: a
+   * device whose `ui:agent` grant was revoked host-side would have had it silently
+   * restored by a background reconnect.
+   */
+  it("narrows to the empty set in background when nothing was ever confirmed", async () => {
     const { getConfirmedScopes, initializeEnvironmentRuntime } = await import(
       "./environment-runtime"
     );
+    const { networkFetch } = await import("./network-fetch");
     useEnvironmentStore.getState().setEnvironments([summary("env-b")]);
     setFlag(true);
     teardown = initializeEnvironmentRuntime();
     const runtime = supervisors[0];
+    vi.mocked(networkFetch).mockClear();
 
     const scopes = await runtime?.deps.refreshScopes();
     runtime?.deps.applyScopes(scopes ?? []);
 
-    expect(scopes).toEqual(["ui:read"]);
-    expect(getConfirmedScopes("env-b")).toEqual(["ui:read"]);
+    // NOT `["ui:read"]`: the pairing snapshot records what the host granted when the
+    // environment was added and can be arbitrarily stale.
+    expect(scopes).toEqual([]);
+    expect(getConfirmedScopes("env-b")).toEqual([]);
+    // And it stays a health-only environment — no session request was issued (P-26).
+    expect(networkFetch).not.toHaveBeenCalled();
+  });
+
+  it("retains the last CONFIRMED set across a background reconnect", async () => {
+    const { getConfirmedScopes, initializeEnvironmentRuntime } = await import(
+      "./environment-runtime"
+    );
+    const { networkFetch } = await import("./network-fetch");
+    useEnvironmentStore.getState().setEnvironments([summary("env-b")]);
+    setFlag(true);
+    teardown = initializeEnvironmentRuntime();
+    const runtime = supervisors[0];
+    // A previous active-session introspection confirmed a wider grant.
+    runtime?.deps.applyScopes(["ui:read", "ui:operate"]);
+    vi.mocked(networkFetch).mockClear();
+
+    const scopes = await runtime?.deps.refreshScopes();
+
+    // Retained, never widened past it, and never re-broadened from the pairing row.
+    expect(scopes).toEqual(["ui:read", "ui:operate"]);
+    expect(getConfirmedScopes("env-b")).toEqual(["ui:read", "ui:operate"]);
+    expect(networkFetch).not.toHaveBeenCalled();
   });
 });

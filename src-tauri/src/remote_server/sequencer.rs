@@ -30,6 +30,7 @@ use tokio::sync::{broadcast, mpsc};
 use crate::error::AppResult;
 use crate::infrastructure::sqlite::{RemoteEventLogStore, RemoteEventRow};
 use crate::remote_server::capture::{CaptureReceivers, CapturedEvent};
+use crate::remote_server::counters::RemoteStreamCounters;
 use crate::remote_server::retention::RetentionLeaseRegistry;
 
 #[cfg(test)]
@@ -133,6 +134,7 @@ struct StreamState {
     control: mpsc::UnboundedSender<SequencerControl>,
     leases: RetentionLeaseRegistry,
     log: Arc<dyn RemoteEventLogStore>,
+    counters: RemoteStreamCounters,
 }
 
 /// The shared, cloneable view of the durable stream: what `hello`, `subscribe`, replay, and the
@@ -163,6 +165,11 @@ impl RemoteStreamHandle {
 
     pub(crate) fn leases(&self) -> &RetentionLeaseRegistry {
         &self.state.leases
+    }
+
+    /// The host's observability counters for this stream (§5.5, R-11).
+    pub(crate) fn counters(&self) -> &RemoteStreamCounters {
+        &self.state.counters
     }
 
     pub(crate) fn log(&self) -> Arc<dyn RemoteEventLogStore> {
@@ -235,6 +242,7 @@ fn build_stream(
             control,
             leases,
             log,
+            counters: RemoteStreamCounters::new(),
         }),
     }
 }
@@ -421,6 +429,7 @@ impl RemoteSequencer {
                 floor_seq: max_seq,
             };
         }
+        self.handle.state.counters.record_epoch_roll(cause);
         let _ = self.handle.state.frames.send(StreamFrame::EpochRolled);
         tracing::warn!(
             ?cause,
