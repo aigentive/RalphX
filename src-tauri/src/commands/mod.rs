@@ -37,6 +37,8 @@ mod clickup_commands_tests;
 pub mod conversation_folder_reference_commands;
 pub mod conversation_stats_commands;
 pub mod diagnostic_commands;
+#[cfg(test)]
+mod diagnostic_commands_tests;
 pub mod diff_commands;
 pub mod execution_commands;
 pub(crate) mod execution_task_navigation;

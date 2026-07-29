@@ -524,6 +524,7 @@ macro_rules! register_tauri_commands {
             commands::api_key_commands::get_api_key_audit_log,
             commands::diagnostic_commands::get_agent_health,
             commands::diagnostic_commands::get_codex_cli_diagnostics,
+            commands::diagnostic_commands::log_frontend_error,
             // UI feature flag commands
             commands::ui_commands::get_ui_feature_flags,
             commands::ui_commands::update_ui_feature_flags,

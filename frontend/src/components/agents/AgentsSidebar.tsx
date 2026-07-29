@@ -323,6 +323,7 @@ interface ScrollableAgentSessionListProps<T> {
   hasNextPage: boolean;
   isFetchingNextPage: boolean;
   isLoading: boolean;
+  isVisible: boolean;
   onViewportRowCapacityChange?: (rowCapacity: number) => void;
   onVisibleRowsChange?: (rows: T[]) => void;
   renderRow: (row: T) => ReactNode;
@@ -338,6 +339,7 @@ function ScrollableAgentSessionList<T>({
   hasNextPage,
   isFetchingNextPage,
   isLoading,
+  isVisible,
   onViewportRowCapacityChange,
   onVisibleRowsChange,
   renderRow,
@@ -355,6 +357,10 @@ function ScrollableAgentSessionList<T>({
   const rowResizeObserverRef = useRef<ResizeObserver | null>(null);
   const viewportResizeObserverRef = useRef<ResizeObserver | null>(null);
   const latestVisibleRangeRef = useRef<ListRange | null>(null);
+  const forceRestoreTargetRef = useRef<{
+    scroller: HTMLElement;
+    scrollKey: string;
+  } | null>(null);
   const [measuredRowHeight, setMeasuredRowHeight] = useState<number | null>(null);
   const underflowFetchKeyRef = useRef<string | null>(null);
   const nextPageRequestRowCountRef = useRef<number | null>(null);
@@ -362,24 +368,26 @@ function ScrollableAgentSessionList<T>({
   const rowCount = rows.length;
   const rowHeight =
     measuredRowHeight ?? AGENTS_SIDEBAR_FALLBACK_SESSION_ROW_PX;
-  const rememberedScroll = useMemo(
-    () => agentSidebarSessionScrollPositions.get(scrollKey) ?? null,
-    [scrollKey]
-  );
+  const hasRows = rowCount > 0;
+  const rememberedScroll = useMemo(() => {
+    if (!isVisible || !hasRows) {
+      return null;
+    }
+    return agentSidebarSessionScrollPositions.get(scrollKey) ?? null;
+  }, [hasRows, isVisible, scrollKey]);
   const initialScrollTop = rememberedScroll?.scrollTop ?? 0;
   const rememberedRowCount = rememberedScroll?.rowCount ?? 0;
+  const hasEnoughRowsForRestore =
+    rememberedRowCount === 0 || rowCount >= rememberedRowCount;
   const restoreStateFrom = useMemo<StateSnapshot | undefined>(() => {
-    if (!rememberedScroll?.stateSnapshot) {
-      return undefined;
-    }
-    if (rememberedRowCount > 0 && rowCount < rememberedRowCount) {
+    if (!rememberedScroll?.stateSnapshot || !hasEnoughRowsForRestore) {
       return undefined;
     }
     return {
       ...rememberedScroll.stateSnapshot,
       scrollTop: rememberedScroll.scrollTop,
     };
-  }, [rememberedRowCount, rememberedScroll, rowCount]);
+  }, [hasEnoughRowsForRestore, rememberedScroll]);
   const visibleRowSlots = Math.min(
     Math.max(rowCount, isLoading ? 1 : 0),
     AGENTS_SIDEBAR_MAX_VISIBLE_SESSION_ROWS
@@ -704,36 +712,22 @@ function ScrollableAgentSessionList<T>({
 
   useLayoutEffect(() => {
     const scroller = scrollerRef.current;
-    if (!scroller || rowCount === 0) {
+    if (!isVisible || !scroller || rowCount === 0 || scroller.clientHeight <= 0) {
       return;
     }
 
-    const savedScrollTop =
-      agentSidebarSessionScrollPositions.get(scrollKey)?.scrollTop ?? 0;
-    const restoreScroll = () => {
-      const nextScrollTop = Math.max(0, savedScrollTop);
-      scroller.scrollTop = nextScrollTop;
-      virtuosoRef.current?.scrollTo?.({ top: nextScrollTop });
-    };
-
-    if (typeof window === "undefined") {
-      restoreScroll();
+    if (
+      forceRestoreTargetRef.current?.scrollKey === scrollKey &&
+      forceRestoreTargetRef.current.scroller === scroller
+    ) {
       return;
     }
+    forceRestoreTargetRef.current = { scrollKey, scroller };
 
-    restoreScroll();
-    let secondFrameId: number | null = null;
-    const frameId = window.requestAnimationFrame(() => {
-      restoreScroll();
-      secondFrameId = window.requestAnimationFrame(restoreScroll);
-    });
-    return () => {
-      window.cancelAnimationFrame(frameId);
-      if (secondFrameId !== null) {
-        window.cancelAnimationFrame(secondFrameId);
-      }
-    };
-  }, [rowCount, scrollKey, scrollerVersion, viewportHeight]);
+    const nextScrollTop = Math.max(0, initialScrollTop);
+    scroller.scrollTop = nextScrollTop;
+    virtuosoRef.current?.scrollTo?.({ top: nextScrollTop });
+  }, [initialScrollTop, isVisible, rowCount, scrollKey, scrollerVersion]);
 
   useEffect(() => {
     if (rowCount === 0 || rowCount >= rememberedRowCount) {
@@ -770,6 +764,14 @@ function ScrollableAgentSessionList<T>({
     testId,
   ]);
 
+  const frameClassName = fillAvailableHeight
+    ? "mb-0 mt-1 flex min-h-0 flex-1 flex-col"
+    : "mb-2 mt-1";
+
+  if (!isVisible) {
+    return <div className={frameClassName} data-testid={`${testId}-frame`} role="group" />;
+  }
+
   if (rowCount === 0) {
     if (!isLoading) {
       return null;
@@ -784,11 +786,8 @@ function ScrollableAgentSessionList<T>({
 
   return (
     <div
-      className={
-        fillAvailableHeight
-          ? "mb-0 mt-1 flex min-h-0 flex-1 flex-col"
-          : "mb-2 mt-1"
-      }
+      data-testid={`${testId}-frame`}
+      className={frameClassName}
       role="group"
     >
       <Virtuoso
@@ -2211,6 +2210,7 @@ function AgentSidebarConversationRowsPanel({
           hasNextPage={hasNextPage}
           isFetchingNextPage={isFetchingNextPage}
           isLoading={isLoading}
+          isVisible={isSidebarVisible}
           onVisibleRowsChange={handleVisibleRowsChange}
           renderRow={renderRow}
           rows={rows}
@@ -3962,6 +3962,7 @@ function ProjectSessionGroup({
               hasNextPage={Boolean(groupQuery.hasNextPage)}
               isFetchingNextPage={Boolean(groupQuery.isFetchingNextPage)}
               isLoading={Boolean(groupQuery.isLoading)}
+              isVisible={isSidebarVisible}
               onViewportRowCapacityChange={handleViewportRowCapacityChange}
               onVisibleRowsChange={handleVisibleProjectRowsChange}
               renderRow={renderProjectRow}
