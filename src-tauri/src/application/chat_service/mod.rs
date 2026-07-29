@@ -1552,11 +1552,15 @@ pub trait ChatService: Send + Sync {
     async fn is_agent_running(&self, context_type: ChatContextType, context_id: &str) -> bool;
 
     /// Bulk-check whether agents are running for the given context ids.
+    ///
+    /// Returns `Err` when the registry read itself fails. It must not degrade to an all-idle
+    /// map: "the registry is unreachable" and "nothing is running" drive opposite UI, and
+    /// collapsing them showed a broken system as a quiet one.
     async fn get_agent_running_states(
         &self,
         context_type: ChatContextType,
         context_ids: &[String],
-    ) -> HashMap<String, AgentRunningState>;
+    ) -> Result<HashMap<String, AgentRunningState>, ChatServiceError>;
 
     /// Override plan branch repo at runtime (interior mutability).
     /// Default is a no-op; AppChatService uses std::sync::Mutex.
@@ -7971,7 +7975,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         &self,
         context_type: ChatContextType,
         context_ids: &[String],
-    ) -> HashMap<String, AgentRunningState> {
+    ) -> Result<HashMap<String, AgentRunningState>, ChatServiceError> {
         let requested_ids: HashSet<String> = context_ids
             .iter()
             .filter(|id| !id.is_empty())
@@ -7983,25 +7987,24 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             .collect();
 
         if requested_ids.is_empty() {
-            return states;
+            return Ok(states);
         }
 
         let context_type_name = context_type.to_string();
-        let entries = match self
+        let entries = self
             .running_agent_registry
             .list_by_context_type(&context_type_name)
             .await
-        {
-            Ok(entries) => entries,
-            Err(error) => {
+            .map_err(|error| {
                 tracing::warn!(
                     %context_type,
                     error = %error,
                     "Failed to bulk-list running-agent registry entries"
                 );
-                return states;
-            }
-        };
+                ChatServiceError::RepositoryError(format!(
+                    "Failed to list running agents for {context_type}: {error}"
+                ))
+            })?;
 
         let mut live_entries = Vec::new();
         for (key, info) in entries {
@@ -8093,7 +8096,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 .await;
         }
 
-        states
+        Ok(states)
     }
 
     fn set_plan_branch_repo(&self, repo: Arc<dyn PlanBranchRepository>) {
@@ -9605,7 +9608,8 @@ mod bulk_running_state_tests {
         ];
         let states = service
             .get_agent_running_states(ChatContextType::Project, &requested_ids)
-            .await;
+            .await
+            .expect("bulk running states resolve");
 
         assert_eq!(
             states.get("conv-running").map(|state| state.is_running),
@@ -9685,7 +9689,8 @@ mod bulk_running_state_tests {
                 ChatContextType::Project,
                 std::slice::from_ref(&conversation_id_string),
             )
-            .await;
+            .await
+            .expect("bulk running states resolve");
 
         let state = states
             .get(&conversation_id_string)
@@ -9718,7 +9723,8 @@ mod bulk_running_state_tests {
 
         let states = service
             .get_agent_running_states(ChatContextType::Project, &["conv-waiting".to_string()])
-            .await;
+            .await
+            .expect("bulk running states resolve");
 
         let state = states.get("conv-waiting").expect("state for requested id");
         assert!(state.is_running);
@@ -9748,7 +9754,8 @@ mod bulk_running_state_tests {
                 ChatContextType::Project,
                 &["conv-idle-missing-run".to_string()],
             )
-            .await;
+            .await
+            .expect("bulk running states resolve");
 
         let state = states
             .get("conv-idle-missing-run")
@@ -9784,7 +9791,8 @@ mod bulk_running_state_tests {
                 ChatContextType::Project,
                 &["conv-idle-running-run".to_string()],
             )
-            .await;
+            .await
+            .expect("bulk running states resolve");
 
         let state = states
             .get("conv-idle-running-run")
@@ -9805,7 +9813,8 @@ mod bulk_running_state_tests {
 
         let states = service
             .get_agent_running_states(ChatContextType::Project, &[])
-            .await;
+            .await
+            .expect("bulk running states resolve");
 
         assert!(states.is_empty());
     }

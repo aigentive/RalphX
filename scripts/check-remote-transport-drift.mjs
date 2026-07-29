@@ -29,9 +29,12 @@
  *      the Vite alias matches the bare specifier only, so a deep path silently strands
  *      that caller on local IPC while a remote environment is active.
  *
- * Plus a RATCHET on the command inventory: every literal command name is either
- * remote-registered (host facade) or listed in `local-only-commands.ts`. Anything
- * else is "unclassified" and must appear in the checked-in baseline. New
+ * Plus a RATCHET on the command inventory: every literal command name resolves through
+ * one of THREE sources — remote-registered (host facade), listed in
+ * `local-only-commands.ts` with a reason, or carrying a host-denied/deferred
+ * `v1Resolution` in `docs/generated/remote-commands.json` (P-11 batch B0: commands
+ * the facade denies or defers are not client-local and must not claim to be).
+ * Anything else is "unclassified" and must appear in the checked-in baseline. New
  * unclassified names fail; names that became classified must be pruned (run with
  * --update-baseline). The count reaches zero in PR 3.1, after which the baseline
  * file goes away.
@@ -63,6 +66,7 @@ const registryPath = path.join(
 );
 const localOnlyPath = path.join(sourceRoot, "lib", "remote", "local-only-commands.ts");
 const baselinePath = path.join(repoRoot, "scripts", "remote-transport-drift-baseline.json");
+const manifestPath = path.join(repoRoot, "docs", "generated", "remote-commands.json");
 
 const require = createRequire(path.join(frontendRoot, "package.json"));
 const ts = require("typescript");
@@ -550,6 +554,65 @@ export function parseLocalOnlyCommands(localOnlySource) {
   );
 }
 
+/**
+ * The third classification source (P-11 batch B0).
+ *
+ * A large block of the gap is neither remote-registered nor client-local: they are host
+ * commands the facade DENIES (`RiskClass::Denied`, or `SpawnsProcess`, which `class_permits`
+ * admits only under `Elevated`) or DEFERS (`Elevated`, a v1 non-goal). Phase-doc key point 6
+ * fixes their resolution as the ledger rows the manifest renders — explicitly NOT a
+ * client-local reason, because they are not client-local and pretending otherwise would put a
+ * false statement in `local-only-commands.ts`.
+ *
+ * The verdict is READ, never re-derived: `ralphx_remote_protocol::v1_resolution` owns it and
+ * `capability_ledger_tests` renders it per row. Re-implementing `class_permits` here would fork
+ * the authority, which is exactly the failure this indirection exists to avoid.
+ *
+ * Fail-closed in both directions:
+ * - an absent, shapeless, or resolution-less row classifies NOTHING (a missing field can never
+ *   read as "classified");
+ * - an unknown resolution literal or a registered-and-refused row THROWS. A rename upstream must
+ *   fail the scan loudly rather than silently stop classifying, and a row the registry serves
+ *   while the ledger denies it is a contradiction the ratchet must not paper over.
+ *
+ * @param {unknown} manifest parsed `remote-commands.json`, or `null` when absent
+ * @returns {Map<string, string>} command name → non-registerable resolution
+ */
+export function parseManifestClassifications(manifest) {
+  const classified = new Map();
+  const ledger = manifest && typeof manifest === "object" ? manifest.ledger : null;
+  if (!Array.isArray(ledger)) return classified;
+
+  for (const row of ledger) {
+    if (!row || typeof row !== "object") continue;
+    const { command, v1Resolution: resolution, registered } = row;
+    if (typeof command !== "string" || resolution === undefined) continue;
+    if (!MANIFEST_RESOLUTIONS.has(resolution)) {
+      throw new Error(
+        `unknown v1Resolution \`${resolution}\` on ledger row \`${command}\` — the manifest ` +
+          "contract changed; update MANIFEST_RESOLUTIONS and re-audit the ratchet"
+      );
+    }
+    if (resolution === "registerable") continue;
+    if (registered === true) {
+      throw new Error(
+        `ledger/registry contradiction: \`${command}\` renders \`${resolution}\` but is ` +
+          "registered on the facade — the scan would classify a name the host actually serves"
+      );
+    }
+    classified.set(command, resolution);
+  }
+  return classified;
+}
+
+/** The closed set `V1_RESOLUTIONS` renders. Pinned by `protocol_contract.rs`. */
+const MANIFEST_RESOLUTIONS = new Set([
+  "registerable",
+  "host-denied",
+  "host-denied-spawns-process",
+  "v1-deferred",
+]);
+
 // ---------------------------------------------------------------------------
 // Self-test
 // ---------------------------------------------------------------------------
@@ -742,12 +805,81 @@ function runSelfTest() {
     )
   );
 
+  // --- P-11 batch B0: the manifest as a third classification source ---------
+  const manifestFixture = {
+    ledger: [
+      { command: "open_terminal", v1Resolution: "host-denied", registered: false },
+      { command: "run_setup", v1Resolution: "host-denied-spawns-process", registered: false },
+      { command: "read_credential", v1Resolution: "v1-deferred", registered: false },
+      { command: "list_tasks", v1Resolution: "registerable", registered: true },
+      { command: "archive_task", v1Resolution: "registerable", registered: false },
+    ],
+  };
+  const manifestClassified = parseManifestClassifications(manifestFixture);
+  check(
+    "classifies a manifest host-denied name",
+    manifestClassified.get("open_terminal") === "host-denied"
+  );
+  check(
+    "classifies a manifest SpawnsProcess name",
+    manifestClassified.get("run_setup") === "host-denied-spawns-process"
+  );
+  check(
+    "classifies a manifest v1-deferred name",
+    manifestClassified.get("read_credential") === "v1-deferred"
+  );
+  check(
+    "leaves a registerable name unclassified — it still needs a registration or a reason",
+    !manifestClassified.has("archive_task") && !manifestClassified.has("list_tasks")
+  );
+  check(
+    "a name absent from every source stays unclassified",
+    !manifestClassified.has("never_heard_of_it")
+  );
+  check(
+    "rejects an unknown resolution literal rather than trusting it",
+    (() => {
+      try {
+        parseManifestClassifications({
+          ledger: [{ command: "x", v1Resolution: "probably-fine", registered: false }],
+        });
+        return false;
+      } catch {
+        return true;
+      }
+    })()
+  );
+  check(
+    "fails a registered-and-manifest-denied contradiction",
+    (() => {
+      try {
+        parseManifestClassifications({
+          ledger: [{ command: "x", v1Resolution: "host-denied", registered: true }],
+        });
+        return false;
+      } catch {
+        return true;
+      }
+    })()
+  );
+  check(
+    "degrades to nothing-classified when the manifest is absent or shapeless",
+    parseManifestClassifications(null).size === 0 &&
+      parseManifestClassifications({}).size === 0
+  );
+  check(
+    "treats a row with no resolution as unclassified, never as classified",
+    parseManifestClassifications({
+      ledger: [{ command: "x", registered: false }],
+    }).size === 0
+  );
+
   if (failures.length > 0) {
     console.error("FAIL: drift-scan self-test");
     failures.forEach((failure) => console.error(`  ${failure}`));
     process.exit(1);
   }
-  console.log("PASS: drift-scan self-test (26 detector cases)");
+  console.log("PASS: drift-scan self-test (35 detector cases)");
   process.exit(0);
 }
 
@@ -808,10 +940,27 @@ const localOnly = fs.existsSync(localOnlyPath)
   ? parseLocalOnlyCommands(fs.readFileSync(localOnlyPath, "utf8"))
   : new Set();
 
+const manifestClassified = fs.existsSync(manifestPath)
+  ? parseManifestClassifications(JSON.parse(fs.readFileSync(manifestPath, "utf8")))
+  : new Map();
+if (manifestClassified.size === 0) {
+  console.warn(
+    "WARN: no manifest classifications found; the host-denied/deferred disposition is inert " +
+      "(regenerate docs/generated/remote-commands.json)"
+  );
+}
+
 const commands = [...new Set(callSites.map((site) => site.command))].sort();
 const unclassified = commands.filter(
-  (command) => !(registered ?? new Set()).has(command) && !localOnly.has(command)
+  (command) =>
+    !(registered ?? new Set()).has(command) &&
+    !localOnly.has(command) &&
+    !manifestClassified.has(command)
 );
+
+const manifestResolvedCount = commands.filter((command) =>
+  manifestClassified.has(command)
+).length;
 
 const baseline = fs.existsSync(baselinePath)
   ? JSON.parse(fs.readFileSync(baselinePath, "utf8"))
@@ -823,7 +972,7 @@ if (updateBaseline) {
     baselinePath,
     `${JSON.stringify(
       {
-        note: "P-11 ratchet. Commands invoked by the frontend that are neither remote-registered nor local-only. This list may only shrink; PR 3.1 drives it to zero and deletes this file.",
+        note: "P-11 ratchet. Commands invoked by the frontend that are remote-registered by nothing, local-only by nothing, and carry no host-denied/deferred ledger row in docs/generated/remote-commands.json. This list may only shrink; PR 3.1 drives it to zero and deletes this file.",
         unclassifiedCommands: unclassified,
       },
       null,
@@ -843,11 +992,13 @@ if (added.length > 0 || stale.length > 0) {
   console.error("FAIL: remote transport command inventory drift");
   if (added.length > 0) {
     console.error(
-      `  ${added.length} command(s) are neither remote-registered nor listed in local-only-commands.ts:`
+      `  ${added.length} command(s) are remote-registered by nothing, listed in ` +
+        "local-only-commands.ts by nothing, and carry no host-denied/deferred ledger row:"
     );
     added.forEach((command) => console.error(`    ${command}`));
     console.error(
-      "  Register them on the host facade, add them to local-only-commands.ts with a reason,"
+      "  Register them on the host facade, add them to local-only-commands.ts with a reason,\n" +
+        "  classify them in capability_ledger.rs as Denied/Elevated (then regenerate the manifest),"
     );
     console.error("  or record them deliberately: node scripts/check-remote-transport-drift.mjs --update-baseline");
   }
@@ -863,5 +1014,6 @@ if (added.length > 0 || stale.length > 0) {
 
 console.log(
   `PASS: remote transport drift — ${commands.length} invoke command name(s), 0 dynamic, ` +
-    `0 seam bypasses; ${unclassified.length} unclassified (baseline, → 0 in PR 3.1).`
+    `0 seam bypasses; ${manifestResolvedCount} manifest-classified; ` +
+    `${unclassified.length} unclassified (baseline, → 0 in PR 3.1).`
 );

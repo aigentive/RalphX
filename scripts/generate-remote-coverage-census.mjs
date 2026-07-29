@@ -96,12 +96,27 @@ const DISPOSITIONS = {
   },
 };
 
+/**
+ * B0 landed, so the disposition is READ off the row's rendered `v1Resolution` rather than
+ * re-derived from class + capabilities here. One authority
+ * (`ralphx_remote_protocol::v1_resolution`), three consumers.
+ */
+const RESOLUTION_DISPOSITIONS = {
+  "host-denied": "hostDeniedClass",
+  "host-denied-spawns-process": "hostDeniedSpawn",
+  "v1-deferred": "v1DeferredElevated",
+  registerable: "registerCandidate",
+};
+
 function dispositionOf(command, ledgerEntry) {
   if (!ledgerEntry) return "orphan";
-  if (ledgerEntry.class === "denied") return "hostDeniedClass";
-  if ((ledgerEntry.capabilities ?? []).includes("spawnsProcess")) return "hostDeniedSpawn";
-  if (ledgerEntry.class === "elevated") return "v1DeferredElevated";
-  return "registerCandidate";
+  const disposition = RESOLUTION_DISPOSITIONS[ledgerEntry.v1Resolution];
+  if (!disposition) {
+    fail(
+      `ledger row \`${command}\` renders v1Resolution \`${ledgerEntry.v1Resolution}\`, which this census cannot route`
+    );
+  }
+  return disposition;
 }
 
 // ---------------------------------------------------------------------------
@@ -119,14 +134,15 @@ const BATCHES = [
     title: "P-11 third-disposition mechanism (prerequisite, no registrations)",
     modules: [],
     commands: [],
-    why: "Today the drift scan classifies a name as remote-registered OR local-only. 159 of the 447 gap names are neither and never will be: they are host-side commands the facade denies (Denied class, SpawnsProcess) or defers (Elevated). Phase doc key point 6 fixes the intended resolution — those names resolve for P-11 'via the module-`Denied` rows the ledger renders into `remote-commands.json`', explicitly NOT via a client-local reason. The scan must learn to read the manifest as a third classification source before ANY batch can move the unclassified count to zero. Landing this first also makes every later batch's delta measurable.",
+why: "LANDED (PR 3.1-b batch B0). The drift scan used to admit two answers — remote-registered, or client-local with a reason. 162 of the then-419 gap names were neither and never will be: host commands the facade denies (Denied class, SpawnsProcess) or defers (Elevated), and writing them into `local-only-commands.ts` would have put a false statement in a file whose whole value is that its reasons are true. `ralphx_remote_protocol::v1_resolution` now derives the verdict from the ledger row, `capability_ledger_tests` renders it as `v1Resolution` on every manifest row, and the scan reads it as a third classification source. The ratchet moved 419 → 257 with zero registrations. Every later batch's delta is now measurable.",
     work: [
-      "Extend `scripts/check-remote-transport-drift.mjs` to read `docs/generated/remote-commands.json` and treat a name as classified when its ledger row is host-denied (class `denied`, or any capability set `class_permits` rejects at v1 classes) — with the ledger row, not a name list, as the authority.",
-      "Decide and encode the `Elevated`/v1-deferred disposition: same manifest path with a distinct reason, or an explicit deferred list that CI shrinks. Do not let it fall into `local-only-commands.ts` (key point 6).",
-      "Add self-test detector cases: a manifest-denied name classifies; a name absent from every source still fails; a name that is BOTH registered and manifest-denied fails (that is a ledger/registry contradiction).",
-      "Keep the ratchet: the baseline file may only shrink, and is deleted when the count reaches zero.",
+      "DONE — `v1_resolution(class, capabilities)` in `ralphx-remote-protocol` derives one of `registerable` / `host-denied` / `host-denied-spawns-process` / `v1-deferred`. The ledger row is the authority; nothing downstream re-derives `class_permits`.",
+      "DONE — the `Elevated`/v1-deferred disposition rides the SAME manifest path under a distinct reason code, not a side list and not `local-only-commands.ts` (key point 6). CI shrinks it as Elevated rows are reclassified.",
+      "DONE — 9 new scan self-test cases (26 → 35): each refusal class classifies, a registerable name does not, a name absent from every source stays unclassified, an unknown resolution literal throws, a registered-and-refused row throws, and an absent/shapeless/field-less manifest classifies nothing.",
+      "DONE — the ratchet held: the baseline shrank 419 → 257 and is still delete-on-zero.",
+      "NOTE — `host-only-ux` needed no separate annotation list: all 162 manifest-resolvable names carry a Denied or Elevated ledger row already, so the census's taxonomy covers the set with no side file.",
     ],
-    gate: "Scan self-test grows by the new detector cases; the PASS line reports the unclassified count falling by exactly the manifest-resolved set (expected −159 with no registrations).",
+    gate: "MET — scan self-test 26 → 35 cases; the PASS line reports 190 manifest-classified and the unclassified count fell 419 → 257, exactly the 162-name manifest-resolved set, with zero registrations.",
   },
   {
     id: "B1",
@@ -245,6 +261,7 @@ const BATCHES = [
   },
   {
     id: "D1",
+    retiredBy: "B0",
     title: "Credential + integration surface (disposition only, no registrations)",
     modules: [
       "ticketing_commands",
@@ -265,6 +282,7 @@ const BATCHES = [
   },
   {
     id: "D2",
+    retiredBy: "B0",
     title: "Process-launch getters and git/gh surface (disposition only)",
     modules: [
       "diff_commands",
@@ -285,6 +303,9 @@ const BATCHES = [
   },
   {
     id: "R1",
+    retiredBy: "B0",
+    retiredNote:
+      "NOT closed, though: leaving the ratchet is a bookkeeping fact, not an answer. Both names are manifest-classified `host-denied-spawns-process` because the getter shells out TODAY; §5.1's open question is whether to remove the spawn so they can be registered, and that owner call still stands. If it is answered yes, these rows change class and re-enter as registration work.",
     title: "`get_project` / `list_projects` — spawn-free read path",
     modules: [],
     commands: ["get_project", "list_projects"],
@@ -298,6 +319,7 @@ const BATCHES = [
   },
   {
     id: "D3",
+    retiredBy: "B0",
     title: "Host chrome, terminal, repository settings, test data (disposition only)",
     modules: [
       "startup_commands",
@@ -314,6 +336,9 @@ const BATCHES = [
   },
   {
     id: "A1",
+    retiredBy: "B0",
+    retiredNote:
+      "NOT closed: the attachment names leave the ratchet, but remote attachment RENDERING is a fetch route, not an invoke command, and §5.3's `ChatAttachmentGallery.tsx` gap plus the 1.5-C endpoint dependency are untouched by B0.",
     title: "Chat attachments — disposition + remote rendering (deferred from 2.6/review-4)",
     modules: ["chat_attachment_commands"],
     why: "2.6-a shipped the honest interim: under a remote environment `getImagePreviewSrc()` returns `null` and every attachment renders as a placeholder card, because `convertFileSrc` mints an `asset://` URL for a path on the CLIENT's filesystem while `attachment.filePath` names a file on the HOST. The comment at `MessageAttachments.tsx:92-94` defers the real fix to 3.1. The three attachment commands are Denied (`writesArbitraryPath` / `deletesEntity`) and stay dispositions — the rendering work is a FETCH-path change, not a command registration, which is exactly 3.1 open question 4 and needs an explicit call.",
@@ -359,7 +384,7 @@ try {
 }
 
 const scanMatch = scanOutput.match(
-  /PASS: remote transport drift — (\d+) invoke command name\(s\), (\d+) dynamic, (\d+) seam bypasses; (\d+) unclassified/
+  /PASS: remote transport drift — (\d+) invoke command name\(s\), (\d+) dynamic, (\d+) seam bypasses; (\d+) manifest-classified; (\d+) unclassified/
 );
 if (!scanMatch) fail(`could not parse the drift-scan PASS line: ${scanOutput.trim()}`);
 
@@ -367,7 +392,8 @@ const scan = {
   invokedCommands: Number(scanMatch[1]),
   dynamicExpressions: Number(scanMatch[2]),
   seamBypasses: Number(scanMatch[3]),
-  unclassified: Number(scanMatch[4]),
+  manifestClassified: Number(scanMatch[4]),
+  unclassified: Number(scanMatch[5]),
   line: scanOutput.trim(),
 };
 
@@ -431,13 +457,42 @@ for (const record of records) {
   record.batch = batchId;
 }
 
-// Every declared module must actually appear in the gap, or the plan is stale.
+// A batch is RETIRED when B0's manifest classification took its whole membership out of the
+// gap — the disposition-only batches exist precisely to be retired this way. The check is
+// two-directional so neither half can rot: a live batch must still have gap members, and a
+// batch marked retired must have NONE. Marking a batch retired to silence a staleness failure
+// therefore fails immediately if any member is still unclassified.
+const batchIsEmpty = (batch) =>
+  !(batch.modules ?? []).some((module) =>
+    records.some((record) => record.module === module)
+  ) && !(batch.commands ?? []).some((command) =>
+    records.some((record) => record.command === command)
+  );
+
+for (const batch of BATCHES) {
+  const empty = batchIsEmpty(batch);
+  if (batch.retiredBy && !empty) {
+    fail(
+      `batch ${batch.id} is marked retired by ${batch.retiredBy}, but some of its members are still unclassified`
+    );
+  }
+  if (!batch.retiredBy && empty && (batch.modules?.length || batch.commands?.length)) {
+    fail(
+      `batch ${batch.id} claims modules/commands that have no unclassified commands — mark it retiredBy if a mechanism batch resolved them`
+    );
+  }
+}
+
 for (const [module, batchId] of moduleOwner) {
+  const batch = BATCHES.find((candidate) => candidate.id === batchId);
+  if (batch?.retiredBy) continue;
   if (!records.some((record) => record.module === module)) {
     fail(`batch ${batchId} claims module ${module}, which has no unclassified commands`);
   }
 }
 for (const [command, batchId] of pinned) {
+  const batch = BATCHES.find((candidate) => candidate.id === batchId);
+  if (batch?.retiredBy) continue;
   if (!records.some((record) => record.command === command)) {
     fail(`batch ${batchId} pins ${command}, which is not in the gap`);
   }
@@ -464,6 +519,8 @@ const batches = BATCHES.map((batch, index) => {
     order: index + 1,
     title: batch.title,
     rationale: batch.why,
+    retiredBy: batch.retiredBy ?? null,
+    retiredNote: batch.retiredNote ?? null,
     work: batch.work,
     gate: batch.gate,
     commandCount: members.length,
@@ -616,6 +673,7 @@ function renderMarkdown(data) {
         ["Remote-registered (`remote_commands!`)", data.totals.remoteRegistered, "`docs/generated/remote-commands.json`"],
         ["Reason-coded local-only rows", data.totals.localOnlyRows, "`frontend/src/lib/remote/local-only-commands.ts`"],
         ["Ledger rows (exhaustive over `generate_handler!`)", data.totals.ledgerRows, "`docs/generated/remote-commands.json`"],
+        ["Manifest-classified (host-denied / v1-deferred)", data.scan.manifestClassified, "`v1Resolution` in `docs/generated/remote-commands.json`"],
         ["**Unclassified — the 3.1 gap**", `**${data.totals.unclassified}**`, "`scripts/remote-transport-drift-baseline.json`"],
       ]
     )
@@ -624,7 +682,7 @@ function renderMarkdown(data) {
   lines.push("## 2. What the gap is made of");
   lines.push("");
   lines.push(
-    "The gap is not 447 registrations. Routing each name mechanically through the ledger splits it into four very different kinds of work:"
+    "Routing each name mechanically through the ledger splits it into very different kinds of work. B0 has already retired the three non-registerable dispositions from the gap, so they read 0 here — their members now resolve through the manifest and no longer sit in the baseline:"
   );
   lines.push("");
   lines.push(
@@ -639,7 +697,7 @@ function renderMarkdown(data) {
   );
   lines.push("");
   lines.push(
-    `**${(d.hostDeniedClass ?? 0) + (d.hostDeniedSpawn ?? 0) + (d.v1DeferredElevated ?? 0)} of the ${data.totals.unclassified} gap names can never be registered in v1** — they are host-side commands the facade denies or defers. They are not client-local either, so today's scan (registered OR local-only) has no way to classify them and P-11 cannot reach zero. Phase-doc key point 6 fixes the intended resolution: they resolve through the ledger rows the manifest renders. **That mechanism does not exist yet — it is batch B0, and it blocks every other batch's measurable progress.**`
+    `**${data.scan.manifestClassified} invoked names now resolve through the manifest** — host-side commands the facade denies or defers, classified by their ledger row's \`v1Resolution\` rather than by a registration or a client-local reason (phase-doc key point 6). B0 landed that mechanism and the gap fell 419 → ${data.totals.unclassified} with zero registrations. **What remains in the baseline is registration work only**, so from here every batch's delta is exactly the count it registers.`
   );
   lines.push("");
   lines.push(
@@ -680,6 +738,15 @@ function renderMarkdown(data) {
       }`
     );
     lines.push("");
+    if (batch.retiredBy) {
+      lines.push(
+        `**Retired by \`${batch.retiredBy}\`.** Every member left the P-11 ratchet as manifest-classified, so this batch has no registration work. ${
+          batch.retiredNote ??
+          "Disposition-only from the start — the manifest classification IS the disposition."
+        }`
+      );
+      lines.push("");
+    }
     lines.push(`**Why here:** ${batch.rationale}`);
     lines.push("");
     if (batch.work.length > 0) {

@@ -19,6 +19,9 @@ use crate::error::AppResult;
 pub struct MemoryArtifactRepository {
     artifacts: Arc<RwLock<HashMap<ArtifactId, Artifact>>>,
     relations: Arc<RwLock<HashMap<String, ArtifactRelation>>>,
+    /// Fault injection for the latest-version resolver. Callers that must not silently fall
+    /// back to a stale seed id need the failure to be reachable in a test.
+    resolve_latest_failure: Arc<RwLock<Option<String>>>,
 }
 
 impl Default for MemoryArtifactRepository {
@@ -32,7 +35,13 @@ impl MemoryArtifactRepository {
         Self {
             artifacts: Arc::new(RwLock::new(HashMap::new())),
             relations: Arc::new(RwLock::new(HashMap::new())),
+            resolve_latest_failure: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// Make `resolve_latest_artifact_id` fail with `message`.
+    pub async fn fail_resolve_latest_artifact_id(&self, message: impl Into<String>) {
+        *self.resolve_latest_failure.write().await = Some(message.into());
     }
 
     pub fn with_artifacts(artifacts: Vec<Artifact>) -> Self {
@@ -41,6 +50,7 @@ impl MemoryArtifactRepository {
         Self {
             artifacts: Arc::new(RwLock::new(map)),
             relations: Arc::new(RwLock::new(HashMap::new())),
+            resolve_latest_failure: Arc::new(RwLock::new(None)),
         }
     }
 }
@@ -237,6 +247,9 @@ impl ArtifactRepository for MemoryArtifactRepository {
     }
 
     async fn resolve_latest_artifact_id(&self, id: &ArtifactId) -> AppResult<ArtifactId> {
+        if let Some(message) = self.resolve_latest_failure.read().await.clone() {
+            return Err(crate::error::AppError::Infrastructure(message));
+        }
         Ok(id.clone())
     }
 

@@ -9664,22 +9664,8 @@ pub async fn get_agent_run_status_unified(
         return Ok(None);
     };
 
-    // Look up conversation to get context_type/context_id for registry lookup
-    let (model_id, model_label) =
-        if let Ok(Some(conv)) = state.chat_conversation_repo.get_by_id(&conv_id).await {
-            let runtime_context_id = if conv.context_type == ChatContextType::Project {
-                conv.id.as_str().to_string()
-            } else {
-                conv.context_id.clone()
-            };
-            let key = RunningAgentKey::new(conv.context_type.to_string(), runtime_context_id);
-            let agent_info = state.running_agent_registry.get(&key).await;
-            let mid = agent_info.and_then(|info| info.model);
-            let mlabel = mid.as_deref().map(|id| model_id_to_label(id));
-            (mid, mlabel)
-        } else {
-            (None, None)
-        };
+    // Look up conversation to get context_type/context_id for registry lookup.
+    let (model_id, model_label) = resolve_agent_run_model_fields(&state, &conv_id).await?;
 
     Ok(Some(AgentRunStatusResponse {
         id: run.id.as_str().to_string(),
@@ -9752,6 +9738,43 @@ pub async fn is_agent_running(
     Ok(service.is_agent_running(context_type, &context_id).await)
 }
 
+/// Resolve the model id/label a run is executing under, from the conversation's registry entry.
+///
+/// `Ok((None, None))` means "the conversation is gone, or no agent is registered for it" —
+/// genuinely unknown. A repository ERROR is not that, and must not be spelled the same way: the
+/// caller renders these fields as the model the user is talking to, so a failed lookup silently
+/// nulling them shows a confident wrong answer. The sibling `get_active_run` call directly
+/// above already propagates.
+async fn resolve_agent_run_model_fields(
+    state: &AppState,
+    conv_id: &ChatConversationId,
+) -> Result<(Option<String>, Option<String>), String> {
+    let Some(conv) = state
+        .chat_conversation_repo
+        .get_by_id(conv_id)
+        .await
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok((None, None));
+    };
+
+    let runtime_context_id = if conv.context_type == ChatContextType::Project {
+        conv.id.as_str().to_string()
+    } else {
+        conv.context_id.clone()
+    };
+    let key = RunningAgentKey::new(conv.context_type.to_string(), runtime_context_id);
+    let model_id = state
+        .running_agent_registry
+        .get(&key)
+        .await
+        .and_then(|info| info.model);
+    let model_label = model_id
+        .as_deref()
+        .map(crate::infrastructure::agents::claude::model_labels::model_id_to_label);
+    Ok((model_id, model_label))
+}
+
 /// Bulk-check whether agents are running for the requested context ids.
 #[tauri::command]
 pub async fn get_agent_running_states(
@@ -9774,9 +9797,10 @@ pub async fn get_agent_running_states_for_service(
 ) -> Result<HashMap<String, AgentRunningState>, String> {
     let context_type = parse_context_type(&context_type)?;
 
-    Ok(service
+    service
         .get_agent_running_states(context_type, &context_ids)
-        .await)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -9998,7 +10022,8 @@ async fn add_ideation_runtime_item(
             ChatContextType::Ideation,
             std::slice::from_ref(&session_id_str),
         )
-        .await;
+        .await
+        .map_err(|error| error.to_string())?;
     let running_state = states
         .get(&session_id_str)
         .copied()
@@ -10138,13 +10163,16 @@ async fn add_task_runtime_items(
         .collect::<Vec<_>>();
     let execution_states = service
         .get_agent_running_states(ChatContextType::TaskExecution, &task_id_strings)
-        .await;
+        .await
+        .map_err(|error| error.to_string())?;
     let review_states = service
         .get_agent_running_states(ChatContextType::Review, &task_id_strings)
-        .await;
+        .await
+        .map_err(|error| error.to_string())?;
     let merge_states = service
         .get_agent_running_states(ChatContextType::Merge, &task_id_strings)
-        .await;
+        .await
+        .map_err(|error| error.to_string())?;
 
     for task in tasks {
         let candidates = [

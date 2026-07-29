@@ -122,6 +122,81 @@ pub const fn class_permits(class: RiskClass, capabilities: &[Capability]) -> boo
     !matches!(class, RiskClass::Denied)
 }
 
+/// The scopes a **v1** remote facade may grant. `ui:elevated` is a v1 non-goal, so a ledgered
+/// command whose class maps to it is deferred rather than registerable. Kept next to
+/// [`class_permits`] because the two together are the whole v1 exposability question.
+pub const V1_FACADE_SCOPES: &[Scope] = &[Scope::UiRead, Scope::UiOperate, Scope::UiAgent];
+
+/// How a ledgered command resolves against the v1 remote facade (P-11 third disposition).
+///
+/// The P-11 ratchet used to admit exactly two answers — remote-registered, or client-local with
+/// a reason. A large block of host commands is neither and never will be: the facade denies or
+/// defers them. This enum is that third answer, derived from the ledger row itself so the
+/// authority stays in `capability_ledger.rs` and the drift scan only reads the rendered value.
+///
+/// Every variant other than [`V1Resolution::Registerable`] is *manifest-classified*: it needs no
+/// `remote_commands!` entry and no client-local reason, and invoking it remotely stays a
+/// `REMOTE_COMMAND_UNAVAILABLE` `find_spec` miss.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum V1Resolution {
+    /// The class maps to a v1 scope and no capability blocks it — eligible for a hand-audited
+    /// `remote_commands!` entry. Eligible, not approved: the per-command audit still owns the
+    /// final call.
+    Registerable,
+    /// `RiskClass::Denied` — `scope_for_class` yields `None`, so no grant at any capability set
+    /// can reach it and registering it fails the `class_permits` const-assert.
+    HostDenied,
+    /// Carries `Capability::SpawnsProcess`, which `class_permits` admits only under `Elevated`;
+    /// with `ui:elevated` excluded from v1 this is unexposable at every v1 scope.
+    HostDeniedSpawnsProcess,
+    /// Ledgered `Elevated` without `SpawnsProcess` — reachable only under `ui:elevated`, which
+    /// v1 excludes. Deferred, not denied.
+    V1Deferred,
+}
+
+pub const V1_RESOLUTIONS: &[V1Resolution] = &[
+    V1Resolution::Registerable,
+    V1Resolution::HostDenied,
+    V1Resolution::HostDeniedSpawnsProcess,
+    V1Resolution::V1Deferred,
+];
+
+/// Derive a ledger row's [`V1Resolution`] from its declared class and capabilities.
+///
+/// Ordering is deliberate and matches the census's disposition split: `Denied` first (no scope
+/// exists), then `SpawnsProcess` (the capability, not the class, is what forecloses v1), then
+/// the remaining non-v1 classes as deferrals.
+pub const fn v1_resolution(class: RiskClass, capabilities: &[Capability]) -> V1Resolution {
+    if matches!(class, RiskClass::Denied) {
+        return V1Resolution::HostDenied;
+    }
+    let mut index = 0;
+    while index < capabilities.len() {
+        if matches!(capabilities[index], Capability::SpawnsProcess) {
+            return V1Resolution::HostDeniedSpawnsProcess;
+        }
+        index += 1;
+    }
+    match scope_for_v1_class(class) {
+        Some(_) => V1Resolution::Registerable,
+        None => V1Resolution::V1Deferred,
+    }
+}
+
+/// The v1 scope a class maps to, or `None` when v1 grants no scope for it.
+///
+/// Mirrors `remote_server::registry::scope_for_class` restricted to [`V1_FACADE_SCOPES`]; it
+/// lives here because the protocol crate is what the ledger derivation may depend on.
+const fn scope_for_v1_class(class: RiskClass) -> Option<Scope> {
+    match class {
+        RiskClass::Read => Some(Scope::UiRead),
+        RiskClass::Operate | RiskClass::PathScoped => Some(Scope::UiOperate),
+        RiskClass::AgentControl => Some(Scope::UiAgent),
+        RiskClass::Elevated | RiskClass::Denied => None,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResetReason {
     #[serde(rename = "cursor_pruned")]

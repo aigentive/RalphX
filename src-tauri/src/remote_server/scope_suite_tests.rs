@@ -559,3 +559,127 @@ async fn the_generated_suite_is_unreachable_from_a_default_pairing() {
         "a refused dispatch created a task"
     );
 }
+
+/// P-11 batch B0 fail-closed proof — classification is bookkeeping, never a grant.
+///
+/// B0 lets the drift scan mark a name CLASSIFIED without registering it. The hazard that
+/// introduces is precise: a name could stop appearing in the ratchet while quietly becoming
+/// reachable, and the scan — which reads a document, not the running facade — would never
+/// notice. So the refusal is proven here against the production `registry::dispatch`, for one
+/// representative of EACH resolution class.
+///
+/// Representatives are drawn from the manifest rather than hard-coded, so the test cannot
+/// silently stop covering a class whose membership was rewritten.
+#[tokio::test]
+async fn manifest_classified_commands_stay_unreachable_at_every_scope() {
+    let manifest = manifest();
+    let ledger = manifest["ledger"]
+        .as_array()
+        .expect("manifest publishes a ledger array");
+
+    // One representative per class, chosen deterministically (first by command name) so a
+    // failure names the same command on every run.
+    let mut representatives: std::collections::BTreeMap<String, (String, Value)> =
+        std::collections::BTreeMap::new();
+    for row in ledger {
+        let resolution = row["v1Resolution"]
+            .as_str()
+            .expect("every ledger row renders a v1Resolution");
+        if resolution == "registerable" {
+            continue;
+        }
+        let command = row["command"].as_str().expect("rows name a command");
+        representatives
+            .entry(resolution.to_string())
+            .and_modify(|(existing, existing_row)| {
+                if command < existing.as_str() {
+                    *existing = command.to_string();
+                    *existing_row = row.clone();
+                }
+            })
+            .or_insert_with(|| (command.to_string(), row.clone()));
+    }
+
+    assert_eq!(
+        representatives.keys().collect::<Vec<_>>(),
+        vec!["host-denied", "host-denied-spawns-process", "v1-deferred"],
+        "every refusal class must contribute a representative"
+    );
+
+    let app = crate::testing::create_mock_app();
+    let app_state = AppState::new_test();
+    let project_id = ProjectId::new();
+    let seeded = app_state
+        .task_repo
+        .create(Task::new(project_id.clone(), "B0 canary".to_string()))
+        .await
+        .expect("canary task is created");
+    let before = app_state
+        .task_repo
+        .get_by_id(&seeded.id)
+        .await
+        .expect("canary is readable")
+        .expect("canary exists");
+
+    let execution_state = Arc::new(crate::commands::execution_commands::ExecutionState::default());
+    app.manage(app_state);
+    app.manage(Arc::clone(&execution_state));
+
+    for (resolution, (command, row)) in &representatives {
+        // 1. Classification did not create a facade entry.
+        assert!(
+            find_spec(command).is_none(),
+            "`{command}` renders `{resolution}` but has a registered spec"
+        );
+
+        // 2. `Denied` additionally has no scope AT ALL — a stronger statement than "not
+        //    currently registered": there is no grant a device could ever hold for it.
+        if resolution == "host-denied" {
+            let class: RiskClass = serde_json::from_value(row["class"].clone())
+                .expect("ledger rows render a known risk class");
+            assert_eq!(class, RiskClass::Denied);
+            assert_eq!(
+                registry::scope_for_class(class),
+                None,
+                "`{command}` is Denied, so no scope may map to it"
+            );
+        }
+
+        // 3. The envelope is the `find_spec`-miss code, at the default pairing AND with every
+        //    scope a device could ever be granted. `ui:elevated` is in `EVERY_SCOPE`, so this
+        //    also discharges the v1-deferred class's "reachable only under a scope v1 excludes"
+        //    claim: even holding that scope, the command does not dispatch.
+        //
+        //    Args are shaped like a real attempt, so the refusal is proven to happen at the
+        //    lookup — before argument handling or any target fn is reached.
+        let args = json!({
+            "taskId": seeded.id.as_str(),
+            "task_id": seeded.id.as_str(),
+            "projectId": project_id.as_str(),
+            "input": {"taskId": seeded.id.as_str(), "projectId": project_id.as_str()},
+        });
+        for granted in [DEFAULT_PAIRING, EVERY_SCOPE] {
+            let refusal = registry::dispatch(app.handle(), granted, command, &args)
+                .await
+                .expect_err(&format!(
+                    "`{command}` renders `{resolution}` and must never dispatch"
+                ));
+            assert_eq!(
+                refusal.code,
+                ErrorCode::RemoteCommandUnavailable,
+                "`{command}` ({resolution}) must answer the unavailable envelope"
+            );
+        }
+    }
+
+    // Absence assertion: the whole proof ran and wrote nothing.
+    let state = app.state::<AppState>();
+    let after = state
+        .task_repo
+        .get_by_id(&seeded.id)
+        .await
+        .expect("canary is still readable")
+        .expect("canary still exists");
+    assert_eq!(after.title, before.title);
+    assert_eq!(after.internal_status, before.internal_status);
+}

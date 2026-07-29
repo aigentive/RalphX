@@ -354,6 +354,12 @@ fn generated_manifest() -> serde_json::Value {
                 "capabilities": row.capabilities,
                 "reason": row.reason,
                 "registered": find_spec(command).is_some(),
+                // P-11 batch B0: the third disposition. Rendered from the row rather than
+                // re-derived downstream, so the drift scan and the census read one authority.
+                "v1Resolution": ralphx_remote_protocol::v1_resolution(
+                    row.class,
+                    row.capabilities,
+                ),
             })
         })
         .collect::<Vec<_>>();
@@ -671,6 +677,59 @@ fn regenerate_remote_command_manifest_when_requested() {
     let parent = path.parent().expect("manifest has parent");
     std::fs::create_dir_all(parent).expect("generated docs directory is writable");
     std::fs::write(path, manifest_text()).expect("remote command manifest is writable");
+}
+
+/// P-11 batch B0 — the manifest is the third classification source.
+///
+/// The drift scan resolves a frontend invoke name it cannot find in `remote_commands!` or in
+/// `local-only-commands.ts` by reading this row's `v1Resolution`. Two invariants make that
+/// safe, and both are asserted here rather than in the scan:
+///
+/// * **totality** — every ledger row renders a resolution, so "absent field" can never read as
+///   "classified";
+/// * **non-contradiction** — a row that renders a refusal must not also be registered. A
+///   registered-and-denied row would let the scan classify a name the facade actually serves.
+#[test]
+fn manifest_renders_a_non_contradictory_v1_resolution_for_every_row() {
+    let manifest = generated_manifest();
+    let ledger = manifest["ledger"]
+        .as_array()
+        .expect("manifest renders a ledger array");
+    assert!(!ledger.is_empty(), "ledger must not be empty");
+
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for row in ledger {
+        let command = row["command"].as_str().expect("row names a command");
+        let resolution = row["v1Resolution"]
+            .as_str()
+            .unwrap_or_else(|| panic!("row `{command}` renders no v1Resolution"));
+        assert!(
+            matches!(
+                resolution,
+                "registerable" | "host-denied" | "host-denied-spawns-process" | "v1-deferred"
+            ),
+            "row `{command}` renders an unknown v1Resolution `{resolution}`"
+        );
+        if resolution != "registerable" {
+            assert_eq!(
+                row["registered"],
+                serde_json::Value::Bool(false),
+                "`{command}` is registered but renders `{resolution}` — the ledger and the \
+                 registry contradict each other, and the drift scan would classify a name the \
+                 facade actually serves"
+            );
+        }
+        *counts.entry(resolution.to_string()).or_default() += 1;
+    }
+
+    // Each refusal class is non-empty: a scan that only ever sees `registerable` would pass
+    // this test while classifying nothing.
+    for resolution in ["host-denied", "host-denied-spawns-process", "v1-deferred"] {
+        assert!(
+            counts.get(resolution).copied().unwrap_or_default() > 0,
+            "no ledger row renders `{resolution}`"
+        );
+    }
 }
 
 #[test]
@@ -3209,19 +3268,37 @@ fn the_b2_workspace_read_refusals_are_pinned() {
         "the reconciliation scheduler vanished; re-audit `get_agent_conversation_workspace`"
     );
 
-    // MECHANISM 5 — the composer search is the FAIL-OPEN shape batch 4 refused four times,
-    // and it is the sibling of `search_agent_composer_plan_references` which batch 4 refused
-    // for exactly this. A failed `git ls-files` silently becomes a filesystem walk, so a
-    // remote client cannot distinguish "these are the project's files" from "git failed".
+    // MECHANISM 5 — the composer search WAS the fail-open shape batch 4 refused four times.
+    //
+    // MECHANISM UPDATED (B0 lane): the fail-open is FIXED. `collect_git_entries` is now
+    // tri-state — `Ok(None)` only when git RAN and said "not a checkout", `Err` when git could
+    // not be consulted — so a broken git no longer renders as a complete file list. The old
+    // assertion pinned the broken shape by source text and would now fail, which is exactly the
+    // re-audit it asked for; this is that re-audit's result.
+    //
+    // The refusal STANDS on the two reasons that survive: the command launches a process
+    // (`SpawnsProcess`, unexposable at any v1 scope) and it discloses host absolute paths. The
+    // repaired error path removes one argument for refusal, not the disqualifying ones.
     let (_, project_entries) = sources
         .iter()
         .find(|(file, _)| file == "commands/agent_composer_commands/project_entries.rs")
         .expect("the composer entry module must exist");
     assert!(
-        project_entries
+        !project_entries
             .contains("collect_git_entries(root).unwrap_or_else(|| collect_fs_entries(root))"),
-        "the composer search's fail-open fallback changed shape; re-audit whether it now \
-         propagates its errors, in which case it may become registrable"
+        "the composer search's fail-open fallback came back; it was repaired in the B0 lane"
+    );
+    assert!(
+        project_entries.contains(
+            "fn collect_git_entries(root: &Path) -> Result<Option<Vec<IndexedEntry>>, String>"
+        ),
+        "the composer search's git probe is no longer tri-state; a two-state probe cannot \
+         distinguish `not a checkout` from `git failed`, which is the fail-open returning"
+    );
+    assert!(
+        project_entries.contains("Command::new(resolve_git_cli_path())"),
+        "the composer search no longer launches git; if the process launch is gone, re-audit \
+         whether SpawnsProcess still disqualifies it"
     );
 }
 
@@ -3295,9 +3372,14 @@ fn the_b2_getters_are_reviewed_read_rows() {
 fn the_b2_getter_refusals_are_pinned() {
     for command in [
         // Fail-open: swallows a repository/filesystem error into an empty-but-successful
-        // result. `get_agent_running_states` returns `HashMap`, not `Result`, so a failed
-        // registry list is reported to the client as "nothing is running" — the false-success
-        // shape this ledger exists to prevent.
+        // result — the false-success shape this ledger exists to prevent.
+        //
+        // MECHANISM UPDATED (B0 lane): the fail-open itself is FIXED. The trait method now
+        // returns `Result`, so a failed registry list propagates instead of reporting "nothing
+        // is running"; `ipc_contract_bulk_running_states_propagates_a_registry_read_failure`
+        // pins that. These stay refused because the fail-open was never the only reason — the
+        // per-command audit that would clear them for the facade has not been done, and a
+        // repaired error path is not a registration decision.
         "get_agent_running_states",
         "get_agent_conversation_runtime_statuses",
         "list_agent_composer_skills",

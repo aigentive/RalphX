@@ -111,7 +111,10 @@ export function useTaskChat(taskId: string, contextType: TaskContextType, histor
     },
     enabled: !!activeConversationId,
     refetchInterval: (query) => {
-      // Poll every 2 seconds if agent is running
+      // Poll every 2 seconds if agent is running, and keep polling while the query is
+      // FAILING: on an error with no prior success `state.data` is undefined, which used to
+      // read as "not running" and stopped the poll permanently.
+      if (query.state.status === "error") return 2000;
       const agentRun = query.state.data;
       return agentRun?.status === "running" ? 2000 : false;
     },
