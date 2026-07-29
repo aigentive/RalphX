@@ -4714,14 +4714,14 @@
     },
     {
       "capabilities": [
-        "agentControl"
+        "spawnsProcess"
       ],
-      "class": "agentControl",
+      "class": "elevated",
       "command": "search_agent_composer_entries",
       "module": "agent_composer_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-c: indexes project entries via Command::new(resolve_git_cli_path())",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [],
@@ -4733,6 +4733,11 @@
       "v1Resolution": "registerable"
     },
     {
+      "auditRefusal": {
+        "batch": "4, re-audited 8",
+        "finding": "agent_composer_commands/skills.rs:766 swallows the Codex config read, so losing it reports DISABLED skills as enabled — a fail-open that changes the answer, not just its completeness (also :299/:318/:442/:589)",
+        "reason": "fail-open-until-fixed"
+      },
       "capabilities": [
         "agentControl"
       ],
@@ -4741,7 +4746,7 @@
       "module": "agent_composer_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "v1-audit-refused"
     },
     {
       "capabilities": [
@@ -5124,14 +5129,14 @@
     },
     {
       "capabilities": [
-        "agentControl"
+        "spawnsProcess"
       ],
-      "class": "agentControl",
+      "class": "elevated",
       "command": "get_execution_status",
       "module": "execution_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-c: resolves the process-inspection CLI (resolve_tasklist_cli_path) to report live execution status",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [],
@@ -5268,14 +5273,14 @@
     },
     {
       "capabilities": [
-        "agentControl"
+        "spawnsProcess"
       ],
-      "class": "agentControl",
+      "class": "elevated",
       "command": "get_running_processes",
       "module": "execution_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-c: resolves the process-inspection CLI (resolve_tasklist_cli_path)",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [],
@@ -6957,6 +6962,11 @@
       "v1Resolution": "registerable"
     },
     {
+      "auditRefusal": {
+        "batch": "1-2",
+        "finding": "returns Ok(vec![]) when the repository read fails, so an outage is indistinguishable from `no gates are open`; fix by propagating the error",
+        "reason": "fail-open-until-fixed"
+      },
       "capabilities": [
         "agentControl"
       ],
@@ -6965,7 +6975,7 @@
       "module": "permission_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "v1-audit-refused"
     },
     {
       "capabilities": [],
@@ -6988,6 +6998,11 @@
       "v1Resolution": "registerable"
     },
     {
+      "auditRefusal": {
+        "batch": "1-2",
+        "finding": "same Ok(vec![]) shape as get_pending_permissions; fix by propagating the error",
+        "reason": "fail-open-until-fixed"
+      },
       "capabilities": [
         "agentControl"
       ],
@@ -6996,7 +7011,7 @@
       "module": "question_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "v1-audit-refused"
     },
     {
       "capabilities": [],
@@ -7129,14 +7144,14 @@
     },
     {
       "capabilities": [
-        "agentControl"
+        "spawnsProcess"
       ],
-      "class": "agentControl",
+      "class": "elevated",
       "command": "start_agent_conversation",
       "module": "unified_chat_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-c: conversation start reaches the same three CLI resolvers as the send path",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7184,14 +7199,14 @@
     },
     {
       "capabilities": [
-        "agentControl"
+        "spawnsProcess"
       ],
-      "class": "agentControl",
+      "class": "elevated",
       "command": "send_agent_message",
       "module": "unified_chat_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-c: the send path resolves the git, node and Codex CLIs to run the agent turn",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7205,6 +7220,11 @@
       "v1Resolution": "registerable"
     },
     {
+      "auditRefusal": {
+        "batch": "8",
+        "finding": "same create_chat_service shape at unified_chat_commands/mod.rs:4263",
+        "reason": "constructs-spawn-capable-service"
+      },
       "capabilities": [
         "agentControl"
       ],
@@ -7213,7 +7233,7 @@
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "v1-audit-refused"
     },
     {
       "capabilities": [
@@ -7238,6 +7258,11 @@
       "v1Resolution": "registerable"
     },
     {
+      "auditRefusal": {
+        "batch": "5, re-affirmed 8",
+        "finding": "batch 5 split the seam; list_remote_agent_conversations is the registered answer and the local twin deliberately stays off the facade, so registering this name would put two facade paths on one query for no new capability",
+        "reason": "seam-resolved-via-remote-twin"
+      },
       "capabilities": [
         "agentControl"
       ],
@@ -7246,9 +7271,14 @@
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "v1-audit-refused"
     },
     {
+      "auditRefusal": {
+        "batch": "5, re-affirmed 8",
+        "finding": "same split seam; list_remote_agent_conversations_page is the registered answer",
+        "reason": "seam-resolved-via-remote-twin"
+      },
       "capabilities": [
         "agentControl"
       ],
@@ -7257,18 +7287,18 @@
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "v1-audit-refused"
     },
     {
       "capabilities": [
-        "agentControl"
+        "spawnsProcess"
       ],
-      "class": "agentControl",
+      "class": "elevated",
       "command": "list_agent_sidebar_conversations",
       "module": "agent_sidebar_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-c: the sidebar list reaches the same hydrator and its three CLI resolvers",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [],
@@ -7322,6 +7352,11 @@
       "v1Resolution": "registerable"
     },
     {
+      "auditRefusal": {
+        "batch": "4, re-audited 8",
+        "finding": "load_delegated_tool_runtime_snapshot (unified_chat_commands/mod.rs:2496/2504/2511/2525/2536) applies .ok().flatten() to every repository read, so an outage returns the STALE persisted tool result as though it were current",
+        "reason": "fail-open-until-fixed"
+      },
       "capabilities": [
         "agentControl"
       ],
@@ -7330,9 +7365,14 @@
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "v1-audit-refused"
     },
     {
+      "auditRefusal": {
+        "batch": "4, re-audited 8",
+        "finding": "same load_delegated_tool_runtime_snapshot helper chain, same swallowed reads",
+        "reason": "fail-open-until-fixed"
+      },
       "capabilities": [
         "agentControl"
       ],
@@ -7341,18 +7381,18 @@
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "v1-audit-refused"
     },
     {
       "capabilities": [
-        "agentControl"
+        "spawnsProcess"
       ],
-      "class": "agentControl",
+      "class": "elevated",
       "command": "get_agent_conversation_workspace",
       "module": "unified_chat_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-c: the workspace hydrator reaches resolve_git_cli_path, resolve_node_cli_path and find_codex_cli_candidates; it also arms, but the process launch is what forecloses every v1 scope",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7379,14 +7419,14 @@
     },
     {
       "capabilities": [
-        "agentControl"
+        "spawnsProcess"
       ],
-      "class": "agentControl",
+      "class": "elevated",
       "command": "list_agent_conversation_workspaces_by_project",
       "module": "unified_chat_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-c: same workspace hydrator, same three CLI resolvers",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [],
@@ -7399,14 +7439,14 @@
     },
     {
       "capabilities": [
-        "agentControl"
+        "spawnsProcess"
       ],
-      "class": "agentControl",
+      "class": "elevated",
       "command": "get_agent_conversation_workspace_freshness",
       "module": "unified_chat_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-c: compares base against remote via resolve_git_cli_path",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7530,6 +7570,11 @@
       "v1Resolution": "registerable"
     },
     {
+      "auditRefusal": {
+        "batch": "8",
+        "finding": "takes execution_state and tauri::AppHandle and calls create_chat_service (unified_chat_commands/mod.rs:9657) purely to reach one getter, handing a read-scoped caller a constructed steer surface",
+        "reason": "constructs-spawn-capable-service"
+      },
       "capabilities": [
         "agentControl"
       ],
@@ -7538,18 +7583,18 @@
       "module": "unified_chat_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "v1-audit-refused"
     },
     {
       "capabilities": [
-        "agentControl"
+        "spawnsProcess"
       ],
-      "class": "agentControl",
+      "class": "elevated",
       "command": "is_chat_service_available",
       "module": "unified_chat_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-c: the harness capability probe resolves the Codex CLI (find_codex_cli_candidates)",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -7564,36 +7609,36 @@
     },
     {
       "capabilities": [
-        "agentControl"
+        "spawnsProcess"
       ],
-      "class": "agentControl",
+      "class": "elevated",
       "command": "is_agent_running",
       "module": "unified_chat_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-c: the read-only registry cleanup path resolves the process-kill CLIs (resolve_pkill/taskkill/tasklist) to reap dead entries",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
-        "agentControl"
+        "spawnsProcess"
       ],
-      "class": "agentControl",
+      "class": "elevated",
       "command": "get_agent_running_states",
       "module": "unified_chat_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-c: same read-only registry cleanup path, same process-kill CLI resolvers",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
-        "agentControl"
+        "spawnsProcess"
       ],
-      "class": "agentControl",
+      "class": "elevated",
       "command": "get_agent_conversation_runtime_statuses",
       "module": "unified_chat_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-c: inherits the running-states registry cleanup path and its process-kill CLI resolvers",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [],
@@ -7748,6 +7793,11 @@
       "v1Resolution": "registerable"
     },
     {
+      "auditRefusal": {
+        "batch": "8",
+        "finding": "a pure SELECT ... WHERE removed_at IS NULL that audits cleaner than rows already registered, but it returns Result<_, AppError> and AppError is not Serialize, so the fallible dispatch arm cannot render its error",
+        "reason": "transport-shape-deferred"
+      },
       "capabilities": [
         "agentControl"
       ],
@@ -7756,7 +7806,7 @@
       "module": "conversation_folder_reference_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "v1-audit-refused"
     },
     {
       "capabilities": [
@@ -8329,6 +8379,11 @@
       "v1Resolution": "registerable"
     },
     {
+      "auditRefusal": {
+        "batch": "7",
+        "finding": "swallows TWO errors — the execution-plan lookup is `if let Ok(Some(ep))` and the follow-up set_execution_plan_id write is discarded with `let _ =` — so a partial write returns Ok(()) while the execution-plan id the Kanban/Graph filters and the scheduler read silently did not move",
+        "reason": "fail-open-until-fixed"
+      },
       "capabilities": [
         "agentControl"
       ],
@@ -8337,7 +8392,7 @@
       "module": "plan_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "v1-audit-refused"
     },
     {
       "capabilities": [],

@@ -602,7 +602,17 @@ async fn manifest_classified_commands_stay_unreachable_at_every_scope() {
 
     assert_eq!(
         representatives.keys().collect::<Vec<_>>(),
-        vec!["host-denied", "host-denied-spawns-process", "v1-deferred"],
+        // PR 3.1-b batch 9 added `v1-audit-refused`. It needs this proof MORE than its siblings,
+        // not less: the other three are derived from `(class, capabilities)` and cannot be
+        // granted by hand, while this one is granted by writing a ledger table row. Drawing
+        // representatives from the manifest meant the class was covered the moment it existed —
+        // only this expected list needed the deliberate update.
+        vec![
+            "host-denied",
+            "host-denied-spawns-process",
+            "v1-audit-refused",
+            "v1-deferred",
+        ],
         "every refusal class must contribute a representative"
     );
 

@@ -5,7 +5,7 @@
 //! pretending 500+ independent judgements were made. Tests expand these policies against
 //! `commands/registry.rs`; an unknown module or duplicate command fails the census gate.
 
-use ralphx_remote_protocol::{Capability, RiskClass};
+use ralphx_remote_protocol::{AuditRefusalReason, Capability, RiskClass};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LedgerPolicy {
@@ -1440,7 +1440,231 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
             "plan-reference search: ideation sessions plus artifact resolution, ranked and              truncated to a capped limit; the resolver fail-open that once dropped sessions              silently was already removed, so a resolver outage now errors instead of              shipping a short list that looks complete",
         ),
     },
+    // ---------------------------------------------------------------------------------------
+    // PR 3.1-b batch 9 ITEM 0 — the detector-(c) refusals, given the capability they actually
+    // carry.
+    //
+    // Batches 1–8 audited each of these, found a process launch in its closure, and refused it.
+    // The refusal was pinned; the ledger row was left at the `AgentControl` module default. That
+    // left a command whose closure resolves a CLI binary rendering as `registerable`, which is
+    // the P-11 ratchet's own definition of an unresolved name — so the audit's result was
+    // invisible to the gate that exists to count it.
+    //
+    // Every row below was re-measured against the CURRENT graph by
+    // `probe_batch9_detector_c_sink_evidence`, never inherited from a tracker's recorded verdict
+    // — `reopen_issue` is the standing proof that a recorded detector verdict can be a same-name
+    // artefact. The probe reports the SPECIFIC `PROCESS_LAUNCH_SINKS` resolver reached, and each
+    // reason below names it. `batch9_detector_c_refusals_declare_the_capability_they_reach`
+    // asserts the measurement, so a row cannot keep `SpawnsProcess` after its launch path goes
+    // away.
+    process_refusal(
+        "get_execution_status",
+        "detector-c: resolves the process-inspection CLI (resolve_tasklist_cli_path) to report \
+         live execution status",
+    ),
+    process_refusal(
+        "get_running_processes",
+        "detector-c: resolves the process-inspection CLI (resolve_tasklist_cli_path)",
+    ),
+    process_refusal(
+        "is_agent_running",
+        "detector-c: the read-only registry cleanup path resolves the process-kill CLIs \
+         (resolve_pkill/taskkill/tasklist) to reap dead entries",
+    ),
+    process_refusal(
+        "get_agent_running_states",
+        "detector-c: same read-only registry cleanup path, same process-kill CLI resolvers",
+    ),
+    process_refusal(
+        "get_agent_conversation_runtime_statuses",
+        "detector-c: inherits the running-states registry cleanup path and its process-kill CLI \
+         resolvers",
+    ),
+    process_refusal(
+        "is_chat_service_available",
+        "detector-c: the harness capability probe resolves the Codex CLI \
+         (find_codex_cli_candidates)",
+    ),
+    process_refusal(
+        "search_agent_composer_entries",
+        "detector-c: indexes project entries via Command::new(resolve_git_cli_path())",
+    ),
+    process_refusal(
+        "get_agent_conversation_workspace_freshness",
+        "detector-c: compares base against remote via resolve_git_cli_path",
+    ),
+    process_refusal(
+        "get_agent_conversation_workspace",
+        "detector-c: the workspace hydrator reaches resolve_git_cli_path, resolve_node_cli_path \
+         and find_codex_cli_candidates; it also arms, but the process launch is what forecloses \
+         every v1 scope",
+    ),
+    process_refusal(
+        "list_agent_conversation_workspaces_by_project",
+        "detector-c: same workspace hydrator, same three CLI resolvers",
+    ),
+    process_refusal(
+        "list_agent_sidebar_conversations",
+        "detector-c: the sidebar list reaches the same hydrator and its three CLI resolvers",
+    ),
+    process_refusal(
+        "send_agent_message",
+        "detector-c: the send path resolves the git, node and Codex CLIs to run the agent turn",
+    ),
+    process_refusal(
+        "start_agent_conversation",
+        "detector-c: conversation start reaches the same three CLI resolvers as the send path",
+    ),
+    // `resolve_user_question` is the fifteenth measured detector-(c) refusal and is deliberately
+    // NOT here. Its closure does reach `resolve_git_cli_path`, `resolve_node_cli_path` and
+    // `find_codex_cli_candidates` — answering a live gate resumes the agent turn — so its
+    // `AgentControl`/`AGENT` row understates it. But that row is pinned twice over by
+    // `exemptions_and_declared_memberships_are_exact`, which asserts BOTH its exact class and
+    // that its reason string is verbatim `DECLARED_MEMBERSHIPS[1].1`. Rewriting a declared
+    // membership is a contract change, not the retroactive closure of an unclassified refusal,
+    // so batch 9 recorded the finding and left the row alone. Pinned as a successor gap by
+    // `batch9_records_the_declared_membership_process_launch_gap`.
 ];
+
+/// PR 3.1-b batch 9 ITEM 0 — a detector-(c) refusal, declared at the capability it reaches.
+///
+/// `Elevated` is the only class `class_permits` accepts `SpawnsProcess` under, and v1 excludes
+/// `ui:elevated`, so this pair is exactly `V1Resolution::HostDeniedSpawnsProcess`. It is an
+/// authority-INCREASING correction in every case: all fourteen sat at the `AgentControl` module
+/// default, which understated them.
+const fn process_refusal(command: &'static str, reason: &'static str) -> CommandOverride {
+    CommandOverride {
+        command,
+        policy: policy(RiskClass::Elevated, PROCESS, reason),
+    }
+}
+
+/// A per-command audit refusal that no v1 scope can accommodate.
+///
+/// Distinct from a `CommandOverride`: an override states what authority a command CARRIES, and
+/// this states what a hand audit FOUND. Keeping them apart is what stops a classification being
+/// bought by overstating a class — the `reopen_issue` pin's standing warning against putting a
+/// false statement in the ledger to buy a manifest row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuditRefusal {
+    pub command: &'static str,
+    pub reason: AuditRefusalReason,
+    /// The finding, specific enough to falsify. `batch9_audit_refusals_are_tied_to_a_live_pin`
+    /// additionally requires the command to be named inside a pinned-refusal test, so a row
+    /// here cannot exist without the mechanism being asserted somewhere that CI runs.
+    pub finding: &'static str,
+    pub batch: &'static str,
+}
+
+/// Commands the class/capability arithmetic would admit, refused by a recorded audit.
+///
+/// **The bar, and what it excludes.** A row belongs here only if the finding disqualifies the
+/// command at EVERY v1 scope as it stands. It is NOT enough that a batch declined to register
+/// it. In particular "detector (a) fires", "detector (b) fires", "it writes", and "it steers"
+/// are all excluded: the facade serves 16 `agentControl` ops today, four carrying
+/// `Capability::AgentControl` and three carrying `Capability::SeedsSpawnTriggeringState`, so
+/// arming authority demonstrably does NOT foreclose v1 exposure. Refusals of that shape stay
+/// `registerable` and stay on the ratchet until someone does the `ui:agent` audit they need.
+///
+/// That is why the batch-9 sweep classified 25 of the 50 audited-and-refused commands and left
+/// 25 alone; the excluded ones are listed in `batch9_arming_and_write_refusals_stay_on_the_ratchet`
+/// so a later batch does not quietly reach for a class this table deliberately does not offer.
+pub const AUDIT_REFUSALS: &[AuditRefusal] = &[
+    // --- Fail-open: a host failure is rendered as absence or success, so no scope serves it
+    //     honestly. The unlocking fix is named in each finding.
+    AuditRefusal {
+        command: "get_pending_permissions",
+        reason: AuditRefusalReason::FailOpenUntilFixed,
+        finding: "returns Ok(vec![]) when the repository read fails, so an outage is \
+                  indistinguishable from `no gates are open`; fix by propagating the error",
+        batch: "1-2",
+    },
+    AuditRefusal {
+        command: "get_pending_questions",
+        reason: AuditRefusalReason::FailOpenUntilFixed,
+        finding: "same Ok(vec![]) shape as get_pending_permissions; fix by propagating the error",
+        batch: "1-2",
+    },
+    AuditRefusal {
+        command: "list_agent_composer_skills",
+        reason: AuditRefusalReason::FailOpenUntilFixed,
+        finding: "agent_composer_commands/skills.rs:766 swallows the Codex config read, so \
+                  losing it reports DISABLED skills as enabled — a fail-open that changes the \
+                  answer, not just its completeness (also :299/:318/:442/:589)",
+        batch: "4, re-audited 8",
+    },
+    AuditRefusal {
+        command: "get_agent_message_tool_call_detail",
+        reason: AuditRefusalReason::FailOpenUntilFixed,
+        finding: "load_delegated_tool_runtime_snapshot (unified_chat_commands/mod.rs:2496/2504/\
+                  2511/2525/2536) applies .ok().flatten() to every repository read, so an outage \
+                  returns the STALE persisted tool result as though it were current",
+        batch: "4, re-audited 8",
+    },
+    AuditRefusal {
+        command: "get_agent_timeline_item_tool_call_detail",
+        reason: AuditRefusalReason::FailOpenUntilFixed,
+        finding: "same load_delegated_tool_runtime_snapshot helper chain, same swallowed reads",
+        batch: "4, re-audited 8",
+    },
+    AuditRefusal {
+        command: "set_active_plan",
+        reason: AuditRefusalReason::FailOpenUntilFixed,
+        finding: "swallows TWO errors — the execution-plan lookup is `if let Ok(Some(ep))` and \
+                  the follow-up set_execution_plan_id write is discarded with `let _ =` — so a \
+                  partial write returns Ok(()) while the execution-plan id the Kanban/Graph \
+                  filters and the scheduler read silently did not move",
+        batch: "7",
+    },
+    // --- Spawn-capable machinery constructed to serve a read. Unlockable by the same kind of
+    //     read-only seam extraction that produced the registered `list_remote_*` reads.
+    AuditRefusal {
+        command: "get_agent_run_status_unified",
+        reason: AuditRefusalReason::ConstructsSpawnCapableService,
+        finding: "takes execution_state and tauri::AppHandle and calls create_chat_service \
+                  (unified_chat_commands/mod.rs:9657) purely to reach one getter, handing a \
+                  read-scoped caller a constructed steer surface",
+        batch: "8",
+    },
+    AuditRefusal {
+        command: "get_queued_agent_messages",
+        reason: AuditRefusalReason::ConstructsSpawnCapableService,
+        finding: "same create_chat_service shape at unified_chat_commands/mod.rs:4263",
+        batch: "8",
+    },
+    // --- Transport shape, explicitly not an authority finding.
+    AuditRefusal {
+        command: "list_conversation_folder_references",
+        reason: AuditRefusalReason::TransportShapeDeferred,
+        finding: "a pure SELECT ... WHERE removed_at IS NULL that audits cleaner than rows \
+                  already registered, but it returns Result<_, AppError> and AppError is not \
+                  Serialize, so the fallible dispatch arm cannot render its error",
+        batch: "8",
+    },
+    // --- Answered by a registered remote twin through a deliberately split seam.
+    AuditRefusal {
+        command: "list_agent_conversations",
+        reason: AuditRefusalReason::SeamResolvedViaRemoteTwin,
+        finding: "batch 5 split the seam; list_remote_agent_conversations is the registered \
+                  answer and the local twin deliberately stays off the facade, so registering \
+                  this name would put two facade paths on one query for no new capability",
+        batch: "5, re-affirmed 8",
+    },
+    AuditRefusal {
+        command: "list_agent_conversations_page",
+        reason: AuditRefusalReason::SeamResolvedViaRemoteTwin,
+        finding: "same split seam; list_remote_agent_conversations_page is the registered answer",
+        batch: "5, re-affirmed 8",
+    },
+];
+
+/// The audit refusal recorded for a command, if any.
+pub fn audit_refusal_for(command: &str) -> Option<AuditRefusal> {
+    AUDIT_REFUSALS
+        .iter()
+        .find(|entry| entry.command == command)
+        .copied()
+}
 
 pub const AUTHORITY_REDUCING_EXEMPTIONS: &[AuthorityReducingExemption] = &[
     AuthorityReducingExemption {
