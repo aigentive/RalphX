@@ -2084,6 +2084,60 @@ fn probe_chat_send_trio_sink_paths() {
     }
 }
 
+/// Calibration probe for census `B3` — review, QA, merge pipeline, validation.
+///
+/// Same shape as [`probe_b1_module_batch_audit`]: prints the live detector (a)/(b)/(c) verdict
+/// per member alongside its ledger row, plus the concrete sink tokens behind every hit so the
+/// hand audit can be argued against a path rather than a boolean. Run before the batch decides
+/// which members register and which are refused.
+#[test]
+#[ignore = "calibration probe"]
+fn probe_b3_module_batch_audit() {
+    const B3_MODULES: &[&str] = &[
+        "merge_pipeline_commands",
+        "qa_commands",
+        "review_commands",
+        "validation_commands",
+    ];
+    let graph = CallGraph::build(&load_production_sources());
+    let rows = census();
+    let commands = rows.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>();
+    let detector_b = spawn_triggering_writers(&graph, commands, SPAWN_TRIGGERING_STATE_SURFACE);
+
+    for (command, module) in &rows {
+        if !B3_MODULES.contains(&module.as_str()) {
+            continue;
+        }
+        let closure = graph.closure([command.clone()]);
+        let a = closure_is_arming(&closure);
+        let b = detector_b.contains(command);
+        let c = tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS);
+        let row = policy_for(command, module).expect("ledgered");
+        eprintln!(
+            "PROBE-B3 {module} {command} a={a} b={b} c={c} class={:?} caps={:?} registered={}",
+            row.class,
+            row.capabilities,
+            find_spec(command).is_some(),
+        );
+        for sinks in [
+            ("STEER", &super::authority_audit::STEER_SINKS[..]),
+            ("SCHEDULER", &super::authority_audit::SCHEDULER_SINKS[..]),
+            ("TRANSITION", &super::authority_audit::TRANSITION_SINKS[..]),
+            ("LAUNCH", PROCESS_LAUNCH_SINKS),
+        ] {
+            let hits = closure
+                .tokens
+                .iter()
+                .filter(|t| tokens_reach_any(&std::iter::once((*t).clone()).collect(), sinks.1))
+                .cloned()
+                .collect::<Vec<_>>();
+            if !hits.is_empty() {
+                eprintln!("PROBE-B3   {command} {} -> {hits:?}", sinks.0);
+            }
+        }
+    }
+}
+
 #[test]
 #[ignore = "calibration probe"]
 fn probe_b1_module_batch_audit() {
