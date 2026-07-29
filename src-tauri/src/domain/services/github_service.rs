@@ -586,6 +586,22 @@ pub trait GithubServiceTrait: Send + Sync {
     /// Push a branch to origin.
     async fn push_branch(&self, working_dir: &Path, branch: &str) -> AppResult<()>;
 
+    /// Replace one proven local branch ref only when origin still has the exact expected OID.
+    ///
+    /// Callers must establish workspace ownership and Git target-lease authority before using
+    /// this operation. `local_ref` is deliberately fully qualified so the implementation cannot
+    /// synthesize a destination from an untrusted branch-name convention.
+    async fn push_branch_with_expected_remote_oid_lease(
+        &self,
+        _working_dir: &Path,
+        _local_ref: &str,
+        _expected_remote_oid: &str,
+    ) -> AppResult<()> {
+        Err(AppError::Validation(
+            "exact force-with-lease branch publishing is not supported by this service".to_string(),
+        ))
+    }
+
     /// Close (without merging) a pull request.
     async fn close_pr(&self, working_dir: &Path, pr_number: i64) -> AppResult<()>;
 

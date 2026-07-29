@@ -15,6 +15,20 @@ fn create_test_project() -> Project {
     Project::new("Test Project".to_string(), "/tmp/test".to_string())
 }
 
+fn run_git(repo: &std::path::Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .expect("git command should start");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[test]
 fn test_validation_result_new_is_valid() {
     let result = ResumeValidationResult::new();
@@ -63,6 +77,53 @@ async fn test_validate_task_without_branch() {
 
     // Task without branch should validate (no git isolation)
     assert!(result.is_valid);
+}
+
+#[tokio::test]
+async fn validate_checks_both_existing_branches_and_rejects_a_missing_task_branch() {
+    let temp = tempfile::tempdir().expect("resume validation repository");
+    run_git(temp.path(), &["init", "-b", "main"]);
+    run_git(temp.path(), &["config", "user.email", "test@example.com"]);
+    run_git(temp.path(), &["config", "user.name", "RalphX Test"]);
+    run_git(temp.path(), &["commit", "--allow-empty", "-m", "base"]);
+    run_git(temp.path(), &["branch", "ralphx/resume-validation"]);
+    run_git(
+        temp.path(),
+        &["commit", "--allow-empty", "-m", "base ahead"],
+    );
+
+    let validator = create_test_validator();
+    let mut task = create_test_task();
+    task.task_branch = Some("ralphx/resume-validation".to_string());
+    let mut project = Project::new(
+        "Resume validation".to_string(),
+        temp.path().to_string_lossy().into_owned(),
+    );
+    project.base_branch = Some("main".to_string());
+
+    let moved_base = validator
+        .validate(&task, &project, None)
+        .await
+        .expect("existing branch validation");
+    assert!(moved_base.is_valid);
+    assert!(
+        moved_base
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("has new commits")),
+        "the exact base/task branches should drive the ahead warning"
+    );
+
+    task.task_branch = Some("ralphx/missing-resume-validation".to_string());
+    let missing = validator
+        .validate(&task, &project, None)
+        .await
+        .expect("missing branch is a validation result");
+    assert!(!missing.is_valid);
+    assert!(missing
+        .errors
+        .iter()
+        .any(|error| error.contains("does not exist")));
 }
 
 #[tokio::test]
@@ -154,8 +215,8 @@ async fn create_test_stdin() -> (tokio::process::ChildStdin, tokio::process::Chi
 async fn test_cleanup_orphan_agents_with_ipr_removes_ipr_entries() {
     let registry = Arc::new(MemoryRunningAgentRegistry::new());
     let ipr = Arc::new(InteractiveProcessRegistry::new());
-    let validator = ResumeValidator::new(registry.clone())
-        .with_interactive_process_registry(Arc::clone(&ipr));
+    let validator =
+        ResumeValidator::new(registry.clone()).with_interactive_process_registry(Arc::clone(&ipr));
     let task = create_test_task();
 
     // Register agent in both running registry and IPR
@@ -165,7 +226,10 @@ async fn test_cleanup_orphan_agents_with_ipr_removes_ipr_entries() {
     let (stdin, _child) = create_test_stdin().await;
     let ipr_key = InteractiveProcessKey::new("task_execution", task.id.as_str());
     ipr.register(ipr_key.clone(), stdin).await;
-    assert!(ipr.has_process(&ipr_key).await, "Precondition: IPR has entry");
+    assert!(
+        ipr.has_process(&ipr_key).await,
+        "Precondition: IPR has entry"
+    );
 
     let result = validator.cleanup_orphan_agents(&task).await;
 
@@ -191,8 +255,8 @@ async fn test_cleanup_orphan_agents_with_ipr_removes_ipr_entries() {
 async fn test_cleanup_orphan_agents_with_ipr_handles_multiple_context_types() {
     let registry = Arc::new(MemoryRunningAgentRegistry::new());
     let ipr = Arc::new(InteractiveProcessRegistry::new());
-    let validator = ResumeValidator::new(registry.clone())
-        .with_interactive_process_registry(Arc::clone(&ipr));
+    let validator =
+        ResumeValidator::new(registry.clone()).with_interactive_process_registry(Arc::clone(&ipr));
     let task = create_test_task();
 
     // Register agents in multiple context types
@@ -240,5 +304,8 @@ async fn test_cleanup_orphan_agents_without_ipr_still_cleans_registry() {
 
     assert!(result.is_valid);
     assert!(result.warnings[0].contains("Stopped 1 orphan agent"));
-    assert!(!registry.is_running(&key).await, "Agent must still be stopped");
+    assert!(
+        !registry.is_running(&key).await,
+        "Agent must still be stopped"
+    );
 }

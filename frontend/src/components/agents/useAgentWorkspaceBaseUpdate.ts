@@ -16,6 +16,8 @@ import {
   type AgentWorkspaceOperationToastKind,
   type AgentWorkspaceOperationToastResultOptions,
   agentWorkspaceOperationToastId,
+  agentWorkspaceMaintenanceOperationToastId,
+  maintenanceOperationToastLabel,
   startAgentWorkspaceOperationToast,
 } from "./agentWorkspaceOperationToast";
 
@@ -40,6 +42,12 @@ export function useAgentWorkspaceBaseUpdate({
 }) {
   const queryClient = useQueryClient();
   const progressToastRef = useRef<AgentWorkspaceOperationToast | null>(null);
+  const maintenanceToastRef = useRef<{
+    conversationId: string;
+    operationId: string;
+    toast: AgentWorkspaceOperationToast;
+  } | null>(null);
+  const settledMaintenanceOperationIdsRef = useRef(new Set<string>());
   const toastConversationTitle = conversationTitle?.trim() || null;
   const { isPending, mutateAsync } = useMutation({
     mutationFn: ({
@@ -78,6 +86,116 @@ export function useAgentWorkspaceBaseUpdate({
     [],
   );
 
+  const syncMaintenanceOperation = useCallback(
+    (
+      workspace: AgentConversationWorkspace | null | undefined,
+      allowTerminalStart = false,
+    ) => {
+      const operation = workspace?.maintenanceOperation;
+      const current = maintenanceToastRef.current;
+      if (!operation) {
+        if (current) {
+          maintenanceToastRef.current = null;
+          void chatApi
+            .getAgentConversationWorkspace(current.conversationId)
+            .then((refreshedWorkspace) => {
+              if (refreshedWorkspace) {
+                queryClient.setQueryData(
+                  agentWorkspaceKeys.workspace(current.conversationId),
+                  refreshedWorkspace,
+                );
+              }
+
+              const refreshedOperation = refreshedWorkspace?.maintenanceOperation;
+              if (refreshedOperation?.status === "ready") {
+                settledMaintenanceOperationIdsRef.current.add(
+                  `${current.conversationId}:${refreshedOperation.operationId}`,
+                );
+                current.toast.success("Base updated — ready to publish", {
+                  detail: refreshedOperation.blocker ?? refreshedOperation.summary,
+                });
+                return;
+              }
+              if (refreshedOperation?.status === "blocked") {
+                settledMaintenanceOperationIdsRef.current.add(
+                  `${current.conversationId}:${refreshedOperation.operationId}`,
+                );
+                current.toast.error("Repair blocked", {
+                  detail: refreshedOperation.blocker ?? refreshedOperation.summary,
+                });
+                return;
+              }
+              if (refreshedOperation?.status === "active") {
+                return;
+              }
+
+              current.toast.success(
+                refreshedWorkspace?.publicationPrNumber
+                  ? `Published pull request #${refreshedWorkspace.publicationPrNumber}`
+                  : "Workspace operation completed",
+              );
+            })
+            .catch(() => {
+              current.toast.info("Couldn't verify workspace operation", {
+                detail:
+                  "Check the workspace publish panel, then retry after reconnecting.",
+              });
+            });
+        }
+        return;
+      }
+
+      const operationKey = `${workspace.conversationId}:${operation.operationId}`;
+      if (settledMaintenanceOperationIdsRef.current.has(operationKey)) {
+        return;
+      }
+      if (!current && operation.status !== "active" && !allowTerminalStart) {
+        return;
+      }
+      const id = agentWorkspaceMaintenanceOperationToastId(
+        workspace.conversationId,
+        operation.operationId,
+      );
+      const title = maintenanceOperationToastLabel(operation.stage);
+      const detail = operation.blocker ?? operation.summary;
+      let toast: AgentWorkspaceOperationToast;
+      if (
+        !current ||
+        current.conversationId !== workspace.conversationId ||
+        current.operationId !== operation.operationId
+      ) {
+        current?.toast.dismiss();
+        progressToastRef.current?.dismiss();
+        toast = startAgentWorkspaceOperationToast({
+          conversationTitle: toastConversationTitle,
+          detail,
+          id,
+          startedAtMs: new Date(operation.startedAt).getTime(),
+          title,
+        });
+        maintenanceToastRef.current = {
+          conversationId: workspace.conversationId,
+          operationId: operation.operationId,
+          toast,
+        };
+      } else {
+        toast = current.toast;
+        toast.update({ detail, id, title });
+      }
+
+      if (operation.status === "ready") {
+        settledMaintenanceOperationIdsRef.current.add(operationKey);
+        maintenanceToastRef.current = null;
+        toast.success("Base updated — ready to publish", { detail });
+      } else if (operation.status === "blocked") {
+        settledMaintenanceOperationIdsRef.current.add(operationKey);
+        maintenanceToastRef.current = null;
+        toast.error("Repair blocked", { detail });
+      }
+    },
+    [queryClient, toastConversationTitle],
+  );
+
   const runUpdateFromBase = useCallback(
     ({
       baseSelection,
@@ -108,6 +226,10 @@ export function useAgentWorkspaceBaseUpdate({
             queryClient,
             result.workspace.conversationId,
           );
+          if (result.workspace.maintenanceOperation) {
+            syncMaintenanceOperation(result.workspace, true);
+            return;
+          }
           settleProgressToast(
             progressToast,
             "success",
@@ -132,9 +254,13 @@ export function useAgentWorkspaceBaseUpdate({
           } catch {
             refreshedWorkspace = null;
           }
-          const repairStarted =
-            (refreshedWorkspace ?? requestWorkspace)?.publicationPushStatus ===
-            "needs_agent";
+          const repairWorkspace = refreshedWorkspace ?? requestWorkspace;
+          if (repairWorkspace?.maintenanceOperation) {
+            syncMaintenanceOperation(repairWorkspace, true);
+            void invalidateWorkspaceQueries(queryClient, requestConversationId);
+            return;
+          }
+          const repairStarted = repairWorkspace?.publicationPushStatus === "needs_agent";
           settleProgressToast(
             progressToast,
             repairStarted ? "info" : "error",
@@ -144,11 +270,18 @@ export function useAgentWorkspaceBaseUpdate({
           void invalidateWorkspaceQueries(queryClient, requestConversationId);
         });
     },
-    [mutateAsync, queryClient, settleProgressToast, toastConversationTitle],
+    [
+      mutateAsync,
+      queryClient,
+      settleProgressToast,
+      syncMaintenanceOperation,
+      toastConversationTitle,
+    ],
   );
 
   return {
     isUpdatingFromBase: isPending,
     runUpdateFromBase,
+    syncMaintenanceOperation,
   };
 }

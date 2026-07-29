@@ -263,7 +263,7 @@
       {
         "path": "src-tauri/src/application/session_reopen_service.rs",
         "target": "crate::http_server",
-        "text": "use crate::http_server::handlers::ideation::{ChildFilter, stop_and_archive_children};"
+        "text": "use crate::http_server::handlers::ideation::{stop_and_archive_children, ChildFilter};"
       },
       {
         "path": "src-tauri/src/application/setup_settings.rs",

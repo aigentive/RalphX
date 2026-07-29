@@ -40,7 +40,10 @@ fn setup_test_context() -> TestContext {
     }
 }
 
-fn setup_empty_service() -> (SqliteTestDb, ReviewIssueService<SqliteReviewIssueRepository>) {
+fn setup_empty_service() -> (
+    SqliteTestDb,
+    ReviewIssueService<SqliteReviewIssueRepository>,
+) {
     let db = SqliteTestDb::new("review-issue-service-empty");
     let service = create_service(&db);
     (db, service)
@@ -486,7 +489,11 @@ async fn test_get_open_issues_by_task() {
         .await
         .unwrap();
 
-    let open_issues = ctx.service.get_open_issues_by_task(&ctx.task_id).await.unwrap();
+    let open_issues = ctx
+        .service
+        .get_open_issues_by_task(&ctx.task_id)
+        .await
+        .unwrap();
     assert_eq!(open_issues.len(), 2);
 }
 

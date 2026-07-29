@@ -15,10 +15,11 @@ use crate::domain::entities::{
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
     AgentWorkspacePrReviewMonitorStatus, AgentWorkspacePublicationMetadataPhase,
     AgentWorkspacePublicationMetadataReceipt, AgentWorkspacePublicationMetadataState,
-    AgentWorkspaceReviewApprovalSnapshot, AgentWorkspaceReviewAutoMergeGuard,
-    AgentWorkspaceReviewFixerSnapshot, AgentWorkspaceReviewGateStatus,
-    AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
-    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+    AgentWorkspaceRepairAttempt, AgentWorkspaceRepairAttemptId, AgentWorkspaceRepairEffect,
+    AgentWorkspaceRepairEffectId, AgentWorkspaceReviewApprovalSnapshot,
+    AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewFixerSnapshot,
+    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewHunkAnnotation,
+    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewTargetScope, ArtifactId, ChatConversationId, IdeationSessionId,
     PlanBranchId, ProjectId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
@@ -27,13 +28,34 @@ use crate::domain::repositories::{
     AgentWorkspacePrReviewActionMutation, AgentWorkspacePrReviewStateTransition,
     AgentWorkspacePrTerminalSettlement, AgentWorkspacePublicationGuard,
     AgentWorkspacePublicationMetadataReceiptClaim, AgentWorkspacePublicationMetadataReceiptRefresh,
-    AgentWorkspacePublicationUpdate,
+    AgentWorkspacePublicationUpdate, ImportLegacyAgentWorkspaceRepairAttemptOutcome,
 };
 use crate::error::{AppError, AppResult};
 
 #[cfg(test)]
 #[path = "memory_agent_conversation_workspace_repo_tests.rs"]
 mod memory_agent_conversation_workspace_repo_tests;
+
+mod repair_attempts;
+
+#[cfg(test)]
+#[path = "memory_agent_conversation_workspace_repo/repair_attempts_tests.rs"]
+mod repair_attempts_tests;
+
+#[cfg(test)]
+#[path = "memory_agent_conversation_workspace_repo/repair_attempt_fencing_tests.rs"]
+mod repair_attempt_fencing_tests;
+
+#[cfg(test)]
+#[path = "memory_agent_conversation_workspace_repo/repair_attempt_effect_fencing_tests.rs"]
+mod repair_attempt_effect_fencing_tests;
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+pub enum ForcedCreateAgentWorkspaceRepairEffectOutcome {
+    Stale,
+    Missing,
+}
 
 fn is_lowercase_sha256(value: &str) -> bool {
     value.len() == 64
@@ -136,6 +158,8 @@ fn validate_publication_metadata_decision(
 
 pub struct MemoryAgentConversationWorkspaceRepository {
     workspaces: RwLock<HashMap<ChatConversationId, AgentConversationWorkspace>>,
+    repair_attempts: RwLock<HashMap<AgentWorkspaceRepairAttemptId, AgentWorkspaceRepairAttempt>>,
+    repair_effects: RwLock<HashMap<AgentWorkspaceRepairEffectId, AgentWorkspaceRepairEffect>>,
     followup_provenance: RwLock<HashMap<ChatConversationId, AgentWorkspaceFollowupProvenance>>,
     pr_descriptions: RwLock<HashMap<ChatConversationId, AgentWorkspacePrDescription>>,
     pr_metadata_decisions: RwLock<HashMap<ChatConversationId, AgentWorkspacePrMetadataDecision>>,
@@ -162,12 +186,16 @@ pub struct MemoryAgentConversationWorkspaceRepository {
     next_worktree_path_list_error: Mutex<Option<String>>,
     #[cfg(test)]
     next_auto_merge_restore_completion_error: Mutex<Option<String>>,
+    #[cfg(test)]
+    next_create_repair_effect_outcome: Mutex<Option<ForcedCreateAgentWorkspaceRepairEffectOutcome>>,
 }
 
 impl MemoryAgentConversationWorkspaceRepository {
     pub fn new() -> Self {
         Self {
             workspaces: RwLock::new(HashMap::new()),
+            repair_attempts: RwLock::new(HashMap::new()),
+            repair_effects: RwLock::new(HashMap::new()),
             followup_provenance: RwLock::new(HashMap::new()),
             pr_descriptions: RwLock::new(HashMap::new()),
             pr_metadata_decisions: RwLock::new(HashMap::new()),
@@ -191,6 +219,8 @@ impl MemoryAgentConversationWorkspaceRepository {
             next_worktree_path_list_error: Mutex::new(None),
             #[cfg(test)]
             next_auto_merge_restore_completion_error: Mutex::new(None),
+            #[cfg(test)]
+            next_create_repair_effect_outcome: Mutex::new(None),
         }
     }
 
@@ -231,6 +261,14 @@ impl MemoryAgentConversationWorkspaceRepository {
             .next_auto_merge_restore_completion_error
             .lock()
             .unwrap() = Some(message.into());
+    }
+
+    #[cfg(test)]
+    pub fn force_next_create_repair_effect_outcome(
+        &self,
+        outcome: ForcedCreateAgentWorkspaceRepairEffectOutcome,
+    ) {
+        *self.next_create_repair_effect_outcome.lock().unwrap() = Some(outcome);
     }
 
     pub async fn local_cleanup_status_for_test(
@@ -1070,6 +1108,15 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         expected: &crate::domain::repositories::AgentWorkspaceRepairStateGuard,
         transition: &crate::domain::repositories::AgentWorkspaceRepairStateTransition,
     ) -> AppResult<bool> {
+        // The coarse workspace tuple is migration-era state only. Keep its test seam fenced so
+        // an old caller cannot overwrite a durable generation's projection.
+        let attempts = self.repair_attempts.write().await;
+        if attempts
+            .values()
+            .any(|attempt| attempt.conversation_id == *conversation_id)
+        {
+            return Ok(false);
+        }
         let mut workspaces = self.workspaces.write().await;
         let Some(workspace) = workspaces.get_mut(conversation_id) else {
             return Ok(false);
@@ -1128,6 +1175,13 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             }
         }
 
+        let attempts = self.repair_attempts.write().await;
+        if attempts
+            .values()
+            .any(|attempt| attempt.conversation_id == *conversation_id)
+        {
+            return Ok(false);
+        }
         let mut workspaces = self.workspaces.write().await;
         let mut publication_events = self.publication_events.write().await;
         let Some(workspace) = workspaces.get_mut(conversation_id) else {
@@ -2802,11 +2856,7 @@ fn is_stale_transient_publish_status_workspace(
     workspace.status == AgentConversationWorkspaceStatus::Active
         && matches!(
             workspace.publication_push_status.as_deref(),
-            Some("refreshing")
-                | Some("checking")
-                | Some("committing")
-                | Some("describing")
-                | Some("pushing")
+            Some("refreshing") | Some("checking") | Some("committing") | Some("describing")
         )
         && !matches!(
             workspace.publication_pr_status.as_deref(),

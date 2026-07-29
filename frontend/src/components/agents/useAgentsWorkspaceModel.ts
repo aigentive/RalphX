@@ -67,6 +67,9 @@ export function useAgentsWorkspaceModel({
       !!selectedConversationId &&
       activeConversation?.contextType === "project",
     staleTime: AGENT_WORKSPACE_STALE_MS,
+    refetchInterval: (query) =>
+      query.state.data?.maintenanceOperation?.status === "active" ? 1_500 : false,
+    refetchIntervalInBackground: false,
   });
   const activeWorkspace =
     conversationWorkspaceQuery.data ??
