@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 
 import {
   chatApi,
@@ -49,6 +49,15 @@ export function useAgentWorkspaceBaseUpdate({
   } | null>(null);
   const settledMaintenanceOperationIdsRef = useRef(new Set<string>());
   const toastConversationTitle = conversationTitle?.trim() || null;
+  useEffect(
+    () => () => {
+      progressToastRef.current?.dismiss();
+      progressToastRef.current = null;
+      maintenanceToastRef.current?.toast.dismiss();
+      maintenanceToastRef.current = null;
+    },
+    [],
+  );
   const { isPending, mutateAsync } = useMutation({
     mutationFn: ({
       baseSelection,

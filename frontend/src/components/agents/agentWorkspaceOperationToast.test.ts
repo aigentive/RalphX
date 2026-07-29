@@ -313,6 +313,42 @@ describe("agentWorkspaceOperationToast", () => {
     loadingOptions?.onDismiss?.();
   });
 
+  it("supersedes an existing controller for the same toast id", () => {
+    const toastId = agentWorkspaceOperationToastId(
+      "conversation-1",
+      "update-from-base",
+    );
+    const superseded = startAgentWorkspaceOperationToast({
+      id: toastId,
+      title: "First writer",
+    });
+    const current = startAgentWorkspaceOperationToast({
+      id: toastId,
+      title: "Second writer",
+    });
+
+    vi.advanceTimersByTime(1_000);
+
+    expect(toastLoadingMock).toHaveBeenCalledTimes(3);
+    expect(toastLoadingMock).toHaveBeenLastCalledWith(
+      "Second writer",
+      expect.objectContaining({ id: toastId }),
+    );
+    superseded.success("Old writer must not settle the active toast");
+    expect(toastSuccessMock).not.toHaveBeenCalled();
+
+    const loadingOptions = toastLoadingMock.mock.calls.at(-1)?.[1] as
+      | { onDismiss?: () => void }
+      | undefined;
+    loadingOptions?.onDismiss?.();
+    const loadingCallCount = toastLoadingMock.mock.calls.length;
+
+    current.update({ title: "Must not resurrect" });
+    vi.advanceTimersByTime(2_000);
+
+    expect(toastLoadingMock).toHaveBeenCalledTimes(loadingCallCount);
+  });
+
   it("replaces the persistent loading toast with an auto-dismissing info result", () => {
     const progress = startAgentWorkspaceOperationToast({
       conversationTitle: "Agent conversation",
