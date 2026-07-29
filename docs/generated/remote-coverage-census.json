@@ -11,9 +11,9 @@
   },
   "totals": {
     "invokedCommandNames": 499,
-    "remoteRegistered": 47,
+    "remoteRegistered": 50,
     "localOnlyRows": 29,
-    "ledgerRows": 541,
+    "ledgerRows": 544,
     "unclassified": 424,
     "assignedToBatches": 424,
     "batches": 14

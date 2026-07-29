@@ -134,6 +134,24 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: [],
     pins: [],
   },
+  "get_remote_agent_conversation": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_remote_agent_conversation_messages_page": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_remote_agent_conversation_timeline_page": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
   "get_session_task_history_availability": {
     opClass: "read",
     argumentSensitive: false,
