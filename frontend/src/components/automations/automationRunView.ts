@@ -483,6 +483,10 @@ export interface RunTimelineHighlight {
   backgroundColor: string;
   borderColor: string;
   markerColor: string;
+  /** Left edge rule on the Runs-timeline card — carries status at a glance. */
+  accentColor: string;
+  /** Whether this run is live and should animate its timeline marker. */
+  live: boolean;
 }
 
 /**
@@ -497,6 +501,8 @@ export function runTimelineHighlight(run: AutomationRun): RunTimelineHighlight {
       backgroundColor: "var(--status-success-muted)",
       borderColor: "var(--status-success-border)",
       markerColor: "var(--status-success, #3fbf7f)",
+      accentColor: "var(--status-success-strong, #3fbf7f)",
+      live: false,
     };
   }
   const isActive =
@@ -506,6 +512,8 @@ export function runTimelineHighlight(run: AutomationRun): RunTimelineHighlight {
       backgroundColor: "var(--accent-muted)",
       borderColor: "var(--accent-border)",
       markerColor: "var(--accent-primary, #ff6a35)",
+      accentColor: "var(--accent-primary, #ff6a35)",
+      live: true,
     };
   }
   if (describeRunFailure(run)) {
@@ -513,12 +521,16 @@ export function runTimelineHighlight(run: AutomationRun): RunTimelineHighlight {
       backgroundColor: "var(--bg-surface, #1c1c21)",
       borderColor: "var(--border-default, #393940)",
       markerColor: "var(--status-error, #d55e00)",
+      accentColor: "var(--status-error-strong, #d55e00)",
+      live: false,
     };
   }
   return {
     backgroundColor: "var(--bg-elevated, #232329)",
     borderColor: "var(--border-subtle, #2e2e36)",
     markerColor: "var(--text-subtle, #6b6b73)",
+    accentColor: "var(--border-strong, #44444d)",
+    live: false,
   };
 }
 

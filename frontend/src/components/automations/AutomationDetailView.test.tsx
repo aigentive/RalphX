@@ -853,21 +853,21 @@ describe("AutomationDetailView", () => {
 
     const successCard = screen.getByTestId("automation-run-run-success-card");
     expect(successCard.style.backgroundColor).toContain("--status-success-muted");
-    expect(successCard.style.borderColor).toContain("--status-success-border");
+    expect(successCard.style.borderTopColor).toContain("--status-success-border");
     expect(screen.getByTestId("automation-run-run-success-marker").style.backgroundColor).toEqual(
       expect.stringContaining("--status-success"),
     );
 
     const progressCard = screen.getByTestId("automation-run-run-progress-card");
     expect(progressCard.style.backgroundColor).toContain("--accent-muted");
-    expect(progressCard.style.borderColor).toContain("--accent-border");
+    expect(progressCard.style.borderTopColor).toContain("--accent-border");
     expect(screen.getByTestId("automation-run-run-progress-marker").style.backgroundColor).toEqual(
       expect.stringContaining("--accent-primary"),
     );
 
     const failedCard = screen.getByTestId("automation-run-run-failed-card");
     expect(failedCard.style.backgroundColor).toContain("--bg-surface");
-    expect(failedCard.style.borderColor).toContain("--border-default");
+    expect(failedCard.style.borderTopColor).toContain("--border-default");
     expect(screen.getByTestId("automation-run-run-failed-marker").style.backgroundColor).toEqual(
       expect.stringContaining("--status-error"),
     );
