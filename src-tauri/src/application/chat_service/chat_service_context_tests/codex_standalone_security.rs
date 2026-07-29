@@ -153,6 +153,7 @@ async fn build_standalone_codex_noninteractive_resume_command(
         CoordinationMode::Solo,
         &context_id,
         Some(AgentConversationWorkspaceMode::Chat),
+        None,
         "Continue the queued standalone Codex chat safely.",
         None,
         None,

@@ -1299,6 +1299,14 @@ pub async fn start_delegate(
     Ok(Json(start_delegate_impl(&state, req).await?))
 }
 
+/// Fail-closed 400 for delegation calls whose MCP transport carries no run identity.
+/// This indicates the caller's spawn lane did not inject `--agent-run-id` into the MCP
+/// runtime context (a spawn-time injection gap), not a delegation policy denial.
+pub const DELEGATION_MISSING_RUN_IDENTITY_ERROR: &str = "Delegation start requires trusted parent agent run context, but this agent's MCP runtime context has no run identity: the spawn lane did not inject --agent-run-id at launch. This is a spawn-lane injection gap (fail-closed by design), not a delegation policy denial for this agent";
+
+pub const DELEGATION_INVALID_RUN_IDENTITY_ERROR: &str =
+    "Trusted parent agent run identity header is invalid";
+
 pub async fn start_delegate_with_runtime_context(
     State(state): State<HttpServerState>,
     headers: HeaderMap,
@@ -1314,21 +1322,21 @@ pub async fn start_delegate_with_runtime_context(
         .ok_or_else(|| {
             json_error(
                 StatusCode::BAD_REQUEST,
-                "Delegation start requires trusted parent agent run context",
+                DELEGATION_MISSING_RUN_IDENTITY_ERROR,
             )
         })?
         .to_str()
         .map_err(|_| {
             json_error(
                 StatusCode::BAD_REQUEST,
-                "Trusted parent agent run context is invalid",
+                DELEGATION_INVALID_RUN_IDENTITY_ERROR,
             )
         })?
         .trim();
     if trusted_parent_run_id.is_empty() {
         return Err(json_error(
             StatusCode::BAD_REQUEST,
-            "Delegation start requires trusted parent agent run context",
+            DELEGATION_MISSING_RUN_IDENTITY_ERROR,
         ));
     }
     Ok(Json(

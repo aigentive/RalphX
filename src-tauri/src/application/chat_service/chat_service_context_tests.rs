@@ -2102,6 +2102,7 @@ async fn resume_commands_append_captured_attachment_context_for_claude_and_codex
             CoordinationMode::Solo,
             "project-resume-attachment-context-conversation",
             None,
+            None,
             "continue with the selected file",
             None,
             None,
@@ -2160,6 +2161,122 @@ async fn resume_commands_append_captured_attachment_context_for_claude_and_codex
 
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
+async fn resume_commands_pass_current_run_identity_to_mcp() {
+    let _env_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let provider_home = temp.path().join("provider-home");
+    let claude_session_id = "claude-resume-run-identity";
+    let codex_session_id = "codex-resume-run-identity";
+    write_test_file(
+        &provider_home
+            .join(".claude")
+            .join("projects")
+            .join("project")
+            .join(format!("{claude_session_id}.jsonl")),
+        "{}\n",
+    );
+    write_test_file(
+        &provider_home.join(".codex").join("session_index.jsonl"),
+        &format!(r#"{{"id":"{codex_session_id}"}}"#),
+    );
+    let _provider_home = EnvGuard::set_os(
+        "RALPHX_PROVIDER_STATE_HOME_OVERRIDE",
+        provider_home.as_os_str(),
+    );
+
+    let plugin_dir = repo_plugin_dir();
+    let project_id = ProjectId::from_string("project-resume-run-identity".to_string());
+    let queued_run_id = "queued-run-identity-123";
+    let harness_clis = [
+        (
+            AgentHarnessKind::Claude,
+            make_fake_claude_cli(&temp),
+            claude_session_id,
+        ),
+        (
+            AgentHarnessKind::Codex,
+            make_fake_codex_cli(&temp),
+            codex_session_id,
+        ),
+    ];
+
+    for (harness, cli_path, session_id) in harness_clis {
+        for run_id in [Some(queued_run_id), None] {
+            let command = build_resume_command_for_harness(
+                harness,
+                &cli_path,
+                &plugin_dir,
+                ChatContextType::Project,
+                project_id.as_str(),
+                CoordinationMode::Solo,
+                "project-resume-run-identity-conversation",
+                None,
+                run_id,
+                "continue after queue drain",
+                None,
+                None,
+                None,
+                temp.path(),
+                session_id,
+                Some(project_id.as_str()),
+                &[],
+                Some("conversation-id".to_string()),
+                Arc::new(MemoryChatAttachmentRepository::new()),
+                Arc::new(MemoryArtifactRepository::new()),
+                None,
+                None,
+                None,
+                Arc::new(MemoryIdeationSessionRepository::new()),
+                Arc::new(MemoryDelegatedSessionRepository::new()),
+                Arc::new(MemoryTaskRepository::new()),
+                &[],
+                0,
+                None,
+                None,
+                false,
+                None,
+            )
+            .await
+            .expect("resume command should build with run identity");
+
+            let spawnable = command.spawnable;
+            let mcp_args = match harness {
+                AgentHarnessKind::Claude => {
+                    let args = spawnable.get_args_for_test();
+                    let config_path = args
+                        .windows(2)
+                        .find_map(|window| (window[0] == "--mcp-config").then(|| window[1].clone()))
+                        .expect("Claude resume should include --mcp-config");
+                    let content = fs::read_to_string(config_path)
+                        .expect("Claude MCP config should be readable");
+                    content
+                }
+                AgentHarnessKind::Codex => spawnable
+                    .get_args_for_test()
+                    .into_iter()
+                    .filter(|arg| arg.starts_with("mcp_servers."))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            };
+            if run_id.is_some() {
+                assert!(
+                    mcp_args.contains("--agent-run-id") && mcp_args.contains(queued_run_id),
+                    "{harness} resume should pass the caller's run id so coordination endpoints trust the spawned MCP server"
+                );
+            } else {
+                assert!(
+                    !mcp_args.contains("--agent-run-id") && !mcp_args.contains(queued_run_id),
+                    "{harness} resume without run identity must not fabricate an --agent-run-id"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn project_resume_commands_use_plan_agent_profile_for_claude_and_codex() {
     let _env_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
         .lock()
@@ -2211,6 +2328,7 @@ async fn project_resume_commands_use_plan_agent_profile_for_claude_and_codex() {
             project_id.as_str(),
             CoordinationMode::Solo,
             "project-plan-resume-profile-conversation",
+            None,
             None,
             "continue the accepted plan",
             None,
@@ -2497,6 +2615,7 @@ async fn codex_project_noninteractive_resume_keeps_current_conversation_id_for_m
         CoordinationMode::Solo,
         conversation_id,
         None,
+        None,
         "continue from a queued Codex project message",
         None,
         Some(agent_names::AGENT_GENERAL_WORKER),
@@ -2572,6 +2691,7 @@ async fn codex_project_noninteractive_resume_without_resume_capability_uses_reco
         project_id.as_str(),
         CoordinationMode::Solo,
         "project-conversation-old-resume",
+        None,
         None,
         "continue from an old Codex CLI",
         None,

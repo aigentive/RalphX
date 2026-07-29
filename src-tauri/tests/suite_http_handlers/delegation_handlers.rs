@@ -3653,10 +3653,10 @@ async fn test_routed_delegate_start_requires_trusted_parent_run_context() {
     .unwrap_err();
 
     assert_eq!(error.0, axum::http::StatusCode::BAD_REQUEST);
-    assert!(error.1 .0["error"]
-        .as_str()
-        .unwrap_or_default()
-        .contains("requires trusted parent agent run context"));
+    assert_eq!(
+        error.1 .0["error"].as_str().unwrap_or_default(),
+        ralphx_lib::http_server::handlers::DELEGATION_MISSING_RUN_IDENTITY_ERROR,
+    );
 }
 
 #[tokio::test]
