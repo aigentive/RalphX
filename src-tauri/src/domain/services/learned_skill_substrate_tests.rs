@@ -16,12 +16,13 @@ use crate::domain::repositories::{
     UpsertTaskOutcomeInput,
 };
 use crate::domain::services::learned_skill_substrate::{
-    new_empty_task_outcome, new_skill_usage_event, MemoryToProjectSkillPromotionService,
-    OutcomeLedgerService, ProjectSkillAgingStatus, ProjectSkillEvidenceLevel,
-    ProjectSkillImportApplyInput, ProjectSkillImportCandidate, ProjectSkillImportDecision,
-    ProjectSkillImportPreviewInput, ProjectSkillImportPreviewService, ProjectSkillReportOptions,
-    ProjectSkillReportService, ProjectSkillService, PromoteMemoryToProjectSkillInput,
-    SkillUsageService, UpdateProjectSkillContentInput,
+    new_c2_skill_usage_event, new_empty_task_outcome, new_skill_usage_event,
+    MemoryToProjectSkillPromotionService, OutcomeLedgerService, ProjectSkillAgingStatus,
+    ProjectSkillEvidenceLevel, ProjectSkillImportApplyInput, ProjectSkillImportCandidate,
+    ProjectSkillImportDecision, ProjectSkillImportPreviewInput, ProjectSkillImportPreviewService,
+    ProjectSkillReportOptions, ProjectSkillReportService, ProjectSkillService,
+    PromoteMemoryToProjectSkillInput, SkillUsageAttribution, SkillUsageService,
+    UpdateProjectSkillContentInput,
 };
 use crate::testing::{
     InMemoryMemoryEntryRepository, MemoryProjectSkillRepository, MemorySkillUsageEventRepository,
@@ -53,6 +54,127 @@ fn staged_skill(project_id: ProjectId) -> ProjectSkill {
         created_at: now,
         updated_at: now,
     }
+}
+
+#[test]
+fn c2_usage_policy_builds_deterministic_scoring_and_linkage_metadata() {
+    let project_id = ProjectId::from_string("project-1".to_string());
+    let skill_id = ProjectSkillId::from_string("skill-1");
+    let exact = SkillUsageAttribution::ExactRun {
+        conversation_id: "conversation-1".to_string(),
+        agent_run_id: "run-1".to_string(),
+        provider_harness: "codex".to_string(),
+        stage: Some("execution".to_string()),
+        bucket: Some("execution".to_string()),
+    };
+    let first = new_c2_skill_usage_event(
+        project_id.clone(),
+        skill_id.clone(),
+        SkillUsageInjectionKind::CompactIndex,
+        exact.clone(),
+    )
+    .unwrap();
+    let retry = new_c2_skill_usage_event(
+        project_id.clone(),
+        skill_id.clone(),
+        SkillUsageInjectionKind::CompactIndex,
+        exact,
+    )
+    .unwrap();
+    let composer = new_c2_skill_usage_event(
+        project_id.clone(),
+        skill_id.clone(),
+        SkillUsageInjectionKind::ComposerDirective,
+        SkillUsageAttribution::ExactRun {
+            conversation_id: "conversation-1".to_string(),
+            agent_run_id: "run-1".to_string(),
+            provider_harness: "codex".to_string(),
+            stage: Some("execution".to_string()),
+            bucket: Some("execution".to_string()),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(first.id, retry.id);
+    assert_ne!(first.id, composer.id);
+    assert_eq!(first.agent_run_id.as_deref(), Some("run-1"));
+    assert_eq!(first.metadata_json["scoring_eligible"], true);
+    assert_eq!(first.metadata_json["outcome_linkage_eligible"], true);
+    assert_eq!(first.metadata_json["outcome_linkage_policy"], "exact_run");
+    assert!(first.outcome_id.is_none());
+
+    let bounded = new_c2_skill_usage_event(
+        project_id.clone(),
+        skill_id.clone(),
+        SkillUsageInjectionKind::FullLoad,
+        SkillUsageAttribution::BoundedConversation {
+            conversation_id: "conversation-1".to_string(),
+            reason: "agent_run_unavailable".to_string(),
+            stage: Some("execution".to_string()),
+            bucket: Some("execution".to_string()),
+        },
+    )
+    .unwrap();
+    assert!(bounded.agent_run_id.is_none());
+    assert_eq!(
+        bounded.metadata_json["outcome_linkage_policy"],
+        "bounded_conversation"
+    );
+    assert_eq!(
+        bounded.metadata_json["attribution_reason"],
+        "agent_run_unavailable"
+    );
+
+    let stdin = new_c2_skill_usage_event(
+        project_id,
+        skill_id,
+        SkillUsageInjectionKind::InteractiveStdinUnattributed,
+        SkillUsageAttribution::InteractiveStdin {
+            conversation_id: "conversation-1".to_string(),
+            source_turn_id: "message-1".to_string(),
+            stage: Some("execution".to_string()),
+            bucket: Some("execution".to_string()),
+        },
+    )
+    .unwrap();
+    assert!(stdin.agent_run_id.is_none());
+    assert_eq!(stdin.metadata_json["scoring_eligible"], false);
+    assert_eq!(stdin.metadata_json["outcome_linkage_eligible"], false);
+    assert_eq!(
+        stdin.metadata_json["exclusion_reason"],
+        "interactive_stdin_has_no_exact_agent_run"
+    );
+}
+
+#[test]
+fn c2_usage_policy_rejects_mismatched_or_empty_attribution() {
+    let project_id = ProjectId::from_string("project-1".to_string());
+    let skill_id = ProjectSkillId::from_string("skill-1");
+    assert!(new_c2_skill_usage_event(
+        project_id.clone(),
+        skill_id.clone(),
+        SkillUsageInjectionKind::CompactIndex,
+        SkillUsageAttribution::BoundedConversation {
+            conversation_id: "conversation-1".to_string(),
+            reason: "missing".to_string(),
+            stage: None,
+            bucket: None,
+        },
+    )
+    .is_err());
+    assert!(new_c2_skill_usage_event(
+        project_id,
+        skill_id,
+        SkillUsageInjectionKind::FullLoad,
+        SkillUsageAttribution::ExactRun {
+            conversation_id: String::new(),
+            agent_run_id: "run-1".to_string(),
+            provider_harness: "claude".to_string(),
+            stage: None,
+            bucket: None,
+        },
+    )
+    .is_err());
 }
 
 fn import_candidate() -> ProjectSkillImportCandidate {

@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::domain::entities::types::ProjectId;
 use crate::domain::entities::{
@@ -779,6 +780,13 @@ impl SkillUsageService {
         self.repo.record(event).await
     }
 
+    pub async fn record_usage_batch(
+        &self,
+        events: Vec<SkillUsageEvent>,
+    ) -> AppResult<Vec<SkillUsageEvent>> {
+        self.repo.record_batch(events).await
+    }
+
     pub async fn list_project_usage(
         &self,
         project_id: &ProjectId,
@@ -786,6 +794,171 @@ impl SkillUsageService {
     ) -> AppResult<Vec<SkillUsageEvent>> {
         self.repo.list_by_project(project_id, options).await
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SkillUsageAttribution {
+    ExactRun {
+        conversation_id: String,
+        agent_run_id: String,
+        provider_harness: String,
+        stage: Option<String>,
+        bucket: Option<String>,
+    },
+    BoundedConversation {
+        conversation_id: String,
+        reason: String,
+        stage: Option<String>,
+        bucket: Option<String>,
+    },
+    InteractiveStdin {
+        conversation_id: String,
+        source_turn_id: String,
+        stage: Option<String>,
+        bucket: Option<String>,
+    },
+}
+
+pub fn new_c2_skill_usage_event(
+    project_id: ProjectId,
+    project_skill_id: ProjectSkillId,
+    injection_kind: SkillUsageInjectionKind,
+    attribution: SkillUsageAttribution,
+) -> AppResult<SkillUsageEvent> {
+    validate_non_empty("skill usage project_id", project_id.as_str())?;
+    validate_non_empty("skill usage project_skill_id", project_skill_id.as_str())?;
+
+    let (conversation_id, agent_run_id, provider_harness, stage, bucket, anchor, metadata_json) =
+        match (injection_kind, attribution) {
+            (
+                SkillUsageInjectionKind::CompactIndex
+                | SkillUsageInjectionKind::ComposerDirective
+                | SkillUsageInjectionKind::FullLoad,
+                SkillUsageAttribution::ExactRun {
+                    conversation_id,
+                    agent_run_id,
+                    provider_harness,
+                    stage,
+                    bucket,
+                },
+            ) => {
+                validate_non_empty("skill usage conversation_id", &conversation_id)?;
+                validate_non_empty("skill usage agent_run_id", &agent_run_id)?;
+                validate_non_empty("skill usage provider_harness", &provider_harness)?;
+                let anchor = agent_run_id.clone();
+                (
+                    conversation_id,
+                    Some(agent_run_id),
+                    Some(provider_harness),
+                    stage,
+                    bucket,
+                    anchor,
+                    serde_json::json!({
+                        "scoring_eligible": true,
+                        "outcome_linkage_eligible": true,
+                        "outcome_linkage_policy": "exact_run",
+                    }),
+                )
+            }
+            (
+                SkillUsageInjectionKind::FullLoad,
+                SkillUsageAttribution::BoundedConversation {
+                    conversation_id,
+                    reason,
+                    stage,
+                    bucket,
+                },
+            ) => {
+                validate_non_empty("skill usage conversation_id", &conversation_id)?;
+                validate_non_empty("skill usage attribution reason", &reason)?;
+                let anchor = conversation_id.clone();
+                (
+                    conversation_id,
+                    None,
+                    None,
+                    stage,
+                    bucket,
+                    anchor,
+                    serde_json::json!({
+                        "scoring_eligible": true,
+                        "outcome_linkage_eligible": true,
+                        "outcome_linkage_policy": "bounded_conversation",
+                        "attribution_reason": reason,
+                    }),
+                )
+            }
+            (
+                SkillUsageInjectionKind::InteractiveStdinUnattributed,
+                SkillUsageAttribution::InteractiveStdin {
+                    conversation_id,
+                    source_turn_id,
+                    stage,
+                    bucket,
+                },
+            ) => {
+                validate_non_empty("skill usage conversation_id", &conversation_id)?;
+                validate_non_empty("skill usage source_turn_id", &source_turn_id)?;
+                let anchor = source_turn_id.clone();
+                (
+                    conversation_id,
+                    None,
+                    None,
+                    stage,
+                    bucket,
+                    anchor,
+                    serde_json::json!({
+                        "scoring_eligible": false,
+                        "outcome_linkage_eligible": false,
+                        "outcome_linkage_policy": "none",
+                        "exclusion_reason": "interactive_stdin_has_no_exact_agent_run",
+                        "source_turn_id": source_turn_id,
+                    }),
+                )
+            }
+            _ => {
+                return Err(AppError::Validation(format!(
+                    "invalid attribution policy for {} skill usage",
+                    injection_kind.as_str()
+                )))
+            }
+        };
+
+    let id =
+        deterministic_skill_usage_event_id(&project_id, &project_skill_id, injection_kind, &anchor);
+    Ok(SkillUsageEvent {
+        id,
+        project_id,
+        project_skill_id,
+        conversation_id: Some(conversation_id),
+        agent_run_id,
+        provider_harness,
+        stage,
+        bucket,
+        injection_kind,
+        outcome_id: None,
+        metadata_json,
+        created_at: Utc::now(),
+    })
+}
+
+fn deterministic_skill_usage_event_id(
+    project_id: &ProjectId,
+    project_skill_id: &ProjectSkillId,
+    injection_kind: SkillUsageInjectionKind,
+    anchor: &str,
+) -> SkillUsageEventId {
+    let mut hasher = Sha256::new();
+    for component in [
+        "ralphx-skill-usage-v1",
+        project_id.as_str(),
+        project_skill_id.as_str(),
+        injection_kind.as_str(),
+        anchor,
+    ] {
+        hasher.update((component.len() as u64).to_be_bytes());
+        hasher.update(component.as_bytes());
+    }
+    SkillUsageEventId::from_string(format!("skill-usage-{:x}", hasher.finalize()))
 }
 
 pub fn new_empty_task_outcome(

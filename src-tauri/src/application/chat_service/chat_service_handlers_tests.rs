@@ -2173,6 +2173,15 @@ async fn test_interactive_stdin_learned_skill_usage_is_recorded_as_unscored() {
         .record_learned_skill_usage_for_interactive_stdin(
             Some(project_id.as_str()),
             &conversation_id,
+            "message-1",
+            &[skill.clone()],
+        )
+        .await;
+    service
+        .record_learned_skill_usage_for_interactive_stdin(
+            Some(project_id.as_str()),
+            &conversation_id,
+            "message-1",
             &[skill.clone()],
         )
         .await;
@@ -2197,9 +2206,10 @@ async fn test_interactive_stdin_learned_skill_usage_is_recorded_as_unscored() {
     );
     assert_eq!(event.metadata_json["scoring_eligible"], false);
     assert_eq!(
-        event.metadata_json["scoring_disabled_reason"],
-        "interactive_stdin_turn_has_no_new_agent_run_id"
+        event.metadata_json["exclusion_reason"],
+        "interactive_stdin_has_no_exact_agent_run"
     );
+    assert_eq!(event.metadata_json["source_turn_id"], "message-1");
 }
 
 // ========================================

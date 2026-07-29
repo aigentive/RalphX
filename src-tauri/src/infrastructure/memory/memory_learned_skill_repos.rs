@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::RwLock;
 
 use async_trait::async_trait;
@@ -451,19 +453,48 @@ fn validate_memory_companion(
 #[derive(Default)]
 pub struct MemorySkillUsageEventRepository {
     rows: RwLock<Vec<SkillUsageEvent>>,
+    fail_next_batch: AtomicBool,
 }
 
 impl MemorySkillUsageEventRepository {
     pub fn new() -> Self {
         Self::default()
     }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn fail_next_batch_for_test(&self) {
+        self.fail_next_batch.store(true, Ordering::SeqCst);
+    }
 }
 
 #[async_trait]
 impl SkillUsageEventRepository for MemorySkillUsageEventRepository {
     async fn record(&self, event: SkillUsageEvent) -> AppResult<SkillUsageEvent> {
-        self.rows.write().unwrap().push(event.clone());
-        Ok(event)
+        let mut saved = self.record_batch(vec![event]).await?;
+        saved.pop().ok_or_else(|| {
+            AppError::Database("skill usage batch unexpectedly returned no event".to_string())
+        })
+    }
+
+    async fn record_batch(&self, events: Vec<SkillUsageEvent>) -> AppResult<Vec<SkillUsageEvent>> {
+        if self.fail_next_batch.swap(false, Ordering::SeqCst) {
+            return Err(AppError::Database(
+                "injected memory skill usage batch failure".to_string(),
+            ));
+        }
+
+        let mut rows = self.rows.write().unwrap();
+        let mut known_ids = rows
+            .iter()
+            .map(|row| row.id.as_str().to_string())
+            .collect::<HashSet<_>>();
+        let saved = events;
+        for event in &saved {
+            if known_ids.insert(event.id.as_str().to_string()) {
+                rows.push(event.clone());
+            }
+        }
+        Ok(saved)
     }
 
     async fn list_by_project(

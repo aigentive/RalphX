@@ -109,11 +109,11 @@ use crate::domain::repositories::{
     ValidationRunRepository,
 };
 use crate::domain::services::{
-    is_process_alive, kill_process, new_skill_usage_event, AttachProcessResult,
+    is_process_alive, kill_process, new_c2_skill_usage_event, AttachProcessResult,
     ComposerArtifactReference, ComposerExcerptReference, ComposerIntegrationReference,
     ComposerProjectReference, ComposerSelectionSnapshot, MessageQueue, ProjectSkillService,
     QueueKey, QueuedMessage, RunningAgentInfo, RunningAgentKey, RunningAgentRegistry,
-    SkillUsageService, TryRegisterError,
+    SkillUsageAttribution, SkillUsageService, TryRegisterError,
 };
 use crate::domain::state_machine::services::WebhookPublisher;
 use crate::infrastructure::agents::internal_skills::inject_learned_skill_citations_into_system_prompt;
@@ -4260,6 +4260,7 @@ impl<R: Runtime> AppChatService<R> {
             tokio::process::Child,
             Option<Arc<InteractiveProcessRegistry>>,
             Option<InteractiveProcessToken>,
+            Vec<String>,
         ),
         ChatServiceError,
     > {
@@ -4426,6 +4427,7 @@ impl<R: Runtime> AppChatService<R> {
         );
 
         let launch_mode = launch_plan.launch_mode();
+        let injected_skill_names = launch_plan.injected_skill_names().to_vec();
         tracing::info!(mode = ?launch_mode, plan = ?launch_plan, "Spawning chat harness agent");
         let process_spawn_started = Instant::now();
         let launched = launch_plan.spawn().await.map_err(|error| {
@@ -4499,6 +4501,7 @@ impl<R: Runtime> AppChatService<R> {
                 launched.child,
                 Some(self.ipr()),
                 Some(interactive_process_token),
+                injected_skill_names,
             ))
         } else {
             tracing::info!(
@@ -4509,7 +4512,13 @@ impl<R: Runtime> AppChatService<R> {
                 total_elapsed_ms = spawn_total_started.elapsed().as_millis() as u64,
                 "chat_service.send_message spawn process completed"
             );
-            Ok((launched.cli_path, launched.child, None, None))
+            Ok((
+                launched.cli_path,
+                launched.child,
+                None,
+                None,
+                injected_skill_names,
+            ))
         }
     }
 
@@ -4747,9 +4756,10 @@ impl<R: Runtime> AppChatService<R> {
         conversation_id: &ChatConversationId,
         agent_run_id: &str,
         harness: AgentHarnessKind,
+        injected_skill_names: &[String],
         selected_skills: &[ProjectSkill],
     ) {
-        if selected_skills.is_empty() {
+        if selected_skills.is_empty() && injected_skill_names.is_empty() {
             return;
         }
         let Some(project_id) = project_id.map(str::trim).filter(|value| !value.is_empty()) else {
@@ -4764,29 +4774,104 @@ impl<R: Runtime> AppChatService<R> {
         };
 
         let project_id = ProjectId::from_string(project_id.to_string());
-        let service = SkillUsageService::new(Arc::clone(&app_state.skill_usage_event_repo));
+        let attribution = SkillUsageAttribution::ExactRun {
+            conversation_id: conversation_id.as_str().to_string(),
+            agent_run_id: agent_run_id.to_string(),
+            provider_harness: harness.to_string(),
+            stage: None,
+            bucket: None,
+        };
+        let mut events = Vec::new();
+        for injected_name in injected_skill_names {
+            let Some(skill_id) = injected_name.strip_prefix("learned:") else {
+                continue;
+            };
+            let Ok(Some(skill)) = app_state
+                .project_skill_repo
+                .get_by_id(&crate::domain::entities::ProjectSkillId::from_string(skill_id))
+                .await
+            else {
+                tracing::warn!(
+                    injected_skill_name = injected_name,
+                    project_id = project_id.as_str(),
+                    "Suppressing learned skill injection telemetry for an unresolved skill"
+                );
+                return;
+            };
+            if skill.project_id != project_id {
+                tracing::warn!(
+                    injected_skill_name = injected_name,
+                    project_id = project_id.as_str(),
+                    "Suppressing cross-project learned skill injection telemetry"
+                );
+                return;
+            }
+            let mut event_attribution = attribution.clone();
+            if let SkillUsageAttribution::ExactRun { stage, bucket, .. } = &mut event_attribution {
+                *stage = Some(skill.stage.clone());
+                *bucket = Some(skill.bucket.clone());
+            }
+            match new_c2_skill_usage_event(
+                project_id.clone(),
+                skill.id,
+                SkillUsageInjectionKind::CompactIndex,
+                event_attribution,
+            ) {
+                Ok(mut event) => {
+                    event.metadata_json["source"] =
+                        serde_json::json!("pre_execution_project_skill_injection");
+                    event.metadata_json["injected_skill_name"] = serde_json::json!(injected_name);
+                    events.push(event);
+                }
+                Err(error) => {
+                    tracing::warn!(error = %error, "Suppressing invalid learned skill launch telemetry batch");
+                    return;
+                }
+            }
+        }
         for skill in selected_skills {
-            let mut event = new_skill_usage_event(
+            if skill.project_id != project_id {
+                tracing::warn!(
+                    project_skill_id = skill.id.as_str(),
+                    project_id = project_id.as_str(),
+                    "Suppressing cross-project learned skill launch telemetry batch"
+                );
+                return;
+            }
+            let event = new_c2_skill_usage_event(
                 project_id.clone(),
                 skill.id.clone(),
                 SkillUsageInjectionKind::ComposerDirective,
+                SkillUsageAttribution::ExactRun {
+                    conversation_id: conversation_id.as_str().to_string(),
+                    agent_run_id: agent_run_id.to_string(),
+                    provider_harness: harness.to_string(),
+                    stage: Some(skill.stage.clone()),
+                    bucket: Some(skill.bucket.clone()),
+                },
             );
-            event.conversation_id = Some(conversation_id.as_str().to_string());
-            event.agent_run_id = Some(agent_run_id.to_string());
-            event.provider_harness = Some(harness.to_string());
-            event.stage = Some(skill.stage.clone());
-            event.bucket = Some(skill.bucket.clone());
-            event.metadata_json = serde_json::json!({
-                "source": "ralphx_project_skill_directive",
-            });
-            if let Err(error) = service.record_usage(event).await {
-                tracing::warn!(
-                    project_skill_id = skill.id.as_str(),
-                    agent_run_id,
-                    error = %error,
-                    "Failed to record learned project skill usage"
-                );
+            match event {
+                Ok(mut event) => {
+                    event.metadata_json["source"] =
+                        serde_json::json!("ralphx_project_skill_directive");
+                    events.push(event);
+                }
+                Err(error) => {
+                    tracing::warn!(error = %error, "Suppressing invalid learned skill launch telemetry batch");
+                    return;
+                }
             }
+        }
+        if events.is_empty() {
+            return;
+        }
+        let service = SkillUsageService::new(Arc::clone(&app_state.skill_usage_event_repo));
+        if let Err(error) = service.record_usage_batch(events).await {
+            tracing::warn!(
+                agent_run_id,
+                error = %error,
+                "Failed to atomically record learned project skill launch usage"
+            );
         }
     }
 
@@ -4794,6 +4879,7 @@ impl<R: Runtime> AppChatService<R> {
         &self,
         project_id: Option<&str>,
         conversation_id: &ChatConversationId,
+        source_turn_id: &str,
         selected_skills: &[ProjectSkill],
     ) {
         if selected_skills.is_empty() {
@@ -4812,29 +4898,37 @@ impl<R: Runtime> AppChatService<R> {
 
         let project_id = ProjectId::from_string(project_id.to_string());
         let service = SkillUsageService::new(Arc::clone(&app_state.skill_usage_event_repo));
+        let mut events = Vec::with_capacity(selected_skills.len());
         for skill in selected_skills {
-            let mut event = new_skill_usage_event(
+            match new_c2_skill_usage_event(
                 project_id.clone(),
                 skill.id.clone(),
                 SkillUsageInjectionKind::InteractiveStdinUnattributed,
-            );
-            event.conversation_id = Some(conversation_id.as_str().to_string());
-            event.stage = Some(skill.stage.clone());
-            event.bucket = Some(skill.bucket.clone());
-            event.metadata_json = serde_json::json!({
-                "source": "ralphx_project_skill_directive",
-                "attribution_scope": "interactive_stdin_turn",
-                "scoring_eligible": false,
-                "scoring_disabled_reason": "interactive_stdin_turn_has_no_new_agent_run_id",
-            });
-            if let Err(error) = service.record_usage(event).await {
-                tracing::warn!(
-                    project_skill_id = skill.id.as_str(),
-                    conversation_id = conversation_id.as_str(),
-                    error = %error,
-                    "Failed to record unattributed interactive learned project skill usage"
-                );
+                SkillUsageAttribution::InteractiveStdin {
+                    conversation_id: conversation_id.as_str().to_string(),
+                    source_turn_id: source_turn_id.to_string(),
+                    stage: Some(skill.stage.clone()),
+                    bucket: Some(skill.bucket.clone()),
+                },
+            ) {
+                Ok(mut event) => {
+                    event.metadata_json["source"] =
+                        serde_json::json!("ralphx_project_skill_directive");
+                    events.push(event);
+                }
+                Err(error) => {
+                    tracing::warn!(error = %error, "Suppressing invalid interactive learned skill telemetry batch");
+                    return;
+                }
             }
+        }
+        if let Err(error) = service.record_usage_batch(events).await {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                source_turn_id,
+                error = %error,
+                "Failed to atomically record interactive learned project skill usage"
+            );
         }
     }
 
@@ -5786,12 +5880,6 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             let (runtime_message, selected_learned_skills) = self
                 .learned_skill_runtime_message(interactive_project_id.as_deref(), runtime_message)
                 .await;
-            self.record_learned_skill_usage_for_interactive_stdin(
-                interactive_project_id.as_deref(),
-                &conversation.id,
-                &selected_learned_skills,
-            )
-            .await;
             let stdin_prompt = chat_service_context::build_initial_prompt(
                 context_type,
                 context_id,
@@ -5832,18 +5920,29 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     if let Some(user_msg) = pending_user_message {
                         let user_msg_id = user_msg.id.as_str().to_string();
                         let user_msg_created_at = user_msg.created_at.to_rfc3339();
-                        if self
-                            .chat_message_repo
-                            .create(user_msg.clone())
-                            .await
-                            .is_ok()
-                            && !hide_user_message
-                        {
-                            chat_service_streaming::persist_message_text_timeline_item(
-                                &self.chat_timeline_repo,
-                                &user_msg,
-                            )
-                            .await;
+                        match self.chat_message_repo.create(user_msg.clone()).await {
+                            Ok(_) => {
+                                self.record_learned_skill_usage_for_interactive_stdin(
+                                    interactive_project_id.as_deref(),
+                                    &conversation.id,
+                                    &user_msg_id,
+                                    &selected_learned_skills,
+                                )
+                                .await;
+                                if !hide_user_message {
+                                    chat_service_streaming::persist_message_text_timeline_item(
+                                        &self.chat_timeline_repo,
+                                        &user_msg,
+                                    )
+                                    .await;
+                                }
+                            }
+                            Err(error) => tracing::warn!(
+                                conversation_id = conversation.id.as_str(),
+                                source_turn_id = user_msg_id,
+                                error = %error,
+                                "Suppressing interactive learned skill telemetry because the source turn was not persisted"
+                            ),
                         }
                         self.link_turn_attachments(&turn_attachments, &user_msg_id)
                             .await?;
@@ -7350,8 +7449,13 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         let (runtime_message, selected_learned_skills) = self
             .learned_skill_runtime_message(project_id.as_deref(), runtime_message)
             .await;
-        let (selected_cli_path, mut child, interactive_process_registry, interactive_process_token) =
-            match self
+        let (
+            selected_cli_path,
+            mut child,
+            interactive_process_registry,
+            interactive_process_token,
+            injected_skill_names,
+        ) = match self
                 .spawn_process_for_harness(
                      &conversation,
                      &runtime_message,
@@ -7382,6 +7486,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             &conversation_id,
             &agent_run_id,
             resolved_spawn_settings.effective_harness,
+            &injected_skill_names,
             &selected_learned_skills,
         )
         .await;
@@ -9969,6 +10074,8 @@ mod chat_service_redaction_tests;
 mod freshness_routing_tests;
 #[cfg(test)]
 mod interactive_runtime_tests;
+#[cfg(test)]
+mod learned_skill_usage_tests;
 #[cfg(test)]
 mod resolved_conversation_spawn_context_tests;
 #[cfg(test)]

@@ -1259,6 +1259,7 @@ pub struct SpawnableCommand {
     stdin_prompt: Option<String>,
     stdin_transport: SpawnableStdinTransport,
     prompt_arg_debug_redaction: Option<PromptArgDebugRedaction>,
+    injected_skill_names: Vec<String>,
     persona_injected: bool,
     persona_injection_skipped_reason: Option<&'static str>,
 }
@@ -1358,6 +1359,7 @@ impl SpawnableCommand {
             stdin_prompt,
             stdin_transport,
             prompt_arg_debug_redaction: None,
+            injected_skill_names: Vec::new(),
             persona_injected: false,
             persona_injection_skipped_reason: None,
         }
@@ -1371,6 +1373,15 @@ impl SpawnableCommand {
         self.persona_injected = persona_injected;
         self.persona_injection_skipped_reason = persona_injection_skipped_reason;
         self
+    }
+
+    pub(crate) fn with_injected_skill_names(mut self, injected_skill_names: Vec<String>) -> Self {
+        self.injected_skill_names = injected_skill_names;
+        self
+    }
+
+    pub(crate) fn injected_skill_names(&self) -> &[String] {
+        &self.injected_skill_names
     }
 
     pub(crate) fn persona_injected(&self) -> bool {
@@ -1534,6 +1545,7 @@ pub fn format_stream_json_input(content: &str) -> String {
 /// actually appended. Fallback agent-prompt paths deliberately report no injection.
 struct PromptArgsOutcome {
     stdin_prompt: Option<String>,
+    injected_skill_names: Vec<String>,
     persona_injected: bool,
     persona_injection_skipped_reason: Option<&'static str>,
 }
@@ -1573,6 +1585,7 @@ fn add_prompt_args(
     };
     let mut persona_injected = false;
     let mut persona_skip_reason = None;
+    let mut injected_skill_names = Vec::new();
     if let Some(agent_name) = agent {
         if use_native_agent_flag {
             cmd.args(["--agent", agent_name]);
@@ -1588,13 +1601,13 @@ fn add_prompt_args(
                 persona_block,
                 pre_execution_learned_skills,
             );
-            if let Some((system_prompt, injected_skill_names)) =
+            if let Some((system_prompt, composed_skill_names)) =
                 prompt_with_internal_skills.as_ref()
             {
-                if !injected_skill_names.is_empty() {
+                if !composed_skill_names.is_empty() {
                     tracing::debug!(
                         agent = agent_name,
-                        skills = ?injected_skill_names,
+                        skills = ?composed_skill_names,
                         "Injected agent prompt with internal skills"
                     );
                 }
@@ -1606,6 +1619,7 @@ fn add_prompt_args(
                     write_agent_system_prompt_temp,
                 );
                 persona_injected = persona_block.is_some();
+                composed_skill_names.clone_into(&mut injected_skill_names);
             } else if runtime.use_append_system_prompt_file {
                 if let Some(path_str) = prompt_path.to_str() {
                     cmd.args(["--append-system-prompt-file", path_str]);
@@ -1699,6 +1713,7 @@ fn add_prompt_args(
 
     PromptArgsOutcome {
         stdin_prompt,
+        injected_skill_names,
         persona_injected,
         persona_injection_skipped_reason: persona_skip_reason,
     }
@@ -1805,7 +1820,8 @@ pub fn build_spawnable_command_with_mcp_runtime_context(
     .with_persona_injection_outcome(
         prompt_args.persona_injected,
         prompt_args.persona_injection_skipped_reason,
-    ))
+    )
+    .with_injected_skill_names(prompt_args.injected_skill_names))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1977,7 +1993,8 @@ fn build_spawnable_profile_command_with_permission_policy_inner(
     .with_persona_injection_outcome(
         prompt_args.persona_injected,
         prompt_args.persona_injection_skipped_reason,
-    ))
+    )
+    .with_injected_skill_names(prompt_args.injected_skill_names))
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -2053,7 +2070,8 @@ pub fn build_spawnable_command_with_mcp_runtime_context_for_test(
     .with_persona_injection_outcome(
         prompt_args.persona_injected,
         prompt_args.persona_injection_skipped_reason,
-    ))
+    )
+    .with_injected_skill_names(prompt_args.injected_skill_names))
 }
 
 #[cfg(any(test, feature = "test-utils"))]

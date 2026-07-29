@@ -2,6 +2,8 @@ import { Tool } from "@modelcontextprotocol/sdk/types.js";
 
 import {
   buildProjectSkillPipelineTransportHeaders,
+  buildRuntimeIdentityTransportHeaders,
+  buildRuntimeTransportHeaders,
 } from "./runtime-context.js";
 import type { RuntimeContext } from "./runtime-context.js";
 import type { TauriCallOptions } from "./tauri-client.js";
@@ -184,6 +186,7 @@ const WRITE_TOOLS = new Set([
   "patch_project_skill",
   "retire_project_skill",
 ]);
+const READ_TOOLS = new Set(["list_project_skills", "get_project_skill"]);
 
 export function learnedSkillEndpoint(toolName: string): string {
   const endpoint = ENDPOINT_BY_TOOL[toolName];
@@ -198,7 +201,12 @@ export function learnedSkillTransportOptions(
   runtimeContext: RuntimeContext
 ): TauriCallOptions | undefined {
   if (!WRITE_TOOLS.has(toolName)) {
-    return undefined;
+    if (!READ_TOOLS.has(toolName)) return undefined;
+    const headers = {
+      ...(buildRuntimeTransportHeaders(runtimeContext) ?? {}),
+      ...(buildRuntimeIdentityTransportHeaders(runtimeContext) ?? {}),
+    };
+    return Object.keys(headers).length > 0 ? { headers } : undefined;
   }
   const headers = buildProjectSkillPipelineTransportHeaders(runtimeContext);
   return headers ? { headers } : undefined;

@@ -1,4 +1,8 @@
-use axum::{extract::State, http::StatusCode, Json};
+use axum::{
+    extract::State,
+    http::{HeaderMap, StatusCode},
+    Json,
+};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -16,19 +20,20 @@ use crate::application::memory_orchestration::{
 use crate::application::project_skill_distillation_service::ProjectSkillDistillationSelection;
 use crate::application::project_skill_export_service::MAX_SKILL_DESCRIPTION_CHARS;
 use crate::domain::entities::types::ProjectId;
-use crate::domain::entities::ChatConversationId;
+use crate::domain::entities::{AgentRunId, ChatConversationId};
 use crate::domain::entities::{
     ChatContextType, MemoryEntryId, ProjectSkill, ProjectSkillId, ProjectSkillLifecycleStatus,
-    TaskOutcomeClass, TaskOutcomeSource, TaskOutcomeStatus,
+    SkillUsageInjectionKind, TaskOutcomeClass, TaskOutcomeSource, TaskOutcomeStatus,
 };
 use crate::domain::repositories::{
     ProjectSkillListOptions, SkillUsageListOptions, UpsertTaskOutcomeInput,
 };
 use crate::domain::services::{
-    new_empty_task_outcome, MemoryToProjectSkillPromotionService, ProjectSkillImportApplyInput,
-    ProjectSkillImportCandidate, ProjectSkillImportPreview, ProjectSkillImportPreviewInput,
-    ProjectSkillImportPreviewRow, ProjectSkillImportPreviewService, ProjectSkillReportOptions,
-    ProjectSkillReportService, ProjectSkillService, PromoteMemoryToProjectSkillInput,
+    new_c2_skill_usage_event, new_empty_task_outcome, MemoryToProjectSkillPromotionService,
+    ProjectSkillImportApplyInput, ProjectSkillImportCandidate, ProjectSkillImportPreview,
+    ProjectSkillImportPreviewInput, ProjectSkillImportPreviewRow, ProjectSkillImportPreviewService,
+    ProjectSkillReportOptions, ProjectSkillReportService, ProjectSkillService,
+    PromoteMemoryToProjectSkillInput, SkillUsageAttribution, SkillUsageService,
     UpdateProjectSkillContentInput,
 };
 use crate::error::{AppError, AppResult};
@@ -321,6 +326,7 @@ pub async fn process_conversation_project_skills(
 
 pub async fn get_project_skill(
     State(state): State<HttpServerState>,
+    headers: HeaderMap,
     scope: ProjectScope,
     Json(req): Json<GetProjectSkillRequest>,
 ) -> Result<Json<GetProjectSkillResponse>, HttpError> {
@@ -347,12 +353,138 @@ pub async fn get_project_skill(
                 message: Some("project skill does not belong to the requested project".to_string()),
             });
         }
+        record_full_load_skill_usage(&state, &headers, &skill).await;
         return Ok(Json(GetProjectSkillResponse {
             skill: Some(ProjectSkillResponse::from(skill)),
         }));
     }
 
     Ok(Json(GetProjectSkillResponse { skill: None }))
+}
+
+async fn record_full_load_skill_usage(
+    state: &HttpServerState,
+    headers: &HeaderMap,
+    skill: &ProjectSkill,
+) {
+    let attribution = match trusted_full_load_attribution(state, headers, skill).await {
+        Ok(Some(attribution)) => attribution,
+        Ok(None) => return,
+        Err(reason) => {
+            tracing::warn!(
+                project_skill_id = skill.id.as_str(),
+                reason,
+                "Suppressing learned skill full-load telemetry"
+            );
+            return;
+        }
+    };
+    let mut event = match new_c2_skill_usage_event(
+        skill.project_id.clone(),
+        skill.id.clone(),
+        SkillUsageInjectionKind::FullLoad,
+        attribution,
+    ) {
+        Ok(event) => event,
+        Err(error) => {
+            tracing::warn!(error = %error, "Suppressing invalid learned skill full-load telemetry");
+            return;
+        }
+    };
+    event.metadata_json["source"] = serde_json::json!("get_project_skill");
+    let service = SkillUsageService::new(Arc::clone(&state.app_state.skill_usage_event_repo));
+    if let Err(error) = service.record_usage_batch(vec![event]).await {
+        tracing::warn!(
+            project_skill_id = skill.id.as_str(),
+            error = %error,
+            "Failed to record learned skill full-load telemetry"
+        );
+    }
+}
+
+async fn trusted_full_load_attribution(
+    state: &HttpServerState,
+    headers: &HeaderMap,
+    skill: &ProjectSkill,
+) -> Result<Option<SkillUsageAttribution>, String> {
+    let conversation_header = headers.get("x-ralphx-conversation-id");
+    let run_header = headers.get("x-ralphx-agent-run-id");
+    if conversation_header.is_none() && run_header.is_none() {
+        return Ok(None);
+    }
+    let conversation_id = conversation_header
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "run identity requires a valid conversation identity".to_string())?
+        .parse::<ChatConversationId>()
+        .map_err(|_| "conversation identity is malformed".to_string())?;
+    let conversation = state
+        .app_state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .map_err(|error| format!("conversation identity lookup failed: {error}"))?
+        .ok_or_else(|| "conversation identity is stale".to_string())?;
+    let resolved_project_id =
+        crate::application::chat_service::chat_service_context::resolve_project_id(
+            conversation.context_type,
+            &conversation.context_id,
+            Arc::clone(&state.app_state.task_repo),
+            Arc::clone(&state.app_state.ideation_session_repo),
+            Arc::clone(&state.app_state.delegated_session_repo),
+        )
+        .await
+        .ok_or_else(|| "conversation has no resolvable project authority".to_string())?;
+    if resolved_project_id != skill.project_id.as_str() {
+        return Err("conversation belongs to a different project".to_string());
+    }
+
+    let Some(run_value) = run_header else {
+        return Ok(Some(SkillUsageAttribution::BoundedConversation {
+            conversation_id: conversation_id.as_str().to_string(),
+            reason: "agent_run_header_absent".to_string(),
+            stage: Some(skill.stage.clone()),
+            bucket: Some(skill.bucket.clone()),
+        }));
+    };
+    let run_id = run_value
+        .to_str()
+        .ok()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "run identity is malformed".to_string())?
+        .parse::<AgentRunId>()
+        .map_err(|_| "run identity is malformed".to_string())?;
+    let run = state
+        .app_state
+        .agent_run_repo
+        .get_by_id(&run_id)
+        .await
+        .map_err(|error| format!("run identity lookup failed: {error}"))?
+        .ok_or_else(|| "run identity is stale".to_string())?;
+    if run.conversation_id != conversation_id {
+        return Err("run identity belongs to a different conversation".to_string());
+    }
+    let active_run = state
+        .app_state
+        .agent_run_repo
+        .get_active_for_conversation(&conversation_id)
+        .await
+        .map_err(|error| format!("active run lookup failed: {error}"))?;
+    if active_run.as_ref().map(|active| &active.id) != Some(&run_id) {
+        return Err("run identity is stale or no longer active".to_string());
+    }
+    let harness = run
+        .harness
+        .ok_or_else(|| "run identity has no authoritative harness".to_string())?;
+    Ok(Some(SkillUsageAttribution::ExactRun {
+        conversation_id: conversation_id.as_str().to_string(),
+        agent_run_id: run_id.as_str().to_string(),
+        provider_harness: harness.to_string(),
+        stage: Some(skill.stage.clone()),
+        bucket: Some(skill.bucket.clone()),
+    }))
 }
 
 pub async fn approve_project_skill(

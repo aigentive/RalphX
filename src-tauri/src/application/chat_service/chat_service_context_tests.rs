@@ -972,6 +972,16 @@ async fn c1_fresh_recovery_and_resume_builders_inject_for_both_harnesses() {
         .await
         .expect("fresh launch should build");
         let fresh_prompt = c1_spawnable_prompt(launch_spawnable(&launch));
+        let expected_fresh_names = if harness == AgentHarnessKind::Claude {
+            vec!["learned:skill-execution"]
+        } else {
+            vec!["learned:skill-current-claude", "learned:skill-execution"]
+        };
+        assert_eq!(
+            launch.injected_skill_names(),
+            expected_fresh_names,
+            "fresh {harness} launch should expose every currently eligible C1 name"
+        );
         assert!(fresh_prompt.contains("skill-execution"));
         assert!(!fresh_prompt.contains("skill-staged"));
         assert!(!fresh_prompt.contains("skill-review"));
@@ -1015,6 +1025,16 @@ async fn c1_fresh_recovery_and_resume_builders_inject_for_both_harnesses() {
         .await
         .expect("recovery command should build");
         let recovery_prompt = c1_spawnable_prompt(&recovery.spawnable);
+        let mut expected_recovery_names = vec![format!("learned:{retry_skill_id}")];
+        if harness == AgentHarnessKind::Codex {
+            expected_recovery_names.insert(0, "learned:skill-current-claude".to_string());
+        }
+        expected_recovery_names.push("learned:skill-execution".to_string());
+        assert_eq!(
+            recovery.injected_skill_names(),
+            expected_recovery_names,
+            "recovery {harness} command should expose every currently eligible C1 name"
+        );
         assert!(recovery_prompt.contains("skill-execution"));
         assert!(
             recovery_prompt.contains(&retry_skill_id),
@@ -1061,6 +1081,10 @@ async fn c1_fresh_recovery_and_resume_builders_inject_for_both_harnesses() {
         .await
         .expect("resume command should build");
         assert!(c1_spawnable_prompt(&resumed.spawnable).contains("skill-execution"));
+        assert!(resumed
+            .injected_skill_names()
+            .iter()
+            .any(|name| name == "learned:skill-execution"));
 
         let unavailable = build_command_for_harness_with_folder_refs(
             harness,
@@ -1092,6 +1116,7 @@ async fn c1_fresh_recovery_and_resume_builders_inject_for_both_harnesses() {
         .expect("unavailable project skills must not block spawn");
         assert!(!c1_spawnable_prompt(&unavailable.spawnable)
             .contains("<ralphx_learned_skill_citations>"));
+        assert!(unavailable.injected_skill_names().is_empty());
     }
 }
 

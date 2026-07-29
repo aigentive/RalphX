@@ -1587,6 +1587,58 @@ role: project_chat
 }
 
 #[test]
+fn c2_spawnable_carries_exact_pre_execution_skill_names() {
+    let (_dir, root, plugin_dir) = make_temp_project_plugin_dir();
+    let agent_root = root.join("agents/ralphx-chat-project");
+    std::fs::create_dir_all(agent_root.join("shared")).expect("create shared prompt dir");
+    std::fs::write(
+        agent_root.join("agent.yaml"),
+        "name: ralphx-chat-project\nrole: project_chat\n",
+    )
+    .expect("write shared definition");
+    std::fs::write(agent_root.join("shared/prompt.md"), "Project chat prompt")
+        .expect("write shared prompt");
+    let context = PreExecutionLearnedSkillContext {
+        request: LearnedSkillMultiSelectionRequest {
+            project_id: "project-1".to_string(),
+            caller_surface: "ralphx-chat-project".to_string(),
+            stages: vec![LearnedSkillStage::Planning],
+            buckets: vec![LearnedSkillBucket::Planning],
+            touched_paths: Vec::new(),
+            max_skills: 4,
+        },
+        available_skills: vec![learned_skill("skill-planning", "project-1")
+            .with_caller_surfaces(vec!["ralphx-chat-project"])
+            .with_stages(vec![LearnedSkillStage::Planning])
+            .with_buckets(vec![LearnedSkillBucket::Planning])],
+        max_total_chars: 6_000,
+        max_guidance_chars: 400,
+    };
+
+    let spawnable = build_spawnable_profile_command_with_permission_policy_for_test(
+        Path::new("/fake/claude"),
+        &plugin_dir,
+        "Plan the domain change.",
+        Some("ralphx:ralphx-chat-project"),
+        None,
+        Some("<ralphx_agent_persona>Methodical planner</ralphx_agent_persona>"),
+        None,
+        root.as_path(),
+        false,
+        None,
+        None,
+        None,
+        Some(&context),
+        ClaudePermissionPolicy::InheritConfigured,
+        ClaudePromptDelivery::NonInteractive,
+    )
+    .expect("build spawnable");
+
+    assert_eq!(spawnable.injected_skill_names(), ["learned:skill-planning"]);
+    assert!(spawnable.persona_injected());
+}
+
+#[test]
 fn build_spawnable_command_prompt_file_uses_generated_claude_prompt() {
     let (_dir, root, plugin_dir) = make_temp_project_plugin_dir();
     let agent_root = root.join("agents/ralphx-general-worker");

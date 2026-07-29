@@ -585,33 +585,49 @@ impl ProjectSkillRepository for SqliteProjectSkillRepository {
 #[async_trait]
 impl SkillUsageEventRepository for SqliteSkillUsageEventRepository {
     async fn record(&self, event: SkillUsageEvent) -> AppResult<SkillUsageEvent> {
-        let metadata_json = serde_json::to_string(&event.metadata_json)
-            .map_err(|error| AppError::Database(error.to_string()))?;
-        let saved = event.clone();
+        let mut saved = self.record_batch(vec![event]).await?;
+        saved.pop().ok_or_else(|| {
+            AppError::Database("skill usage batch unexpectedly returned no event".to_string())
+        })
+    }
+
+    async fn record_batch(&self, events: Vec<SkillUsageEvent>) -> AppResult<Vec<SkillUsageEvent>> {
+        let serialized = events
+            .iter()
+            .map(|event| {
+                serde_json::to_string(&event.metadata_json)
+                    .map(|metadata_json| (event.clone(), metadata_json))
+                    .map_err(|error| AppError::Database(error.to_string()))
+            })
+            .collect::<AppResult<Vec<_>>>()?;
+        let saved = events;
         self.db
-            .run(move |conn| {
-                conn.execute(
-                    "INSERT INTO skill_usage_events (
+            .run_transaction(move |conn| {
+                for (event, metadata_json) in serialized {
+                    conn.execute(
+                        "INSERT INTO skill_usage_events (
                         id, project_id, project_skill_id, conversation_id, agent_run_id,
                         provider_harness, stage, bucket, injection_kind, outcome_id,
                         metadata_json, created_at
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-                    rusqlite::params![
-                        saved.id.as_str(),
-                        saved.project_id.as_str(),
-                        saved.project_skill_id.as_str(),
-                        saved.conversation_id,
-                        saved.agent_run_id,
-                        saved.provider_harness,
-                        saved.stage,
-                        saved.bucket,
-                        saved.injection_kind.to_string(),
-                        saved.outcome_id.as_ref().map(|id| id.as_str().to_string()),
-                        metadata_json,
-                        saved.created_at.to_rfc3339(),
-                    ],
-                )?;
-                Ok(event)
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                    ON CONFLICT(id) DO NOTHING",
+                        rusqlite::params![
+                            event.id.as_str(),
+                            event.project_id.as_str(),
+                            event.project_skill_id.as_str(),
+                            event.conversation_id,
+                            event.agent_run_id,
+                            event.provider_harness,
+                            event.stage,
+                            event.bucket,
+                            event.injection_kind.to_string(),
+                            event.outcome_id.as_ref().map(|id| id.as_str().to_string()),
+                            metadata_json,
+                            event.created_at.to_rfc3339(),
+                        ],
+                    )?;
+                }
+                Ok(saved)
             })
             .await
     }

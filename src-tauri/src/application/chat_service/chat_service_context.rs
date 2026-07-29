@@ -363,6 +363,10 @@ impl ProviderSpawnableCommand {
         );
     }
 
+    pub fn injected_skill_names(&self) -> &[String] {
+        self.spawnable.injected_skill_names()
+    }
+
     #[doc(hidden)]
     pub fn persona_injected(&self) -> bool {
         self.spawnable.persona_injected()
@@ -670,6 +674,14 @@ impl ResolvedChatHarnessLaunch {
         match self {
             Self::Interactive { spawnable, .. } | Self::Background { spawnable, .. } => {
                 spawnable.persona_injection_skipped_reason()
+            }
+        }
+    }
+
+    pub fn injected_skill_names(&self) -> &[String] {
+        match self {
+            Self::Interactive { spawnable, .. } | Self::Background { spawnable, .. } => {
+                spawnable.injected_skill_names()
             }
         }
     }
@@ -3435,6 +3447,7 @@ pub async fn build_codex_command(
     );
     let CodexPromptComposition {
         prompt,
+        injected_skill_names,
         persona_injected,
         persona_injection_skipped_reason,
     } = compose_codex_prompt_for_profile_with_learned_skills_and_outcome(
@@ -3494,7 +3507,8 @@ pub async fn build_codex_command(
         conversation_launch_security_class(conversation.context_type, conversation.agent_mode)
             .codex_security_policy(),
     )?
-    .with_persona_injection_outcome(persona_injected, persona_injection_skipped_reason);
+    .with_persona_injection_outcome(persona_injected, persona_injection_skipped_reason)
+    .with_injected_skill_names(injected_skill_names);
     tracing::info!(
         context_type = %conversation.context_type,
         context_id = %conversation.context_id,
@@ -4585,6 +4599,7 @@ pub async fn build_codex_resume_command(
             );
             let CodexPromptComposition {
                 prompt,
+                injected_skill_names,
                 persona_injected,
                 persona_injection_skipped_reason,
             } = compose_codex_prompt_for_profile_with_learned_skills_and_outcome(
@@ -4605,7 +4620,8 @@ pub async fn build_codex_resume_command(
                 conversation_launch_security_class(context_type, effective_mode)
                     .codex_security_policy(),
             )?
-            .with_persona_injection_outcome(persona_injected, persona_injection_skipped_reason);
+            .with_persona_injection_outcome(persona_injected, persona_injection_skipped_reason)
+            .with_injected_skill_names(injected_skill_names);
 
             apply_ralphx_env_vars(
                 &mut spawnable,
@@ -4658,6 +4674,7 @@ pub async fn build_codex_resume_command(
 
             let CodexPromptComposition {
                 prompt,
+                injected_skill_names,
                 persona_injected,
                 persona_injection_skipped_reason,
             } = compose_codex_prompt_for_profile_with_learned_skills_and_outcome(
@@ -4676,7 +4693,8 @@ pub async fn build_codex_resume_command(
                 conversation_launch_security_class(context_type, effective_mode)
                     .codex_security_policy(),
             )?
-            .with_persona_injection_outcome(persona_injected, persona_injection_skipped_reason);
+            .with_persona_injection_outcome(persona_injected, persona_injection_skipped_reason)
+            .with_injected_skill_names(injected_skill_names);
 
             apply_ralphx_env_vars(
                 &mut spawnable,

@@ -1,20 +1,78 @@
 use chrono::{Duration, Utc};
 use serde_json::json;
 
-use super::{MemoryProjectSkillRepository, MemoryTaskOutcomeRepository};
+use super::{
+    MemoryProjectSkillRepository, MemorySkillUsageEventRepository, MemoryTaskOutcomeRepository,
+};
 use crate::domain::entities::{
-    ProjectId, ProjectSkill, ProjectSkillId, ProjectSkillLifecycleStatus, TaskOutcome,
-    TaskOutcomeClass, TaskOutcomeId, TaskOutcomeSource, TaskOutcomeStatus,
+    ProjectId, ProjectSkill, ProjectSkillId, ProjectSkillLifecycleStatus, SkillUsageInjectionKind,
+    TaskOutcome, TaskOutcomeClass, TaskOutcomeId, TaskOutcomeSource, TaskOutcomeStatus,
 };
 use crate::domain::repositories::{
     canonical_terminal_pr_source_ref_id, ProjectSkillMatchedMutation, ProjectSkillRepository,
     ProjectSkillResolutionCommand, ProjectSkillResolutionIntent, ProjectSkillResolutionOutcome,
-    ProjectSkillStagingPolicy, TaskOutcomeRepository, UpsertTaskOutcomeInput,
-    AGENT_WORKSPACE_PR_OUTCOME_SOURCE, TERMINAL_PR_SOURCE_REF_KIND, WORKSPACE_PR_CLOSED_CLASS,
-    WORKSPACE_PR_FAILED_CLASS, WORKSPACE_PR_MERGED_CLASS, WORKSPACE_PR_MERGED_CLEAN_CLASS,
+    ProjectSkillStagingPolicy, SkillUsageEventRepository, SkillUsageListOptions,
+    TaskOutcomeRepository, UpsertTaskOutcomeInput, AGENT_WORKSPACE_PR_OUTCOME_SOURCE,
+    TERMINAL_PR_SOURCE_REF_KIND, WORKSPACE_PR_CLOSED_CLASS, WORKSPACE_PR_FAILED_CLASS,
+    WORKSPACE_PR_MERGED_CLASS, WORKSPACE_PR_MERGED_CLEAN_CLASS,
     WORKSPACE_PR_MERGED_WITH_FOLLOWUPS_CLASS, WORKSPACE_PR_TERMINAL_CLASS,
 };
+use crate::domain::services::learned_skill_substrate::{
+    new_c2_skill_usage_event, SkillUsageAttribution,
+};
 use crate::domain::services::project_skill_resolution::import_title_resolution_identity;
+
+#[tokio::test]
+async fn c2_memory_usage_batch_is_idempotent_and_failure_atomic() {
+    let repo = MemorySkillUsageEventRepository::new();
+    let project_id = ProjectId::from_string("project-1".to_string());
+    let event = new_c2_skill_usage_event(
+        project_id.clone(),
+        ProjectSkillId::from_string("skill-1"),
+        SkillUsageInjectionKind::CompactIndex,
+        SkillUsageAttribution::ExactRun {
+            conversation_id: "conversation-1".to_string(),
+            agent_run_id: "run-1".to_string(),
+            provider_harness: "claude".to_string(),
+            stage: Some("execution".to_string()),
+            bucket: Some("execution".to_string()),
+        },
+    )
+    .unwrap();
+
+    repo.record_batch(vec![event.clone(), event]).await.unwrap();
+    assert_eq!(
+        repo.list_by_project(&project_id, SkillUsageListOptions::default())
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    repo.fail_next_batch_for_test();
+    let second = new_c2_skill_usage_event(
+        project_id.clone(),
+        ProjectSkillId::from_string("skill-2"),
+        SkillUsageInjectionKind::ComposerDirective,
+        SkillUsageAttribution::ExactRun {
+            conversation_id: "conversation-1".to_string(),
+            agent_run_id: "run-2".to_string(),
+            provider_harness: "codex".to_string(),
+            stage: Some("execution".to_string()),
+            bucket: Some("execution".to_string()),
+        },
+    )
+    .unwrap();
+    assert!(repo.record_batch(vec![second]).await.is_err());
+    assert_eq!(
+        repo.list_by_project(&project_id, SkillUsageListOptions::default())
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "failed memory batch must not partially mutate rows"
+    );
+}
 
 fn terminal_outcome(outcome_class: &str, evidence: &str) -> TaskOutcome {
     let now = Utc::now();
