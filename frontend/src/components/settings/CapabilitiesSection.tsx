@@ -1,3 +1,4 @@
+import { Sparkles } from "lucide-react";
 import { toast } from "sonner";
 
 import {
@@ -5,7 +6,7 @@ import {
   useUpdateFeatureFlags,
 } from "@/hooks/useFeatureFlags";
 
-import { ToggleSettingRow } from "./SettingsView.shared";
+import { SectionCard, ToggleSettingRow } from "./SettingsView.shared";
 
 export function CapabilitiesSection() {
   const { data: featureFlags, isPlaceholderData } = useFeatureFlags();
@@ -28,16 +29,12 @@ export function CapabilitiesSection() {
   };
 
   return (
-    <section aria-label="Capabilities" className="space-y-4">
-      <div className="space-y-1">
-        <h2 className="text-sm font-semibold text-[var(--text-primary)]">
-          Agent conversation capabilities
-        </h2>
-        <p className="text-xs leading-relaxed text-[var(--text-secondary)]">
-          These optional Agent capabilities are opt-in and apply across the app.
-        </p>
-      </div>
-
+    <section aria-label="Capabilities">
+      <SectionCard
+        icon={<Sparkles className="h-5 w-5" />}
+        title="Agent conversation capabilities"
+        description="These optional Agent capabilities are opt-in and apply across the app."
+      >
       <ToggleSettingRow
         id="agent-conversation-autopilot"
         label="Autopilot"
@@ -75,10 +72,11 @@ export function CapabilitiesSection() {
         }
       />
 
-      <p className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-2 text-xs leading-relaxed text-[var(--text-secondary)]">
+      <p className="mt-3 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-2 text-xs leading-relaxed text-[var(--text-secondary)]">
         Codex Ultra is availability-driven and selected per conversation. It
         uses provider-native subagents and can dramatically increase usage.
       </p>
+      </SectionCard>
     </section>
   );
 }

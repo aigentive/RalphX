@@ -15,7 +15,7 @@ export function PersonasEnableToggle({
     <ToggleSettingRow
       id="agent-personas-enabled"
       label="Enable Agent Personas"
-      description="Conversation-bound behavior profiles for Project Agent conversations. Experimental."
+      description="Turn on persona selection for new Project Agent conversations. Experimental."
       checked={enabled}
       disabled={pending}
       onChange={onEnabledChange}

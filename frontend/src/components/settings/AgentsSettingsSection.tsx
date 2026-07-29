@@ -148,14 +148,14 @@ export function AgentsSettingsSection() {
   return (
     <SectionCard
       icon={<Bot className="h-5 w-5" />}
-      title="Agents"
+      title="Role defaults"
       description="Configure new-run behavior and backend-owned defaults for every agent role."
     >
       <div className="agents-settings-content space-y-4">
         <SelectSettingRow
           id="agent-default-start-mode"
           label="Default new-run mode"
-          description="Choose the mode selected when you open Agents > New run"
+          description="Choose the mode selected when you open Agents > New run."
           value={defaultStartMode}
           options={DEFAULT_START_MODE_OPTIONS}
           disabled={false}

@@ -7,9 +7,9 @@ const SETTINGS_SECTION_VISUALS = [
   { id: "models", heading: "Models" },
   { id: "repository", heading: "Repository" },
   { id: "project-analysis", heading: "Setup & Validation" },
-  { id: "agents", heading: "Agents" },
-  { id: "tasks", heading: "Tasks" },
-  { id: "planning", heading: "Planning" },
+  { id: "agents", heading: "Role defaults" },
+  { id: "tasks", heading: "Task policies" },
+  { id: "planning", heading: "Plan verification" },
   { id: "github", heading: "GitHub" },
   { id: "api-keys", heading: "API Keys" },
   { id: "mcp", heading: "MCP" },
@@ -269,7 +269,7 @@ test.describe("Settings Dialog", () => {
   test("matches populated Agents expanded editor", async ({ page }) => {
     settingsPage = new SettingsPage(page);
     await settingsPage.openViaStore("agents");
-    await settingsPage.waitForSection("agents", "Agents");
+    await settingsPage.waitForSection("agents", "Role defaults");
     await settingsPage.settingsDialog
       .getByTestId("agent-family-row")
       .first()
@@ -292,7 +292,7 @@ test.describe("Settings Dialog", () => {
     await page.setViewportSize({ width: 760, height: 900 });
     settingsPage = new SettingsPage(page);
     await settingsPage.openViaStore("agents");
-    await settingsPage.waitForSection("agents", "Agents");
+    await settingsPage.waitForSection("agents", "Role defaults");
     await expect(
       settingsPage.settingsDialog.getByTestId("agent-family-row").first(),
     ).toBeVisible({ timeout: 10000 });

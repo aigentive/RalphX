@@ -1371,6 +1371,12 @@ input[data-agent-sidebar-search="true"]:focus-visible {
   font-family: inherit;
 }
 
+/* Search fields with a leading icon: the unlayered padding above outranks
+   Tailwind's layered pl-8 utility, so restate the icon inset here. */
+.settings-input.pl-8 {
+  padding-left: 2rem;
+}
+
 .settings-input:hover,
 .settings-select:hover {
   border-color: var(--dialog-control-border-hover) !important;
@@ -1394,15 +1400,21 @@ input[data-agent-sidebar-search="true"]:focus-visible {
 }
 
 /* The shadcn default knob paints `bg-background`, which is near-invisible on
-   the dark unchecked track; use an explicit knob token instead. */
+   the dark unchecked track; use an explicit knob token instead. Tailwind v4
+   translate utilities set the CSS `translate` property (not `transform`), so
+   both must be pinned here or the knob gets the utility offset on top of ours
+   and overhangs the track. */
 .settings-toggle > span {
   width: 18px !important;
   height: 18px !important;
+  margin-left: 2px;
   background-color: var(--dialog-toggle-knob-bg) !important;
+  transform: none !important;
+  translate: 0 0 !important;
 }
 
 .settings-toggle[data-state="checked"] > span {
-  transform: translateX(18px) !important;
+  translate: 18px 0 !important;
 }
 
 .settings-toggle[data-state="checked"] {

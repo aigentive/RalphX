@@ -123,7 +123,7 @@ describe("IdeationSettingsPanel", () => {
       expect(screen.getByText("Queue missing verification on acceptance")).toBeInTheDocument();
       expect(
         screen.getByText(
-          "After a successful Plan-mode Agent response, queue a visible Verify Plan turn in the same conversation",
+          "After a successful Plan-mode Agent response, queue a visible Verify Plan turn in the same conversation.",
         ),
       ).toBeInTheDocument();
     });

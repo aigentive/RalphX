@@ -387,7 +387,7 @@ describe("AgentsSettingsSection", () => {
     testState.isLoading = true;
     renderSection();
 
-    expect(screen.getByRole("heading", { name: "Agents" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Role defaults" })).toBeInTheDocument();
     expect(screen.getByTestId("agents-settings-loading")).toBeInTheDocument();
     expect(screen.queryByTestId("agent-family-row")).not.toBeInTheDocument();
   });
