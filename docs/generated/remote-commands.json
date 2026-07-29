@@ -2105,6 +2105,18 @@
     {
       "command": "update_agent_lane_settings",
       "reason": "arms-agent-spawn-harness"
+    },
+    {
+      "command": "restart_automation",
+      "reason": "arms-automation-scheduler"
+    },
+    {
+      "command": "retry_automation_plan_judge",
+      "reason": "arms-automation-scheduler"
+    },
+    {
+      "command": "skip_automation_judge",
+      "reason": "arms-automation-scheduler"
     }
   ],
   "facade_ops": [
@@ -3411,6 +3423,300 @@
       "pins": [],
       "scopeConfined": false,
       "target": "crate::commands::methodology_commands::deactivate_methodology"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "list_task_activity_events",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::activity_commands::list_task_activity_events"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "list_session_activity_events",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::activity_commands::list_session_activity_events"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "list_all_activity_events",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::activity_commands::list_all_activity_events"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "count_task_activity_events",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::activity_commands::count_task_activity_events"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "count_session_activity_events",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::activity_commands::count_session_activity_events"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_project_stats",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::metrics_commands::get_project_stats"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_insights_stats",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::metrics_commands::get_insights_stats"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_project_trends",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::metrics_commands::get_project_trends"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_insights_trends",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::metrics_commands::get_insights_trends"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_project_pr_insights",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::metrics_commands::get_project_pr_insights"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_insights_pr_insights",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::metrics_commands::get_insights_pr_insights"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_metrics_config",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::metrics_commands::get_metrics_config"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_task_metrics",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::metrics_commands::get_task_metrics"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_research_presets",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::research_commands::get_research_presets"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_research_process",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::research_commands::get_research_process"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_research_processes",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::research_commands::get_research_processes"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "list_automations",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::automation_commands::list_automations"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_automation",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::automation_commands::get_automation"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "save_metrics_config",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::metrics_commands::save_metrics_config"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "pause_research",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::research_commands::pause_research"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "resume_research",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::research_commands::resume_research"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "stop_research",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::research_commands::stop_research"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "pause_automation",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::automation_commands::pause_automation"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "stop_automation",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::automation_commands::stop_automation"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "cancel_automation_run",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::automation_commands::cancel_automation_run"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "update_automation_settings",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::automation_commands::update_automation_settings"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "restart_automation",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::automation_commands::restart_automation"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "seedsSpawnTriggeringState"
+      ],
+      "class": "agentControl",
+      "command": "resume_automation_run",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::automation_commands::resume_automation_run"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "retry_automation_plan_judge",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::automation_commands::retry_automation_plan_judge"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "skip_automation_judge",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::automation_commands::skip_automation_judge"
     }
   ],
   "ledger": [
@@ -4115,37 +4421,33 @@
       "v1Resolution": "host-denied"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "list_automations",
       "module": "automation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-12 audit: `AutomationService::list_automations`; the service is constructed from AppState Arc clones, reaches no launch resolver, and this path performs no write",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_automation",
       "module": "automation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-12 audit: detail read plus `automation_detail_response_for_state`, whose usage, pipeline and run hydrators all propagate with `?` — no `.ok()` anywhere on the path",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
       "capabilities": [
-        "agentControl"
+        "spawnsProcess"
       ],
-      "class": "agentControl",
+      "class": "elevated",
       "command": "create_automation_draft",
       "module": "automation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-c, hand-traced: create_automation_draft_for_state calls prepare_agent_conversation_workspace_with_setup_mode_and_defaults, which reaches GitService::ref_exists -> run_status -> build_git_command. Setup mode is Deferred, so no worktree is materialised, but the ref probe is an unconditional git launch",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -4154,8 +4456,8 @@
       "class": "agentControl",
       "command": "update_automation_settings",
       "module": "automation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-12 audit: one settings patch; plan_approval_mode and pr_merge_mode are both `parse()`-validated and rejected on a miss. These knobs govern whether a LATER run auto-approves a plan or auto-merges a PR, but they seed no scanned surface value on their own — the run has to already exist and reach that gate",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -4165,8 +4467,8 @@
       "class": "agentControl",
       "command": "pause_automation",
       "module": "automation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-12 audit: one CAS status write to Paused. Authority-reducing — it removes the Active value the automation scheduler scans for",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -4198,8 +4500,8 @@
       "class": "agentControl",
       "command": "stop_automation",
       "module": "automation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-12 audit: CAS write to Stopped. The Active write in this body is a ROLLBACK restoring the pre-call value after a failed follow-up, not a fresh arming",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -4209,31 +4511,31 @@
       "class": "agentControl",
       "command": "restart_automation",
       "module": "automation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-12 audit: CAS Stopped->Active. Declared arms-automation-scheduler: Active is the armed value of the automation-active surface, but that surface's only write marker is `reopen_run_corrective`, which this path does not carry, so detector (b) is silent on a write that genuinely re-arms the scheduler",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
       "capabilities": [
-        "agentControl"
+        "spawnsProcess"
       ],
-      "class": "agentControl",
+      "class": "elevated",
       "command": "trigger_automation_run_now",
       "module": "automation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-c, hand-traced: dispatch_automation_run_now_action -> spawn_automation_judge_task -> AutomationJudgeTask::invoke_and_parse_judge -> invoke_automation_utility_agent -> CodexCliClient::spawn_agent, resolving the Codex CLI and, through build_codex_internal_mcp_overrides, the node binary. A real agent spawn",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
-        "agentControl"
+        "spawnsProcess"
       ],
-      "class": "agentControl",
+      "class": "elevated",
       "command": "retry_automation_judge",
       "module": "automation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-c, hand-traced: the SAME dispatch_automation_run_now_action chain as trigger_automation_run_now, genuinely shared rather than inferred, so the identical Codex spawn. Its plan-judge sibling retry_automation_plan_judge does NOT share it and is registered as an arming write instead",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -4242,8 +4544,8 @@
       "class": "agentControl",
       "command": "retry_automation_plan_judge",
       "module": "automation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-12 audit: does NOT spawn inline — unlike its `retry_automation_judge` twin it never reaches dispatch_automation_run_now_action, which is why detector (c) is correctly silent. It instead un-pauses the automation to Active and resets plan_judge_state Failed->None on a run AwaitingPlanApproval, leaving exactly the state the scheduler dispatches a fresh plan judge from. Declared arms-automation-scheduler",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -4253,8 +4555,8 @@
       "class": "agentControl",
       "command": "skip_automation_judge",
       "module": "automation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-12 audit: advances a run past its judge and, when the automation was paused for a failed judge, flips Paused->Active. Skipping the judge is the point: it removes the gate AND restores the scanned Active value. Declared arms-automation-scheduler",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -4264,8 +4566,8 @@
       "class": "agentControl",
       "command": "cancel_automation_run",
       "module": "automation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-12 audit: ownership-checked run cancel via CAS. The trailing sync_goal_items_for_closed_run_without_successor returns unit and absorbs its own repo errors, but it is a derived goal-item projection running AFTER the cancel is durable and returned — it cannot make a failed cancel look successful",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -4281,13 +4583,13 @@
     },
     {
       "capabilities": [
-        "agentControl"
+        "seedsSpawnTriggeringState"
       ],
       "class": "agentControl",
       "command": "resume_automation_run",
       "module": "automation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-12 audit: `reopen_automation_run` re-opens a closed run. Detector (a) AND (b) both fire here — it carries the surface's `reopen_run_corrective` marker — so it is the ONE arming member of this batch that earns SeedsSpawnTriggeringState, which `seeds_spawn_triggering_state_tags_track_detector_b_evidence` defines as detector-(b) evidence. Its three detector-silent siblings take AGENT plus a declared membership instead, the same split batches 10 and 11 used",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -5905,80 +6207,66 @@
       "v1Resolution": "host-denied-spawns-process"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_insights_stats",
       "module": "metrics_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-12 audit: cross-project aggregate query; the only `unwrap_or` defaults an absent timezone/week-start ARGUMENT, never a swallowed Err",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_project_stats",
       "module": "metrics_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-12 audit: project-scoped twin of get_insights_stats, same shape",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_insights_pr_insights",
       "module": "metrics_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-12 audit: PR aggregate read; no write",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_project_pr_insights",
       "module": "metrics_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-12 audit: project-scoped twin of get_insights_pr_insights",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_insights_trends",
       "module": "metrics_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-12 audit: bucketed trend query; no write",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_project_trends",
       "module": "metrics_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-12 audit: project-scoped twin of get_insights_trends",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_metrics_config",
       "module": "metrics_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-12 audit: single `project_metrics_config` row read; 23-node closure, detectors silent, and unlike its writing sibling it never touches the colliding `execute` name",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -5988,8 +6276,8 @@
       "class": "agentControl",
       "command": "save_metrics_config",
       "module": "metrics_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-12 audit: ONE `project_metrics_config` upsert inside a single `db.run`, error propagated. Detector (a) fires on it and the hit is an attribution artifact, not a finding: the bare name `execute` from `conn.execute(..)` resolves to `AgentWorkflowRunner::execute`. Kept at AgentControl regardless — it is a write, and a write is not dropped to Read on a detector verdict in either direction",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -6004,14 +6292,12 @@
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_task_metrics",
       "module": "metrics_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-12 audit: per-task metric read; no write",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -7352,8 +7638,8 @@
       "class": "agentControl",
       "command": "pause_research",
       "module": "research_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-12 audit: guarded Running->Paused entity mutation then one `process_repo` update; a wrong-status caller gets Err, not a silent no-op",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -7363,8 +7649,8 @@
       "class": "agentControl",
       "command": "resume_research",
       "module": "research_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-12 audit: guarded Paused->Running write. Canonicalized with the already registered `start_research`, which reaches the SAME Running value: no production consumer scans for Running ResearchProcess rows — the only reader is startup_cleanup's fail_all_active — so this arms nothing and carries no SeedsSpawnTriggeringState. If a research executor is ever wired, BOTH rows move",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -7374,41 +7660,35 @@
       "class": "agentControl",
       "command": "stop_research",
       "module": "research_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-12 audit: terminal-guarded write recording a user stop; authority-reducing",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_research_processes",
       "module": "research_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-12 audit: list read with an optional status filter that is `parse()?`-rejected on a miss rather than defaulted, so a bad filter cannot silently widen the query",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_research_process",
       "module": "research_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-12 audit: single `process_repo` read; no write",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_research_presets",
       "module": "research_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-12 audit: pure function over ResearchDepthPreset::all(); takes no AppState at all and cannot read or write anything",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -8363,58 +8643,48 @@
       "v1Resolution": "v1-audit-refused"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "list_task_activity_events",
       "module": "activity_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-12 audit: one cursor-paginated `activity_event_repo` read; the limit is clamped to 100 host-side and every error is `map_err(..)?`",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "list_session_activity_events",
       "module": "activity_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-12 audit: the same paginated read keyed by session; no write",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "list_all_activity_events",
       "module": "activity_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-12 audit: unscoped paginated read. Widest reader in the block, but still a read — the filter is the caller's own narrowing and omitting it is already the default",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "count_task_activity_events",
       "module": "activity_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-12 audit: aggregate count; no write",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "count_session_activity_events",
       "module": "activity_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-12 audit: aggregate count; no write",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {

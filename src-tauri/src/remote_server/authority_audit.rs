@@ -513,6 +513,35 @@ impl CallGraph {
         &self.registered_commands
     }
 
+    /// Callees recorded on a node, or on every definition of a bare name.
+    ///
+    /// [`CallGraph::closure`] unions tokens across the whole walk, so it can report THAT a
+    /// launcher was reached but never THROUGH WHICH edge. Exposing the edges lets an audit
+    /// reconstruct the path behind a detector-(c) hit and argue a refusal reason against it.
+    pub fn callees_of(&self, name: &str) -> BTreeSet<String> {
+        if let Some(node) = self.nodes.get(name) {
+            return node.callees.clone();
+        }
+        self.roots_named(name)
+            .iter()
+            .filter_map(|node| self.nodes.get(node))
+            .flat_map(|node| node.callees.iter().cloned())
+            .collect()
+    }
+
+    /// Own-body tokens of a QUALIFIED node, or of every definition of a bare name.
+    ///
+    /// [`CallGraph::own_body_tokens`] resolves bare names only, so walking an edge chain — whose
+    /// intermediate hops are qualified node ids — silently yields an empty token set at every
+    /// hop. Path reconstruction needs the node-keyed lookup that [`CallGraph::callees_of`]
+    /// already does, or it can never attribute a hit to the hop that carried it.
+    pub fn own_tokens_of(&self, name: &str) -> BTreeSet<String> {
+        if let Some(node) = self.nodes.get(name) {
+            return node.tokens.clone();
+        }
+        self.own_body_tokens(name)
+    }
+
     /// The source file a qualified definition node came from.
     pub fn file_of(&self, node: &str) -> Option<&str> {
         self.node_files.get(node).map(String::as_str)

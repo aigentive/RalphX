@@ -5258,3 +5258,489 @@ fn the_registered_twin_pairings_that_justified_the_batch10_registrations_hold() 
         );
     }
 }
+
+// =======================================================================================
+// PR 3.1-b batch 12 — probes
+// =======================================================================================
+
+/// Shortest call path from `root` to a body that itself contains a `PROCESS_LAUNCH_SINKS`
+/// token, using the same bare-name expansion `CallGraph::closure` uses.
+///
+/// `closure()` unions the tokens of every visited node, so detector (c) reports only a
+/// boolean and the *reason* recorded on a refusal row is written by hand. This reconstructs
+/// the edge chain that actually carried the launcher token, so a refusal reason can be argued
+/// against a path instead of a `true` — and so an attribution that rides on a bare-name
+/// collision is visible as such.
+#[cfg(test)]
+fn launcher_paths(graph: &CallGraph, root: &str) -> Vec<Vec<String>> {
+    sink_paths(graph, root, PROCESS_LAUNCH_SINKS)
+}
+
+/// Shortest call paths from `root` to a body whose own tokens name one of `sinks`.
+#[cfg(test)]
+fn sink_paths(graph: &CallGraph, root: &str, sinks: &[&str]) -> Vec<Vec<String>> {
+    use std::collections::VecDeque;
+    let mut queue = VecDeque::new();
+    let mut seen = BTreeSet::new();
+    let mut found: Vec<Vec<String>> = Vec::new();
+    let starts = if graph.definitions_snapshot().contains_key(root) {
+        graph.roots_named(root)
+    } else {
+        std::iter::once(root.to_string()).collect()
+    };
+    for s in starts {
+        queue.push_back(vec![s]);
+    }
+    while let Some(path) = queue.pop_front() {
+        let name = path.last().expect("nonempty").clone();
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        let own: BTreeSet<String> = graph.own_tokens_of(&name);
+        if tokens_reach_any(&own, sinks) {
+            found.push(path.clone());
+            continue;
+        }
+        for callee in graph.callees_of(&name) {
+            let mut next = path.clone();
+            next.push(callee);
+            queue.push_back(next);
+        }
+    }
+    found
+}
+
+/// Attribution evidence for the two scanner errors batch 11 recorded by hand.
+///
+/// Batch 11 asserted that `resolve_manual_role_spawn_settings` is treated as launch-reaching
+/// while terminating in pure DB/YAML, and that `resolve_node_cli_path` is confused with the
+/// `find_node_cli_path` that `git_cmd` reaches through `ensure_resolved_node_bin_in_path`.
+/// Both claims were made from a hand trace, never from the engine. This prints the engine's
+/// own answer so the claims can be confirmed or refuted before anything is "fixed".
+#[test]
+#[ignore = "calibration probe"]
+fn probe_scanner_attribution_bugs() {
+    let graph = CallGraph::build(&load_production_sources());
+    for subject in [
+        "resolve_manual_role_spawn_settings",
+        "ensure_resolved_node_bin_in_path",
+        "resolved_node_bin_dir",
+        "find_node_cli_path",
+        "git_cmd",
+    ] {
+        let defs = graph.definitions_snapshot().get(subject).cloned();
+        let closure = graph.closure([subject.to_string()]);
+        let c = tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS);
+        let launchers = closure
+            .tokens
+            .iter()
+            .filter(|t| {
+                tokens_reach_any(&std::iter::once((*t).clone()).collect(), PROCESS_LAUNCH_SINKS)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        eprintln!(
+            "PROBE-ATTR {subject} defs={:?} visited={} c={c} launchers={launchers:?}",
+            defs,
+            closure.visited.len()
+        );
+        for path in launcher_paths(&graph, subject).iter().take(6) {
+            eprintln!("PROBE-ATTR   path: {}", path.join(" -> "));
+        }
+    }
+}
+
+/// Positive control for [`launcher_paths`] plus the census `B5`/`B7` module sweep.
+///
+/// The control matters more than the sweep: [`probe_scanner_attribution_bugs`] reports that
+/// NEITHER helper batch 11 named as a scanner error reaches a launcher when taken as a root,
+/// which would make the engine correct and batch 11's *diagnosis* wrong. That conclusion is
+/// only worth anything if `launcher_paths` can find a path when one exists, so this prints the
+/// real edge chain for B4 members batch 11 refused on a hand trace.
+#[test]
+#[ignore = "calibration probe"]
+fn probe_b5_b7_module_batch_audit() {
+    const CONTROL: &[&str] = &[
+        "create_ideation_session",
+        "activate_agent_task_pipeline",
+        "apply_proposals_to_kanban",
+        "copy_agent_conversation_plan",
+    ];
+    const MODULES: &[&str] = &[
+        "activity_commands",
+        "automation_commands",
+        "metrics_commands",
+        "research_commands",
+        "artifact_commands",
+        "notification_commands",
+        "release_notes_commands",
+        "task_context_commands",
+        "ui_commands",
+        "update_channel_commands",
+    ];
+    let graph = CallGraph::build(&load_production_sources());
+    let rows = census();
+    let commands = rows.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>();
+    let detector_b = spawn_triggering_writers(&graph, commands, SPAWN_TRIGGERING_STATE_SURFACE);
+
+    for command in CONTROL {
+        let closure = graph.closure([(*command).to_string()]);
+        let c = tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS);
+        eprintln!("PROBE-CTRL {command} c={c}");
+        for path in launcher_paths(&graph, command).iter().take(3) {
+            eprintln!("PROBE-CTRL   path: {}", path.join(" -> "));
+        }
+    }
+
+    for (command, module) in &rows {
+        if !MODULES.contains(&module.as_str()) {
+            continue;
+        }
+        let closure = graph.closure([command.clone()]);
+        let a = closure_is_arming(&closure);
+        let b = detector_b.contains(command);
+        let c = tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS);
+        let row = policy_for(command, module).expect("ledgered");
+        eprintln!(
+            "PROBE-B57 {module} {command} a={a} b={b} c={c} class={:?} caps={:?} registered={}",
+            row.class,
+            row.capabilities,
+            find_spec(command).is_some(),
+        );
+        if c {
+            let launchers = closure
+                .tokens
+                .iter()
+                .filter(|t| {
+                    tokens_reach_any(&std::iter::once((*t).clone()).collect(), PROCESS_LAUNCH_SINKS)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            eprintln!("PROBE-B57   launchers={launchers:?}");
+            for path in launcher_paths(&graph, command).iter().take(3) {
+                eprintln!("PROBE-B57   path: {}", path.join(" -> "));
+            }
+        }
+    }
+}
+
+/// Detector-(a) evidence for `save_metrics_config`.
+///
+/// The sweep reports detector (a) firing on a command whose body is a single
+/// `project_metrics_config` upsert. A pure settings write that reads as "arming" is either a
+/// real transitive edge into a transition sink or an attribution artifact, and registering
+/// over it either way would be registering over a boolean. This prints the sink hits and their
+/// named targets so the answer is a path.
+#[test]
+#[ignore = "calibration probe"]
+fn probe_save_metrics_config_arming_evidence() {
+    let graph = CallGraph::build(&load_production_sources());
+    for command in ["save_metrics_config", "get_metrics_config", "get_task_metrics"] {
+        let closure = graph.closure([command.to_string()]);
+        eprintln!(
+            "PROBE-MET {command} arming={} visited={}",
+            closure_is_arming(&closure),
+            closure.visited.len()
+        );
+        for hit in &closure.sink_hits {
+            eprintln!("PROBE-MET   sink={} targets={:?}", hit.sink, hit.targets);
+        }
+        for path in sink_paths(&graph, command, &["send_message"]).iter().take(2) {
+            eprintln!("PROBE-MET   path: {}", path.join(" -> "));
+        }
+    }
+}
+
+/// PR 3.1-b batch 12 — the census `B5` block (activity, automation, metrics, research).
+///
+/// Same contract as [`batch11_closes_the_b4_remainder`]: every one of the 33 ratchet members is
+/// named with its disposition, and the detector-(c) floor is RE-MEASURED per member so a
+/// registered member that grows a launch path and a refused member that loses one both fail
+/// loudly rather than drifting.
+///
+/// The block's own character is different from B4's, and the table records it. B4 was carried by
+/// a large family of pure reads; `automation_commands` is the densest arming surface in the
+/// census, and four of its members flip `automations.status` to `Active` — the armed value the
+/// `automation-active` state surface names — while carrying none of that surface's write
+/// markers. Those four are pinned as [`Arming`] so a future edit that drops the capability or
+/// the declaration fails here.
+#[test]
+fn batch12_closes_the_b5_block() {
+    #[derive(PartialEq, Eq, Clone, Copy, Debug)]
+    enum Disposition {
+        /// Registered `Read`/no-capability on a body audit that found no write.
+        Read,
+        /// Registered `AgentControl` — a writer a silent detector never licenses dropping.
+        Agent,
+        /// Registered `AgentControl` + `SeedsSpawnTriggeringState`: writes the armed value of
+        /// a scanned surface AND is flagged by detector (b), which is what that capability
+        /// asserts (see `seeds_spawn_triggering_state_tags_track_detector_b_evidence`).
+        ArmingDetected,
+        /// Registered `AgentControl` + a `DECLARED_MEMBERSHIPS` row: arms just as really, but
+        /// invisibly to detector (b), so it may NOT claim the evidence capability.
+        ArmingDeclared,
+        /// `host-denied-spawns-process`, hand-traced to a concrete launch.
+        Floor,
+    }
+    use Disposition::*;
+
+    const TABLE: &[(&str, &str, Disposition)] = &[
+        // --- activity_commands: five cursor-paginated reads, every error `map_err(..)?` ------
+        ("list_task_activity_events", "activity_commands", Read),
+        ("list_session_activity_events", "activity_commands", Read),
+        ("list_all_activity_events", "activity_commands", Read),
+        ("count_task_activity_events", "activity_commands", Read),
+        ("count_session_activity_events", "activity_commands", Read),
+        // --- metrics_commands: eight aggregate reads plus one settings upsert ---------------
+        ("get_insights_stats", "metrics_commands", Read),
+        ("get_project_stats", "metrics_commands", Read),
+        ("get_insights_pr_insights", "metrics_commands", Read),
+        ("get_project_pr_insights", "metrics_commands", Read),
+        ("get_insights_trends", "metrics_commands", Read),
+        ("get_project_trends", "metrics_commands", Read),
+        ("get_metrics_config", "metrics_commands", Read),
+        ("get_task_metrics", "metrics_commands", Read),
+        ("save_metrics_config", "metrics_commands", Agent),
+        // --- research_commands: three reads and three status writes that arm nothing --------
+        ("get_research_presets", "research_commands", Read),
+        ("get_research_process", "research_commands", Read),
+        ("get_research_processes", "research_commands", Read),
+        ("pause_research", "research_commands", Agent),
+        ("resume_research", "research_commands", Agent),
+        ("stop_research", "research_commands", Agent),
+        // --- automation_commands: two reads --------------------------------------------------
+        ("list_automations", "automation_commands", Read),
+        ("get_automation", "automation_commands", Read),
+        // --- automation_commands: brakes and settings, no `Active` write ---------------------
+        ("pause_automation", "automation_commands", Agent),
+        ("stop_automation", "automation_commands", Agent),
+        ("cancel_automation_run", "automation_commands", Agent),
+        ("update_automation_settings", "automation_commands", Agent),
+        // --- automation_commands: the four that write `AutomationStatus::Active` ------------
+        ("resume_automation_run", "automation_commands", ArmingDetected),
+        ("restart_automation", "automation_commands", ArmingDeclared),
+        ("retry_automation_plan_judge", "automation_commands", ArmingDeclared),
+        ("skip_automation_judge", "automation_commands", ArmingDeclared),
+        // --- the floor: each hand-traced to a concrete launch, not taken on the boolean -----
+        ("create_automation_draft", "automation_commands", Floor),
+        ("trigger_automation_run_now", "automation_commands", Floor),
+        ("retry_automation_judge", "automation_commands", Floor),
+    ];
+
+    let graph = CallGraph::build(&load_production_sources());
+
+    for (command, module, disposition) in TABLE {
+        let row = policy_for(command, module)
+            .unwrap_or_else(|| panic!("`{command}` must be ledgered by batch 12"));
+
+        // (1) The floor, re-measured per member.
+        let closure = graph.closure([(*command).to_string()]);
+        let reaches_launch = tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS);
+        if *disposition == Floor {
+            assert!(
+                reaches_launch,
+                "`{command}` is classified host-denied-spawns-process but no longer reaches a \
+                 process-launch sink; the claim is now false and the row must be re-audited"
+            );
+        } else {
+            assert!(
+                !reaches_launch,
+                "`{command}` now reaches a process-launch sink; the absolute floor forecloses \
+                 every v1 scope, so its batch-12 disposition is void"
+            );
+        }
+
+        // (2) A member whose class moved may not keep the placeholder meaning "no audit done".
+        assert!(
+            !row.reason.contains("conservative-module-default"),
+            "`{command}` changed class but carries the module-default reason; every batch-12 \
+             reclassification must record the audit that bought it"
+        );
+
+        match disposition {
+            Read => {
+                assert_eq!(row.class, RiskClass::Read, "`{command}` must be Read");
+                assert!(
+                    row.capabilities.is_empty(),
+                    "`{command}` is a Read row and must carry no capability"
+                );
+                assert!(
+                    find_spec(command).is_some(),
+                    "`{command}` audited clean and must be registered"
+                );
+            }
+            Agent => {
+                assert_eq!(
+                    row.class,
+                    RiskClass::AgentControl,
+                    "`{command}` writes; a silent detector never licenses dropping it to Read"
+                );
+                assert!(
+                    !row.capabilities.contains(&Capability::SeedsSpawnTriggeringState),
+                    "`{command}` is pinned as a non-arming write; if it now seeds a scanned \
+                     surface it must move to the Arming rows and declare its membership"
+                );
+                let spec = find_spec(command)
+                    .unwrap_or_else(|| panic!("`{command}` audited clean and must be registered"));
+                assert_eq!(spec.class, RiskClass::AgentControl);
+            }
+            ArmingDetected => {
+                assert_eq!(
+                    row.class,
+                    RiskClass::AgentControl,
+                    "`{command}` arms a background loop and stays at AgentControl"
+                );
+                assert!(
+                    row.capabilities
+                        .contains(&Capability::SeedsSpawnTriggeringState),
+                    "`{command}` is detector-(b) visible and must record that evidence as \
+                     SeedsSpawnTriggeringState"
+                );
+                assert!(
+                    find_spec(command).is_some(),
+                    "`{command}` audited clean and must be registered"
+                );
+            }
+            ArmingDeclared => {
+                assert_eq!(
+                    row.class,
+                    RiskClass::AgentControl,
+                    "`{command}` arms a background loop and stays at AgentControl"
+                );
+                // The capability is an EVIDENCE tag, not a severity dial. Claiming it without
+                // detector (b) behind it is the exact forgery
+                // `seeds_spawn_triggering_state_tags_track_detector_b_evidence` forbids, so an
+                // invisibly-arming write buys its honesty with a declaration instead.
+                assert!(
+                    !row.capabilities
+                        .contains(&Capability::SeedsSpawnTriggeringState),
+                    "`{command}` arms invisibly to detector (b) and must NOT claim the evidence \
+                     capability; it carries a DECLARED_MEMBERSHIPS row instead"
+                );
+                assert!(
+                    find_spec(command).is_some(),
+                    "`{command}` audited clean and must be registered"
+                );
+            }
+            Floor => {
+                assert_eq!(
+                    row.class,
+                    RiskClass::Elevated,
+                    "`{command}` reaches a launch; Elevated is the only class permitting \
+                     SpawnsProcess"
+                );
+                assert_eq!(row.capabilities, &[Capability::SpawnsProcess]);
+                assert!(
+                    row.reason.starts_with("detector-c"),
+                    "`{command}` must state the finding that justifies the class"
+                );
+                assert!(
+                    find_spec(command).is_none(),
+                    "`{command}` is host-denied and must not be registered"
+                );
+                assert_eq!(
+                    ralphx_remote_protocol::v1_resolution_with_audit(
+                        row.class,
+                        row.capabilities,
+                        audit_refusal_for(command).is_some(),
+                    ),
+                    ralphx_remote_protocol::V1Resolution::HostDeniedSpawnsProcess,
+                );
+            }
+        }
+    }
+
+    // The three arming writes NO detector models. `resume_automation_run` is deliberately absent:
+    // detector (b) already fires on it, so it needs the capability but not a declaration — the
+    // same split `resume_automation` already carries.
+    for command in [
+        "restart_automation",
+        "retry_automation_plan_judge",
+        "skip_automation_judge",
+    ] {
+        let declared = DECLARED_MEMBERSHIPS
+            .iter()
+            .any(|(name, _)| *name == command);
+        assert!(
+            declared,
+            "`{command}` flips automations.status to Active — the armed value \
+             spawn_automation_scheduler scans — through a surface detector (b) does not watch, \
+             and must declare its membership"
+        );
+    }
+}
+
+/// PR 3.1-b batch 12 — what the detector call graph actually attributes, pinned.
+///
+/// Batch 11 recorded two scanner errors as fact, in a commit message, a tracker and twelve
+/// ledger reasons: that `resolve_manual_role_spawn_settings` is treated as launch-reaching when
+/// it terminates in pure DB/YAML, and that `resolve_node_cli_path` is confused with the
+/// `find_node_cli_path` that `git_cmd` reaches via `ensure_resolved_node_bin_in_path`. Both were
+/// hand-traced conclusions about the engine that were never put TO the engine.
+///
+/// Neither reproduces. Both helpers are launch-free by the engine's own measurement, so the
+/// engine agreed with batch 11's trace all along and the diagnosis attributed a real symptom to
+/// the wrong cause. The `codex`/`node` tokens batch 11 called artifacts are real, and arrive
+/// through `CodexCliClient::spawn_agent`.
+///
+/// The genuine over-attribution is a THIRD mechanism neither batch named: callees resolve by
+/// bare name, so `conn.execute(..)` in a one-statement SQL upsert binds to
+/// `AgentWorkflowRunner::execute` and pulls the entire workflow runner — and a `send_message`
+/// steer sink — into the closure.
+///
+/// This is pinned rather than fixed, deliberately. Narrowing bare-name resolution REMOVES edges,
+/// and edges are what the detector-(c) floor is measured from; a graph that resolves fewer
+/// callees would un-refuse commands batches 7-11 already dispositioned on the wider graph, which
+/// is a safety regression dressed as a bug fix. The collision is recorded here so the next batch
+/// reads a measured limit instead of re-deriving a folk explanation.
+#[test]
+fn batch12_detector_attribution_limits_are_measured_not_assumed() {
+    let graph = CallGraph::build(&load_production_sources());
+
+    // (1) Batch 11's two named "scanner errors" do not reproduce.
+    for helper in [
+        "resolve_manual_role_spawn_settings",
+        "ensure_resolved_node_bin_in_path",
+        "resolved_node_bin_dir",
+        "find_node_cli_path",
+    ] {
+        let closure = graph.closure([helper.to_string()]);
+        assert!(
+            !tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS),
+            "`{helper}` reaches a process-launch sink as a root. Batch 11 recorded the OPPOSITE \
+             as a scanner bug; if this now fires, the twelve batch-11 detector-(c) reasons that \
+             call codex/node tokens `artifacts` have to be re-derived rather than inherited"
+        );
+    }
+
+    // (2) The real over-attribution: a bare-name collision on an ultra-common method name.
+    let upsert = graph.closure(["save_metrics_config".to_string()]);
+    assert!(
+        upsert.visited.len() > 500,
+        "`save_metrics_config` is one `conn.execute` upsert but its closure was measured at 1200 \
+         nodes through the bare name `execute`. A sharp drop means callee resolution changed, \
+         which moves the detector-(c) floor for every previously dispositioned batch"
+    );
+    assert!(
+        upsert
+            .visited
+            .iter()
+            .any(|node| node.ends_with("AgentWorkflowRunner::execute")),
+        "the `execute` collision that makes detector (a) fire on a settings upsert is the \
+         measured reason that row is annotated; if it is gone, re-audit the row instead of \
+         keeping the annotation"
+    );
+    // ...and it is an (a)-only artifact: no launch sink rides in on it.
+    assert!(
+        !tokens_reach_any(&upsert.tokens, PROCESS_LAUNCH_SINKS),
+        "`save_metrics_config` now reaches a launch sink; it is registered and that forecloses it"
+    );
+
+    // (3) The collision does NOT reach the sibling read, which is why one is Read and one is not.
+    let read = graph.closure(["get_metrics_config".to_string()]);
+    assert!(
+        read.visited.len() < 100,
+        "`get_metrics_config` was measured at 23 nodes; if it has grown into the workflow runner \
+         its Read classification is no longer supported by its own body"
+    );
+}

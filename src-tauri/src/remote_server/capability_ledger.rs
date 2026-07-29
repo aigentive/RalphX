@@ -1991,6 +1991,258 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
          on the caller's `enabled` argument and the prior Disabled state. Its read sibling \
          get_tasks_disable_impact is registered; the writer is foreclosed at every v1 scope",
     ),
+    //
+    // ---- PR 3.1-b batch 12 — census B5 (activity, automation, metrics, research) -----------
+    //
+    // Every row below replaces an `agent_default` placeholder with a reviewed reason. The block
+    // is NOT shaped like B4's: `automation_commands` is the densest arming surface in the census
+    // and contributes both the batch's whole floor and all four of its arming writes, while
+    // `activity_commands` and `metrics_commands` are aggregate readers with no write at all.
+    //
+    // The reads. Dropped to `Read`/NONE on a body audit that found no repository write — never
+    // on detector silence, which this batch has particular reason not to trust: detector (a)
+    // fires on `save_metrics_config`, whose entire body is one `project_metrics_config` upsert,
+    // because the bare name `execute` in `conn.execute(..)` resolves to
+    // `AgentWorkflowRunner::execute` and drags 1200 nodes and a `send_message` sink in behind it.
+    // See `probe_save_metrics_config_arming_evidence`.
+    read_audit(
+        "list_task_activity_events",
+        "batch-12 audit: one cursor-paginated `activity_event_repo` read; the limit is clamped \
+         to 100 host-side and every error is `map_err(..)?`",
+    ),
+    read_audit(
+        "list_session_activity_events",
+        "batch-12 audit: the same paginated read keyed by session; no write",
+    ),
+    read_audit(
+        "list_all_activity_events",
+        "batch-12 audit: unscoped paginated read. Widest reader in the block, but still a read — \
+         the filter is the caller's own narrowing and omitting it is already the default",
+    ),
+    read_audit(
+        "count_task_activity_events",
+        "batch-12 audit: aggregate count; no write",
+    ),
+    read_audit(
+        "count_session_activity_events",
+        "batch-12 audit: aggregate count; no write",
+    ),
+    read_audit(
+        "get_insights_stats",
+        "batch-12 audit: cross-project aggregate query; the only `unwrap_or` defaults an absent \
+         timezone/week-start ARGUMENT, never a swallowed Err",
+    ),
+    read_audit(
+        "get_project_stats",
+        "batch-12 audit: project-scoped twin of get_insights_stats, same shape",
+    ),
+    read_audit(
+        "get_insights_pr_insights",
+        "batch-12 audit: PR aggregate read; no write",
+    ),
+    read_audit(
+        "get_project_pr_insights",
+        "batch-12 audit: project-scoped twin of get_insights_pr_insights",
+    ),
+    read_audit(
+        "get_insights_trends",
+        "batch-12 audit: bucketed trend query; no write",
+    ),
+    read_audit(
+        "get_project_trends",
+        "batch-12 audit: project-scoped twin of get_insights_trends",
+    ),
+    read_audit(
+        "get_metrics_config",
+        "batch-12 audit: single `project_metrics_config` row read; 23-node closure, detectors \
+         silent, and unlike its writing sibling it never touches the colliding `execute` name",
+    ),
+    read_audit(
+        "get_task_metrics",
+        "batch-12 audit: per-task metric read; no write",
+    ),
+    read_audit(
+        "get_research_presets",
+        "batch-12 audit: pure function over ResearchDepthPreset::all(); takes no AppState at all \
+         and cannot read or write anything",
+    ),
+    read_audit(
+        "get_research_process",
+        "batch-12 audit: single `process_repo` read; no write",
+    ),
+    read_audit(
+        "get_research_processes",
+        "batch-12 audit: list read with an optional status filter that is `parse()?`-rejected on \
+         a miss rather than defaulted, so a bad filter cannot silently widen the query",
+    ),
+    read_audit(
+        "list_automations",
+        "batch-12 audit: `AutomationService::list_automations`; the service is constructed from \
+         AppState Arc clones, reaches no launch resolver, and this path performs no write",
+    ),
+    read_audit(
+        "get_automation",
+        "batch-12 audit: detail read plus `automation_detail_response_for_state`, whose usage, \
+         pipeline and run hydrators all propagate with `?` — no `.ok()` anywhere on the path",
+    ),
+    //
+    // The writers. Registered at `ui:agent`, never dropped to Read on detector silence.
+    CommandOverride {
+        command: "save_metrics_config",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-12 audit: ONE `project_metrics_config` upsert inside a single `db.run`, error \
+             propagated. Detector (a) fires on it and the hit is an attribution artifact, not a \
+             finding: the bare name `execute` from `conn.execute(..)` resolves to \
+             `AgentWorkflowRunner::execute`. Kept at AgentControl regardless — it is a write, and \
+             a write is not dropped to Read on a detector verdict in either direction",
+        ),
+    },
+    CommandOverride {
+        command: "pause_research",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-12 audit: guarded Running->Paused entity mutation then one `process_repo` \
+             update; a wrong-status caller gets Err, not a silent no-op",
+        ),
+    },
+    CommandOverride {
+        command: "resume_research",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-12 audit: guarded Paused->Running write. Canonicalized with the already \
+             registered `start_research`, which reaches the SAME Running value: no production \
+             consumer scans for Running ResearchProcess rows — the only reader is \
+             startup_cleanup's fail_all_active — so this arms nothing and carries no \
+             SeedsSpawnTriggeringState. If a research executor is ever wired, BOTH rows move",
+        ),
+    },
+    CommandOverride {
+        command: "stop_research",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-12 audit: terminal-guarded write recording a user stop; authority-reducing",
+        ),
+    },
+    CommandOverride {
+        command: "pause_automation",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-12 audit: one CAS status write to Paused. Authority-reducing — it removes the \
+             Active value the automation scheduler scans for",
+        ),
+    },
+    CommandOverride {
+        command: "stop_automation",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-12 audit: CAS write to Stopped. The Active write in this body is a ROLLBACK \
+             restoring the pre-call value after a failed follow-up, not a fresh arming",
+        ),
+    },
+    CommandOverride {
+        command: "cancel_automation_run",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-12 audit: ownership-checked run cancel via CAS. The trailing \
+             sync_goal_items_for_closed_run_without_successor returns unit and absorbs its own \
+             repo errors, but it is a derived goal-item projection running AFTER the cancel is \
+             durable and returned — it cannot make a failed cancel look successful",
+        ),
+    },
+    CommandOverride {
+        command: "update_automation_settings",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-12 audit: one settings patch; plan_approval_mode and pr_merge_mode are both \
+             `parse()`-validated and rejected on a miss. These knobs govern whether a LATER run \
+             auto-approves a plan or auto-merges a PR, but they seed no scanned surface value on \
+             their own — the run has to already exist and reach that gate",
+        ),
+    },
+    //
+    // The four arming writes: each flips `automations.status` to Active, the armed value the
+    // `automation-active` state surface names and `spawn_automation_scheduler` scans.
+    CommandOverride {
+        command: "restart_automation",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-12 audit: CAS Stopped->Active. Declared arms-automation-scheduler: Active is \
+             the armed value of the automation-active surface, but that surface's only write \
+             marker is `reopen_run_corrective`, which this path does not carry, so detector (b) \
+             is silent on a write that genuinely re-arms the scheduler",
+        ),
+    },
+    CommandOverride {
+        command: "resume_automation_run",
+        policy: policy(
+            RiskClass::AgentControl,
+            SEEDS_STATE,
+            "batch-12 audit: `reopen_automation_run` re-opens a closed run. Detector (a) AND (b) \
+             both fire here — it carries the surface's `reopen_run_corrective` marker — so it is \
+             the ONE arming member of this batch that earns SeedsSpawnTriggeringState, which \
+             `seeds_spawn_triggering_state_tags_track_detector_b_evidence` defines as detector-(b) \
+             evidence. Its three detector-silent siblings take AGENT plus a declared membership \
+             instead, the same split batches 10 and 11 used",
+        ),
+    },
+    CommandOverride {
+        command: "retry_automation_plan_judge",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-12 audit: does NOT spawn inline — unlike its `retry_automation_judge` twin it \
+             never reaches dispatch_automation_run_now_action, which is why detector (c) is \
+             correctly silent. It instead un-pauses the automation to Active and resets \
+             plan_judge_state Failed->None on a run AwaitingPlanApproval, leaving exactly the \
+             state the scheduler dispatches a fresh plan judge from. Declared \
+             arms-automation-scheduler",
+        ),
+    },
+    CommandOverride {
+        command: "skip_automation_judge",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-12 audit: advances a run past its judge and, when the automation was paused \
+             for a failed judge, flips Paused->Active. Skipping the judge is the point: it \
+             removes the gate AND restores the scanned Active value. Declared \
+             arms-automation-scheduler",
+        ),
+    },
+    //
+    // The batch-12 floor. Three members, each hand-traced to a concrete launch through the
+    // reconstructed call path rather than accepted on detector (c)'s boolean.
+    process_refusal(
+        "create_automation_draft",
+        "detector-c, hand-traced: create_automation_draft_for_state calls \
+         prepare_agent_conversation_workspace_with_setup_mode_and_defaults, which reaches \
+         GitService::ref_exists -> run_status -> build_git_command. Setup mode is Deferred, so \
+         no worktree is materialised, but the ref probe is an unconditional git launch",
+    ),
+    process_refusal(
+        "trigger_automation_run_now",
+        "detector-c, hand-traced: dispatch_automation_run_now_action -> \
+         spawn_automation_judge_task -> AutomationJudgeTask::invoke_and_parse_judge -> \
+         invoke_automation_utility_agent -> CodexCliClient::spawn_agent, resolving the Codex CLI \
+         and, through build_codex_internal_mcp_overrides, the node binary. A real agent spawn",
+    ),
+    process_refusal(
+        "retry_automation_judge",
+        "detector-c, hand-traced: the SAME dispatch_automation_run_now_action chain as \
+         trigger_automation_run_now, genuinely shared rather than inferred, so the identical \
+         Codex spawn. Its plan-judge sibling retry_automation_plan_judge does NOT share it and \
+         is registered as an arming write instead",
+    ),
 ];
 
 /// PR 3.1-b batch 9 ITEM 0 — a detector-(c) refusal, declared at the capability it reaches.
@@ -2493,6 +2745,22 @@ pub const DECLARED_MEMBERSHIPS: &[(&str, &str)] = &[
     // negative suite never proves unreachable from a default pairing.
     ("update_ideation_settings", "arms-auto-plan-verification"),
     ("update_agent_lane_settings", "arms-agent-spawn-harness"),
+    // PR 3.1-b batch 12 — three automation writes that flip `automations.status` to Active.
+    //
+    // Active is the armed value the `automation-active` state surface already names, and
+    // `spawn_automation_scheduler` is already listed as its reading loop — so unlike the batch-10
+    // and batch-11 declarations, the SURFACE here is modelled and only the WRITE is invisible.
+    // Detector (b) matches a write by marker, and that surface carries exactly one
+    // (`reopen_run_corrective`); none of these three routes through it. Widening the marker list
+    // to catch them was rejected: markers are matched against every command's closure, so a
+    // broader marker changes the floor for members other batches already dispositioned. A
+    // declaration states the finding without moving anyone else's measurement.
+    //
+    // `resume_automation_run` is deliberately NOT here — it does carry the marker, detector (b)
+    // fires, and it takes the capability on the detector's own evidence.
+    ("restart_automation", "arms-automation-scheduler"),
+    ("retry_automation_plan_judge", "arms-automation-scheduler"),
+    ("skip_automation_judge", "arms-automation-scheduler"),
 ];
 
 /// Expands the module policy and command overrides into one effective command row.

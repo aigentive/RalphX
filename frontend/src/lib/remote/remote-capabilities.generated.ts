@@ -80,6 +80,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: [],
     pins: [],
   },
+  "cancel_automation_run": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl"],
+    pins: [],
+  },
   "cancel_tasks_in_group": {
     opClass: "operate",
     argumentSensitive: false,
@@ -90,6 +96,18 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     opClass: "agentControl",
     argumentSensitive: false,
     capabilities: ["agentControl"],
+    pins: [],
+  },
+  "count_session_activity_events": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "count_task_activity_events": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
     pins: [],
   },
   "create_artifact": {
@@ -194,6 +212,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: [],
     pins: [],
   },
+  "get_automation": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
   "get_blocked_tasks": {
     opClass: "read",
     argumentSensitive: false,
@@ -278,6 +302,24 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: [],
     pins: [],
   },
+  "get_insights_pr_insights": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_insights_stats": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_insights_trends": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
   "get_issue_progress": {
     opClass: "read",
     argumentSensitive: false,
@@ -314,6 +356,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: [],
     pins: [],
   },
+  "get_metrics_config": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
   "get_pending_reviews": {
     opClass: "read",
     argumentSensitive: false,
@@ -321,6 +369,24 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     pins: [],
   },
   "get_project_chat_usage_stats": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_project_pr_insights": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_project_stats": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_project_trends": {
     opClass: "read",
     argumentSensitive: false,
     capabilities: [],
@@ -363,6 +429,24 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     pins: [],
   },
   "get_remote_agent_conversation_timeline_page": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_research_presets": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_research_process": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_research_processes": {
     opClass: "read",
     argumentSensitive: false,
     capabilities: [],
@@ -435,6 +519,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     pins: [],
   },
   "get_task_issues": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "get_task_metrics": {
     opClass: "read",
     argumentSensitive: false,
     capabilities: [],
@@ -530,6 +620,18 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: [],
     pins: [],
   },
+  "list_all_activity_events": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "list_automations": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
   "list_ideation_sessions": {
     opClass: "read",
     argumentSensitive: false,
@@ -566,6 +668,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: [],
     pins: [],
   },
+  "list_session_activity_events": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
   "list_session_proposals": {
     opClass: "read",
     argumentSensitive: false,
@@ -573,6 +681,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     pins: [],
   },
   "list_sessions_by_group": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "list_task_activity_events": {
     opClass: "read",
     argumentSensitive: false,
     capabilities: [],
@@ -602,10 +716,22 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: ["agentControl","mutatesAgentConsumedContent"],
     pins: [],
   },
+  "pause_automation": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl"],
+    pins: [],
+  },
   "pause_execution": {
     opClass: "operate",
     argumentSensitive: false,
     capabilities: [],
+    pins: [],
+  },
+  "pause_research": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl"],
     pins: [],
   },
   "pause_task": {
@@ -668,13 +794,43 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: ["mutatesAgentConsumedContent"],
     pins: [],
   },
+  "restart_automation": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl"],
+    pins: [],
+  },
   "resume_automation": {
     opClass: "agentControl",
     argumentSensitive: false,
     capabilities: ["seedsSpawnTriggeringState"],
     pins: [],
   },
+  "resume_automation_run": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["seedsSpawnTriggeringState"],
+    pins: [],
+  },
+  "resume_research": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl"],
+    pins: [],
+  },
+  "retry_automation_plan_judge": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl"],
+    pins: [],
+  },
   "retry_qa": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl"],
+    pins: [],
+  },
+  "save_metrics_config": {
     opClass: "agentControl",
     argumentSensitive: false,
     capabilities: ["agentControl"],
@@ -716,7 +872,19 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: ["agentControl"],
     pins: [],
   },
+  "skip_automation_judge": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl"],
+    pins: [],
+  },
   "start_research": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl"],
+    pins: [],
+  },
+  "stop_automation": {
     opClass: "agentControl",
     argumentSensitive: false,
     capabilities: ["agentControl"],
@@ -726,6 +894,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     opClass: "operate",
     argumentSensitive: false,
     capabilities: [],
+    pins: [],
+  },
+  "stop_research": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl"],
     pins: [],
   },
   "stop_task": {
@@ -750,6 +924,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     opClass: "agentControl",
     argumentSensitive: false,
     capabilities: ["mutatesAgentConsumedContent"],
+    pins: [],
+  },
+  "update_automation_settings": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl"],
     pins: [],
   },
   "update_ideation_effort_settings": {
