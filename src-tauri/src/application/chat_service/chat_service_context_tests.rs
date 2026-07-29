@@ -2233,12 +2233,12 @@ async fn resume_commands_pass_current_run_identity_to_mcp() {
             if run_id.is_some() {
                 assert!(
                     mcp_args.contains("--agent-run-id") && mcp_args.contains(queued_run_id),
-                    "{harness} resume should pass the caller's run id so coordination endpoints trust the spawned MCP server: {mcp_args}"
+                    "{harness} resume should pass the caller's run id so coordination endpoints trust the spawned MCP server"
                 );
             } else {
                 assert!(
                     !mcp_args.contains("--agent-run-id") && !mcp_args.contains(queued_run_id),
-                    "{harness} resume without run identity must not fabricate an --agent-run-id: {mcp_args}"
+                    "{harness} resume without run identity must not fabricate an --agent-run-id"
                 );
             }
         }
