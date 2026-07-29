@@ -123,8 +123,8 @@ use crate::application::publish_resilience::{
     remote_tracking_ref_for_publish, review_base_for_publish,
     verify_agent_workspace_repair_pr_handoff, AgentWorkspaceRepairPrHandoff,
     AgentWorkspaceRepairPrHandoffResult, AgentWorkspaceRepairPublishContinuation,
-    AgentWorkspaceRepairPushOutcome, PublishBranchFreshnessOutcome, PublishBranchFreshnessStatus,
-    PublishFailureClass,
+    AgentWorkspaceRepairPushOutcome, PublishAfterRepairPushError, PublishBranchFreshnessOutcome,
+    PublishBranchFreshnessStatus, PublishFailureClass,
 };
 use crate::application::services::pr_auto_merge_status::{
     auto_merge_disable_failure_summary, auto_merge_enable_failure_summary,
@@ -1026,16 +1026,27 @@ impl AgentWorkspaceRepairPublishContinuation for AgentWorkspaceRepairPublishComm
         state: &AppState,
         conversation_id: ChatConversationId,
         repair_handoff: AgentWorkspaceRepairPrHandoff,
-    ) -> Result<AgentWorkspaceRepairPrHandoffResult, String> {
+    ) -> Result<AgentWorkspaceRepairPrHandoffResult, PublishAfterRepairPushError> {
         let result = publish_agent_conversation_workspace_after_repair_push(
             state,
             conversation_id,
             repair_handoff,
         )
-        .await?;
+        .await
+        .map_err(|error| {
+            if error == AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE {
+                PublishAfterRepairPushError::Busy
+            } else {
+                PublishAfterRepairPushError::Failed(error)
+            }
+        })?;
         let pr_number = result
             .pr_number
-            .ok_or_else(|| "normal publish completed without a pull-request number".to_string())?;
+            .ok_or_else(|| {
+                PublishAfterRepairPushError::Failed(
+                    "normal publish completed without a pull-request number".to_string(),
+                )
+            })?;
         Ok(AgentWorkspaceRepairPrHandoffResult {
             pr_number,
             pr_url: result.pr_url,
