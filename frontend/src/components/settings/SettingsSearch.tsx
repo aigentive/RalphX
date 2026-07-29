@@ -9,7 +9,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Search, X } from "lucide-react";
+import { X } from "lucide-react";
 
 import {
   Tooltip,
@@ -19,7 +19,7 @@ import {
 } from "@/components/ui/tooltip";
 
 import { searchSettings } from "./settings-search-index";
-import type { SettingsDestination } from "./settings-registry";
+import { navForSection, type SettingsDestination } from "./settings-registry";
 
 export interface SettingsSearchProps {
   /** True only while the settings dialog is open. */
@@ -61,14 +61,13 @@ export function SettingsSearch({ isOpen, onNavigate }: SettingsSearchProps) {
 
   return (
     <div className="settings-search" data-testid="settings-search">
-      <Search className="settings-search__icon" aria-hidden="true" />
       <input
         ref={inputRef}
         type="text"
         role="searchbox"
         aria-label="Search settings"
         aria-expanded={results.length > 0}
-        placeholder="Search settings…"
+        placeholder="Search settings…   ⌘K"
         className="settings-search__input"
         value={query}
         onChange={(event) => setQuery(event.target.value)}
@@ -102,11 +101,7 @@ export function SettingsSearch({ isOpen, onNavigate }: SettingsSearchProps) {
             <TooltipContent>Clear search</TooltipContent>
           </Tooltip>
         </TooltipProvider>
-      ) : (
-        <kbd className="settings-search__kbd" aria-hidden="true">
-          ⌘K
-        </kbd>
-      )}
+      ) : null}
 
       {results.length > 0 ? (
         <ul
@@ -114,31 +109,41 @@ export function SettingsSearch({ isOpen, onNavigate }: SettingsSearchProps) {
           aria-label="Settings search results"
           className="settings-search__results"
         >
-          {results.map((result) => (
-            <li key={`${result.section}:${result.tab ?? ""}:${result.label}`}>
-              <button
-                type="button"
-                role="option"
-                aria-selected={false}
-                className="settings-search__result"
-                onClick={() =>
-                  go(
-                    result.tab
-                      ? { section: result.section, tab: result.tab }
-                      : { section: result.section },
-                  )
-                }
-              >
-                <span className="settings-search__result-label">
-                  {result.label}
-                </span>
-                <span className="settings-search__result-hint">
-                  {result.hint}
-                </span>
-              </button>
-            </li>
-          ))}
+          {results.map((result) => {
+            const NavIcon = navForSection(result.section).icon;
+            return (
+              <li key={`${result.section}:${result.tab ?? ""}:${result.label}`}>
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={false}
+                  className="settings-search__result"
+                  onClick={() =>
+                    go(
+                      result.tab
+                        ? { section: result.section, tab: result.tab }
+                        : { section: result.section },
+                    )
+                  }
+                >
+                  <span className="settings-search__result-label">
+                    {result.label}
+                  </span>
+                  <span className="settings-search__result-hint">
+                    <NavIcon aria-hidden="true" />
+                    {result.hint}
+                  </span>
+                </button>
+              </li>
+            );
+          })}
         </ul>
+      ) : null}
+
+      {query.trim() && results.length === 0 ? (
+        <p className="settings-search__empty" role="status">
+          No settings match “{query.trim()}”
+        </p>
       ) : null}
     </div>
   );

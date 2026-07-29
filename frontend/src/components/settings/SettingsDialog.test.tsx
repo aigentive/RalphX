@@ -628,6 +628,52 @@ describe("SettingsDialog", () => {
       );
       expect(screen.getByTestId("settings-drill-in-back")).toBeInTheDocument();
     });
+
+    it("navigates and persists when a search result carries a composite tab", async () => {
+      const user = userEvent.setup();
+      uiState.activeModal = "settings";
+      render(<SettingsDialog {...defaultProps} />);
+
+      await user.type(
+        screen.getByRole("searchbox", { name: "Search settings" }),
+        "review policy",
+      );
+      await user.click(screen.getByRole("option", { name: /review policy/i }));
+
+      // The composite tab rides along in state while persistence stores the
+      // leaf id, exactly as a nav click would.
+      await waitFor(() =>
+        expect(localStorage.getItem("ralphx-settings-active-section")).toBe(
+          "tasks",
+        ),
+      );
+      expect(
+        within(screen.getByTestId("settings-nav-automation")).getByText("Automation"),
+      ).toBeInTheDocument();
+      expect(screen.getByTestId("settings-nav-automation")).toHaveAttribute(
+        "aria-current",
+        "page",
+      );
+    });
+
+    it("navigates from a tabless search result", async () => {
+      const user = userEvent.setup();
+      uiState.activeModal = "settings";
+      render(<SettingsDialog {...defaultProps} />);
+
+      await user.type(
+        screen.getByRole("searchbox", { name: "Search settings" }),
+        "granola",
+      );
+      const [firstResult] = screen.getAllByRole("option");
+      await user.click(firstResult as HTMLElement);
+
+      await waitFor(() =>
+        expect(localStorage.getItem("ralphx-settings-active-section")).toBe(
+          "granola",
+        ),
+      );
+    });
   });
 
   // --------------------------------------------------------------------------

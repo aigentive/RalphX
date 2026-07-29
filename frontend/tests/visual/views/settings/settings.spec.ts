@@ -190,7 +190,36 @@ test.describe("Settings Dialog", () => {
 
     await expect(
       settingsPage.settingsDialog.getByTestId("settings-search"),
+    ).toHaveScreenshot("settings-dialog-search-box.png", {
+      maxDiffPixelRatio: 0.01,
+    });
+
+    // The dropdown is absolutely positioned, so it falls outside the search
+    // box's own bounds — capture the listbox directly.
+    await expect(
+      settingsPage.settingsDialog.getByRole("listbox", {
+        name: "Settings search results",
+      }),
     ).toHaveScreenshot("settings-dialog-search-results.png", {
+      maxDiffPixelRatio: 0.01,
+    });
+  });
+
+  test("matches the settings search empty state", async ({ page }) => {
+    settingsPage = new SettingsPage(page);
+    await settingsPage.openViaStore("providers");
+    await settingsPage.waitForSection("providers", "Providers");
+
+    await page.addStyleTag({ content: ".settings-search__input { caret-color: transparent; }" });
+    await settingsPage.settingsDialog
+      .getByRole("searchbox", { name: "Search settings" })
+      .fill("zzzznomatch");
+
+    const empty = settingsPage.settingsDialog.getByRole("status");
+    await expect(empty).toBeVisible();
+    await settingsPage.waitForAnimations();
+
+    await expect(empty).toHaveScreenshot("settings-dialog-search-empty.png", {
       maxDiffPixelRatio: 0.01,
     });
   });

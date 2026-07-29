@@ -9,17 +9,7 @@
  * gating logic lives here.
  */
 
-import {
-  ArrowRight,
-  Blocks,
-  GitPullRequest,
-  KeyRound,
-  NotebookPen,
-  Server,
-  SquareKanban,
-  Ticket,
-  type LucideIcon,
-} from "lucide-react";
+import { ArrowRight } from "lucide-react";
 
 import { useApiKeys } from "@/hooks/useApiKeys";
 import {
@@ -43,32 +33,37 @@ export interface IntegrationsHubSectionProps {
 
 interface HubCard {
   section: SettingsSectionId;
-  icon: LucideIcon;
   connected: boolean;
   isLoading: boolean;
-  /** Short status line under the title, e.g. "Authenticated" / "2 keys". */
+  /** Short status line in the card footer, e.g. "Authenticated" / "2 keys". */
   status: string;
 }
 
 function CardGrid({
   heading,
   cards,
+  narrow = false,
   onNavigate,
   onWarmSection,
 }: {
-  heading: string;
+  /** Omitted for the lead grid, which sits directly under the page subtitle. */
+  heading?: string;
   cards: HubCard[];
+  /** External-access grid is capped narrower than the provider grid. */
+  narrow?: boolean;
   onNavigate: (section: SettingsSectionId) => void;
   onWarmSection: (section: SettingsSectionId) => void;
 }) {
   return (
     <section className="settings-hub__group">
-      <p className="settings-section__label">{heading}</p>
-      <div className="settings-hub__grid">
+      {heading ? <p className="settings-section__label">{heading}</p> : null}
+      <div
+        className="settings-hub__grid"
+        data-narrow={narrow ? "true" : undefined}
+      >
         {cards.map((entry) => {
           const meta = sectionMeta(entry.section);
           const label = meta?.label ?? entry.section;
-          const Icon = entry.icon;
           return (
             <div
               key={entry.section}
@@ -77,32 +72,45 @@ function CardGrid({
               className="settings-hub__card"
               onPointerEnter={() => onWarmSection(entry.section)}
             >
-              <div className="settings-hub__card-head">
-                <span className="settings-hub__card-icon">
-                  <Icon aria-hidden="true" />
-                </span>
-                <span className="settings-hub__card-title">{label}</span>
-                <span
-                  className="settings-hub__dot"
-                  data-connected={entry.connected}
-                  aria-hidden="true"
-                />
-              </div>
+              <span className="settings-hub__card-title">{label}</span>
               <p className="settings-hub__card-desc">{meta?.description}</p>
-              <p className="settings-hub__card-status">
-                {entry.isLoading ? "Checking…" : entry.status}
-              </p>
-              <button
-                type="button"
-                className={
-                  entry.connected ? "settings-btn-ghost" : "settings-btn-primary"
-                }
-                onClick={() => onNavigate(entry.section)}
-                onFocus={() => onWarmSection(entry.section)}
-              >
-                {entry.connected ? `Manage ${label}` : `Set up ${label}`}
-                {entry.connected ? null : <ArrowRight aria-hidden="true" />}
-              </button>
+              <div className="settings-hub__card-foot">
+                <span
+                  className="settings-hub__status"
+                  data-connected={entry.connected}
+                >
+                  <span
+                    className="settings-hub__dot"
+                    data-connected={entry.connected}
+                    aria-hidden="true"
+                  />
+                  {entry.isLoading ? "Checking…" : entry.status}
+                </span>
+                <button
+                  type="button"
+                  className={
+                    entry.connected
+                      ? "settings-hub__action"
+                      : "settings-hub__action settings-hub__action--setup"
+                  }
+                  // The visible label stays short per the mock; the accessible
+                  // name keeps naming the target so the buttons stay distinct.
+                  aria-label={
+                    entry.connected ? `Manage ${label}` : `Set up ${label}`
+                  }
+                  onClick={() => onNavigate(entry.section)}
+                  onFocus={() => onWarmSection(entry.section)}
+                >
+                  {entry.connected ? (
+                    "Manage"
+                  ) : (
+                    <>
+                      Set up
+                      <ArrowRight aria-hidden="true" />
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
           );
         })}
@@ -130,35 +138,30 @@ export function IntegrationsHubSection({
   const providers: HubCard[] = [
     {
       section: "integrations",
-      icon: Blocks,
       connected: atlassianConnected,
       isLoading: atlassian.isLoading,
       status: atlassianConnected ? "Connected" : "Not configured",
     },
     {
       section: "github",
-      icon: GitPullRequest,
       connected: githubConnected,
       isLoading: github.isLoading,
       status: githubConnected ? "Authenticated" : "Not authenticated",
     },
     {
       section: "linear",
-      icon: SquareKanban,
       connected: linearConnected,
       isLoading: linear.isLoading,
       status: linearConnected ? "Issue references enabled" : "Not configured",
     },
     {
       section: "clickup",
-      icon: Ticket,
       connected: clickup.connected,
       isLoading: clickup.isLoading,
       status: clickup.connected ? "Task references enabled" : "Not configured",
     },
     {
       section: "granola",
-      icon: NotebookPen,
       connected: granola.connected,
       isLoading: granola.isLoading,
       status: granola.connected ? "Note references enabled" : "Not configured",
@@ -168,14 +171,12 @@ export function IntegrationsHubSection({
   const externalAccess: HubCard[] = [
     {
       section: "api-keys",
-      icon: KeyRound,
       connected: keyCount > 0,
       isLoading: apiKeys.isLoading,
       status: keyCount === 1 ? "1 key" : `${keyCount} keys`,
     },
     {
       section: "external-mcp",
-      icon: Server,
       // The external MCP server is configuration, not a connection RalphX can
       // probe from here; the panel owns its own enablement state.
       connected: false,
@@ -187,7 +188,6 @@ export function IntegrationsHubSection({
   return (
     <div className="settings-hub" data-testid="integrations-hub">
       <CardGrid
-        heading="Connected tools"
         cards={providers}
         onNavigate={onNavigate}
         onWarmSection={onWarmSection}
@@ -195,6 +195,7 @@ export function IntegrationsHubSection({
       <CardGrid
         heading="External access"
         cards={externalAccess}
+        narrow
         onNavigate={onNavigate}
         onWarmSection={onWarmSection}
       />

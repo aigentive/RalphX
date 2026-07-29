@@ -71,6 +71,18 @@ describe("SettingsSearch", () => {
     expect(onNavigate).toHaveBeenCalledWith({ section: "granola" });
   });
 
+  it("reports an empty result set instead of a silent dropdown", async () => {
+    const user = userEvent.setup();
+    render(<SettingsSearch isOpen onNavigate={vi.fn()} />);
+
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+
+    await user.type(screen.getByRole("searchbox"), "zzzznomatch");
+
+    expect(screen.queryAllByRole("option")).toHaveLength(0);
+    expect(screen.getByRole("status")).toHaveTextContent(/no settings match/i);
+  });
+
   it("clears the query on Escape without navigating", async () => {
     const user = userEvent.setup();
     const onNavigate = vi.fn();

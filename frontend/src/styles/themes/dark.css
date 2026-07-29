@@ -127,22 +127,34 @@ html[data-theme="dark"] main {
   --kanban-group-divider: rgba(255,255,255,.05);
   --kanban-progress-track: rgba(255,255,255,.06);
 
-  /* Settings modal — v30 literal tokens for WKWebView parity */
+  /* Settings modal — v30 literal tokens for WKWebView parity.
+     Tonal scale mirrors the redesign mock: the rail sits BELOW the dialog
+     surface, the pane shares the dialog surface, and cards sit one step
+     above it. Borders are near-invisible hairlines; separation comes from
+     luminance, not stroke. */
   --dialog-overlay-bg: rgba(0,0,0,.45);
-  --dialog-bg: #1E1E23;
-  --dialog-rail-bg: #1E1E23;
-  --dialog-pane-bg: #18181D;
-  --dialog-pane-head-bg: #232329;
-  --dialog-pane-head-icon-bg: #2A2A31;
-  --dialog-border-color: #393940;
-  --dialog-divider-color: #2E2E36;
-  --dialog-control-bg: #232329;
-  --dialog-control-border: #393940;
-  --dialog-control-border-hover: #44444D;
-  --dialog-nav-active-bg: #2A2A31;
-  --dialog-nav-active-border: #393940;
-  --dialog-toggle-off-bg: #393940;
-  --dialog-toggle-knob-bg: #E6E6EB;
+  --dialog-bg: #17171A;
+  --dialog-rail-bg: #141417;
+  --dialog-pane-bg: #17171A;
+  --dialog-pane-head-bg: #1D1D21;
+  --dialog-pane-head-icon-bg: #26262C;
+  --dialog-border-color: #2B2B31;
+  --dialog-divider-color: #232328;
+  --dialog-control-bg: #212126;
+  --dialog-control-border: #2F2F35;
+  --dialog-control-border-hover: #3D3D45;
+  --dialog-nav-active-bg: #2C2C33;
+  --dialog-nav-active-border: transparent;
+  --dialog-nav-hover-bg: #1E1E23;
+  --dialog-hover-bg: #26262C;
+  --dialog-tab-bg: #1D1D21;
+  --dialog-tab-active-bg: #3A3A42;
+  --dialog-tab-active-text: #FFFFFF;
+  --dialog-search-results-bg: #1F1F24;
+  --dialog-text-muted: #A4A4AD;
+  --dialog-text-subtle: #85858E;
+  --dialog-toggle-off-bg: #47474F;
+  --dialog-toggle-knob-bg: #FFFFFF;
   --dialog-warn: #E0B341;
   --dialog-warn-bg: rgba(224,179,65,.10);
   --dialog-warn-card-bg: rgba(224,179,65,.06);
