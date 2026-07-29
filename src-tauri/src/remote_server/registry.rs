@@ -2537,4 +2537,426 @@ crate::remote_commands! {
         result: fallible,
     },
 
+    // -----------------------------------------------------------------------------------
+    // PR 3.1-b batch 13 — census B7 (artifact, notification, release-notes, task-context, ui,
+    // update-channel) plus two B6 modules (persona, MCP policy).
+    //
+    // The reads first, each `Read` on a body audit rather than on detector silence. Batch 12
+    // measured this whole block detector-silent; this batch re-measured it and then read every
+    // body anyway, which is how it found that detector (a) over-reports seven persona writes,
+    // detector (b) over-reports `update_notification_settings`, and — the one that matters —
+    // detector (c) UNDER-reports `retry_legacy_mcp_registration_repair`, which really does spawn
+    // the Claude CLI.
+    //
+    // Deliberately NOT here: `get_mcp_catalog`, `refresh_mcp_catalog` and
+    // `retry_legacy_mcp_registration_repair` are host-denied-spawns-process, and
+    // `set_update_channel` is Elevated/HostManagement.
+    // -----------------------------------------------------------------------------------
+    "get_artifacts" => crate::commands::artifact_commands::get_artifacts {
+        class: Read,
+        caps: [],
+        params: [(arg artifact_type: Option<String>), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_artifact" => crate::commands::artifact_commands::get_artifact {
+        class: Read,
+        caps: [],
+        params: [(arg id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_artifact_at_version" => crate::commands::artifact_commands::get_artifact_at_version {
+        class: Read,
+        caps: [],
+        params: [(arg id: String), (arg version: u32), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_artifacts_by_bucket" => crate::commands::artifact_commands::get_artifacts_by_bucket {
+        class: Read,
+        caps: [],
+        params: [(arg bucket_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_artifacts_by_task" => crate::commands::artifact_commands::get_artifacts_by_task {
+        class: Read,
+        caps: [],
+        params: [(arg task_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_artifact_version_history" => crate::commands::artifact_commands::get_artifact_version_history {
+        class: Read,
+        caps: [],
+        params: [(arg id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_buckets" => crate::commands::artifact_commands::get_buckets {
+        class: Read,
+        caps: [],
+        params: [(app_state)],
+        call: async,
+        result: fallible,
+    },
+    // Takes no AppState at all — the `get_research_presets` shape batch 12 registered.
+    "get_system_buckets" => crate::commands::artifact_commands::get_system_buckets {
+        class: Read,
+        caps: [],
+        params: [],
+        call: async,
+        result: fallible,
+    },
+    "get_artifact_relations" => crate::commands::artifact_commands::get_artifact_relations {
+        class: Read,
+        caps: [],
+        params: [(arg artifact_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_task_context" => crate::commands::task_context_commands::get_task_context {
+        class: Read,
+        caps: [],
+        params: [(arg task_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_artifact_full" => crate::commands::task_context_commands::get_artifact_full {
+        class: Read,
+        caps: [],
+        params: [(arg artifact_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_artifact_version" => crate::commands::task_context_commands::get_artifact_version {
+        class: Read,
+        caps: [],
+        params: [(arg artifact_id: String), (arg version: u32), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_related_artifacts" => crate::commands::task_context_commands::get_related_artifacts {
+        class: Read,
+        caps: [],
+        params: [(arg artifact_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "search_artifacts" => crate::commands::task_context_commands::search_artifacts {
+        class: Read,
+        caps: [],
+        params: [
+            (arg input: crate::commands::task_context_commands::SearchArtifactsInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "get_notification_settings" => crate::commands::notification_commands::get_notification_settings {
+        class: Read,
+        caps: [],
+        params: [(app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_unread_notification_count" => crate::commands::notification_commands::get_unread_notification_count {
+        class: Read,
+        caps: [],
+        params: [(arg project_id: Option<String>), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "list_attention_items" => crate::commands::notification_commands::list_attention_items {
+        class: Read,
+        caps: [],
+        params: [(arg project_id: Option<String>), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "list_notifications" => crate::commands::notification_commands::list_notifications {
+        class: Read,
+        caps: [],
+        params: [
+            (arg project_id: Option<String>),
+            (arg cursor: Option<String>),
+            (arg limit: Option<u32>),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "get_current_release_notes" => crate::commands::release_notes_commands::get_current_release_notes {
+        class: Read,
+        caps: [],
+        params: [(host_app_handle)],
+        call: async,
+        result: fallible,
+    },
+    "get_release_notes_for_version" => crate::commands::release_notes_commands::get_release_notes_for_version {
+        class: Read,
+        caps: [],
+        params: [(host_app_handle), (arg version: String)],
+        call: async,
+        result: fallible,
+    },
+    "get_last_seen_release_notes_version" => crate::commands::release_notes_commands::get_last_seen_release_notes_version {
+        class: Read,
+        caps: [],
+        params: [(app_state)],
+        call: async,
+        result: fallible,
+    },
+    // Fixed before registration: the directory reader was `.ok()`-swallowed, so an unreadable
+    // release-notes root reported an empty version list. It now propagates every non-NotFound error.
+    "list_release_notes_versions" => crate::commands::release_notes_commands::list_release_notes_versions {
+        class: Read,
+        caps: [],
+        params: [(host_app_handle)],
+        call: async,
+        result: fallible,
+    },
+    "list_personas" => crate::commands::persona_commands::list_personas {
+        class: Read,
+        caps: [],
+        params: [
+            (arg input: crate::commands::persona_commands::ListPersonasInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "get_persona" => crate::commands::persona_commands::get_persona {
+        class: Read,
+        caps: [],
+        params: [
+            (arg input: crate::commands::persona_commands::PersonaIdInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "list_persona_usage" => crate::commands::persona_commands::list_persona_usage {
+        class: Read,
+        caps: [],
+        params: [(app_state)],
+        call: async,
+        result: fallible,
+    },
+    "preview_persona_overlay" => crate::commands::persona_commands::preview_persona_overlay {
+        class: Read,
+        caps: [],
+        params: [
+            (arg input: crate::commands::persona_commands::PreviewPersonaOverlayInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "get_ui_feature_flags" => crate::commands::ui_commands::get_ui_feature_flags {
+        class: Read,
+        caps: [],
+        params: [(app_state)],
+        call: sync,
+        result: infallible,
+    },
+    "get_update_channel" => crate::commands::update_channel_commands::get_update_channel {
+        class: Read,
+        caps: [],
+        params: [(app_state)],
+        call: async,
+        result: fallible,
+    },
+    // The writers, at `ui:agent`. Never dropped to Read on a silent detector.
+    "archive_artifact" => crate::commands::artifact_commands::archive_artifact {
+        class: AgentControl,
+        caps: [MutatesAgentConsumedContent],
+        params: [(arg artifact_id: String), (app_state), (host_app_handle)],
+        call: async,
+        result: fallible,
+    },
+    "create_bucket" => crate::commands::artifact_commands::create_bucket {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [
+            (arg input: crate::commands::artifact_commands::CreateBucketInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "mark_notification_read" => crate::commands::notification_commands::mark_notification_read {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [(arg id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "mark_all_notifications_read" => crate::commands::notification_commands::mark_all_notifications_read {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [(arg project_id: Option<String>), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "set_dock_badge_count" => crate::commands::notification_commands::set_dock_badge_count {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [(arg count: u32), (host_app_handle)],
+        call: sync,
+        result: fallible,
+    },
+    // Detector (b) fires on this row; the ledger records WHY it does not claim the evidence
+    // capability (a bare-name marker collision on `update_settings`).
+    "update_notification_settings" => crate::commands::notification_commands::update_notification_settings {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [
+            (arg input: crate::commands::notification_commands::UpdateNotificationSettingsInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "mark_release_notes_seen" => crate::commands::release_notes_commands::mark_release_notes_seen {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [(arg version: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    // The eight persona writes. Persona bodies are injected into agent prompts, so each carries
+    // MutatesAgentConsumedContent rather than a bare AgentControl.
+    "create_persona_draft" => crate::commands::persona_commands::create_persona_draft {
+        class: AgentControl,
+        caps: [MutatesAgentConsumedContent],
+        params: [
+            (arg input: crate::commands::persona_commands::CreatePersonaDraftInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "update_persona_draft" => crate::commands::persona_commands::update_persona_draft {
+        class: AgentControl,
+        caps: [MutatesAgentConsumedContent],
+        params: [
+            (arg input: crate::commands::persona_commands::UpdatePersonaDraftInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "update_persona" => crate::commands::persona_commands::update_persona {
+        class: AgentControl,
+        caps: [MutatesAgentConsumedContent],
+        params: [
+            (arg input: crate::commands::persona_commands::UpdatePersonaInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "approve_persona" => crate::commands::persona_commands::approve_persona {
+        class: AgentControl,
+        caps: [MutatesAgentConsumedContent],
+        params: [
+            (arg input: crate::commands::persona_commands::PersonaIdInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "approve_persona_as_new" => crate::commands::persona_commands::approve_persona_as_new {
+        class: AgentControl,
+        caps: [MutatesAgentConsumedContent],
+        params: [
+            (arg input: crate::commands::persona_commands::ApprovePersonaAsNewInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "reseed_persona_draft" => crate::commands::persona_commands::reseed_persona_draft {
+        class: AgentControl,
+        caps: [MutatesAgentConsumedContent],
+        params: [
+            (arg input: crate::commands::persona_commands::PersonaIdInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "archive_persona" => crate::commands::persona_commands::archive_persona {
+        class: AgentControl,
+        caps: [MutatesAgentConsumedContent],
+        params: [
+            (arg input: crate::commands::persona_commands::PersonaIdInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "unarchive_persona" => crate::commands::persona_commands::unarchive_persona {
+        class: AgentControl,
+        caps: [MutatesAgentConsumedContent],
+        params: [
+            (arg input: crate::commands::persona_commands::PersonaIdInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    // The four MCP override writes. Each runs three fail-closed guards before the write.
+    "update_mcp_server_override" => crate::commands::mcp_policy_commands::update_mcp_server_override {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [
+            (arg input: crate::commands::mcp_policy_commands::McpServerOverrideInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "clear_mcp_server_override" => crate::commands::mcp_policy_commands::clear_mcp_server_override {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [
+            (arg input: crate::commands::mcp_policy_commands::ClearMcpServerOverrideInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "update_mcp_tool_override" => crate::commands::mcp_policy_commands::update_mcp_tool_override {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [
+            (arg input: crate::commands::mcp_policy_commands::McpToolOverrideInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "clear_mcp_tool_override" => crate::commands::mcp_policy_commands::clear_mcp_tool_override {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [
+            (arg input: crate::commands::mcp_policy_commands::ClearMcpToolOverrideInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "update_ui_feature_flags" => crate::commands::ui_commands::update_ui_feature_flags {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [
+            (arg input: crate::commands::ui_commands::UpdateUiFeatureFlagsInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
 }

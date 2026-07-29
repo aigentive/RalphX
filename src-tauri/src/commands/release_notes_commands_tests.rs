@@ -56,10 +56,52 @@ fn collect_versions_deduplicates_and_sorts_descending() {
 
     let versions = collect_versions_from_dirs(
         vec![temp_a.path().to_path_buf(), temp_b.path().to_path_buf()],
-        |path| std::fs::read_dir(path).ok(),
-    );
+        |path| std::fs::read_dir(path),
+    )
+    .expect("both directories are readable");
 
     assert_eq!(versions, vec!["0.28.0", "0.12.0", "0.9.0", "0.1.0"]);
+}
+
+/// A release-notes root that is absent is NORMAL: the bundled resource dir does not exist in a
+/// dev checkout and the repo root does not exist in a shipped bundle, so `list_release_notes_versions`
+/// must keep tolerating `NotFound` and read the roots that do exist.
+#[test]
+fn collect_versions_tolerates_a_missing_directory() {
+    let present = tempfile::tempdir().unwrap();
+    std::fs::write(present.path().join("v1.2.0.md"), "").unwrap();
+    let absent = present.path().join("definitely-not-here");
+
+    let versions = collect_versions_from_dirs(
+        vec![absent, present.path().to_path_buf()],
+        |path| std::fs::read_dir(path),
+    )
+    .expect("a missing root is not a failure");
+
+    assert_eq!(versions, vec!["1.2.0"]);
+}
+
+/// ...but a root that exists and cannot be READ is a host failure, and must NOT be reported as
+/// "this version does not exist". Before this test the reader was `std::fs::read_dir(path).ok()`,
+/// so a permissions or I/O error produced an empty version list indistinguishable from a genuine
+/// empty directory — the caller could not tell "no release notes" from "could not look".
+#[test]
+fn collect_versions_fails_closed_when_a_readable_directory_errors() {
+    let present = tempfile::tempdir().unwrap();
+    std::fs::write(present.path().join("v1.2.0.md"), "").unwrap();
+
+    let error = collect_versions_from_dirs(
+        vec![present.path().to_path_buf()],
+        |_| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "release notes directory is not readable",
+            ))
+        },
+    )
+    .expect_err("a non-NotFound read failure must surface, not collapse into an empty list");
+
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
 }
 
 #[test]

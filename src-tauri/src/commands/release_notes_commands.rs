@@ -62,9 +62,10 @@ pub async fn list_release_notes_versions<R: Runtime>(
     app: AppHandle<R>,
 ) -> Result<Vec<String>, String> {
     let dirs = release_notes_dirs(&app);
-    Ok(collect_versions_from_dirs(dirs, |path| {
-        std::fs::read_dir(path).ok()
-    }))
+    // The closure is load-bearing: passing `std::fs::read_dir` directly does not satisfy the
+    // higher-ranked lifetime bound on the `FnMut(&Path)` parameter.
+    collect_versions_from_dirs(dirs, |path: &Path| std::fs::read_dir(path))
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -86,24 +87,35 @@ fn release_notes_dirs<R: Runtime>(app: &AppHandle<R>) -> Vec<PathBuf> {
     dirs
 }
 
+/// Collects release-notes versions across the candidate roots, failing closed on a real I/O error.
+///
+/// An ABSENT root is expected and skipped: the bundled resource dir does not exist in a dev
+/// checkout, and the repo root does not exist in a shipped bundle, so `NotFound` is a normal
+/// outcome for one of the two candidates on every platform. Any OTHER error is a host failure and
+/// propagates, because an unreadable directory must not be reported to the caller as "there are
+/// no release notes" — that is indistinguishable from a genuine empty directory.
 fn collect_versions_from_dirs(
     dirs: Vec<PathBuf>,
-    mut read_dir: impl FnMut(&Path) -> Option<std::fs::ReadDir>,
-) -> Vec<String> {
+    mut read_dir: impl FnMut(&Path) -> std::io::Result<std::fs::ReadDir>,
+) -> std::io::Result<Vec<String>> {
     let mut versions = Vec::new();
     for dir in &dirs {
-        if let Some(entries) = read_dir(dir) {
-            for entry in entries.flatten() {
-                if let Some(version) = parse_version_from_filename(entry.file_name().to_str()) {
-                    if !versions.contains(&version) {
-                        versions.push(version);
-                    }
+        let entries = match read_dir(dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        for entry in entries {
+            let entry = entry?;
+            if let Some(version) = parse_version_from_filename(entry.file_name().to_str()) {
+                if !versions.contains(&version) {
+                    versions.push(version);
                 }
             }
         }
     }
     versions.sort_by(|a, b| compare_semver_desc(a, b));
-    versions
+    Ok(versions)
 }
 
 fn parse_version_from_filename(filename: Option<&str>) -> Option<String> {

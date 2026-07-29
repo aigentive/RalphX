@@ -269,34 +269,38 @@ why: "LANDED (PR 3.1-b batch B0). The drift scan used to admit two answers — r
     id: "B6",
     title: "Personas, role defaults, MCP policy, review settings",
     modules: [
-      "persona_commands",
+      // `persona_commands` and `mcp_policy_commands` are fully classified as of batch 13 and are
+      // dropped here because the plan enumerates REMAINING gap work; see `work` below.
       "manual_role_default_commands",
-      "mcp_policy_commands",
       "workspace_review_settings_commands",
     ],
     why: "Configuration-of-future-authority shapes cluster here: a persona/role/policy write does not act now but changes what a later spawn is allowed to do. This is the `update_custom_analysis` family of risk (§3.3 backstop-1 residual), so it gets one focused dual-lens review instead of being sprinkled across batches.",
     work: [
       "For each command ask the deferred-authority question explicitly: does this write change what a FUTURE agent process may do? If yes it is at least `AgentControl` with `ConfiguresFutureProcessAuthority`, regardless of how inert the immediate action looks.",
       "`delete_persona`-shaped members stay Denied (deletesEntity).",
+      "DONE (PR 3.1-b batch 13): `persona_commands` (12) and `mcp_policy_commands` (7) are fully classified — 8 reads at `ui:read`, 12 writers at `ui:agent` (8 carrying `MutatesAgentConsumedContent`, 4 carrying `DECLARED_MEMBERSHIPS`), 3 `host-denied-spawns-process`.",
+      "RESOLVED, and successors must not re-litigate it — the deferred-authority lens above says such a write is 'at least AgentControl with ConfiguresFutureProcessAuthority'. That reading is UNREPRESENTABLE: `class_permits` admits `ConfiguresFutureProcessAuthority` only under `Elevated`, which v1 grants no scope for, so declaring it converts an audited-clean bounded write into a deferral by notation rather than by finding. The idiom that records the same finding at a registerable class is AgentControl plus a `DECLARED_MEMBERSHIPS` row, which is what `update_agent_lane_settings` already carries for picking the harness a live agent is launched with — strictly more deferred authority than an MCP server/tool override. Batch 13 used declarations `configures-future-agent-tool-authority` and `configures-future-agent-capability-gates`.",
+      "READ FIRST — `get_mcp_catalog` and `refresh_mcp_catalog` are REFUSED at the floor. They are reads by intent, but `build_catalog -> discover_provider_catalog -> resolve_codex_catalog_cli_path` launches the Codex app-server to answer. `retry_legacy_mcp_registration_repair` is ALSO refused, and detector (c) does NOT see it: it runs `claude mcp remove ralphx -s user` through `tokio::process::Command::new`, hidden by a `spawn_blocking(bare_fn)` call shape that creates no edge plus a spawn on an already-resolved path that names no resolver. Pinned by `batch13_detector_gap_is_measured_not_inherited`.",
     ],
     gate: "P-17 green; C-9 review recorded with the deferred-authority lens explicitly exercised.",
   },
   {
     id: "B7",
+    retiredBy: "B7",
     title: "Artifacts, task context, notifications, app chrome",
     modules: [
-      "artifact_commands",
-      "task_context_commands",
-      "notification_commands",
-      "ui_commands",
-      "update_channel_commands",
-      "release_notes_commands",
+      // All six modules are fully classified as of batch 13 and are dropped here because the plan
+      // enumerates REMAINING gap work. The completions are recorded in `work` below.
     ],
     why: "The tail. Mixed reads and small writes; also the batch that must decide which names are genuinely CLIENT-LOCAL (updater channel, window/dock chrome) and therefore belong in `local-only-commands.ts` with an honest reason — the only batch expected to add local-only rows.",
     work: [
       "Split client-local from host-owned per command: `update_channel_commands` and parts of `ui_commands` are plausible `local-only` rows; artifacts and task context are host state and must register or be manifest-disposed.",
       "`get_task_context` and the prompt-builder reads are content-surface members (ledger-soundness round found 5 dropped worker content reads) — re-check the surface enumeration before assigning.",
       "Every local-only row gets an honest client-local reason; 'hard to classify' is never valid.",
+      "DONE (PR 3.1-b batch 13): all 33 B7 ratchet members are dispositioned — 24 reads at `ui:read`, 8 writers at `ui:agent`, 1 `v1-deferred`. Zero local-only rows were added, which answers the batch's own open question: the client-local split it anticipated did not survive contact with the commands.",
+      "RESOLVED — the batch was expected to move `update_channel_commands` and parts of `ui_commands` to `local-only-commands.ts`. Neither is client-local. `get_update_channel`/`set_update_channel` read and write `app_state_repo`, which is HOST state, and `get_ui_feature_flags` projects the host runtime config plus the agent-capability snapshot. `set_update_channel` is instead ledgered `Elevated`/`HostManagement` (V1Deferred, not denied): it selects which release train the desktop app auto-updates onto, matching every other HOST row\'s class. Its read half is registered.",
+      "RESOLVED — the plan flagged 5 dropped worker content reads. They are the `task_context_commands` Tauri commands (`get_task_context`, `get_artifact_full`, `get_artifact_version`, `get_related_artifacts`, `search_artifacts`), all registered at `ui:read`. Note their HTTP namesakes in `http_server/handlers/worker.rs` are DIFFERENT functions: the axum `search_artifacts` silently skips unparsable artifact types, while the Tauri command propagates the parse error. Do not reason about one from the other.",
+      "NOTE — batch 12 measured this block detector-silent and batch 13 re-measured rather than inheriting, which is how it found that detector (b)\'s flag on `update_notification_settings` is a bare-name MARKER collision (`update_settings` vs the workspace-auto-review write marker), not a spawn-triggering write. It is registered WITHOUT `SeedsSpawnTriggeringState`; claiming the tag would have passed the evidence test while being false.",
     ],
     gate: "P-17 green; every new local-only row has a reason; C-9 review recorded.",
   },
