@@ -248,11 +248,17 @@ impl AgentRunRepository for FailingAgentRunRepo {
     async fn complete(&self, id: &AgentRunId) -> AppResult<()> {
         unimplemented!("complete")
     }
+    async fn complete_if_prune_cancelled(&self, id: &AgentRunId) -> AppResult<bool> {
+        unimplemented!("complete_if_prune_cancelled")
+    }
     async fn fail(&self, id: &AgentRunId, error_message: &str) -> AppResult<()> {
         unimplemented!("fail")
     }
     async fn cancel(&self, id: &AgentRunId) -> AppResult<()> {
         unimplemented!("cancel")
+    }
+    async fn cancel_with_reason(&self, id: &AgentRunId, reason: &str) -> AppResult<()> {
+        unimplemented!("cancel_with_reason")
     }
     async fn delete(&self, id: &AgentRunId) -> AppResult<()> {
         unimplemented!("delete")
