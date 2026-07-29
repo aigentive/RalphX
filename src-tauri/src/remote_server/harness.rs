@@ -299,6 +299,15 @@ impl RemoteHostHarness {
         &self.stream
     }
 
+    /// The host's live observability counters (§5.5, R-11).
+    ///
+    /// The load legs assert against these because they are the only in-process proxy for
+    /// "host memory stayed flat" available to a Rust test — there is no reliable per-test
+    /// RSS or allocator assertion (phase doc PR 3.3, key point 3).
+    pub fn counters(&self) -> crate::remote_server::counters::RemoteStreamCounterSnapshot {
+        self.stream.counters().snapshot()
+    }
+
     /// Emits through the production Tauri bus, which is what the capture bank listens on.
     ///
     /// This is the same call shape `AppChatService::emit_event` makes, so an event pushed here

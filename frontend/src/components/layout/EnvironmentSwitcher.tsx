@@ -58,10 +58,53 @@ function EnvironmentDot({ environmentId, state }: EnvironmentDotProps) {
   );
 }
 
+/** Counts above this render as `9+`; the exact number stays in the accessible name. */
+const BADGE_DISPLAY_CAP = 9;
+
+/** The spoken count, so a screen reader never has to interpret the `9+` glyph. */
+function badgeLabel(count: number): string {
+  return count === 1
+    ? "1 new notification"
+    : `${String(count)} new notifications`;
+}
+
+/**
+ * The observed-notification tally for a BACKGROUND environment (PR 3.3-a).
+ *
+ * Renders nothing at zero rather than an empty chip: a badge slot that is always
+ * present reads as "0 unread" to a screen reader and adds visual noise to the common
+ * case. Paint uses literal colors and longhand properties per rule 22 — the switcher
+ * lives in the top bar, where a dropped `var()` chain would render an invisible chip on
+ * WKWebView while Chromium looked correct.
+ */
+function NotificationBadge({
+  count,
+  testId,
+}: {
+  count: number;
+  testId: string;
+}): React.ReactElement | null {
+  if (count <= 0) return null;
+  return (
+    <span
+      className="grid h-4 min-w-4 shrink-0 place-items-center rounded-full px-1 text-[0.625rem] font-bold leading-none"
+      style={{
+        backgroundColor: "var(--accent-primary, #ff6b35)",
+        color: "var(--text-on-accent, #ffffff)",
+      }}
+      data-testid={testId}
+      aria-label={badgeLabel(count)}
+    >
+      {count > BADGE_DISPLAY_CAP ? `${String(BADGE_DISPLAY_CAP)}+` : count}
+    </span>
+  );
+}
+
 interface EnvironmentRowProps {
   environment: EnvironmentEntry;
   state: EnvironmentConnectionState;
   blockedFailure: AttemptFailure | null;
+  badgeCount: number;
   selected: boolean;
   optionRef: (node: HTMLButtonElement | null) => void;
   onSelect: (id: string) => void;
@@ -72,6 +115,7 @@ const EnvironmentRow = memo(function EnvironmentRow({
   environment,
   state,
   blockedFailure,
+  badgeCount,
   selected,
   optionRef,
   onSelect,
@@ -92,6 +136,10 @@ const EnvironmentRow = memo(function EnvironmentRow({
     >
       <EnvironmentDot environmentId={environment.id} state={state} />
       <span className="min-w-0 flex-1 truncate">{environment.name}</span>
+      <NotificationBadge
+        count={badgeCount}
+        testId={`environment-badge-${environment.id}`}
+      />
       {selected ? (
         <Check
           aria-label="Active environment"
@@ -153,6 +201,7 @@ export const EnvironmentSwitcher = memo(function EnvironmentSwitcher({
   const connectionPresentations = useEnvironmentStore(
     (state) => state.connectionPresentations,
   );
+  const notificationBadges = useEnvironmentStore((state) => state.notificationBadges);
   const setActiveEnvironment = useEnvironmentStore((state) => state.setActiveEnvironment);
   const optionRefs = useRef(new Map<string, HTMLButtonElement>());
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -167,6 +216,21 @@ export const EnvironmentSwitcher = memo(function EnvironmentSwitcher({
     activeEnvironment?.kind === "local"
       ? "connected"
       : (connectionStates[activeEnvironment?.id ?? LOCAL_ENVIRONMENT_ID] ?? "idle");
+
+  /**
+   * The collapsed trigger cannot show a per-environment badge, so it carries the SUM
+   * across background environments — the one number that answers "is there anything
+   * waiting behind this menu". The active environment is excluded because it is
+   * projecting: its notifications are already in its own cache and its own bell.
+   */
+  const backgroundBadgeTotal = useMemo(
+    () =>
+      Object.entries(notificationBadges).reduce(
+        (total, [id, count]) => (id === activeEnvironmentId ? total : total + count),
+        0,
+      ),
+    [activeEnvironmentId, notificationBadges],
+  );
 
   useEffect(() => {
     if (!resolvedOpen) return;
@@ -244,7 +308,11 @@ export const EnvironmentSwitcher = memo(function EnvironmentSwitcher({
             <button
               ref={triggerRef}
               type="button"
-              aria-label="Switch environment"
+              aria-label={
+                backgroundBadgeTotal > 0
+                  ? `Switch environment, ${badgeLabel(backgroundBadgeTotal)} in other environments`
+                  : "Switch environment"
+              }
               aria-haspopup="listbox"
               aria-expanded={resolvedOpen}
               className="inline-flex h-8 max-w-[220px] items-center gap-1.5 rounded-[6px] border px-2.5 text-[0.8125rem] font-medium outline-none transition-colors hover:bg-[var(--bg-elevated)] focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]"
@@ -265,6 +333,10 @@ export const EnvironmentSwitcher = memo(function EnvironmentSwitcher({
             >
               <EnvironmentDot environmentId={activeEnvironment.id} state={activeState} />
               <span className="min-w-0 truncate">{activeEnvironment.name}</span>
+              <NotificationBadge
+                count={backgroundBadgeTotal}
+                testId="environment-switcher-badge"
+              />
               <ChevronDown
                 aria-hidden="true"
                 className="h-3.5 w-3.5 shrink-0"
@@ -314,6 +386,7 @@ export const EnvironmentSwitcher = memo(function EnvironmentSwitcher({
                 blockedFailure={
                   connectionPresentations[environment.id]?.blockedFailure ?? null
                 }
+                badgeCount={notificationBadges[environment.id] ?? 0}
                 selected={environment.id === activeEnvironmentId}
                 optionRef={(node) => {
                   if (node) optionRefs.current.set(environment.id, node);

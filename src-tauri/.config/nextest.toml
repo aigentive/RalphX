@@ -37,3 +37,15 @@ slow-timeout = { period = "120s", terminate-after = 2 }
 filter = 'binary(suite_sqlite_repos) or binary(suite_sqlite_flows) or binary(suite_metrics)'
 test-group = 'sqlite-integration'
 slow-timeout = { period = "90s", terminate-after = 2 }
+
+# PR 3.3-b load legs. Serial and generously timed on purpose: they measure send-queue
+# depth, emit latency, and commit/publish latency against pinned thresholds, so running
+# them alongside the rest of the lib shard makes those measurements a function of how
+# busy the machine is rather than of the code under test.
+[test-groups.remote-load-serial]
+max-threads = 1
+
+[[profile.default.overrides]]
+filter = 'test(remote_server::remote_load_tests)'
+test-group = 'remote-load-serial'
+slow-timeout = { period = "120s", terminate-after = 2 }

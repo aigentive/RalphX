@@ -10,6 +10,10 @@ pub mod auth_endpoints;
 #[cfg(test)]
 mod auth_tests;
 pub mod capture;
+pub mod counters;
+#[cfg(test)]
+#[path = "counters_tests.rs"]
+mod counters_tests;
 pub mod endpoints;
 #[cfg(test)]
 mod endpoints_tests;
@@ -20,6 +24,10 @@ mod endpoints_tests;
 // — which is exactly what `test-utils = ["tauri/test"]` turns on.
 #[cfg(feature = "test-utils")]
 pub mod harness;
+#[cfg(all(test, feature = "test-utils"))]
+#[path = "remote_load_tests.rs"]
+mod remote_load_tests;
+
 #[cfg(all(test, feature = "test-utils"))]
 mod harness_tests;
 // --- end PR 3.2 block ---

@@ -76,6 +76,23 @@ import { RemoteTransportError } from "./transport-errors";
 /** Visibility flapping shorter than this never becomes a suspend (churn safety). */
 export const SUSPEND_DEBOUNCE_MS = 2_000;
 
+/**
+ * How often a BLOCKED environment may re-attempt on a foreground.
+ *
+ * `blocked` is the terminal-until-new-information state: an unauthorized device, a
+ * version-skewed host, a malformed descriptor. Its wakeup edge carries `resetAttempts`,
+ * so — unlike `backoff` — it has no ladder to slow it down. Without a floor, every app
+ * switch spent a descriptor fetch, a ws-ticket, and a per-device session slot on a host
+ * whose answer cannot have changed in the seconds since the last one.
+ *
+ * One minute is chosen against what actually clears a block: a host upgrade, a re-pair,
+ * or an operator re-granting a scope. All are minutes-to-hours events, so a tighter
+ * floor buys no responsiveness — and the three wakeups that DO signal new information
+ * (`retry_now`, `credentials_changed`, `online`) bypass this entirely, which is what
+ * keeps the retry button and a re-pair instant.
+ */
+export const BLOCKED_FOREGROUND_RETRY_MS = 60_000;
+
 /** Why an attempt failed, in the vocabulary the FSM understands. */
 export type AttemptFailure =
   | "transient"
@@ -158,6 +175,14 @@ export class ConnectionSupervisor {
   private blockedReason: { failure: AttemptFailure; message: string } | null = null;
   /** The last CONFIRMED scope set. Gating never widens past this (P-28 fail-closed). */
   private confirmedScopes: readonly string[] | null = null;
+  /**
+   * When this environment last spent a foreground wakeup while `blocked`, or `null`
+   * when the current blocked episode has not spent one yet.
+   *
+   * Cleared on ENTRY to `blocked`, so each fresh episode always gets one immediate
+   * attempt and the floor only ever suppresses repeats within the same episode.
+   */
+  private lastBlockedForegroundAt: number | null = null;
 
   private readonly timers: TimerHandles = {
     retry: null,
@@ -237,7 +262,30 @@ export class ConnectionSupervisor {
       this.dispatch("retry_now");
       return;
     }
+    if (this.state === "blocked" && !this.mayRetryBlockedOnForeground()) {
+      // Suppressed, not deferred: no timer is armed and no event is queued, so the
+      // supervisor stays the sole retry owner (A-5) and a blocked FSM still schedules
+      // nothing. The next foreground past the floor, or any informative wakeup,
+      // attempts immediately.
+      return;
+    }
     this.dispatch("resume");
+  }
+
+  /**
+   * The foreground floor for `blocked` (review-4 item 3). Records the spend as a side
+   * effect, so a caller that is allowed through cannot be allowed through twice.
+   */
+  private mayRetryBlockedOnForeground(): boolean {
+    const now = Date.now();
+    if (
+      this.lastBlockedForegroundAt !== null &&
+      now - this.lastBlockedForegroundAt < BLOCKED_FOREGROUND_RETRY_MS
+    ) {
+      return false;
+    }
+    this.lastBlockedForegroundAt = now;
+    return true;
   }
 
   /** The stream died or can no longer be trusted (bus restart request, socket close). */
@@ -318,6 +366,16 @@ export class ConnectionSupervisor {
     const from = this.state;
     const transition = lookupTransition(from, event);
     this.state = transition.next;
+
+    if (this.state === "connected" && from !== "connected") {
+      // The block genuinely cleared, so the floor has nothing left to protect against.
+      //
+      // Note this is the ONLY reset. Clearing on entry to `blocked` instead would
+      // defeat the floor entirely: a suppressed-then-allowed foreground runs
+      // `blocked -> connecting -> blocked`, and re-entry would wipe the stamp the
+      // attempt just set, letting the very next app switch spend another attempt.
+      this.lastBlockedForegroundAt = null;
+    }
 
     for (const effect of transition.effects) {
       this.runEffect(effect);

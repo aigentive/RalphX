@@ -35,6 +35,7 @@ use crate::domain::repositories::RemoteWsTicketOutcome;
 use crate::domain::services::key_crypto::hash_key;
 use crate::infrastructure::sqlite::RemoteEventLogStore;
 use crate::remote_server::auth::{now_timestamp, RemoteAuthContext, RemoteAuthRejection};
+use crate::remote_server::counters::RemoteStreamCounters;
 use crate::remote_server::endpoints::RemoteRouterState;
 use crate::remote_server::rate_limit::auth_endpoint_key;
 use crate::remote_server::remote_error_response;
@@ -166,9 +167,12 @@ impl SessionSendQueue {
         }
     }
 
-    /// Depth probe. Only the tests need it — production never branches on the depth, it branches
-    /// on the [`SendQueueOutcome`], which is the whole point of returning one.
-    #[cfg(test)]
+    /// Depth probe, sampled by the session loop into the high-water counter (§5.5).
+    ///
+    /// Production still never BRANCHES on the depth — it branches on the
+    /// [`SendQueueOutcome`], which is the whole point of returning one. This is
+    /// observation only, which is why it can be read on the hot path without making the
+    /// depth part of any decision.
     pub(crate) fn len(&self) -> usize {
         self.frames.len()
     }
@@ -407,6 +411,7 @@ pub(crate) async fn run_session(
     // The epoch this session's replay was proven against; live durable frames from any other
     // epoch are not this client's stream.
     let mut subscribed_epoch: Option<StreamEpoch> = None;
+    let counters = context.stream.counters();
     let mut queue = SessionSendQueue::with_capacity(SESSION_SEND_QUEUE_CAPACITY);
     let mut last_sent: u64 = 0;
     let mut unacked_heartbeats: u32 = 0;
@@ -415,6 +420,10 @@ pub(crate) async fn run_session(
     heartbeat.tick().await; // the first tick fires immediately; skip it
 
     loop {
+        // Sampled before the drain, which is the only moment the backlog is at its peak:
+        // the drain below empties the queue completely on every turn, so a sample taken
+        // afterwards would always read zero and the high-water would be meaningless.
+        counters.observe_send_queue_depth(queue.len() as u64);
         while let Some(frame) = queue.pop() {
             if socket.send(frame).await.is_err() {
                 return SessionOutcome::SocketError;
@@ -435,8 +444,12 @@ pub(crate) async fn run_session(
         match event {
             // A `None` reason means the sender was dropped without one — still a teardown.
             SessionEvent::Kill(reason) => {
-                return close_with_teardown(socket, reason.unwrap_or(ResetReason::HostDisabled))
-                    .await
+                return close_with_teardown(
+                    socket,
+                    counters,
+                    reason.unwrap_or(ResetReason::HostDisabled),
+                )
+                .await
             }
             SessionEvent::Incoming(None) => return SessionOutcome::ClientClosed,
             SessionEvent::Incoming(Some(Err(_))) => return SessionOutcome::SocketError,
@@ -452,6 +465,7 @@ pub(crate) async fn run_session(
                         frames = Some(subscription.frames);
                     }
                     Err(reason) => {
+                        counters.record_reset(reason);
                         let _ = socket.send(ServerFrame::Reset { reason }).await;
                         socket.close().await;
                         return SessionOutcome::Reset(reason);
@@ -477,7 +491,7 @@ pub(crate) async fn run_session(
                 // session already crossed a roll boundary. Skipping instead would turn a missed
                 // roll into a healthy-looking session that never receives another durable event.
                 if subscribed_epoch.as_ref() != Some(&event.epoch) {
-                    return close_with_teardown(socket, ResetReason::EpochChanged).await;
+                    return close_with_teardown(socket, counters, ResetReason::EpochChanged).await;
                 }
                 // The client already has everything through `through_seq` from the replay; the
                 // fork deliberately overlaps it (§3.4).
@@ -486,25 +500,39 @@ pub(crate) async fn run_session(
                     if queue.push(QueuedFrame::Durable(event_frame(&event)))
                         == SendQueueOutcome::DurableGap
                     {
-                        return close_with_teardown(socket, ResetReason::CursorPruned).await;
+                        counters.record_kicked_session();
+                        return close_with_teardown(socket, counters, ResetReason::CursorPruned)
+                            .await;
                     }
                 }
             }
             SessionEvent::Live(LiveFrame::Transient { name, payload }) => {
-                // Transient frames carry no seq (§3.2) and never enter the log (A-4).
-                queue.push(QueuedFrame::Transient(ServerFrame::Event {
+                // Transient frames carry no seq (§3.2) and never enter the log (A-4), so a full
+                // queue drops one rather than stalling the stream (R-6 drop-oldest).
+                let outcome = queue.push(QueuedFrame::Transient(ServerFrame::Event {
                     seq: None,
                     name: name.to_string(),
                     payload: (*payload).clone(),
                 }));
+                if matches!(
+                    outcome,
+                    SendQueueOutcome::DroppedOldestTransient
+                        | SendQueueOutcome::DroppedIncomingTransient
+                ) {
+                    counters.record_transient_drop();
+                }
             }
             SessionEvent::Live(LiveFrame::EpochRolled) => {
-                return close_with_teardown(socket, ResetReason::EpochChanged).await
+                return close_with_teardown(socket, counters, ResetReason::EpochChanged).await
             }
             // The session fell behind the live buffer: a durable gap. Kick it with a
             // cursor-resumable reset rather than splice over the missing seqs.
             SessionEvent::Live(LiveFrame::Lagged) => {
-                return close_with_teardown(socket, ResetReason::CursorPruned).await
+                // The REAL backpressure path in production: the per-session queue is drained
+                // every loop turn, so a slow client falls behind on the broadcast channel long
+                // before its own queue fills. Counted as a kick because that is what it is.
+                counters.record_kicked_session();
+                return close_with_teardown(socket, counters, ResetReason::CursorPruned).await;
             }
             SessionEvent::HeartbeatTick => {
                 if heartbeat_budget_exhausted(unacked_heartbeats) {
@@ -550,8 +578,12 @@ enum SessionEvent {
 /// Sends the terminal frame for a teardown reason, then closes.
 async fn close_with_teardown(
     socket: &mut dyn SessionSocket,
+    counters: &RemoteStreamCounters,
     reason: ResetReason,
 ) -> SessionOutcome {
+    // Every teardown is counted HERE rather than at the five call sites, so a future
+    // teardown path cannot be added without being observable (§5.5, R-11).
+    counters.record_reset(reason);
     // Revocation is an `error{revoked}` (P-2); every other teardown is a typed `reset`.
     let outcome = match reason {
         ResetReason::Revoked => {

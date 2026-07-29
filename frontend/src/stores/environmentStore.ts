@@ -117,6 +117,25 @@ interface EnvironmentState {
    */
   effectiveScopes: Record<string, readonly string[] | null>;
   /**
+   * Per-environment notification tally OBSERVED while an environment is in the
+   * background (PR 3.3, §6.4).
+   *
+   * This is a count of `notification:created` frames seen on a background socket —
+   * NOT a projection. Nothing here advances a warm cursor and nothing here touches an
+   * environment's retained `QueryClient` (A-12). A missing key means "nothing observed
+   * since this environment was last active", which is what a reader must render as no
+   * badge.
+   *
+   * SINGLE WRITER: the composition root's background relay in
+   * `lib/remote/environment-runtime.ts`. The switcher is a READER. A second writer
+   * (say, a component reacting to its own notification query) would race the observer
+   * and produce a badge that disagrees with itself between renders.
+   *
+   * The active environment never accumulates: it is projecting, so its notifications
+   * are already in its cache and the badge would double-count them.
+   */
+  notificationBadges: Record<string, number>;
+  /**
    * Switches the active environment. Synchronous state update first (first
    * paint), then mirrors to the Rust authority; reverts on rejection.
    */
@@ -139,6 +158,10 @@ interface EnvironmentState {
   clearEffectiveScopes: (id: string) => void;
   /** Composition-root only: forgets a presentation (quiesce / registry removal). */
   clearConnectionPresentation: (id: string) => void;
+  /** Composition-root only: counts one observed background notification (A-12). */
+  observeNotificationBadge: (id: string) => void;
+  /** Composition-root only: reconciles the tally away on activation / removal. */
+  clearNotificationBadge: (id: string) => void;
 }
 
 function toEntry(summary: RemoteEnvironmentSummary): EnvironmentEntry {
@@ -156,6 +179,7 @@ export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
   connectionStates: { [LOCAL_ENVIRONMENT_ID]: "connected" },
   connectionPresentations: {},
   effectiveScopes: {},
+  notificationBadges: {},
 
   setActiveEnvironment: async (id) => {
     const previous = get().activeEnvironmentId;
@@ -212,11 +236,21 @@ export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
           connectionPresentations[id] = presentation;
         }
       }
+      // Same reasoning again: an observed tally belongs to the connection that
+      // produced it. A re-added row reusing an id must start at zero rather than
+      // claim notifications from an environment the user removed.
+      const notificationBadges: Record<string, number> = {};
+      for (const [id, count] of Object.entries(state.notificationBadges)) {
+        if (knownIds.has(id) && id !== LOCAL_ENVIRONMENT_ID) {
+          notificationBadges[id] = count;
+        }
+      }
       return {
         environments,
         connectionStates,
         connectionPresentations,
         effectiveScopes,
+        notificationBadges,
         // A removed environment cannot stay active; Rust already fell back to
         // local when the row died, so the mirror follows.
         activeEnvironmentId: knownIds.has(state.activeEnvironmentId)
@@ -292,6 +326,25 @@ export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
       const connectionPresentations = { ...state.connectionPresentations };
       delete connectionPresentations[id];
       return { connectionPresentations };
+    });
+  },
+
+  observeNotificationBadge: (id) => {
+    if (id === LOCAL_ENVIRONMENT_ID) return; // local projects; it never observes
+    set((state) => ({
+      notificationBadges: {
+        ...state.notificationBadges,
+        [id]: (state.notificationBadges[id] ?? 0) + 1,
+      },
+    }));
+  },
+
+  clearNotificationBadge: (id) => {
+    set((state) => {
+      if (state.notificationBadges[id] === undefined) return state;
+      const notificationBadges = { ...state.notificationBadges };
+      delete notificationBadges[id];
+      return { notificationBadges };
     });
   },
 }));
