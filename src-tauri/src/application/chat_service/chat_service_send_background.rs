@@ -13,6 +13,7 @@ use super::chat_service_context;
 use super::chat_service_helpers::get_assistant_role;
 use super::chat_service_run_finalization::{
     finalize_run_completed_by_id, queue_run_completed_event_authority as queue_authority,
+    run_completed_without_queue_is_authorized,
 };
 use super::chat_service_streaming::{
     completion_tool_result_accepted, is_completion_tool_name, process_stream_background,
@@ -1773,8 +1774,11 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     let conv_id_str = conversation_id.as_str();
                     streaming_state_cache.clear(&conv_id_str).await;
 
-                    let will_emit_run_completed = completion_applied
-                        && (!skip_post_loop_finalization || outcome.silent_interactive_exit);
+                    let will_emit_run_completed = run_completed_without_queue_is_authorized(
+                        completion_applied,
+                        skip_post_loop_finalization,
+                        outcome.silent_interactive_exit,
+                    );
                     tracing::info!(
                         context_type = %context_type,
                         context_id = %context_id,
