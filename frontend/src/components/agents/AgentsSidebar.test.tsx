@@ -48,6 +48,8 @@ const { virtuosoMockState } = vi.hoisted(() => ({
     dimensionsByTestId: new Map<string, VirtuosoMockDimensions>(),
     endReachedByTestId: new Map<string, () => void>(),
     rangeByTestId: new Map<string, VirtuosoMockRange>(),
+    restoreStateByTestIdAndCount: new Map<string, VirtuosoMockStateSnapshot>(),
+    scrollToCallsByTestId: new Map<string, number>(),
     resetScrollAfterMountWithoutStateByTestId: new Set<string>(),
     asyncGetStateByTestId: new Set<string>(),
   },
@@ -170,6 +172,12 @@ vi.mock("react-virtuoso", async () => {
       } = props;
       const scrollerNodeRef = React.useRef<HTMLDivElement | null>(null);
       const testId = dataTestId ?? "mock-virtuoso";
+      if (restoreStateFrom) {
+        virtuosoMockState.restoreStateByTestIdAndCount.set(
+          `${testId}:${data.length}`,
+          restoreStateFrom
+        );
+      }
       const range = virtuosoMockState.rangeByTestId.get(testId);
       const startIndex = range?.startIndex ?? 0;
       const endIndex = range?.endIndex ?? data.length - 1;
@@ -199,6 +207,10 @@ vi.mock("react-virtuoso", async () => {
           },
           scrollTo: (location: ScrollToOptions) => {
             if (typeof location.top === "number" && scrollerNodeRef.current) {
+              virtuosoMockState.scrollToCallsByTestId.set(
+                testId,
+                (virtuosoMockState.scrollToCallsByTestId.get(testId) ?? 0) + 1
+              );
               scrollerNodeRef.current.scrollTop = location.top;
             }
           },
@@ -886,33 +898,40 @@ const workspace = (
   ...overrides,
 });
 
+function buildSidebarProps(
+  projects: Project[] = [project()],
+  props?: Partial<ComponentProps<typeof AgentsSidebar>>
+): ComponentProps<typeof AgentsSidebar> {
+  return {
+    projects,
+    focusedProjectId: "project-1",
+    selectedConversationId: null,
+    onFocusProject: vi.fn(),
+    onSelectConversation: vi.fn(),
+    onCreateAgent: vi.fn(),
+    onCreateProject: vi.fn(),
+    onArchiveProject: vi.fn(),
+    onAutoRenameConversation: vi.fn(),
+    onRenameConversation: vi.fn(),
+    onArchiveConversation: vi.fn(),
+    onBulkArchiveConversations: vi.fn(),
+    onBulkMuteConversations: vi.fn(),
+    onSetConversationMuted: vi.fn(),
+    onRestoreConversation: vi.fn(),
+    onForkConversation: vi.fn(),
+    showArchived: false,
+    onShowArchivedChange: vi.fn(),
+    ...props,
+  };
+}
+
 function renderSidebar(
   projects: Project[] = [project()],
   props?: Partial<ComponentProps<typeof AgentsSidebar>>
 ) {
   return render(
     <TooltipProvider delayDuration={0}>
-      <AgentsSidebar
-        projects={projects}
-        focusedProjectId="project-1"
-        selectedConversationId={null}
-        onFocusProject={vi.fn()}
-        onSelectConversation={vi.fn()}
-        onCreateAgent={vi.fn()}
-        onCreateProject={vi.fn()}
-        onArchiveProject={vi.fn()}
-        onAutoRenameConversation={vi.fn()}
-        onRenameConversation={vi.fn()}
-        onArchiveConversation={vi.fn()}
-        onBulkArchiveConversations={vi.fn()}
-        onBulkMuteConversations={vi.fn()}
-        onSetConversationMuted={vi.fn()}
-        onRestoreConversation={vi.fn()}
-        onForkConversation={vi.fn()}
-        showArchived={false}
-        onShowArchivedChange={vi.fn()}
-        {...props}
-      />
+      <AgentsSidebar {...buildSidebarProps(projects, props)} />
     </TooltipProvider>
   );
 }
@@ -979,6 +998,8 @@ describe("AgentsSidebar", () => {
     virtuosoMockState.dimensionsByTestId.clear();
     virtuosoMockState.endReachedByTestId.clear();
     virtuosoMockState.rangeByTestId.clear();
+    virtuosoMockState.restoreStateByTestIdAndCount.clear();
+    virtuosoMockState.scrollToCallsByTestId.clear();
     virtuosoMockState.resetScrollAfterMountWithoutStateByTestId.clear();
     virtuosoMockState.asyncGetStateByTestId.clear();
     runningStatesHook.mockClear();
@@ -1021,6 +1042,33 @@ describe("AgentsSidebar", () => {
     expect(screen.getByTestId("agents-new-agent")).toHaveTextContent("New");
     expect(screen.getByTestId("agents-new-agent").className).toContain("h-7");
     expect(screen.getByTestId("agents-add-project").className).toContain("rounded-[6px]");
+  });
+
+  it("keeps a lightweight list frame but does not mount Virtuoso while hidden", () => {
+    conversationsByProject.set("project-1", {
+      data: [conversation()],
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    const hiddenSidebar = renderSidebar([project()], { isVisible: false });
+
+    expect(
+      screen.getByTestId("agents-sidebar-session-list-project-1-frame")
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-sidebar-session-list-project-1")
+    ).not.toBeInTheDocument();
+
+    hiddenSidebar.rerender(
+      <TooltipProvider delayDuration={0}>
+        <AgentsSidebar {...buildSidebarProps([project()], { isVisible: true })} />
+      </TooltipProvider>
+    );
+
+    expect(screen.getByTestId("agents-sidebar-session-list-project-1")).toBeInTheDocument();
   });
 
   it("renders the data-driven No project group and selects its standalone row without a project id", async () => {
@@ -1771,6 +1819,111 @@ describe("AgentsSidebar", () => {
     expect(screen.getByTestId("agents-sidebar-session-list-project-1").scrollTop).toBe(
       184
     );
+  });
+
+  it("restores a saved scroll state only once for a scroll key across data refreshes", () => {
+    const rows = Array.from({ length: 12 }, (_, index) =>
+      conversation({
+        id: `conversation-restore-${index + 1}`,
+        title: `Restore row ${index + 1}`,
+      })
+    );
+    conversationsByProject.set("project-1", {
+      data: rows,
+      total: rows.length,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    const firstRender = renderSidebar();
+    const firstList = screen.getByTestId("agents-sidebar-session-list-project-1");
+    firstList.scrollTop = 184;
+    fireEvent.scroll(firstList);
+    firstRender.unmount();
+    virtuosoMockState.dimensionsByTestId.set("agents-sidebar-session-list-project-1", {
+      clientHeight: 368,
+      scrollHeight: 736,
+    });
+
+    const refreshedRows = [
+      ...rows,
+      conversation({ id: "conversation-restore-13", title: "Restore row 13" }),
+    ];
+    const restoredRender = renderSidebar();
+    conversationsByProject.set("project-1", {
+      data: refreshedRows,
+      total: refreshedRows.length,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    restoredRender.rerender(
+      <TooltipProvider delayDuration={0}>
+        <AgentsSidebar {...buildSidebarProps()} />
+      </TooltipProvider>
+    );
+
+    const testId = "agents-sidebar-session-list-project-1";
+    expect(virtuosoMockState.restoreStateByTestIdAndCount.get(`${testId}:12`)).toBe(
+      virtuosoMockState.restoreStateByTestIdAndCount.get(`${testId}:13`)
+    );
+    expect(virtuosoMockState.scrollToCallsByTestId.get(testId)).toBe(1);
+  });
+
+  it("restores the latest saved scroll position after a hide and show cycle", async () => {
+    const hideProject = project({ id: "project-hide", name: "hide-show" });
+    useAgentSessionStore.setState({
+      expandedProjectIds: { "project-hide": true },
+    });
+    const rows = Array.from({ length: 12 }, (_, index) =>
+      conversation({
+        id: `conversation-hide-${index + 1}`,
+        title: `Hide row ${index + 1}`,
+        projectId: "project-hide",
+        contextId: "project-hide",
+      })
+    );
+    conversationsByProject.set("project-hide", {
+      data: rows,
+      total: rows.length,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    virtuosoMockState.dimensionsByTestId.set(
+      "agents-sidebar-session-list-project-hide",
+      { clientHeight: 368, scrollHeight: 736 }
+    );
+
+    const view = renderSidebar([hideProject], { isVisible: true });
+    const list = screen.getByTestId("agents-sidebar-session-list-project-hide");
+    list.scrollTop = 184;
+    fireEvent.scroll(list);
+    await waitForAnimationFrame();
+
+    view.rerender(
+      <TooltipProvider delayDuration={0}>
+        <AgentsSidebar {...buildSidebarProps([hideProject], { isVisible: false })} />
+      </TooltipProvider>
+    );
+    expect(
+      screen.queryByTestId("agents-sidebar-session-list-project-hide")
+    ).not.toBeInTheDocument();
+
+    view.rerender(
+      <TooltipProvider delayDuration={0}>
+        <AgentsSidebar {...buildSidebarProps([hideProject], { isVisible: true })} />
+      </TooltipProvider>
+    );
+    await waitForAnimationFrame();
+
+    expect(
+      screen.getByTestId("agents-sidebar-session-list-project-hide").scrollTop
+    ).toBe(184);
   });
 
   it("refetches the previously loaded project page depth when returning to a group", async () => {
