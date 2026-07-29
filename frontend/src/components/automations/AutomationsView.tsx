@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { Plus, Workflow } from "lucide-react";
 
 import type { Automation } from "@/api/automations";
@@ -9,6 +9,7 @@ import type { AutomationRunOpenTarget } from "@/components/automations/automatio
 import { preloadAutomationDetailView } from "@/components/automations/preloadAutomationDetailView";
 import { useAutomationsList } from "@/hooks/useAutomations";
 import { withAlpha } from "@/lib/theme-colors";
+import { lazyWithRetry } from "@/lib/lazy-with-retry";
 import { AutomationListGroup } from "./AutomationListGroup";
 import { AutomationListRow } from "./AutomationListRow";
 import { AutomationListToolbar } from "./AutomationListToolbar";
@@ -32,7 +33,7 @@ interface AutomationsViewProps {
   onOpenAutomationRun?: (target: AutomationRunOpenTarget) => void;
 }
 
-const LazyAutomationDetailView = lazy(() => preloadAutomationDetailView());
+const LazyAutomationDetailView = lazyWithRetry(() => preloadAutomationDetailView());
 const EMPTY_AUTOMATIONS: Automation[] = [];
 
 function AutomationsListSkeleton() {

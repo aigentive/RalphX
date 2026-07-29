@@ -1,100 +1,101 @@
-import { Suspense, lazy } from "react";
+import { Suspense } from "react";
 
+import { lazyWithRetry } from "@/lib/lazy-with-retry";
 import type { ProjectSettings } from "@/types/settings";
 import { useIdeationSettings } from "@/hooks/useIdeationSettings";
 
 import type { SettingsCompositeTab, SettingsSectionId } from "./settings-registry";
 
-const LazyAgentsSettingsSection = lazy(() =>
+const LazyAgentsSettingsSection = lazyWithRetry(() =>
   import("./AgentsSettingsSection").then((module) => ({
     default: module.AgentsSettingsSection,
   })),
 );
-const LazyHarnessProvidersSection = lazy(() =>
+const LazyHarnessProvidersSection = lazyWithRetry(() =>
   import("./HarnessProvidersSection").then((module) => ({
     default: module.HarnessProvidersSection,
   })),
 );
-const LazyAgentModelsSection = lazy(() =>
+const LazyAgentModelsSection = lazyWithRetry(() =>
   import("./AgentModelsSection").then((module) => ({
     default: module.AgentModelsSection,
   })),
 );
-const LazyTasksSettingsSection = lazy(() => import("./sections/TasksSettingsSection"));
-const LazyPlanningSettingsSection = lazy(() => import("./sections/PlanningSettingsSection"));
-const LazyWorkspaceSettingsSection = lazy(() => import("./sections/WorkspaceSettingsSection"));
-const LazyCapacitySettingsSection = lazy(() => import("./sections/CapacitySettingsSection"));
-const LazyRepositorySettingsSection = lazy(() =>
+const LazyTasksSettingsSection = lazyWithRetry(() => import("./sections/TasksSettingsSection"));
+const LazyPlanningSettingsSection = lazyWithRetry(() => import("./sections/PlanningSettingsSection"));
+const LazyWorkspaceSettingsSection = lazyWithRetry(() => import("./sections/WorkspaceSettingsSection"));
+const LazyCapacitySettingsSection = lazyWithRetry(() => import("./sections/CapacitySettingsSection"));
+const LazyRepositorySettingsSection = lazyWithRetry(() =>
   import("./RepositorySettingsSection").then((module) => ({
     default: module.RepositorySettingsSection,
   })),
 );
-const LazyProjectAnalysisSection = lazy(() =>
+const LazyProjectAnalysisSection = lazyWithRetry(() =>
   import("./ProjectAnalysisSection").then((module) => ({
     default: module.ProjectAnalysisSection,
   })),
 );
-const LazyApiKeysSection = lazy(() =>
+const LazyApiKeysSection = lazyWithRetry(() =>
   import("./ApiKeysSection").then((module) => ({
     default: module.ApiKeysSection,
   })),
 );
-const LazyExternalMcpSettingsPanel = lazy(() =>
+const LazyExternalMcpSettingsPanel = lazyWithRetry(() =>
   import("./ExternalMcpSettingsPanel").then((module) => ({
     default: module.ExternalMcpSettingsPanel,
   })),
 );
-const LazyAtlassianIntegrationSettingsPanel = lazy(() =>
+const LazyAtlassianIntegrationSettingsPanel = lazyWithRetry(() =>
   import("./AtlassianIntegrationSettingsPanel").then((module) => ({
     default: module.AtlassianIntegrationSettingsPanel,
   })),
 );
-const LazyGitHubIntegrationSettingsPanel = lazy(() =>
+const LazyGitHubIntegrationSettingsPanel = lazyWithRetry(() =>
   import("./GitHubIntegrationSettingsPanel").then((module) => ({
     default: module.GitHubIntegrationSettingsPanel,
   })),
 );
-const LazyLinearIntegrationSettingsPanel = lazy(() =>
+const LazyLinearIntegrationSettingsPanel = lazyWithRetry(() =>
   import("./LinearIntegrationSettingsPanel").then((module) => ({
     default: module.LinearIntegrationSettingsPanel,
   })),
 );
-const LazyClickUpIntegrationSettingsPanel = lazy(() =>
+const LazyClickUpIntegrationSettingsPanel = lazyWithRetry(() =>
   import("./ClickUpIntegrationSettingsPanel").then((module) => ({
     default: module.ClickUpIntegrationSettingsPanel,
   })),
 );
-const LazyGranolaIntegrationSettingsPanel = lazy(() =>
+const LazyGranolaIntegrationSettingsPanel = lazyWithRetry(() =>
   import("./GranolaIntegrationSettingsPanel").then((module) => ({
     default: module.GranolaIntegrationSettingsPanel,
   })),
 );
-const LazyMcpSettingsSection = lazy(() =>
+const LazyMcpSettingsSection = lazyWithRetry(() =>
   import("./McpSettingsSection").then((module) => ({
     default: module.McpSettingsSection,
   })),
 );
-const LazyAccessibilitySection = lazy(() =>
+const LazyAccessibilitySection = lazyWithRetry(() =>
   import("./AccessibilitySection").then((module) => ({
     default: module.AccessibilitySection,
   })),
 );
-const LazyNotificationSettingsPanel = lazy(() =>
+const LazyNotificationSettingsPanel = lazyWithRetry(() =>
   import("./NotificationSettingsPanel").then((module) => ({
     default: module.NotificationSettingsPanel,
   })),
 );
-const LazyUpdatesSettingsSection = lazy(() =>
+const LazyUpdatesSettingsSection = lazyWithRetry(() =>
   import("./UpdatesSettingsSection").then((module) => ({
     default: module.UpdatesSettingsSection,
   })),
 );
-const LazyPersonasSection = lazy(() =>
+const LazyPersonasSection = lazyWithRetry(() =>
   import("./PersonasSection").then((module) => ({
     default: module.PersonasSection,
   })),
 );
-const LazyCapabilitiesSection = lazy(() =>
+const LazyCapabilitiesSection = lazyWithRetry(() =>
   import("./CapabilitiesSection").then((module) => ({
     default: module.CapabilitiesSection,
   })),
