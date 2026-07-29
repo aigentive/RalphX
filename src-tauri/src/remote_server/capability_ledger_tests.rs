@@ -2254,6 +2254,48 @@ fn probe_b4_module_batch_audit() {
     }
 }
 
+/// Sink evidence behind every census-`B4` detector-(c) hit.
+///
+/// [`probe_b4_module_batch_audit`] prints a boolean; batch 11 classifies twelve B4 members as
+/// `host-denied-spawns-process` on the strength of that boolean, and a manifest reason that
+/// asserts "reaches a process launch" has to be argued against a concrete resolver token rather
+/// than a `true`. This prints the launcher tokens inside each member's own closure so the
+/// classification can be checked by reading it, and so a member that STOPS reaching a launcher
+/// shows up as an empty list instead of silently keeping a stale refusal.
+#[test]
+#[ignore = "calibration probe"]
+fn probe_b4_detector_c_sink_evidence() {
+    const B4_MODULES: &[&str] = &[
+        "agent_plan_commands",
+        "ideation_commands",
+        "methodology_commands",
+        "plan_commands",
+        "workflow_commands",
+    ];
+    let graph = CallGraph::build(&load_production_sources());
+    for (command, module) in &census() {
+        if !B4_MODULES.contains(&module.as_str()) {
+            continue;
+        }
+        let closure = graph.closure([command.clone()]);
+        if !tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS) {
+            continue;
+        }
+        let launchers = closure
+            .tokens
+            .iter()
+            .filter(|t| {
+                tokens_reach_any(&std::iter::once((*t).clone()).collect(), PROCESS_LAUNCH_SINKS)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        eprintln!(
+            "PROBE-B4C {command} visited={} launchers={launchers:?}",
+            closure.tokens.len()
+        );
+    }
+}
+
 /// Calibration probe for census `B3` — review, QA, merge pipeline, validation.
 ///
 /// Same shape as [`probe_b1_module_batch_audit`]: prints the live detector (a)/(b)/(c) verdict
@@ -4661,6 +4703,230 @@ fn batch10_closes_the_declared_membership_process_launch_gap() {
     );
 }
 
+/// PR 3.1-b batch 11 — the census `B4` remainder, one disposition per member.
+///
+/// Same three-valued shape batch 10 established, and the same non-negotiable inside it: the
+/// detector-(c) floor is RE-MEASURED per member here rather than inherited from the batch's
+/// probe output. A registered member that grows a process-launch path fails loudly instead of
+/// keeping its registration, and a refused member that LOSES its launch path fails too — a
+/// stale refusal is as dishonest as a stale registration, and `host-denied-spawns-process`
+/// asserts a reachable sink, not a historical one.
+///
+/// This test is also the live pin for the seven `v1-audit-refused` rows batch 11 added: each is
+/// named below, so deleting the table takes the classifications down with it.
+#[test]
+fn batch11_closes_the_b4_remainder() {
+    // `Read` and `Agent` are registered; `FailOpen` and `Floor` are manifest classifications.
+    #[derive(PartialEq, Eq, Clone, Copy, Debug)]
+    enum Disposition {
+        Read,
+        Agent,
+        FailOpen,
+        Floor,
+    }
+    use Disposition::*;
+
+    const TABLE: &[(&str, &str, Disposition)] = &[
+        // The reads: hand-audited write-free, dropped from the conservative module default.
+        ("get_ideation_session", "ideation_commands", Read),
+        ("get_ideation_session_with_data", "ideation_commands", Read),
+        ("get_ideation_agent_workspace", "ideation_commands", Read),
+        ("list_ideation_sessions", "ideation_commands", Read),
+        ("get_session_group_counts", "ideation_commands", Read),
+        ("list_sessions_by_group", "ideation_commands", Read),
+        ("get_child_sessions", "ideation_commands", Read),
+        ("get_latest_child_session_id", "ideation_commands", Read),
+        ("get_task_proposal", "ideation_commands", Read),
+        ("list_session_proposals", "ideation_commands", Read),
+        ("get_proposal_dependencies", "ideation_commands", Read),
+        ("get_proposal_dependents", "ideation_commands", Read),
+        ("get_task_blockers", "ideation_commands", Read),
+        ("get_blocked_tasks", "ideation_commands", Read),
+        ("get_tasks_disable_impact", "ideation_commands", Read),
+        ("get_ideation_settings", "ideation_commands", Read),
+        ("get_ideation_effort_settings", "ideation_commands", Read),
+        ("get_ideation_model_settings", "ideation_commands", Read),
+        ("get_agent_lane_settings", "ideation_commands", Read),
+        // The writers: registered at `ui:agent`, never dropped to Read on detector silence.
+        ("update_ideation_session_title", "ideation_commands", Agent),
+        ("reorder_proposals", "ideation_commands", Agent),
+        ("assess_proposal_priority", "ideation_commands", Agent),
+        ("assess_all_priorities", "ideation_commands", Agent),
+        ("remove_proposal_dependency", "ideation_commands", Agent),
+        ("update_ideation_settings", "ideation_commands", Agent),
+        ("update_ideation_effort_settings", "ideation_commands", Agent),
+        ("update_ideation_model_settings", "ideation_commands", Agent),
+        ("update_agent_lane_settings", "ideation_commands", Agent),
+        ("create_workflow", "workflow_commands", Agent),
+        ("update_workflow", "workflow_commands", Agent),
+        ("set_default_workflow", "workflow_commands", Agent),
+        ("activate_methodology", "methodology_commands", Agent),
+        ("deactivate_methodology", "methodology_commands", Agent),
+        // The fail-opens: an error discarded on a path that still returns Ok, where losing it
+        // changes the ANSWER rather than its completeness.
+        ("analyze_dependencies", "ideation_commands", FailOpen),
+        ("export_ideation_session", "ideation_commands", FailOpen),
+        ("create_task_proposal", "ideation_commands", FailOpen),
+        ("get_agent_harness_availability", "ideation_commands", FailOpen),
+        (
+            "get_ideation_harness_availability",
+            "ideation_commands",
+            FailOpen,
+        ),
+        ("create_cross_project_session", "ideation_commands", FailOpen),
+        ("import_ideation_session", "ideation_commands", FailOpen),
+        // The floor: each hand-traced to a concrete Command::new, not accepted on the boolean.
+        ("copy_agent_conversation_plan", "agent_plan_commands", Floor),
+        ("import_agent_conversation_plan", "agent_plan_commands", Floor),
+        ("activate_agent_task_pipeline", "agent_plan_commands", Floor),
+        (
+            "activate_agent_plan_direct_implementation",
+            "agent_plan_commands",
+            Floor,
+        ),
+        ("start_agent_task_pipeline", "agent_plan_commands", Floor),
+        ("create_ideation_session", "ideation_commands", Floor),
+        ("archive_ideation_session", "ideation_commands", Floor),
+        ("reopen_ideation_session", "ideation_commands", Floor),
+        ("spawn_session_namer", "ideation_commands", Floor),
+        ("apply_proposals_to_kanban", "ideation_commands", Floor),
+        ("restart_ideation_implementation", "ideation_commands", Floor),
+        ("set_tasks_feature_enabled", "ideation_commands", Floor),
+    ];
+
+    let graph = CallGraph::build(&load_production_sources());
+
+    for (command, module, disposition) in TABLE {
+        let row = policy_for(command, module)
+            .unwrap_or_else(|| panic!("`{command}` must be ledgered by batch 11"));
+
+        // (1) The floor, re-measured per member. This is the gate, not a formality.
+        let closure = graph.closure([(*command).to_string()]);
+        let reaches_launch = tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS);
+        if *disposition == Floor {
+            assert!(
+                reaches_launch,
+                "`{command}` is classified host-denied-spawns-process but no longer reaches a \
+                 process-launch sink; the claim is now false and the row must be re-audited \
+                 rather than kept"
+            );
+        } else {
+            assert!(
+                !reaches_launch,
+                "`{command}` now reaches a process-launch sink; the absolute floor forecloses \
+                 every v1 scope, so its batch-11 disposition is void"
+            );
+        }
+
+        // (2) A member whose CLASS moved may not keep the placeholder that means "no audit was
+        // done". `FailOpen` is deliberately exempt: an audit refusal does not change the class,
+        // so its row legitimately keeps the module default and the finding lives in
+        // `AuditRefusal::finding` instead — asserted per-member in the match below. Requiring a
+        // reviewed reason there would force a false statement into the class reason to buy a
+        // classification, which is the exact trade the ledger's two-table split exists to prevent.
+        if *disposition != FailOpen {
+            assert!(
+                !row.reason.contains("conservative-module-default"),
+                "`{command}` changed class but carries the module-default reason; every batch-11 \
+                 reclassification must record the audit that bought it"
+            );
+        }
+
+        match disposition {
+            Read => {
+                assert_eq!(row.class, RiskClass::Read, "`{command}` must be Read");
+                assert!(
+                    row.capabilities.is_empty(),
+                    "`{command}` is a Read row and must carry no capability"
+                );
+                assert!(
+                    find_spec(command).is_some(),
+                    "`{command}` audited clean and must be registered"
+                );
+            }
+            Agent => {
+                assert_eq!(
+                    row.class,
+                    RiskClass::AgentControl,
+                    "`{command}` writes; a silent detector never licenses dropping it to Read"
+                );
+                let spec = find_spec(command)
+                    .unwrap_or_else(|| panic!("`{command}` audited clean and must be registered"));
+                assert_eq!(spec.class, RiskClass::AgentControl);
+            }
+            FailOpen => {
+                let refusal = audit_refusal_for(command).unwrap_or_else(|| {
+                    panic!("`{command}` audited dirty and must carry an audit refusal")
+                });
+                assert_eq!(
+                    refusal.reason,
+                    ralphx_remote_protocol::AuditRefusalReason::FailOpenUntilFixed,
+                    "`{command}` was refused for a fail-open and must say so"
+                );
+                // The finding is what the exempted class reason would otherwise have carried, so
+                // it has to be specific enough to falsify rather than a restatement of the code.
+                assert!(
+                    refusal.finding.len() > 80
+                        && !refusal.finding.contains("conservative-module-default"),
+                    "`{command}` must record a falsifiable finding, not a placeholder"
+                );
+                assert!(
+                    find_spec(command).is_none(),
+                    "`{command}` is refused and must not be registered"
+                );
+                assert_eq!(
+                    ralphx_remote_protocol::v1_resolution_with_audit(
+                        row.class,
+                        row.capabilities,
+                        true,
+                    ),
+                    ralphx_remote_protocol::V1Resolution::V1AuditRefused,
+                    "`{command}` must resolve through the manifest, not through a comment"
+                );
+            }
+            Floor => {
+                assert_eq!(
+                    row.class,
+                    RiskClass::Elevated,
+                    "`{command}` reaches a launch; Elevated is the only class permitting \
+                     SpawnsProcess"
+                );
+                assert_eq!(row.capabilities, &[Capability::SpawnsProcess]);
+                assert!(
+                    row.reason.starts_with("detector-c"),
+                    "`{command}` must state the finding that justifies the class"
+                );
+                assert!(
+                    find_spec(command).is_none(),
+                    "`{command}` is host-denied and must not be registered"
+                );
+                assert_eq!(
+                    ralphx_remote_protocol::v1_resolution_with_audit(
+                        row.class,
+                        row.capabilities,
+                        audit_refusal_for(command).is_some(),
+                    ),
+                    ralphx_remote_protocol::V1Resolution::HostDeniedSpawnsProcess,
+                );
+            }
+        }
+    }
+
+    // The two arming writes no detector models. Registering either without a declaration would
+    // put an arming write at `ui:agent` that the generated P-17b negative suite never proves
+    // unreachable from a default pairing — the exact hole the chat-send declaration closed.
+    for command in ["update_ideation_settings", "update_agent_lane_settings"] {
+        let declared = DECLARED_MEMBERSHIPS
+            .iter()
+            .any(|(name, _)| *name == command);
+        assert!(
+            declared,
+            "`{command}` arms a spawner through a surface no detector watches and must declare \
+             its membership"
+        );
+    }
+}
+
 /// PR 3.1-b batch 9 ITEM 0 — `v1-audit-refused` cannot be granted without a live pin.
 ///
 /// This is the fail-closed proof for the one resolution a human can hand out by writing a table
@@ -4685,6 +4951,9 @@ fn batch9_audit_refusals_are_tied_to_a_live_pin() {
         // each one and re-measures the detector-(c) floor on it, so deleting the table takes the
         // classifications down with it.
         "batch10_closes_the_batch9_arming_and_write_block",
+        // Batch 11's disposition table is the pin for the seven B4 members it classified
+        // `v1-audit-refused`: it names each one and re-measures the detector-(c) floor on it.
+        "batch11_closes_the_b4_remainder",
     ];
     let own_source = include_str!("capability_ledger_tests.rs");
     let pin_bodies = PINNED_REFUSAL_TESTS
@@ -4750,9 +5019,9 @@ fn batch9_audit_refusals_are_tied_to_a_live_pin() {
     }
     assert_eq!(
         AUDIT_REFUSALS.len(),
-        18,
-        "batch 9 recorded eleven audit refusals and batch 10 added seven; changing that count is \
-         a census decision"
+        25,
+        "batch 9 recorded eleven audit refusals, batch 10 added seven and batch 11 added seven \
+         more (the B4 fail-opens); changing that count is a census decision"
     );
 }
 

@@ -67,6 +67,18 @@ const fn policy(
     }
 }
 
+/// A command dropped from its conservative module default to `Read` by a hand audit.
+///
+/// The reason is mandatory and is asserted non-placeholder by the read-reclassification pins:
+/// dropping a row below the module default is only ever licensed by an audit that found no
+/// write, never by detector silence, so the row has to carry the finding that bought it.
+const fn read_audit(command: &'static str, reason: &'static str) -> CommandOverride {
+    CommandOverride {
+        command,
+        policy: policy(RiskClass::Read, NONE, reason),
+    }
+}
+
 const fn agent_default(module: &'static str) -> ModuleDefault {
     ModuleDefault {
         module,
@@ -1669,6 +1681,316 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
     // membership is a contract change, not the retroactive closure of an unclassified refusal,
     // so batch 9 recorded the finding and left the row alone. Pinned as a successor gap by
     // `batch9_records_the_declared_membership_process_launch_gap`.
+    //
+    // ---- PR 3.1-b batch 11 — census B4 remainder, hand-audited -----------------------------
+    //
+    // Every row below replaces the `agent_default("ideation_commands")` (or workflow/methodology)
+    // placeholder with a reviewed reason. The reads drop to `Read`/`NONE` on the b1 precedent:
+    // detector (a)/(b)/(c) all silent AND a hand audit confirming no repository write. The
+    // writers stay at `AgentControl` — a silent detector never licenses dropping a writer.
+    //
+    // The B4 reads. All confirmed write-free by body audit, not by detector silence alone.
+    read_audit(
+        "get_ideation_session",
+        "batch-11 audit: one `ideation_session_repo` read plus in-memory title hydration; \
+         `agent_planning_session_titles` mutates the returned struct, never the repository",
+    ),
+    read_audit(
+        "get_ideation_session_with_data",
+        "batch-11 audit: same single-session read widened with proposals/dependencies; no write",
+    ),
+    read_audit(
+        "get_ideation_agent_workspace",
+        "batch-11 audit: resolves the linked workspace through \
+         `resolve_agent_workspace_target_for_ideation_session` — three repository reads and a \
+         pure title helper. NOT the `agent_workspace_response_for_state` hydrator, which is the \
+         detector-(c) funnel that forecloses the agent-conversation twins",
+    ),
+    read_audit(
+        "list_ideation_sessions",
+        "batch-11 audit: project-scoped session list; no write",
+    ),
+    read_audit(
+        "get_session_group_counts",
+        "batch-11 audit: aggregate count query; no write",
+    ),
+    read_audit(
+        "list_sessions_by_group",
+        "batch-11 audit: paged group list; the `group` argument is checked against an allowlist \
+         and rejected on miss, so it cannot widen the query",
+    ),
+    read_audit(
+        "get_child_sessions",
+        "batch-11 audit: child-session read with purpose filter; no write",
+    ),
+    read_audit(
+        "get_latest_child_session_id",
+        "batch-11 audit: single-id read; the purpose parse is `.transpose()?`, not a default",
+    ),
+    read_audit(
+        "get_task_proposal",
+        "batch-11 audit: one proposal read; no write",
+    ),
+    read_audit(
+        "list_session_proposals",
+        "batch-11 audit: session-scoped proposal list; no write",
+    ),
+    read_audit(
+        "get_proposal_dependencies",
+        "batch-11 audit: dependency edge read; no write",
+    ),
+    read_audit(
+        "get_proposal_dependents",
+        "batch-11 audit: reverse dependency edge read; no write",
+    ),
+    read_audit(
+        "get_task_blockers",
+        "batch-11 audit: blocker read; no write",
+    ),
+    read_audit(
+        "get_blocked_tasks",
+        "batch-11 audit: blocked-task read; no write",
+    ),
+    read_audit(
+        "get_tasks_disable_impact",
+        "batch-11 audit: `TasksFeatureToggleService::get_disable_impact` aggregates counts and \
+         returns them; it is the read half of the toggle pair and never emits or persists. Its \
+         writing sibling `set_tasks_feature_enabled` is a detector-(c) refusal below",
+    ),
+    read_audit(
+        "get_ideation_settings",
+        "batch-11 audit: settings read; the repo maps only `QueryReturnedNoRows` to the default \
+         and propagates every other error",
+    ),
+    read_audit(
+        "get_ideation_effort_settings",
+        "batch-11 audit: effort read; the `unwrap_or_else` fallbacks fire on an absent row, \
+         never on a swallowed `Err`",
+    ),
+    read_audit(
+        "get_ideation_model_settings",
+        "batch-11 audit: model read; same absent-row-not-error fallback shape as the effort read",
+    ),
+    read_audit(
+        "get_agent_lane_settings",
+        "batch-11 audit: lane settings read; both branches propagate with `map_err(..)?`",
+    ),
+    //
+    // The B4 writers. Registered at `ui:agent` on a body audit, NOT dropped to Read.
+    CommandOverride {
+        command: "update_ideation_session_title",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-11 audit: single `ideation_sessions` title write, read back before return; \
+             the only discard is the post-commit `app.emit`",
+        ),
+    },
+    CommandOverride {
+        command: "reorder_proposals",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-11 audit: the reorder is ONE `UPDATE .. SET sort_order = CASE ..` statement, \
+             so there is no half-reordered mid-loop state; failure propagates",
+        ),
+    },
+    CommandOverride {
+        command: "assess_proposal_priority",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-11 audit: pure in-process scoring (dependency/critical-path/keyword factors) \
+             then one `update_priority` write. Reaches no LLM, harness or process",
+        ),
+    },
+    CommandOverride {
+        command: "assess_all_priorities",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-11 audit: same scoring, looped; both fallible calls inside the loop use `?`, \
+             so a mid-loop failure returns `Err` rather than a short list as success",
+        ),
+    },
+    CommandOverride {
+        command: "remove_proposal_dependency",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-11 audit: one `proposal_dependencies` delete, error propagated",
+        ),
+    },
+    CommandOverride {
+        command: "update_ideation_settings",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-11 audit: one UPDATE plus a read-back inside a single `db.run`. Declared \
+             arms-auto-plan-verification: `auto_verify_draft_plans` written here is the gate \
+             `plan_verification_service` reads before launching the verification agent, and no \
+             detector models it",
+        ),
+    },
+    CommandOverride {
+        command: "update_ideation_effort_settings",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-11 audit: read-merge-upsert, every step `?`; effort changes HOW a spawned \
+             agent runs, not WHETHER a scheduler launches one",
+        ),
+    },
+    CommandOverride {
+        command: "update_ideation_model_settings",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-11 audit: validated then one upsert; both project/global branches `?`",
+        ),
+    },
+    CommandOverride {
+        command: "update_agent_lane_settings",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-11 audit: one lane upsert. Declared arms-agent-spawn-harness: \
+             `resolve_agent_spawn_settings` reads this row on the live spawn path to pick the \
+             harness, model and effort an agent is actually launched with, and no detector \
+             models it",
+        ),
+    },
+    CommandOverride {
+        command: "create_workflow",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-11 audit: builds the workflow from input and creates it; every step \
+             propagates. Touches no task and no transition service",
+        ),
+    },
+    CommandOverride {
+        command: "update_workflow",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-11 audit: get-or-404 then one update; propagates. Replacing the column set \
+             can leave a task's `internal_status` unmapped by any column, but that is a board \
+             projection, not a task write — the module reaches neither `task_repo` nor a \
+             transition service",
+        ),
+    },
+    CommandOverride {
+        command: "set_default_workflow",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-11 audit: clear-then-set default. NOT a fail-open — the error is propagated, \
+             not swallowed — but the pair runs under `db.run` (no BEGIN), so a failed second \
+             write leaves ZERO defaults. Recorded as a product bug, not a refusal: the local UI \
+             reaches the identical path, so refusing it would not fix it",
+        ),
+    },
+    CommandOverride {
+        command: "activate_methodology",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-11 audit: deactivate-previous then activate; every await `?`. Same \
+             non-atomic-toggle product bug as `set_default_workflow`, same reasoning",
+        ),
+    },
+    CommandOverride {
+        command: "deactivate_methodology",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-11 audit: single-row deactivate with a not-active guard; no partial window",
+        ),
+    },
+    //
+    // The twelve B4 detector-(c) refusals. Every one was hand-traced to a concrete
+    // `Command::new` rather than accepted on the probe's boolean, because the scanner is known to
+    // over-attribute: it treats `resolve_manual_role_spawn_settings` as launch-reaching when that
+    // helper terminates in pure DB/YAML, and it confuses `resolve_node_cli_path` with the
+    // `find_node_cli_path` that `git_cmd` reaches via `ensure_resolved_node_bin_in_path`. Between
+    // them those two errors invented the identical {git, codex, node} triple on all five
+    // `agent_plan_commands`. The reasons below claim only the sinks the trace CONFIRMED.
+    process_refusal(
+        "copy_agent_conversation_plan",
+        "detector-c, hand-traced: seed_agent_conversation_plan prepares the plan workspace and \
+         reaches GitService::get_current_branch, and on a conversation with no workspace yet also \
+         create_worktree plus the project's pre-execution shell setup. The probe's codex/node \
+         tokens are artifacts — this path never spawns an agent — but the git launch is real",
+    ),
+    process_refusal(
+        "import_agent_conversation_plan",
+        "detector-c, hand-traced: the same seed_agent_conversation_plan helper as \
+         copy_agent_conversation_plan, genuinely shared, so the same git worktree launch. \
+         codex/node artifacts likewise",
+    ),
+    process_refusal(
+        "activate_agent_task_pipeline",
+        "detector-c, hand-traced and NARROW: the command's own work is DB-only. The launch is \
+         reached through agent_workspace_response_for_state's stale-publish repair, which runs \
+         `git rev-parse --is-inside-work-tree` when the conversation has a stranded PR-fix review \
+         handoff. Refused because the process-launch floor is absolute, not because the reach is \
+         broad — recorded this way so a future seam split can be argued against the real path",
+    ),
+    process_refusal(
+        "activate_agent_plan_direct_implementation",
+        "detector-c, hand-traced and NARROW: same incidental publish-repair probe as \
+         activate_agent_task_pipeline. This command flips the mode inline in SQL and does NOT \
+         inherit the worktree-creation edge the copy/import pair carries",
+    ),
+    process_refusal(
+        "start_agent_task_pipeline",
+        "detector-c, hand-traced: delegates to apply_supervised_proposals_core and inherits all \
+         three of apply_proposals_to_kanban's sinks — the repository capability probe, \
+         base-branch creation, and the session-namer agent spawn",
+    ),
+    process_refusal(
+        "create_ideation_session",
+        "detector-c, hand-traced and UNCONDITIONAL: prepare_ideation_analysis_state calls \
+         GitService::get_current_branch as the fourth statement of the impl, before any \
+         branching, followed immediately by resolve_project_default_branch",
+    ),
+    process_refusal(
+        "archive_ideation_session",
+        "detector-c, hand-traced: TaskCleanupService::cleanup_tasks walks and deletes worktrees \
+         and branches, then delete_feature_branch runs `git branch -D` for the session's active \
+         plan branch",
+    ),
+    process_refusal(
+        "reopen_ideation_session",
+        "detector-c, hand-traced: SessionReopenService::reopen runs the same cleanup_tasks \
+         worktree/branch walk and then delete_feature_branch. Reached through a different helper \
+         from create/archive — all three are independently confirmed, none inherited",
+    ),
+    process_refusal(
+        "spawn_session_namer",
+        "detector-c, hand-traced: client.spawn_agent resolves the Codex CLI and the node binary \
+         for MCP wiring, and the caller selects the harness through the provider_harness argument",
+    ),
+    process_refusal(
+        "apply_proposals_to_kanban",
+        "detector-c, hand-traced, three independent sinks: the github_pr_enabled capability probe \
+         (ensure_git_worktree), base-branch creation directly controlled by the caller's \
+         base_branch_override, and the session-namer agent spawn resolving codex and node",
+    ),
+    process_refusal(
+        "restart_ideation_implementation",
+        "detector-c, hand-traced: the capability probe, then GitService list/delete_worktree, \
+         fetch_origin_branch_strict, and a reset_hard + clean_working_tree pair on the restarted \
+         worktree — the destructive end of the range",
+    ),
+    process_refusal(
+        "set_tasks_feature_enabled",
+        "detector-c, hand-traced: toggling the feature ON fans out up to EIGHT Codex agent \
+         spawns via reconcile_missing_assessments -> spawn_plan_complexity_assessor, gated only \
+         on the caller's `enabled` argument and the prior Disabled state. Its read sibling \
+         get_tasks_disable_impact is registered; the writer is foreclosed at every v1 scope",
+    ),
 ];
 
 /// PR 3.1-b batch 9 ITEM 0 — a detector-(c) refusal, declared at the capability it reaches.
@@ -1906,6 +2228,92 @@ pub const AUDIT_REFUSALS: &[AuditRefusal] = &[
                   the intended verdict and making from_results express it",
         batch: "7 refused, audited and classified 10",
     },
+    // -----------------------------------------------------------------------------------
+    // PR 3.1-b batch 11 — census B4 remainder, the seven whose audit came back dirty.
+    //
+    // Every one of these is a fail-open in the strict sense the vocabulary requires: an error
+    // is discarded on a path that still returns `Ok`, and the discarded error CHANGES the
+    // answer rather than merely truncating it. Members whose only defect was non-atomicity are
+    // NOT here — `set_default_workflow` and `activate_methodology` propagate their errors and
+    // are registered with the product bug recorded on the ledger row instead.
+    // -----------------------------------------------------------------------------------
+    AuditRefusal {
+        command: "analyze_dependencies",
+        reason: AuditRefusalReason::FailOpenUntilFixed,
+        finding: "ideation_commands_dependencies.rs:117 downgrades the \
+                  set_dependencies_acknowledged write to a tracing::warn! and returns \
+                  Ok(DependencyGraphResponse), so the accept-gate flag the command exists to set \
+                  can silently stay unset. The command is not the pure read its name implies — \
+                  viewing the graph IS the write, and the write is the part that can vanish",
+        batch: "audited and classified 11",
+    },
+    AuditRefusal {
+        command: "export_ideation_session",
+        reason: AuditRefusalReason::FailOpenUntilFixed,
+        finding: "session_export_service.rs:291/295/299 decode proposal steps, \
+                  acceptance_criteria and priority_factors with serde_json::from_str(..).ok(), \
+                  so a column that fails to parse is exported as absent rather than as an error \
+                  — the artifact silently loses the fields a re-import would rebuild tasks from. \
+                  Compounded at :411, where a detected cycle replaces the whole plan version \
+                  history with Ok(vec![])",
+        batch: "audited and classified 11",
+    },
+    AuditRefusal {
+        command: "create_task_proposal",
+        reason: AuditRefusalReason::FailOpenUntilFixed,
+        finding: "ideation_commands_proposals.rs:38 coerces an unparsable client priority to \
+                  Priority::Medium instead of rejecting it, and :42/:45/:48 turn a failed \
+                  serde_json::to_string into an empty string — including affected_paths, the \
+                  exact value validate_affected_paths_json is later supposed to check, so a \
+                  serialization failure silently produces an empty path set that passes \
+                  validation. helpers.rs:462 additionally swallows set_dependencies_acknowledged \
+                  after the proposal INSERT has already committed",
+        batch: "audited and classified 11",
+    },
+    AuditRefusal {
+        command: "get_agent_harness_availability",
+        reason: AuditRefusalReason::FailOpenUntilFixed,
+        finding: "ideation_harness_availability.rs:344 and :360 discard the lane-settings read \
+                  with .ok().flatten(), and resolve_lane_harness_config returns infallibly, so a \
+                  DB error is indistinguishable from 'no row configured'. A lane configured to \
+                  Codex with Codex unavailable then probes DEFAULT_AGENT_HARNESS (Claude) and \
+                  reports available:true, configured_harness:null, error:null — a fully green \
+                  lane. This is the list_agent_composer_skills shape exactly: a fail-open that \
+                  changes the answer, not its completeness",
+        batch: "audited and classified 11",
+    },
+    AuditRefusal {
+        command: "get_ideation_harness_availability",
+        reason: AuditRefusalReason::FailOpenUntilFixed,
+        finding: "the same helper, get_harness_availability_for_lanes, over IDEATION_LANES \
+                  instead of AGENT_LANES — identical .ok().flatten() at \
+                  ideation_harness_availability.rs:344/:360 and identical fail-open. Classified \
+                  alongside its sibling rather than left implicit: one shared defect, two \
+                  ledger rows, so fixing the helper clears both",
+        batch: "audited and classified 11",
+    },
+    AuditRefusal {
+        command: "create_cross_project_session",
+        reason: AuditRefusalReason::FailOpenUntilFixed,
+        finding: "plan_reference_import.rs:239 swallows artifact_repo.add_relation after the \
+                  cloned plan artifact at :233 has already been persisted, so the imported plan \
+                  loses its derived_from provenance edge while the command returns Ok — and \
+                  provenance is the whole point of a cross-project import. The durable \
+                  external_events row is discarded the same way at \
+                  ideation_commands_cross_project.rs:242",
+        batch: "audited and classified 11",
+    },
+    AuditRefusal {
+        command: "import_ideation_session",
+        reason: AuditRefusalReason::FailOpenUntilFixed,
+        finding: "session_export_service.rs:671/675/679 re-serialize proposal steps, \
+                  acceptance_criteria and priority_factors with .ok() INSIDE the committed \
+                  import transaction, so those columns land NULL while ImportedSession.\
+                  proposal_count still reports the proposal as fully imported. The input \
+                  validation front end is strong (size cap, schema-version pin, cycle and bounds \
+                  checks); the loss is entirely on the write side",
+        batch: "audited and classified 11",
+    },
 ];
 
 /// The audit refusal recorded for a command, if any.
@@ -2074,6 +2482,17 @@ pub const DECLARED_MEMBERSHIPS: &[(&str, &str)] = &[
     // `DECLARED_MEMBERSHIPS[0]` and `[1]` positionally.
     ("update_qa_settings", "arms-auto-qa"),
     ("set_active_project", "arms-scheduler-quota"),
+    // PR 3.1-b batch 11 — two more detector-silent arming writes, same reasoning as above.
+    //
+    // `update_ideation_settings` writes a plain settings row and `update_agent_lane_settings`
+    // writes a plain lane row, so detector (b) — which watches SPAWN_TRIGGERING_STATE_SURFACE —
+    // is silent on both. But the hand audit found a spawner on the other end of each: the plan
+    // verification service gates on `auto_verify_draft_plans`, and `resolve_agent_spawn_settings`
+    // reads the lane row to choose the harness a live agent is launched with. Registering either
+    // without a declaration would put an arming write at `ui:agent` that the generated P-17b
+    // negative suite never proves unreachable from a default pairing.
+    ("update_ideation_settings", "arms-auto-plan-verification"),
+    ("update_agent_lane_settings", "arms-agent-spawn-harness"),
 ];
 
 /// Expands the module policy and command overrides into one effective command row.

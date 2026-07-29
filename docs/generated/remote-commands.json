@@ -2097,6 +2097,14 @@
     {
       "command": "set_active_project",
       "reason": "arms-scheduler-quota"
+    },
+    {
+      "command": "update_ideation_settings",
+      "reason": "arms-auto-plan-verification"
+    },
+    {
+      "command": "update_agent_lane_settings",
+      "reason": "arms-agent-spawn-harness"
     }
   ],
   "facade_ops": [
@@ -3078,6 +3086,331 @@
       "pins": [],
       "scopeConfined": false,
       "target": "crate::commands::agent_composer_commands::search_agent_composer_plan_references"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_ideation_session",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ideation_commands::get_ideation_session"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_ideation_session_with_data",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ideation_commands::get_ideation_session_with_data"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_ideation_agent_workspace",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ideation_commands::get_ideation_agent_workspace"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "list_ideation_sessions",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ideation_commands::list_ideation_sessions"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_session_group_counts",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ideation_commands::get_session_group_counts"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "list_sessions_by_group",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ideation_commands::list_sessions_by_group"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_child_sessions",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ideation_commands::get_child_sessions"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_latest_child_session_id",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ideation_commands::get_latest_child_session_id"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_task_proposal",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ideation_commands::get_task_proposal"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "list_session_proposals",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ideation_commands::list_session_proposals"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_proposal_dependencies",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ideation_commands::get_proposal_dependencies"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_proposal_dependents",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ideation_commands::get_proposal_dependents"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_task_blockers",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ideation_commands::get_task_blockers"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_blocked_tasks",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ideation_commands::get_blocked_tasks"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_tasks_disable_impact",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ideation_commands::get_tasks_disable_impact"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_ideation_settings",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ideation_commands::get_ideation_settings"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_ideation_effort_settings",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ideation_commands::get_ideation_effort_settings"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_ideation_model_settings",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ideation_commands::get_ideation_model_settings"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_agent_lane_settings",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ideation_commands::get_agent_lane_settings"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "update_ideation_session_title",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ideation_commands::update_ideation_session_title"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "reorder_proposals",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ideation_commands::reorder_proposals"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "assess_proposal_priority",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ideation_commands::assess_proposal_priority"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "assess_all_priorities",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ideation_commands::assess_all_priorities"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "remove_proposal_dependency",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ideation_commands::remove_proposal_dependency"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "update_ideation_settings",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ideation_commands::update_ideation_settings"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "update_ideation_effort_settings",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ideation_commands::update_ideation_effort_settings"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "update_ideation_model_settings",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ideation_commands::update_ideation_model_settings"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "update_agent_lane_settings",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ideation_commands::update_agent_lane_settings"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "create_workflow",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::workflow_commands::create_workflow"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "update_workflow",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::workflow_commands::update_workflow"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "set_default_workflow",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::workflow_commands::set_default_workflow"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "activate_methodology",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::methodology_commands::activate_methodology"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "deactivate_methodology",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::methodology_commands::deactivate_methodology"
     }
   ],
   "ledger": [
@@ -4944,58 +5277,58 @@
     },
     {
       "capabilities": [
-        "agentControl"
+        "spawnsProcess"
       ],
-      "class": "agentControl",
+      "class": "elevated",
       "command": "copy_agent_conversation_plan",
       "module": "agent_plan_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-c, hand-traced: seed_agent_conversation_plan prepares the plan workspace and reaches GitService::get_current_branch, and on a conversation with no workspace yet also create_worktree plus the project's pre-execution shell setup. The probe's codex/node tokens are artifacts — this path never spawns an agent — but the git launch is real",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
-        "agentControl"
+        "spawnsProcess"
       ],
-      "class": "agentControl",
+      "class": "elevated",
       "command": "import_agent_conversation_plan",
       "module": "agent_plan_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-c, hand-traced: the same seed_agent_conversation_plan helper as copy_agent_conversation_plan, genuinely shared, so the same git worktree launch. codex/node artifacts likewise",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
-        "agentControl"
+        "spawnsProcess"
       ],
-      "class": "agentControl",
+      "class": "elevated",
       "command": "activate_agent_task_pipeline",
       "module": "agent_plan_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-c, hand-traced and NARROW: the command's own work is DB-only. The launch is reached through agent_workspace_response_for_state's stale-publish repair, which runs `git rev-parse --is-inside-work-tree` when the conversation has a stranded PR-fix review handoff. Refused because the process-launch floor is absolute, not because the reach is broad — recorded this way so a future seam split can be argued against the real path",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
-        "agentControl"
+        "spawnsProcess"
       ],
-      "class": "agentControl",
+      "class": "elevated",
       "command": "activate_agent_plan_direct_implementation",
       "module": "agent_plan_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-c, hand-traced and NARROW: same incidental publish-repair probe as activate_agent_task_pipeline. This command flips the mode inline in SQL and does NOT inherit the worktree-creation edge the copy/import pair carries",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
-        "agentControl"
+        "spawnsProcess"
       ],
-      "class": "agentControl",
+      "class": "elevated",
       "command": "start_agent_task_pipeline",
       "module": "agent_plan_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-c, hand-traced: delegates to apply_supervised_proposals_core and inherits all three of apply_proposals_to_kanban's sinks — the repository capability probe, base-branch creation, and the session-namer agent spawn",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [],
@@ -5683,16 +6016,21 @@
     },
     {
       "capabilities": [
-        "agentControl"
+        "spawnsProcess"
       ],
-      "class": "agentControl",
+      "class": "elevated",
       "command": "create_ideation_session",
       "module": "ideation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-c, hand-traced and UNCONDITIONAL: prepare_ideation_analysis_state calls GitService::get_current_branch as the fourth statement of the impl, before any branching, followed immediately by resolve_project_default_branch",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
+      "auditRefusal": {
+        "batch": "audited and classified 11",
+        "finding": "plan_reference_import.rs:239 swallows artifact_repo.add_relation after the cloned plan artifact at :233 has already been persisted, so the imported plan loses its derived_from provenance edge while the command returns Ok — and provenance is the whole point of a cross-project import. The durable external_events row is discarded the same way at ideation_commands_cross_project.rs:242",
+        "reason": "fail-open-until-fixed"
+      },
       "capabilities": [
         "agentControl"
       ],
@@ -5701,7 +6039,7 @@
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "v1-audit-refused"
     },
     {
       "capabilities": [
@@ -5715,92 +6053,80 @@
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_ideation_session",
       "module": "ideation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-11 audit: one `ideation_session_repo` read plus in-memory title hydration; `agent_planning_session_titles` mutates the returned struct, never the repository",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_ideation_session_with_data",
       "module": "ideation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-11 audit: same single-session read widened with proposals/dependencies; no write",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_ideation_agent_workspace",
       "module": "ideation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-11 audit: resolves the linked workspace through `resolve_agent_workspace_target_for_ideation_session` — three repository reads and a pure title helper. NOT the `agent_workspace_response_for_state` hydrator, which is the detector-(c) funnel that forecloses the agent-conversation twins",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "list_ideation_sessions",
       "module": "ideation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-11 audit: project-scoped session list; no write",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_session_group_counts",
       "module": "ideation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-11 audit: aggregate count query; no write",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "list_sessions_by_group",
       "module": "ideation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-11 audit: paged group list; the `group` argument is checked against an allowlist and rejected on miss, so it cannot widen the query",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
       "capabilities": [
-        "agentControl"
+        "spawnsProcess"
       ],
-      "class": "agentControl",
+      "class": "elevated",
       "command": "archive_ideation_session",
       "module": "ideation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-c, hand-traced: TaskCleanupService::cleanup_tasks walks and deletes worktrees and branches, then delete_feature_branch runs `git branch -D` for the session's active plan branch",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
-        "agentControl"
+        "spawnsProcess"
       ],
-      "class": "agentControl",
+      "class": "elevated",
       "command": "reopen_ideation_session",
       "module": "ideation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-c, hand-traced: SessionReopenService::reopen runs the same cleanup_tasks worktree/branch walk and then delete_feature_branch. Reached through a different helper from create/archive — all three are independently confirmed, none inherited",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -5809,44 +6135,45 @@
       "class": "agentControl",
       "command": "update_ideation_session_title",
       "module": "ideation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-11 audit: single `ideation_sessions` title write, read back before return; the only discard is the post-commit `app.emit`",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
       "capabilities": [
-        "agentControl"
+        "spawnsProcess"
       ],
-      "class": "agentControl",
+      "class": "elevated",
       "command": "spawn_session_namer",
       "module": "ideation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-c, hand-traced: client.spawn_agent resolves the Codex CLI and the node binary for MCP wiring, and the caller selects the harness through the provider_harness argument",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_child_sessions",
       "module": "ideation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-11 audit: child-session read with purpose filter; no write",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_latest_child_session_id",
       "module": "ideation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-11 audit: single-id read; the purpose parse is `.transpose()?`, not a default",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
+      "auditRefusal": {
+        "batch": "audited and classified 11",
+        "finding": "ideation_commands_proposals.rs:38 coerces an unparsable client priority to Priority::Medium instead of rejecting it, and :42/:45/:48 turn a failed serde_json::to_string into an empty string — including affected_paths, the exact value validate_affected_paths_json is later supposed to check, so a serialization failure silently produces an empty path set that passes validation. helpers.rs:462 additionally swallows set_dependencies_acknowledged after the proposal INSERT has already committed",
+        "reason": "fail-open-until-fixed"
+      },
       "capabilities": [
         "agentControl"
       ],
@@ -5855,28 +6182,24 @@
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "v1-audit-refused"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_task_proposal",
       "module": "ideation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-11 audit: one proposal read; no write",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "list_session_proposals",
       "module": "ideation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-11 audit: session-scoped proposal list; no write",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -5930,8 +6253,8 @@
       "class": "agentControl",
       "command": "reorder_proposals",
       "module": "ideation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-11 audit: the reorder is ONE `UPDATE .. SET sort_order = CASE ..` statement, so there is no half-reordered mid-loop state; failure propagates",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -5941,8 +6264,8 @@
       "class": "agentControl",
       "command": "assess_proposal_priority",
       "module": "ideation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-11 audit: pure in-process scoring (dependency/critical-path/keyword factors) then one `update_priority` write. Reaches no LLM, harness or process",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -5952,8 +6275,8 @@
       "class": "agentControl",
       "command": "assess_all_priorities",
       "module": "ideation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-11 audit: same scoring, looped; both fallible calls inside the loop use `?`, so a mid-loop failure returns `Err` rather than a short list as success",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -5963,33 +6286,34 @@
       "class": "agentControl",
       "command": "remove_proposal_dependency",
       "module": "ideation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-11 audit: one `proposal_dependencies` delete, error propagated",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_proposal_dependencies",
       "module": "ideation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-11 audit: dependency edge read; no write",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_proposal_dependents",
       "module": "ideation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-11 audit: reverse dependency edge read; no write",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
+      "auditRefusal": {
+        "batch": "audited and classified 11",
+        "finding": "ideation_commands_dependencies.rs:117 downgrades the set_dependencies_acknowledged write to a tracing::warn! and returns Ok(DependencyGraphResponse), so the accept-gate flag the command exists to set can silently stay unset. The command is not the pure read its name implies — viewing the graph IS the write, and the write is the part that can vanish",
+        "reason": "fail-open-until-fixed"
+      },
       "capabilities": [
         "agentControl"
       ],
@@ -5998,50 +6322,46 @@
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "v1-audit-refused"
     },
     {
       "capabilities": [
-        "agentControl"
+        "spawnsProcess"
       ],
-      "class": "agentControl",
+      "class": "elevated",
       "command": "apply_proposals_to_kanban",
       "module": "ideation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-c, hand-traced, three independent sinks: the github_pr_enabled capability probe (ensure_git_worktree), base-branch creation directly controlled by the caller's base_branch_override, and the session-namer agent spawn resolving codex and node",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
-        "agentControl"
+        "spawnsProcess"
       ],
-      "class": "agentControl",
+      "class": "elevated",
       "command": "restart_ideation_implementation",
       "module": "ideation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-c, hand-traced: the capability probe, then GitService list/delete_worktree, fetch_origin_branch_strict, and a reset_hard + clean_working_tree pair on the restarted worktree — the destructive end of the range",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_task_blockers",
       "module": "ideation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-11 audit: blocker read; no write",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_blocked_tasks",
       "module": "ideation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-11 audit: blocked-task read; no write",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -6155,14 +6475,12 @@
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_ideation_settings",
       "module": "ideation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-11 audit: settings read; the repo maps only `QueryReturnedNoRows` to the default and propagates every other error",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -6172,44 +6490,45 @@
       "class": "agentControl",
       "command": "update_ideation_settings",
       "module": "ideation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-11 audit: one UPDATE plus a read-back inside a single `db.run`. Declared arms-auto-plan-verification: `auto_verify_draft_plans` written here is the gate `plan_verification_service` reads before launching the verification agent, and no detector models it",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_tasks_disable_impact",
       "module": "ideation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-11 audit: `TasksFeatureToggleService::get_disable_impact` aggregates counts and returns them; it is the read half of the toggle pair and never emits or persists. Its writing sibling `set_tasks_feature_enabled` is a detector-(c) refusal below",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
       "capabilities": [
-        "agentControl"
+        "spawnsProcess"
       ],
-      "class": "agentControl",
+      "class": "elevated",
       "command": "set_tasks_feature_enabled",
       "module": "ideation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-c, hand-traced: toggling the feature ON fans out up to EIGHT Codex agent spawns via reconcile_missing_assessments -> spawn_plan_complexity_assessor, gated only on the caller's `enabled` argument and the prior Disabled state. Its read sibling get_tasks_disable_impact is registered; the writer is foreclosed at every v1 scope",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_agent_lane_settings",
       "module": "ideation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-11 audit: lane settings read; both branches propagate with `map_err(..)?`",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
+      "auditRefusal": {
+        "batch": "audited and classified 11",
+        "finding": "ideation_harness_availability.rs:344 and :360 discard the lane-settings read with .ok().flatten(), and resolve_lane_harness_config returns infallibly, so a DB error is indistinguishable from 'no row configured'. A lane configured to Codex with Codex unavailable then probes DEFAULT_AGENT_HARNESS (Claude) and reports available:true, configured_harness:null, error:null — a fully green lane. This is the list_agent_composer_skills shape exactly: a fail-open that changes the answer, not its completeness",
+        "reason": "fail-open-until-fixed"
+      },
       "capabilities": [
         "agentControl"
       ],
@@ -6218,9 +6537,14 @@
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "v1-audit-refused"
     },
     {
+      "auditRefusal": {
+        "batch": "audited and classified 11",
+        "finding": "the same helper, get_harness_availability_for_lanes, over IDEATION_LANES instead of AGENT_LANES — identical .ok().flatten() at ideation_harness_availability.rs:344/:360 and identical fail-open. Classified alongside its sibling rather than left implicit: one shared defect, two ledger rows, so fixing the helper clears both",
+        "reason": "fail-open-until-fixed"
+      },
       "capabilities": [
         "agentControl"
       ],
@@ -6229,7 +6553,7 @@
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "v1-audit-refused"
     },
     {
       "capabilities": [
@@ -6238,8 +6562,8 @@
       "class": "agentControl",
       "command": "update_agent_lane_settings",
       "module": "ideation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-11 audit: one lane upsert. Declared arms-agent-spawn-harness: `resolve_agent_spawn_settings` reads this row on the live spawn path to pick the harness, model and effort an agent is actually launched with, and no detector models it",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -6452,14 +6776,12 @@
       "v1Resolution": "host-denied"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_ideation_effort_settings",
       "module": "ideation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-11 audit: effort read; the `unwrap_or_else` fallbacks fire on an absent row, never on a swallowed `Err`",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -6469,19 +6791,17 @@
       "class": "agentControl",
       "command": "update_ideation_effort_settings",
       "module": "ideation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-11 audit: read-merge-upsert, every step `?`; effort changes HOW a spawned agent runs, not WHETHER a scheduler launches one",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_ideation_model_settings",
       "module": "ideation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-11 audit: model read; same absent-row-not-error fallback shape as the effort read",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -6491,11 +6811,16 @@
       "class": "agentControl",
       "command": "update_ideation_model_settings",
       "module": "ideation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-11 audit: validated then one upsert; both project/global branches `?`",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
+      "auditRefusal": {
+        "batch": "audited and classified 11",
+        "finding": "session_export_service.rs:291/295/299 decode proposal steps, acceptance_criteria and priority_factors with serde_json::from_str(..).ok(), so a column that fails to parse is exported as absent rather than as an error — the artifact silently loses the fields a re-import would rebuild tasks from. Compounded at :411, where a detected cycle replaces the whole plan version history with Ok(vec![])",
+        "reason": "fail-open-until-fixed"
+      },
       "capabilities": [
         "agentControl"
       ],
@@ -6504,9 +6829,14 @@
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "v1-audit-refused"
     },
     {
+      "auditRefusal": {
+        "batch": "audited and classified 11",
+        "finding": "session_export_service.rs:671/675/679 re-serialize proposal steps, acceptance_criteria and priority_factors with .ok() INSIDE the committed import transaction, so those columns land NULL while ImportedSession.proposal_count still reports the proposal as fully imported. The input validation front end is strong (size cap, schema-version pin, cycle and bounds checks); the loss is entirely on the write side",
+        "reason": "fail-open-until-fixed"
+      },
       "capabilities": [
         "agentControl"
       ],
@@ -6515,7 +6845,7 @@
       "module": "ideation_commands",
       "reason": "conservative-module-default: may steer or arm autonomous work",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "v1-audit-refused"
     },
     {
       "capabilities": [],
@@ -6542,8 +6872,8 @@
       "class": "agentControl",
       "command": "create_workflow",
       "module": "workflow_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-11 audit: builds the workflow from input and creates it; every step propagates. Touches no task and no transition service",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -6553,8 +6883,8 @@
       "class": "agentControl",
       "command": "update_workflow",
       "module": "workflow_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-11 audit: get-or-404 then one update; propagates. Replacing the column set can leave a task's `internal_status` unmapped by any column, but that is a board projection, not a task write — the module reaches neither `task_repo` nor a transition service",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -6564,8 +6894,8 @@
       "class": "agentControl",
       "command": "set_default_workflow",
       "module": "workflow_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-11 audit: clear-then-set default. NOT a fail-open — the error is propagated, not swallowed — but the pair runs under `db.run` (no BEGIN), so a failed second write leaves ZERO defaults. Recorded as a product bug, not a refusal: the local UI reaches the identical path, so refusing it would not fix it",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -7106,8 +7436,8 @@
       "class": "agentControl",
       "command": "activate_methodology",
       "module": "methodology_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-11 audit: deactivate-previous then activate; every await `?`. Same non-atomic-toggle product bug as `set_default_workflow`, same reasoning",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -7117,8 +7447,8 @@
       "class": "agentControl",
       "command": "deactivate_methodology",
       "module": "methodology_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-11 audit: single-row deactivate with a not-active guard; no partial window",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
