@@ -611,6 +611,11 @@ const MANIFEST_RESOLUTIONS = new Set([
   "host-denied",
   "host-denied-spawns-process",
   "v1-deferred",
+  // PR 3.1-b batch 9: a per-command audit found a property no v1 scope can accommodate. Unlike
+  // its siblings this one is not derived from the class/capability pair, so the ledger pairs it
+  // with a rendered finding and `batch9_audit_refusals_are_tied_to_a_live_pin` requires the
+  // mechanism to be asserted by a live pinned-refusal test.
+  "v1-audit-refused",
 ]);
 
 // ---------------------------------------------------------------------------
@@ -811,6 +816,7 @@ function runSelfTest() {
       { command: "open_terminal", v1Resolution: "host-denied", registered: false },
       { command: "run_setup", v1Resolution: "host-denied-spawns-process", registered: false },
       { command: "read_credential", v1Resolution: "v1-deferred", registered: false },
+      { command: "fail_open_getter", v1Resolution: "v1-audit-refused", registered: false },
       { command: "list_tasks", v1Resolution: "registerable", registered: true },
       { command: "archive_task", v1Resolution: "registerable", registered: false },
     ],
@@ -827,6 +833,23 @@ function runSelfTest() {
   check(
     "classifies a manifest v1-deferred name",
     manifestClassified.get("read_credential") === "v1-deferred"
+  );
+  check(
+    "classifies a manifest v1-audit-refused name",
+    manifestClassified.get("fail_open_getter") === "v1-audit-refused"
+  );
+  check(
+    "fails a registered-and-audit-refused contradiction",
+    (() => {
+      try {
+        parseManifestClassifications({
+          ledger: [{ command: "x", v1Resolution: "v1-audit-refused", registered: true }],
+        });
+        return false;
+      } catch {
+        return true;
+      }
+    })()
   );
   check(
     "leaves a registerable name unclassified — it still needs a registration or a reason",

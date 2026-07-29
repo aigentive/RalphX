@@ -9,8 +9,9 @@ use super::authority_audit::{
     PROCESS_LAUNCH_SINKS, SPAWN_TRIGGERING_STATE_SURFACE, TRANSITION_SINKS,
 };
 use super::capability_ledger::{
-    policy_for, AUTHORITY_REDUCING_EXEMPTIONS, COMMAND_OVERRIDES, CONDITIONAL_CAPABILITIES,
-    DECLARED_MEMBERSHIPS, MODULE_DEFAULTS, SCOPE_CONFINEMENTS,
+    audit_refusal_for, policy_for, AUDIT_REFUSALS, AUTHORITY_REDUCING_EXEMPTIONS,
+    COMMAND_OVERRIDES, CONDITIONAL_CAPABILITIES, DECLARED_MEMBERSHIPS, MODULE_DEFAULTS,
+    SCOPE_CONFINEMENTS,
 };
 use super::registry::{find_spec, REMOTE_COMMANDS};
 
@@ -347,7 +348,7 @@ fn generated_manifest() -> serde_json::Value {
         .iter()
         .map(|(command, module)| {
             let row = policy_for(command, module).expect("census is ledgered");
-            serde_json::json!({
+            let mut row_json = serde_json::json!({
                 "command": command,
                 "module": module,
                 "class": row.class,
@@ -356,11 +357,30 @@ fn generated_manifest() -> serde_json::Value {
                 "registered": find_spec(command).is_some(),
                 // P-11 batch B0: the third disposition. Rendered from the row rather than
                 // re-derived downstream, so the drift scan and the census read one authority.
-                "v1Resolution": ralphx_remote_protocol::v1_resolution(
+                //
+                // PR 3.1-b batch 9: the audit-refusal table is the second input. Mechanical
+                // refusals still win inside `v1_resolution_with_audit`, so a hand-written row
+                // can never downgrade a proven denial.
+                "v1Resolution": ralphx_remote_protocol::v1_resolution_with_audit(
                     row.class,
                     row.capabilities,
+                    audit_refusal_for(command).is_some(),
                 ),
-            })
+            });
+            // Rendered alongside the resolution, never instead of it: `v1-audit-refused` is
+            // only as trustworthy as the finding behind it, so the finding ships too.
+            //
+            // OMITTED rather than rendered `null` for the 535 rows that have none. An always-on
+            // field would put 535 lines of noise into every future manifest diff, which is a
+            // real cost on an artifact whose whole job is to be reviewed by hand.
+            if let Some(refusal) = audit_refusal_for(command) {
+                row_json["auditRefusal"] = serde_json::json!({
+                    "reason": refusal.reason,
+                    "finding": refusal.finding,
+                    "batch": refusal.batch,
+                });
+            }
+            row_json
         })
         .collect::<Vec<_>>();
     let detector_b = spawn_triggering_writers(
@@ -706,7 +726,11 @@ fn manifest_renders_a_non_contradictory_v1_resolution_for_every_row() {
         assert!(
             matches!(
                 resolution,
-                "registerable" | "host-denied" | "host-denied-spawns-process" | "v1-deferred"
+                "registerable"
+                    | "host-denied"
+                    | "host-denied-spawns-process"
+                    | "v1-deferred"
+                    | "v1-audit-refused"
             ),
             "row `{command}` renders an unknown v1Resolution `{resolution}`"
         );
@@ -724,11 +748,39 @@ fn manifest_renders_a_non_contradictory_v1_resolution_for_every_row() {
 
     // Each refusal class is non-empty: a scan that only ever sees `registerable` would pass
     // this test while classifying nothing.
-    for resolution in ["host-denied", "host-denied-spawns-process", "v1-deferred"] {
+    for resolution in [
+        "host-denied",
+        "host-denied-spawns-process",
+        "v1-deferred",
+        "v1-audit-refused",
+    ] {
         assert!(
             counts.get(resolution).copied().unwrap_or_default() > 0,
             "no ledger row renders `{resolution}`"
         );
+    }
+
+    // PR 3.1-b batch 9 — `v1-audit-refused` is the one resolution a human can grant by writing
+    // a table row, so the manifest must show the row and the finding together or not at all.
+    for row in ledger {
+        let command = row["command"].as_str().expect("row names a command");
+        let audit_refused = row["v1Resolution"] == "v1-audit-refused";
+        let has_finding = row["auditRefusal"].is_object();
+        assert_eq!(
+            has_finding,
+            audit_refusal_for(command).is_some(),
+            "`{command}` renders auditRefusal={:?} but the ledger table disagrees; the manifest \
+             must mirror the table exactly",
+            row["auditRefusal"],
+        );
+        assert!(
+            !audit_refused || has_finding,
+            "`{command}` renders `v1-audit-refused` with no finding; that would be an \
+             unfalsifiable classification"
+        );
+        // The converse is deliberately NOT asserted: a command may carry BOTH an audit finding
+        // and a mechanical denial, and `v1_resolution_with_audit` renders the mechanical one.
+        // Requiring the audit resolution there would let a table row mask a proven denial.
     }
 }
 
@@ -4193,5 +4245,462 @@ fn b2_detector_clean_members_refused_on_their_own_findings() {
         folder.class,
         RiskClass::Denied,
         "the deferral is a transport-shape gap; recording it as Denied would misstate the finding"
+    );
+}
+
+/// Calibration probe for PR 3.1-b batch 9 ITEM 0 — the retroactive-closure candidate set.
+///
+/// Every command batches 1–8 audited and refused, measured against the CURRENT graph. The
+/// batch-8 workspace-crate walk invalidated pre-batch-8 detector verdicts, and `reopen_issue`
+/// is the standing proof that a tracker's recorded detector verdict can be an artefact. So the
+/// manifest classification each refusal receives is derived from THIS output, never from the
+/// reason phrase a tracker recorded.
+#[test]
+#[ignore = "calibration probe"]
+fn probe_batch9_retroactive_closure_candidates() {
+    const CANDIDATES: &[&str] = &[
+        "approve_fix_task",
+        "approve_review",
+        "archive_tasks_in_group",
+        "clear_active_plan",
+        "get_agent_conversation",
+        "get_agent_conversation_messages_page",
+        "get_agent_conversation_runtime_statuses",
+        "get_agent_conversation_timeline_page",
+        "get_agent_conversation_workspace",
+        "get_agent_conversation_workspace_freshness",
+        "get_agent_message_tool_call_detail",
+        "get_agent_run_status_unified",
+        "get_agent_running_states",
+        "get_agent_timeline_item_tool_call_detail",
+        "get_execution_status",
+        "get_pending_permissions",
+        "get_pending_questions",
+        "get_queued_agent_messages",
+        "get_running_processes",
+        "is_agent_running",
+        "is_chat_service_available",
+        "list_agent_composer_skills",
+        "list_agent_conversation_workspaces_by_project",
+        "list_agent_conversations",
+        "list_agent_conversations_page",
+        "list_agent_sidebar_conversations",
+        "list_conversation_folder_references",
+        "mark_issue_addressed",
+        "mark_issue_in_progress",
+        "re_review_task_from_escalated",
+        "reject_fix_task",
+        "reject_review",
+        "reopen_issue",
+        "request_changes",
+        "request_task_changes_for_review",
+        "request_task_changes_from_reviewing",
+        "resolve_permission_request",
+        "resolve_user_question",
+        "retry_qa",
+        "search_agent_composer_entries",
+        "seed_builtin_workflows",
+        "send_agent_message",
+        "set_active_plan",
+        "set_active_project",
+        "skip_qa",
+        "start_agent_conversation",
+        "start_research",
+        "update_qa_settings",
+        "update_review_settings",
+        "verify_issue",
+    ];
+    let graph = CallGraph::build(&load_production_sources());
+    let rows = census();
+    let commands = rows.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>();
+    let detector_b = spawn_triggering_writers(&graph, commands, SPAWN_TRIGGERING_STATE_SURFACE);
+
+    for (command, module) in &rows {
+        if !CANDIDATES.contains(&command.as_str()) {
+            continue;
+        }
+        let closure = graph.closure([command.clone()]);
+        let a = closure_is_arming(&closure);
+        let b = detector_b.contains(command);
+        let c = tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS);
+        let row = policy_for(command, module).expect("ledgered");
+        eprintln!(
+            "PROBE-B9 {module} {command} a={a} b={b} c={c} class={:?} caps={:?}",
+            row.class, row.capabilities,
+        );
+    }
+}
+
+/// Sink-level evidence for the batch-9 detector-(c) hits, so no classification is bought with
+/// a same-name artefact (the `reopen_issue` lesson, made a standing procedure).
+#[test]
+#[ignore = "calibration probe"]
+fn probe_batch9_detector_c_sink_evidence() {
+    const SPAWNERS: &[&str] = &[
+        "archive_tasks_in_group",
+        "get_agent_conversation_runtime_statuses",
+        "get_agent_conversation_workspace",
+        "get_agent_conversation_workspace_freshness",
+        "get_agent_running_states",
+        "get_execution_status",
+        "get_running_processes",
+        "is_agent_running",
+        "is_chat_service_available",
+        "list_agent_conversation_workspaces_by_project",
+        "list_agent_sidebar_conversations",
+        "resolve_user_question",
+        "search_agent_composer_entries",
+        "send_agent_message",
+        "start_agent_conversation",
+    ];
+    let graph = CallGraph::build(&load_production_sources());
+    let census_rows = census();
+    for command in SPAWNERS {
+        let present = census_rows.iter().any(|(c, _)| c == command);
+        let closure = graph.closure([(*command).to_string()]);
+        let sinks = closure
+            .sink_hits
+            .iter()
+            .map(|hit| hit.sink.clone())
+            .collect::<BTreeSet<_>>();
+        let launchers = PROCESS_LAUNCH_SINKS
+            .iter()
+            .filter(|sink| closure.tokens.contains(**sink))
+            .collect::<Vec<_>>();
+        eprintln!(
+            "PROBE-B9C {command} in_census={present} visited={} launchers={:?} arming={:?}",
+            closure.visited.len(),
+            launchers,
+            sinks,
+        );
+    }
+}
+
+/// PR 3.1-b batch 9 ITEM 0 — the detector-(c) refusals declare the capability they REACH.
+///
+/// Fourteen commands were audited and refused across batches 1–8 with "it shells out" as the
+/// mechanism, and every one kept the `AgentControl` module default. A row whose closure resolves
+/// a CLI binary while rendering `registerable` is precisely the P-11 ratchet's definition of an
+/// unresolved name, so the audits were invisible to the gate built to count them.
+///
+/// This gate is the honesty condition on that correction, in BOTH directions: the capability is
+/// only declarable while the launch path is measurably there. If a command stops reaching a
+/// process-launch sink, this fails and the row returns to review instead of keeping a
+/// classification it no longer earns.
+#[test]
+fn batch9_detector_c_refusals_declare_the_capability_they_reach() {
+    let graph = CallGraph::build(&load_production_sources());
+    let modules = census().into_iter().collect::<BTreeMap<_, _>>();
+
+    let mut checked = 0;
+    for entry in COMMAND_OVERRIDES {
+        if entry.policy.capabilities != [Capability::SpawnsProcess]
+            || !entry.policy.reason.starts_with("detector-c:")
+        {
+            continue;
+        }
+        checked += 1;
+        let command = entry.command;
+        let module = modules
+            .get(command)
+            .unwrap_or_else(|| panic!("`{command}` carries a ledger override but left the census"));
+
+        let closure = graph.closure([command.to_string()]);
+        assert!(
+            !closure.visited.is_empty(),
+            "`{command}` did not resolve; this assertion would be vacuous"
+        );
+        let launchers = PROCESS_LAUNCH_SINKS
+            .iter()
+            .filter(|sink| closure.tokens.contains(**sink))
+            .collect::<Vec<_>>();
+        assert!(
+            !launchers.is_empty(),
+            "`{command}` declares SpawnsProcess but reaches no PROCESS_LAUNCH_SINKS resolver; \
+             either the launch path was removed — in which case re-audit the row rather than \
+             keeping the capability — or the call graph regressed"
+        );
+
+        let row = policy_for(command, module).expect("ledgered");
+        assert_eq!(
+            row.class,
+            RiskClass::Elevated,
+            "`{command}` carries SpawnsProcess, which class_permits admits only under Elevated"
+        );
+        assert_eq!(
+            ralphx_remote_protocol::v1_resolution_with_audit(
+                row.class,
+                row.capabilities,
+                audit_refusal_for(command).is_some(),
+            ),
+            ralphx_remote_protocol::V1Resolution::HostDeniedSpawnsProcess,
+            "`{command}` must resolve through the manifest, not stay on the ratchet"
+        );
+        assert!(
+            find_spec(command).is_none(),
+            "`{command}` renders a host denial and must not be registered"
+        );
+    }
+
+    assert_eq!(
+        checked, 13,
+        "batch 9 classified thirteen detector-(c) refusals; a change to that count is a census \
+         decision and must be made deliberately"
+    );
+}
+
+/// PR 3.1-b batch 9 — the measured detector-(c) refusal batch 9 declined to classify.
+///
+/// `resolve_user_question` reaches three CLI resolvers, so its `AgentControl`/`AGENT` row
+/// understates it exactly as the thirteen corrected rows did. It was left alone because
+/// `exemptions_and_declared_memberships_are_exact` pins its class AND its verbatim reason
+/// string as a declared membership, and rewriting a membership contract is not the retroactive
+/// closure of an unclassified refusal.
+///
+/// Recorded as an assertion rather than a comment so the gap cannot decay: if the launch path
+/// disappears there is nothing left to correct, and if the membership pin is ever relaxed the
+/// row should be reclassified in the same change.
+#[test]
+fn batch9_records_the_declared_membership_process_launch_gap() {
+    let graph = CallGraph::build(&load_production_sources());
+    let closure = graph.closure(["resolve_user_question".to_string()]);
+    let launchers = PROCESS_LAUNCH_SINKS
+        .iter()
+        .filter(|sink| closure.tokens.contains(**sink))
+        .collect::<Vec<_>>();
+    assert!(
+        !launchers.is_empty(),
+        "`resolve_user_question` no longer reaches a process-launch sink; the batch-9 successor \
+         gap is closed by the code and this test plus its ledger comment should be deleted"
+    );
+
+    let row = policy_for("resolve_user_question", "question_commands").expect("ledgered");
+    assert_eq!(
+        row.class,
+        RiskClass::AgentControl,
+        "the declared-membership pin is what blocks the correction; if the class moved, finish \
+         the job and give the row its SpawnsProcess capability"
+    );
+    assert!(
+        !row.capabilities.contains(&Capability::SpawnsProcess),
+        "the row gained SpawnsProcess without moving to Elevated, which class_permits forbids"
+    );
+    assert!(
+        find_spec("resolve_user_question").is_none(),
+        "the gap is a ledger understatement, not a registration"
+    );
+}
+
+/// PR 3.1-b batch 9 ITEM 0 — `v1-audit-refused` cannot be granted without a live pin.
+///
+/// This is the fail-closed proof for the one resolution a human can hand out by writing a table
+/// row. Three conditions, each of which alone would be forgeable:
+///
+/// * the command is real, still in the census, and NOT served by the facade;
+/// * the mechanical resolution is `Registerable`, so the row is doing the classifying and is not
+///   quietly riding on a denial it did not earn;
+/// * the command is NAMED inside a pinned-refusal test, so the mechanism behind the finding is
+///   asserted somewhere CI actually runs. A row whose pin is deleted fails here.
+#[test]
+fn batch9_audit_refusals_are_tied_to_a_live_pin() {
+    const PINNED_REFUSAL_TESTS: &[&str] = &[
+        "the_b2_workspace_read_refusals_are_pinned",
+        "the_b2_getter_refusals_are_pinned",
+        "b2_detector_clean_members_refused_on_their_own_findings",
+        "b3_members_that_audit_dirty_stay_unregistered",
+        "b4_members_that_audit_dirty_stay_unregistered",
+        "b1_sibling_getters_that_audit_dirty_stay_above_read",
+        "b1_read_reclassifications_are_reviewed_rather_than_module_defaults",
+    ];
+    let own_source = include_str!("capability_ledger_tests.rs");
+    let pin_bodies = PINNED_REFUSAL_TESTS
+        .iter()
+        .map(|name| {
+            let start = own_source
+                .find(&format!("fn {name}("))
+                .unwrap_or_else(|| panic!("pinned-refusal test `{name}` no longer exists"));
+            let rest = &own_source[start..];
+            let end = rest.find("\n}\n").expect("pin body is brace-terminated");
+            &rest[..end]
+        })
+        .collect::<Vec<_>>();
+
+    let modules = census().into_iter().collect::<BTreeMap<_, _>>();
+    let mut seen_reasons = BTreeSet::new();
+
+    for refusal in AUDIT_REFUSALS {
+        let command = refusal.command;
+        let module = modules.get(command).unwrap_or_else(|| {
+            panic!("`{command}` carries an audit refusal but is not in the census")
+        });
+        assert!(
+            find_spec(command).is_none(),
+            "`{command}` renders `v1-audit-refused` but is registered; the ledger and the \
+             registry contradict each other"
+        );
+
+        let row = policy_for(command, module).expect("ledgered");
+        assert_eq!(
+            ralphx_remote_protocol::v1_resolution(row.class, row.capabilities),
+            ralphx_remote_protocol::V1Resolution::Registerable,
+            "`{command}`'s mechanical resolution already refuses it, so the audit row adds \
+             nothing and would only obscure which fact is load-bearing"
+        );
+        assert_eq!(
+            ralphx_remote_protocol::v1_resolution_with_audit(row.class, row.capabilities, true),
+            ralphx_remote_protocol::V1Resolution::V1AuditRefused,
+        );
+
+        assert!(
+            pin_bodies
+                .iter()
+                .any(|body| body.contains(&format!("\"{command}\""))),
+            "`{command}` is classified `v1-audit-refused` but no pinned-refusal test names it. \
+             The classification records the disposition; the pin records the mechanism, and the \
+             ratchet may only count a refusal that still has both."
+        );
+        assert!(
+            refusal.finding.len() > 40,
+            "`{command}`'s finding is too thin to falsify"
+        );
+        seen_reasons.insert(refusal.reason);
+    }
+
+    // Representative-per-class: an unused reason variant is an invitation to reach for it
+    // without evidence, and an unexercised one proves nothing about the derivation.
+    for reason in ralphx_remote_protocol::AUDIT_REFUSAL_REASONS {
+        assert!(
+            seen_reasons.contains(reason),
+            "no audit refusal uses `{reason:?}`; drop the variant or evidence it"
+        );
+    }
+    assert_eq!(
+        AUDIT_REFUSALS.len(),
+        11,
+        "batch 9 recorded eleven audit refusals; changing that count is a census decision"
+    );
+}
+
+/// PR 3.1-b batch 9 ITEM 0 — the refusals that must STAY on the ratchet, and why.
+///
+/// The batch-9 brief proposed mapping every arming/steering/write refusal onto a host-denied
+/// class. Measuring the facade refuted it: 83 registered ops include 16 at `agentControl`, four
+/// carrying `Capability::AgentControl` and three carrying `SeedsSpawnTriggeringState`. So the
+/// host demonstrably DOES grant arming authority in v1, and "detector (a) fires" or "it writes"
+/// cannot mean "the host denies it" — those refusals record which batch ran out of scope, not a
+/// property of the command.
+///
+/// Classifying them anyway would have moved the ratchet by 25 while putting 25 false statements
+/// in the ledger, and the ratchet's only value is that its number is true. This test freezes the
+/// decision so a later batch re-deriving the tempting mapping meets the counter-evidence first.
+#[test]
+fn batch9_arming_and_write_refusals_stay_on_the_ratchet() {
+    // Audited and refused in batches 1–8, deliberately NOT classified: every recorded finding is
+    // arming, steering, or an unaudited write, and the facade serves commands of that shape.
+    const STILL_UNRESOLVED: &[&str] = &[
+        // detector (a) and/or (b) fires — the same profile as registered `agentControl` ops.
+        "approve_fix_task",
+        "reject_fix_task",
+        "request_task_changes_for_review",
+        "request_task_changes_from_reviewing",
+        "re_review_task_from_escalated",
+        "update_review_settings",
+        "get_agent_conversation",
+        "get_agent_conversation_messages_page",
+        "get_agent_conversation_timeline_page",
+        // hand-found arming surfaces no detector models.
+        "update_qa_settings",
+        "set_active_project",
+        "archive_tasks_in_group",
+        "resolve_permission_request",
+        // repository writes behind a status guard; a writer audit for `ui:agent` was never done,
+        // and detector silence is not a substitute for one.
+        "reopen_issue",
+        "approve_review",
+        "request_changes",
+        "reject_review",
+        "verify_issue",
+        "mark_issue_in_progress",
+        "mark_issue_addressed",
+        "retry_qa",
+        "skip_qa",
+        "start_research",
+        "seed_builtin_workflows",
+        "clear_active_plan",
+    ];
+
+    let modules = census().into_iter().collect::<BTreeMap<_, _>>();
+    for command in STILL_UNRESOLVED {
+        let module = modules
+            .get(*command)
+            .unwrap_or_else(|| panic!("`{command}` left the census"));
+        assert!(
+            audit_refusal_for(command).is_none(),
+            "`{command}` was classified `v1-audit-refused`. Its recorded finding is arming, \
+             steering or an unaudited write — shapes the facade already serves — so the \
+             classification would be false. Register it after a real `ui:agent` audit, or leave \
+             it on the ratchet."
+        );
+        let row = policy_for(command, module).expect("ledgered");
+        assert_eq!(
+            ralphx_remote_protocol::v1_resolution_with_audit(
+                row.class,
+                row.capabilities,
+                audit_refusal_for(command).is_some(),
+            ),
+            ralphx_remote_protocol::V1Resolution::Registerable,
+            "`{command}` must stay countable as unresolved"
+        );
+        assert!(find_spec(command).is_none(), "`{command}` is not registered");
+    }
+
+    // The sharpest form of the counter-evidence: for several refusals above, the facade ALREADY
+    // registers the near-twin. Asserted as pairs, because a reviewer who accepts "16 agentControl
+    // ops exist" in the abstract may still feel that a particular refusal is obviously deniable.
+    //
+    //   refused (stays on the ratchet)   | registered twin at ui:agent
+    //   ---------------------------------|---------------------------------
+    //   resolve_user_question            | answer_user_question
+    //   resolve_permission_request       | approve_permission_request
+    //   approve_review / reject_review   | approve_task_for_review
+    //   update_review_settings (det. b)  | inject_task (seedsSpawnTriggeringState)
+    //
+    // Calling any of the left column `host-denied` would assert that no v1 grant can reach it,
+    // while the host serves the right column at the same class and capability set.
+    for (refused, registered_twin) in [
+        ("resolve_user_question", "answer_user_question"),
+        ("resolve_permission_request", "approve_permission_request"),
+        ("approve_review", "approve_task_for_review"),
+        ("update_review_settings", "inject_task"),
+    ] {
+        assert!(
+            find_spec(refused).is_none(),
+            "`{refused}` is refused; if it was registered, update this pairing"
+        );
+        assert!(
+            find_spec(registered_twin).is_some(),
+            "`{registered_twin}` is the registered twin that makes refusing `{refused}` a \
+             scope decision rather than a host denial; if it was unregistered, batch 9's \
+             classification argument must be re-derived"
+        );
+    }
+
+    // The counter-evidence itself, asserted rather than described: if the facade ever stops
+    // serving arming authority, this test's whole argument changes and it should fail loudly.
+    let arming_ops = REMOTE_COMMANDS
+        .iter()
+        .filter(|spec| {
+            matches!(
+                policy_for(spec.name, modules.get(spec.name).map_or("", |m| m.as_str()))
+                    .map(|row| row.class),
+                Some(RiskClass::AgentControl)
+            )
+        })
+        .count();
+    assert!(
+        arming_ops >= 16,
+        "the facade serves {arming_ops} agentControl ops; batch 9 refused to call arming \
+         authority `host-denied` BECAUSE the facade grants it. If that changed, re-derive the \
+         classification decision rather than editing this number."
     );
 }

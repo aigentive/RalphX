@@ -90,6 +90,10 @@ const DISPOSITIONS = {
     label: "v1-deferred (Elevated)",
     rule: "ledgered Elevated without SpawnsProcess — reachable only under `ui:elevated`, which §1 excludes from v1; deferred, not denied",
   },
+  v1AuditRefused: {
+    label: "v1-audit-refused (per-command finding)",
+    rule: "the class/capability pair would admit a v1 scope, but a recorded audit found a property of the command AS IT STANDS that no v1 scope can accommodate — fail-open, spawn-capable machinery built to serve a read, an unrenderable transport shape, or a registered remote twin that already answers the query. Never used for arming/steering/write refusals: the facade serves 16 `agentControl` ops, so those stay register-candidates",
+  },
   orphan: {
     label: "orphan invoke (no local handler)",
     rule: "invoked by the frontend but absent from `generate_handler!` and from the ledger — it cannot be registered remotely because it does not exist locally either",
@@ -105,6 +109,10 @@ const RESOLUTION_DISPOSITIONS = {
   "host-denied": "hostDeniedClass",
   "host-denied-spawns-process": "hostDeniedSpawn",
   "v1-deferred": "v1DeferredElevated",
+  // PR 3.1-b batch 9: a recorded per-command audit found a property no v1 scope can
+  // accommodate. Routed like the other refusals — it is NOT gap work — but kept as its own
+  // disposition so the census never reports an audit refusal as a class-derived one.
+  "v1-audit-refused": "v1AuditRefused",
   registerable: "registerCandidate",
 };
 
@@ -167,8 +175,14 @@ why: "LANDED (PR 3.1-b batch B0). The drift scan used to admit two answers — r
     title: "Chat + agent conversation surface (unblocks PR 3.2)",
     modules: [
       "unified_chat_commands",
-      "agent_sidebar_commands",
-      "agent_composer_commands",
+      // `agent_sidebar_commands` was a B2 module and is now fully classified — PR 3.1-b batch 9
+      // resolved its single remaining member, `list_agent_sidebar_conversations`, as
+      // `host-denied-spawns-process`. Dropped here because the plan enumerates REMAINING gap
+      // work; the completion is recorded in `work` below so it does not read as a silently
+      // abandoned module. `agent_composer_commands` went the same way in the same batch:
+      // batch 8 registered `search_agent_composer_plan_references` at `ui:read`, and batch 9
+      // resolved its last two members — `search_agent_composer_entries` as
+      // `host-denied-spawns-process` and `list_agent_composer_skills` as `v1-audit-refused`.
       // `conversation_stats_commands` was a B2 module and is now fully classified — PR 3.1-b
       // batch 3 registered all four usage-aggregate reads at `ui:read`. It is dropped from
       // the plan because the plan enumerates REMAINING gap work; the completion is recorded
@@ -182,6 +196,8 @@ why: "LANDED (PR 3.1-b batch B0). The drift scan used to admit two answers — r
       "Verify per command that the process-launch sink sits BEYOND the steer-sink cut (`chat_service.send_message`) rather than inside the command's own closure — the cut is what makes chat send registerable while `resume_task` is not. Any command whose own closure resolves a CLI path is a detector-(c) rejection, not a registration.",
       "P-4 rows must cover `SendAgentMessageInput`'s optional/override fields (the `runtimeOverride` vs legacy-field rejection is an error-path parity row).",
       "DONE (PR 3.1-b batch 3): `conversation_stats_commands` — all four usage-aggregate reads registered at `ui:read`, so the module no longer appears in this batch's module list. Batch 3's `probe_b2_module_batch_audit` also published detector output for every remaining B2 member; start from it rather than re-deriving. Its headline finding: `get_agent_conversation`, `get_agent_conversation_messages_page` and `get_agent_conversation_timeline_page` — the three transcript reads PR 3.2 needs — all fire detector (a), so they are NOT free reads and need their own hand-trace.",
+      "DONE (PR 3.1-b batch 9): `agent_sidebar_commands` — `list_agent_sidebar_conversations` resolved as `host-denied-spawns-process`, so the module no longer appears in this batch's module list. Batch 9 also closed eight more B2 members by manifest classification rather than registration: `send_agent_message`, `start_agent_conversation`, `get_agent_conversation_workspace`, `list_agent_conversation_workspaces_by_project`, `get_agent_conversation_workspace_freshness`, `is_chat_service_available`, `is_agent_running`, `get_agent_running_states` and `get_agent_conversation_runtime_statuses` all measurably resolve a CLI path in their OWN closure — which is precisely the detector-(c) rejection this batch's work list predicted, now recorded in the ledger instead of only in a pin. `agent_composer_commands` is also fully retired: batch 8 registered `search_agent_composer_plan_references` at `ui:read` and batch 9 resolved `search_agent_composer_entries` (`host-denied-spawns-process`) and `list_agent_composer_skills` (`v1-audit-refused`, fail-open that reports DISABLED skills as enabled).",
+      "READ FIRST — `send_agent_message` and `start_agent_conversation` are ledgered `Elevated`/`SpawnsProcess` as of batch 9, so the split-by-authority plan above no longer applies to them unmodified. PR 3.2's premise (chat send answers `REMOTE_FORBIDDEN` rather than `REMOTE_COMMAND_UNAVAILABLE`) needs the process-launch sink moved BEYOND the command's own closure first — the `list_remote_*`/`get_remote_*` seam split is the proven shape for that. Registering them as they stand would fail `detector_c_floors_process_spawn_authority`.",
     ],
     gate: "P-17 green; C-9 dual-lens review recorded; the five 2.6-surfaced ops resolve per this census's `resolvedItems.unregisteredUiAgentOps`.",
   },
@@ -574,7 +590,21 @@ const RESOLVED_ITEMS = {
       "restart_automation",
     ],
     batches: { send_agent_message: "B2", start_agent_conversation: "B2", skip_step: "B1", trigger_automation_run_now: "B5", restart_automation: "B5" },
-    status: "resolved — all five are registration candidates; none is a detector-(c) rejection on current evidence",
+    // PR 3.1-b batch 9 discharged the `obligation` below. Two of the five came back POSITIVE on
+    // the live detector and were demoted to a manifest disposition, exactly as the obligation
+    // requires. Recorded per command so the resolution is not a single sentence that has to be
+    // true of all five at once.
+    resolutions: {
+      send_agent_message:
+        "DEMOTED (batch 9) — `host-denied-spawns-process`. Detector (c) fires on its OWN closure, which is already cut at the `send_message` steer sink: it still reaches `resolve_git_cli_path`, `resolve_node_cli_path` and `find_codex_cli_candidates` by another route. Registering it would fail `detector_c_floors_process_spawn_authority`.",
+      start_agent_conversation:
+        "DEMOTED (batch 9) — `host-denied-spawns-process`. Same three resolvers reached from its own cut closure.",
+      skip_step: "register (`ui:agent`), pending detector-(c) confirmation",
+      trigger_automation_run_now: "register (`ui:agent`), pending detector-(c) confirmation",
+      restart_automation: "register (`ui:agent`), pending detector-(c) confirmation",
+    },
+    status:
+      "PARTIALLY RESOLVED (PR 3.1-b batch 9) — the detector-(c) confirmation this section made mandatory was run. `skip_step`, `trigger_automation_run_now` and `restart_automation` remain registration candidates; `send_agent_message` and `start_agent_conversation` came back POSITIVE and are now manifest-classified `host-denied-spawns-process`. The evidence bullet below claiming the provider launch sits outside chat send's own closure is therefore WRONG and is retained only as the record of what the static read predicted.",
     briefingCorrection:
       "The 3.1-a brief states three of these five are detector-(c)-rejected. That does not match the code: the detector-(c) trio is `resume_task`, `apply_proposals_to_kanban`, `set_agent_conversation_workspace_auto_publish` (`remote_server/registry.rs` NOT-registered note; `frontend/src/lib/remote/agent-gate.test.ts:114-124` uses exactly those three as the unavailable-by-ABSENCE fixture). None of the five 2.6-surfaced ops appears in that set. The two lists were conflated — they are different trios, and 2.6's tracker note lists the five as ops that 'flip with no client change when 3.1 registers them', i.e. registration is the intended resolution.",
     evidence: [
@@ -795,13 +825,22 @@ function renderMarkdown(data) {
     mdTable(
       ["Command", "Ledger class", "Capabilities", "Batch", "Resolution"],
       RESOLVED_ITEMS.unregisteredUiAgentOps.commands.map((command) => {
-        const record = data.commands.find((item) => item.command === command);
+        // A demoted op leaves `data.commands` (the UNCLASSIFIED set) the moment its manifest
+        // disposition lands, so fall back to the ledger row rather than crashing. The lookup
+        // failing used to be impossible; batch 9 made it the normal case for two of the five.
+        const record =
+          data.commands.find((item) => item.command === command) ??
+          (() => {
+            const row = ledger.get(command);
+            if (!row) fail(`§5.2 names \`${command}\`, which is in neither the gap nor the ledger`);
+            return { ledgerClass: row.class, capabilities: row.capabilities ?? [] };
+          })();
         return [
           `\`${command}\``,
           record.ledgerClass,
           record.capabilities.join(", ") || "—",
           `\`${RESOLVED_ITEMS.unregisteredUiAgentOps.batches[command]}\``,
-          "register (`ui:agent`), pending detector-(c) confirmation",
+          RESOLVED_ITEMS.unregisteredUiAgentOps.resolutions[command],
         ];
       })
     )

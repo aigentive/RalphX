@@ -288,8 +288,99 @@ fn v1_resolution_wire_spelling_is_kebab_case_and_closed() {
             json!("host-denied"),
             json!("host-denied-spawns-process"),
             json!("v1-deferred"),
+            json!("v1-audit-refused"),
         ]
     );
-    assert_eq!(V1_RESOLUTIONS.len(), 4);
+    assert_eq!(V1_RESOLUTIONS.len(), 5);
     assert!(V1_RESOLUTIONS.contains(&V1Resolution::Registerable));
+}
+
+/// PR 3.1-b batch 9 — the audit-refusal overlay, and the two properties that keep it honest.
+///
+/// `V1AuditRefused` is the only resolution not derived from `(class, capabilities)`. That makes
+/// it the only one a human can grant by writing a table row, so the derivation must guarantee
+/// (a) it can never mask a mechanically proven refusal, and (b) it can never appear without the
+/// caller explicitly asserting a refusal was recorded.
+#[test]
+fn audit_refusal_overlays_registerable_and_never_masks_a_mechanical_refusal() {
+    use ralphx_remote_protocol::{
+        v1_resolution, v1_resolution_with_audit, AuditRefusalReason, V1Resolution,
+        AUDIT_REFUSAL_REASONS,
+    };
+
+    // (b) Without a recorded refusal the overlay is the identity function, across every pair.
+    for class in [
+        RiskClass::Read,
+        RiskClass::Operate,
+        RiskClass::PathScoped,
+        RiskClass::AgentControl,
+        RiskClass::Elevated,
+        RiskClass::Denied,
+    ] {
+        for capabilities in [&[][..], &[Capability::SpawnsProcess][..], CAPABILITIES] {
+            assert_eq!(
+                v1_resolution_with_audit(class, capabilities, false),
+                v1_resolution(class, capabilities),
+                "the overlay must not move a row that has no recorded refusal"
+            );
+        }
+    }
+
+    // (a) With one, only `Registerable` moves. Every mechanical refusal survives untouched —
+    // otherwise a hand-written table row could downgrade a proven denial to a softer class.
+    assert_eq!(
+        v1_resolution_with_audit(RiskClass::AgentControl, &[], true),
+        V1Resolution::V1AuditRefused,
+    );
+    assert_eq!(
+        v1_resolution_with_audit(RiskClass::Read, &[], true),
+        V1Resolution::V1AuditRefused,
+    );
+    for (class, capabilities, expected) in [
+        (
+            RiskClass::Denied,
+            &[][..],
+            V1Resolution::HostDenied,
+        ),
+        (
+            RiskClass::Elevated,
+            &[Capability::SpawnsProcess][..],
+            V1Resolution::HostDeniedSpawnsProcess,
+        ),
+        (
+            RiskClass::Denied,
+            &[Capability::SpawnsProcess][..],
+            V1Resolution::HostDenied,
+        ),
+        (
+            RiskClass::Elevated,
+            &[Capability::TouchesCredentials][..],
+            V1Resolution::V1Deferred,
+        ),
+    ] {
+        assert_eq!(
+            v1_resolution_with_audit(class, capabilities, true),
+            expected,
+            "an audit row must not mask the mechanical refusal for {class:?}/{capabilities:?}"
+        );
+    }
+
+    // The reason vocabulary is closed and kebab-cased; the manifest renders these literals.
+    assert_eq!(
+        AUDIT_REFUSAL_REASONS
+            .iter()
+            .map(|reason| value(reason))
+            .collect::<Vec<_>>(),
+        vec![
+            json!("fail-open-until-fixed"),
+            json!("constructs-spawn-capable-service"),
+            json!("transport-shape-deferred"),
+            json!("seam-resolved-via-remote-twin"),
+        ]
+    );
+    // Deliberately absent, and the absence is the point: there is no reason code for "it arms",
+    // "it steers" or "it writes". The facade serves `agentControl` ops carrying exactly those
+    // capabilities, so such a refusal is a batch's scope limit, not a host denial.
+    assert_eq!(AUDIT_REFUSAL_REASONS.len(), 4);
+    assert!(AUDIT_REFUSAL_REASONS.contains(&AuditRefusalReason::FailOpenUntilFixed));
 }

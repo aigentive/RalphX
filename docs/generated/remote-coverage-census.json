@@ -6,17 +6,17 @@
     "invokedCommands": 499,
     "dynamicExpressions": 0,
     "seamBypasses": 0,
-    "manifestClassified": 191,
-    "unclassified": 232,
-    "line": "PASS: remote transport drift — 499 invoke command name(s), 0 dynamic, 0 seam bypasses; 191 manifest-classified; 232 unclassified (baseline, → 0 in PR 3.1)."
+    "manifestClassified": 215,
+    "unclassified": 208,
+    "line": "PASS: remote transport drift — 499 invoke command name(s), 0 dynamic, 0 seam bypasses; 215 manifest-classified; 208 unclassified (baseline, → 0 in PR 3.1)."
   },
   "totals": {
     "invokedCommandNames": 499,
     "remoteRegistered": 81,
     "localOnlyRows": 29,
     "ledgerRows": 546,
-    "unclassified": 232,
-    "assignedToBatches": 232,
+    "unclassified": 208,
+    "assignedToBatches": 208,
     "batches": 14
   },
   "dispositionModel": {
@@ -36,13 +36,17 @@
       "label": "v1-deferred (Elevated)",
       "rule": "ledgered Elevated without SpawnsProcess — reachable only under `ui:elevated`, which §1 excludes from v1; deferred, not denied"
     },
+    "v1AuditRefused": {
+      "label": "v1-audit-refused (per-command finding)",
+      "rule": "the class/capability pair would admit a v1 scope, but a recorded audit found a property of the command AS IT STANDS that no v1 scope can accommodate — fail-open, spawn-capable machinery built to serve a read, an unrenderable transport shape, or a registered remote twin that already answers the query. Never used for arming/steering/write refusals: the facade serves 16 `agentControl` ops, so those stay register-candidates"
+    },
     "orphan": {
       "label": "orphan invoke (no local handler)",
       "rule": "invoked by the frontend but absent from `generate_handler!` and from the ledger — it cannot be registered remotely because it does not exist locally either"
     }
   },
   "dispositionTotals": {
-    "registerCandidate": 232
+    "registerCandidate": 208
   },
   "batches": [
     {
@@ -81,7 +85,7 @@
         "Confirm the brakes in these modules stay `ui:operate` (A-14) and that no arming transition lands below the `AgentControl` floor."
       ],
       "gate": "P-17 suite green; P-17b generated scope entries exist for every new AgentControl member; C-9 dual-lens review recorded.",
-      "commandCount": 27,
+      "commandCount": 23,
       "modules": [
         "execution_commands",
         "permission_commands",
@@ -90,14 +94,12 @@
         "task_step_commands"
       ],
       "dispositionCounts": {
-        "registerCandidate": 27
+        "registerCandidate": 23
       },
-      "registerCandidates": 27,
+      "registerCandidates": 23,
       "nonRegistering": 0,
       "commandsByModule": {
         "execution_commands": [
-          "get_execution_status",
-          "get_running_processes",
           "recover_task_execution",
           "resolve_recovery_prompt",
           "restart_task",
@@ -107,11 +109,9 @@
           "update_global_execution_settings"
         ],
         "permission_commands": [
-          "get_pending_permissions",
           "resolve_permission_request"
         ],
         "question_commands": [
-          "get_pending_questions",
           "resolve_user_question"
         ],
         "task_commands": [
@@ -138,10 +138,6 @@
         "archive_tasks_in_group",
         "complete_step",
         "fail_step",
-        "get_execution_status",
-        "get_pending_permissions",
-        "get_pending_questions",
-        "get_running_processes",
         "pause_execution_plan",
         "recover_task_execution",
         "reorder_task_steps",
@@ -174,36 +170,28 @@
         "Split the module by authority: the send/steer commands register as `AgentControl`; the publish/PR surface (`publish_agent_conversation_workspace`, `update_agent_conversation_workspace_from_base`, `close_agent_workspace_pr`) stays denied, and `set_agent_conversation_workspace_auto_publish` is an already-proven detector-(c) rejection.",
         "Verify per command that the process-launch sink sits BEYOND the steer-sink cut (`chat_service.send_message`) rather than inside the command's own closure — the cut is what makes chat send registerable while `resume_task` is not. Any command whose own closure resolves a CLI path is a detector-(c) rejection, not a registration.",
         "P-4 rows must cover `SendAgentMessageInput`'s optional/override fields (the `runtimeOverride` vs legacy-field rejection is an error-path parity row).",
-        "DONE (PR 3.1-b batch 3): `conversation_stats_commands` — all four usage-aggregate reads registered at `ui:read`, so the module no longer appears in this batch's module list. Batch 3's `probe_b2_module_batch_audit` also published detector output for every remaining B2 member; start from it rather than re-deriving. Its headline finding: `get_agent_conversation`, `get_agent_conversation_messages_page` and `get_agent_conversation_timeline_page` — the three transcript reads PR 3.2 needs — all fire detector (a), so they are NOT free reads and need their own hand-trace."
+        "DONE (PR 3.1-b batch 3): `conversation_stats_commands` — all four usage-aggregate reads registered at `ui:read`, so the module no longer appears in this batch's module list. Batch 3's `probe_b2_module_batch_audit` also published detector output for every remaining B2 member; start from it rather than re-deriving. Its headline finding: `get_agent_conversation`, `get_agent_conversation_messages_page` and `get_agent_conversation_timeline_page` — the three transcript reads PR 3.2 needs — all fire detector (a), so they are NOT free reads and need their own hand-trace.",
+        "DONE (PR 3.1-b batch 9): `agent_sidebar_commands` — `list_agent_sidebar_conversations` resolved as `host-denied-spawns-process`, so the module no longer appears in this batch's module list. Batch 9 also closed eight more B2 members by manifest classification rather than registration: `send_agent_message`, `start_agent_conversation`, `get_agent_conversation_workspace`, `list_agent_conversation_workspaces_by_project`, `get_agent_conversation_workspace_freshness`, `is_chat_service_available`, `is_agent_running`, `get_agent_running_states` and `get_agent_conversation_runtime_statuses` all measurably resolve a CLI path in their OWN closure — which is precisely the detector-(c) rejection this batch's work list predicted, now recorded in the ledger instead of only in a pin. `agent_composer_commands` is also fully retired: batch 8 registered `search_agent_composer_plan_references` at `ui:read` and batch 9 resolved `search_agent_composer_entries` (`host-denied-spawns-process`) and `list_agent_composer_skills` (`v1-audit-refused`, fail-open that reports DISABLED skills as enabled).",
+        "READ FIRST — `send_agent_message` and `start_agent_conversation` are ledgered `Elevated`/`SpawnsProcess` as of batch 9, so the split-by-authority plan above no longer applies to them unmodified. PR 3.2's premise (chat send answers `REMOTE_FORBIDDEN` rather than `REMOTE_COMMAND_UNAVAILABLE`) needs the process-launch sink moved BEYOND the command's own closure first — the `list_remote_*`/`get_remote_*` seam split is the proven shape for that. Registering them as they stand would fail `detector_c_floors_process_spawn_authority`."
       ],
       "gate": "P-17 green; C-9 dual-lens review recorded; the five 2.6-surfaced ops resolve per this census's `resolvedItems.unregisteredUiAgentOps`.",
-      "commandCount": 41,
+      "commandCount": 22,
       "modules": [
-        "agent_composer_commands",
         "agent_model_commands",
-        "agent_sidebar_commands",
         "conversation_folder_reference_commands",
         "unified_chat_commands"
       ],
       "dispositionCounts": {
-        "registerCandidate": 41
+        "registerCandidate": 22
       },
-      "registerCandidates": 41,
+      "registerCandidates": 22,
       "nonRegistering": 0,
       "commandsByModule": {
-        "agent_composer_commands": [
-          "list_agent_composer_skills",
-          "search_agent_composer_entries"
-        ],
         "agent_model_commands": [
           "upsert_custom_agent_model"
         ],
-        "agent_sidebar_commands": [
-          "list_agent_sidebar_conversations"
-        ],
         "conversation_folder_reference_commands": [
           "add_conversation_folder_reference",
-          "list_conversation_folder_references",
           "remove_conversation_folder_reference"
         ],
         "unified_chat_commands": [
@@ -214,28 +202,13 @@
           "fork_agent_conversation",
           "get_agent_conversation",
           "get_agent_conversation_messages_page",
-          "get_agent_conversation_runtime_statuses",
           "get_agent_conversation_timeline_page",
-          "get_agent_conversation_workspace",
-          "get_agent_conversation_workspace_freshness",
-          "get_agent_message_tool_call_detail",
-          "get_agent_run_status_unified",
-          "get_agent_running_states",
-          "get_agent_timeline_item_tool_call_detail",
-          "get_queued_agent_messages",
-          "is_agent_running",
-          "is_chat_service_available",
-          "list_agent_conversation_workspaces_by_project",
-          "list_agent_conversations",
-          "list_agent_conversations_page",
           "precompute_agent_conversation_workspace_pr_description",
           "reconcile_agent_conversation_workspace_publication",
           "restore_agent_conversation",
-          "send_agent_message",
           "send_queued_agent_message_now",
           "set_agent_conversation_workspace_auto_publish",
           "set_agent_conversation_workspace_pr_supervision",
-          "start_agent_conversation",
           "stop_agent",
           "switch_agent_conversation_mode",
           "switch_agent_conversation_persona",
@@ -252,33 +225,14 @@
         "fork_agent_conversation",
         "get_agent_conversation",
         "get_agent_conversation_messages_page",
-        "get_agent_conversation_runtime_statuses",
         "get_agent_conversation_timeline_page",
-        "get_agent_conversation_workspace",
-        "get_agent_conversation_workspace_freshness",
-        "get_agent_message_tool_call_detail",
-        "get_agent_run_status_unified",
-        "get_agent_running_states",
-        "get_agent_timeline_item_tool_call_detail",
-        "get_queued_agent_messages",
-        "is_agent_running",
-        "is_chat_service_available",
-        "list_agent_composer_skills",
-        "list_agent_conversation_workspaces_by_project",
-        "list_agent_conversations",
-        "list_agent_conversations_page",
-        "list_agent_sidebar_conversations",
-        "list_conversation_folder_references",
         "precompute_agent_conversation_workspace_pr_description",
         "reconcile_agent_conversation_workspace_publication",
         "remove_conversation_folder_reference",
         "restore_agent_conversation",
-        "search_agent_composer_entries",
-        "send_agent_message",
         "send_queued_agent_message_now",
         "set_agent_conversation_workspace_auto_publish",
         "set_agent_conversation_workspace_pr_supervision",
-        "start_agent_conversation",
         "stop_agent",
         "switch_agent_conversation_mode",
         "switch_agent_conversation_persona",
@@ -365,7 +319,7 @@
         "`delete_task_proposal` is Denied (deletesEntity) — it stays a manifest disposition inside this batch."
       ],
       "gate": "P-17 green; C-9 review recorded; rejected members appear as manifest dispositions, never as local-only rows.",
-      "commandCount": 54,
+      "commandCount": 53,
       "modules": [
         "agent_plan_commands",
         "ideation_commands",
@@ -374,9 +328,9 @@
         "workflow_commands"
       ],
       "dispositionCounts": {
-        "registerCandidate": 54
+        "registerCandidate": 53
       },
-      "registerCandidates": 54,
+      "registerCandidates": 53,
       "nonRegistering": 0,
       "commandsByModule": {
         "agent_plan_commands": [
@@ -434,8 +388,7 @@
           "deactivate_methodology"
         ],
         "plan_commands": [
-          "clear_active_plan",
-          "set_active_plan"
+          "clear_active_plan"
         ],
         "workflow_commands": [
           "create_workflow",
@@ -488,7 +441,6 @@
         "reorder_proposals",
         "restart_ideation_implementation",
         "seed_builtin_workflows",
-        "set_active_plan",
         "set_default_workflow",
         "set_tasks_feature_enabled",
         "spawn_session_namer",
@@ -1423,40 +1375,7 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "get_agent_conversation_runtime_statuses",
-      "batch": "B2",
-      "module": "unified_chat_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
       "command": "get_agent_conversation_timeline_page",
-      "batch": "B2",
-      "module": "unified_chat_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_agent_conversation_workspace",
-      "batch": "B2",
-      "module": "unified_chat_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_agent_conversation_workspace_freshness",
       "batch": "B2",
       "module": "unified_chat_commands",
       "ledgerClass": "agentControl",
@@ -1481,50 +1400,6 @@
       "command": "get_agent_lane_settings",
       "batch": "B4",
       "module": "ideation_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_agent_message_tool_call_detail",
-      "batch": "B2",
-      "module": "unified_chat_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_agent_run_status_unified",
-      "batch": "B2",
-      "module": "unified_chat_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_agent_running_states",
-      "batch": "B2",
-      "module": "unified_chat_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_agent_timeline_item_tool_call_detail",
-      "batch": "B2",
-      "module": "unified_chat_commands",
       "ledgerClass": "agentControl",
       "capabilities": [
         "agentControl"
@@ -1679,17 +1554,6 @@
       "command": "get_current_release_notes",
       "batch": "B7",
       "module": "release_notes_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_execution_status",
-      "batch": "B1",
-      "module": "execution_commands",
       "ledgerClass": "agentControl",
       "capabilities": [
         "agentControl"
@@ -1863,28 +1727,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "get_pending_permissions",
-      "batch": "B1",
-      "module": "permission_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_pending_questions",
-      "batch": "B1",
-      "module": "question_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
       "command": "get_persona",
       "batch": "B6",
       "module": "persona_commands",
@@ -1951,17 +1793,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "get_queued_agent_messages",
-      "batch": "B2",
-      "module": "unified_chat_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
       "command": "get_related_artifacts",
       "batch": "B7",
       "module": "task_context_commands",
@@ -2009,17 +1840,6 @@
       "command": "get_research_processes",
       "batch": "B5",
       "module": "research_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_running_processes",
-      "batch": "B1",
-      "module": "execution_commands",
       "ledgerClass": "agentControl",
       "capabilities": [
         "agentControl"
@@ -2182,83 +2002,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "is_agent_running",
-      "batch": "B2",
-      "module": "unified_chat_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "is_chat_service_available",
-      "batch": "B2",
-      "module": "unified_chat_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "list_agent_composer_skills",
-      "batch": "B2",
-      "module": "agent_composer_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "list_agent_conversation_workspaces_by_project",
-      "batch": "B2",
-      "module": "unified_chat_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "list_agent_conversations",
-      "batch": "B2",
-      "module": "unified_chat_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "list_agent_conversations_page",
-      "batch": "B2",
-      "module": "unified_chat_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "list_agent_sidebar_conversations",
-      "batch": "B2",
-      "module": "agent_sidebar_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
       "command": "list_all_activity_events",
       "batch": "B5",
       "module": "activity_commands",
@@ -2284,17 +2027,6 @@
       "command": "list_automations",
       "batch": "B5",
       "module": "automation_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "list_conversation_folder_references",
-      "batch": "B2",
-      "module": "conversation_folder_reference_commands",
       "ledgerClass": "agentControl",
       "capabilities": [
         "agentControl"
@@ -2922,17 +2654,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "search_agent_composer_entries",
-      "batch": "B2",
-      "module": "agent_composer_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
       "command": "search_artifacts",
       "batch": "B7",
       "module": "task_context_commands",
@@ -2955,31 +2676,9 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "send_agent_message",
-      "batch": "B2",
-      "module": "unified_chat_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
       "command": "send_queued_agent_message_now",
       "batch": "B2",
       "module": "unified_chat_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "set_active_plan",
-      "batch": "B4",
-      "module": "plan_commands",
       "ledgerClass": "agentControl",
       "capabilities": [
         "agentControl"
@@ -3103,17 +2802,6 @@
       "command": "spawn_session_namer",
       "batch": "B4",
       "module": "ideation_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "start_agent_conversation",
-      "batch": "B2",
-      "module": "unified_chat_commands",
       "ledgerClass": "agentControl",
       "capabilities": [
         "agentControl"
@@ -3532,7 +3220,14 @@
         "trigger_automation_run_now": "B5",
         "restart_automation": "B5"
       },
-      "status": "resolved — all five are registration candidates; none is a detector-(c) rejection on current evidence",
+      "resolutions": {
+        "send_agent_message": "DEMOTED (batch 9) — `host-denied-spawns-process`. Detector (c) fires on its OWN closure, which is already cut at the `send_message` steer sink: it still reaches `resolve_git_cli_path`, `resolve_node_cli_path` and `find_codex_cli_candidates` by another route. Registering it would fail `detector_c_floors_process_spawn_authority`.",
+        "start_agent_conversation": "DEMOTED (batch 9) — `host-denied-spawns-process`. Same three resolvers reached from its own cut closure.",
+        "skip_step": "register (`ui:agent`), pending detector-(c) confirmation",
+        "trigger_automation_run_now": "register (`ui:agent`), pending detector-(c) confirmation",
+        "restart_automation": "register (`ui:agent`), pending detector-(c) confirmation"
+      },
+      "status": "PARTIALLY RESOLVED (PR 3.1-b batch 9) — the detector-(c) confirmation this section made mandatory was run. `skip_step`, `trigger_automation_run_now` and `restart_automation` remain registration candidates; `send_agent_message` and `start_agent_conversation` came back POSITIVE and are now manifest-classified `host-denied-spawns-process`. The evidence bullet below claiming the provider launch sits outside chat send's own closure is therefore WRONG and is retained only as the record of what the static read predicted.",
       "briefingCorrection": "The 3.1-a brief states three of these five are detector-(c)-rejected. That does not match the code: the detector-(c) trio is `resume_task`, `apply_proposals_to_kanban`, `set_agent_conversation_workspace_auto_publish` (`remote_server/registry.rs` NOT-registered note; `frontend/src/lib/remote/agent-gate.test.ts:114-124` uses exactly those three as the unavailable-by-ABSENCE fixture). None of the five 2.6-surfaced ops appears in that set. The two lists were conflated — they are different trios, and 2.6's tracker note lists the five as ops that 'flip with no client change when 3.1 registers them', i.e. registration is the intended resolution.",
       "evidence": [
         "2.6 tracker product note: 'with `ui:agent` granted, chat send / start composer / skip_step / automation run+restart render UNAVAILABLE remotely — send_agent_message etc. are unregistered in 1.5-A's 27-op surface. Honest against this build; flips with no client change when 3.1 registers them.'",

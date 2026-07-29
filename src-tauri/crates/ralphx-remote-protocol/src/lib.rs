@@ -153,6 +153,20 @@ pub enum V1Resolution {
     /// Ledgered `Elevated` without `SpawnsProcess` — reachable only under `ui:elevated`, which
     /// v1 excludes. Deferred, not denied.
     V1Deferred,
+    /// The class/capability arithmetic admits a v1 scope, but a recorded per-command audit found
+    /// a property of the command AS IT STANDS that no v1 scope can accommodate.
+    ///
+    /// This variant is NOT derivable from `(class, capabilities)` — that pair is exactly what
+    /// [`v1_resolution`] partitions, and widening it would break that partition. It is reachable
+    /// only through an explicit ledger audit-refusal row, so the classification cannot be bought
+    /// by adjusting a class; it has to be bought by recording a finding and pinning it.
+    ///
+    /// PR 3.1-b batch 9 added it after establishing what it must NOT be used for. The facade
+    /// already serves 16 `agentControl` ops, three of which carry `SeedsSpawnTriggeringState`,
+    /// so "detector (a)/(b) fires" is a reason a batch declined to register a command — never a
+    /// reason the host denies it. Refusals of that shape stay `Registerable` and stay on the
+    /// ratchet. See [`AuditRefusalReason`] for the four findings that do qualify.
+    V1AuditRefused,
 }
 
 pub const V1_RESOLUTIONS: &[V1Resolution] = &[
@@ -160,7 +174,60 @@ pub const V1_RESOLUTIONS: &[V1Resolution] = &[
     V1Resolution::HostDenied,
     V1Resolution::HostDeniedSpawnsProcess,
     V1Resolution::V1Deferred,
+    V1Resolution::V1AuditRefused,
 ];
+
+/// Why a per-command audit refused a command that the class/capability arithmetic would admit.
+///
+/// The bar every variant must clear: **the finding must disqualify the command at EVERY v1
+/// scope, independent of any future audit.** "It writes", "it arms", "it steers" do not clear
+/// that bar — `ui:operate` and `ui:agent` are live v1 scopes with registered ops carrying
+/// exactly those capabilities — and there is deliberately no variant for them, so a later batch
+/// cannot reach for one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AuditRefusalReason {
+    /// Renders a host failure as absence or success, so no scope can serve it honestly: a
+    /// remote caller cannot distinguish "nothing here" from "the host could not tell". The
+    /// unlocking fix is to propagate the error.
+    FailOpenUntilFixed,
+    /// Constructs spawn-capable machinery to serve a read, handing any caller a constructed
+    /// steer surface. The unlocking fix is a read-only seam, as already done for the
+    /// `list_remote_*` reads.
+    ConstructsSpawnCapableService,
+    /// The success or error payload cannot cross the facade at all — e.g. an error type that is
+    /// not `Serialize`, so the `fallible` dispatch arm cannot render it. An error-contract
+    /// change unlocks it; it is not an authority finding.
+    TransportShapeDeferred,
+    /// A registered remote twin already answers this query through a deliberately split seam.
+    /// Registering the local name would put two facade paths on one query for no new
+    /// capability, so the refusal is architectural rather than pending anything.
+    SeamResolvedViaRemoteTwin,
+}
+
+pub const AUDIT_REFUSAL_REASONS: &[AuditRefusalReason] = &[
+    AuditRefusalReason::FailOpenUntilFixed,
+    AuditRefusalReason::ConstructsSpawnCapableService,
+    AuditRefusalReason::TransportShapeDeferred,
+    AuditRefusalReason::SeamResolvedViaRemoteTwin,
+];
+
+/// Resolve a ledger row that also carries an audit refusal.
+///
+/// The mechanical refusals win FIRST and unconditionally. A command that both spawns a process
+/// and has an audit finding is `HostDeniedSpawnsProcess`, because that is the stronger and
+/// cheaper-to-verify statement; letting the audit row mask it would let a hand-written table
+/// downgrade a mechanically proven denial.
+pub const fn v1_resolution_with_audit(
+    class: RiskClass,
+    capabilities: &[Capability],
+    audit_refused: bool,
+) -> V1Resolution {
+    match v1_resolution(class, capabilities) {
+        V1Resolution::Registerable if audit_refused => V1Resolution::V1AuditRefused,
+        mechanical => mechanical,
+    }
+}
 
 /// Derive a ledger row's [`V1Resolution`] from its declared class and capabilities.
 ///
