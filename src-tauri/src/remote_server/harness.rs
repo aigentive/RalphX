@@ -299,6 +299,30 @@ impl RemoteHostHarness {
         &self.stream
     }
 
+    /// The live durable high-water — the `H` a client would see at `hello`.
+    ///
+    /// `pub` because [`RemoteStreamHandle`] is `pub(crate)`: PR 3.4's `remote_e2e` integration
+    /// binary is outside the crate and cannot name the handle at all, so the fixture exposes
+    /// the two facts a leg actually needs rather than promoting the whole sequencer surface.
+    pub fn max_seq(&self) -> u64 {
+        self.stream.max_seq()
+    }
+
+    /// Publishes a retention floor, as a completed prune would.
+    ///
+    /// This is the deterministic seam for the prune → reset leg. Running the REAL pruner is not
+    /// an option for a test: `retention::prune_once` hardcodes `RETAIN_ROWS = 50_000`, so
+    /// reaching a nonzero retention ceiling against the real SQLite store would mean committing
+    /// more than fifty thousand rows per run. `record_pruned_floor` publishes exactly the state
+    /// a real prune leaves behind — the floor every `subscribe` is validated against
+    /// (`ws::validate_subscribe`) — so the leg exercises the production fail-closed path with
+    /// the arithmetic, not the outcome, stubbed.
+    ///
+    /// The floor only ever moves forward (`fetch_max`), so this can never mask a live lease.
+    pub fn force_pruned_floor(&self, floor: u64) {
+        self.stream.record_pruned_floor(floor);
+    }
+
     /// The host's live observability counters (§5.5, R-11).
     ///
     /// The load legs assert against these because they are the only in-process proxy for
