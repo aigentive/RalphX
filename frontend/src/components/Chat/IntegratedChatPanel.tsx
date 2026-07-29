@@ -876,8 +876,9 @@ export function IntegratedChatPanel({
   const persistedStreamingContentBlocks = useMemo(
     () => projectPersistedStreamingContentBlocks(
       currentPrimaryConversationData?.messages ?? [],
+      agentRunQuery.data?.id ?? undefined,
     ),
-    [currentPrimaryConversationData?.messages],
+    [currentPrimaryConversationData?.messages, agentRunQuery.data?.id],
   );
 
   // Recovery and polling effects (extracted to hook)

@@ -20,10 +20,12 @@ import type { StreamingContentBlock, StreamingTask } from "@/types/streaming-tas
  */
 export function projectPersistedStreamingContentBlocks(
   messages: readonly ChatMessageResponse[],
+  activeRunId?: string,
 ): StreamingContentBlock[] {
   let textBlockIndex = 0;
   return messages.flatMap((message) => {
     if (message.timelineStatus !== "streaming") return [];
+    if (activeRunId != null && message.runId != null && message.runId !== activeRunId) return [];
     const seq = message.timelineSequence ?? undefined;
     return (message.contentBlocks ?? []).flatMap((block): StreamingContentBlock[] => {
       if (block.type === "text") {
@@ -66,10 +68,10 @@ export function removePersistedStreamingPrefix(
       ? [[block.blockIndex, block.text] as const]
       : []
   ));
-  const legacyPersistedTexts = persistedBlocks.flatMap((block) =>
-    block.type === "text" && block.blockIndex == null ? [block.text] : []
+  const persistedTextsInOrder = persistedBlocks.flatMap((block) =>
+    block.type === "text" ? [block.text] : []
   );
-  let persistedTextIndex = 0;
+  let liveTextOrdinal = 0;
 
   return liveBlocks.flatMap((block): StreamingContentBlock[] => {
     if (block.type === "tool_use" && persistedToolIds.has(block.toolCall.id)) {
@@ -84,17 +86,23 @@ export function removePersistedStreamingPrefix(
 
     const persistedText = block.blockIndex != null
       ? persistedTextsByBlockIndex.get(block.blockIndex)
-      : legacyPersistedTexts[persistedTextIndex];
-    if (persistedText == null || !block.text.startsWith(persistedText)) {
+      : persistedTextsInOrder[liveTextOrdinal];
+    liveTextOrdinal += 1;
+    if (persistedText == null) {
       return [block];
     }
-    if (block.blockIndex == null) persistedTextIndex += 1;
-    const tail = block.text.slice(persistedText.length);
-    return tail.length > 0 ? [{ ...block, text: tail }] : [];
+    if (block.text.startsWith(persistedText)) {
+      const tail = block.text.slice(persistedText.length);
+      return tail.length > 0 ? [{ ...block, text: tail }] : [];
+    }
+    if (persistedText.startsWith(block.text)) {
+      return [];
+    }
+    return [block];
   });
 }
 
-/** Seed recovery with durable anchors without discarding events received first. */
+/** Seed recovery with durable anchors, reconciling indexed text snapshots in place. */
 export function mergePersistedStreamingAnchors(
   persistedBlocks: readonly StreamingContentBlock[],
   liveBlocks: readonly StreamingContentBlock[],
@@ -104,7 +112,24 @@ export function mergePersistedStreamingAnchors(
 
   for (const block of liveBlocks) {
     if (block.type === "text") {
-      if (!next.some((existing) => existing.type === "text" && existing.text === block.text)) {
+      if (block.blockIndex != null) {
+        const existingIndex = next.findIndex((existing) =>
+          existing.type === "text" && existing.blockIndex === block.blockIndex
+        );
+        if (existingIndex >= 0) {
+          const existing = next[existingIndex] as Extract<StreamingContentBlock, { type: "text" }>;
+          // The persisted anchor is the snapshot argument so it leads on the
+          // disjoint path. A live-led merge would produce text the persisted row
+          // is not a prefix of, which the release pass then cannot trim — the
+          // durable copy would render twice.
+          next[existingIndex] = {
+            ...existing,
+            text: mergeStreamingTextSnapshot(existing.text, block.text),
+          };
+        } else {
+          next.push(block);
+        }
+      } else if (!next.some((existing) => existing.type === "text" && existing.text === block.text)) {
         next.push(block);
       }
       continue;
