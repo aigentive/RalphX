@@ -464,6 +464,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: ["seedsSpawnTriggeringState"],
     pins: [],
   },
+  "search_agent_composer_plan_references": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
   "search_tasks": {
     opClass: "read",
     argumentSensitive: false,

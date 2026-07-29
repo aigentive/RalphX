@@ -182,7 +182,6 @@
     "retry_qa",
     "save_metrics_config",
     "search_agent_composer_entries",
-    "search_agent_composer_plan_references",
     "search_artifacts",
     "seed_builtin_workflows",
     "send_agent_message",

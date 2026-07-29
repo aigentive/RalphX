@@ -3500,10 +3500,15 @@ fn the_b2_getter_refusals_are_pinned() {
         // pins that. These stay refused because the fail-open was never the only reason — the
         // per-command audit that would clear them for the facade has not been done, and a
         // repaired error path is not a registration decision.
+        //
+        // BATCH 8: `search_agent_composer_plan_references` LEFT this list. The per-command
+        // audit this comment asks for was done — pure read, every repository error propagated,
+        // no `AppHandle`/`ExecutionState`/chat service — and it is now registered at `ui:read`
+        // and pinned by `b2_read_reclassifications_are_reviewed_rather_than_module_defaults`.
+        // The rest stay: their audits have still not been done.
         "get_agent_running_states",
         "get_agent_conversation_runtime_statuses",
         "list_agent_composer_skills",
-        "search_agent_composer_plan_references",
         // In-memory registry WRITE from a nominally read-only command.
         "is_agent_running",
         // Raw un-truncated content: pending prompt text, or full tool arguments/results.
@@ -3768,24 +3773,23 @@ fn b3_members_that_audit_dirty_stay_unregistered() {
     );
     assert!(find_spec("update_qa_settings").is_none());
 
-    // --- A detector-(c) FALSE POSITIVE, recorded rather than worked around.
+    // --- The batch-7 detector-(c) FALSE POSITIVE, now CLEARED (PR 3.1-b batch 8, ITEM 0).
     //
-    // `reopen_issue`'s body is a `review_issue_repo` read + `update` with a status guard: no
-    // transition, no CLI. The hit comes from `issue.reopen(reason)`, whose real target is
-    // `ReviewIssueEntity::reopen` in the `ralphx-domain` CRATE — outside the tree
-    // `load_production_sources` walks. With no same-arity candidate visible, the resolver
-    // falls back to every method named `reopen` (the documented conservative
-    // over-approximation) and picks up `SessionReopenService::reopen`, which does reach git.
+    // Batch 7 recorded that `issue.reopen(reason)`'s real target, `ReviewIssueEntity::reopen`,
+    // lived in the `ralphx-domain` crate outside the scanned tree, so the resolver fell back to
+    // every method named `reopen` and picked up `SessionReopenService::reopen`, which reaches
+    // git. Batch 8 widened the walk to the linked workspace crates, the real definition is now
+    // visible, and the spurious process-launch hit is gone.
     //
-    // The honest disposition is therefore NEITHER: it must not be registered while the
-    // detector-(c) floor fires on it, and it must not be ledgered `SpawnsProcess`, because it
-    // does not spawn. It stays unclassified in the P-11 baseline until the scanner's crate
-    // scope is widened — a change with its own blast radius and its own batch.
+    // The refusal SURVIVES the cleared detector, on a different and stronger ground: the body
+    // is a repository `update` behind a status guard, i.e. a WRITE. Detector silence never
+    // licenses registering a writer, and this row is the reason the two facts are asserted
+    // separately rather than as one "audits clean → register" step.
     let closure = graph.closure(["reopen_issue".to_string()]);
     assert!(
-        tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS),
-        "`reopen_issue` is held back by a detector (c) hit; if it no longer fires, the domain \
-         crate entered the scanned tree and this row can be re-audited"
+        !tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS),
+        "`reopen_issue`'s detector-(c) hit was an artefact of the missing domain crate; if it \
+         fires again the workspace-crate walk regressed"
     );
     let reopen = policy_for("reopen_issue", "review_commands").expect("ledgered");
     assert!(
@@ -3793,7 +3797,38 @@ fn b3_members_that_audit_dirty_stay_unregistered() {
         "`reopen_issue` does not spawn a process; declaring `SpawnsProcess` to buy a manifest \
          classification would put a false statement in the ledger"
     );
+    assert_eq!(
+        reopen.class,
+        RiskClass::AgentControl,
+        "`reopen_issue` persists a status change through `review_issue_repo.update`; a cleared \
+         detector does not turn a writer into a getter"
+    );
     assert!(find_spec("reopen_issue").is_none());
+
+    // --- `start_research` lost ALL THREE detectors to the same walk fix, and stays refused.
+    //
+    // Its `process.start()` resolved, pre-fix, to an unrelated `start` and dragged an entire
+    // agent-prompt/git closure behind it (6478 tokens → 1631 once `ResearchProcess::start`,
+    // a two-line `self.status = Running` setter, became visible). Nothing about that correction
+    // makes the command registerable: it still ends in `process_repo.create(process)`. This is
+    // the one row in the batch whose every mechanical hold disappeared at once, so it is pinned
+    // to the write finding explicitly — a later batch must not read the silence as a licence.
+    let research = graph.closure(["start_research".to_string()]);
+    assert!(
+        !closure_is_arming(&research) && !tokens_reach_any(&research.tokens, PROCESS_LAUNCH_SINKS),
+        "start_research is expected to audit clean after the workspace-crate walk"
+    );
+    let research_row = policy_for("start_research", "research_commands").expect("ledgered");
+    assert_eq!(
+        research_row.class,
+        RiskClass::AgentControl,
+        "start_research creates a research process row; it audits clean only because the \
+         pre-fix closure was a same-name artefact, not because it reads"
+    );
+    assert!(
+        find_spec("start_research").is_none(),
+        "start_research must not be registered"
+    );
 }
 
 /// The `B4` rows reclassified to `Read` carry a reviewed reason and audit clean, exactly as
@@ -3918,4 +3953,245 @@ fn b4_members_that_audit_dirty_stay_unregistered() {
             "`{command}` must not be registered"
         );
     }
+}
+
+/// Calibration probe: every detector verdict that moved when the linked workspace crates
+/// entered the authority graph (PR 3.1-b batch 8, ITEM 0).
+///
+/// Not an assertion — it prints the shift table that batch 8 hand-verified before regenerating
+/// the manifest. The fault being closed is direction-agnostic, so this reports BOTH directions.
+#[test]
+#[ignore = "calibration probe"]
+fn probe_workspace_crate_walk_verdict_shifts() {
+    use super::authority_audit::{collect_rs_files, crate_src_root};
+
+    let app_only = {
+        let root = crate_src_root();
+        let mut files = Vec::new();
+        collect_rs_files(&root, &root, &mut files);
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+        files
+    };
+    let full = load_production_sources();
+    println!("app-only sources: {}, full: {}", app_only.len(), full.len());
+
+    let before = CallGraph::build(&app_only);
+    let after = CallGraph::build(&full);
+    let rows = census();
+    let commands = rows
+        .iter()
+        .map(|(command, _)| command.clone())
+        .collect::<Vec<_>>();
+
+    let before_b =
+        spawn_triggering_writers(&before, commands.clone(), SPAWN_TRIGGERING_STATE_SURFACE);
+    let after_b =
+        spawn_triggering_writers(&after, commands.clone(), SPAWN_TRIGGERING_STATE_SURFACE);
+
+    for (command, module) in &rows {
+        let before_closure = before.closure([command.clone()]);
+        let after_closure = after.closure([command.clone()]);
+        let a0 = closure_is_arming(&before_closure);
+        let a1 = closure_is_arming(&after_closure);
+        let b0 = before_b.contains(command);
+        let b1 = after_b.contains(command);
+        let c0 = tokens_reach_any(&before_closure.tokens, PROCESS_LAUNCH_SINKS);
+        let c1 = tokens_reach_any(&after_closure.tokens, PROCESS_LAUNCH_SINKS);
+        if (a0, b0, c0) != (a1, b1, c1) {
+            println!("SHIFT {command} ({module}): a {a0}->{a1}  b {b0}->{b1}  c {c0}->{c1}");
+        }
+    }
+}
+
+/// The `B2` rows reclassified to `Read` carry a reviewed reason and audit clean.
+///
+/// Same shape as the `B3`/`B4` clusters. `B2` is the census's highest-risk batch — it also
+/// holds `send_agent_message`, the workspace publish surface and the conversation lifecycle
+/// writes — so the module default stays `AgentControl` and each row below is asserted
+/// individually.
+#[test]
+fn b2_read_reclassifications_are_reviewed_rather_than_module_defaults() {
+    const RECLASSIFIED: &[(&str, &str)] = &[(
+        "search_agent_composer_plan_references",
+        "agent_composer_commands",
+    )];
+
+    let graph = CallGraph::build(&load_production_sources());
+    let rows = census();
+    let commands = rows
+        .iter()
+        .map(|(command, _)| command.clone())
+        .collect::<Vec<_>>();
+    let detector_b = spawn_triggering_writers(&graph, commands, SPAWN_TRIGGERING_STATE_SURFACE);
+
+    for (command, module) in RECLASSIFIED {
+        let row = policy_for(command, module).expect("reclassified row is ledgered");
+        assert_eq!(
+            row.class,
+            RiskClass::Read,
+            "`{command}` must be ledgered Read"
+        );
+        assert!(
+            row.capabilities.is_empty(),
+            "`{command}` is a read and must carry no capability"
+        );
+        assert!(
+            find_spec(command).is_some(),
+            "`{command}` must be registered on the facade"
+        );
+
+        let closure = graph.closure([(*command).to_string()]);
+        assert!(
+            !closure_is_arming(&closure),
+            "`{command}` reaches an arming sink and cannot be Read"
+        );
+        assert!(
+            !detector_b.contains(*command),
+            "`{command}` writes spawn-triggering state and cannot be Read"
+        );
+        assert!(
+            !tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS),
+            "`{command}` reaches a process-launch sink and cannot be Read"
+        );
+    }
+
+    // The module defaults are NOT relaxed by the reclassifications above: the neighbours that
+    // make them conservative are still in the same modules and still unregistered.
+    for (command, module) in [
+        ("send_agent_message", "unified_chat_commands"),
+        (
+            "publish_agent_conversation_workspace",
+            "unified_chat_commands",
+        ),
+        ("start_agent_conversation", "unified_chat_commands"),
+    ] {
+        let row = policy_for(command, module).expect("ledgered");
+        assert_ne!(
+            row.class,
+            RiskClass::Read,
+            "`{command}` must not be pulled down to Read by its module's read cluster"
+        );
+        assert!(
+            find_spec(command).is_none(),
+            "`{command}` stays unregistered"
+        );
+    }
+}
+
+/// `B2` members that audit clean but are still refused, each pinned to its OWN finding.
+///
+/// Detector silence is not a licence. These six are the ones a "detectors clean → register"
+/// rule would have taken, and each is held back by something only a body read shows.
+#[test]
+fn b2_detector_clean_members_refused_on_their_own_findings() {
+    // --- Fail-open reads. A repository or filesystem failure is rendered as absence, so a
+    // remote client cannot distinguish "nothing here" from "the host could not tell".
+    //
+    // `list_agent_composer_skills` swallows the plugin/settings reads wholesale — e.g.
+    // `agent_composer_commands/skills.rs:299` `let Ok(raw) = std::fs::read_to_string(..) else`
+    // and `:766`, where losing the Codex disabled-skill list reports DISABLED skills as
+    // enabled. That is a fail-open that changes the answer, not just its completeness.
+    //
+    // `get_agent_message_tool_call_detail` and `get_agent_timeline_item_tool_call_detail`
+    // share `load_delegated_tool_runtime_snapshot`
+    // (`unified_chat_commands/mod.rs:2496/2504/2511/2525/2536`), whose `.ok().flatten()` on
+    // every repository read makes an outage return the STALE persisted tool result as though
+    // it were current.
+    for (command, module) in [
+        ("list_agent_composer_skills", "agent_composer_commands"),
+        (
+            "get_agent_message_tool_call_detail",
+            "unified_chat_commands",
+        ),
+        (
+            "get_agent_timeline_item_tool_call_detail",
+            "unified_chat_commands",
+        ),
+    ] {
+        let row = policy_for(command, module).expect("ledgered");
+        assert_ne!(
+            row.class,
+            RiskClass::Read,
+            "`{command}` is fail-open; a fail-open shape is fixed or refused, never registered"
+        );
+        assert!(
+            find_spec(command).is_none(),
+            "`{command}` must not register"
+        );
+    }
+
+    // --- Reads that construct spawn-capable machinery to serve a read.
+    //
+    // Both take `execution_state` and `tauri::AppHandle` and call `create_chat_service`
+    // (`unified_chat_commands/mod.rs:9657`, `:4263`) purely to reach one getter. The service
+    // is not USED to steer, but exposing the command hands a read-scoped caller a constructed
+    // steer surface, and the read-only seam that would fix this does not exist yet. Contrast
+    // `list_agent_conversations`, whose `_for_app_state` seam was extracted for exactly this
+    // reason and which IS registered above.
+    for (command, module) in [
+        ("get_agent_run_status_unified", "unified_chat_commands"),
+        ("get_queued_agent_messages", "unified_chat_commands"),
+    ] {
+        let row = policy_for(command, module).expect("ledgered");
+        assert_ne!(
+            row.class,
+            RiskClass::Read,
+            "`{command}` builds a spawn-capable chat service to serve a read"
+        );
+        assert!(
+            find_spec(command).is_none(),
+            "`{command}` must not register"
+        );
+    }
+
+    // --- Already answered by a different seam, so registering the local name would DUPLICATE
+    // a deliberate architectural decision rather than extend the facade.
+    //
+    // Batch 8's audit found `list_agent_conversations` and `list_agent_conversations_page`
+    // detector-clean, fail-open-free, and reached through a documented `_for_app_state` seam
+    // carrying no spawn authority — i.e. it would have registered them on the evidence. Batch 5
+    // had already resolved them by SPLITTING the seam: `list_remote_agent_conversations` and
+    // `list_remote_agent_conversations_page` in `remote_transcript_commands` are the registered
+    // answer, and the local twins stay off the facade. Registering the local names would put two
+    // facade paths on one query for no new capability. The refusal is pinned in
+    // `the_local_conversation_lists_stay_unregistered`; this assertion records WHY batch 8 did
+    // not re-add them, so the next batch does not rediscover the same clean audit and act on it.
+    for command in ["list_agent_conversations", "list_agent_conversations_page"] {
+        assert!(
+            find_spec(command).is_none(),
+            "`{command}` is answered by its registered `list_remote_*` twin, not by the local \
+             command; a clean audit is not a reason to add a second path to one query"
+        );
+        assert!(
+            find_spec(&format!(
+                "list_remote_{}",
+                command.trim_start_matches("list_")
+            ))
+            .is_some(),
+            "the `list_remote_*` twin that justifies refusing `{command}` must exist"
+        );
+    }
+
+    // --- A transport-shape refusal, not an authority one.
+    //
+    // `list_conversation_folder_references` is a pure `SELECT ... WHERE removed_at IS NULL`
+    // with no fail-open and no spawn authority — it audits cleaner than the rows registered
+    // above. It returns `Result<_, AppError>`, and `AppError` is not `Serialize`, so the
+    // `fallible` dispatch arm cannot render its error. Changing the command's error contract
+    // is an implementation change, not a census decision, so it is deferred rather than
+    // registered or ledgered as though it had authority it does not have.
+    let folder = policy_for(
+        "list_conversation_folder_references",
+        "conversation_folder_reference_commands",
+    )
+    .expect("ledgered");
+    assert!(
+        find_spec("list_conversation_folder_references").is_none(),
+        "list_conversation_folder_references is deferred on its error type, not registered"
+    );
+    assert_ne!(
+        folder.class,
+        RiskClass::Denied,
+        "the deferral is a transport-shape gap; recording it as Denied would misstate the finding"
+    );
 }

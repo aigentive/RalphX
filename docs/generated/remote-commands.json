@@ -534,7 +534,6 @@
     "list_granola_notes",
     "refresh_agent_conversation_granola_note",
     "validate_granola_integration_settings",
-    "start_research",
     "resolve_user_question",
     "start_agent_conversation",
     "abort_seeded_agent_conversation",
@@ -556,8 +555,6 @@
     "publish_agent_conversation_workspace",
     "commit_agent_conversation_workspace_locally",
     "close_agent_workspace_pr",
-    "open_agent_terminal",
-    "restart_agent_terminal",
     "resolve_merge_conflict",
     "retry_merge",
     "update_api_key_projects",
@@ -2883,6 +2880,15 @@
       "pins": [],
       "scopeConfined": false,
       "target": "crate::commands::workflow_commands::get_active_workflow_columns"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "search_agent_composer_plan_references",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::agent_composer_commands::search_agent_composer_plan_references"
     }
   ],
   "ledger": [
@@ -4718,14 +4724,12 @@
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "search_agent_composer_plan_references",
       "module": "agent_composer_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "plan-reference search: ideation sessions plus artifact resolution, ranked and              truncated to a capped limit; the resolver fail-open that once dropped sessions              silently was already removed, so a resolver outage now errors instead of              shipping a short list that looks complete",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -8807,13 +8811,33 @@
       ],
       "surface": "tasks.internal_status + task_status_history.entered_at + agent_runs.status",
       "writers": [
+        "activate_agent_plan_direct_implementation",
+        "activate_agent_task_pipeline",
+        "approve_task_for_review",
+        "close_agent_workspace_pr",
+        "commit_agent_conversation_workspace_locally",
+        "copy_agent_conversation_plan",
+        "get_agent_conversation_workspace",
+        "import_agent_conversation_plan",
+        "list_agent_conversation_workspaces_by_project",
+        "list_agent_sidebar_conversations",
+        "publish_agent_conversation_workspace",
         "re_review_task_from_escalated",
+        "reconcile_agent_conversation_workspace_publication",
         "recover_task_execution",
+        "reject_fix_task",
         "request_task_changes_for_review",
         "request_task_changes_from_reviewing",
         "resolve_recovery_prompt",
+        "resolve_user_question",
         "resume_deferred_git_startup",
-        "retry_merge"
+        "retry_merge",
+        "set_agent_conversation_workspace_auto_publish",
+        "set_agent_conversation_workspace_pr_supervision",
+        "start_agent_conversation",
+        "start_ralphx_work_from_ticket",
+        "switch_agent_conversation_mode",
+        "update_agent_conversation_workspace_from_base"
       ]
     },
     {
@@ -8858,7 +8882,6 @@
         "start_agent_conversation",
         "start_agent_task_pipeline",
         "start_ralphx_work_from_ticket",
-        "start_research",
         "switch_agent_conversation_mode",
         "update_agent_conversation_workspace_from_base"
       ]

@@ -1640,4 +1640,42 @@ crate::remote_commands! {
         call: async,
         result: fallible,
     },
+
+    // -----------------------------------------------------------------------------------
+    // PR 3.1-b batch 8 — census `B2`, ONE row, at `ui:read`.
+    //
+    // `B2` is the census's highest-risk batch: it also holds the detector-(a) steer sink
+    // (`send_agent_message`), the workspace `git push` surface, and the conversation
+    // lifecycle writes. The module default stays `AgentControl` precisely because those
+    // neighbours live in it, and this row is an exception to the default, not a relaxation
+    // of it.
+    //
+    // `search_agent_composer_plan_references` was refused by an earlier batch under the
+    // fail-open group. That fail-open is FIXED (the resolver call now propagates instead of
+    // falling back to the pre-resolution id and silently dropping sessions from a list whose
+    // `truncated` flag still read "complete"), and the earlier pin said explicitly that a
+    // repaired error path is not a registration decision — clearing it needs the per-command
+    // audit. That audit is this batch's: pure read, every repository error propagated via
+    // `map_err(...)?`, no `AppHandle`/`ExecutionState`/chat service, and no route through
+    // `agent_workspace_response_for_state`.
+    //
+    // Deliberately NOT here, each on its own finding: `list_agent_composer_skills`,
+    // `get_agent_message_tool_call_detail` and `get_agent_timeline_item_tool_call_detail`
+    // are fail-open; `get_agent_run_status_unified` and `get_queued_agent_messages` build a
+    // spawn-capable chat service to serve a read; `list_conversation_folder_references`
+    // returns `AppError`, which is not `Serialize`; and `list_agent_conversations` /
+    // `list_agent_conversations_page` stay refused because batch 5 already answered them
+    // with the registered `list_remote_agent_conversations*` twins in
+    // `remote_transcript_commands`. See `capability_ledger_tests`.
+    // -----------------------------------------------------------------------------------
+    "search_agent_composer_plan_references" => crate::commands::agent_composer_commands::search_agent_composer_plan_references {
+        class: Read,
+        caps: [],
+        params: [
+            (arg input: crate::commands::agent_composer_commands::SearchAgentComposerPlanReferencesInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
 }
