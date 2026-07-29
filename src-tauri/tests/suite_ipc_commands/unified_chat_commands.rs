@@ -3190,7 +3190,7 @@ mod ipc_contract {
             .agent_workspace_repair_repo
             .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
                 attempt: AgentWorkspaceRepairAttempt::new(
-                    conversation_id.clone(),
+                    *conversation_id,
                     AgentWorkspaceRepairSource::Publish,
                     AgentWorkspaceRepairContinuation::Publish,
                     "feature/deleted-base",
@@ -3245,7 +3245,7 @@ mod ipc_contract {
         let _ = ralphx_lib::commands::unified_chat_commands::publish_agent_conversation_workspace_for_app_state_with_repair_intent(
             &state,
             &execution_state,
-            conversation_id.clone(),
+            conversation_id,
             true,
             true,
         )
@@ -3287,7 +3287,7 @@ mod ipc_contract {
         let _ = publish_agent_conversation_workspace_for_app_state(
             &state,
             &execution_state,
-            conversation_id.clone(),
+            conversation_id,
             true,
         )
         .await;
