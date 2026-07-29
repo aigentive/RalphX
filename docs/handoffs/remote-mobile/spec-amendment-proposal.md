@@ -91,3 +91,7 @@ P-17b membership is generated from detector output, so a command that is detecto
 **Question:** All four p4_parity_* tables cover Read commands; the 27 registered Operate/AgentControl ops have no result-vs-direct-call envelope parity assertion (their tests assert authorization and absence-of-effect instead). Mutating parity requires paired fixture executions and is meaningfully more test machinery. Extend parity to mutating ops, or amend P-4 to record the Read-full / mutating-representative scoping?
 
 **Resolved:** Middle path: add one parity table over a representative mutating trio (create_task, update_task, deny_permission_request) including error-path envelope parity, and amend P-4 to state Read = exhaustive, mutating = representative + scope-suite effect coverage. Full mutating enumeration is low marginal value given the scope suite already proves effects and refusals per op.
+
+### A8. PR 3.2 scripted-agent premise (04-phase-3-hardening.md)
+
+The phase doc directs the two-instance harness to drive turns via a scripted `AgenticClient`. That seam does not exist on main: `AppChatService::send_message` never calls an `AgenticClient` — it spawns a provider CLI process and parses stream-json. The real scripted seam is `with_cli_path` pointed at a fake stream-json script (working recipe recorded in the 3.2 lane tracker). Amend the doc to name the fake-CLI seam; the landed harness (`remote_server::harness`, 11 legs) exercises the production Tauri bus path and defers the full fake-CLI chat turn to 3.4's E2E suite.
