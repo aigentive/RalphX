@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
@@ -31,6 +31,13 @@ vi.mock("@/stores/uiStore", () => ({
   useUiStore: (selector: (s: { autoAcceptPlans: boolean; setAutoAcceptPlans: () => void }) => unknown) =>
     selector({ autoAcceptPlans: false, setAutoAcceptPlans: vi.fn() }),
 }));
+
+if (!HTMLElement.prototype.scrollIntoView) {
+  Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+    value: vi.fn(),
+    writable: true,
+  });
+}
 
 const defaultSettings: IdeationSettings = {
   tasksEnabled: false,
@@ -123,7 +130,7 @@ describe("IdeationSettingsPanel", () => {
       expect(screen.getByText("Queue missing verification on acceptance")).toBeInTheDocument();
       expect(
         screen.getByText(
-          "After a successful Plan-mode Agent response, queue a visible Verify Plan turn in the same conversation",
+          "After a successful Plan-mode Agent response, queue a visible Verify Plan turn in the same conversation.",
         ),
       ).toBeInTheDocument();
     });
@@ -291,6 +298,36 @@ describe("IdeationSettingsPanel", () => {
       overrideTriggers.forEach((trigger) => {
         expect(trigger).toHaveTextContent("Inherit");
       });
+    });
+  });
+
+  it.each([
+    ["ext-override-auto-verify-plans", "autoVerifyPlans"],
+    [
+      "ext-override-verification-for-accept",
+      "requireVerificationForAccept",
+    ],
+    ["ext-override-accept-for-finalize", "requireAcceptForFinalize"],
+  ] as const)("persists the %s external override", async (testId, field) => {
+    const user = userEvent.setup();
+    vi.mocked(ideationApi.settings.update).mockImplementation(
+      async (settings) => settings,
+    );
+    render(<IdeationSettingsPanel />, { wrapper: createWrapper() });
+
+    await user.click(await screen.findByTestId("external-overrides-toggle"));
+    fireEvent.keyDown(screen.getByTestId(testId), {
+      key: "ArrowDown",
+      code: "ArrowDown",
+    });
+    await user.click(screen.getByRole("option", { name: /On/ }));
+
+    await waitFor(() => {
+      expect(ideationApi.settings.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          externalOverrides: expect.objectContaining({ [field]: true }),
+        }),
+      );
     });
   });
 });

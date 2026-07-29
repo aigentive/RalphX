@@ -191,14 +191,10 @@ describe("AgentsSettingsSection", () => {
     expect(screen.getByText("1 configured")).toBeInTheDocument();
   });
 
-  it("uses the existing settings select to change the default new-run mode", async () => {
+  it("changes the default new-run mode through the radio card group", async () => {
     renderSection();
 
-    fireEvent.keyDown(screen.getByTestId("agent-default-start-mode"), {
-      key: "ArrowDown",
-      code: "ArrowDown",
-    });
-    fireEvent.click(screen.getByRole("option", { name: /Plan/ }));
+    fireEvent.click(screen.getByRole("radio", { name: /Plan/ }));
 
     await waitFor(() => {
       expect(useAgentSessionStore.getState().defaultStartMode).toBe("plan");
@@ -387,7 +383,7 @@ describe("AgentsSettingsSection", () => {
     testState.isLoading = true;
     renderSection();
 
-    expect(screen.getByRole("heading", { name: "Agents" })).toBeInTheDocument();
+    expect(screen.getByTestId("agent-default-start-mode")).toBeInTheDocument();
     expect(screen.getByTestId("agents-settings-loading")).toBeInTheDocument();
     expect(screen.queryByTestId("agent-family-row")).not.toBeInTheDocument();
   });

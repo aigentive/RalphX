@@ -14,7 +14,7 @@ export default function PlanningSettingsSection({
   return (
     <SectionCard
       icon={<CalendarCheck className="h-5 w-5" />}
-      title="Planning"
+      title="Plan verification"
       description="Configure acceptance-triggered automatic plan verification."
     >
       <IdeationSettingsContent controller={controller} surface="planning" embedded />
