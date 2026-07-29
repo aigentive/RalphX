@@ -256,6 +256,78 @@ fn production_source_load_reaches_the_whole_tree() {
     }
 }
 
+/// The graph must span every workspace crate the app crate actually links.
+///
+/// PR 3.1-b batch 7 recorded the fault this closes: the walk covered `src-tauri/src` only, so a
+/// call into a `ralphx-domain` entity method had NO same-name definition in the graph and fell
+/// through to the all-same-name fallback. `reopen_issue` was the observed instance — its
+/// `issue.reopen(reason)` resolved to `SessionReopenService::reopen`, which reaches git, and the
+/// command read as a process spawner. The mechanism is direction-agnostic: the same missing
+/// definition could as easily have swallowed a real writer, so this is a soundness floor, not a
+/// convenience.
+///
+/// `ralphx-workflow-runner` is deliberately absent: it is a standalone `main.rs` binary and is
+/// NOT a dependency of the app crate, so none of its definitions are reachable from a Tauri
+/// command closure. Admitting them would inject same-name candidates from a program the census
+/// can never call — the exact over-attribution this walk exists to prevent.
+#[test]
+fn production_source_walk_spans_the_linked_workspace_crates() {
+    let files = load_production_sources();
+    let paths = files
+        .iter()
+        .map(|(path, _)| path.as_str())
+        .collect::<BTreeSet<_>>();
+
+    for expected in [
+        "crates/ralphx-domain/src/entities/review_issue.rs",
+        "crates/ralphx-events/src/event_bus.rs",
+        "crates/ralphx-remote-protocol/src/lib.rs",
+    ] {
+        assert!(
+            paths.contains(expected),
+            "workspace crate walk missed {expected}"
+        );
+    }
+
+    assert!(
+        !paths
+            .iter()
+            .any(|path| path.starts_with("crates/ralphx-workflow-runner/")),
+        "the workflow-runner binary is not linked by the app crate and must not contribute \
+         same-name dispatch candidates"
+    );
+
+    // Every included crate contributed, so a crate silently dropping out of the walk fails here
+    // rather than quietly re-opening the batch-7 masking hole.
+    for crate_name in ["ralphx-domain", "ralphx-events", "ralphx-remote-protocol"] {
+        let prefix = format!("crates/{crate_name}/src/");
+        assert!(
+            paths
+                .iter()
+                .filter(|path| path.starts_with(&prefix))
+                .count()
+                >= MIN_WORKSPACE_CRATE_SOURCE_FILES,
+            "{crate_name} contributed too few sources: the walk lost the crate"
+        );
+    }
+}
+
+/// The batch-7 false positive clears once the domain crate is visible.
+///
+/// `ReviewIssueEntity::reopen` is a status-guarded field mutation. With the definition in the
+/// graph the resolver can pick it on owner/arity instead of falling back to every `reopen`, and
+/// `reopen_issue`'s closure must no longer reach a process-launch sink.
+#[test]
+fn domain_crate_visibility_clears_the_reopen_issue_fallback() {
+    let graph = CallGraph::build(&load_production_sources());
+    let closure = graph.closure(["reopen_issue".to_string()]);
+    assert!(
+        !tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS),
+        "`reopen_issue` still reaches a process-launch sink: the domain-crate definition did \
+         not displace the all-same-name fallback"
+    );
+}
+
 #[test]
 fn method_spawn_and_listen_shapes_are_inventory_roots_with_body_authority() {
     let source = r#"

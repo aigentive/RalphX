@@ -1,7 +1,8 @@
 //! Two-detector remote authority audit (PR 1.3, P-17d/e/g).
 //!
 //! Build-time tooling — compiled only under `cfg(test)` and never linked into the shipped
-//! binary. It parses `src-tauri/src` with `syn` and answers two questions the capability
+//! binary. It parses `src-tauri/src` plus the linked workspace crates (see
+//! [`LINKED_WORKSPACE_CRATES`]) with `syn` and answers two questions the capability
 //! ledger cannot answer by inspection:
 //!
 //! * **Detector (a)** — which registered Tauri commands can transitively reach an agent
@@ -1258,13 +1259,50 @@ pub fn repo_root() -> PathBuf {
 /// The detectors are only a floor if the graph they run over is the whole program. A load that
 /// silently returns a fraction of the tree would collapse every downstream classification to
 /// "nothing is authority-bearing" and could be baked into the checked-in manifest through
-/// `RALPHX_REGENERATE_REMOTE_MANIFEST`. The tree has ~1060 production files; anything under
-/// this floor means the walk lost the tree, not that the tree shrank.
-pub const MIN_PRODUCTION_SOURCE_FILES: usize = 900;
+/// `RALPHX_REGENERATE_REMOTE_MANIFEST`. The app crate has ~1060 production files and the linked
+/// workspace crates add ~250; anything under this floor means the walk lost the tree, not that
+/// the tree shrank.
+pub const MIN_PRODUCTION_SOURCE_FILES: usize = 1150;
 
-/// Loads every production `.rs` file under `src-tauri/src`.
+/// Fail-closed floor on each linked workspace crate's contribution.
+///
+/// The whole-graph floor is dominated by the app crate, so a workspace crate dropping out
+/// entirely would not move it. That is precisely the failure this walk exists to close, so each
+/// crate is floored on its own.
+pub const MIN_WORKSPACE_CRATE_SOURCE_FILES: usize = 1;
+
+/// The workspace crates whose definitions belong in the authority graph.
+///
+/// Membership is decided per crate by one question: can a Tauri command closure reach this
+/// crate's definitions? If yes, its absence lets a same-name call fall through to the
+/// all-same-name fallback and mis-resolve — the batch-7 fault.
+///
+/// | crate | linked by the app crate | verdict |
+/// |---|---|---|
+/// | `ralphx-domain` | yes (`ralphx-domain = { path = ... }`) | INCLUDED — entities and repository traits are called directly from application services; its invisibility is what mis-resolved `reopen_issue` |
+/// | `ralphx-events` | yes | INCLUDED — the event bus/sink methods (`emit`, `publish`, `subscribe`) are exactly the generic names the fallback mis-binds |
+/// | `ralphx-remote-protocol` | yes | INCLUDED — small, and its message constructors are reachable from remote command paths |
+/// | `ralphx-workflow-runner` | NO — a workspace member, not a dependency | EXCLUDED — a standalone `main.rs` binary; no command closure can reach it, so admitting its definitions would only add spurious dispatch candidates |
+///
+/// Paths are returned relative to `src-tauri/`, so walked files carry a `crates/<name>/src/`
+/// prefix that cannot collide with the app crate's `commands/` or `domain/` prefixes used by
+/// [`is_architecture_leaf`] and the command-fusion rule.
+///
+/// These crates are NOT added to [`is_architecture_leaf`], and that was MEASURED rather than
+/// assumed. Leafing `crates/ralphx-domain/src/` — the symmetric treatment of the app crate's own
+/// `domain/` — was tried and produced a byte-identical `remote-commands.json` and an identical
+/// set of detector verdict shifts. The fix works through newly visible DEFINITIONS correcting
+/// dispatch, not through traversing domain bodies, so the leaf rule would have been dead policy
+/// carrying a real cost: it also suppresses any authority a domain body genuinely acquires
+/// later. Walking them fully is strictly more information at no observed precision cost.
+pub const LINKED_WORKSPACE_CRATES: &[&str] =
+    &["ralphx-domain", "ralphx-events", "ralphx-remote-protocol"];
+
+/// Loads every production `.rs` file under `src-tauri/src` and the linked workspace crates.
 ///
 /// `*_tests.rs` files are excluded: test bodies would inject edges no production caller has.
+/// The cfg-gated-fixture exclusion applies per walk root, so a `#[cfg(test)]`-gated module in a
+/// workspace crate is skipped there exactly as it is in the app crate.
 ///
 /// Every I/O failure is a hard error. An unreadable directory or file shrinks the call graph
 /// exactly the way an unparseable file does, and the parse path already panics rather than
@@ -1274,6 +1312,26 @@ pub fn load_production_sources() -> Vec<(String, String)> {
     let root = crate_src_root();
     let mut files = Vec::new();
     collect_rs_files(&root, &root, &mut files);
+
+    for crate_name in LINKED_WORKSPACE_CRATES {
+        let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("crates")
+            .join(crate_name)
+            .join("src");
+        let mut crate_files = Vec::new();
+        collect_rs_files(&crate_root, &crate_root, &mut crate_files);
+        assert!(
+            crate_files.len() >= MIN_WORKSPACE_CRATE_SOURCE_FILES,
+            "authority audit loaded {} sources from workspace crate {crate_name}: the walk lost the crate",
+            crate_files.len()
+        );
+        files.extend(
+            crate_files
+                .into_iter()
+                .map(|(relative, source)| (format!("crates/{crate_name}/src/{relative}"), source)),
+        );
+    }
+
     files.sort_by(|a, b| a.0.cmp(&b.0));
     assert!(
         files.len() >= MIN_PRODUCTION_SOURCE_FILES,

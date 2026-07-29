@@ -3768,24 +3768,23 @@ fn b3_members_that_audit_dirty_stay_unregistered() {
     );
     assert!(find_spec("update_qa_settings").is_none());
 
-    // --- A detector-(c) FALSE POSITIVE, recorded rather than worked around.
+    // --- The batch-7 detector-(c) FALSE POSITIVE, now CLEARED (PR 3.1-b batch 8, ITEM 0).
     //
-    // `reopen_issue`'s body is a `review_issue_repo` read + `update` with a status guard: no
-    // transition, no CLI. The hit comes from `issue.reopen(reason)`, whose real target is
-    // `ReviewIssueEntity::reopen` in the `ralphx-domain` CRATE — outside the tree
-    // `load_production_sources` walks. With no same-arity candidate visible, the resolver
-    // falls back to every method named `reopen` (the documented conservative
-    // over-approximation) and picks up `SessionReopenService::reopen`, which does reach git.
+    // Batch 7 recorded that `issue.reopen(reason)`'s real target, `ReviewIssueEntity::reopen`,
+    // lived in the `ralphx-domain` crate outside the scanned tree, so the resolver fell back to
+    // every method named `reopen` and picked up `SessionReopenService::reopen`, which reaches
+    // git. Batch 8 widened the walk to the linked workspace crates, the real definition is now
+    // visible, and the spurious process-launch hit is gone.
     //
-    // The honest disposition is therefore NEITHER: it must not be registered while the
-    // detector-(c) floor fires on it, and it must not be ledgered `SpawnsProcess`, because it
-    // does not spawn. It stays unclassified in the P-11 baseline until the scanner's crate
-    // scope is widened — a change with its own blast radius and its own batch.
+    // The refusal SURVIVES the cleared detector, on a different and stronger ground: the body
+    // is a repository `update` behind a status guard, i.e. a WRITE. Detector silence never
+    // licenses registering a writer, and this row is the reason the two facts are asserted
+    // separately rather than as one "audits clean → register" step.
     let closure = graph.closure(["reopen_issue".to_string()]);
     assert!(
-        tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS),
-        "`reopen_issue` is held back by a detector (c) hit; if it no longer fires, the domain \
-         crate entered the scanned tree and this row can be re-audited"
+        !tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS),
+        "`reopen_issue`'s detector-(c) hit was an artefact of the missing domain crate; if it \
+         fires again the workspace-crate walk regressed"
     );
     let reopen = policy_for("reopen_issue", "review_commands").expect("ledgered");
     assert!(
@@ -3793,7 +3792,38 @@ fn b3_members_that_audit_dirty_stay_unregistered() {
         "`reopen_issue` does not spawn a process; declaring `SpawnsProcess` to buy a manifest \
          classification would put a false statement in the ledger"
     );
+    assert_eq!(
+        reopen.class,
+        RiskClass::AgentControl,
+        "`reopen_issue` persists a status change through `review_issue_repo.update`; a cleared \
+         detector does not turn a writer into a getter"
+    );
     assert!(find_spec("reopen_issue").is_none());
+
+    // --- `start_research` lost ALL THREE detectors to the same walk fix, and stays refused.
+    //
+    // Its `process.start()` resolved, pre-fix, to an unrelated `start` and dragged an entire
+    // agent-prompt/git closure behind it (6478 tokens → 1631 once `ResearchProcess::start`,
+    // a two-line `self.status = Running` setter, became visible). Nothing about that correction
+    // makes the command registerable: it still ends in `process_repo.create(process)`. This is
+    // the one row in the batch whose every mechanical hold disappeared at once, so it is pinned
+    // to the write finding explicitly — a later batch must not read the silence as a licence.
+    let research = graph.closure(["start_research".to_string()]);
+    assert!(
+        !closure_is_arming(&research) && !tokens_reach_any(&research.tokens, PROCESS_LAUNCH_SINKS),
+        "start_research is expected to audit clean after the workspace-crate walk"
+    );
+    let research_row = policy_for("start_research", "research_commands").expect("ledgered");
+    assert_eq!(
+        research_row.class,
+        RiskClass::AgentControl,
+        "start_research creates a research process row; it audits clean only because the \
+         pre-fix closure was a same-name artefact, not because it reads"
+    );
+    assert!(
+        find_spec("start_research").is_none(),
+        "start_research must not be registered"
+    );
 }
 
 /// The `B4` rows reclassified to `Read` carry a reviewed reason and audit clean, exactly as
@@ -3917,5 +3947,53 @@ fn b4_members_that_audit_dirty_stay_unregistered() {
             find_spec(command).is_none(),
             "`{command}` must not be registered"
         );
+    }
+}
+
+/// Calibration probe: every detector verdict that moved when the linked workspace crates
+/// entered the authority graph (PR 3.1-b batch 8, ITEM 0).
+///
+/// Not an assertion — it prints the shift table that batch 8 hand-verified before regenerating
+/// the manifest. The fault being closed is direction-agnostic, so this reports BOTH directions.
+#[test]
+#[ignore = "calibration probe"]
+fn probe_workspace_crate_walk_verdict_shifts() {
+    use super::authority_audit::{collect_rs_files, crate_src_root};
+
+    let app_only = {
+        let root = crate_src_root();
+        let mut files = Vec::new();
+        collect_rs_files(&root, &root, &mut files);
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+        files
+    };
+    let full = load_production_sources();
+    println!("app-only sources: {}, full: {}", app_only.len(), full.len());
+
+    let before = CallGraph::build(&app_only);
+    let after = CallGraph::build(&full);
+    let rows = census();
+    let commands = rows
+        .iter()
+        .map(|(command, _)| command.clone())
+        .collect::<Vec<_>>();
+
+    let before_b =
+        spawn_triggering_writers(&before, commands.clone(), SPAWN_TRIGGERING_STATE_SURFACE);
+    let after_b =
+        spawn_triggering_writers(&after, commands.clone(), SPAWN_TRIGGERING_STATE_SURFACE);
+
+    for (command, module) in &rows {
+        let before_closure = before.closure([command.clone()]);
+        let after_closure = after.closure([command.clone()]);
+        let a0 = closure_is_arming(&before_closure);
+        let a1 = closure_is_arming(&after_closure);
+        let b0 = before_b.contains(command);
+        let b1 = after_b.contains(command);
+        let c0 = tokens_reach_any(&before_closure.tokens, PROCESS_LAUNCH_SINKS);
+        let c1 = tokens_reach_any(&after_closure.tokens, PROCESS_LAUNCH_SINKS);
+        if (a0, b0, c0) != (a1, b1, c1) {
+            println!("SHIFT {command} ({module}): a {a0}->{a1}  b {b0}->{b1}  c {c0}->{c1}");
+        }
     }
 }
