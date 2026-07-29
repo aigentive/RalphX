@@ -6,17 +6,17 @@
     "invokedCommands": 499,
     "dynamicExpressions": 0,
     "seamBypasses": 0,
-    "manifestClassified": 248,
-    "unclassified": 48,
-    "line": "PASS: remote transport drift — 499 invoke command name(s), 0 dynamic, 0 seam bypasses; 248 manifest-classified; 48 unclassified (baseline, → 0 in PR 3.1)."
+    "manifestClassified": 285,
+    "unclassified": 0,
+    "line": "PASS: remote transport drift — 499 invoke command name(s), 0 dynamic, 0 seam bypasses; 285 manifest-classified; 0 unclassified (P-11 COMPLETE — permanent zero).\n      P-11 census: all 499 names have a reviewed disposition — 213 remote-registered, 29 reason-coded local-only, 257 manifest-classified only, 0 unclassified, 0 suppressions."
   },
   "totals": {
     "invokedCommandNames": 499,
-    "remoteRegistered": 208,
+    "remoteRegistered": 219,
     "localOnlyRows": 29,
     "ledgerRows": 546,
-    "unclassified": 48,
-    "assignedToBatches": 48,
+    "unclassified": 0,
+    "assignedToBatches": 0,
     "batches": 14
   },
   "dispositionModel": {
@@ -45,9 +45,7 @@
       "rule": "invoked by the frontend but absent from `generate_handler!` and from the ledger — it cannot be registered remotely because it does not exist locally either"
     }
   },
-  "dispositionTotals": {
-    "registerCandidate": 48
-  },
+  "dispositionTotals": {},
   "batches": [
     {
       "id": "B0",
@@ -86,65 +84,13 @@
         "DONE (PR 3.1-b batch 10): `question_commands` and `permission_commands` are fully classified and no longer appear in this batch's module list. `resolve_user_question` was corrected in place to `Elevated`/`SpawnsProcess` (`host-denied-spawns-process`) after it was measured reaching `resolve_git_cli_path`, `resolve_node_cli_path` and `find_codex_cli_candidates` while sitting at `AgentControl` — an authority-INCREASING correction that preserved its `steering-question` declared membership. `resolve_permission_request` is `seam-resolved-via-remote-twin`: the facade already registers that exact fn twice, as `approve_permission_request` (AgentControl) and `deny_permission_request` (Operate), with the decision field server-pinned, so registering the raw name would move branch selection to a client-supplied argument."
       ],
       "gate": "P-17 suite green; P-17b generated scope entries exist for every new AgentControl member; C-9 dual-lens review recorded.",
-      "commandCount": 19,
-      "modules": [
-        "execution_commands",
-        "task_commands",
-        "task_step_commands"
-      ],
-      "dispositionCounts": {
-        "registerCandidate": 19
-      },
-      "registerCandidates": 19,
+      "commandCount": 0,
+      "modules": [],
+      "dispositionCounts": {},
+      "registerCandidates": 0,
       "nonRegistering": 0,
-      "commandsByModule": {
-        "execution_commands": [
-          "recover_task_execution",
-          "resolve_recovery_prompt",
-          "restart_task",
-          "resume_execution",
-          "update_execution_settings",
-          "update_global_execution_settings"
-        ],
-        "task_commands": [
-          "archive_task",
-          "pause_execution_plan",
-          "restore_task",
-          "resume_execution_plan",
-          "resume_task",
-          "resume_tasks_in_group",
-          "retry_branch_update",
-          "stop_execution_plan"
-        ],
-        "task_step_commands": [
-          "complete_step",
-          "fail_step",
-          "reorder_task_steps",
-          "skip_step",
-          "start_step"
-        ]
-      },
-      "commands": [
-        "archive_task",
-        "complete_step",
-        "fail_step",
-        "pause_execution_plan",
-        "recover_task_execution",
-        "reorder_task_steps",
-        "resolve_recovery_prompt",
-        "restart_task",
-        "restore_task",
-        "resume_execution",
-        "resume_execution_plan",
-        "resume_task",
-        "resume_tasks_in_group",
-        "retry_branch_update",
-        "skip_step",
-        "start_step",
-        "stop_execution_plan",
-        "update_execution_settings",
-        "update_global_execution_settings"
-      ]
+      "commandsByModule": {},
+      "commands": []
     },
     {
       "id": "B2",
@@ -162,65 +108,13 @@
         "READ FIRST — `send_agent_message` and `start_agent_conversation` are ledgered `Elevated`/`SpawnsProcess` as of batch 9, so the split-by-authority plan above no longer applies to them unmodified. PR 3.2's premise (chat send answers `REMOTE_FORBIDDEN` rather than `REMOTE_COMMAND_UNAVAILABLE`) needs the process-launch sink moved BEYOND the command's own closure first — the `list_remote_*`/`get_remote_*` seam split is the proven shape for that. Registering them as they stand would fail `detector_c_floors_process_spawn_authority`."
       ],
       "gate": "P-17 green; C-9 dual-lens review recorded; the five 2.6-surfaced ops resolve per this census's `resolvedItems.unregisteredUiAgentOps`.",
-      "commandCount": 19,
-      "modules": [
-        "agent_model_commands",
-        "conversation_folder_reference_commands",
-        "unified_chat_commands"
-      ],
-      "dispositionCounts": {
-        "registerCandidate": 19
-      },
-      "registerCandidates": 19,
+      "commandCount": 0,
+      "modules": [],
+      "dispositionCounts": {},
+      "registerCandidates": 0,
       "nonRegistering": 0,
-      "commandsByModule": {
-        "agent_model_commands": [
-          "upsert_custom_agent_model"
-        ],
-        "conversation_folder_reference_commands": [
-          "add_conversation_folder_reference",
-          "remove_conversation_folder_reference"
-        ],
-        "unified_chat_commands": [
-          "abort_seeded_agent_conversation",
-          "archive_agent_conversation",
-          "commit_agent_conversation_workspace_locally",
-          "create_agent_conversation",
-          "fork_agent_conversation",
-          "precompute_agent_conversation_workspace_pr_description",
-          "reconcile_agent_conversation_workspace_publication",
-          "restore_agent_conversation",
-          "send_queued_agent_message_now",
-          "set_agent_conversation_workspace_auto_publish",
-          "set_agent_conversation_workspace_pr_supervision",
-          "stop_agent",
-          "switch_agent_conversation_mode",
-          "switch_agent_conversation_persona",
-          "update_agent_conversation_coordination_mode",
-          "update_agent_conversation_title"
-        ]
-      },
-      "commands": [
-        "abort_seeded_agent_conversation",
-        "add_conversation_folder_reference",
-        "archive_agent_conversation",
-        "commit_agent_conversation_workspace_locally",
-        "create_agent_conversation",
-        "fork_agent_conversation",
-        "precompute_agent_conversation_workspace_pr_description",
-        "reconcile_agent_conversation_workspace_publication",
-        "remove_conversation_folder_reference",
-        "restore_agent_conversation",
-        "send_queued_agent_message_now",
-        "set_agent_conversation_workspace_auto_publish",
-        "set_agent_conversation_workspace_pr_supervision",
-        "stop_agent",
-        "switch_agent_conversation_mode",
-        "switch_agent_conversation_persona",
-        "update_agent_conversation_coordination_mode",
-        "update_agent_conversation_title",
-        "upsert_custom_agent_model"
-      ]
+      "commandsByModule": {},
+      "commands": []
     },
     {
       "id": "B3",
@@ -238,25 +132,13 @@
         "DONE (PR 3.1-b batch 10): `qa_commands` is fully classified and no longer appears in this batch's module list. `retry_qa` and `update_qa_settings` registered at `ui:agent` — the latter with a declared `arms-auto-qa` membership, because it arms through an in-memory `RwLock` that no detector watches — and `skip_qa` is `v1-audit-refused`: it writes every step as `QAStepResult::skipped`, but `QAResults::from_results` then derives `Pending` rather than `Passed`, contradicting the body's own comment. That discrepancy is a live product bug, not only a facade finding."
       ],
       "gate": "P-17d floor diff clean; C-9 review recorded.",
-      "commandCount": 2,
-      "modules": [
-        "review_commands"
-      ],
-      "dispositionCounts": {
-        "registerCandidate": 2
-      },
-      "registerCandidates": 2,
+      "commandCount": 0,
+      "modules": [],
+      "dispositionCounts": {},
+      "registerCandidates": 0,
       "nonRegistering": 0,
-      "commandsByModule": {
-        "review_commands": [
-          "approve_fix_task",
-          "reject_fix_task"
-        ]
-      },
-      "commands": [
-        "approve_fix_task",
-        "reject_fix_task"
-      ]
+      "commandsByModule": {},
+      "commands": []
     },
     {
       "id": "B4",
@@ -319,40 +201,13 @@
         "READ FIRST — `get_mcp_catalog` and `refresh_mcp_catalog` are REFUSED at the floor. They are reads by intent, but `build_catalog -> discover_provider_catalog -> resolve_codex_catalog_cli_path` launches the Codex app-server to answer. `retry_legacy_mcp_registration_repair` is ALSO refused, and detector (c) does NOT see it: it runs `claude mcp remove ralphx -s user` through `tokio::process::Command::new`, hidden by a `spawn_blocking(bare_fn)` call shape that creates no edge plus a spawn on an already-resolved path that names no resolver. Pinned by `batch13_detector_gap_is_measured_not_inherited`."
       ],
       "gate": "P-17 green; C-9 review recorded with the deferred-authority lens explicitly exercised.",
-      "commandCount": 8,
-      "modules": [
-        "manual_role_default_commands",
-        "workspace_review_settings_commands"
-      ],
-      "dispositionCounts": {
-        "registerCandidate": 8
-      },
-      "registerCandidates": 8,
+      "commandCount": 0,
+      "modules": [],
+      "dispositionCounts": {},
+      "registerCandidates": 0,
       "nonRegistering": 0,
-      "commandsByModule": {
-        "manual_role_default_commands": [
-          "clear_manual_role_default",
-          "get_agent_conversation_role_default",
-          "get_manual_role_defaults",
-          "get_start_composer_role_default",
-          "reset_agent_conversation_role_default",
-          "update_manual_role_default"
-        ],
-        "workspace_review_settings_commands": [
-          "get_workspace_review_runtime_settings",
-          "update_workspace_review_runtime_settings"
-        ]
-      },
-      "commands": [
-        "clear_manual_role_default",
-        "get_agent_conversation_role_default",
-        "get_manual_role_defaults",
-        "get_start_composer_role_default",
-        "get_workspace_review_runtime_settings",
-        "reset_agent_conversation_role_default",
-        "update_manual_role_default",
-        "update_workspace_review_runtime_settings"
-      ]
+      "commandsByModule": {},
+      "commands": []
     },
     {
       "id": "B7",
@@ -507,541 +362,7 @@
       "commands": []
     }
   ],
-  "commands": [
-    {
-      "command": "abort_seeded_agent_conversation",
-      "batch": "B2",
-      "module": "unified_chat_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "add_conversation_folder_reference",
-      "batch": "B2",
-      "module": "conversation_folder_reference_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "approve_fix_task",
-      "batch": "B3",
-      "module": "review_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "detector-a: guards internal_status == Blocked, then transitions the fix task to Ready through TaskTransitionService. Authority-RESTORING in exactly the registered `unblock_task` shape — a human gate decision that lets scheduling resume, with the guard and every repository error propagated. Audited CLEAN by batch 10 and deliberately NOT registered: its paired half `reject_fix_task` reaches transition_task_corrective, which the facade forbids at every scope, and exposing the approve half alone would give a device fix-task unblocking with no remote way to reject. Held on the pair, not on a finding of its own"
-    },
-    {
-      "command": "archive_agent_conversation",
-      "batch": "B2",
-      "module": "unified_chat_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "archive_task",
-      "batch": "B1",
-      "module": "task_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "clear_manual_role_default",
-      "batch": "B6",
-      "module": "manual_role_default_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "commit_agent_conversation_workspace_locally",
-      "batch": "B2",
-      "module": "unified_chat_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "complete_step",
-      "batch": "B1",
-      "module": "task_step_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl",
-        "mutatesAgentConsumedContent"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "detector-d: writes worker-consumed task step status"
-    },
-    {
-      "command": "create_agent_conversation",
-      "batch": "B2",
-      "module": "unified_chat_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "fail_step",
-      "batch": "B1",
-      "module": "task_step_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl",
-        "mutatesAgentConsumedContent"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "detector-d: writes worker-consumed task step status"
-    },
-    {
-      "command": "fork_agent_conversation",
-      "batch": "B2",
-      "module": "unified_chat_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_agent_conversation_role_default",
-      "batch": "B6",
-      "module": "manual_role_default_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_manual_role_defaults",
-      "batch": "B6",
-      "module": "manual_role_default_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_start_composer_role_default",
-      "batch": "B6",
-      "module": "manual_role_default_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_workspace_review_runtime_settings",
-      "batch": "B6",
-      "module": "workspace_review_settings_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "pause_execution_plan",
-      "batch": "B1",
-      "module": "task_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "precompute_agent_conversation_workspace_pr_description",
-      "batch": "B2",
-      "module": "unified_chat_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "reconcile_agent_conversation_workspace_publication",
-      "batch": "B2",
-      "module": "unified_chat_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "recover_task_execution",
-      "batch": "B1",
-      "module": "execution_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "reject_fix_task",
-      "batch": "B3",
-      "module": "review_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "mutatesAgentConsumedContent"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "content-surface: writes worker-consumed fix feedback"
-    },
-    {
-      "command": "remove_conversation_folder_reference",
-      "batch": "B2",
-      "module": "conversation_folder_reference_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "reorder_task_steps",
-      "batch": "B1",
-      "module": "task_step_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "reset_agent_conversation_role_default",
-      "batch": "B6",
-      "module": "manual_role_default_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "resolve_recovery_prompt",
-      "batch": "B1",
-      "module": "execution_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "restart_task",
-      "batch": "B1",
-      "module": "execution_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "restore_agent_conversation",
-      "batch": "B2",
-      "module": "unified_chat_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "restore_task",
-      "batch": "B1",
-      "module": "task_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "resume_execution",
-      "batch": "B1",
-      "module": "execution_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "resume_execution_plan",
-      "batch": "B1",
-      "module": "task_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "resume_task",
-      "batch": "B1",
-      "module": "task_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "resume_tasks_in_group",
-      "batch": "B1",
-      "module": "task_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "retry_branch_update",
-      "batch": "B1",
-      "module": "task_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "send_queued_agent_message_now",
-      "batch": "B2",
-      "module": "unified_chat_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "set_agent_conversation_workspace_auto_publish",
-      "batch": "B2",
-      "module": "unified_chat_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl",
-        "seedsSpawnTriggeringState"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "detector-b: arms auto_publish_enabled consumed by the auto-publish freshness scan"
-    },
-    {
-      "command": "set_agent_conversation_workspace_pr_supervision",
-      "batch": "B2",
-      "module": "unified_chat_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "skip_step",
-      "batch": "B1",
-      "module": "task_step_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl",
-        "mutatesAgentConsumedContent"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "detector-d: writes worker-consumed task step status"
-    },
-    {
-      "command": "start_step",
-      "batch": "B1",
-      "module": "task_step_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl",
-        "mutatesAgentConsumedContent"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "detector-d: writes worker-consumed task step status"
-    },
-    {
-      "command": "stop_agent",
-      "batch": "B2",
-      "module": "unified_chat_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "stop_execution_plan",
-      "batch": "B1",
-      "module": "task_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "switch_agent_conversation_mode",
-      "batch": "B2",
-      "module": "unified_chat_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "switch_agent_conversation_persona",
-      "batch": "B2",
-      "module": "unified_chat_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "update_agent_conversation_coordination_mode",
-      "batch": "B2",
-      "module": "unified_chat_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "update_agent_conversation_title",
-      "batch": "B2",
-      "module": "unified_chat_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "update_execution_settings",
-      "batch": "B1",
-      "module": "execution_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "update_global_execution_settings",
-      "batch": "B1",
-      "module": "execution_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "update_manual_role_default",
-      "batch": "B6",
-      "module": "manual_role_default_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "update_workspace_review_runtime_settings",
-      "batch": "B6",
-      "module": "workspace_review_settings_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "upsert_custom_agent_model",
-      "batch": "B2",
-      "module": "agent_model_commands",
-      "ledgerClass": "agentControl",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "registerCandidate",
-      "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    }
-  ],
+  "commands": [],
   "resolvedItems": {
     "projectGetters": {
       "commands": [

@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use ralphx_remote_protocol::{class_permits, Capability, RiskClass};
+use ralphx_remote_protocol::{class_permits, AuditRefusalReason, Capability, RiskClass};
 
 use super::authority_audit::{
     agent_consumed_content_writers, closure_is_arming, load_production_sources,
@@ -3899,21 +3899,32 @@ fn b3_members_that_audit_dirty_stay_unregistered() {
         );
     }
 
-    // (a) alone, plus corrective-transition authority: `reject_fix_task` reaches
-    // `transition_task_corrective`, the nonstandard repair jump, and `approve_fix_task` is its
-    // paired half. Registering one half of a repair pair remotely while the other is held is
-    // worse than holding both, so both wait for a batch that audits the pair together.
+    // (a) alone, plus corrective-transition authority. PR 3.1-b batch 14 SPLIT this pair, which
+    // batch 3 recorded together and batch 10 held together. The shared property that justified
+    // holding both — "registering one half of a repair pair while the other is held is worse
+    // than holding both" — was re-examined against the current registry and did not survive:
+    // `block_task` and `stop_task` are registered, so the remote brake the pair argument was
+    // protecting already exists. `reject_fix_task` is now classified `v1-audit-refused` on the
+    // batch-14 `reaches-corrective-transition` reason and `approve_fix_task` is registered.
+    //
+    // Detector (a) must still fire on BOTH — that is what put them in this block — and the pair's
+    // mechanical split is pinned separately by
+    // `batch14_held_pair_splits_on_the_corrective_reach`.
     for command in ["approve_fix_task", "reject_fix_task"] {
         let closure = graph.closure([command.to_string()]);
         assert!(
             closure_is_arming(&closure),
             "`{command}` is excluded because detector (a) fires"
         );
-        assert!(
-            find_spec(command).is_none(),
-            "`{command}` must not be registered"
-        );
     }
+    assert!(
+        find_spec("reject_fix_task").is_none(),
+        "`reject_fix_task` reaches a corrective transition and must never be registered"
+    );
+    assert!(
+        find_spec("approve_fix_task").is_some(),
+        "`approve_fix_task` was released from its batch-10 pair hold in batch 14; if it is          withheld again, restore the pair reasoning here rather than silently unregistering it"
+    );
 
     // (b): the write half of the settings pair whose READ half batch 7 registered. PR 3.1-b
     // batch 10 registered this half too, at `ui:agent` — the registered `inject_task`,
@@ -4619,14 +4630,18 @@ fn batch9_detector_c_refusals_declare_the_capability_they_reach() {
     }
 
     assert_eq!(
-        checked, 16,
+        checked, 26,
         "batch 9 classified thirteen detector-(c) refusals, batch 10 closed the fourteenth \
-         (`resolve_user_question`), and batch 13 added `get_mcp_catalog` and `refresh_mcp_catalog` \
-         — both genuinely detector-visible, so they belong UNDER this gate's re-measurement rather \
-         than beside it. Two nearby rows are deliberately absent: batch 12's three floor rows open \
-         `detector-c, hand-traced:` rather than `detector-c:`, and batch 13's third refusal \
-         (`retry_legacy_mcp_registration_repair`) is excluded on purpose — detector (c) cannot see \
-         its launch, so a gate that re-measures the sink would fail on a row that is nonetheless \
+         (`resolve_user_question`), batch 13 added `get_mcp_catalog` and `refresh_mcp_catalog`, \
+         and batch 14 added TEN more — its twelve detector-DETECTED floor rows, of which \
+         `set_agent_conversation_workspace_auto_publish` was already counted here and one other \
+         was already an override. All are genuinely detector-visible, so they belong UNDER this \
+         gate's re-measurement rather than beside it. Rows deliberately absent: batch 12's three \
+         floor rows open `detector-c, hand-traced:` rather than `detector-c:`, batch 13's third \
+         refusal (`retry_legacy_mcp_registration_repair`) is excluded on purpose, and batch 14's \
+         THIRTEEN hand-traced floor rows open `detector-c-MISS, hand-traced:` — detector (c) \
+         cannot see their launches, so a gate that re-measures the sink would fail on rows that \
+         are nonetheless \
          correct. A change to this count is a census decision and must be made deliberately"
     );
 }
@@ -4959,6 +4974,11 @@ fn batch9_audit_refusals_are_tied_to_a_live_pin() {
         // Batch 11's disposition table is the pin for the seven B4 members it classified
         // `v1-audit-refused`: it names each one and re-measures the detector-(c) floor on it.
         "batch11_closes_the_b4_remainder",
+        // Batch 14's disposition table is the pin for the NINE refusals that closed the ratchet:
+        // the seven transport-shape rows, `get_manual_role_defaults`, and `reject_fix_task`. It
+        // names each one and re-measures the detector-(c) floor on it, so deleting the table
+        // takes the classifications down with it.
+        "batch14_closes_the_ratchet_at_zero",
     ];
     let own_source = include_str!("capability_ledger_tests.rs");
     let pin_bodies = PINNED_REFUSAL_TESTS
@@ -5024,9 +5044,12 @@ fn batch9_audit_refusals_are_tied_to_a_live_pin() {
     }
     assert_eq!(
         AUDIT_REFUSALS.len(),
-        25,
-        "batch 9 recorded eleven audit refusals, batch 10 added seven and batch 11 added seven \
-         more (the B4 fail-opens); changing that count is a census decision"
+        34,
+        "batch 9 recorded eleven audit refusals, batch 10 added seven, batch 11 added seven more \
+         (the B4 fail-opens), and batch 14 added the final NINE that closed the ratchet: seven \
+         `TransportShapeDeferred` rows sharing ONE non-Serialize `AppError` contract, \
+         `get_manual_role_defaults` on a fail-open, and `reject_fix_task` on the newly minted \
+         `ReachesCorrectiveTransition`. Changing that count is a census decision"
     );
 }
 
@@ -5080,23 +5103,26 @@ fn batch10_closes_the_batch9_arming_and_write_block() {
         ("archive_tasks_in_group", CLASSIFIED),
         ("request_task_changes_from_reviewing", CLASSIFIED),
         ("skip_qa", CLASSIFIED),
-        // --- Still on the ratchet, recorded rather than quietly dropped. The fix-task repair
-        //     pair is the one part of batch 9's block batch 10 could not close, and the reason
-        //     is a hard invariant rather than a missing audit:
+        // --- The fix-task repair pair, the one part of batch 9's block batch 10 could not
+        //     close. It stayed UNRESOLVED here for four batches and PR 3.1-b batch 14 closed it,
+        //     because driving the ratchet to zero left no batch to defer to. Both dispositions
+        //     are recorded in place rather than deleted, so this table stays the honest history
+        //     of what each batch could and could not do.
         //
-        //     `reject_fix_task` reaches `transition_task_corrective`. Corrective jumps are
-        //     repair-path-only and `no_registered_facade_target_reaches_a_corrective_transition`
-        //     forbids them on the facade at every scope — the audit was done and it FAILED.
-        //     It is not classified `v1-audit-refused` because no reason code in the closed
-        //     vocabulary states "reaches a corrective transition", and batch 9's standing rule
-        //     is that a classification may not be bought by reaching for an ill-fitting code.
+        //     `reject_fix_task` is now CLASSIFIED. The finding never changed — it reaches
+        //     `transition_task_corrective` and
+        //     `no_registered_facade_target_reaches_a_corrective_transition` forbids that at
+        //     every scope — but batch 10 had no honest code for it, and batch 9's standing rule
+        //     forbids buying a classification with an ill-fitting one. Batch 14 minted
+        //     `AuditRefusalReason::ReachesCorrectiveTransition`: one specific, separately
+        //     CI-enforced mechanism, not the generic arming code the vocabulary still withholds.
         //
-        //     `approve_fix_task` audits CLEAN — a Blocked→Ready transition in the registered
-        //     `unblock_task` shape — and is withheld anyway, on the pair argument: registering
-        //     the approve half alone would let a device unblock fix tasks with no remote way to
-        //     reject one, the brake-less asymmetry batch 3 closed for execution.
-        ("approve_fix_task", UNRESOLVED),
-        ("reject_fix_task", UNRESOLVED),
+        //     `approve_fix_task` is now REGISTERED. Its body audited CLEAN here and it was
+        //     withheld purely on the pair argument — no remote way to reject. That argument was
+        //     re-checked against the current registry and did not survive: `block_task` and
+        //     `stop_task` are both registered, so the brake it was protecting exists.
+        ("approve_fix_task", REGISTERED),
+        ("reject_fix_task", CLASSIFIED),
     ];
 
     let modules = census().into_iter().collect::<BTreeMap<_, _>>();
@@ -5191,12 +5217,24 @@ fn batch10_closes_the_batch9_arming_and_write_block() {
         }
     }
 
-    assert_eq!(registered, 16, "batch 10 registered sixteen of the block");
-    assert_eq!(classified, 7, "batch 10 classified seven of the block");
+    // Counts updated by PR 3.1-b batch 14, which closed the two members batch 10 left open.
+    // The table still records batch 10's audit; these totals record the CURRENT disposition of
+    // batch 9's block, which is what the assertions below can actually verify.
     assert_eq!(
-        unresolved, 2,
-        "the fix-task repair pair is the only part of the block batch 10 left open; closing it \
-         needs `reject_fix_task` to stop reaching a corrective transition, not a new argument"
+        registered, 17,
+        "batch 10 registered sixteen of the block and batch 14 released `approve_fix_task` from \
+         its pair hold"
+    );
+    assert_eq!(
+        classified, 8,
+        "batch 10 classified seven of the block and batch 14 classified `reject_fix_task` on the \
+         newly minted `reaches-corrective-transition` reason"
+    );
+    assert_eq!(
+        unresolved, 0,
+        "batch 9's block is fully closed. The fix-task repair pair was the last open part and \
+         batch 14 resolved both halves; a member reappearing here means a disposition was \
+         withdrawn without being replaced"
     );
     assert_eq!(
         DISPOSITIONS.len(),
@@ -6374,5 +6412,388 @@ fn batch13_detector_gap_is_measured_not_inherited() {
         "`update_notification_settings` claims SeedsSpawnTriggeringState. Detector (b) does flag \
          it, so `seeds_spawn_triggering_state_tags_track_detector_b_evidence` would PASS — but \
          the flag is a marker collision and the tag would be false"
+    );
+}
+
+/// PR 3.1-b batch 14 — the FINAL ratchet population, measured before any disposition.
+#[test]
+#[ignore = "calibration probe"]
+fn probe_b14_final_population_audit() {
+    const MEMBERS: &[&str] = &[
+        "abort_seeded_agent_conversation",
+        "add_conversation_folder_reference",
+        "approve_fix_task",
+        "archive_agent_conversation",
+        "archive_task",
+        "clear_manual_role_default",
+        "commit_agent_conversation_workspace_locally",
+        "complete_step",
+        "create_agent_conversation",
+        "fail_step",
+        "fork_agent_conversation",
+        "get_agent_conversation_role_default",
+        "get_manual_role_defaults",
+        "get_start_composer_role_default",
+        "get_workspace_review_runtime_settings",
+        "pause_execution_plan",
+        "precompute_agent_conversation_workspace_pr_description",
+        "reconcile_agent_conversation_workspace_publication",
+        "recover_task_execution",
+        "reject_fix_task",
+        "remove_conversation_folder_reference",
+        "reorder_task_steps",
+        "reset_agent_conversation_role_default",
+        "resolve_recovery_prompt",
+        "restart_task",
+        "restore_agent_conversation",
+        "restore_task",
+        "resume_execution",
+        "resume_execution_plan",
+        "resume_task",
+        "resume_tasks_in_group",
+        "retry_branch_update",
+        "send_queued_agent_message_now",
+        "set_agent_conversation_workspace_auto_publish",
+        "set_agent_conversation_workspace_pr_supervision",
+        "skip_step",
+        "start_step",
+        "stop_agent",
+        "stop_execution_plan",
+        "switch_agent_conversation_mode",
+        "switch_agent_conversation_persona",
+        "update_agent_conversation_coordination_mode",
+        "update_agent_conversation_title",
+        "update_execution_settings",
+        "update_global_execution_settings",
+        "update_manual_role_default",
+        "update_workspace_review_runtime_settings",
+        "upsert_custom_agent_model",
+    ];
+    let graph = CallGraph::build(&load_production_sources());
+    let rows = census();
+    let commands = rows.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>();
+    let detector_b = spawn_triggering_writers(&graph, commands, SPAWN_TRIGGERING_STATE_SURFACE);
+
+    for (command, module) in &rows {
+        if !MEMBERS.contains(&command.as_str()) {
+            continue;
+        }
+        let closure = graph.closure([command.clone()]);
+        let a = closure_is_arming(&closure);
+        let b = detector_b.contains(command);
+        let c = tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS);
+        let row = policy_for(command, module).expect("ledgered");
+        eprintln!(
+            "PROBE-B14 {module} {command} a={a} b={b} c={c} visited={} class={:?} caps={:?} registered={}",
+            closure.visited.len(),
+            row.class,
+            row.capabilities,
+            find_spec(command).is_some(),
+        );
+        if c {
+            for path in launcher_paths(&graph, command).iter().take(2) {
+                eprintln!("PROBE-B14   path: {}", path.join(" -> "));
+            }
+        }
+    }
+    let named = rows
+        .iter()
+        .filter(|(c, _)| MEMBERS.contains(&c.as_str()))
+        .count();
+    eprintln!("PROBE-B14 census-covered {named} of {}", MEMBERS.len());
+}
+
+/// PR 3.1-b batch 14 — the FINAL ratchet block, and the P-11 exit criterion in test form.
+///
+/// Same contract as [`batch13_closes_the_b7_block_and_two_b6_modules`]: every one of the 48
+/// remaining members is named with its disposition and the detector-(c) floor is RE-MEASURED
+/// per member.
+///
+/// The table splits the floor the way batch 13 did, and the split now carries most of the
+/// batch: `FloorDetected` asserts detector (c) sees the launch, and `FloorHandTraced` asserts
+/// it is SILENT. Thirteen members are hand-traced, so if the engine is ever widened to close
+/// the M1/M2/M3 gaps this test fails loudly on all thirteen and they are re-classified
+/// deliberately rather than drifting into agreement.
+#[test]
+fn batch14_closes_the_ratchet_at_zero() {
+    #[derive(PartialEq, Eq, Clone, Copy, Debug)]
+    enum Disposition {
+        /// Registered `Read` on a body audit that found no repository write.
+        Read,
+        /// Registered `AgentControl` — a writer a silent detector never licenses dropping.
+        Agent,
+        /// `host-denied-spawns-process`, and detector (c) sees the launch.
+        FloorDetected,
+        /// `host-denied-spawns-process` on a SOURCE trace while detector (c) is SILENT.
+        FloorHandTraced,
+        /// Ledgered `Elevated`/`ConfiguresFutureProcessAuthority`: deferred by authority.
+        DeferredFutureAuthority,
+        /// `v1-audit-refused` — a recorded `AUDIT_REFUSALS` finding.
+        AuditRefused,
+    }
+    use Disposition::*;
+
+    const MEMBERS: &[(&str, Disposition)] = &[
+        // --- floor, detector (c) DETECTED (12)
+        ("resume_task", FloorDetected),
+        ("retry_branch_update", FloorDetected),
+        ("restart_task", FloorDetected),
+        ("recover_task_execution", FloorDetected),
+        ("resolve_recovery_prompt", FloorDetected),
+        ("switch_agent_conversation_mode", FloorDetected),
+        ("set_agent_conversation_workspace_auto_publish", FloorDetected),
+        ("set_agent_conversation_workspace_pr_supervision", FloorDetected),
+        (
+            "reconcile_agent_conversation_workspace_publication",
+            FloorDetected,
+        ),
+        ("commit_agent_conversation_workspace_locally", FloorDetected),
+        (
+            "precompute_agent_conversation_workspace_pr_description",
+            FloorDetected,
+        ),
+        ("archive_agent_conversation", FloorDetected),
+        // --- floor, detector (c) MISSED (13)
+        ("resume_execution", FloorHandTraced),
+        ("update_execution_settings", FloorHandTraced),
+        ("update_global_execution_settings", FloorHandTraced),
+        ("reset_agent_conversation_role_default", FloorHandTraced),
+        ("resume_tasks_in_group", FloorHandTraced),
+        ("pause_execution_plan", FloorHandTraced),
+        ("resume_execution_plan", FloorHandTraced),
+        ("stop_execution_plan", FloorHandTraced),
+        ("fork_agent_conversation", FloorHandTraced),
+        ("switch_agent_conversation_persona", FloorHandTraced),
+        ("send_queued_agent_message_now", FloorHandTraced),
+        ("stop_agent", FloorHandTraced),
+        ("update_agent_conversation_coordination_mode", FloorHandTraced),
+        // --- deferred by authority (3)
+        ("add_conversation_folder_reference", DeferredFutureAuthority),
+        ("update_manual_role_default", DeferredFutureAuthority),
+        ("clear_manual_role_default", DeferredFutureAuthority),
+        // --- audit-refused (9)
+        ("start_step", AuditRefused),
+        ("complete_step", AuditRefused),
+        ("skip_step", AuditRefused),
+        ("fail_step", AuditRefused),
+        ("reorder_task_steps", AuditRefused),
+        ("remove_conversation_folder_reference", AuditRefused),
+        ("abort_seeded_agent_conversation", AuditRefused),
+        ("get_manual_role_defaults", AuditRefused),
+        ("reject_fix_task", AuditRefused),
+        // --- registered (11)
+        ("get_start_composer_role_default", Read),
+        ("get_agent_conversation_role_default", Read),
+        ("get_workspace_review_runtime_settings", Read),
+        ("archive_task", Agent),
+        ("restore_task", Agent),
+        ("create_agent_conversation", Agent),
+        ("restore_agent_conversation", Agent),
+        ("update_agent_conversation_title", Agent),
+        ("update_workspace_review_runtime_settings", Agent),
+        ("upsert_custom_agent_model", Agent),
+        ("approve_fix_task", Agent),
+    ];
+
+    assert_eq!(
+        MEMBERS.len(),
+        48,
+        "the final ratchet block is 48 members; the table must name every one"
+    );
+
+    let graph = CallGraph::build(&load_production_sources());
+    let rows = census().into_iter().collect::<BTreeMap<_, _>>();
+
+    for (command, disposition) in MEMBERS {
+        let module = rows
+            .get(*command)
+            .unwrap_or_else(|| panic!("`{command}` is not in the live census"));
+        let row = policy_for(command, module).expect("ledgered");
+        let closure = graph.closure([(*command).to_string()]);
+        let reaches_launch = tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS);
+
+        match disposition {
+            Read => {
+                assert_eq!(
+                    row.class,
+                    RiskClass::Read,
+                    "`{command}` is dispositioned Read but the ledger says {:?}",
+                    row.class
+                );
+                assert!(
+                    find_spec(command).is_some(),
+                    "`{command}` is dispositioned Read but is not registered"
+                );
+                assert!(
+                    !reaches_launch,
+                    "`{command}` is registered as a read but reaches a launch sink"
+                );
+            }
+            Agent => {
+                assert_eq!(
+                    row.class,
+                    RiskClass::AgentControl,
+                    "`{command}` is dispositioned AgentControl but the ledger says {:?}",
+                    row.class
+                );
+                assert!(
+                    find_spec(command).is_some(),
+                    "`{command}` is dispositioned AgentControl but is not registered"
+                );
+                assert!(
+                    !reaches_launch,
+                    "`{command}` is registered but now reaches a launch sink; a registration \
+                     may never sit over a CLI launch"
+                );
+            }
+            FloorDetected => {
+                assert_eq!(row.class, RiskClass::Elevated);
+                assert!(
+                    row.capabilities.contains(&Capability::SpawnsProcess),
+                    "`{command}` is floored but does not carry SpawnsProcess"
+                );
+                assert!(
+                    reaches_launch,
+                    "`{command}` is recorded as a DETECTED floor, but detector (c) is now \
+                     silent on it — re-audit the row rather than keeping the annotation"
+                );
+                assert!(find_spec(command).is_none());
+            }
+            FloorHandTraced => {
+                assert_eq!(row.class, RiskClass::Elevated);
+                assert!(
+                    row.capabilities.contains(&Capability::SpawnsProcess),
+                    "`{command}` is floored but does not carry SpawnsProcess"
+                );
+                // The falsifiable half. These thirteen are refused on a SOURCE trace while the
+                // detector reports nothing. If the engine is widened to see M1/M2/M3, this
+                // fires and the row is re-classified deliberately.
+                assert!(
+                    !reaches_launch,
+                    "`{command}` is recorded as a hand-traced floor BECAUSE detector (c) could \
+                     not see its launch. Detector (c) now flags it, so the engine changed: move \
+                     the row to the detected floor and re-check the other twelve"
+                );
+                assert!(find_spec(command).is_none());
+            }
+            DeferredFutureAuthority => {
+                assert_eq!(row.class, RiskClass::Elevated);
+                assert!(
+                    row.capabilities
+                        .contains(&Capability::ConfiguresFutureProcessAuthority),
+                    "`{command}` is deferred on future-process authority but does not carry it"
+                );
+                assert!(
+                    !row.capabilities.contains(&Capability::SpawnsProcess),
+                    "`{command}` is a DEFERRAL, not a denial; carrying SpawnsProcess would \
+                     make it host-denied and the distinction is the point"
+                );
+                assert!(find_spec(command).is_none());
+            }
+            AuditRefused => {
+                assert!(
+                    audit_refusal_for(command).is_some(),
+                    "`{command}` is dispositioned v1-audit-refused but has no AUDIT_REFUSALS row"
+                );
+                assert!(find_spec(command).is_none());
+            }
+        }
+    }
+}
+
+/// PR 3.1-b batch 14 — the held pair, and the two halves proved to differ mechanically.
+///
+/// The whole vocabulary decision rests on one asymmetry: `reject_fix_task` reaches a corrective
+/// transition and `approve_fix_task` does not. Both directions are asserted, so the new reason
+/// cannot outlive its cause and the released half cannot silently acquire the property that
+/// refused its partner.
+#[test]
+fn batch14_held_pair_splits_on_the_corrective_reach() {
+    const CORRECTIVE_SINKS: &[&str] = &[
+        "transition_task_corrective",
+        "transition_task_corrective_with_exit",
+        "apply_corrective_transition",
+    ];
+    let graph = CallGraph::build(&load_production_sources());
+
+    let reaches = |command: &str| {
+        graph
+            .closure([command.to_string()])
+            .sink_hits
+            .iter()
+            .any(|hit| CORRECTIVE_SINKS.contains(&hit.sink.as_str()))
+    };
+
+    assert!(
+        reaches("reject_fix_task"),
+        "`reject_fix_task` no longer reaches a corrective transition, so the \
+         `reaches-corrective-transition` refusal is STALE — re-audit it for registration \
+         instead of leaving a refusal whose finding has been fixed"
+    );
+    let refusal = audit_refusal_for("reject_fix_task").expect("the refusal row exists");
+    assert_eq!(
+        refusal.reason,
+        AuditRefusalReason::ReachesCorrectiveTransition,
+        "`reject_fix_task` is the sole justification for minting this reason; filing it under \
+         another one would put a false statement in the ledger"
+    );
+
+    assert!(
+        !reaches("approve_fix_task"),
+        "`approve_fix_task` now reaches a corrective transition. It is REGISTERED, and \
+         `no_registered_facade_target_reaches_a_corrective_transition` forbids that at any \
+         scope — unregister it rather than exempting it"
+    );
+    assert!(
+        find_spec("approve_fix_task").is_some(),
+        "`approve_fix_task` was released from its four-batch hold in batch 14; if it is \
+         unregistered again the ledger reason must be rewritten, not just the registration"
+    );
+    // The brake that dissolved the pair argument. If either is ever unregistered, the reason
+    // recorded for releasing `approve_fix_task` stops being true.
+    for brake in ["block_task", "stop_task"] {
+        assert!(
+            find_spec(brake).is_some(),
+            "`{brake}` is unregistered. Batch 14 released `approve_fix_task` from its pair hold \
+             BECAUSE a remote brake exists; without it the asymmetry batch 10 refused is back"
+        );
+    }
+}
+
+/// PR 3.1-b batch 14 — the seven transport-shape refusals are ONE mechanism, not seven calls.
+#[test]
+fn batch14_transport_shape_refusals_share_one_error_contract() {
+    const SHARED: &[&str] = &[
+        "start_step",
+        "complete_step",
+        "skip_step",
+        "fail_step",
+        "reorder_task_steps",
+        "remove_conversation_folder_reference",
+        "abort_seeded_agent_conversation",
+    ];
+    for command in SHARED {
+        let refusal =
+            audit_refusal_for(command).unwrap_or_else(|| panic!("`{command}` has a refusal row"));
+        assert_eq!(
+            refusal.reason,
+            AuditRefusalReason::TransportShapeDeferred,
+            "`{command}` is refused on the shared non-Serialize AppError contract; a different \
+             reason here means the finding changed and the row needs re-auditing"
+        );
+        assert!(
+            find_spec(command).is_none(),
+            "`{command}` is registered despite an error type the fallible dispatch arm cannot \
+             render"
+        );
+    }
+    // The unlocking fix is shared too: making `AppError` Serialize releases all seven at once.
+    // Batch 8 recorded the same mechanism for this sibling, which is why it is not a new finding.
+    assert_eq!(
+        audit_refusal_for("list_conversation_folder_references")
+            .expect("batch 8's row")
+            .reason,
+        AuditRefusalReason::TransportShapeDeferred,
+        "batch 8's row is the precedent these seven cite; if it moved, re-argue them"
     );
 }

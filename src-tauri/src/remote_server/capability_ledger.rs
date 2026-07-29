@@ -48,6 +48,13 @@ const AGENT_AND_CONTENT: &[Capability] = &[
     Capability::MutatesAgentConsumedContent,
 ];
 const PROCESS: &[Capability] = &[Capability::SpawnsProcess];
+/// The process floor PLUS retained detector-(b) evidence. PR 3.1-b batch 14: a row may be
+/// foreclosed by a launch and still be a proof-class arming writer, and erasing the weaker tag
+/// to record the stronger one would delete evidence three tests depend on.
+const PROCESS_AND_SEEDS: &[Capability] = &[
+    Capability::SpawnsProcess,
+    Capability::SeedsSpawnTriggeringState,
+];
 const CREDENTIALS: &[Capability] = &[Capability::TouchesCredentials];
 const PTY: &[Capability] = &[Capability::PtyControl];
 const HOST: &[Capability] = &[Capability::HostManagement];
@@ -304,12 +311,26 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
     // R5-H1 names these two detector-(b) writers explicitly. Without the tag the manifest
     // records the class but not WHY the class is required, and the evidence could be dropped
     // from either row without CI noticing.
+    // PR 3.1-b batch 14 raised this row from AgentControl to the process floor. It is the one
+    // ratchet member that ALREADY had an override, so it is amended in place rather than
+    // duplicated — a second row would never be reached by `policy_for` and the command would
+    // have stayed unclassified while looking handled.
+    //
+    // The detector-(b) evidence tag is KEPT alongside `SpawnsProcess`, deliberately: R5-H1 names
+    // this command as a proof-class detector-(b) writer and three tests pin that tag, so
+    // dropping it to buy the floor would delete real evidence. `Elevated` admits both, and
+    // `v1_resolution` returns `HostDeniedSpawnsProcess` on the process capability regardless of
+    // what else the row carries — the stronger, cheaper-to-verify statement wins without the
+    // weaker one being erased.
     CommandOverride {
         command: "set_agent_conversation_workspace_auto_publish",
         policy: policy(
-            RiskClass::AgentControl,
-            AGENT_AND_SEEDS,
-            "detector-b: arms auto_publish_enabled consumed by the auto-publish freshness scan",
+            RiskClass::Elevated,
+            PROCESS_AND_SEEDS,
+            "detector-c: resolve_agent_workspace_pr_automation_target -> \
+             ensure_linked_plan_branch_agent_worktree -> GitService::get_current_branch. It \
+             ALSO arms auto_publish_enabled for the auto-publish freshness scan (detector b, \
+             tag retained), but the process launch is what forecloses it at every v1 scope",
         ),
     },
     CommandOverride {
@@ -1502,21 +1523,6 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
     // lists document WHY the class is required; they never lower it.
     // ---------------------------------------------------------------------------------------
     CommandOverride {
-        command: "approve_fix_task",
-        policy: policy(
-            RiskClass::AgentControl,
-            AGENT,
-            "detector-a: guards internal_status == Blocked, then transitions the fix task to \
-             Ready through TaskTransitionService. Authority-RESTORING in exactly the registered \
-             `unblock_task` shape — a human gate decision that lets scheduling resume, with the \
-             guard and every repository error propagated. Audited CLEAN by batch 10 and \
-             deliberately NOT registered: its paired half `reject_fix_task` reaches \
-             transition_task_corrective, which the facade forbids at every scope, and exposing \
-             the approve half alone would give a device fix-task unblocking with no remote way \
-             to reject. Held on the pair, not on a finding of its own",
-        ),
-    },
-    CommandOverride {
         command: "re_review_task_from_escalated",
         policy: policy(
             RiskClass::AgentControl,
@@ -2668,6 +2674,381 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
              may grant it. Its READ half `get_update_channel` is registered",
         ),
     },
+
+    // ---------------------------------------------------------------------------------------
+    // PR 3.1-b batch 14 — THE FINAL BATCH. The last 48 ratchet members, driving P-11 to ZERO.
+    //
+    // The batch's central measurement: detector (c) was SILENT on 36 of the 48, and the hand
+    // trace found a real, unconditional process launch behind THIRTEEN of them. Batch 13 pinned
+    // two hiding mechanisms; this batch confirms the second is far larger than one victim and
+    // adds a third.
+    //
+    //   M1  `spawn_blocking(bare_fn)` / a function VALUE stored in a struct field creates no
+    //       call edge. New site found here: `running_agent_registry.rs:45` stores
+    //       `kill: Arc::new(kill_process)` and `stop_if_owned` calls it as `(self.kill)(pid)`,
+    //       so nothing syntactically names `kill_process`, which runs
+    //       `Command::new(resolve_pkill_cli_path())` at `:323`.
+    //   M2  `Command::new(<already-resolved path variable>)` names no resolver, and the sink
+    //       model is resolver-NAME-based. This is not a corner case: it is how EVERY agent
+    //       launch in the codebase is written — `claude_code_client.rs:596/:681`,
+    //       `codex/mod.rs:1156/:1206/:1286`, `git_cmd.rs:272`, `agent_workflow_runner.rs:162`.
+    //   M3  dyn-trait dispatch (`Arc<dyn ChatService>`, `services.agent_spawner`,
+    //       `TransitionHandler::on_enter`'s state-arm dispatch) breaks the edge before the
+    //       resolver is ever named.
+    //
+    // The engine is deliberately NOT widened, the same call batch 13 made and for a stronger
+    // reason now that the blast radius is known: widening it would retroactively move rows
+    // batches 7-13 dispositioned, and the ratchet reaches zero in THIS batch, so there is no
+    // successor batch to absorb the churn. Every refusal below that detector (c) cannot see is
+    // marked `detector-c-MISS, hand-traced` and pinned by a test that asserts detector (c) is
+    // still silent, so closing the gap later fails loudly instead of drifting into agreement.
+    // ---------------------------------------------------------------------------------------
+
+    // --- Floor, detector (c) DETECTED. Reaching a CLI resolver forecloses v1 regardless of
+    //     intent; these need no hand argument beyond the measured path.
+    process_refusal(
+        "resume_task",
+        "detector-c: publish_post_merge_branch_update -> run_authorized_mutation -> \
+         build_git_command",
+    ),
+    process_refusal(
+        "retry_branch_update",
+        "detector-c: execute_programmatic_branch_update -> run_authorized_mutation -> \
+         build_git_command; hand-tracing adds two more independent launches (the post-merge \
+         publish push, and entry actions into UpdatingTaskBranch/UpdatingPlanBranch which \
+         start the branch-update resolver agent)",
+    ),
+    process_refusal(
+        "restart_task",
+        "detector-c: validate_resume -> GitService::branch_exists -> run_status -> \
+         build_git_command",
+    ),
+    process_refusal(
+        "recover_task_execution",
+        "detector-c: recover_execution_stop -> apply_recovery_decision -> \
+         reconcile_merge_auto_complete -> try_complete_stale_rebase -> build_git_command, and \
+         separately is_ipr_process_alive -> is_process_alive",
+    ),
+    process_refusal(
+        "resolve_recovery_prompt",
+        "detector-c: apply_user_recovery_action -> apply_failed_user_recovery_action -> \
+         GitService::delete_branch -> build_git_command",
+    ),
+    process_refusal(
+        "switch_agent_conversation_mode",
+        "detector-c: the running-agent-stopping mode switch prepares the conversation \
+         workspace (GitService::ref_exists) and reaches the publish path's \
+         inspect_repository_capability -> ensure_git_worktree",
+    ),
+    process_refusal(
+        "set_agent_conversation_workspace_pr_supervision",
+        "detector-c: the same resolve_agent_workspace_pr_automation_target worktree path as \
+         set_agent_conversation_workspace_auto_publish, genuinely shared",
+    ),
+    process_refusal(
+        "reconcile_agent_conversation_workspace_publication",
+        "detector-c: schedule_pr_supervision_recovery_for_conversation_id -> \
+         recover_agent_workspace_pr_supervision -> GitService::get_head_sha",
+    ),
+    process_refusal(
+        "commit_agent_conversation_workspace_locally",
+        "detector-c: commit_agent_workspace_locally_unlocked -> GitService::get_head_sha; the \
+         command's whole purpose is a local git commit",
+    ),
+    process_refusal(
+        "precompute_agent_conversation_workspace_pr_description",
+        "detector-c, two sinks: draft_agent_workspace_pr_metadata_decision_unlocked runs \
+         run_git_text for the diff AND reaches CodexCliClient::spawn_agent -> \
+         resolve_codex_cli to draft the description with an agent",
+    ),
+    process_refusal(
+        "archive_agent_conversation",
+        "detector-c: archive_agent_conversation_for_state -> \
+         terminalize_agent_workspace_after_pr -> cleanup_force_owned_terminal_artifacts -> \
+         GitService::branch_exists; archiving walks and deletes worktrees and branches",
+    ),
+
+    // --- Floor, detector (c) MISSED. Each was reported c=false and each launches anyway. The
+    //     hiding mechanism is named per row so a successor can close it deliberately.
+    process_refusal(
+        "resume_execution",
+        "detector-c-MISS (M2+M3), hand-traced: THREE independent launch chains. (1) \
+         execute_entry_actions -> TransitionHandler::on_enter -> enter_executing_state -> \
+         send_task_execution_message; (2) try_schedule_ready_tasks transitions a Ready task to \
+         Executing into the same spine; (3) four paused-queue relaunchers reach \
+         ChatService::send_message. All terminate at ChatHarnessLaunchPlan::spawn -> \
+         Command::new(cli_path) (claude/mod.rs:664, codex/mod.rs:1156), which names no \
+         resolver. It ALSO fails open at lifecycle.rs:273: the task is transitioned into an \
+         agent-active status at :258, then `if let Ok(Some(..))` collapses read error and \
+         absence, so entry actions never run, restoring_count is never incremented, and the \
+         capacity guard admits MORE tasks than the cap while the command returns success",
+    ),
+    process_refusal(
+        "update_execution_settings",
+        "detector-c-MISS (M2+M3), hand-traced: settings.rs:147 tokio::spawn -> \
+         PendingSessionDrainService::try_drain_pending_for_project -> send_message -> agent \
+         spawn, plus the scheduler kick at :113. It also fails open at settings.rs:88, where \
+         `.map(..).unwrap_or(input.project_ideation_max)` on a Result makes a failed read look \
+         like `value unchanged`, so a capacity raise is silently dropped",
+    ),
+    process_refusal(
+        "update_global_execution_settings",
+        "detector-c-MISS (M2+M3), hand-traced: resume_paused_workspace_queues_with_chat_service \
+         reaches send_message, and :353 kicks the ready-task scheduler",
+    ),
+    process_refusal(
+        "reset_agent_conversation_role_default",
+        "detector-c-MISS (M1+M2+M3), hand-traced: service.stop_agent -> \
+         running_agent_registry stop -> stop_if_owned -> (self.kill)(pid) -> kill_process -> \
+         Command::new(resolve_pkill_cli_path()). The kill is reached through a function VALUE \
+         held in a struct field, which is M1 in a shape batch 13 had not seen. It also \
+         constructs a full AppChatService unconditionally before knowing whether any agent is \
+         live",
+    ),
+    process_refusal(
+        "resume_tasks_in_group",
+        "detector-c-MISS (M2+M3), hand-traced: mutation.rs:2143/:2161 transition each task back \
+         to its PRE-PAUSE status and run execute_entry_actions for it, so the restored status is \
+         Executing/Reviewing/Merging and the on_enter spine spawns the agent",
+    ),
+    process_refusal(
+        "pause_execution_plan",
+        "detector-c-MISS (M1+M2+M3), hand-traced: only AGENT_ACTIVE tasks are touched, so \
+         on_exit from Executing ALWAYS runs auto_commit_on_execution_done (git \
+         has_uncommitted_changes + commit_all), and stop_task_runtime_contexts reaches \
+         kill_process -> Command::new(resolve_pkill_cli_path())",
+    ),
+    process_refusal(
+        "resume_execution_plan",
+        "detector-c-MISS (M2+M3), hand-traced, three ways: transition_task into a gated \
+         AGENT_ACTIVE restore status, execute_entry_actions, and an explicit \
+         scheduler.try_schedule_ready_tasks()",
+    ),
+    process_refusal(
+        "stop_execution_plan",
+        "detector-c-MISS (M1+M2+M3), hand-traced: the same on_exit auto-commit and \
+         stop_task_runtime_contexts kill path as pause_execution_plan, via \
+         transition_to_stopped_with_context",
+    ),
+    process_refusal(
+        "fork_agent_conversation",
+        "detector-c-MISS (M2), hand-traced: prepare_agent_conversation_workspace_* runs \
+         GitService get_current_branch/ensure_local_branch_from_origin_if_missing/ \
+         get_branch_sha/create_worktree, then backgrounds run_pre_execution_setup, which \
+         executes the project's setup commands through a shell AFTER the command has returned",
+    ),
+    process_refusal(
+        "switch_agent_conversation_persona",
+        "detector-c-MISS (M1+M2+M3), hand-traced: constructs the chat service and calls \
+         stop_agent, reaching kill_process -> Command::new(resolve_pkill_cli_path()) plus a raw \
+         SIGTERM that names no binary at all",
+    ),
+    process_refusal(
+        "send_queued_agent_message_now",
+        "detector-c-MISS (M2+M3), hand-traced, and the highest-authority command in the batch: \
+         send_queued_message_with_policy(ManualNow) first stop_agent's the in-flight provider \
+         (pkill + SIGTERM) and then send_message's a fresh turn, i.e. launch_plan.spawn(). It \
+         does not re-timestamp a row; it interrupts one agent process and starts another",
+    ),
+    process_refusal(
+        "stop_agent",
+        "detector-c-MISS (M1+M2), hand-traced: AppChatService::stop_agent drops the \
+         InteractiveProcess (EOF to the child's stdin), then running_agent_registry stop -> \
+         kill_process -> Command::new(resolve_pkill_cli_path()).args([\"-TERM\", \"-P\", pid]) \
+         plus nix SIGTERM. It terminates the agent child AND its whole child tree including the \
+         MCP node servers — not in-memory state",
+    ),
+    process_refusal(
+        "update_agent_conversation_coordination_mode",
+        "detector-c-MISS (M2), hand-traced and CONDITIONAL: selecting CodexNativeUltra reaches \
+         codex_ultra_support_for_model -> probe_harness -> probe_codex_cli, which runs up to \
+         six `codex` subprocesses (--version, --help, exec --help, features list, debug models) \
+         per candidate path on the first uncached call. Solo/Team/Workflow never reach it. \
+         Conditional launches still foreclose: the caller picks the mode",
+    ),
+
+    // --- Deferred by AUTHORITY, not by hygiene: Elevated + ConfiguresFutureProcessAuthority,
+    //     which class_permits admits only under `ui:elevated`. V1Deferred, NOT denied.
+    //
+    //     This is a DELIBERATE departure from batch 13's idiom and the line is drawn narrowly.
+    //     Batch 13 refused the literal `ConfiguresFutureProcessAuthority` reading because it
+    //     converted audited-clean BOUNDED writes (an MCP override, a lane's model/effort) into
+    //     deferrals by notation. These three are not bounded: two write the spawned agent's
+    //     SECURITY ENVELOPE (`sandbox_mode`, `approval_policy`) and one widens a later agent's
+    //     filesystem reach to an arbitrary host directory. Where the deferred authority IS the
+    //     containment boundary, the capability is the honest row. The batch-13 idiom is kept
+    //     for this batch's model/effort writes, which stay registerable — see
+    //     `update_workspace_review_runtime_settings` and `upsert_custom_agent_model`.
+    CommandOverride {
+        command: "add_conversation_folder_reference",
+        policy: policy(
+            RiskClass::Elevated,
+            FUTURE_PROCESS,
+            "the stored folder_path is read at spawn time by \
+             resolve_mcp_filesystem_read_roots_with_folder_references and appended to the MCP \
+             filesystem roots enforced for every subsequently spawned agent conversation. \
+             Containment is real but stops short: validate_registration_path rejects relative, \
+             ParentDir, root, symlink, non-directory and app-data paths, and re-validates on \
+             read — but there is NO project-root or allowlist confinement, so any absolute \
+             non-root directory (~/.ssh, /etc, another user's project) is accepted. A remote \
+             caller could hand a later agent read access to arbitrary host directories. \
+             Deferred, not denied: an allowlist confinement unlocks it",
+        ),
+    },
+    CommandOverride {
+        command: "update_manual_role_default",
+        policy: policy(
+            RiskClass::Elevated,
+            FUTURE_PROCESS,
+            "writes the whole tuple a later spawn consumes through \
+             resolve_manual_role_spawn_settings -> ResolvedAgentSpawnSettings: harness, model, \
+             effort, service_tier, coordination_mode, persona_id, and critically \
+             approval_policy and sandbox_mode. The last two are the spawned agent's security \
+             envelope rather than a preference, which is what separates this from the bounded \
+             lane/MCP writes batch 13 registered with a declared membership",
+        ),
+    },
+    CommandOverride {
+        command: "clear_manual_role_default",
+        policy: policy(
+            RiskClass::Elevated,
+            FUTURE_PROCESS,
+            "the destructive half of update_manual_role_default and the more dangerous one: it \
+             performs NO validation at all, deleting the row so resolution falls through to \
+             project YAML, global, legacy lane, then provider default. A hardened \
+             approval_policy/sandbox_mode can therefore be silently downgraded to whatever the \
+             fallback layer says, with nothing in the response indicating the demotion",
+        ),
+    },
+
+    // --- Registered `ui:read`: pure reads, errors propagated, audited clean.
+    read_row(
+        "get_start_composer_role_default",
+        "batch-14 audit: resolves the backend-owned role default for a NEW conversation and \
+         returns it. No write, no launch; every repository error propagates. Deliberately NOT \
+         sharing get_manual_role_defaults' catalog_entry fallback, which is why that sibling is \
+         refused and this one is registered",
+    ),
+    read_row(
+        "get_agent_conversation_role_default",
+        "batch-14 audit: the same resolve_composer_role_default read as \
+         get_start_composer_role_default, keyed by an existing conversation. Same clean \
+         error handling",
+    ),
+    read_row(
+        "get_workspace_review_runtime_settings",
+        "batch-14 audit: two fetch_many branches, both propagating with `?`. An empty vec \
+         genuinely means `no rows`, never `the read failed`. Recorded semantic caveat, not a \
+         fail-open: project_id=None returns GLOBAL rows only and does not merge project scope; \
+         effective resolution is a separate concern owned by resolve_effective",
+    ),
+
+    // --- Registered `ui:agent`: writers, none dropped to Read on a silent detector.
+    CommandOverride {
+        command: "archive_task",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-14 audit: writes tasks.archived_at and updated_at through a pure db.run SQL \
+             path behind authorize_task_mutation. No transition service, no entry/exit actions, \
+             no scheduler, no registry, no git — hand-traced, not inferred from silence. \
+             DISARMS scheduling (get_oldest_ready_tasks filters archived_at IS NULL). Recorded \
+             standing wart, unchanged by this batch: archiving does not kill an already-running \
+             agent for the task, so an Executing task can go invisible to the reconciler",
+        ),
+    },
+    CommandOverride {
+        command: "restore_task",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-14 audit: the exact inverse of archive_task and the same pure-SQL body. It \
+             is a real ARM despite launching nothing: clearing archived_at on a task already in \
+             Ready re-admits it to get_oldest_ready_tasks, so the next scheduler tick may spawn \
+             for it. It does NOT claim SeedsSpawnTriggeringState — detector (b) does not flag \
+             it, and that capability is defined as detector-(b) evidence, so the tag would be \
+             false even though the arming is real",
+        ),
+    },
+    CommandOverride {
+        command: "create_agent_conversation",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-14 audit: inserts the conversation row and, for standalone/persona-builder \
+             modes, creates a private workspace directory through standalone_workspace, whose \
+             fs calls are containment-checked. Hand-traced clear of all four workspace helper \
+             families that make its siblings spawn — it never reaches \
+             prepare_agent_conversation_workspace_*, so no worktree and no setup shell",
+        ),
+    },
+    CommandOverride {
+        command: "restore_agent_conversation",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-14 audit: one restore() un-archiving the conversation row, errors \
+             propagated, no launch and no fail-open. The narrowest write in the batch",
+        ),
+    },
+    CommandOverride {
+        command: "update_agent_conversation_title",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-14 audit: writes the conversation title and the linked ideation-session \
+             title. Recorded and deliberately NOT treated as a blocking fail-open: \
+             unified_chat_commands/mod.rs:11652 uses `.ok()?` on the message read used to \
+             normalise a Jira key, so a repo error degrades to `no key found`. The command \
+             still returns the title it actually stored, so no caller is told a write \
+             succeeded that did not — it loses a cosmetic normalisation, not an authority answer",
+        ),
+    },
+    CommandOverride {
+        command: "update_workspace_review_runtime_settings",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "content-surface, declared membership configures-future-agent-runtime: upserts \
+             model and effort for the Workspace Review background agent, read back by \
+             resolve_explicit_workspace_review_runtime_settings. This is batch 13's \
+             update_agent_lane_settings idiom exactly — BOUNDED deferred authority over which \
+             model runs, not over the sandbox/approval envelope — so it stays registerable with \
+             the finding declared rather than becoming a deferral by notation. Fail-closed: a \
+             missing post-upsert re-read is an error, not a default",
+        ),
+    },
+    CommandOverride {
+        command: "upsert_custom_agent_model",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "content-surface, declared membership configures-future-agent-runtime: writes an \
+             agent_model_registry row consumed by normalize_agent_runtime_selection to pick the \
+             harness CLI's model and effort. Same bounded-deferred-authority idiom as \
+             update_workspace_review_runtime_settings. Registered only AFTER fixing the \
+             fail-open this batch found in its return path: the repo read `.ok()`-swallowed the \
+             created_at/updated_at columns and fell through to a fabricated Utc::now(), so a \
+             column error was rendered as a real timestamp",
+        ),
+    },
+    CommandOverride {
+        command: "approve_fix_task",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-14: the STANDING HELD half, released. Batch 10 audited the body clean (a \
+             Blocked guard, then Blocked->Ready in the registered unblock_task shape, every \
+             error propagated) and withheld it ONLY on a pair argument — no remote way to \
+             reject. That argument does not survive the current registry: block_task and \
+             stop_task are both registered, so the remote brake exists; its exact \
+             scheduler-construction shape is already registered as approve_task_for_review; and \
+             the in-band Ready->Executing spawn is MODELLED rather than hidden, because \
+             TRANSITION_SINKS cuts traversal at transition_task and SCHEDULER_SINKS names \
+             try_schedule_ready_tasks, so the hit is classified by its target. Pinned corrective- \
+             free: unlike its partner it reaches no corrective sink",
+        ),
+    },
 ];
 
 /// PR 3.1-b batch 9 ITEM 0 — a detector-(c) refusal, declared at the capability it reaches.
@@ -2999,6 +3380,101 @@ pub const AUDIT_REFUSALS: &[AuditRefusal] = &[
                   checks); the loss is entirely on the write side",
         batch: "audited and classified 11",
     },
+
+    // --- PR 3.1-b batch 14, the final batch.
+    //
+    // Seven TransportShapeDeferred rows below are ONE mechanism, not seven judgements, and it
+    // is the mechanism batch 8 already recorded for `list_conversation_folder_references`:
+    // the target returns `Result<_, AppError>` (directly or as `AppResult<T>`), `AppError`
+    // derives only `Error, Debug`, and the macro's `fallible` arm renders the error through
+    // `serialize_ok(error)`. The payload cannot cross the facade at all. These are explicitly
+    // NOT authority findings — several are among the cleanest bodies in the whole census — and
+    // an error-contract change unlocks every one of them at once.
+    AuditRefusal {
+        command: "start_step",
+        reason: AuditRefusalReason::TransportShapeDeferred,
+        finding: "returns AppResult<TaskStepResponse>; AppError is not Serialize, so the \
+                  fallible dispatch arm cannot render its error. The body audits CLEAN — a \
+                  guarded task_steps status write behind the fail-closed tasks-feature policy \
+                  gate, whose only `let _ =` is the post-write app.emit",
+        batch: "14",
+    },
+    AuditRefusal {
+        command: "complete_step",
+        reason: AuditRefusalReason::TransportShapeDeferred,
+        finding: "same AppResult<TaskStepResponse> error contract as start_step, same clean body",
+        batch: "14",
+    },
+    AuditRefusal {
+        command: "skip_step",
+        reason: AuditRefusalReason::TransportShapeDeferred,
+        finding: "same AppResult<TaskStepResponse> error contract as start_step, same clean body",
+        batch: "14",
+    },
+    AuditRefusal {
+        command: "fail_step",
+        reason: AuditRefusalReason::TransportShapeDeferred,
+        finding: "same AppResult<TaskStepResponse> error contract as start_step, same clean body",
+        batch: "14",
+    },
+    AuditRefusal {
+        command: "reorder_task_steps",
+        reason: AuditRefusalReason::TransportShapeDeferred,
+        finding: "returns AppResult<Vec<TaskStepResponse>>, same non-Serialize error contract. \
+                  Body is a single transaction scoped `WHERE id = ?2 AND task_id = ?3`, so \
+                  foreign step ids are no-ops rather than cross-task writes",
+        batch: "14",
+    },
+    AuditRefusal {
+        command: "remove_conversation_folder_reference",
+        reason: AuditRefusalReason::TransportShapeDeferred,
+        finding: "returns Result<(), AppError> — the identical contract that refused its \
+                  sibling list_conversation_folder_references in batch 8. Body is the SAFE \
+                  half of the folder-reference pair: a soft delete scoped by both \
+                  folder_reference_id and conversation_id, taking no path and failing closed \
+                  with NotFound on a missing row",
+        batch: "14",
+    },
+    AuditRefusal {
+        command: "abort_seeded_agent_conversation",
+        reason: AuditRefusalReason::TransportShapeDeferred,
+        finding: "returns Result<(), AppError>, same non-Serialize contract. Body audits clean \
+                  and launches nothing: it deletes attachments, folder references, the persona \
+                  draft, the private workspace directory and the conversation row, with every \
+                  error propagated by `?`",
+        batch: "14",
+    },
+    // --- The one fail-open in the final batch, in the shape `list_agent_composer_skills` set.
+    AuditRefusal {
+        command: "get_manual_role_defaults",
+        reason: AuditRefusalReason::FailOpenUntilFixed,
+        finding: "manual_role_default_commands.rs:539-546 turns a resolution Err into \
+                  `effective: None` PLUS an assumed AgentHarnessKind::Claude provider, and \
+                  control_options at :558 then computes capability and speed availability \
+                  AGAINST that fabricated default. The caller receives a plausible \
+                  enabled/disabled control set derived from an error rather than from \
+                  configuration — an outage changes the ANSWER, not just its completeness. Its \
+                  two sibling reads take a different path and are registered; fix by \
+                  propagating the resolution error",
+        batch: "14",
+    },
+    // --- The NEW reason. See the AuditRefusalReason::ReachesCorrectiveTransition doc for why
+    //     minting it beat filing a false one, and why it is not the generic arming code the
+    //     vocabulary still withholds.
+    AuditRefusal {
+        command: "reject_fix_task",
+        reason: AuditRefusalReason::ReachesCorrectiveTransition,
+        finding: "review_commands.rs:273 calls transition_task_corrective(fix_task, Failed) and \
+                  :297 calls it again for the original task (Backlog) once max attempts are \
+                  exceeded. Corrective jumps are the repair-path-only state-machine escape and \
+                  `no_registered_facade_target_reaches_a_corrective_transition` forbids a \
+                  registered target from reaching one at ANY scope, so this is a hard invariant \
+                  rather than a scope call. Held unclassified since batch 10 for want of an \
+                  honest code; classified here rather than mis-filed. The rest of the body is \
+                  clean, so the finding is precisely the corrective reach — fix by routing the \
+                  rejection through a mediator that pins its own target, as move_task does",
+        batch: "10 refused, classified 14",
+    },
 ];
 
 /// The audit refusal recorded for a command, if any.
@@ -3208,6 +3684,21 @@ pub const DECLARED_MEMBERSHIPS: &[(&str, &str)] = &[
     ("restart_automation", "arms-automation-scheduler"),
     ("retry_automation_plan_judge", "arms-automation-scheduler"),
     ("skip_automation_judge", "arms-automation-scheduler"),
+    // PR 3.1-b batch 14 — the final batch's two BOUNDED deferred-authority writes.
+    //
+    // Both pick which model/effort a LATER agent process runs with, and neither is watched by a
+    // detector: `update_workspace_review_runtime_settings` writes a plain settings row and
+    // `upsert_custom_agent_model` writes a registry row, so detector (b) is silent on each and
+    // the P-17b negative suite would otherwise never prove them unreachable from a default
+    // pairing. Same reasoning as the batch 10/11 rows above.
+    //
+    // These stay REGISTERABLE rather than becoming Elevated deferrals because the authority
+    // they configure is bounded — which model runs — whereas this batch's three Elevated rows
+    // configure the containment boundary itself (sandbox_mode/approval_policy, MCP filesystem
+    // read roots). That is the whole of the distinction, recorded here so a successor does not
+    // read the two groups as inconsistent.
+    ("update_workspace_review_runtime_settings", "configures-future-agent-runtime"),
+    ("upsert_custom_agent_model", "configures-future-agent-runtime"),
 ];
 
 /// Expands the module policy and command overrides into one effective command row.
