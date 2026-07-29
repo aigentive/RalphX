@@ -111,9 +111,9 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     pins: [],
   },
   "block_task": {
-    opClass: "operate",
+    opClass: "agentControl",
     argumentSensitive: false,
-    capabilities: [],
+    capabilities: ["agentControl"],
     pins: [],
   },
   "cancel_automation_run": {
@@ -123,9 +123,9 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     pins: [],
   },
   "cancel_tasks_in_group": {
-    opClass: "operate",
+    opClass: "agentControl",
     argumentSensitive: false,
-    capabilities: [],
+    capabilities: ["agentControl"],
     pins: [],
   },
   "clear_active_plan": {
@@ -993,9 +993,9 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     pins: [],
   },
   "pause_task": {
-    opClass: "operate",
+    opClass: "agentControl",
     argumentSensitive: false,
-    capabilities: [],
+    capabilities: ["agentControl"],
     pins: [],
   },
   "pause_tasks_in_group": {
@@ -1197,9 +1197,9 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     pins: [],
   },
   "stop_task": {
-    opClass: "operate",
+    opClass: "agentControl",
     argumentSensitive: false,
-    capabilities: [],
+    capabilities: ["agentControl"],
     pins: [],
   },
   "unarchive_persona": {

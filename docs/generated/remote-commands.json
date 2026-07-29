@@ -542,6 +542,7 @@
     "queue_agent_message",
     "send_queued_agent_message_now",
     "list_agent_sidebar_conversations",
+    "set_agent_conversation_muted",
     "get_agent_conversation",
     "get_agent_conversation_messages_page",
     "get_agent_conversation_timeline_page",
@@ -576,27 +577,6 @@
   ],
   "authority_reducing_exemptions": [
     {
-      "command": "pause_task",
-      "direction": "authority-reducing",
-      "kind": "command",
-      "rationale": "transitions only to Paused",
-      "scope": "ui:operate"
-    },
-    {
-      "command": "block_task",
-      "direction": "authority-reducing",
-      "kind": "command",
-      "rationale": "transitions only to Blocked",
-      "scope": "ui:operate"
-    },
-    {
-      "command": "stop_task",
-      "direction": "authority-reducing",
-      "kind": "command",
-      "rationale": "transitions only to Stopped",
-      "scope": "ui:operate"
-    },
-    {
       "command": "pause_tasks_in_group",
       "direction": "authority-reducing",
       "kind": "command",
@@ -615,13 +595,6 @@
       "direction": "authority-reducing",
       "kind": "command",
       "rationale": "commands/execution_commands/lifecycle.rs sets the pause flag and transitions agent-active tasks only to Stopped; the only production caller of ExecutionState::resume is resume_execution, which re-syncs the quota first",
-      "scope": "ui:operate"
-    },
-    {
-      "command": "cancel_tasks_in_group",
-      "direction": "authority-reducing",
-      "kind": "command",
-      "rationale": "commands/task_commands/mutation.rs skips terminal tasks and transitions only to Cancelled, whose on_exit in domain/state_machine/transition_handler/mod.rs stops pollers and decrements the running count",
       "scope": "ui:operate"
     },
     {
@@ -728,7 +701,7 @@
       "authorityBearing": true,
       "enclosingFunction": "application/app_setup.rs:::::launch_startup_attempt",
       "file": "application/app_setup.rs",
-      "id": "application/app_setup.rs::application/app_setup.rs:::::launch_startup_attempt@b33103c07384b8f8",
+      "id": "application/app_setup.rs::application/app_setup.rs:::::launch_startup_attempt@a7f8e57aac6aa30c",
       "kind": "async_runtime::spawn",
       "readSurface": [],
       "sinksReached": [
@@ -823,7 +796,7 @@
       "authorityBearing": true,
       "enclosingFunction": "application/chat_service/chat_service_send_background.rs:::::spawn_send_message_background",
       "file": "application/chat_service/chat_service_send_background.rs",
-      "id": "application/chat_service/chat_service_send_background.rs::application/chat_service/chat_service_send_background.rs:::::spawn_send_message_background@55486985f28fb4ca",
+      "id": "application/chat_service/chat_service_send_background.rs::application/chat_service/chat_service_send_background.rs:::::spawn_send_message_background@2d993297d593cb6a",
       "kind": "tokio::spawn",
       "readSurface": [],
       "sinksReached": [
@@ -999,9 +972,9 @@
     },
     {
       "authorityBearing": true,
-      "enclosingFunction": "application/services/pr_merge_poller.rs::PrPollerRegistry::start_agent_workspace_polling",
+      "enclosingFunction": "application/services/pr_merge_poller.rs::PrPollerRegistry::start_agent_workspace_polling_with_optional_repair_repo",
       "file": "application/services/pr_merge_poller.rs",
-      "id": "application/services/pr_merge_poller.rs::application/services/pr_merge_poller.rs::PrPollerRegistry::start_agent_workspace_polling@a807bdf7a644f52d",
+      "id": "application/services/pr_merge_poller.rs::application/services/pr_merge_poller.rs::PrPollerRegistry::start_agent_workspace_polling_with_optional_repair_repo@78202415007560a4",
       "kind": "tokio::spawn",
       "readSurface": [],
       "sinksReached": [
@@ -1194,13 +1167,19 @@
       "sinksReached": []
     },
     {
-      "authorityBearing": false,
+      "authorityBearing": true,
       "enclosingFunction": "application/startup_pipeline.rs:::::run_startup_pipeline",
       "file": "application/startup_pipeline.rs",
       "id": "application/startup_pipeline.rs::application/startup_pipeline.rs:::::run_startup_pipeline@e80cc739fa2ab5dd",
       "kind": "async_runtime::spawn",
       "readSurface": [],
-      "sinksReached": []
+      "sinksReached": [
+        "execute_entry_actions",
+        "send_message",
+        "transition_task",
+        "transition_task_corrective_with_exit",
+        "try_schedule_ready_tasks"
+      ]
     },
     {
       "authorityBearing": true,
@@ -1320,7 +1299,7 @@
       "authorityBearing": true,
       "enclosingFunction": "commands/agent_workspace_auto_publish.rs:::::spawn_pr_supervision_recovery_from_run_completed_event",
       "file": "commands/agent_workspace_auto_publish.rs",
-      "id": "commands/agent_workspace_auto_publish.rs::commands/agent_workspace_auto_publish.rs:::::spawn_pr_supervision_recovery_from_run_completed_event@fc9b531317aa042d",
+      "id": "commands/agent_workspace_auto_publish.rs::commands/agent_workspace_auto_publish.rs:::::spawn_pr_supervision_recovery_from_run_completed_event@aa2decb29c143a67",
       "kind": "async_runtime::spawn",
       "readSurface": [],
       "sinksReached": [
@@ -1635,7 +1614,7 @@
       "authorityBearing": true,
       "enclosingFunction": "commands/unified_chat_commands/mod.rs:::::spawn_deferred_agent_workspace_repair_message",
       "file": "commands/unified_chat_commands/mod.rs",
-      "id": "commands/unified_chat_commands/mod.rs::commands/unified_chat_commands/mod.rs:::::spawn_deferred_agent_workspace_repair_message@33cef224af17ad49",
+      "id": "commands/unified_chat_commands/mod.rs::commands/unified_chat_commands/mod.rs:::::spawn_deferred_agent_workspace_repair_message@438140338d56f26b",
       "kind": "async_runtime::spawn",
       "readSurface": [],
       "sinksReached": [
@@ -2375,8 +2354,10 @@
     },
     {
       "argumentSensitive": false,
-      "capabilities": [],
-      "class": "operate",
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
       "command": "pause_task",
       "pins": [],
       "scopeConfined": false,
@@ -2384,8 +2365,10 @@
     },
     {
       "argumentSensitive": false,
-      "capabilities": [],
-      "class": "operate",
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
       "command": "block_task",
       "pins": [],
       "scopeConfined": false,
@@ -2393,8 +2376,10 @@
     },
     {
       "argumentSensitive": false,
-      "capabilities": [],
-      "class": "operate",
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
       "command": "stop_task",
       "pins": [],
       "scopeConfined": false,
@@ -2429,8 +2414,10 @@
     },
     {
       "argumentSensitive": false,
-      "capabilities": [],
-      "class": "operate",
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
       "command": "cancel_tasks_in_group",
       "pins": [],
       "scopeConfined": false,
@@ -5474,11 +5461,13 @@
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [],
-      "class": "operate",
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
       "command": "block_task",
       "module": "task_commands",
-      "reason": "authority-reducing: transitions only to Blocked",
+      "reason": "exiting an agent-active state decrements capacity and calls try_schedule_ready_tasks through the attached scheduler, which can launch queued work",
       "registered": true,
       "v1Resolution": "registerable"
     },
@@ -5516,11 +5505,13 @@
       "v1Resolution": "host-denied"
     },
     {
-      "capabilities": [],
-      "class": "operate",
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
       "command": "cancel_tasks_in_group",
       "module": "task_commands",
-      "reason": "authority-reducing: transitions only to Cancelled",
+      "reason": "bulk-terminalizes an attacker-chosen group and execution exits reach auto-commit, which invokes Git",
       "registered": true,
       "v1Resolution": "registerable"
     },
@@ -5594,11 +5585,13 @@
       "v1Resolution": "host-denied-spawns-process"
     },
     {
-      "capabilities": [],
-      "class": "operate",
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
       "command": "pause_task",
       "module": "task_commands",
-      "reason": "authority-reducing: transitions only to Paused",
+      "reason": "leaving Executing/ReExecuting reaches the normal exit auto-commit path and can invoke Git",
       "registered": true,
       "v1Resolution": "registerable"
     },
@@ -5625,11 +5618,13 @@
       "v1Resolution": "host-denied-spawns-process"
     },
     {
-      "capabilities": [],
-      "class": "operate",
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
       "command": "stop_task",
       "module": "task_commands",
-      "reason": "authority-reducing: transitions only to Stopped",
+      "reason": "leaving Executing/ReExecuting reaches the normal exit auto-commit path and can invoke Git",
       "registered": true,
       "v1Resolution": "registerable"
     },
@@ -8717,6 +8712,17 @@
       "v1Resolution": "host-denied-spawns-process"
     },
     {
+      "capabilities": [
+        "spawnsProcess"
+      ],
+      "class": "elevated",
+      "command": "set_agent_conversation_muted",
+      "module": "agent_conversation_mute_commands",
+      "reason": "detector-c, hand-traced: the mute=true path calls agent_workspace_response_for_state, which schedules PR supervision recovery; recover_agent_workspace_pr_supervision can reach GitService::get_head_sha and can resume agent repair/publication work before the mute metadata row is written",
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
+    },
+    {
       "capabilities": [],
       "class": "read",
       "command": "get_bulk_workspace_publication_states",
@@ -9947,6 +9953,17 @@
       "v1Resolution": "host-denied"
     },
     {
+      "capabilities": [
+        "hostManagement"
+      ],
+      "class": "elevated",
+      "command": "log_frontend_error",
+      "module": "diagnostic_commands",
+      "reason": "host-only log sink: each call truncates its three fields before tracing::error!, but the caller can invoke it without a count bound and thereby drive unbounded writes through the host tracing/file-log pipeline",
+      "registered": false,
+      "v1Resolution": "v1-deferred"
+    },
+    {
       "capabilities": [],
       "class": "read",
       "command": "get_ui_feature_flags",
@@ -10295,6 +10312,7 @@
         "commit_agent_conversation_workspace_locally",
         "copy_agent_conversation_plan",
         "get_agent_conversation_workspace",
+        "get_agent_conversation_workspace_freshness",
         "import_agent_conversation_plan",
         "list_agent_conversation_workspaces_by_project",
         "list_agent_sidebar_conversations",
@@ -10309,6 +10327,7 @@
         "resolve_user_question",
         "resume_deferred_git_startup",
         "retry_merge",
+        "set_agent_conversation_muted",
         "set_agent_conversation_workspace_auto_publish",
         "set_agent_conversation_workspace_pr_supervision",
         "start_agent_conversation",
@@ -10354,6 +10373,7 @@
         "resolve_user_question",
         "resume_deferred_git_startup",
         "send_agent_message",
+        "set_agent_conversation_muted",
         "set_agent_conversation_workspace_auto_publish",
         "set_agent_conversation_workspace_pr_supervision",
         "start_agent_conversation",

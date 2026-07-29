@@ -73,7 +73,7 @@ Pairing codes are single-use: the second exchange of the same code is refused.
 | Scope | Meaning |
 |---|---|
 | `ui:read` | Read the workspace |
-| `ui:operate` | Brakes and low-risk edits |
+| `ui:operate` | Global pause/stop brakes, attachment handling, and low-risk edits |
 | `ui:agent` | Start, resume, restart, or steer an agent |
 | `ui:elevated` | **Reserved, not implemented.** Placeholder for the deferred terminal/PTY surface |
 
@@ -106,10 +106,12 @@ Two audit rules matter to a client author:
 
 - The classification traces *downstream* authority, not immediate action. A command that merely
   writes a database row is `AgentControl` if a background loop turns that row into a spawn.
-- The brakes are deliberately exempt: `deny_permission_request`, `pause_task`, `block_task`,
-  `stop_task` stay `ui:operate` so a viewer can always stop something without being handed the
-  ability to start it. `deny_permission_request` server-pins `decision = "deny"`, so a client
-  that sends `"allow"` still denies.
+- The default-tier brakes are deliberately narrow: `pause_execution` and `stop_execution` stay
+  `ui:operate` because they set the process-wide pause gate before any task transition.
+  `deny_permission_request` also stays `ui:operate` and server-pins `decision = "deny"`, so a
+  client that sends `"allow"` still denies. Per-task `block_task`, `pause_task`, and `stop_task`,
+  plus `cancel_tasks_in_group`, require `ui:agent`: agent-active exits can run Git side effects,
+  and `block_task` can free capacity and ask the scheduler to launch queued work.
 
 ### 2.4 The manifest
 

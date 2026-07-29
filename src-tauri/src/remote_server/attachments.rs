@@ -251,30 +251,47 @@ pub(crate) async fn upload_handler(
         );
     }
 
-    if let Err(error) = context
+    let reserved = context
         .store
-        .record(RemoteAttachment {
-            id: id.clone(),
-            device_id: identity.device_id.clone(),
-            display_name,
-            mime: mime.clone(),
-            size,
-            created_at: chrono::Utc::now()
-                .format("%Y-%m-%dT%H:%M:%S%.3fZ")
-                .to_string(),
-        })
-        .await
-    {
-        tracing::error!(%error, "attachment metadata write failed; removing the orphan blob");
-        // Without the row the blob is unreachable AND uncounted against quota, so it is
-        // removed rather than left as silent disk growth.
-        // codeql[rust/path-injection]
-        let _ = tokio::fs::remove_file(&path).await;
-        return attachment_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            ErrorCode::RemoteInternalError,
-            "Attachment storage is unavailable.",
-        );
+        .record_within_device_quota(
+            RemoteAttachment {
+                id: id.clone(),
+                device_id: identity.device_id.clone(),
+                display_name,
+                mime: mime.clone(),
+                size,
+                created_at: chrono::Utc::now()
+                    .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                    .to_string(),
+            },
+            REMOTE_ATTACHMENT_DEVICE_QUOTA_BYTES,
+        )
+        .await;
+    match reserved {
+        Ok(true) => {}
+        Ok(false) => {
+            // The conditional insert lost a concurrent quota race. Its blob is not reachable
+            // from metadata and must not remain as unaccounted disk growth.
+            // codeql[rust/path-injection]
+            let _ = tokio::fs::remove_file(&path).await;
+            return attachment_error(
+                StatusCode::FORBIDDEN,
+                ErrorCode::RemoteForbidden,
+                "This upload would exceed the device's attachment storage quota.",
+            );
+        }
+        Err(error) => {
+            tracing::error!(%error, "attachment metadata reservation failed; removing the orphan blob");
+            // Without the row the blob is unreachable AND uncounted against quota, so it is
+            // removed rather than left as silent disk growth.
+            // codeql[rust/path-injection]
+            let _ = tokio::fs::remove_file(&path).await;
+            return attachment_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ErrorCode::RemoteInternalError,
+                "Attachment storage is unavailable.",
+            );
+        }
     }
 
     (

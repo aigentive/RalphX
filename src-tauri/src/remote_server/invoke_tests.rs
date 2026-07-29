@@ -1309,6 +1309,23 @@ fn the_brake_quota_write_is_dominated_by_the_pause_flag() {
         "the quota re-sync must precede the pause-flag clear, or a quota raised during a \
          remote halt could arm the scheduler on resume"
     );
+
+    for command in ["pause_execution", "stop_execution"] {
+        let body = lifecycle
+            .split(&format!("pub async fn {command}"))
+            .nth(1)
+            .unwrap_or_else(|| panic!("{command} must remain defined in lifecycle.rs"));
+        let pause_at = body
+            .find("execution_state.pause()")
+            .unwrap_or_else(|| panic!("{command} must set the global pause gate"));
+        let transition_at = body
+            .find(".transition_task(")
+            .unwrap_or_else(|| panic!("{command} must transition active tasks"));
+        assert!(
+            pause_at < transition_at,
+            "{command} must set the global pause gate before its first task transition"
+        );
+    }
 }
 
 /// Scope negative — no grant weaker than (or sideways from) `ui:operate` reaches a brake,

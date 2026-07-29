@@ -320,58 +320,78 @@ async fn create_task_is_backlog_only_even_when_a_status_is_smuggled() {
     );
 }
 
-/// The brakes are reachable from the default pairing.
+/// Default-tier devices retain only the global brakes.
 ///
-/// The assertion is admission, not business success: a brake applied to a task in a state that
-/// cannot be paused legitimately returns a command-level error, and that is still proof that the
-/// scope gate let the request through. What must never appear is a FACADE error.
+/// Per-task brakes can run execution-exit side effects, and `block_task` can free capacity and
+/// launch queued work through its attached scheduler. Bulk cancel also reaches the normal
+/// execution-exit auto-commit path. All four therefore require the agent-control grant, while the
+/// global brakes remain available because they set the process-wide pause gate before transitions.
 #[tokio::test]
-async fn the_brakes_are_reachable_from_the_default_pairing() {
+async fn default_pairing_is_refused_per_task_and_bulk_brakes_but_permitted_global_brakes() {
     let app = crate::testing::create_mock_app();
     let app_state = AppState::new_test();
+    let project = crate::domain::entities::Project::new(
+        "Remote brakes".to_string(),
+        "/tmp/remote-brakes".to_string(),
+    );
+    let project_id = project.id.clone();
+    app_state
+        .project_repo
+        .create(project)
+        .await
+        .expect("project is created");
     let task = app_state
         .task_repo
-        .create(Task::new(ProjectId::new(), "Brakeable".to_string()))
+        .create(Task::new(project_id.clone(), "Brakeable".to_string()))
         .await
         .expect("task is created");
     let task_id = task.id.as_str().to_string();
     app.manage(app_state);
     app.manage(Arc::new(
+        crate::commands::execution_commands::ActiveProjectState::new(),
+    ));
+    app.manage(Arc::new(
         crate::commands::execution_commands::ExecutionState::default(),
     ));
+    app.manage(Arc::new(
+        crate::commands::execution_commands::ActiveProjectState::new(),
+    ));
 
-    for brake in ["pause_task", "stop_task"] {
+    for brake in [
+        "block_task",
+        "pause_task",
+        "stop_task",
+        "cancel_tasks_in_group",
+    ] {
+        let spec = find_spec(brake).unwrap_or_else(|| panic!("{brake} is registered"));
+        assert_eq!(spec.class, RiskClass::AgentControl, "{brake} drifted class");
+        let error = registry::dispatch(
+            app.handle(),
+            DEFAULT_PAIRING,
+            brake,
+            &json!({
+                "taskId": &task_id,
+                "groupKind": "status",
+                "groupId": "Ready",
+                "projectId": project_id.as_str(),
+            }),
+        )
+        .await
+        .expect_err("the default pairing must not reach agent-control brakes");
+        assert_eq!(error.code, ErrorCode::RemoteForbidden, "{brake} drifted");
+    }
+
+    for brake in ["pause_execution", "stop_execution"] {
         let spec = find_spec(brake).unwrap_or_else(|| panic!("{brake} is registered"));
         assert_eq!(spec.class, RiskClass::Operate, "{brake} drifted class");
         registry::dispatch(
             app.handle(),
             DEFAULT_PAIRING,
             brake,
-            &json!({"taskId": &task_id}),
+            &json!({"projectId": project_id.as_str()}),
         )
         .await
         .unwrap_or_else(|error| panic!("{brake} was refused by the facade: {error:?}"));
-    }
-
-    // The two AppHandle-bearing brakes must be registered at the same class. They cannot be
-    // dispatched under a mock runtime — `AppState::new_test()` carries no Wry handle — and the
-    // `(host_app_handle)` arm is required to fail CLOSED rather than substitute anything.
-    for brake in ["block_task", "pause_tasks_in_group"] {
-        let spec = find_spec(brake).unwrap_or_else(|| panic!("{brake} is registered"));
-        assert_eq!(spec.class, RiskClass::Operate, "{brake} drifted class");
-        let error = registry::dispatch(
-            app.handle(),
-            DEFAULT_PAIRING,
-            brake,
-            &json!({"taskId": &task_id, "groupKind": "status", "groupId": "Ready", "projectId": ProjectId::new().as_str()}),
-        )
-        .await
-        .expect_err("a missing host handle must not be substituted");
-        assert_eq!(
-            error.code,
-            ErrorCode::RemoteInternalError,
-            "{brake} degraded instead of failing closed"
-        );
     }
 }
 

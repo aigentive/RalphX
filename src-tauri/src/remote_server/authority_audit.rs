@@ -23,11 +23,10 @@
 //! registered commands. Residual multi-target method dispatch is intentionally retained as
 //! a reviewable over-approximation.
 //!
-//! Sinks are **cut points** — traversal stops when it reaches one. Without that, every
-//! command that touches `TaskTransitionService` would inherit the entry-action spawn graph
-//! and the authority-reducing brakes (`pause_task`, `block_task`, `stop_task`) would all
-//! classify `AgentControl`, disabling the product's promised remote brakes (codex R4-H1).
-//! Cutting at the sink is what lets the transition hit be classified by its *target*.
+//! Sinks are **cut points** — traversal stops when it reaches one. Without that, every command
+//! that touches `TaskTransitionService` would inherit the entry-action spawn graph. Cutting at
+//! the sink lets the transition hit be classified by its target; downstream exit behavior that
+//! target analysis cannot model remains a hand-audited ledger responsibility.
 //!
 //! Known residual, recorded rather than papered over: deferred authority that no static sink
 //! models (`update_custom_analysis` persisting a shell string, permission approval over a
@@ -121,8 +120,8 @@ pub const PROCESS_LAUNCH_SINKS: &[&str] = &[
 
 // No `WritesArbitraryPath` counterpart exists, and that is a measured result rather than an
 // omission: `fs::write`/`create_dir_all`/`remove_*` are reachable from the transitive closure of
-// nearly every command, including `list_tasks` and the `pause_task`/`block_task`/`stop_task`
-// brakes. A gate that fires on pure reads is not a floor, so path authority stays a hand-audited
+// nearly every command, including `list_tasks` and task-transition commands. A gate that fires
+// on pure reads is not a floor, so path authority stays a hand-audited
 // ledger judgement (`chat_attachment_commands` is `Denied` on exactly that basis) and is recorded
 // here as a stated soundness limit.
 

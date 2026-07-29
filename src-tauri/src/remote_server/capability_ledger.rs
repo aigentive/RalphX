@@ -124,6 +124,7 @@ pub const MODULE_DEFAULTS: &[ModuleDefault] = &[
     agent_default("root"),
     agent_default("activity_commands"),
     agent_default("agent_composer_commands"),
+    agent_default("agent_conversation_mute_commands"),
     elevated_default(
         "agent_issue_report_commands",
         PROCESS,
@@ -877,29 +878,28 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
             "remote audit read; AppHandle-ineligible until PR 3.1",
         ),
     },
-    // Target-sensitive authority-reducing exemptions.
     CommandOverride {
         command: "pause_task",
         policy: policy(
-            RiskClass::Operate,
-            NONE,
-            "authority-reducing: transitions only to Paused",
+            RiskClass::AgentControl,
+            AGENT,
+            "leaving Executing/ReExecuting reaches the normal exit auto-commit path and can invoke Git",
         ),
     },
     CommandOverride {
         command: "block_task",
         policy: policy(
-            RiskClass::Operate,
-            NONE,
-            "authority-reducing: transitions only to Blocked",
+            RiskClass::AgentControl,
+            AGENT,
+            "exiting an agent-active state decrements capacity and calls try_schedule_ready_tasks through the attached scheduler, which can launch queued work",
         ),
     },
     CommandOverride {
         command: "stop_task",
         policy: policy(
-            RiskClass::Operate,
-            NONE,
-            "authority-reducing: transitions only to Stopped",
+            RiskClass::AgentControl,
+            AGENT,
+            "leaving Executing/ReExecuting reaches the normal exit auto-commit path and can invoke Git",
         ),
     },
     CommandOverride {
@@ -1167,9 +1167,9 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
     CommandOverride {
         command: "cancel_tasks_in_group",
         policy: policy(
-            RiskClass::Operate,
-            NONE,
-            "authority-reducing: transitions only to Cancelled",
+            RiskClass::AgentControl,
+            AGENT,
+            "bulk-terminalizes an attacker-chosen group and execution exits reach auto-commit, which invokes Git",
         ),
     },
     // NOT reclassified — `archive_tasks_in_group` stays at the `task_commands` AgentControl
@@ -3046,9 +3046,26 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
              the in-band Ready->Executing spawn is MODELLED rather than hidden, because \
              TRANSITION_SINKS cuts traversal at transition_task and SCHEDULER_SINKS names \
              try_schedule_ready_tasks, so the hit is classified by its target. Pinned corrective- \
-             free: unlike its partner it reaches no corrective sink",
+            free: unlike its partner it reaches no corrective sink",
         ),
     },
+    CommandOverride {
+        command: "log_frontend_error",
+        policy: policy(
+            RiskClass::Elevated,
+            HOST,
+            "host-only log sink: each call truncates its three fields before tracing::error!, but \
+             the caller can invoke it without a count bound and thereby drive unbounded writes \
+             through the host tracing/file-log pipeline",
+        ),
+    },
+    process_refusal(
+        "set_agent_conversation_muted",
+        "detector-c, hand-traced: the mute=true path calls agent_workspace_response_for_state, \
+         which schedules PR supervision recovery; recover_agent_workspace_pr_supervision can \
+         reach GitService::get_head_sha and can resume agent repair/publication work before the \
+         mute metadata row is written",
+    ),
 ];
 
 /// PR 3.1-b batch 9 ITEM 0 — a detector-(c) refusal, declared at the capability it reaches.
@@ -3380,7 +3397,6 @@ pub const AUDIT_REFUSALS: &[AuditRefusal] = &[
                   checks); the loss is entirely on the write side",
         batch: "audited and classified 11",
     },
-
     // --- PR 3.1-b batch 14, the final batch.
     //
     // Seven TransportShapeDeferred rows below are ONE mechanism, not seven judgements, and it
@@ -3487,27 +3503,6 @@ pub fn audit_refusal_for(command: &str) -> Option<AuditRefusal> {
 
 pub const AUTHORITY_REDUCING_EXEMPTIONS: &[AuthorityReducingExemption] = &[
     AuthorityReducingExemption {
-        subject: "pause_task",
-        kind: "command",
-        direction: "authority-reducing",
-        scope: "ui:operate",
-        rationale: "transitions only to Paused",
-    },
-    AuthorityReducingExemption {
-        subject: "block_task",
-        kind: "command",
-        direction: "authority-reducing",
-        scope: "ui:operate",
-        rationale: "transitions only to Blocked",
-    },
-    AuthorityReducingExemption {
-        subject: "stop_task",
-        kind: "command",
-        direction: "authority-reducing",
-        scope: "ui:operate",
-        rationale: "transitions only to Stopped",
-    },
-    AuthorityReducingExemption {
         subject: "pause_tasks_in_group",
         kind: "command",
         direction: "authority-reducing",
@@ -3528,13 +3523,6 @@ pub const AUTHORITY_REDUCING_EXEMPTIONS: &[AuthorityReducingExemption] = &[
         direction: "authority-reducing",
         scope: "ui:operate",
         rationale: "commands/execution_commands/lifecycle.rs sets the pause flag and transitions agent-active tasks only to Stopped; the only production caller of ExecutionState::resume is resume_execution, which re-syncs the quota first",
-    },
-    AuthorityReducingExemption {
-        subject: "cancel_tasks_in_group",
-        kind: "command",
-        direction: "authority-reducing",
-        scope: "ui:operate",
-        rationale: "commands/task_commands/mutation.rs skips terminal tasks and transitions only to Cancelled, whose on_exit in domain/state_machine/transition_handler/mod.rs stops pollers and decrements the running count",
     },
     AuthorityReducingExemption {
         subject: "deny_permission_request",
@@ -3676,11 +3664,26 @@ pub const DECLARED_MEMBERSHIPS: &[(&str, &str)] = &[
     // notation rather than by finding. `update_agent_lane_settings` already settled the idiom:
     // it picks the harness, model and effort a live agent is launched with — strictly more
     // deferred authority than any row here — and records that as AgentControl plus a declaration.
-    ("update_mcp_server_override", "configures-future-agent-tool-authority"),
-    ("clear_mcp_server_override", "configures-future-agent-tool-authority"),
-    ("update_mcp_tool_override", "configures-future-agent-tool-authority"),
-    ("clear_mcp_tool_override", "configures-future-agent-tool-authority"),
-    ("update_ui_feature_flags", "configures-future-agent-capability-gates"),
+    (
+        "update_mcp_server_override",
+        "configures-future-agent-tool-authority",
+    ),
+    (
+        "clear_mcp_server_override",
+        "configures-future-agent-tool-authority",
+    ),
+    (
+        "update_mcp_tool_override",
+        "configures-future-agent-tool-authority",
+    ),
+    (
+        "clear_mcp_tool_override",
+        "configures-future-agent-tool-authority",
+    ),
+    (
+        "update_ui_feature_flags",
+        "configures-future-agent-capability-gates",
+    ),
     ("restart_automation", "arms-automation-scheduler"),
     ("retry_automation_plan_judge", "arms-automation-scheduler"),
     ("skip_automation_judge", "arms-automation-scheduler"),
@@ -3697,8 +3700,14 @@ pub const DECLARED_MEMBERSHIPS: &[(&str, &str)] = &[
     // configure the containment boundary itself (sandbox_mode/approval_policy, MCP filesystem
     // read roots). That is the whole of the distinction, recorded here so a successor does not
     // read the two groups as inconsistent.
-    ("update_workspace_review_runtime_settings", "configures-future-agent-runtime"),
-    ("upsert_custom_agent_model", "configures-future-agent-runtime"),
+    (
+        "update_workspace_review_runtime_settings",
+        "configures-future-agent-runtime",
+    ),
+    (
+        "upsert_custom_agent_model",
+        "configures-future-agent-runtime",
+    ),
 ];
 
 /// Expands the module policy and command overrides into one effective command row.

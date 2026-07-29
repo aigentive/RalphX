@@ -549,6 +549,72 @@ async fn quota_is_per_device_so_one_device_cannot_exhaust_anothers_allowance() {
     );
 }
 
+#[tokio::test]
+async fn concurrent_uploads_cannot_both_reserve_more_than_the_devices_remaining_quota() {
+    let harness = harness();
+    let (token, device) = harness
+        .device("phone", &[Scope::UiRead, Scope::UiOperate])
+        .await;
+    let payload = vec![b'x'; 1024 * 1024];
+    let seeded = REMOTE_ATTACHMENT_DEVICE_QUOTA_BYTES - (payload.len() as i64 * 3 / 2);
+
+    RemoteAttachmentRepository::record(
+        harness.store.as_ref(),
+        RemoteAttachment {
+            id: uuid::Uuid::new_v4().hyphenated().to_string(),
+            device_id: device.clone(),
+            display_name: None,
+            mime: "application/octet-stream".to_string(),
+            size: seeded,
+            created_at: "2026-07-28T10:00:00.000Z".to_string(),
+        },
+    )
+    .await
+    .expect("baseline quota row should seed");
+
+    let first = harness.router().oneshot(upload_request(
+        &token,
+        "first.bin",
+        "application/octet-stream",
+        &payload,
+    ));
+    let second = harness.router().oneshot(upload_request(
+        &token,
+        "second.bin",
+        "application/octet-stream",
+        &payload,
+    ));
+    let (first, second) = tokio::join!(first, second);
+    let statuses = [
+        first.expect("first request should complete").status(),
+        second.expect("second request should complete").status(),
+    ];
+
+    assert_eq!(
+        statuses
+            .iter()
+            .filter(|status| **status == StatusCode::OK)
+            .count(),
+        1,
+        "exactly one concurrent reservation may fit: {statuses:?}"
+    );
+    assert_eq!(
+        statuses
+            .iter()
+            .filter(|status| **status == StatusCode::FORBIDDEN)
+            .count(),
+        1,
+        "the losing upload must fail closed on quota: {statuses:?}"
+    );
+    assert_eq!(
+        RemoteAttachmentRepository::device_usage_bytes(harness.store.as_ref(), &device)
+            .await
+            .expect("usage should read"),
+        seeded + payload.len() as i64,
+        "only the winning upload may reserve quota"
+    );
+}
+
 // ---------------------------------------------------------------------------------------
 // Fail-closed wiring
 // ---------------------------------------------------------------------------------------

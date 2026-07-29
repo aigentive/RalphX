@@ -201,6 +201,38 @@ impl RemoteAttachmentRepository for SqliteRemoteRequestDedupRepository {
             .await
     }
 
+    async fn record_within_device_quota(
+        &self,
+        attachment: RemoteAttachment,
+        quota_bytes: i64,
+    ) -> AppResult<bool> {
+        self.db
+            .run(move |conn| {
+                let inserted = conn.execute(
+                    &format!(
+                        "INSERT INTO remote_attachments ({ATTACHMENT_COLUMNS})
+                         SELECT ?1, ?2, ?3, ?4, ?5, ?6
+                         WHERE ?5 >= 0
+                           AND COALESCE(
+                               (SELECT SUM(size) FROM remote_attachments WHERE device_id = ?2),
+                               0
+                           ) <= ?7 - ?5"
+                    ),
+                    rusqlite::params![
+                        attachment.id,
+                        attachment.device_id.0,
+                        attachment.display_name,
+                        attachment.mime,
+                        attachment.size,
+                        attachment.created_at,
+                        quota_bytes,
+                    ],
+                )?;
+                Ok(inserted == 1)
+            })
+            .await
+    }
+
     async fn get_for_device(
         &self,
         device_id: &RemoteDeviceId,

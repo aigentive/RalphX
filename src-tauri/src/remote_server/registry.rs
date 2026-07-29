@@ -948,15 +948,15 @@ crate::remote_commands! {
         result: fallible,
     },
     "pause_task" => crate::commands::task_commands::mutation::pause_task {
-        class: Operate,
-        caps: [],
+        class: AgentControl,
+        caps: [AgentControl],
         params: [(arg task_id: String), (app_state), (execution_state)],
         call: async,
         result: fallible,
     },
     "block_task" => crate::commands::task_commands::mutation::block_task {
-        class: Operate,
-        caps: [],
+        class: AgentControl,
+        caps: [AgentControl],
         params: [
             (arg task_id: String),
             (arg reason: Option<String>),
@@ -968,8 +968,8 @@ crate::remote_commands! {
         result: fallible,
     },
     "stop_task" => crate::commands::task_commands::mutation::stop_task {
-        class: Operate,
-        caps: [],
+        class: AgentControl,
+        caps: [AgentControl],
         params: [
             (arg task_id: String),
             (arg reason: Option<String>),
@@ -994,12 +994,11 @@ crate::remote_commands! {
         result: fallible,
     },
     // -----------------------------------------------------------------------------------
-    // PR 3.1-b batch 3 — the Operate brakes, at `ui:operate`.
+    // PR 3.1-b batch 3 — the global Operate brakes, at `ui:operate`.
     //
     // Until this batch a paired device could WATCH execution it had no way to stop: the
-    // per-task brakes (`pause_task`, `stop_task`, `block_task`) were registered but the
-    // global halt and the bulk cancel were not. All three below move the system strictly
-    // toward less autonomous work.
+    // global halt was not. The two global commands below move the system strictly toward less
+    // autonomous work and set the process-wide pause gate before task transitions.
     //
     // `pause_execution` / `stop_execution` open with `sync_quota_from_project`, the runtime
     // scheduler-quota write that disqualified `set_active_project` in batch 2. They are safe
@@ -1040,8 +1039,8 @@ crate::remote_commands! {
     },
     "cancel_tasks_in_group"
         => crate::commands::task_commands::mutation::cancel_tasks_in_group {
-        class: Operate,
-        caps: [],
+        class: AgentControl,
+        caps: [AgentControl],
         params: [
             (arg group_kind: String),
             (arg group_id: String),

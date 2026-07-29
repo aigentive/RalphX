@@ -50,6 +50,14 @@ pub trait RemoteRequestDedupRepository: Send + Sync {
 pub trait RemoteAttachmentRepository: Send + Sync {
     async fn record(&self, attachment: RemoteAttachment) -> AppResult<()>;
 
+    /// Atomically inserts the attachment only when the device's resulting usage is within
+    /// `quota_bytes`. Returns `false` when the reservation would exceed the quota.
+    async fn record_within_device_quota(
+        &self,
+        attachment: RemoteAttachment,
+        quota_bytes: i64,
+    ) -> AppResult<bool>;
+
     /// Device-scoped fetch. The device id is part of the query, not a post-filter, so a
     /// cross-device read can never be served by forgetting a check at the call site.
     async fn get_for_device(

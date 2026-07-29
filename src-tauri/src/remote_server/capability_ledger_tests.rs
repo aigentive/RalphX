@@ -2285,7 +2285,10 @@ fn probe_b4_detector_c_sink_evidence() {
             .tokens
             .iter()
             .filter(|t| {
-                tokens_reach_any(&std::iter::once((*t).clone()).collect(), PROCESS_LAUNCH_SINKS)
+                tokens_reach_any(
+                    &std::iter::once((*t).clone()).collect(),
+                    PROCESS_LAUNCH_SINKS,
+                )
             })
             .cloned()
             .collect::<Vec<_>>();
@@ -2689,7 +2692,7 @@ fn probe_operate_brakes_audit() {
 fn batch3_brake_reclassifications_are_reviewed_rather_than_module_defaults() {
     let rows = census().into_iter().collect::<BTreeMap<_, _>>();
 
-    for command in ["pause_execution", "stop_execution", "cancel_tasks_in_group"] {
+    for command in ["pause_execution", "stop_execution"] {
         let module = rows.get(command).expect("brake is a live command");
         let row = policy_for(command, module).expect("brake is ledgered");
 
@@ -2734,7 +2737,7 @@ fn batch3_brake_reclassifications_are_reviewed_rather_than_module_defaults() {
         );
     }
 
-    // The modules stay conservative. If either default ever drops, these three stop being
+    // The modules stay conservative. If either default ever drops, these two stop being
     // exceptions and the audit that justified them no longer applies.
     for module in ["execution_commands", "task_commands"] {
         let default = MODULE_DEFAULTS
@@ -3889,7 +3892,10 @@ fn b3_members_that_audit_dirty_stay_unregistered() {
         audit_refusal_for("request_task_changes_from_reviewing").is_some(),
         "its refusal must be recorded, or it silently returns to the ratchet"
     );
-    for command in ["request_task_changes_for_review", "re_review_task_from_escalated"] {
+    for command in [
+        "request_task_changes_for_review",
+        "re_review_task_from_escalated",
+    ] {
         let spec = find_spec(command)
             .unwrap_or_else(|| panic!("batch 10 registered `{command}` at ui:agent"));
         assert_eq!(
@@ -3975,8 +3981,7 @@ fn b3_members_that_audit_dirty_stay_unregistered() {
     // above — without that row the generated P-17b suite could never prove a registered
     // arming write is unreachable from a default pairing. The invariant this test keeps is
     // the class: an auto-QA arming write must never be reachable below `ui:agent`.
-    let qa_spec =
-        find_spec("update_qa_settings").expect("batch 10 registered update_qa_settings");
+    let qa_spec = find_spec("update_qa_settings").expect("batch 10 registered update_qa_settings");
     assert_eq!(qa_spec.class, RiskClass::AgentControl);
     assert!(
         DECLARED_MEMBERSHIPS
@@ -4774,7 +4779,11 @@ fn batch11_closes_the_b4_remainder() {
         ("assess_all_priorities", "ideation_commands", Agent),
         ("remove_proposal_dependency", "ideation_commands", Agent),
         ("update_ideation_settings", "ideation_commands", Agent),
-        ("update_ideation_effort_settings", "ideation_commands", Agent),
+        (
+            "update_ideation_effort_settings",
+            "ideation_commands",
+            Agent,
+        ),
         ("update_ideation_model_settings", "ideation_commands", Agent),
         ("update_agent_lane_settings", "ideation_commands", Agent),
         ("create_workflow", "workflow_commands", Agent),
@@ -4787,17 +4796,29 @@ fn batch11_closes_the_b4_remainder() {
         ("analyze_dependencies", "ideation_commands", FailOpen),
         ("export_ideation_session", "ideation_commands", FailOpen),
         ("create_task_proposal", "ideation_commands", FailOpen),
-        ("get_agent_harness_availability", "ideation_commands", FailOpen),
+        (
+            "get_agent_harness_availability",
+            "ideation_commands",
+            FailOpen,
+        ),
         (
             "get_ideation_harness_availability",
             "ideation_commands",
             FailOpen,
         ),
-        ("create_cross_project_session", "ideation_commands", FailOpen),
+        (
+            "create_cross_project_session",
+            "ideation_commands",
+            FailOpen,
+        ),
         ("import_ideation_session", "ideation_commands", FailOpen),
         // The floor: each hand-traced to a concrete Command::new, not accepted on the boolean.
         ("copy_agent_conversation_plan", "agent_plan_commands", Floor),
-        ("import_agent_conversation_plan", "agent_plan_commands", Floor),
+        (
+            "import_agent_conversation_plan",
+            "agent_plan_commands",
+            Floor,
+        ),
         ("activate_agent_task_pipeline", "agent_plan_commands", Floor),
         (
             "activate_agent_plan_direct_implementation",
@@ -4810,7 +4831,11 @@ fn batch11_closes_the_b4_remainder() {
         ("reopen_ideation_session", "ideation_commands", Floor),
         ("spawn_session_namer", "ideation_commands", Floor),
         ("apply_proposals_to_kanban", "ideation_commands", Floor),
-        ("restart_ideation_implementation", "ideation_commands", Floor),
+        (
+            "restart_ideation_implementation",
+            "ideation_commands",
+            Floor,
+        ),
         ("set_tasks_feature_enabled", "ideation_commands", Floor),
     ];
 
@@ -5207,11 +5232,7 @@ fn batch10_closes_the_batch9_arming_and_write_block() {
                 "`{command}` renders `v1-audit-refused` but is registered"
             );
             assert_eq!(
-                ralphx_remote_protocol::v1_resolution_with_audit(
-                    row.class,
-                    row.capabilities,
-                    true,
-                ),
+                ralphx_remote_protocol::v1_resolution_with_audit(row.class, row.capabilities, true,),
                 ralphx_remote_protocol::V1Resolution::V1AuditRefused,
             );
         }
@@ -5283,7 +5304,10 @@ fn the_registered_twin_pairings_that_justified_the_batch10_registrations_hold() 
             "get_agent_conversation_timeline_page",
             "get_remote_agent_conversation_timeline_page",
         ),
-        ("list_agent_conversations", "list_remote_agent_conversations"),
+        (
+            "list_agent_conversations",
+            "list_remote_agent_conversations",
+        ),
         // Host-denied, and still the standing proof that a denial needs a MECHANISM: this pair
         // sits at the same declared membership, and only the detector-(c) launch path separates
         // them.
@@ -5378,7 +5402,10 @@ fn probe_scanner_attribution_bugs() {
             .tokens
             .iter()
             .filter(|t| {
-                tokens_reach_any(&std::iter::once((*t).clone()).collect(), PROCESS_LAUNCH_SINKS)
+                tokens_reach_any(
+                    &std::iter::once((*t).clone()).collect(),
+                    PROCESS_LAUNCH_SINKS,
+                )
             })
             .cloned()
             .collect::<Vec<_>>();
@@ -5455,7 +5482,10 @@ fn probe_b5_b7_module_batch_audit() {
                 .tokens
                 .iter()
                 .filter(|t| {
-                    tokens_reach_any(&std::iter::once((*t).clone()).collect(), PROCESS_LAUNCH_SINKS)
+                    tokens_reach_any(
+                        &std::iter::once((*t).clone()).collect(),
+                        PROCESS_LAUNCH_SINKS,
+                    )
                 })
                 .cloned()
                 .collect::<Vec<_>>();
@@ -5478,7 +5508,11 @@ fn probe_b5_b7_module_batch_audit() {
 #[ignore = "calibration probe"]
 fn probe_save_metrics_config_arming_evidence() {
     let graph = CallGraph::build(&load_production_sources());
-    for command in ["save_metrics_config", "get_metrics_config", "get_task_metrics"] {
+    for command in [
+        "save_metrics_config",
+        "get_metrics_config",
+        "get_task_metrics",
+    ] {
         let closure = graph.closure([command.to_string()]);
         eprintln!(
             "PROBE-MET {command} arming={} visited={}",
@@ -5488,7 +5522,10 @@ fn probe_save_metrics_config_arming_evidence() {
         for hit in &closure.sink_hits {
             eprintln!("PROBE-MET   sink={} targets={:?}", hit.sink, hit.targets);
         }
-        for path in sink_paths(&graph, command, &["send_message"]).iter().take(2) {
+        for path in sink_paths(&graph, command, &["send_message"])
+            .iter()
+            .take(2)
+        {
             eprintln!("PROBE-MET   path: {}", path.join(" -> "));
         }
     }
@@ -5560,10 +5597,22 @@ fn batch12_closes_the_b5_block() {
         ("cancel_automation_run", "automation_commands", Agent),
         ("update_automation_settings", "automation_commands", Agent),
         // --- automation_commands: the four that write `AutomationStatus::Active` ------------
-        ("resume_automation_run", "automation_commands", ArmingDetected),
+        (
+            "resume_automation_run",
+            "automation_commands",
+            ArmingDetected,
+        ),
         ("restart_automation", "automation_commands", ArmingDeclared),
-        ("retry_automation_plan_judge", "automation_commands", ArmingDeclared),
-        ("skip_automation_judge", "automation_commands", ArmingDeclared),
+        (
+            "retry_automation_plan_judge",
+            "automation_commands",
+            ArmingDeclared,
+        ),
+        (
+            "skip_automation_judge",
+            "automation_commands",
+            ArmingDeclared,
+        ),
         // --- the floor: each hand-traced to a concrete launch, not taken on the boolean -----
         ("create_automation_draft", "automation_commands", Floor),
         ("trigger_automation_run_now", "automation_commands", Floor),
@@ -5619,7 +5668,8 @@ fn batch12_closes_the_b5_block() {
                     "`{command}` writes; a silent detector never licenses dropping it to Read"
                 );
                 assert!(
-                    !row.capabilities.contains(&Capability::SeedsSpawnTriggeringState),
+                    !row.capabilities
+                        .contains(&Capability::SeedsSpawnTriggeringState),
                     "`{command}` is pinned as a non-arming write; if it now seeds a scanned \
                      surface it must move to the Arming rows and declare its membership"
                 );
@@ -5835,7 +5885,10 @@ fn probe_b13_module_batch_audit() {
                 .tokens
                 .iter()
                 .filter(|t| {
-                    tokens_reach_any(&std::iter::once((*t).clone()).collect(), PROCESS_LAUNCH_SINKS)
+                    tokens_reach_any(
+                        &std::iter::once((*t).clone()).collect(),
+                        PROCESS_LAUNCH_SINKS,
+                    )
                 })
                 .cloned()
                 .collect::<Vec<_>>();
@@ -5946,7 +5999,9 @@ fn probe_b13_attribution_questions() {
         let collision = closure
             .visited
             .iter()
-            .filter(|n| n.ends_with("AgentWorkflowRunner::execute") || n.contains("workflow_runner"))
+            .filter(|n| {
+                n.ends_with("AgentWorkflowRunner::execute") || n.contains("workflow_runner")
+            })
             .take(3)
             .collect::<Vec<_>>();
         eprintln!(
@@ -6047,18 +6102,42 @@ fn batch13_closes_the_b7_block_and_two_b6_modules() {
         ("search_artifacts", "task_context_commands", Read),
         // --- notification_commands: four reads plus four writes ----------------------------
         ("get_notification_settings", "notification_commands", Read),
-        ("get_unread_notification_count", "notification_commands", Read),
+        (
+            "get_unread_notification_count",
+            "notification_commands",
+            Read,
+        ),
         ("list_attention_items", "notification_commands", Read),
         ("list_notifications", "notification_commands", Read),
         ("mark_notification_read", "notification_commands", Agent),
-        ("mark_all_notifications_read", "notification_commands", Agent),
+        (
+            "mark_all_notifications_read",
+            "notification_commands",
+            Agent,
+        ),
         ("set_dock_badge_count", "notification_commands", Agent),
-        ("update_notification_settings", "notification_commands", Agent),
+        (
+            "update_notification_settings",
+            "notification_commands",
+            Agent,
+        ),
         // --- release_notes_commands: four reads plus one write -----------------------------
         ("get_current_release_notes", "release_notes_commands", Read),
-        ("get_release_notes_for_version", "release_notes_commands", Read),
-        ("get_last_seen_release_notes_version", "release_notes_commands", Read),
-        ("list_release_notes_versions", "release_notes_commands", Read),
+        (
+            "get_release_notes_for_version",
+            "release_notes_commands",
+            Read,
+        ),
+        (
+            "get_last_seen_release_notes_version",
+            "release_notes_commands",
+            Read,
+        ),
+        (
+            "list_release_notes_versions",
+            "release_notes_commands",
+            Read,
+        ),
         ("mark_release_notes_seen", "release_notes_commands", Agent),
         // --- persona_commands: four reads plus eight content writes ------------------------
         ("list_personas", "persona_commands", Read),
@@ -6075,14 +6154,38 @@ fn batch13_closes_the_b7_block_and_two_b6_modules() {
         ("unarchive_persona", "persona_commands", AgentContent),
         // --- ui_commands / update_channel_commands ------------------------------------------
         ("get_ui_feature_flags", "ui_commands", Read),
-        ("update_ui_feature_flags", "ui_commands", AgentFutureAuthority),
+        (
+            "update_ui_feature_flags",
+            "ui_commands",
+            AgentFutureAuthority,
+        ),
         ("get_update_channel", "update_channel_commands", Read),
-        ("set_update_channel", "update_channel_commands", DeferredHost),
+        (
+            "set_update_channel",
+            "update_channel_commands",
+            DeferredHost,
+        ),
         // --- mcp_policy_commands: four writes and three refusals ---------------------------
-        ("update_mcp_server_override", "mcp_policy_commands", AgentFutureAuthority),
-        ("clear_mcp_server_override", "mcp_policy_commands", AgentFutureAuthority),
-        ("update_mcp_tool_override", "mcp_policy_commands", AgentFutureAuthority),
-        ("clear_mcp_tool_override", "mcp_policy_commands", AgentFutureAuthority),
+        (
+            "update_mcp_server_override",
+            "mcp_policy_commands",
+            AgentFutureAuthority,
+        ),
+        (
+            "clear_mcp_server_override",
+            "mcp_policy_commands",
+            AgentFutureAuthority,
+        ),
+        (
+            "update_mcp_tool_override",
+            "mcp_policy_commands",
+            AgentFutureAuthority,
+        ),
+        (
+            "clear_mcp_tool_override",
+            "mcp_policy_commands",
+            AgentFutureAuthority,
+        ),
         ("get_mcp_catalog", "mcp_policy_commands", FloorDetected),
         ("refresh_mcp_catalog", "mcp_policy_commands", FloorDetected),
         (
@@ -6177,9 +6280,7 @@ fn batch13_closes_the_b7_block_and_two_b6_modules() {
                          which class_permits rejects; the finding is carried by a declaration"
                     );
                     assert!(
-                        DECLARED_MEMBERSHIPS
-                            .iter()
-                            .any(|(name, _)| name == command),
+                        DECLARED_MEMBERSHIPS.iter().any(|(name, _)| name == command),
                         "`{command}` changes what a LATER agent process may do; the census B6 \
                          plan requires that finding be recorded, and the registerable way to \
                          record it is a DECLARED_MEMBERSHIPS row"
@@ -6405,7 +6506,8 @@ fn batch13_detector_gap_is_measured_not_inherited() {
     );
     // The honesty condition: it is flagged, and it still must not claim the evidence capability,
     // because the flag is a collision rather than a spawn-triggering write.
-    let row = policy_for("update_notification_settings", "notification_commands").expect("ledgered");
+    let row =
+        policy_for("update_notification_settings", "notification_commands").expect("ledgered");
     assert!(
         !row.capabilities
             .contains(&Capability::SeedsSpawnTriggeringState),
@@ -6541,8 +6643,14 @@ fn batch14_closes_the_ratchet_at_zero() {
         ("recover_task_execution", FloorDetected),
         ("resolve_recovery_prompt", FloorDetected),
         ("switch_agent_conversation_mode", FloorDetected),
-        ("set_agent_conversation_workspace_auto_publish", FloorDetected),
-        ("set_agent_conversation_workspace_pr_supervision", FloorDetected),
+        (
+            "set_agent_conversation_workspace_auto_publish",
+            FloorDetected,
+        ),
+        (
+            "set_agent_conversation_workspace_pr_supervision",
+            FloorDetected,
+        ),
         (
             "reconcile_agent_conversation_workspace_publication",
             FloorDetected,
@@ -6566,7 +6674,10 @@ fn batch14_closes_the_ratchet_at_zero() {
         ("switch_agent_conversation_persona", FloorHandTraced),
         ("send_queued_agent_message_now", FloorHandTraced),
         ("stop_agent", FloorHandTraced),
-        ("update_agent_conversation_coordination_mode", FloorHandTraced),
+        (
+            "update_agent_conversation_coordination_mode",
+            FloorHandTraced,
+        ),
         // --- deferred by authority (3)
         ("add_conversation_folder_reference", DeferredFutureAuthority),
         ("update_manual_role_default", DeferredFutureAuthority),
@@ -6795,5 +6906,55 @@ fn batch14_transport_shape_refusals_share_one_error_contract() {
             .reason,
         AuditRefusalReason::TransportShapeDeferred,
         "batch 8's row is the precedent these seven cite; if it moved, re-argue them"
+    );
+}
+
+#[test]
+fn merged_commands_pin_host_log_amplification_and_workspace_recovery_funnel() {
+    let log_row =
+        policy_for("log_frontend_error", "diagnostic_commands").expect("log command is ledgered");
+    assert_eq!(log_row.class, RiskClass::Elevated);
+    assert_eq!(log_row.capabilities, &[Capability::HostManagement]);
+    assert!(
+        log_row.reason.contains("without a count bound")
+            && log_row.reason.contains("host tracing/file-log pipeline"),
+        "the deferred disposition must remain tied to repeated bounded payloads producing an \
+         unbounded host-log write stream"
+    );
+    assert_eq!(
+        ralphx_remote_protocol::v1_resolution(log_row.class, log_row.capabilities),
+        ralphx_remote_protocol::V1Resolution::V1Deferred,
+    );
+    assert!(find_spec("log_frontend_error").is_none());
+
+    let mute_row = policy_for(
+        "set_agent_conversation_muted",
+        "agent_conversation_mute_commands",
+    )
+    .expect("mute command is ledgered");
+    assert_eq!(mute_row.class, RiskClass::Elevated);
+    assert_eq!(mute_row.capabilities, &[Capability::SpawnsProcess]);
+    assert!(
+        mute_row
+            .reason
+            .contains("agent_workspace_response_for_state")
+            && mute_row
+                .reason
+                .contains("recover_agent_workspace_pr_supervision")
+            && mute_row.reason.contains("GitService::get_head_sha"),
+        "the denial must remain tied to the response projection's arming recovery funnel"
+    );
+    assert_eq!(
+        ralphx_remote_protocol::v1_resolution(mute_row.class, mute_row.capabilities),
+        ralphx_remote_protocol::V1Resolution::HostDeniedSpawnsProcess,
+    );
+    assert!(find_spec("set_agent_conversation_muted").is_none());
+
+    let graph = CallGraph::build(&load_production_sources());
+    let closure = graph.closure(["set_agent_conversation_muted".to_string()]);
+    assert!(
+        tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS),
+        "detector (c) no longer sees the recovery funnel; re-trace the command before changing \
+         or retaining its process-floor disposition"
     );
 }
