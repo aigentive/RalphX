@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::Arc;
 
 #[cfg(unix)]
@@ -22,23 +23,24 @@ use crate::application::agent_workspace_publish_recovery::{
     STALE_TRANSIENT_CLASSIFICATION, STALE_TRANSIENT_RECOVERED_STEP,
 };
 use crate::application::agent_workspace_publish_repair_state::{
-    reserve_agent_workspace_repair_dispatch, AgentWorkspaceRepairDispatchOutcome,
-    MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES,
+    reserve_agent_workspace_repair_dispatch, start_or_join_agent_workspace_repair,
+    AgentWorkspaceRepairDispatchOutcome, AgentWorkspaceRepairStartOutcome,
+    AgentWorkspaceRepairStartRequest, MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES,
 };
 use crate::application::agent_workspace_review::{
     AgentWorkspaceReviewPacket, AgentWorkspaceReviewTarget,
 };
-use crate::application::AppState;
+use crate::application::{AppState, GitService};
 use crate::domain::agents::{AgentHarnessKind, AgentProviderSettings};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentRun, AgentRunActionKind, AgentRunId,
-    AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation, AgentWorkspaceRepairEffect,
-    AgentWorkspaceRepairEffectKind, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
-    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
-    AgentWorkspaceReviewOutcome, AgentWorkspaceReviewTargetScope, ArtifactId, ChatConversation,
-    ChatConversationId, GitTargetIdentity, GitTargetLeaseOwner, IdeationAnalysisBaseRefKind,
-    Project, ProjectId,
+    AgentRunStatus, AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation,
+    AgentWorkspaceRepairEffect, AgentWorkspaceRepairEffectKind, AgentWorkspaceRepairOutcome,
+    AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource, AgentWorkspaceReviewGateStatus,
+    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+    AgentWorkspaceReviewTargetScope, ArtifactId, ChatConversation, ChatConversationId,
+    GitTargetIdentity, GitTargetLeaseOwner, IdeationAnalysisBaseRefKind, Project, ProjectId,
 };
 use crate::domain::repositories::{
     AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, AgentConversationWorkspaceRepository,
@@ -105,6 +107,192 @@ fn needs_agent_workspace(conversation_id: ChatConversationId) -> AgentConversati
     workspace.pr_auto_merge_current = Some(true);
     workspace.pr_supervision_status = Some("fixing".to_string());
     workspace
+}
+
+fn recovery_git(repo: &std::path::Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .expect("git command should run");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+#[cfg(unix)]
+async fn seed_orphaned_repair_dispatch(
+    suffix: u8,
+    cli_script: &str,
+) -> (
+    AppState,
+    ChatConversationId,
+    tempfile::TempDir,
+    tempfile::TempDir,
+) {
+    let mut state = AppState::new_test();
+    let worktree_parent = tempfile::tempdir().expect("create orphaned repair worktree parent");
+    let project_dir = tempfile::tempdir().expect("create orphaned repair project directory");
+    recovery_git(project_dir.path(), &["init", "-b", "main"]);
+    recovery_git(
+        project_dir.path(),
+        &["config", "user.email", "recovery@example.com"],
+    );
+    recovery_git(
+        project_dir.path(),
+        &["config", "user.name", "Recovery Test"],
+    );
+    std::fs::write(project_dir.path().join("README.md"), "base\n").expect("write base file");
+    recovery_git(project_dir.path(), &["add", "README.md"]);
+    recovery_git(project_dir.path(), &["commit", "-m", "base"]);
+    let cli_path = project_dir.path().join("fake-claude");
+    std::fs::write(&cli_path, cli_script).expect("write fake repair CLI");
+    std::fs::set_permissions(&cli_path, std::fs::Permissions::from_mode(0o755))
+        .expect("make fake repair CLI executable");
+    state.agent_provider_settings_repo = Arc::new(MemoryAgentProviderSettingsRepository::new());
+    let mut provider = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
+    provider.enabled = true;
+    provider.is_default = true;
+    provider.custom_binary_enabled = true;
+    provider.custom_binary_path = Some(cli_path.display().to_string());
+    state
+        .agent_provider_settings_repo
+        .upsert(&provider)
+        .await
+        .expect("enable fake Claude provider");
+    let conversation_id = conversation_id(suffix);
+    let mut project = Project::new(
+        "orphaned repair recovery project".to_string(),
+        project_dir.path().display().to_string(),
+    );
+    project.id = project_id();
+    project.worktree_parent_directory = Some(worktree_parent.path().display().to_string());
+    let workspace_path = resolve_agent_conversation_workspace_path(&project, &conversation_id)
+        .expect("derive exact orphaned workspace path");
+    recovery_git(
+        project_dir.path(),
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "ralphx/test/publish-recovery",
+            workspace_path.to_str().expect("workspace path"),
+            "main",
+        ],
+    );
+    state
+        .project_repo
+        .create(project)
+        .await
+        .expect("seed orphaned repair project");
+    let mut conversation = ChatConversation::new_project(project_id());
+    conversation.id = conversation_id.clone();
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("seed orphaned repair conversation");
+    let mut workspace = needs_agent_workspace(conversation_id.clone());
+    workspace.worktree_path = workspace_path.display().to_string();
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("seed orphaned repair workspace");
+    let started = state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                conversation_id.clone(),
+                AgentWorkspaceRepairSource::Publish,
+                AgentWorkspaceRepairContinuation::Publish,
+                "main",
+                false,
+                true,
+                false,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: "orphaned first dispatch".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("start orphaned repair");
+    assert!(matches!(
+        started,
+        StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(_)
+    ));
+    (state, conversation_id, worktree_parent, project_dir)
+}
+
+async fn age_requested_repair_attempt(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> AgentWorkspaceRepairAttempt {
+    let mut attempt = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(conversation_id)
+        .await
+        .expect("load requested orphan")
+        .expect("requested orphan exists");
+    let expected_updated_at = attempt.updated_at;
+    attempt.updated_at = chrono::Utc::now() - chrono::Duration::seconds(61);
+    match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase: AgentWorkspaceRepairPhase::Requested,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Requested,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("age requested orphan")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("requested orphan aging must apply, got {outcome:?}"),
+    }
+}
+
+async fn block_repair_attempt_after(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    expected_phase: AgentWorkspaceRepairPhase,
+    elapsed_secs: i64,
+) -> AgentWorkspaceRepairAttempt {
+    let mut attempt = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(conversation_id)
+        .await
+        .expect("load repair attempt to block")
+        .expect("repair attempt exists to block");
+    let expected_updated_at = attempt.updated_at;
+    attempt.phase = AgentWorkspaceRepairPhase::Blocked;
+    attempt.blocker = Some("automatic blocked-repair recovery fixture".to_string());
+    attempt.updated_at = chrono::Utc::now() - chrono::Duration::seconds(elapsed_secs);
+    match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Blocked,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("block repair attempt")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("blocking repair attempt must apply, got {outcome:?}"),
+    }
 }
 
 fn review_target() -> AgentWorkspaceReviewTarget {
@@ -378,7 +566,7 @@ async fn startup_recovery_blocks_unprovable_validation_and_manual_continuation()
             97,
             AgentWorkspaceRepairPhase::Validating,
             AgentWorkspaceRepairContinuation::Publish,
-            "cannot prove the interrupted dispatch or validation result",
+            "lost canonical Git target authority",
         ),
         (
             98,
@@ -459,6 +647,257 @@ async fn startup_recovery_blocks_unprovable_validation_and_manual_continuation()
             blocked.blocker
         );
     }
+}
+
+#[tokio::test]
+async fn startup_recovery_leaves_validating_attempt_owned_by_an_active_run_unchanged() {
+    let state = AppState::new_test();
+    let conversation_id = conversation_id(99);
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(needs_agent_workspace(conversation_id.clone()))
+        .await
+        .expect("seed validating workspace");
+    let run = state
+        .agent_run_repo
+        .create(AgentRun::new(conversation_id.clone()))
+        .await
+        .expect("create active validation owner");
+    state
+        .agent_run_repo
+        .update_status(&run.id, AgentRunStatus::Running)
+        .await
+        .expect("mark validation owner active");
+    let started = state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                conversation_id.clone(),
+                AgentWorkspaceRepairSource::Publish,
+                AgentWorkspaceRepairContinuation::Publish,
+                "main",
+                false,
+                true,
+                false,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: "active validating repair".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("start validating repair");
+    let StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(mut attempt) = started else {
+        panic!("first repair attempt must start");
+    };
+    let expected_updated_at = attempt.updated_at;
+    attempt.phase = AgentWorkspaceRepairPhase::Validating;
+    attempt.reserved_agent_run_id = Some(run.id);
+    attempt.updated_at += chrono::Duration::microseconds(1);
+    let validating = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase: AgentWorkspaceRepairPhase::Requested,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Validating,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("persist active validating repair")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("expected validating repair, got {outcome:?}"),
+    };
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("active validation recovery is a no-op"),
+        0
+    );
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load active validating repair")
+        .expect("attempt remains current");
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Validating);
+    assert_eq!(current.updated_at, validating.updated_at);
+}
+
+#[tokio::test]
+async fn startup_recovery_revalidates_a_clean_committed_validating_repair() {
+    let state = AppState::new_test();
+    let repo = tempfile::tempdir().expect("create recovery repository");
+    let worktrees = tempfile::tempdir().expect("create recovery worktree parent");
+    recovery_git(repo.path(), &["init", "-b", "main"]);
+    recovery_git(repo.path(), &["config", "user.email", "test@example.com"]);
+    recovery_git(repo.path(), &["config", "user.name", "RalphX Test"]);
+    std::fs::write(repo.path().join("README.md"), "base\n").expect("write base file");
+    recovery_git(repo.path(), &["add", "README.md"]);
+    recovery_git(repo.path(), &["commit", "-m", "base"]);
+    let base_commit = recovery_git(repo.path(), &["rev-parse", "HEAD"]);
+
+    let mut project = Project::new(
+        "Recovery validation".to_string(),
+        repo.path().to_string_lossy().to_string(),
+    );
+    project.id = project_id();
+    project.base_branch = Some("main".to_string());
+    project.worktree_parent_directory = Some(worktrees.path().to_string_lossy().to_string());
+    state
+        .project_repo
+        .create(project.clone())
+        .await
+        .expect("seed project");
+    let conversation_id = conversation_id(100);
+    let workspace_path = resolve_agent_conversation_workspace_path(&project, &conversation_id)
+        .expect("resolve canonical recovery workspace path");
+    recovery_git(
+        repo.path(),
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "ralphx/recovery-validation",
+            workspace_path.to_str().expect("workspace path"),
+            "main",
+        ],
+    );
+    std::fs::write(workspace_path.join("repair.md"), "clean repair\n").expect("write repair file");
+    recovery_git(&workspace_path, &["add", "repair.md"]);
+    recovery_git(&workspace_path, &["commit", "-m", "repair"]);
+
+    state
+        .review_settings_repo
+        .update_settings(&crate::domain::review::ReviewSettings {
+            require_workspace_review: false,
+            ..crate::domain::review::ReviewSettings::default()
+        })
+        .await
+        .expect("disable workspace review policy for revalidation fixture");
+    let mut workspace = needs_agent_workspace(conversation_id.clone());
+    workspace.project_id = project.id;
+    workspace.worktree_path = workspace_path.to_string_lossy().to_string();
+    workspace.branch_name = "ralphx/recovery-validation".to_string();
+    workspace.auto_publish_enabled = true;
+    workspace.publication_pr_number = None;
+    workspace.publication_pr_url = None;
+    workspace.publication_pr_status = None;
+    workspace.pr_auto_merge_current = None;
+    workspace.pr_autofix_enabled = false;
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("seed recovery workspace");
+    let started = state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                conversation_id.clone(),
+                AgentWorkspaceRepairSource::BaseUpdate,
+                AgentWorkspaceRepairContinuation::UpdateOnly,
+                "main",
+                false,
+                true,
+                false,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: "recover clean validating repair".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("start recovery attempt");
+    let StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(mut attempt) = started else {
+        panic!("first recovery attempt must start");
+    };
+    let target_identity =
+        GitService::canonical_target_identity(repo.path(), "ralphx/recovery-validation")
+            .await
+            .expect("resolve canonical recovery target");
+    let owner = GitTargetLeaseOwner::agent_workspace_repair(attempt.id.as_str());
+    let AcquireGitTargetLeaseOutcome::Acquired { fencing_epoch } = state
+        .branch_update_repo
+        .acquire_target_lease(AcquireGitTargetLease {
+            identity: target_identity.clone(),
+            owner,
+        })
+        .await
+        .expect("acquire recovery target lease")
+    else {
+        panic!("recovery target lease must be newly acquired");
+    };
+    let expected_updated_at = attempt.updated_at;
+    attempt.phase = AgentWorkspaceRepairPhase::Validating;
+    attempt.target_base_commit = Some(base_commit);
+    attempt.git_common_dir = Some(
+        target_identity
+            .git_common_dir()
+            .to_string_lossy()
+            .into_owned(),
+    );
+    attempt.target_ref = Some(target_identity.full_ref().to_string());
+    attempt.target_identity_version = Some(
+        crate::application::agent_workspace_publish_repair_state::AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION,
+    );
+    attempt.target_lease_epoch = Some(fencing_epoch);
+    attempt.updated_at += chrono::Duration::microseconds(1);
+    let validating = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase: AgentWorkspaceRepairPhase::Requested,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Validating,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("checkpoint interrupted validation")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("expected validating repair, got {outcome:?}"),
+    };
+    let _ = validating;
+
+    let repair_head = recovery_git(&workspace_path, &["rev-parse", "HEAD"]);
+    recover_agent_workspace_repair_attempts_for_state(&state)
+        .await
+        .expect("recover clean committed validation");
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load recovered repair")
+        .expect("recovered repair stays current for continuation reconciliation");
+    assert_ne!(
+        current.phase,
+        AgentWorkspaceRepairPhase::Blocked,
+        "clean committed validating repair must not re-block: {current:?}"
+    );
+    assert_eq!(
+        current.phase,
+        AgentWorkspaceRepairPhase::Ready,
+        "clean update-only revalidation parks the repaired workspace at Ready"
+    );
+    assert_eq!(
+        current.repair_head_commit.as_deref(),
+        Some(repair_head.as_str()),
+        "revalidation records the exact committed repair head"
+    );
+    assert!(
+        current.blocker.is_none(),
+        "no blocker after clean revalidation: {current:?}"
+    );
+    assert!(current.settled_at.is_none());
 }
 
 #[tokio::test]
@@ -763,6 +1202,756 @@ wait "$stdin_drain_pid" 2>/dev/null || true
         events,
         "duplicate recovery must not send another repair message or append another event"
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn orphaned_requested_dispatch_is_rescued_through_the_delivery_lane() {
+    let _environment_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("lock test environment");
+    let _spawn_permission = TestEnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let (state, conversation_id, _worktree_parent, _project_dir) = seed_orphaned_repair_dispatch(
+        101,
+        r#"#!/bin/sh
+cat >/dev/null &
+stdin_drain_pid=$!
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"repair started"}]},"session_id":"orphaned-retry-session"}'
+printf '%s\n' '{"type":"result","session_id":"orphaned-retry-session","is_error":false,"result":"repair started","cost_usd":0.0}'
+sleep 1
+kill "$stdin_drain_pid" 2>/dev/null || true
+wait "$stdin_drain_pid" 2>/dev/null || true
+"#,
+    )
+    .await;
+    let orphan = age_requested_repair_attempt(&state, &conversation_id).await;
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("rescue orphaned requested dispatch"),
+        1
+    );
+    let recovered = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load rescued attempt")
+        .expect("rescued attempt remains current");
+    assert_eq!(recovered.phase, AgentWorkspaceRepairPhase::Repairing);
+    assert!(recovered.reserved_agent_run_id.is_some());
+    assert!(recovered.git_common_dir.is_some());
+    assert!(recovered.target_ref.is_some());
+    assert!(recovered.target_lease_epoch.is_some());
+    assert!(recovered.updated_at > orphan.updated_at);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn fresh_orphaned_requested_dispatch_remains_untouched_during_grace_period() {
+    let (state, conversation_id, _worktree_parent, _project_dir) =
+        seed_orphaned_repair_dispatch(102, "#!/bin/sh\nexit 1\n").await;
+    let before = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load fresh orphan")
+        .expect("fresh orphan exists");
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("fresh orphan recovery is harmless"),
+        0
+    );
+    let after = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload fresh orphan")
+        .expect("fresh orphan remains current");
+    assert_eq!(after.updated_at, before.updated_at);
+    assert_eq!(after.phase, AgentWorkspaceRepairPhase::Requested);
+    assert!(after.reserved_agent_run_id.is_none());
+    assert!(after.target_lease_epoch.is_none());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn orphaned_requested_delivery_failure_schedules_the_normal_retry() {
+    let _environment_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("lock test environment");
+    let _spawn_permission = TestEnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let (state, conversation_id, _worktree_parent, _project_dir) =
+        seed_orphaned_repair_dispatch(103, "#!/bin/sh\nexit 1\n").await;
+    age_requested_repair_attempt(&state, &conversation_id).await;
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("classify orphaned delivery failure"),
+        1
+    );
+    let scheduled = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load scheduled orphan retry")
+        .expect("scheduled orphan retry remains current");
+    assert_eq!(scheduled.phase, AgentWorkspaceRepairPhase::Requested);
+    assert_eq!(scheduled.dispatch_count, 1);
+    assert!(scheduled.next_dispatch_at.is_some());
+    assert!(scheduled.reserved_agent_run_id.is_none());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn orphaned_successor_from_retry_blocked_is_rescued() {
+    let (state, conversation_id, _worktree_parent, _project_dir) = seed_orphaned_repair_dispatch(
+        105,
+        r#"#!/bin/sh
+cat >/dev/null &
+stdin_drain_pid=$!
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"repair started"}]},"session_id":"orphaned-successor-session"}'
+printf '%s\n' '{"type":"result","session_id":"orphaned-successor-session","is_error":false,"result":"repair started","cost_usd":0.0}'
+sleep 1
+kill "$stdin_drain_pid" 2>/dev/null || true
+wait "$stdin_drain_pid" 2>/dev/null || true
+"#,
+    )
+    .await;
+    let mut blocked = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load blocked predecessor")
+        .expect("blocked predecessor exists");
+    let expected_updated_at = blocked.updated_at;
+    blocked.phase = AgentWorkspaceRepairPhase::Blocked;
+    blocked.blocker = Some("retry blocked predecessor".to_string());
+    blocked.updated_at += chrono::Duration::microseconds(1);
+    assert!(matches!(
+        state
+            .agent_workspace_repair_repo
+            .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+                attempt: blocked,
+                expected_phase: AgentWorkspaceRepairPhase::Requested,
+                expected_updated_at,
+                next_phase: AgentWorkspaceRepairPhase::Blocked,
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("block predecessor"),
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_)
+    ));
+    let successor = start_or_join_agent_workspace_repair(
+        Arc::clone(&state.agent_workspace_repair_repo),
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        AgentWorkspaceRepairStartRequest {
+            conversation_id: conversation_id.clone(),
+            source: AgentWorkspaceRepairSource::Publish,
+            continuation: AgentWorkspaceRepairContinuation::Publish,
+            target_base_ref: "main".to_string(),
+            target_base_commit: None,
+            verified_newer_base: false,
+            reason: "retry blocked repair".to_string(),
+            summary: "Retry blocked repair.".to_string(),
+            auto_merge_current: None,
+            retry_blocked: true,
+        },
+    )
+    .await
+    .expect("start orphaned successor");
+    assert!(matches!(
+        successor,
+        AgentWorkspaceRepairStartOutcome::SuccessorStarted(_)
+    ));
+    age_requested_repair_attempt(&state, &conversation_id).await;
+
+    let _environment_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("lock test environment");
+    let _spawn_permission = TestEnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("rescue orphaned successor"),
+        1
+    );
+    let rescued = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load rescued successor")
+        .expect("rescued successor remains current");
+    assert_eq!(rescued.phase, AgentWorkspaceRepairPhase::Repairing);
+    assert!(rescued.reserved_agent_run_id.is_some());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn blocked_automatic_repair_is_superseded_and_dispatched_without_user_action() {
+    let _environment_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("lock test environment");
+    let _spawn_permission = TestEnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let (state, conversation_id, _worktree_parent, _project_dir) = seed_orphaned_repair_dispatch(
+        107,
+        r#"#!/bin/sh
+cat >/dev/null &
+stdin_drain_pid=$!
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"repair started"}]},"session_id":"automatic-blocked-session"}'
+printf '%s\n' '{"type":"result","session_id":"automatic-blocked-session","is_error":false,"result":"repair started","cost_usd":0.0}'
+sleep 1
+kill "$stdin_drain_pid" 2>/dev/null || true
+wait "$stdin_drain_pid" 2>/dev/null || true
+"#,
+    )
+    .await;
+    let blocked = block_repair_attempt_after(
+        &state,
+        &conversation_id,
+        AgentWorkspaceRepairPhase::Requested,
+        61,
+    )
+    .await;
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("automatically retry blocked repair"),
+        1
+    );
+    let predecessor = state
+        .agent_workspace_repair_repo
+        .get_repair_attempt(&blocked.id)
+        .await
+        .expect("load superseded predecessor")
+        .expect("blocked predecessor persists");
+    assert_eq!(
+        predecessor.outcome,
+        Some(AgentWorkspaceRepairOutcome::Superseded)
+    );
+    let successor = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load automatic successor")
+        .expect("automatic successor remains current");
+    assert_eq!(successor.generation, blocked.generation + 1);
+    assert_eq!(successor.phase, AgentWorkspaceRepairPhase::Repairing);
+    assert!(successor
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == "auto_retry_blocked_repair:1"));
+    assert!(successor.reserved_agent_run_id.is_some());
+}
+
+#[tokio::test]
+async fn blocked_manual_repair_remains_untouched_by_automatic_recovery() {
+    let state = AppState::new_test();
+    let conversation_id = conversation_id(108);
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(needs_agent_workspace(conversation_id.clone()))
+        .await
+        .expect("seed manual repair workspace");
+    let started = state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                conversation_id.clone(),
+                AgentWorkspaceRepairSource::Publish,
+                AgentWorkspaceRepairContinuation::Manual,
+                "main",
+                false,
+                true,
+                false,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: "manual blocked repair".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("start manual repair");
+    assert!(matches!(
+        started,
+        StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(_)
+    ));
+    let blocked = block_repair_attempt_after(
+        &state,
+        &conversation_id,
+        AgentWorkspaceRepairPhase::Requested,
+        61,
+    )
+    .await;
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("manual blocked recovery is harmless"),
+        0
+    );
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload manual blocked repair")
+        .expect("manual repair remains current");
+    assert_eq!(current.id, blocked.id);
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Blocked);
+    assert_eq!(current.updated_at, blocked.updated_at);
+}
+
+#[tokio::test]
+async fn blocked_automatic_repair_at_streak_cap_remains_untouched() {
+    let state = AppState::new_test();
+    let conversation_id = conversation_id(109);
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(needs_agent_workspace(conversation_id.clone()))
+        .await
+        .expect("seed capped repair workspace");
+    let started = state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                conversation_id.clone(),
+                AgentWorkspaceRepairSource::Publish,
+                AgentWorkspaceRepairContinuation::Publish,
+                "main",
+                false,
+                true,
+                false,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: "auto_retry_blocked_repair:3".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("start capped repair");
+    assert!(matches!(
+        started,
+        StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(_)
+    ));
+    let blocked = block_repair_attempt_after(
+        &state,
+        &conversation_id,
+        AgentWorkspaceRepairPhase::Requested,
+        1_000,
+    )
+    .await;
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("capped automatic recovery is harmless"),
+        0
+    );
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload capped repair")
+        .expect("capped repair remains current");
+    assert_eq!(current.id, blocked.id);
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Blocked);
+}
+
+#[tokio::test]
+async fn blocked_automatic_repair_waits_for_backoff() {
+    let state = AppState::new_test();
+    let conversation_id = conversation_id(110);
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(needs_agent_workspace(conversation_id.clone()))
+        .await
+        .expect("seed backoff repair workspace");
+    let started = state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                conversation_id.clone(),
+                AgentWorkspaceRepairSource::Publish,
+                AgentWorkspaceRepairContinuation::Publish,
+                "main",
+                false,
+                true,
+                false,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: "backoff blocked repair".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("start backoff repair");
+    assert!(matches!(
+        started,
+        StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(_)
+    ));
+    let blocked = block_repair_attempt_after(
+        &state,
+        &conversation_id,
+        AgentWorkspaceRepairPhase::Requested,
+        59,
+    )
+    .await;
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("backoff recovery is harmless"),
+        0
+    );
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload backoff repair")
+        .expect("backoff repair remains current");
+    assert_eq!(current.id, blocked.id);
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Blocked);
+}
+
+#[tokio::test]
+async fn blocked_automatic_repair_with_an_open_effect_remains_untouched() {
+    let state = AppState::new_test();
+    let conversation_id = conversation_id(111);
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(needs_agent_workspace(conversation_id.clone()))
+        .await
+        .expect("seed effect-owned blocked repair workspace");
+    let started = state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                conversation_id.clone(),
+                AgentWorkspaceRepairSource::Publish,
+                AgentWorkspaceRepairContinuation::Publish,
+                "main",
+                false,
+                true,
+                false,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: "effect-owned blocked repair".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("start effect-owned blocked repair");
+    assert!(matches!(
+        started,
+        StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(_)
+    ));
+    let blocked = block_repair_attempt_after(
+        &state,
+        &conversation_id,
+        AgentWorkspaceRepairPhase::Requested,
+        61,
+    )
+    .await;
+    assert!(matches!(
+        state
+            .agent_workspace_repair_repo
+            .create_repair_effect(CreateAgentWorkspaceRepairEffect {
+                attempt_id: blocked.id.clone(),
+                generation: blocked.generation,
+                expected_phase: AgentWorkspaceRepairPhase::Blocked,
+                expected_attempt_updated_at: blocked.updated_at,
+                effect: AgentWorkspaceRepairEffect::new(
+                    blocked.id.clone(),
+                    AgentWorkspaceRepairEffectKind::PushBranch,
+                    "blocked-repair-open-effect",
+                    chrono::Utc::now(),
+                ),
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("record blocked repair effect"),
+        CreateAgentWorkspaceRepairEffectOutcome::Created(_)
+    ));
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("effect-owned blocked recovery is harmless"),
+        0
+    );
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload effect-owned blocked repair")
+        .expect("effect-owned repair remains current");
+    assert_eq!(current.id, blocked.id);
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Blocked);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn concurrent_blocked_recovery_sweeps_start_and_dispatch_one_successor() {
+    let _environment_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("lock test environment");
+    let _spawn_permission = TestEnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let (state, conversation_id, _worktree_parent, _project_dir) = seed_orphaned_repair_dispatch(
+        112,
+        r#"#!/bin/sh
+cat >/dev/null &
+stdin_drain_pid=$!
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"repair started"}]},"session_id":"automatic-blocked-race-session"}'
+printf '%s\n' '{"type":"result","session_id":"automatic-blocked-race-session","is_error":false,"result":"repair started","cost_usd":0.0}'
+sleep 1
+kill "$stdin_drain_pid" 2>/dev/null || true
+wait "$stdin_drain_pid" 2>/dev/null || true
+"#,
+    )
+    .await;
+    let blocked = block_repair_attempt_after(
+        &state,
+        &conversation_id,
+        AgentWorkspaceRepairPhase::Requested,
+        61,
+    )
+    .await;
+
+    let (first, second) = tokio::join!(
+        recover_agent_workspace_repair_attempts_for_state(&state),
+        recover_agent_workspace_repair_attempts_for_state(&state)
+    );
+    assert_eq!(
+        first.expect("first blocked recovery sweep")
+            + second.expect("second blocked recovery sweep"),
+        1,
+        "the blocked-attempt timestamp CAS must allow one automatic successor"
+    );
+    let predecessor = state
+        .agent_workspace_repair_repo
+        .get_repair_attempt(&blocked.id)
+        .await
+        .expect("load raced predecessor")
+        .expect("raced predecessor persists");
+    assert_eq!(
+        predecessor.outcome,
+        Some(AgentWorkspaceRepairOutcome::Superseded)
+    );
+    let successor = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load raced successor")
+        .expect("one successor remains current");
+    assert_eq!(successor.generation, blocked.generation + 1);
+    assert_eq!(successor.phase, AgentWorkspaceRepairPhase::Repairing);
+    assert!(successor.reserved_agent_run_id.is_some());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn blocked_automatic_repair_streak_escalates_then_stops_at_the_cap() {
+    let _environment_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("lock test environment");
+    let _spawn_permission = TestEnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let (state, conversation_id, _worktree_parent, _project_dir) = seed_orphaned_repair_dispatch(
+        113,
+        r#"#!/bin/sh
+cat >/dev/null &
+stdin_drain_pid=$!
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"repair started"}]},"session_id":"automatic-blocked-streak-session"}'
+printf '%s\n' '{"type":"result","session_id":"automatic-blocked-streak-session","is_error":false,"result":"repair started","cost_usd":0.0}'
+sleep 1
+kill "$stdin_drain_pid" 2>/dev/null || true
+wait "$stdin_drain_pid" 2>/dev/null || true
+"#,
+    )
+    .await;
+    let mut blocked = block_repair_attempt_after(
+        &state,
+        &conversation_id,
+        AgentWorkspaceRepairPhase::Requested,
+        1_000,
+    )
+    .await;
+
+    for expected_streak in 1..=3 {
+        assert_eq!(
+            recover_agent_workspace_repair_attempts_for_state(&state)
+                .await
+                .expect("advance automatic blocked-repair streak"),
+            1
+        );
+        let successor = state
+            .agent_workspace_repair_repo
+            .get_current_repair_attempt(&conversation_id)
+            .await
+            .expect("load automatic streak successor")
+            .expect("automatic streak successor remains current");
+        assert!(matches!(
+            successor.phase,
+            AgentWorkspaceRepairPhase::Requested | AgentWorkspaceRepairPhase::Repairing
+        ));
+        assert!(
+            successor.reserved_agent_run_id.is_some() || successor.next_dispatch_at.is_some(),
+            "automatic successor must be active or durably scheduled: {successor:?}"
+        );
+        assert!(successor
+            .pending_reasons
+            .iter()
+            .any(|reason| { reason == &format!("auto_retry_blocked_repair:{expected_streak}") }));
+        let successor_phase = successor.phase;
+        blocked =
+            block_repair_attempt_after(&state, &conversation_id, successor_phase, 1_000).await;
+    }
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("capped streak recovery is harmless"),
+        0
+    );
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load capped automatic repair")
+        .expect("capped automatic repair remains current");
+    assert_eq!(current.id, blocked.id);
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Blocked);
+    assert!(current
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == "auto_retry_blocked_repair:3"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn concurrent_orphaned_recovery_sweeps_dispatch_only_one_run() {
+    let _environment_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("lock test environment");
+    let _spawn_permission = TestEnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let (state, conversation_id, _worktree_parent, _project_dir) = seed_orphaned_repair_dispatch(
+        106,
+        r#"#!/bin/sh
+cat >/dev/null &
+stdin_drain_pid=$!
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"repair started"}]},"session_id":"orphaned-concurrent-session"}'
+printf '%s\n' '{"type":"result","session_id":"orphaned-concurrent-session","is_error":false,"result":"repair started","cost_usd":0.0}'
+sleep 1
+kill "$stdin_drain_pid" 2>/dev/null || true
+wait "$stdin_drain_pid" 2>/dev/null || true
+"#,
+    )
+    .await;
+    age_requested_repair_attempt(&state, &conversation_id).await;
+
+    let (first, second) = tokio::join!(
+        recover_agent_workspace_repair_attempts_for_state(&state),
+        recover_agent_workspace_repair_attempts_for_state(&state)
+    );
+    assert_eq!(
+        first.expect("first orphan sweep") + second.expect("second orphan sweep"),
+        1,
+        "the Requested timestamp CAS must prevent a duplicate rescue delivery"
+    );
+    let repaired = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load concurrently rescued attempt")
+        .expect("attempt remains current");
+    assert_eq!(repaired.phase, AgentWorkspaceRepairPhase::Repairing);
+    let run_id = repaired
+        .reserved_agent_run_id
+        .expect("exactly one run is reserved");
+    assert!(state
+        .agent_run_repo
+        .get_by_id(&run_id)
+        .await
+        .expect("load reserved run")
+        .is_some());
+}
+
+#[tokio::test]
+async fn orphaned_requested_dispatch_without_a_workspace_is_blocked_actionably() {
+    let mut state = AppState::new_test();
+    let conversation_id = conversation_id(104);
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(needs_agent_workspace(conversation_id.clone()))
+        .await
+        .expect("seed workspace before its durable attempt");
+    let started = state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                conversation_id.clone(),
+                AgentWorkspaceRepairSource::Publish,
+                AgentWorkspaceRepairContinuation::Publish,
+                "main",
+                false,
+                true,
+                false,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: "workspace was removed before dispatch".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("seed missing-workspace orphan");
+    assert!(matches!(
+        started,
+        StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(_)
+    ));
+    age_requested_repair_attempt(&state, &conversation_id).await;
+    state.agent_conversation_workspace_repo =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("block missing-workspace orphan"),
+        1
+    );
+    let blocked = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load blocked orphan")
+        .expect("blocked orphan remains current");
+    assert_eq!(blocked.phase, AgentWorkspaceRepairPhase::Blocked);
+    assert!(blocked
+        .blocker
+        .as_deref()
+        .is_some_and(|blocker| blocker.contains("cannot find its canonical workspace")));
+    assert!(blocked.reserved_agent_run_id.is_none());
 }
 
 #[tokio::test]

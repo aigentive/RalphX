@@ -13,6 +13,7 @@ use super::*;
 use crate::application::agent_workspace_publish_repair_state::{
     block_agent_workspace_repair_completion, classify_agent_workspace_repair_completion_authority,
     continue_agent_workspace_repair_at_boundary, inspect_agent_workspace_repair_completion,
+    reacquire_agent_workspace_repair_target_lease_for_continuation,
     record_agent_workspace_repair_validation,
     reopen_agent_workspace_repair_after_validation_failure,
     reserve_agent_workspace_repair_completion_validation,
@@ -20,7 +21,8 @@ use crate::application::agent_workspace_publish_repair_state::{
 };
 use crate::application::publish_resilience::continue_agent_workspace_repair_publish;
 use crate::domain::entities::{
-    AgentRunId, AgentRunStatus, AgentWorkspaceRepairCompletionAuthority, AgentWorkspaceRepairPhase,
+    AgentRunId, AgentRunStatus, AgentWorkspaceRepairAttempt,
+    AgentWorkspaceRepairCompletionAuthority, AgentWorkspaceRepairPhase,
 };
 
 #[cfg(feature = "test-utils")]
@@ -361,7 +363,7 @@ fn authority_response(
         ))),
         AgentWorkspaceRepairCompletionAuthority::AlreadyBlocked => Ok(Some(completion_response(
             "blocked",
-            "This repair generation is already blocked and awaiting recovery.",
+            "This repair generation is blocked. Retry repair from the workspace to start a new repair attempt.",
         ))),
         AgentWorkspaceRepairCompletionAuthority::Invalid => Err(json_error(
             StatusCode::CONFLICT,
@@ -433,13 +435,39 @@ pub(crate) async fn complete_agent_workspace_repair_for_trusted_run(
     }
 
     let authority = current_authorized_repair_attempt(state, &conversation_id, &run_id).await?;
-    if let Some(response) = authority_response(authority.clone())? {
-        return Ok(response);
-    }
-    let AgentWorkspaceRepairCompletionAuthority::Current(attempt) = authority else {
-        unreachable!("authority response returns every non-current outcome");
+    let (attempt, resurrecting) = match authority {
+        AgentWorkspaceRepairCompletionAuthority::Current(attempt) => (*attempt, false),
+        AgentWorkspaceRepairCompletionAuthority::AlreadyBlocked if req.blocker.is_none() => {
+            let attempt = state
+                .app_state
+                .agent_workspace_repair_repo
+                .get_repair_attempt_for_run(&conversation_id, &run_id)
+                .await
+                .map_err(|error| {
+                    json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+                })?
+                .ok_or_else(|| {
+                    json_error(
+                        StatusCode::CONFLICT,
+                        "The repair run is no longer authorized for the active workspace repair.",
+                        None,
+                    )
+                })?;
+            // Resurrection applies only when the generation blocked before any validated
+            // completion. A recorded repair head means the completion was already accepted and
+            // the blocker belongs to the downstream continuation; duplicates stay idempotent.
+            if attempt.repair_head_commit.is_some() {
+                return Ok(completion_response(
+                    "blocked",
+                    "This repair generation is blocked. Retry repair from the workspace to start a new repair attempt.",
+                ));
+            }
+            (attempt, true)
+        }
+        authority => {
+            return Ok(authority_response(authority)?.expect("non-current authority responds"));
+        }
     };
-    let attempt = *attempt;
     let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
 
     if let Some(blocker) = req.blocker.as_deref() {
@@ -467,6 +495,42 @@ pub(crate) async fn complete_agent_workspace_repair_for_trusted_run(
         };
     }
 
+    let attempt = if resurrecting {
+        let attempt_id = attempt.id.clone();
+        match reacquire_agent_workspace_repair_target_lease_for_continuation(
+            state.app_state.as_ref(),
+            &workspace,
+            attempt,
+            AgentWorkspaceRepairPhase::Blocked,
+        )
+        .await
+        {
+            Ok(AgentWorkspaceRepairTransitionOutcome::Applied(attempt)) => attempt,
+            Ok(
+                AgentWorkspaceRepairTransitionOutcome::Stale(_)
+                | AgentWorkspaceRepairTransitionOutcome::Missing,
+            ) => {
+                return stale_completion_transition_response(state, &conversation_id, &run_id)
+                    .await;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target: "ralphx_lib::http::agent_workspace_repair",
+                    conversation_id = %conversation_id,
+                    attempt_id = %attempt_id,
+                    error = %error,
+                    "Blocked repair completion could not reacquire canonical Git target authority"
+                );
+                return Ok(completion_response(
+                    "blocked",
+                    "The repair stayed blocked because RalphX could not reacquire its canonical Git target. Retry repair from the workspace.",
+                ));
+            }
+        }
+    } else {
+        attempt
+    };
+
     #[cfg(feature = "test-utils")]
     reservation_test_hook::wait().await;
     #[cfg(feature = "test-utils")]
@@ -485,6 +549,27 @@ pub(crate) async fn complete_agent_workspace_repair_for_trusted_run(
             return stale_completion_transition_response(state, &conversation_id, &run_id).await;
         }
     };
+    Box::pin(complete_reserved_agent_workspace_repair(
+        state,
+        &conversation_id,
+        &run_id,
+        &workspace,
+        reserved,
+        req.summary.trim(),
+        resurrecting,
+    ))
+    .await
+}
+
+async fn complete_reserved_agent_workspace_repair(
+    state: &HttpServerState,
+    conversation_id: &ChatConversationId,
+    run_id: &AgentRunId,
+    workspace: &AgentConversationWorkspace,
+    reserved: AgentWorkspaceRepairAttempt,
+    summary: &str,
+    reblock_validation_failure: bool,
+) -> Result<Json<CompleteAgentWorkspaceRepairResponse>, JsonError> {
     if let Err(error) = validate_agent_workspace_repair_target_lease(
         state.app_state.branch_update_repo.as_ref(),
         &reserved,
@@ -521,7 +606,7 @@ pub(crate) async fn complete_agent_workspace_repair_for_trusted_run(
             )),
             AgentWorkspaceRepairTransitionOutcome::Stale(_)
             | AgentWorkspaceRepairTransitionOutcome::Missing => {
-                stale_completion_transition_response(state, &conversation_id, &run_id).await
+                stale_completion_transition_response(state, conversation_id, run_id).await
             }
         };
     }
@@ -529,7 +614,7 @@ pub(crate) async fn complete_agent_workspace_repair_for_trusted_run(
     completion_phase_test_hook::wait_validation().await;
     let validation = match inspect_agent_workspace_repair_completion(
         state.app_state.as_ref(),
-        &workspace,
+        workspace,
         &reserved.target_base_ref,
         reserved.target_base_commit.as_deref(),
     )
@@ -544,19 +629,37 @@ pub(crate) async fn complete_agent_workspace_repair_for_trusted_run(
                 _ => StatusCode::INTERNAL_SERVER_ERROR,
             };
             let validation_error = json_error(status, error.to_string(), None);
-            return match reopen_agent_workspace_repair_after_validation_failure(
-                Arc::clone(&state.app_state.agent_workspace_repair_repo),
-                reserved,
-                workspace.pr_auto_merge_current,
-            )
-            .await
-            .map_err(|error| {
+            let outcome = if reblock_validation_failure {
+                block_agent_workspace_repair_completion(
+                    Arc::clone(&state.app_state.agent_workspace_repair_repo),
+                    Arc::clone(&state.app_state.branch_update_repo),
+                    reserved,
+                    "Workspace repair completion could not prove a clean repair.",
+                    &error.to_string(),
+                    workspace.pr_auto_merge_current,
+                )
+                .await
+            } else {
+                reopen_agent_workspace_repair_after_validation_failure(
+                    Arc::clone(&state.app_state.agent_workspace_repair_repo),
+                    reserved,
+                    workspace.pr_auto_merge_current,
+                )
+                .await
+            };
+            return match outcome.map_err(|error| {
                 json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
             })? {
+                AgentWorkspaceRepairTransitionOutcome::Applied(_) if reblock_validation_failure => {
+                    Ok(completion_response(
+                        "blocked",
+                        "The repair stayed blocked because RalphX could not verify a clean repair. Retry repair from the workspace.",
+                    ))
+                }
                 AgentWorkspaceRepairTransitionOutcome::Applied(_) => Err(validation_error),
                 AgentWorkspaceRepairTransitionOutcome::Stale(_)
                 | AgentWorkspaceRepairTransitionOutcome::Missing => {
-                    stale_completion_transition_response(state, &conversation_id, &run_id).await
+                    stale_completion_transition_response(state, conversation_id, run_id).await
                 }
             };
         }
@@ -568,7 +671,7 @@ pub(crate) async fn complete_agent_workspace_repair_for_trusted_run(
         &validation.base_ref,
         &validation.base_commit,
         &validation.repair_head_commit,
-        req.summary.trim(),
+        summary,
         validation.auto_merge_current,
     )
     .await
@@ -577,7 +680,7 @@ pub(crate) async fn complete_agent_workspace_repair_for_trusted_run(
         AgentWorkspaceRepairTransitionOutcome::Applied(validated) => validated,
         AgentWorkspaceRepairTransitionOutcome::Stale(_)
         | AgentWorkspaceRepairTransitionOutcome::Missing => {
-            return stale_completion_transition_response(state, &conversation_id, &run_id).await;
+            return stale_completion_transition_response(state, conversation_id, run_id).await;
         }
     };
     #[cfg(feature = "test-utils")]
@@ -586,7 +689,7 @@ pub(crate) async fn complete_agent_workspace_repair_for_trusted_run(
         state.app_state.as_ref(),
         validated,
         AgentWorkspaceRepairPhase::Validating,
-        req.summary.trim(),
+        summary,
         false,
     )
     .await
@@ -595,7 +698,7 @@ pub(crate) async fn complete_agent_workspace_repair_for_trusted_run(
         AgentWorkspaceRepairTransitionOutcome::Applied(attempt) => attempt,
         AgentWorkspaceRepairTransitionOutcome::Stale(_)
         | AgentWorkspaceRepairTransitionOutcome::Missing => {
-            return stale_completion_transition_response(state, &conversation_id, &run_id).await;
+            return stale_completion_transition_response(state, conversation_id, run_id).await;
         }
     };
     if continuation.phase == AgentWorkspaceRepairPhase::Blocked {

@@ -6029,6 +6029,18 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
 
     let repair_service = state.build_chat_service_with_execution_state(Arc::clone(execution_state));
 
+    if created_by_run_id.is_none()
+        && retry_blocked_agent_workspace_repair_for_explicit_user_action(
+            state,
+            &workspace,
+            &repair_service,
+            AgentWorkspacePostRepairAction::UpdateOnly,
+        )
+        .await
+    {
+        return Err("A new workspace repair attempt has started.".to_string());
+    }
+
     let explicit_base = normalize_explicit_publish_base_selection(selection)?;
 
     let project = state
@@ -7512,6 +7524,28 @@ pub async fn publish_agent_conversation_workspace_for_app_state_with_repair_inte
     route_fixable_failures_to_agent: bool,
     explicit_repair_publish: bool,
 ) -> Result<PublishAgentConversationWorkspaceResponse, String> {
+    if explicit_repair_publish {
+        let workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| {
+                format!("Agent conversation workspace not found for {conversation_id}")
+            })?;
+        let repair_service =
+            state.build_chat_service_with_execution_state(Arc::clone(execution_state));
+        if retry_blocked_agent_workspace_repair_for_explicit_user_action(
+            state,
+            &workspace,
+            &repair_service,
+            AgentWorkspacePostRepairAction::Publish,
+        )
+        .await
+        {
+            return durable_repair_publish_response(state, &conversation_id, false).await;
+        }
+    }
     if let Some(response) = resume_durable_agent_workspace_repair_publish(
         state,
         &conversation_id,
@@ -8992,8 +9026,82 @@ async fn mark_agent_workspace_failure_with_routing_and_action<S>(
         target,
         post_repair_action,
         failure_class,
+        false,
     )
     .await;
+}
+
+/// Only direct user actions may supersede a blocked repair generation. Background failure
+/// routing reaches the same dispatcher through the default `false` above. The dispatch target
+/// must carry the resolved canonical worktree, or the superseding successor can never be sent.
+async fn retry_blocked_agent_workspace_repair_for_explicit_user_action<S>(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    repair_service: &S,
+    post_repair_action: AgentWorkspacePostRepairAction,
+) -> bool
+where
+    S: ChatService + ?Sized,
+{
+    let Ok(Some(attempt)) = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&workspace.conversation_id)
+        .await
+    else {
+        return false;
+    };
+    if attempt.phase != AgentWorkspaceRepairPhase::Blocked {
+        return false;
+    }
+    let Ok(Some(project)) = state.project_repo.get_by_id(&workspace.project_id).await else {
+        tracing::warn!(
+            conversation_id = %workspace.conversation_id,
+            "Skipping blocked workspace repair retry: project could not be loaded"
+        );
+        return false;
+    };
+    let resolved =
+        match crate::application::agent_conversation_workspace::resolve_effective_agent_conversation_workspace_path(
+            &project,
+            workspace,
+            state.plan_branch_repo.as_ref(),
+        )
+        .await
+        {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                tracing::warn!(
+                    conversation_id = %workspace.conversation_id,
+                    error = %error,
+                    "Skipping blocked workspace repair retry: canonical workspace path did not resolve"
+                );
+                return false;
+            }
+        };
+    let target = AgentConversationWorkspaceRepairTarget {
+        branch_name: workspace.branch_name.clone(),
+        base_ref: workspace.base_ref.clone(),
+        base_display_name: workspace.base_display_name.clone(),
+        worktree_path: Some(resolved.path),
+    };
+
+    mark_agent_workspace_failure_with_routing_and_action_classified(
+        state,
+        workspace,
+        attempt
+            .summary
+            .as_deref()
+            .unwrap_or("Retrying blocked workspace repair."),
+        None,
+        repair_service,
+        true,
+        &target,
+        post_repair_action,
+        PublishFailureClass::AgentFixable,
+        true,
+    )
+    .await;
+    true
 }
 
 async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
@@ -9006,6 +9114,7 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
     target: &AgentConversationWorkspaceRepairTarget,
     post_repair_action: AgentWorkspacePostRepairAction,
     failure_class: PublishFailureClass,
+    retry_blocked: bool,
 ) where
     S: ChatService + ?Sized,
 {
@@ -9060,15 +9169,17 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
             reason: error.to_string(),
             summary: post_repair_action.repair_requested_summary().to_string(),
             auto_merge_current: workspace.pr_auto_merge_current,
-            retry_blocked: false,
+            retry_blocked,
         },
     )
     .await;
     let attempt = match start {
-        Ok(AgentWorkspaceRepairStartOutcome::Started(attempt)) => attempt,
+        Ok(
+            AgentWorkspaceRepairStartOutcome::Started(attempt)
+            | AgentWorkspaceRepairStartOutcome::SuccessorStarted(attempt),
+        ) => attempt,
         Ok(
             AgentWorkspaceRepairStartOutcome::Joined(_)
-            | AgentWorkspaceRepairStartOutcome::SuccessorStarted(_)
             | AgentWorkspaceRepairStartOutcome::BlockedByCurrent(_),
         ) => return,
         Err(error) => {
