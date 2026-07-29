@@ -6,7 +6,7 @@
 ## 1. Scan state
 
 ```
-PASS: remote transport drift — 499 invoke command name(s), 0 dynamic, 0 seam bypasses; 244 manifest-classified; 100 unclassified (baseline, → 0 in PR 3.1).
+PASS: remote transport drift — 499 invoke command name(s), 0 dynamic, 0 seam bypasses; 248 manifest-classified; 48 unclassified (baseline, → 0 in PR 3.1).
 ```
 
 | Measure | Count | Source |
@@ -14,11 +14,11 @@ PASS: remote transport drift — 499 invoke command name(s), 0 dynamic, 0 seam b
 | Invoke command names in `frontend/src` | 499 | drift scan (AST) |
 | Dynamic / unresolvable expressions | 0 | drift scan — must stay 0 |
 | Transport seam bypasses | 0 | drift scan — must stay 0 |
-| Remote-registered (`remote_commands!`) | 160 | `docs/generated/remote-commands.json` |
+| Remote-registered (`remote_commands!`) | 208 | `docs/generated/remote-commands.json` |
 | Reason-coded local-only rows | 29 | `frontend/src/lib/remote/local-only-commands.ts` |
 | Ledger rows (exhaustive over `generate_handler!`) | 546 | `docs/generated/remote-commands.json` |
-| Manifest-classified (host-denied / v1-deferred) | 244 | `v1Resolution` in `docs/generated/remote-commands.json` |
-| **Unclassified — the 3.1 gap** | **100** | `scripts/remote-transport-drift-baseline.json` |
+| Manifest-classified (host-denied / v1-deferred) | 248 | `v1Resolution` in `docs/generated/remote-commands.json` |
+| **Unclassified — the 3.1 gap** | **48** | `scripts/remote-transport-drift-baseline.json` |
 
 ## 2. What the gap is made of
 
@@ -26,16 +26,16 @@ Routing each name mechanically through the ledger splits it into very different 
 
 | Disposition | Count | Rule |
 |---|---|---|
-| register-candidate | 100 | ledgered AgentControl (or lower) with no SpawnsProcess capability — eligible for a hand-audited `remote_commands!` entry under `ui:agent` |
+| register-candidate | 48 | ledgered AgentControl (or lower) with no SpawnsProcess capability — eligible for a hand-audited `remote_commands!` entry under `ui:agent` |
 | host-denied (class: denied) | 0 | `class_permits` returns false for Denied at any capability set — registering it fails compilation. Resolves for P-11 through the manifest, never through a local-only reason (phase doc key point 6) |
 | host-denied (SpawnsProcess) | 0 | carries `SpawnsProcess`; `class_permits(AgentControl, [SpawnsProcess])` is false and Elevated is a v1 non-goal, so it is not exposable on the v1 facade at any scope (`remote_server/registry.rs` detector-(c) note) |
 | v1-deferred (Elevated) | 0 | ledgered Elevated without SpawnsProcess — reachable only under `ui:elevated`, which §1 excludes from v1; deferred, not denied |
 | v1-audit-refused (per-command finding) | 0 | the class/capability pair would admit a v1 scope, but a recorded audit found a property of the command AS IT STANDS that no v1 scope can accommodate — fail-open, spawn-capable machinery built to serve a read, an unrenderable transport shape, or a registered remote twin that already answers the query. Never used for arming/steering/write refusals: the facade serves 16 `agentControl` ops, so those stay register-candidates |
 | orphan invoke (no local handler) | 0 | invoked by the frontend but absent from `generate_handler!` and from the ledger — it cannot be registered remotely because it does not exist locally either |
 
-**244 invoked names now resolve through the manifest** — host-side commands the facade denies or defers, classified by their ledger row's `v1Resolution` rather than by a registration or a client-local reason (phase-doc key point 6). B0 landed that mechanism and the gap fell 419 → 100 with zero registrations. **What remains in the baseline is registration work only**, so from here every batch's delta is exactly the count it registers.
+**248 invoked names now resolve through the manifest** — host-side commands the facade denies or defers, classified by their ledger row's `v1Resolution` rather than by a registration or a client-local reason (phase-doc key point 6). B0 landed that mechanism and the gap fell 419 → 48 with zero registrations. **What remains in the baseline is registration work only**, so from here every batch's delta is exactly the count it registers.
 
-**100 names are registration candidates**, and `register-candidate` means eligible for a hand audit, not approved: detector (c) has already rejected ledgered-`AgentControl` commands whose process authority the manifest cannot see (`resume_task`, `apply_proposals_to_kanban`, `set_agent_conversation_workspace_auto_publish`). Expect a non-empty rejection subset in every registration batch.
+**48 names are registration candidates**, and `register-candidate` means eligible for a hand audit, not approved: detector (c) has already rejected ledgered-`AgentControl` commands whose process authority the manifest cannot see (`resume_task`, `apply_proposals_to_kanban`, `set_agent_conversation_workspace_auto_publish`). Expect a non-empty rejection subset in every registration batch.
 
 ## 3. Recommended batch order
 
@@ -47,8 +47,8 @@ Routing each name mechanically through the ledger splits it into very different 
 | 4 | `B3` | Review, QA, merge pipeline, validation | 2 | 2 | 0 | 1 |
 | 5 | `B4` | Ideation, plans, methodology, workflow | 0 | 0 | 0 | 0 |
 | 6 | `B5` | Automation, research, metrics, activity | 0 | 0 | 0 | 0 |
-| 7 | `B6` | Personas, role defaults, MCP policy, review settings | 27 | 27 | 0 | 4 |
-| 8 | `B7` | Artifacts, task context, notifications, app chrome | 33 | 33 | 0 | 6 |
+| 7 | `B6` | Personas, role defaults, MCP policy, review settings | 8 | 8 | 0 | 2 |
+| 8 | `B7` | Artifacts, task context, notifications, app chrome | 0 | 0 | 0 | 0 |
 | 9 | `D1` | Credential + integration surface (disposition only, no registrations) | 0 | 0 | 0 | 0 |
 | 10 | `D2` | Process-launch getters and git/gh surface (disposition only) | 0 | 0 | 0 | 0 |
 | 11 | `R1` | `get_project` / `list_projects` — spawn-free read path | 0 | 0 | 0 | 0 |
@@ -185,7 +185,7 @@ Ordering logic: **B0 first** (nothing is measurable without the third dispositio
 
 ### 7. `B6` — Personas, role defaults, MCP policy, review settings
 
-**Commands:** 27 · **Register-candidates:** 27 · **Risk classes:** register-candidate 27
+**Commands:** 8 · **Register-candidates:** 8 · **Risk classes:** register-candidate 8
 
 **Why here:** Configuration-of-future-authority shapes cluster here: a persona/role/policy write does not act now but changes what a later spawn is allowed to do. This is the `update_custom_analysis` family of risk (§3.3 backstop-1 residual), so it gets one focused dual-lens review instead of being sprinkled across batches.
 
@@ -193,21 +193,24 @@ Ordering logic: **B0 first** (nothing is measurable without the third dispositio
 
 - For each command ask the deferred-authority question explicitly: does this write change what a FUTURE agent process may do? If yes it is at least `AgentControl` with `ConfiguresFutureProcessAuthority`, regardless of how inert the immediate action looks.
 - `delete_persona`-shaped members stay Denied (deletesEntity).
+- DONE (PR 3.1-b batch 13): `persona_commands` (12) and `mcp_policy_commands` (7) are fully classified — 8 reads at `ui:read`, 12 writers at `ui:agent` (8 carrying `MutatesAgentConsumedContent`, 4 carrying `DECLARED_MEMBERSHIPS`), 3 `host-denied-spawns-process`.
+- RESOLVED, and successors must not re-litigate it — the deferred-authority lens above says such a write is 'at least AgentControl with ConfiguresFutureProcessAuthority'. That reading is UNREPRESENTABLE: `class_permits` admits `ConfiguresFutureProcessAuthority` only under `Elevated`, which v1 grants no scope for, so declaring it converts an audited-clean bounded write into a deferral by notation rather than by finding. The idiom that records the same finding at a registerable class is AgentControl plus a `DECLARED_MEMBERSHIPS` row, which is what `update_agent_lane_settings` already carries for picking the harness a live agent is launched with — strictly more deferred authority than an MCP server/tool override. Batch 13 used declarations `configures-future-agent-tool-authority` and `configures-future-agent-capability-gates`.
+- READ FIRST — `get_mcp_catalog` and `refresh_mcp_catalog` are REFUSED at the floor. They are reads by intent, but `build_catalog -> discover_provider_catalog -> resolve_codex_catalog_cli_path` launches the Codex app-server to answer. `retry_legacy_mcp_registration_repair` is ALSO refused, and detector (c) does NOT see it: it runs `claude mcp remove ralphx -s user` through `tokio::process::Command::new`, hidden by a `spawn_blocking(bare_fn)` call shape that creates no edge plus a spawn on an already-resolved path that names no resolver. Pinned by `batch13_detector_gap_is_measured_not_inherited`.
 
 **Gate:** P-17 green; C-9 review recorded with the deferred-authority lens explicitly exercised.
 
 <details><summary>Members by module</summary>
 
 - **`manual_role_default_commands`** (6) — `clear_manual_role_default`, `get_agent_conversation_role_default`, `get_manual_role_defaults`, `get_start_composer_role_default`, `reset_agent_conversation_role_default`, `update_manual_role_default`
-- **`mcp_policy_commands`** (7) — `clear_mcp_server_override`, `clear_mcp_tool_override`, `get_mcp_catalog`, `refresh_mcp_catalog`, `retry_legacy_mcp_registration_repair`, `update_mcp_server_override`, `update_mcp_tool_override`
-- **`persona_commands`** (12) — `approve_persona`, `approve_persona_as_new`, `archive_persona`, `create_persona_draft`, `get_persona`, `list_persona_usage`, `list_personas`, `preview_persona_overlay`, `reseed_persona_draft`, `unarchive_persona`, `update_persona`, `update_persona_draft`
 - **`workspace_review_settings_commands`** (2) — `get_workspace_review_runtime_settings`, `update_workspace_review_runtime_settings`
 
 </details>
 
 ### 8. `B7` — Artifacts, task context, notifications, app chrome
 
-**Commands:** 33 · **Register-candidates:** 33 · **Risk classes:** register-candidate 33
+**Commands:** 0 · **Register-candidates:** 0 · **Risk classes:** —
+
+**Retired by `B7`.** Every member left the P-11 ratchet as manifest-classified, so this batch has no registration work. Disposition-only from the start — the manifest classification IS the disposition.
 
 **Why here:** The tail. Mixed reads and small writes; also the batch that must decide which names are genuinely CLIENT-LOCAL (updater channel, window/dock chrome) and therefore belong in `local-only-commands.ts` with an honest reason — the only batch expected to add local-only rows.
 
@@ -216,19 +219,12 @@ Ordering logic: **B0 first** (nothing is measurable without the third dispositio
 - Split client-local from host-owned per command: `update_channel_commands` and parts of `ui_commands` are plausible `local-only` rows; artifacts and task context are host state and must register or be manifest-disposed.
 - `get_task_context` and the prompt-builder reads are content-surface members (ledger-soundness round found 5 dropped worker content reads) — re-check the surface enumeration before assigning.
 - Every local-only row gets an honest client-local reason; 'hard to classify' is never valid.
+- DONE (PR 3.1-b batch 13): all 33 B7 ratchet members are dispositioned — 24 reads at `ui:read`, 8 writers at `ui:agent`, 1 `v1-deferred`. Zero local-only rows were added, which answers the batch's own open question: the client-local split it anticipated did not survive contact with the commands.
+- RESOLVED — the batch was expected to move `update_channel_commands` and parts of `ui_commands` to `local-only-commands.ts`. Neither is client-local. `get_update_channel`/`set_update_channel` read and write `app_state_repo`, which is HOST state, and `get_ui_feature_flags` projects the host runtime config plus the agent-capability snapshot. `set_update_channel` is instead ledgered `Elevated`/`HostManagement` (V1Deferred, not denied): it selects which release train the desktop app auto-updates onto, matching every other HOST row's class. Its read half is registered.
+- RESOLVED — the plan flagged 5 dropped worker content reads. They are the `task_context_commands` Tauri commands (`get_task_context`, `get_artifact_full`, `get_artifact_version`, `get_related_artifacts`, `search_artifacts`), all registered at `ui:read`. Note their HTTP namesakes in `http_server/handlers/worker.rs` are DIFFERENT functions: the axum `search_artifacts` silently skips unparsable artifact types, while the Tauri command propagates the parse error. Do not reason about one from the other.
+- NOTE — batch 12 measured this block detector-silent and batch 13 re-measured rather than inheriting, which is how it found that detector (b)'s flag on `update_notification_settings` is a bare-name MARKER collision (`update_settings` vs the workspace-auto-review write marker), not a spawn-triggering write. It is registered WITHOUT `SeedsSpawnTriggeringState`; claiming the tag would have passed the evidence test while being false.
 
 **Gate:** P-17 green; every new local-only row has a reason; C-9 review recorded.
-
-<details><summary>Members by module</summary>
-
-- **`artifact_commands`** (11) — `archive_artifact`, `create_bucket`, `get_artifact`, `get_artifact_at_version`, `get_artifact_relations`, `get_artifact_version_history`, `get_artifacts`, `get_artifacts_by_bucket`, `get_artifacts_by_task`, `get_buckets`, `get_system_buckets`
-- **`notification_commands`** (8) — `get_notification_settings`, `get_unread_notification_count`, `list_attention_items`, `list_notifications`, `mark_all_notifications_read`, `mark_notification_read`, `set_dock_badge_count`, `update_notification_settings`
-- **`release_notes_commands`** (5) — `get_current_release_notes`, `get_last_seen_release_notes_version`, `get_release_notes_for_version`, `list_release_notes_versions`, `mark_release_notes_seen`
-- **`task_context_commands`** (5) — `get_artifact_full`, `get_artifact_version`, `get_related_artifacts`, `get_task_context`, `search_artifacts`
-- **`ui_commands`** (2) — `get_ui_feature_flags`, `update_ui_feature_flags`
-- **`update_channel_commands`** (2) — `get_update_channel`, `set_update_channel`
-
-</details>
 
 ### 9. `D1` — Credential + integration surface (disposition only, no registrations)
 
@@ -391,9 +387,9 @@ Ordering logic: **B0 first** (nothing is measurable without the third dispositio
 | Check | Result |
 |---|---|
 | Drift scan passes | yes (this file is not emitted otherwise) |
-| Scan unclassified count == baseline size | 100 == 100 |
-| Every gap command in exactly one batch | 100 / 100 |
-| Disposition totals sum to the gap | 100 == 100 |
+| Scan unclassified count == baseline size | 48 == 48 |
+| Every gap command in exactly one batch | 48 / 48 |
+| Disposition totals sum to the gap | 48 == 48 |
 | Batch plan claims no empty module and pins no absent command | enforced by the generator |
 
 Machine-readable companion for 3.1-b/c: [`remote-coverage-census.json`](./remote-coverage-census.json) — same batches, plus per-command `{batch, module, ledgerClass, capabilities, disposition}` rows.

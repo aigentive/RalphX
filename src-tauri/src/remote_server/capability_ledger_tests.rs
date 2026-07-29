@@ -4619,10 +4619,15 @@ fn batch9_detector_c_refusals_declare_the_capability_they_reach() {
     }
 
     assert_eq!(
-        checked, 14,
-        "batch 9 classified thirteen detector-(c) refusals and batch 10 closed the fourteenth \
-         (`resolve_user_question`); a change to that count is a census decision and must be made \
-         deliberately"
+        checked, 16,
+        "batch 9 classified thirteen detector-(c) refusals, batch 10 closed the fourteenth \
+         (`resolve_user_question`), and batch 13 added `get_mcp_catalog` and `refresh_mcp_catalog` \
+         — both genuinely detector-visible, so they belong UNDER this gate's re-measurement rather \
+         than beside it. Two nearby rows are deliberately absent: batch 12's three floor rows open \
+         `detector-c, hand-traced:` rather than `detector-c:`, and batch 13's third refusal \
+         (`retry_legacy_mcp_registration_repair`) is excluded on purpose — detector (c) cannot see \
+         its launch, so a gate that re-measures the sink would fail on a row that is nonetheless \
+         correct. A change to this count is a census decision and must be made deliberately"
     );
 }
 
@@ -5742,5 +5747,632 @@ fn batch12_detector_attribution_limits_are_measured_not_assumed() {
         read.visited.len() < 100,
         "`get_metrics_config` was measured at 23 nodes; if it has grown into the workflow runner \
          its Read classification is no longer supported by its own body"
+    );
+}
+
+/// PR 3.1-b batch 13 — calibration sweep for the census blocks this batch audits.
+///
+/// Batch 12 swept `B7` and left its verdicts on record; this reruns that sweep against the
+/// current graph (a verdict inherited across a merge is a verdict nobody measured) and extends
+/// it to the two `B6` modules batch 13 takes. Same contract as
+/// [`probe_b5_b7_module_batch_audit`]: print all three detectors per member, and for every
+/// detector-(c) hit print the launcher tokens and the reconstructed edge chain, so the floor is
+/// dispositioned on a path rather than on a boolean.
+#[test]
+#[ignore = "calibration probe"]
+fn probe_b13_module_batch_audit() {
+    const MODULES: &[&str] = &[
+        "artifact_commands",
+        "notification_commands",
+        "release_notes_commands",
+        "task_context_commands",
+        "ui_commands",
+        "update_channel_commands",
+        "persona_commands",
+        "mcp_policy_commands",
+    ];
+    let graph = CallGraph::build(&load_production_sources());
+    let rows = census();
+    let commands = rows.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>();
+    let detector_b = spawn_triggering_writers(&graph, commands, SPAWN_TRIGGERING_STATE_SURFACE);
+
+    for (command, module) in &rows {
+        if !MODULES.contains(&module.as_str()) {
+            continue;
+        }
+        let closure = graph.closure([command.clone()]);
+        let a = closure_is_arming(&closure);
+        let b = detector_b.contains(command);
+        let c = tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS);
+        let row = policy_for(command, module).expect("ledgered");
+        eprintln!(
+            "PROBE-B13 {module} {command} a={a} b={b} c={c} visited={} class={:?} caps={:?} registered={}",
+            closure.visited.len(),
+            row.class,
+            row.capabilities,
+            find_spec(command).is_some(),
+        );
+        if c {
+            let launchers = closure
+                .tokens
+                .iter()
+                .filter(|t| {
+                    tokens_reach_any(&std::iter::once((*t).clone()).collect(), PROCESS_LAUNCH_SINKS)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            eprintln!("PROBE-B13   launchers={launchers:?}");
+            for path in launcher_paths(&graph, command).iter().take(3) {
+                eprintln!("PROBE-B13   path: {}", path.join(" -> "));
+            }
+        }
+    }
+}
+
+/// PR 3.1-b batch 13 — the detector-(c) FALSE NEGATIVE, measured.
+///
+/// `retry_legacy_mcp_registration_repair` runs `claude mcp remove ralphx -s user` through
+/// `tokio::process::Command::new` (`mcp_registration_repair.rs`), and detector (c) reports
+/// `c=false` for it. This prints the mechanism: `resolve_claude_cleanup_cli` reaches
+/// `find_claude_cli` only by passing it to `spawn_blocking` as a bare function VALUE, and the
+/// scanner records callees from call expressions, so no edge is created. The sibling
+/// `resolve_codex_catalog_cli_path` wraps the same kind of resolver in a CLOSURE that calls it,
+/// which is exactly why `get_mcp_catalog` is `c=true` and this one is not.
+#[test]
+#[ignore = "calibration probe"]
+fn probe_b13_spawn_blocking_bare_fn_detector_gap() {
+    let graph = CallGraph::build(&load_production_sources());
+    for subject in [
+        "retry_legacy_mcp_registration_repair",
+        "retry_reserved_claude_registration_repair",
+        "reconcile_reserved_claude_registration",
+        "resolve_claude_cleanup_cli",
+        "find_claude_cli",
+        "remove_reserved_user_registration",
+        "get_mcp_catalog",
+        "resolve_codex_catalog_cli_path",
+        "resolve_user_managed_codex_cli",
+        "resolve_codex_cli",
+    ] {
+        let closure = graph.closure([subject.to_string()]);
+        let c = tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS);
+        let callees = graph.callees_of(subject);
+        eprintln!(
+            "PROBE-GAP {subject} c={c} visited={} callees={:?}",
+            closure.visited.len(),
+            callees.iter().take(12).collect::<Vec<_>>()
+        );
+    }
+}
+
+/// PR 3.1-b batch 13 — does the `spawn_blocking(bare_fn)` gap expose an already-REGISTERED command?
+///
+/// The gap only matters if a command the facade already exposes reaches a launch through it.
+/// This walks every registered spec and reports any whose closure visits one of the three
+/// hand-identified launch owners detector (c) cannot see.
+#[test]
+#[ignore = "calibration probe"]
+fn probe_b13_gap_exposure_across_registered_specs() {
+    // Launch owners detector (c) misses: two `spawn_blocking(bare_fn)` sites and one direct
+    // `tokio::process::Command::new(<param>)` that never names a resolver.
+    const GAP_OWNERS: &[&str] = &[
+        "resolve_claude_cleanup_cli",
+        "resolve_user_managed_codex_cli",
+        "remove_reserved_user_registration",
+        "remove_reserved_user_registration_with_timeout",
+        "reconcile_reserved_claude_registration",
+        "reconcile_reserved_claude_registration_best_effort",
+    ];
+    let graph = CallGraph::build(&load_production_sources());
+    let rows = census();
+    let mut exposed = Vec::new();
+    for (command, module) in &rows {
+        let registered = find_spec(command).is_some();
+        let closure = graph.closure([command.clone()]);
+        let hits = GAP_OWNERS
+            .iter()
+            .filter(|owner| {
+                closure
+                    .visited
+                    .iter()
+                    .any(|node| node.ends_with(&format!("::{owner}")) || node.ends_with(*owner))
+            })
+            .collect::<Vec<_>>();
+        if !hits.is_empty() {
+            let c = tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS);
+            eprintln!(
+                "PROBE-EXPO {module} {command} registered={registered} detector_c={c} hits={hits:?}"
+            );
+            if registered {
+                exposed.push(command.clone());
+            }
+        }
+    }
+    eprintln!("PROBE-EXPO REGISTERED-AND-EXPOSED = {exposed:?}");
+}
+
+/// PR 3.1-b batch 13 — why detectors fire on two members whose bodies are pure settings/CRUD.
+#[test]
+#[ignore = "calibration probe"]
+fn probe_b13_attribution_questions() {
+    let graph = CallGraph::build(&load_production_sources());
+    for command in [
+        "update_notification_settings",
+        "get_notification_settings",
+        "create_persona_draft",
+        "archive_persona",
+        "unarchive_persona",
+        "list_personas",
+    ] {
+        let closure = graph.closure([command.to_string()]);
+        let collision = closure
+            .visited
+            .iter()
+            .filter(|n| n.ends_with("AgentWorkflowRunner::execute") || n.contains("workflow_runner"))
+            .take(3)
+            .collect::<Vec<_>>();
+        eprintln!(
+            "PROBE-ATTR13 {command} arming={} visited={} workflow_runner_nodes={:?}",
+            closure_is_arming(&closure),
+            closure.visited.len(),
+            collision
+        );
+        for hit in closure.sink_hits.iter().take(6) {
+            eprintln!("PROBE-ATTR13   sink={} targets={:?}", hit.sink, hit.targets);
+        }
+    }
+}
+
+/// PR 3.1-b batch 13 — which surface entry flags `update_notification_settings`, and on what.
+#[test]
+#[ignore = "calibration probe"]
+fn probe_b13_notification_detector_b_entry() {
+    let graph = CallGraph::build(&load_production_sources());
+    for command in ["update_notification_settings", "get_notification_settings"] {
+        let tokens = graph.closure([command.to_string()]).tokens;
+        for entry in SPAWN_TRIGGERING_STATE_SURFACE {
+            if entry.flags(command, &tokens) {
+                let writes = entry
+                    .write_markers
+                    .iter()
+                    .filter(|m| tokens.contains(**m))
+                    .collect::<Vec<_>>();
+                let armed = entry
+                    .armed_markers
+                    .iter()
+                    .filter(|m| tokens.contains(**m))
+                    .collect::<Vec<_>>();
+                eprintln!(
+                    "PROBE-NB {command} entry={} write_markers_matched={writes:?} armed_matched={armed:?}",
+                    entry.id
+                );
+            }
+        }
+    }
+}
+
+/// PR 3.1-b batch 13 — the census `B7` block plus the persona and MCP-policy modules of `B6`.
+///
+/// Same contract as [`batch12_closes_the_b5_block`]: every one of the 52 ratchet members is named
+/// with its disposition and the detector-(c) floor is RE-MEASURED per member.
+///
+/// One rung is NEW. Batch 12's table had a single `Floor` variant that asserted
+/// `reaches_launch`, because until now every refused member was one detector (c) could see.
+/// `retry_legacy_mcp_registration_repair` is the first that it CANNOT, so the table splits the
+/// floor into `FloorDetected` and `FloorHandTraced` — and the hand-traced arm asserts detector (c)
+/// is *silent*, so if the engine is ever widened to close the gap this test fails loudly and the
+/// row is re-classified deliberately rather than drifting into agreement.
+#[test]
+fn batch13_closes_the_b7_block_and_two_b6_modules() {
+    #[derive(PartialEq, Eq, Clone, Copy, Debug)]
+    enum Disposition {
+        /// Registered `Read` on a body audit that found no repository write.
+        Read,
+        /// Registered `AgentControl` — a writer a silent detector never licenses dropping.
+        Agent,
+        /// Registered `AgentControl` + `MutatesAgentConsumedContent`: writes content that agents
+        /// subsequently read (persona overlay bodies, artifact visibility).
+        AgentContent,
+        /// Registered `AgentControl` + a `DECLARED_MEMBERSHIPS` row: changes what a LATER agent
+        /// process may do. The census `B6` plan asks for `ConfiguresFutureProcessAuthority` on
+        /// this shape, but `class_permits` admits that capability only under `Elevated`, so the
+        /// literal reading would defer an audited-clean write by notation. The declaration is
+        /// this ledger's registerable idiom for the same finding.
+        AgentFutureAuthority,
+        /// `host-denied-spawns-process`, and detector (c) sees the launch.
+        FloorDetected,
+        /// `host-denied-spawns-process` on a SOURCE trace while detector (c) is silent.
+        FloorHandTraced,
+        /// Ledgered `Elevated`/`HostManagement`: deferred by authority, not denied.
+        DeferredHost,
+    }
+    use Disposition::*;
+
+    const TABLE: &[(&str, &str, Disposition)] = &[
+        // --- artifact_commands: nine reads plus two writes ---------------------------------
+        ("get_artifacts", "artifact_commands", Read),
+        ("get_artifact", "artifact_commands", Read),
+        ("get_artifact_at_version", "artifact_commands", Read),
+        ("get_artifacts_by_bucket", "artifact_commands", Read),
+        ("get_artifacts_by_task", "artifact_commands", Read),
+        ("get_artifact_version_history", "artifact_commands", Read),
+        ("get_buckets", "artifact_commands", Read),
+        ("get_system_buckets", "artifact_commands", Read),
+        ("get_artifact_relations", "artifact_commands", Read),
+        ("archive_artifact", "artifact_commands", AgentContent),
+        ("create_bucket", "artifact_commands", Agent),
+        // --- task_context_commands: five reads ---------------------------------------------
+        ("get_task_context", "task_context_commands", Read),
+        ("get_artifact_full", "task_context_commands", Read),
+        ("get_artifact_version", "task_context_commands", Read),
+        ("get_related_artifacts", "task_context_commands", Read),
+        ("search_artifacts", "task_context_commands", Read),
+        // --- notification_commands: four reads plus four writes ----------------------------
+        ("get_notification_settings", "notification_commands", Read),
+        ("get_unread_notification_count", "notification_commands", Read),
+        ("list_attention_items", "notification_commands", Read),
+        ("list_notifications", "notification_commands", Read),
+        ("mark_notification_read", "notification_commands", Agent),
+        ("mark_all_notifications_read", "notification_commands", Agent),
+        ("set_dock_badge_count", "notification_commands", Agent),
+        ("update_notification_settings", "notification_commands", Agent),
+        // --- release_notes_commands: four reads plus one write -----------------------------
+        ("get_current_release_notes", "release_notes_commands", Read),
+        ("get_release_notes_for_version", "release_notes_commands", Read),
+        ("get_last_seen_release_notes_version", "release_notes_commands", Read),
+        ("list_release_notes_versions", "release_notes_commands", Read),
+        ("mark_release_notes_seen", "release_notes_commands", Agent),
+        // --- persona_commands: four reads plus eight content writes ------------------------
+        ("list_personas", "persona_commands", Read),
+        ("get_persona", "persona_commands", Read),
+        ("list_persona_usage", "persona_commands", Read),
+        ("preview_persona_overlay", "persona_commands", Read),
+        ("create_persona_draft", "persona_commands", AgentContent),
+        ("update_persona_draft", "persona_commands", AgentContent),
+        ("update_persona", "persona_commands", AgentContent),
+        ("approve_persona", "persona_commands", AgentContent),
+        ("approve_persona_as_new", "persona_commands", AgentContent),
+        ("reseed_persona_draft", "persona_commands", AgentContent),
+        ("archive_persona", "persona_commands", AgentContent),
+        ("unarchive_persona", "persona_commands", AgentContent),
+        // --- ui_commands / update_channel_commands ------------------------------------------
+        ("get_ui_feature_flags", "ui_commands", Read),
+        ("update_ui_feature_flags", "ui_commands", AgentFutureAuthority),
+        ("get_update_channel", "update_channel_commands", Read),
+        ("set_update_channel", "update_channel_commands", DeferredHost),
+        // --- mcp_policy_commands: four writes and three refusals ---------------------------
+        ("update_mcp_server_override", "mcp_policy_commands", AgentFutureAuthority),
+        ("clear_mcp_server_override", "mcp_policy_commands", AgentFutureAuthority),
+        ("update_mcp_tool_override", "mcp_policy_commands", AgentFutureAuthority),
+        ("clear_mcp_tool_override", "mcp_policy_commands", AgentFutureAuthority),
+        ("get_mcp_catalog", "mcp_policy_commands", FloorDetected),
+        ("refresh_mcp_catalog", "mcp_policy_commands", FloorDetected),
+        (
+            "retry_legacy_mcp_registration_repair",
+            "mcp_policy_commands",
+            FloorHandTraced,
+        ),
+    ];
+
+    assert_eq!(TABLE.len(), 52, "batch 13 audited 52 ratchet members");
+
+    let graph = CallGraph::build(&load_production_sources());
+
+    for (command, module, disposition) in TABLE {
+        let row = policy_for(command, module)
+            .unwrap_or_else(|| panic!("`{command}` must be ledgered by batch 13"));
+
+        // (1) The floor, re-measured per member.
+        let closure = graph.closure([(*command).to_string()]);
+        assert!(
+            !closure.visited.is_empty(),
+            "`{command}` did not resolve; every assertion below would be vacuous"
+        );
+        let reaches_launch = tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS);
+        match disposition {
+            FloorDetected => assert!(
+                reaches_launch,
+                "`{command}` is classified host-denied-spawns-process on detector (c) but no \
+                 longer reaches a process-launch sink; the claim is now false and the row must \
+                 be re-audited"
+            ),
+            FloorHandTraced => assert!(
+                !reaches_launch,
+                "`{command}` is now VISIBLE to detector (c). The refusal itself stays correct — \
+                 it really does run `claude mcp remove` — but the reason string says the detector \
+                 cannot see it, and that has stopped being true. Move the row to FloorDetected \
+                 and re-derive whether the gap it documents still exists"
+            ),
+            _ => assert!(
+                !reaches_launch,
+                "`{command}` now reaches a process-launch sink; the absolute floor forecloses \
+                 every v1 scope, so its batch-13 disposition is void"
+            ),
+        }
+
+        // (2) A member whose class moved may not keep the placeholder meaning "no audit done".
+        assert!(
+            !row.reason.contains("conservative-module-default"),
+            "`{command}` changed class but carries the module-default reason; every batch-13 \
+             reclassification must record the audit that bought it"
+        );
+
+        match disposition {
+            Read => {
+                assert_eq!(row.class, RiskClass::Read, "`{command}` must be Read");
+                assert!(
+                    row.capabilities.is_empty(),
+                    "`{command}` is a Read row and must carry no capability"
+                );
+                assert!(
+                    find_spec(command).is_some(),
+                    "`{command}` audited clean and must be registered"
+                );
+            }
+            Agent | AgentContent | AgentFutureAuthority => {
+                assert_eq!(
+                    row.class,
+                    RiskClass::AgentControl,
+                    "`{command}` writes; a silent detector never licenses dropping it to Read"
+                );
+                assert!(
+                    !row.capabilities
+                        .contains(&Capability::SeedsSpawnTriggeringState),
+                    "`{command}` is pinned as a non-arming write; if it now seeds a scanned \
+                     surface it must declare its membership rather than inherit this row"
+                );
+                if *disposition == AgentContent {
+                    assert!(
+                        row.capabilities
+                            .contains(&Capability::MutatesAgentConsumedContent),
+                        "`{command}` writes content agents subsequently read and must say so"
+                    );
+                }
+                if *disposition == AgentFutureAuthority {
+                    // The capability is deliberately NOT claimed: `class_permits` admits it only
+                    // under `Elevated`, so claiming it would defer the command rather than
+                    // describe it.
+                    assert!(
+                        !row.capabilities
+                            .contains(&Capability::ConfiguresFutureProcessAuthority),
+                        "`{command}` claims ConfiguresFutureProcessAuthority at AgentControl, \
+                         which class_permits rejects; the finding is carried by a declaration"
+                    );
+                    assert!(
+                        DECLARED_MEMBERSHIPS
+                            .iter()
+                            .any(|(name, _)| name == command),
+                        "`{command}` changes what a LATER agent process may do; the census B6 \
+                         plan requires that finding be recorded, and the registerable way to \
+                         record it is a DECLARED_MEMBERSHIPS row"
+                    );
+                }
+                let spec = find_spec(command)
+                    .unwrap_or_else(|| panic!("`{command}` audited clean and must be registered"));
+                assert_eq!(spec.class, RiskClass::AgentControl);
+            }
+            FloorDetected | FloorHandTraced => {
+                assert_eq!(
+                    row.class,
+                    RiskClass::Elevated,
+                    "`{command}` reaches a launch; Elevated is the only class permitting \
+                     SpawnsProcess"
+                );
+                assert_eq!(row.capabilities, &[Capability::SpawnsProcess]);
+                assert!(
+                    row.reason.starts_with("detector-c"),
+                    "`{command}` must state the finding that justifies the class"
+                );
+                assert!(
+                    find_spec(command).is_none(),
+                    "`{command}` is host-denied and must not be registered"
+                );
+                assert_eq!(
+                    ralphx_remote_protocol::v1_resolution_with_audit(
+                        row.class,
+                        row.capabilities,
+                        audit_refusal_for(command).is_some(),
+                    ),
+                    ralphx_remote_protocol::V1Resolution::HostDeniedSpawnsProcess,
+                );
+            }
+            DeferredHost => {
+                assert_eq!(
+                    row.class,
+                    RiskClass::Elevated,
+                    "`{command}` is refused on host authority, and Elevated is the class every \
+                     other HostManagement row in this ledger sits at"
+                );
+                assert_eq!(row.capabilities, &[Capability::HostManagement]);
+                assert!(
+                    find_spec(command).is_none(),
+                    "`{command}` is not registered; only its read half is"
+                );
+                // Deferred, NOT denied: no process is spawned, so a later scope may grant it.
+                assert_eq!(
+                    ralphx_remote_protocol::v1_resolution_with_audit(
+                        row.class,
+                        row.capabilities,
+                        audit_refusal_for(command).is_some(),
+                    ),
+                    ralphx_remote_protocol::V1Resolution::V1Deferred,
+                );
+            }
+        }
+    }
+}
+
+/// PR 3.1-b batch 13 — three detector attribution errors, measured rather than inherited.
+///
+/// Batch 12 pinned ONE limit: a bare-name CALLEE collision inflating `save_metrics_config`. This
+/// batch measured three more, and unlike batch 12's they are not all cosmetic — the first is a
+/// detector-(c) FALSE NEGATIVE, the only kind of detector error that can put a process-spawning
+/// command inside the facade.
+#[test]
+fn batch13_detector_gap_is_measured_not_inherited() {
+    let graph = CallGraph::build(&load_production_sources());
+
+    // ---------------------------------------------------------------------------------------
+    // (1) The detector-(c) false negative, and BOTH mechanisms that cause it.
+    // ---------------------------------------------------------------------------------------
+    let repair = graph.closure(["retry_legacy_mcp_registration_repair".to_string()]);
+    assert!(
+        !tokens_reach_any(&repair.tokens, PROCESS_LAUNCH_SINKS),
+        "detector (c) now SEES `retry_legacy_mcp_registration_repair`. Its ledger row and the \
+         batch-13 table both document a gap that would no longer exist; re-derive both rather \
+         than deleting this assertion"
+    );
+
+    // Mechanism A: `spawn_blocking(bare_fn_path)` creates no call edge. The resolver is named in
+    // `resolve_claude_cleanup_cli`'s body but never appears among its callees.
+    let cleanup_callees = graph.callees_of("resolve_claude_cleanup_cli");
+    assert!(
+        !cleanup_callees
+            .iter()
+            .any(|callee| callee.ends_with("find_claude_cli")),
+        "`resolve_claude_cleanup_cli` now has an edge to `find_claude_cli`; mechanism A is closed \
+         and the floor must be re-measured for every member, not just this one"
+    );
+    // ...and the resolver really does reach a launch when taken as a ROOT, which is what makes
+    // the missing edge a false negative rather than a correct silence.
+    assert!(
+        tokens_reach_any(
+            &graph.closure(["find_claude_cli".to_string()]).tokens,
+            PROCESS_LAUNCH_SINKS
+        ),
+        "`find_claude_cli` no longer reaches a launch sink as a root; without that this whole \
+         finding is vacuous"
+    );
+
+    // The control that proves mechanism A is about the CALL SHAPE and not about these two
+    // functions: the sibling wraps its resolver in a closure that CALLS it, and gets the edge.
+    let codex_callees = graph.callees_of("resolve_codex_catalog_cli_path");
+    assert!(
+        codex_callees
+            .iter()
+            .any(|callee| callee.ends_with("resolve_codex_cli")),
+        "`resolve_codex_catalog_cli_path` lost its edge to `resolve_codex_cli`; that edge is the \
+         positive control for mechanism A and the reason `get_mcp_catalog` is correctly refused"
+    );
+    assert!(
+        tokens_reach_any(
+            &graph.closure(["get_mcp_catalog".to_string()]).tokens,
+            PROCESS_LAUNCH_SINKS
+        ),
+        "`get_mcp_catalog` must stay detector-visible; it is the contrast that makes the gap in \
+         its module sibling legible"
+    );
+
+    // Mechanism B: the spawn owner takes an ALREADY-RESOLVED path, so it names no resolver for a
+    // token-based sink model to match, and is silent even as a root.
+    assert!(
+        !tokens_reach_any(
+            &graph
+                .closure(["remove_reserved_user_registration".to_string()])
+                .tokens,
+            PROCESS_LAUNCH_SINKS
+        ),
+        "`remove_reserved_user_registration` is now detector-visible; mechanism B is closed"
+    );
+
+    // ---------------------------------------------------------------------------------------
+    // (2) The gap's blast radius: no REGISTERED command may reach a gap owner.
+    //
+    // This is the assertion that matters operationally. The gap is tolerable only while every
+    // command that reaches it is refused on some other ground; the moment a registered command
+    // reaches one, the facade is exposing a spawn.
+    // ---------------------------------------------------------------------------------------
+    const GAP_OWNERS: &[&str] = &[
+        "resolve_claude_cleanup_cli",
+        "resolve_user_managed_codex_cli",
+        "remove_reserved_user_registration",
+        "remove_reserved_user_registration_with_timeout",
+        "reconcile_reserved_claude_registration",
+        "reconcile_reserved_claude_registration_best_effort",
+    ];
+    let mut exposed = Vec::new();
+    for (command, _module) in census() {
+        if find_spec(&command).is_none() {
+            continue;
+        }
+        let closure = graph.closure([command.clone()]);
+        if GAP_OWNERS.iter().any(|owner| {
+            closure
+                .visited
+                .iter()
+                .any(|node| node.ends_with(&format!("::{owner}")) || node.ends_with(owner))
+        }) {
+            exposed.push(command);
+        }
+    }
+    assert!(
+        exposed.is_empty(),
+        "these REGISTERED commands reach a launch detector (c) cannot see: {exposed:?}. The \
+         facade is exposing a process spawn; refuse them at the floor on the hand trace before \
+         anything else"
+    );
+
+    // ---------------------------------------------------------------------------------------
+    // (3) Detector (a)'s persona verdicts are batch 12's callee collision, not arming.
+    // ---------------------------------------------------------------------------------------
+    let draft = graph.closure(["create_persona_draft".to_string()]);
+    assert!(
+        draft.visited.len() > 500,
+        "`create_persona_draft` is a bounded persona write measured at 1252 closure nodes through \
+         a bare-name collision. A sharp drop means callee resolution changed, which moves the \
+         detector-(c) floor for every previously dispositioned batch"
+    );
+    assert!(
+        draft
+            .visited
+            .iter()
+            .any(|node| node.contains("agent_workflow_runner")),
+        "the workflow-runner nodes that make detector (a) fire on a persona write are gone; \
+         re-audit the row instead of keeping the annotation"
+    );
+    assert!(
+        !tokens_reach_any(&draft.tokens, PROCESS_LAUNCH_SINKS),
+        "`create_persona_draft` now reaches a launch sink; it is registered and that forecloses it"
+    );
+    // The local contrast: the same-shaped sibling never touches the colliding name.
+    let unarchive = graph.closure(["unarchive_persona".to_string()]);
+    assert!(
+        unarchive.visited.len() < 400,
+        "`unarchive_persona` was measured at 120 nodes and is the control proving the sibling \
+         inflation is a collision rather than a real persona-write dependency"
+    );
+
+    // ---------------------------------------------------------------------------------------
+    // (4) Detector (b)'s notification verdict is a MARKER collision — a third mechanism.
+    // ---------------------------------------------------------------------------------------
+    let settings_tokens = graph
+        .closure(["update_notification_settings".to_string()])
+        .tokens;
+    let matched = SPAWN_TRIGGERING_STATE_SURFACE
+        .iter()
+        .filter(|entry| entry.flags("update_notification_settings", &settings_tokens))
+        .map(|entry| entry.id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        matched,
+        vec!["workspace-auto-review"],
+        "`update_notification_settings` is flagged by a different surface than the one measured. \
+         The recorded cause is a bare-name collision on the repository method `update_settings`; \
+         if the matching entry changed, the ledger reason is stale"
+    );
+    assert!(
+        settings_tokens.contains("update_settings"),
+        "the colliding token `update_settings` is gone from the closure, so the recorded reason \
+         for detector (b) firing no longer holds"
+    );
+    // The honesty condition: it is flagged, and it still must not claim the evidence capability,
+    // because the flag is a collision rather than a spawn-triggering write.
+    let row = policy_for("update_notification_settings", "notification_commands").expect("ledgered");
+    assert!(
+        !row.capabilities
+            .contains(&Capability::SeedsSpawnTriggeringState),
+        "`update_notification_settings` claims SeedsSpawnTriggeringState. Detector (b) does flag \
+         it, so `seeds_spawn_triggering_state_tags_track_detector_b_evidence` would PASS — but \
+         the flag is a marker collision and the tag would be false"
     );
 }

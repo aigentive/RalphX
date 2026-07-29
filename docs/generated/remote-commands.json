@@ -2107,6 +2107,26 @@
       "reason": "arms-agent-spawn-harness"
     },
     {
+      "command": "update_mcp_server_override",
+      "reason": "configures-future-agent-tool-authority"
+    },
+    {
+      "command": "clear_mcp_server_override",
+      "reason": "configures-future-agent-tool-authority"
+    },
+    {
+      "command": "update_mcp_tool_override",
+      "reason": "configures-future-agent-tool-authority"
+    },
+    {
+      "command": "clear_mcp_tool_override",
+      "reason": "configures-future-agent-tool-authority"
+    },
+    {
+      "command": "update_ui_feature_flags",
+      "reason": "configures-future-agent-capability-gates"
+    },
+    {
       "command": "restart_automation",
       "reason": "arms-automation-scheduler"
     },
@@ -3717,6 +3737,478 @@
       "pins": [],
       "scopeConfined": false,
       "target": "crate::commands::automation_commands::skip_automation_judge"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_artifacts",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::artifact_commands::get_artifacts"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_artifact",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::artifact_commands::get_artifact"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_artifact_at_version",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::artifact_commands::get_artifact_at_version"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_artifacts_by_bucket",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::artifact_commands::get_artifacts_by_bucket"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_artifacts_by_task",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::artifact_commands::get_artifacts_by_task"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_artifact_version_history",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::artifact_commands::get_artifact_version_history"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_buckets",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::artifact_commands::get_buckets"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_system_buckets",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::artifact_commands::get_system_buckets"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_artifact_relations",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::artifact_commands::get_artifact_relations"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_task_context",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::task_context_commands::get_task_context"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_artifact_full",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::task_context_commands::get_artifact_full"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_artifact_version",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::task_context_commands::get_artifact_version"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_related_artifacts",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::task_context_commands::get_related_artifacts"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "search_artifacts",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::task_context_commands::search_artifacts"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_notification_settings",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::notification_commands::get_notification_settings"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_unread_notification_count",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::notification_commands::get_unread_notification_count"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "list_attention_items",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::notification_commands::list_attention_items"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "list_notifications",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::notification_commands::list_notifications"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_current_release_notes",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::release_notes_commands::get_current_release_notes"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_release_notes_for_version",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::release_notes_commands::get_release_notes_for_version"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_last_seen_release_notes_version",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::release_notes_commands::get_last_seen_release_notes_version"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "list_release_notes_versions",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::release_notes_commands::list_release_notes_versions"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "list_personas",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::persona_commands::list_personas"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_persona",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::persona_commands::get_persona"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "list_persona_usage",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::persona_commands::list_persona_usage"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "preview_persona_overlay",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::persona_commands::preview_persona_overlay"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_ui_feature_flags",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ui_commands::get_ui_feature_flags"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_update_channel",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::update_channel_commands::get_update_channel"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "mutatesAgentConsumedContent"
+      ],
+      "class": "agentControl",
+      "command": "archive_artifact",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::artifact_commands::archive_artifact"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "create_bucket",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::artifact_commands::create_bucket"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "mark_notification_read",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::notification_commands::mark_notification_read"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "mark_all_notifications_read",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::notification_commands::mark_all_notifications_read"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "set_dock_badge_count",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::notification_commands::set_dock_badge_count"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "update_notification_settings",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::notification_commands::update_notification_settings"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "mark_release_notes_seen",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::release_notes_commands::mark_release_notes_seen"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "mutatesAgentConsumedContent"
+      ],
+      "class": "agentControl",
+      "command": "create_persona_draft",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::persona_commands::create_persona_draft"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "mutatesAgentConsumedContent"
+      ],
+      "class": "agentControl",
+      "command": "update_persona_draft",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::persona_commands::update_persona_draft"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "mutatesAgentConsumedContent"
+      ],
+      "class": "agentControl",
+      "command": "update_persona",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::persona_commands::update_persona"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "mutatesAgentConsumedContent"
+      ],
+      "class": "agentControl",
+      "command": "approve_persona",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::persona_commands::approve_persona"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "mutatesAgentConsumedContent"
+      ],
+      "class": "agentControl",
+      "command": "approve_persona_as_new",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::persona_commands::approve_persona_as_new"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "mutatesAgentConsumedContent"
+      ],
+      "class": "agentControl",
+      "command": "reseed_persona_draft",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::persona_commands::reseed_persona_draft"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "mutatesAgentConsumedContent"
+      ],
+      "class": "agentControl",
+      "command": "archive_persona",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::persona_commands::archive_persona"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "mutatesAgentConsumedContent"
+      ],
+      "class": "agentControl",
+      "command": "unarchive_persona",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::persona_commands::unarchive_persona"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "update_mcp_server_override",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::mcp_policy_commands::update_mcp_server_override"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "clear_mcp_server_override",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::mcp_policy_commands::clear_mcp_server_override"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "update_mcp_tool_override",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::mcp_policy_commands::update_mcp_tool_override"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "clear_mcp_tool_override",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::mcp_policy_commands::clear_mcp_tool_override"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "update_ui_feature_flags",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::ui_commands::update_ui_feature_flags"
     }
   ],
   "ledger": [
@@ -3796,14 +4288,12 @@
       "v1Resolution": "v1-deferred"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "list_attention_items",
       "module": "notification_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: AttentionService::list_attention_items, documented and confirmed fail-closed — an unloadable authoritative source errors rather than shipping a partial list as complete",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -3813,19 +4303,17 @@
       "class": "agentControl",
       "command": "set_dock_badge_count",
       "module": "notification_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: mirrors a frontend-owned count onto the macOS Dock tile through run_on_main_thread, whose error propagates. Persists nothing and reads no domain state; classified AgentControl because it is a host-visible side effect, and NOT HostManagement — every HOST row in this ledger sits at a class v1 does not grant, and a cosmetic badge is not that authority",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_notification_settings",
       "module": "notification_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: one notification_settings_repo.get_settings, error mapped",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -3835,19 +4323,17 @@
       "class": "agentControl",
       "command": "update_notification_settings",
       "module": "notification_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: applies only the Some(..) fields to NotificationSettings and writes one update_settings; both repository calls propagate. Detector (b) FIRES on it and the row deliberately does NOT claim SeedsSpawnTriggeringState: the flag is a MARKER collision, measured as entry=workspace-auto-review with write_markers_matched=[\"update_settings\"] and armed_matched=[\"require_workspace_review\"]. The notification settings repository method merely SHARES a bare name with the workspace-review write marker. Claiming the tag would have PASSED seeds_spawn_triggering_state_tags_track_detector_b_evidence, which only enforces tag -> evidence, while being false",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "list_notifications",
       "module": "notification_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: one cursor-paginated notification_repo.list; the `limit.unwrap_or(50)` defaults an absent ARGUMENT, never a swallowed Err",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -3857,8 +4343,8 @@
       "class": "agentControl",
       "command": "mark_notification_read",
       "module": "notification_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: notification_service().mark_read, error propagated with `?`",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -3868,19 +4354,17 @@
       "class": "agentControl",
       "command": "mark_all_notifications_read",
       "module": "notification_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: notification_service().mark_all_read over an optional project scope, error propagated with `?`",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_unread_notification_count",
       "module": "notification_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: one notification_repo.unread_count, error mapped",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -4201,25 +4685,21 @@
       "v1Resolution": "v1-deferred"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_current_release_notes",
       "module": "release_notes_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: reads the packaged version and resolves the notes file through sanitize_release_notes_version, which rejects `..`, separators and non-ASCII. An unreadable candidate yields source: Missing — an EXPLICIT tri-state the caller can see, not a fabricated body",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_last_seen_release_notes_version",
       "module": "release_notes_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: one app_state_repo.get projecting a single field, error mapped",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -4229,30 +4709,26 @@
       "class": "agentControl",
       "command": "mark_release_notes_seen",
       "module": "release_notes_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: sanitizes the version through the same containment check the read half uses, then one app_state_repo.set_last_seen_release_notes_version",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "list_release_notes_versions",
       "module": "release_notes_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: FIXED THEN REGISTERED. The reader was `std::fs::read_dir(path).ok()`, so a permissions or I/O failure produced an empty version list indistinguishable from a genuine empty directory. collect_versions_from_dirs now returns io::Result: an ABSENT root is still skipped (one of the two candidates is always absent by construction) while any other error propagates",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_release_notes_for_version",
       "module": "release_notes_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: same path as get_current_release_notes with a caller-supplied version, through the same containment check",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -4604,135 +5080,127 @@
       "v1Resolution": "host-denied"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "list_personas",
       "module": "persona_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: PersonaService::list_personas behind the feature flag, error mapped. 29 closure nodes",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_persona",
       "module": "persona_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: PersonaService::get_persona, error mapped",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
       "capabilities": [
-        "agentControl"
+        "mutatesAgentConsumedContent"
       ],
       "class": "agentControl",
       "command": "create_persona_draft",
       "module": "persona_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: composes persona content (content, or description+body, else ERROR) and writes a draft through PersonaService::create_draft with map_err(to_string)?; the follow-up emit_draft_updated runs after the write. Persona bodies are injected into agent prompts, hence MutatesAgentConsumedContent",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
       "capabilities": [
-        "agentControl"
+        "mutatesAgentConsumedContent"
       ],
       "class": "agentControl",
       "command": "update_persona_draft",
       "module": "persona_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: PersonaService::update_draft carrying an optional expected_content_hash — an OPTIMISTIC-CONCURRENCY check, propagated not swallowed",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
       "capabilities": [
-        "agentControl"
+        "mutatesAgentConsumedContent"
       ],
       "class": "agentControl",
       "command": "update_persona",
       "module": "persona_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: re-reads the existing persona for its slug, recomposes content, then PersonaService::update_persona; every hop map_err(to_string)?",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
       "capabilities": [
-        "agentControl"
+        "mutatesAgentConsumedContent"
       ],
       "class": "agentControl",
       "command": "approve_persona",
       "module": "persona_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: reads the draft's source_persona_id, approves through PersonaService::approve_persona, and emits persona:draft_applied only when the approved id MATCHES the recorded source. Promotes a draft to the content live conversations overlay",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
       "capabilities": [
-        "agentControl"
+        "mutatesAgentConsumedContent"
       ],
       "class": "agentControl",
       "command": "reseed_persona_draft",
       "module": "persona_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: PersonaService::reseed_persona_draft resets a draft to its source, error mapped",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
       "capabilities": [
-        "agentControl"
+        "mutatesAgentConsumedContent"
       ],
       "class": "agentControl",
       "command": "approve_persona_as_new",
       "module": "persona_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: PersonaService::approve_persona_as_new with an optional new slug, error mapped. Forks rather than overwrites; same content authority",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
       "capabilities": [
-        "agentControl"
+        "mutatesAgentConsumedContent"
       ],
       "class": "agentControl",
       "command": "archive_persona",
       "module": "persona_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: PersonaService::archive_persona, error mapped. Withdraws a persona from overlay resolution",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
       "capabilities": [
-        "agentControl"
+        "mutatesAgentConsumedContent"
       ],
       "class": "agentControl",
       "command": "unarchive_persona",
       "module": "persona_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: PersonaService::unarchive_persona, error mapped. The measured CONTRAST that proves the sibling collision is an artifact: identical shape to archive_persona but 120 closure nodes and a=FALSE, exactly the get_metrics_config (23) vs save_metrics_config (1200) asymmetry batch 12 pinned",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "list_persona_usage",
       "module": "persona_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: PersonaService::list_persona_usage, error mapped",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "preview_persona_overlay",
       "module": "persona_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: resolves the overlay a conversation WOULD receive and returns the rendered block on the direct command response only; the empty-id guard errors first and the chat-service error propagates. Renders, persists nothing",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -6953,36 +7421,36 @@
     },
     {
       "capabilities": [
-        "agentControl"
+        "spawnsProcess"
       ],
-      "class": "agentControl",
+      "class": "elevated",
       "command": "get_mcp_catalog",
       "module": "mcp_policy_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-c: build_catalog -> discover_provider_catalog -> resolve_codex_catalog_cli_path -> resolve_codex_cli, and the Codex branch then runs discover_native_mcp_servers_via_app_server against that CLI path. A READ by intent that launches the Codex app-server to answer; the floor is absolute and does not care which",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
-        "agentControl"
+        "spawnsProcess"
       ],
-      "class": "agentControl",
+      "class": "elevated",
       "command": "refresh_mcp_catalog",
       "module": "mcp_policy_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-c: the SAME build_catalog chain as get_mcp_catalog, reached with an explicit provider rather than an optional one",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
-        "agentControl"
+        "spawnsProcess"
       ],
-      "class": "agentControl",
+      "class": "elevated",
       "command": "retry_legacy_mcp_registration_repair",
       "module": "mcp_policy_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-c-MISS, hand-traced: detector (c) reports c=FALSE and is WRONG. This command runs `claude mcp remove ralphx -s user` through tokio::process::Command::new at infrastructure/agents/claude/mcp_registration_repair.rs, via retry_reserved_claude_registration_repair -> reconcile_reserved_claude_registration -> {resolve_claude_cleanup_cli, remove_reserved_user_registration}. Two mechanisms hide it: resolve_claude_cleanup_cli reaches find_claude_cli only by passing it to spawn_blocking as a bare function VALUE, which creates no call edge, and remove_reserved_user_registration spawns an already-resolved path, naming no resolver for the sink model to match. Refused on the SOURCE, not the boolean — the floor is a safety floor, so a hand-traced launch outranks detector silence. Its reason intentionally does not start with `detector-c:`, so batch9_detector_c_refusals_declare_the_capability_they_reach correctly excludes it; batch13_detector_gap_is_measured_not_inherited pins it instead",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -6991,8 +7459,8 @@
       "class": "agentControl",
       "command": "update_mcp_server_override",
       "module": "mcp_policy_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: three fail-closed guards run BEFORE the write — ensure_project_scope_exists, ensure_mutation_ready (provider eligibility) and mutable_key (which rejects reserved server ids) — then one McpPolicyService::set_server_state. Registered on the update_agent_lane_settings precedent: choosing the harness a future agent spawns with is already at ui:agent, and an MCP server override is strictly less authority than that. Declared configures-future-agent-tool-authority. The census B6 plan asks for ConfiguresFutureProcessAuthority on exactly this shape, and `class_permits` makes that literal reading UNREPRESENTABLE: the capability is admitted only under Elevated, which v1 grants no scope for, so declaring it would silently convert an audited-clean write into a deferral. This ledger's idiom for deferred authority at a registerable class is AgentControl plus a declaration — exactly what `update_agent_lane_settings` carries for picking the harness a live agent spawns with, which is strictly more authority than an MCP override",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -7002,8 +7470,8 @@
       "class": "agentControl",
       "command": "clear_mcp_server_override",
       "module": "mcp_policy_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: same three guards, then McpPolicyService::clear_server, which returns whether a row was actually removed rather than asserting success. Declared configures-future-agent-tool-authority, as its update half is",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -7013,8 +7481,8 @@
       "class": "agentControl",
       "command": "update_mcp_tool_override",
       "module": "mcp_policy_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: same three guards, then McpPolicyService::set_tool_state for one named tool. Declared configures-future-agent-tool-authority, as its server-scoped sibling is",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -7024,8 +7492,8 @@
       "class": "agentControl",
       "command": "clear_mcp_tool_override",
       "module": "mcp_policy_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: same three guards, then McpPolicyService::clear_tool, reporting whether a row was removed. Declared configures-future-agent-tool-authority",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -7456,36 +7924,30 @@
       "v1Resolution": "host-denied"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_artifacts",
       "module": "artifact_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: a single artifact_repo.get_by_type behind a parsed filter, error via map_err. The `artifact_type: None` branch returns Ok(vec![]) rather than all artifacts — recorded as a product bug, not a fail-open: it is an unimplemented filter path, not a swallowed host error",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_artifact",
       "module": "artifact_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: one artifact_repo.get_by_id; Option is preserved into the response and the repository error propagates through map_err",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_artifact_at_version",
       "module": "artifact_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: one artifact_repo.get_by_id_at_version, Option preserved, error mapped",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -7512,35 +7974,31 @@
     },
     {
       "capabilities": [
-        "agentControl"
+        "mutatesAgentConsumedContent"
       ],
       "class": "agentControl",
       "command": "archive_artifact",
       "module": "artifact_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: artifact_repo.archive sets archived_at and the repository error propagates with `?`; the follow-up app.emit is `.ok()`-discarded but runs AFTER the write is durable and cannot make a failed archive look successful. Carries MutatesAgentConsumedContent for the same reason create_artifact/update_artifact do — hiding an artifact changes what agents subsequently read",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_artifacts_by_bucket",
       "module": "artifact_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: one artifact_repo.get_by_bucket, error mapped",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_artifacts_by_task",
       "module": "artifact_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: one artifact_repo.get_by_task, error mapped",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -7555,25 +8013,21 @@
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_artifact_version_history",
       "module": "artifact_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: one artifact_repo.get_version_history, error mapped",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_buckets",
       "module": "artifact_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: one artifact_bucket_repo.get_all, error mapped",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -7583,19 +8037,17 @@
       "class": "agentControl",
       "command": "create_bucket",
       "module": "artifact_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: builds an ArtifactBucket from validated accepted-types (an unknown type ERRORS) plus writer/reader lists, then one artifact_bucket_repo.create. Creates a CONTAINER, not agent-consumed content, so it does not take MutatesAgentConsumedContent",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_system_buckets",
       "module": "artifact_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: takes NO AppState — a pure function over the compiled-in system bucket table, in the `get_research_presets` shape batch 12 registered",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -7610,14 +8062,12 @@
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_artifact_relations",
       "module": "artifact_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: one artifact_repo.get_relations, error mapped",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -7898,58 +8348,48 @@
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_task_context",
       "module": "task_context_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: TaskContextService::get_task_context over five repositories; the error match discriminates NotFound from other AppError variants and both propagate. No write",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_artifact_full",
       "module": "task_context_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: artifact_repo.get_by_id with the repository error mapped and the absent row turned into an explicit NOT-FOUND message, never an empty success",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_artifact_version",
       "module": "task_context_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: artifact_repo.get_by_id_at_version, same explicit-absence shape",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_related_artifacts",
       "module": "task_context_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: one artifact_repo.get_related, error mapped",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "search_artifacts",
       "module": "task_context_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: fans out get_by_type over the requested types and filters in memory; the type parse propagates with `?`, so an unknown type ERRORS. Its HTTP namesake in http_server/handlers/worker.rs silently skips unparsable types — the Tauri command audited here is the fail-closed half",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -9128,26 +9568,24 @@
       "v1Resolution": "v1-deferred"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_update_channel",
       "module": "update_channel_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: one app_state_repo.get projecting update_channel, error mapped. Its WRITE half `set_update_channel` is deliberately NOT registered — see its row",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
       "capabilities": [
-        "agentControl"
+        "hostManagement"
       ],
-      "class": "agentControl",
+      "class": "elevated",
       "command": "set_update_channel",
       "module": "update_channel_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "batch-13 audit: one app_state_repo.set_update_channel with the error propagated — the BODY is clean, and the refusal is about authority, not hygiene. It selects which release train the desktop app auto-updates onto, which is host management, and every other HOST row in this ledger (remote_device, remote_environment, remote_host, startup) sits at Elevated for the same reason. V1Deferred, NOT denied: a later scope may grant it. Its READ half `get_update_channel` is registered",
       "registered": false,
-      "v1Resolution": "registerable"
+      "v1Resolution": "v1-deferred"
     },
     {
       "capabilities": [
@@ -9347,14 +9785,12 @@
       "v1Resolution": "host-denied"
     },
     {
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_ui_feature_flags",
       "module": "ui_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: projects the OnceLock runtime config plus the agent-capability snapshot. Infallible and write-free",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {
@@ -9364,8 +9800,8 @@
       "class": "agentControl",
       "command": "update_ui_feature_flags",
       "module": "ui_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
+      "reason": "batch-13 audit: persists the agent-personas override and the team/workflows/autopilot capability gates, each repository error propagated, then republishes the snapshot. Declared configures-future-agent-capability-gates: the personas override changes injected prompt content and the capability gates change which agent modes exist. Registerable at AgentControl for the same reason the MCP override rows are — see update_mcp_server_override on why the literal ConfiguresFutureProcessAuthority reading is unrepresentable here. Recorded product bug: the two writes are not atomic — a failed capability write leaves the personas override already applied to both the repository and the process-global",
+      "registered": true,
       "v1Resolution": "registerable"
     },
     {

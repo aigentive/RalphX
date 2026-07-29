@@ -2243,6 +2243,431 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
          Codex spawn. Its plan-judge sibling retry_automation_plan_judge does NOT share it and \
          is registered as an arming write instead",
     ),
+    // ---------------------------------------------------------------------------------------
+    // PR 3.1-b batch 13 — census `B7` (artifact, notification, release-notes, task-context, ui,
+    // update-channel) plus two `B6` modules (persona, MCP policy). 52 members.
+    //
+    // Batch 12 swept B7 and recorded every member detector-SILENT except
+    // `update_notification_settings`. This batch re-measured that sweep rather than inheriting it
+    // and then read every body, because detector silence is exactly the condition under which a
+    // batch is tempted to register without reading — and this block found THREE separate
+    // attribution errors, one of them in the safety direction. See
+    // `batch13_detector_gap_is_measured_not_inherited`.
+    //
+    // The reads first. Each is `Read` on a body audit that found no repository write; none was
+    // bought by a silent detector.
+    // ---------------------------------------------------------------------------------------
+    read_row(
+        "get_artifacts",
+        "batch-13 audit: a single artifact_repo.get_by_type behind a parsed filter, error via \
+         map_err. The `artifact_type: None` branch returns Ok(vec![]) rather than all artifacts — \
+         recorded as a product bug, not a fail-open: it is an unimplemented filter path, not a \
+         swallowed host error",
+    ),
+    read_row(
+        "get_artifact",
+        "batch-13 audit: one artifact_repo.get_by_id; Option is preserved into the response and \
+         the repository error propagates through map_err",
+    ),
+    read_row(
+        "get_artifact_at_version",
+        "batch-13 audit: one artifact_repo.get_by_id_at_version, Option preserved, error mapped",
+    ),
+    read_row(
+        "get_artifacts_by_bucket",
+        "batch-13 audit: one artifact_repo.get_by_bucket, error mapped",
+    ),
+    read_row(
+        "get_artifacts_by_task",
+        "batch-13 audit: one artifact_repo.get_by_task, error mapped",
+    ),
+    read_row(
+        "get_artifact_version_history",
+        "batch-13 audit: one artifact_repo.get_version_history, error mapped",
+    ),
+    read_row(
+        "get_buckets",
+        "batch-13 audit: one artifact_bucket_repo.get_all, error mapped",
+    ),
+    read_row(
+        "get_system_buckets",
+        "batch-13 audit: takes NO AppState — a pure function over the compiled-in system bucket \
+         table, in the `get_research_presets` shape batch 12 registered",
+    ),
+    read_row(
+        "get_artifact_relations",
+        "batch-13 audit: one artifact_repo.get_relations, error mapped",
+    ),
+    read_row(
+        "get_task_context",
+        "batch-13 audit: TaskContextService::get_task_context over five repositories; the error \
+         match discriminates NotFound from other AppError variants and both propagate. No write",
+    ),
+    read_row(
+        "get_artifact_full",
+        "batch-13 audit: artifact_repo.get_by_id with the repository error mapped and the absent \
+         row turned into an explicit NOT-FOUND message, never an empty success",
+    ),
+    read_row(
+        "get_artifact_version",
+        "batch-13 audit: artifact_repo.get_by_id_at_version, same explicit-absence shape",
+    ),
+    read_row(
+        "get_related_artifacts",
+        "batch-13 audit: one artifact_repo.get_related, error mapped",
+    ),
+    read_row(
+        "search_artifacts",
+        "batch-13 audit: fans out get_by_type over the requested types and filters in memory; the \
+         type parse propagates with `?`, so an unknown type ERRORS. Its HTTP namesake in \
+         http_server/handlers/worker.rs silently skips unparsable types — the Tauri command \
+         audited here is the fail-closed half",
+    ),
+    read_row(
+        "get_notification_settings",
+        "batch-13 audit: one notification_settings_repo.get_settings, error mapped",
+    ),
+    read_row(
+        "get_unread_notification_count",
+        "batch-13 audit: one notification_repo.unread_count, error mapped",
+    ),
+    read_row(
+        "list_attention_items",
+        "batch-13 audit: AttentionService::list_attention_items, documented and confirmed \
+         fail-closed — an unloadable authoritative source errors rather than shipping a partial \
+         list as complete",
+    ),
+    read_row(
+        "list_notifications",
+        "batch-13 audit: one cursor-paginated notification_repo.list; the `limit.unwrap_or(50)` \
+         defaults an absent ARGUMENT, never a swallowed Err",
+    ),
+    read_row(
+        "get_current_release_notes",
+        "batch-13 audit: reads the packaged version and resolves the notes file through \
+         sanitize_release_notes_version, which rejects `..`, separators and non-ASCII. An \
+         unreadable candidate yields source: Missing — an EXPLICIT tri-state the caller can see, \
+         not a fabricated body",
+    ),
+    read_row(
+        "get_release_notes_for_version",
+        "batch-13 audit: same path as get_current_release_notes with a caller-supplied version, \
+         through the same containment check",
+    ),
+    read_row(
+        "get_last_seen_release_notes_version",
+        "batch-13 audit: one app_state_repo.get projecting a single field, error mapped",
+    ),
+    read_row(
+        "list_release_notes_versions",
+        "batch-13 audit: FIXED THEN REGISTERED. The reader was `std::fs::read_dir(path).ok()`, so \
+         a permissions or I/O failure produced an empty version list indistinguishable from a \
+         genuine empty directory. collect_versions_from_dirs now returns io::Result: an ABSENT \
+         root is still skipped (one of the two candidates is always absent by construction) while \
+         any other error propagates",
+    ),
+    read_row(
+        "list_personas",
+        "batch-13 audit: PersonaService::list_personas behind the feature flag, error mapped. 29 \
+         closure nodes",
+    ),
+    read_row(
+        "get_persona",
+        "batch-13 audit: PersonaService::get_persona, error mapped",
+    ),
+    read_row(
+        "list_persona_usage",
+        "batch-13 audit: PersonaService::list_persona_usage, error mapped",
+    ),
+    read_row(
+        "preview_persona_overlay",
+        "batch-13 audit: resolves the overlay a conversation WOULD receive and returns the \
+         rendered block on the direct command response only; the empty-id guard errors first and \
+         the chat-service error propagates. Renders, persists nothing",
+    ),
+    read_row(
+        "get_ui_feature_flags",
+        "batch-13 audit: projects the OnceLock runtime config plus the agent-capability snapshot. \
+         Infallible and write-free",
+    ),
+    read_row(
+        "get_update_channel",
+        "batch-13 audit: one app_state_repo.get projecting update_channel, error mapped. Its \
+         WRITE half `set_update_channel` is deliberately NOT registered — see its row",
+    ),
+    //
+    // The writers. Registered at `ui:agent` on a body audit; a silent detector never licensed
+    // dropping one to Read, and a firing detector never by itself bought a refusal.
+    CommandOverride {
+        command: "archive_artifact",
+        policy: policy(
+            RiskClass::AgentControl,
+            MUTATES_CONTENT,
+            "batch-13 audit: artifact_repo.archive sets archived_at and the repository error \
+             propagates with `?`; the follow-up app.emit is `.ok()`-discarded but runs AFTER the \
+             write is durable and cannot make a failed archive look successful. Carries \
+             MutatesAgentConsumedContent for the same reason create_artifact/update_artifact do — \
+             hiding an artifact changes what agents subsequently read",
+        ),
+    },
+    CommandOverride {
+        command: "create_bucket",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-13 audit: builds an ArtifactBucket from validated accepted-types (an unknown \
+             type ERRORS) plus writer/reader lists, then one artifact_bucket_repo.create. Creates \
+             a CONTAINER, not agent-consumed content, so it does not take MutatesAgentConsumedContent",
+        ),
+    },
+    CommandOverride {
+        command: "mark_notification_read",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-13 audit: notification_service().mark_read, error propagated with `?`",
+        ),
+    },
+    CommandOverride {
+        command: "mark_all_notifications_read",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-13 audit: notification_service().mark_all_read over an optional project scope, \
+             error propagated with `?`",
+        ),
+    },
+    CommandOverride {
+        command: "set_dock_badge_count",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-13 audit: mirrors a frontend-owned count onto the macOS Dock tile through \
+             run_on_main_thread, whose error propagates. Persists nothing and reads no domain \
+             state; classified AgentControl because it is a host-visible side effect, and NOT \
+             HostManagement — every HOST row in this ledger sits at a class v1 does not grant, \
+             and a cosmetic badge is not that authority",
+        ),
+    },
+    CommandOverride {
+        command: "update_notification_settings",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-13 audit: applies only the Some(..) fields to NotificationSettings and writes \
+             one update_settings; both repository calls propagate. Detector (b) FIRES on it and \
+             the row deliberately does NOT claim SeedsSpawnTriggeringState: the flag is a MARKER \
+             collision, measured as entry=workspace-auto-review with \
+             write_markers_matched=[\"update_settings\"] and armed_matched=[\"require_workspace_review\"]. \
+             The notification settings repository method merely SHARES a bare name with the \
+             workspace-review write marker. Claiming the tag would have PASSED \
+             seeds_spawn_triggering_state_tags_track_detector_b_evidence, which only enforces \
+             tag -> evidence, while being false",
+        ),
+    },
+    CommandOverride {
+        command: "mark_release_notes_seen",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-13 audit: sanitizes the version through the same containment check the read \
+             half uses, then one app_state_repo.set_last_seen_release_notes_version",
+        ),
+    },
+    //
+    // The eight persona writes. All eight are `AgentControl`; SEVEN of them are reported
+    // `a=true` by detector (a) and that verdict is an ARTIFACT — see
+    // `batch13_detector_gap_is_measured_not_inherited`. The class comes from the bodies, which
+    // are writes, so the collision changed no disposition; it is recorded so the reasons are true.
+    CommandOverride {
+        command: "create_persona_draft",
+        policy: policy(
+            RiskClass::AgentControl,
+            MUTATES_CONTENT,
+            "batch-13 audit: composes persona content (content, or description+body, else ERROR) \
+             and writes a draft through PersonaService::create_draft with map_err(to_string)?; \
+             the follow-up emit_draft_updated runs after the write. Persona bodies are injected \
+             into agent prompts, hence MutatesAgentConsumedContent",
+        ),
+    },
+    CommandOverride {
+        command: "update_persona_draft",
+        policy: policy(
+            RiskClass::AgentControl,
+            MUTATES_CONTENT,
+            "batch-13 audit: PersonaService::update_draft carrying an optional \
+             expected_content_hash — an OPTIMISTIC-CONCURRENCY check, propagated not swallowed",
+        ),
+    },
+    CommandOverride {
+        command: "update_persona",
+        policy: policy(
+            RiskClass::AgentControl,
+            MUTATES_CONTENT,
+            "batch-13 audit: re-reads the existing persona for its slug, recomposes content, then \
+             PersonaService::update_persona; every hop map_err(to_string)?",
+        ),
+    },
+    CommandOverride {
+        command: "approve_persona",
+        policy: policy(
+            RiskClass::AgentControl,
+            MUTATES_CONTENT,
+            "batch-13 audit: reads the draft's source_persona_id, approves through \
+             PersonaService::approve_persona, and emits persona:draft_applied only when the \
+             approved id MATCHES the recorded source. Promotes a draft to the content live \
+             conversations overlay",
+        ),
+    },
+    CommandOverride {
+        command: "approve_persona_as_new",
+        policy: policy(
+            RiskClass::AgentControl,
+            MUTATES_CONTENT,
+            "batch-13 audit: PersonaService::approve_persona_as_new with an optional new slug, \
+             error mapped. Forks rather than overwrites; same content authority",
+        ),
+    },
+    CommandOverride {
+        command: "reseed_persona_draft",
+        policy: policy(
+            RiskClass::AgentControl,
+            MUTATES_CONTENT,
+            "batch-13 audit: PersonaService::reseed_persona_draft resets a draft to its source, \
+             error mapped",
+        ),
+    },
+    CommandOverride {
+        command: "archive_persona",
+        policy: policy(
+            RiskClass::AgentControl,
+            MUTATES_CONTENT,
+            "batch-13 audit: PersonaService::archive_persona, error mapped. Withdraws a persona \
+             from overlay resolution",
+        ),
+    },
+    CommandOverride {
+        command: "unarchive_persona",
+        policy: policy(
+            RiskClass::AgentControl,
+            MUTATES_CONTENT,
+            "batch-13 audit: PersonaService::unarchive_persona, error mapped. The measured \
+             CONTRAST that proves the sibling collision is an artifact: identical shape to \
+             archive_persona but 120 closure nodes and a=FALSE, exactly the get_metrics_config \
+             (23) vs save_metrics_config (1200) asymmetry batch 12 pinned",
+        ),
+    },
+    //
+    // MCP policy. Four bounded override writes registered; three members refused below.
+    CommandOverride {
+        command: "update_mcp_server_override",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-13 audit: three fail-closed guards run BEFORE the write — \
+             ensure_project_scope_exists, ensure_mutation_ready (provider eligibility) and \
+             mutable_key (which rejects reserved server ids) — then one \
+             McpPolicyService::set_server_state. Registered on the update_agent_lane_settings \
+             precedent: choosing the harness a future agent spawns with is already at ui:agent, \
+             and an MCP server override is strictly less authority than that. Declared \
+             configures-future-agent-tool-authority. The census B6 plan asks for \
+             ConfiguresFutureProcessAuthority on exactly this shape, and `class_permits` makes \
+             that literal reading UNREPRESENTABLE: the capability is admitted only under \
+             Elevated, which v1 grants no scope for, so declaring it would silently convert an \
+             audited-clean write into a deferral. This ledger's idiom for deferred authority at a \
+             registerable class is AgentControl plus a declaration — exactly what \
+             `update_agent_lane_settings` carries for picking the harness a live agent spawns \
+             with, which is strictly more authority than an MCP override",
+        ),
+    },
+    CommandOverride {
+        command: "clear_mcp_server_override",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-13 audit: same three guards, then McpPolicyService::clear_server, which \
+             returns whether a row was actually removed rather than asserting success. Declared \
+             configures-future-agent-tool-authority, as its update half is",
+        ),
+    },
+    CommandOverride {
+        command: "update_mcp_tool_override",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-13 audit: same three guards, then McpPolicyService::set_tool_state for one \
+             named tool. Declared configures-future-agent-tool-authority, as its server-scoped \
+             sibling is",
+        ),
+    },
+    CommandOverride {
+        command: "clear_mcp_tool_override",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-13 audit: same three guards, then McpPolicyService::clear_tool, reporting \
+             whether a row was removed. Declared configures-future-agent-tool-authority",
+        ),
+    },
+    CommandOverride {
+        command: "update_ui_feature_flags",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "batch-13 audit: persists the agent-personas override and the team/workflows/autopilot \
+             capability gates, each repository error propagated, then republishes the snapshot. \
+             Declared configures-future-agent-capability-gates: the \
+             personas override changes injected prompt content and the capability gates change \
+             which agent modes exist. Registerable at AgentControl for the same reason the MCP \
+             override rows are — see update_mcp_server_override on why the literal \
+             ConfiguresFutureProcessAuthority reading is unrepresentable here. Recorded product bug: the \
+             two writes are not atomic — a failed capability write leaves the personas override \
+             already applied to both the repository and the process-global",
+        ),
+    },
+    //
+    // The batch-13 floor. THREE members, and the third is the first hand-traced launch in this
+    // series that detector (c) does NOT see.
+    process_refusal(
+        "get_mcp_catalog",
+        "detector-c: build_catalog -> discover_provider_catalog -> resolve_codex_catalog_cli_path \
+         -> resolve_codex_cli, and the Codex branch then runs \
+         discover_native_mcp_servers_via_app_server against that CLI path. A READ by intent that \
+         launches the Codex app-server to answer; the floor is absolute and does not care which",
+    ),
+    process_refusal(
+        "refresh_mcp_catalog",
+        "detector-c: the SAME build_catalog chain as get_mcp_catalog, reached with an explicit \
+         provider rather than an optional one",
+    ),
+    process_refusal(
+        "retry_legacy_mcp_registration_repair",
+        "detector-c-MISS, hand-traced: detector (c) reports c=FALSE and is WRONG. This command \
+         runs `claude mcp remove ralphx -s user` through tokio::process::Command::new at \
+         infrastructure/agents/claude/mcp_registration_repair.rs, via \
+         retry_reserved_claude_registration_repair -> reconcile_reserved_claude_registration -> \
+         {resolve_claude_cleanup_cli, remove_reserved_user_registration}. Two mechanisms hide it: \
+         resolve_claude_cleanup_cli reaches find_claude_cli only by passing it to spawn_blocking \
+         as a bare function VALUE, which creates no call edge, and remove_reserved_user_registration \
+         spawns an already-resolved path, naming no resolver for the sink model to match. Refused \
+         on the SOURCE, not the boolean — the floor is a safety floor, so a hand-traced launch \
+         outranks detector silence. Its reason intentionally does not start with `detector-c:`, so \
+         batch9_detector_c_refusals_declare_the_capability_they_reach correctly excludes it; \
+         batch13_detector_gap_is_measured_not_inherited pins it instead",
+    ),
+    CommandOverride {
+        command: "set_update_channel",
+        policy: policy(
+            RiskClass::Elevated,
+            HOST,
+            "batch-13 audit: one app_state_repo.set_update_channel with the error propagated — \
+             the BODY is clean, and the refusal is about authority, not hygiene. It selects which \
+             release train the desktop app auto-updates onto, which is host management, and every \
+             other HOST row in this ledger (remote_device, remote_environment, remote_host, \
+             startup) sits at Elevated for the same reason. V1Deferred, NOT denied: a later scope \
+             may grant it. Its READ half `get_update_channel` is registered",
+        ),
+    },
 ];
 
 /// PR 3.1-b batch 9 ITEM 0 — a detector-(c) refusal, declared at the capability it reaches.
@@ -2251,6 +2676,14 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
 /// `ui:elevated`, so this pair is exactly `V1Resolution::HostDeniedSpawnsProcess`. It is an
 /// authority-INCREASING correction in every case: all fourteen sat at the `AgentControl` module
 /// default, which understated them.
+/// A batch-13 `Read` row: registered on a body audit that found no repository write.
+const fn read_row(command: &'static str, reason: &'static str) -> CommandOverride {
+    CommandOverride {
+        command,
+        policy: policy(RiskClass::Read, NONE, reason),
+    }
+}
+
 const fn process_refusal(command: &'static str, reason: &'static str) -> CommandOverride {
     CommandOverride {
         command,
@@ -2758,6 +3191,20 @@ pub const DECLARED_MEMBERSHIPS: &[(&str, &str)] = &[
     //
     // `resume_automation_run` is deliberately NOT here — it does carry the marker, detector (b)
     // fires, and it takes the capability on the detector's own evidence.
+    // PR 3.1-b batch 13 — five deferred-authority writes registered at `ui:agent`.
+    //
+    // The census B6 plan asks every member "does this write change what a FUTURE agent process
+    // may do?" and answers yes with `ConfiguresFutureProcessAuthority`. That capability is
+    // admitted by `class_permits` ONLY under `Elevated`, which v1 grants no scope for, so taking
+    // the plan literally would convert five audited-clean bounded writes into deferrals by
+    // notation rather than by finding. `update_agent_lane_settings` already settled the idiom:
+    // it picks the harness, model and effort a live agent is launched with — strictly more
+    // deferred authority than any row here — and records that as AgentControl plus a declaration.
+    ("update_mcp_server_override", "configures-future-agent-tool-authority"),
+    ("clear_mcp_server_override", "configures-future-agent-tool-authority"),
+    ("update_mcp_tool_override", "configures-future-agent-tool-authority"),
+    ("clear_mcp_tool_override", "configures-future-agent-tool-authority"),
+    ("update_ui_feature_flags", "configures-future-agent-capability-gates"),
     ("restart_automation", "arms-automation-scheduler"),
     ("retry_automation_plan_judge", "arms-automation-scheduler"),
     ("skip_automation_judge", "arms-automation-scheduler"),
