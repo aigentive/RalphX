@@ -159,14 +159,18 @@ why: "LANDED (PR 3.1-b batch B0). The drift scan used to admit two answers — r
       "task_commands",
       "task_step_commands",
       "execution_commands",
-      "question_commands",
-      "permission_commands",
+      // `question_commands` and `permission_commands` were B1 modules and are now fully
+      // classified — batch 10 resolved `resolve_user_question` as `host-denied-spawns-process`
+      // and `resolve_permission_request` as `seam-resolved-via-remote-twin`. Dropped here
+      // because the plan enumerates REMAINING gap work; the completions are recorded in `work`
+      // below so they do not read as silently abandoned modules.
     ],
     why: "The 1.5-A surface already registered the neighbouring commands (`move_task`, `unblock_task`, `answer_user_question`, the brakes), so the injection table, the `authz:` predicate shape and the P-4 parity rows for these argument shapes are proven on this exact module family. Lowest parity risk, highest reuse — the right batch to shake out the per-batch harness before it meets 41-command modules.",
     work: [
       "Hand-audit each command's downstream authority (detector (a) transitions, detector (b) spawn-triggering state writes, content-surface writes) and assign class + capability set in `capability_ledger.rs`.",
       "P-4 parity rows FIRST (flat args, struct-wrapped, camelCase, `Option`, error path) per C-11.",
       "Confirm the brakes in these modules stay `ui:operate` (A-14) and that no arming transition lands below the `AgentControl` floor.",
+      "DONE (PR 3.1-b batch 10): `question_commands` and `permission_commands` are fully classified and no longer appear in this batch's module list. `resolve_user_question` was corrected in place to `Elevated`/`SpawnsProcess` (`host-denied-spawns-process`) after it was measured reaching `resolve_git_cli_path`, `resolve_node_cli_path` and `find_codex_cli_candidates` while sitting at `AgentControl` — an authority-INCREASING correction that preserved its `steering-question` declared membership. `resolve_permission_request` is `seam-resolved-via-remote-twin`: the facade already registers that exact fn twice, as `approve_permission_request` (AgentControl) and `deny_permission_request` (Operate), with the decision field server-pinned, so registering the raw name would move branch selection to a client-supplied argument.",
     ],
     gate: "P-17 suite green; P-17b generated scope entries exist for every new AgentControl member; C-9 dual-lens review recorded.",
   },
@@ -204,7 +208,10 @@ why: "LANDED (PR 3.1-b batch B0). The drift scan used to admit two answers — r
   {
     id: "B3",
     title: "Review, QA, merge pipeline, validation",
-    modules: ["review_commands", "qa_commands"],
+    // `qa_commands` was a B3 module and is now fully classified — batch 10 registered its
+    // read/retry cluster and resolved `skip_qa` as `v1-audit-refused`. Dropped here because the
+    // plan enumerates REMAINING gap work; the completion is recorded in `work` below.
+    modules: ["review_commands"],
     why: "Approval/review commands write the agent-consumed content surface (`MutatesAgentConsumedContent` already appears on 6 of them), which is exactly the capability whose floor P-17d enforces. Grouping them keeps that audit in one review rather than spread across batches.",
     work: [
       "Confirm every content-surface writer keeps `MutatesAgentConsumedContent` and lands at or above the AgentControl floor.",
@@ -212,23 +219,30 @@ why: "LANDED (PR 3.1-b batch B0). The drift scan used to admit two answers — r
       "DONE (PR 3.1-b batch 7): `merge_pipeline_commands` — all three hydration/projection reads registered at `ui:read`; `validation_commands` — `get_task_validation_summary` resolved as `host-denied-spawns-process`. Neither module appears in this batch's module list any more. Batch 7 also registered the `review_commands`/`qa_commands` read cluster (11 rows) and published `probe_b3_module_batch_audit`; start from its detector output rather than re-deriving.",
       "READ FIRST — batch 7's audit-graph fix changes what a clean probe means. `resolve_dispatch` used to drop every call inside a `commands/` file whose name matched a registered command, which deleted the command→same-named-service delegation edge and made detectors (a)/(b)/(c) vacuously silent for 92 command names. Verdicts taken before that fix are not evidence. `get_task_validation_summary` is the worked example: clean on all three detectors, and shelling out to `git rev-parse HEAD` the whole time.",
       "OPEN — a second scanner-scope gap is recorded but NOT fixed: `load_production_sources` walks `src-tauri/src` only, so entity methods defined in the `ralphx-domain` crate are invisible and every call to one falls into the resolver's all-same-name fallback. That is what makes `reopen_issue` read as a detector-(c) spawner when its body is a repository read plus an update. It is refused rather than registered, and deliberately NOT ledgered `SpawnsProcess`, so it stays in the gap until the crate scope is widened.",
+      "DONE (PR 3.1-b batch 10): `qa_commands` is fully classified and no longer appears in this batch's module list. `retry_qa` and `update_qa_settings` registered at `ui:agent` — the latter with a declared `arms-auto-qa` membership, because it arms through an in-memory `RwLock` that no detector watches — and `skip_qa` is `v1-audit-refused`: it writes every step as `QAStepResult::skipped`, but `QAResults::from_results` then derives `Pending` rather than `Passed`, contradicting the body's own comment. That discrepancy is a live product bug, not only a facade finding.",
     ],
     gate: "P-17d floor diff clean; C-9 review recorded.",
   },
   {
     id: "B4",
+    retiredBy: "B4",
     title: "Ideation, plans, methodology, workflow",
     modules: [
       "ideation_commands",
-      "plan_commands",
-      "agent_plan_commands",
-      "methodology_commands",
-      "workflow_commands",
+      // `plan_commands` was a B4 module and is now fully classified — batch 7 refused
+      // `set_active_plan` (`v1-audit-refused`, a partial write reported as success) and batch 10
+      // registered its sibling writer `clear_active_plan`. `agent_plan_commands`,
+      // `methodology_commands` and `workflow_commands` went the same way in batch 11. Dropped
+      // here because the plan enumerates REMAINING gap work; the completions are recorded in
+      // `work` below so they do not read as silently abandoned modules.
     ],
     why: "The largest single module in the gap (42). It is also where the known detector-(c) rejection `apply_proposals_to_kanban` lives, so the batch must be sized to absorb a mid-batch reclassification without stalling the others.",
     work: [
       "Expect a non-empty detector-(c) rejection subset; record each rejection in the manifest disposition rather than downgrading the class.",
       "`delete_task_proposal` is Denied (deletesEntity) — it stays a manifest disposition inside this batch.",
+      "DONE (PR 3.1-b batch 11): the B4 remainder is dispositioned — 19 reads registered at `ui:read`, 14 writers at `ui:agent`, 7 `v1-audit-refused`, 12 `host-denied-spawns-process`. `agent_plan_commands`, `methodology_commands` and `workflow_commands` are fully classified and no longer appear in this batch's module list.",
+      "READ FIRST — batch 11 hand-traced all twelve detector-(c) hits instead of accepting the probe boolean, and the trace corrected the probe on four of them. Two scanner errors compound: `resolve_manual_role_spawn_settings` is treated as launch-reaching when it terminates in pure DB/YAML, and `resolve_node_cli_path` is confused with the `find_node_cli_path` that `git_cmd` reaches via `ensure_resolved_node_bin_in_path`. Together they invented an identical {git, codex, node} triple on all five `agent_plan_commands`. All twelve still reach a real `Command::new`, so the floor excluded none — but `activate_agent_task_pipeline` and `activate_agent_plan_direct_implementation` reach it ONLY through the stale-publish repair probe, and are recorded as NARROW so a future seam split can be argued against the real path.",
+      "OPEN — the highest-value fail-open fix in the gap is `ideation_harness_availability.rs:344/:360`: `.ok().flatten()` plus an infallible resolver makes a lane-settings DB error indistinguishable from 'no row configured', so a lane configured to an unavailable Codex reports the Claude default as `available: true`. One propagation fix clears BOTH `get_agent_harness_availability` and `get_ideation_harness_availability`.",
     ],
     gate: "P-17 green; C-9 review recorded; rejected members appear as manifest dispositions, never as local-only rows.",
   },
