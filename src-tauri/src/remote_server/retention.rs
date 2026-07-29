@@ -226,6 +226,7 @@ pub(crate) async fn prune_once(stream: &crate::remote_server::sequencer::RemoteS
     };
     match stream.log().prune(request).await {
         Ok(outcome) => {
+            stream.counters().record_prune(outcome.deleted);
             if outcome.deleted > 0 {
                 tracing::info!(
                     deleted = outcome.deleted,

@@ -52,10 +52,7 @@ impl TicketCanonicalBranchRepository for MemoryTicketCanonicalBranchRepository {
             .cloned())
     }
 
-    async fn upsert(
-        &self,
-        mut branch: TicketCanonicalBranch,
-    ) -> AppResult<TicketCanonicalBranch> {
+    async fn upsert(&self, mut branch: TicketCanonicalBranch) -> AppResult<TicketCanonicalBranch> {
         let map_key = key(&branch.project_id, &branch.provider, &branch.issue_key);
         let mut branches = self.branches.write().await;
         if let Some(existing) = branches.get(&map_key) {

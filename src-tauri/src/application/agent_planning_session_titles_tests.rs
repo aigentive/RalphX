@@ -97,12 +97,10 @@ async fn hydration_ignores_non_agent_planning_sessions() {
         .source_context_id(conversation_id.as_str())
         .build();
 
-    let hydrated = hydrate_agent_conversation_planning_session_titles(
-        &state,
-        vec![non_planning, non_agent],
-    )
-    .await
-    .expect("planning session hydration succeeds");
+    let hydrated =
+        hydrate_agent_conversation_planning_session_titles(&state, vec![non_planning, non_agent])
+            .await
+            .expect("planning session hydration succeeds");
 
     assert_eq!(hydrated.len(), 2);
     assert!(hydrated.iter().all(|session| session.title.is_none()));
@@ -214,13 +212,10 @@ async fn sync_skips_blank_titles_missing_workspaces_and_unlinked_workspaces() {
         .await
         .expect("conversation persisted");
 
-    let blank_title_result = sync_linked_planning_session_title_from_conversation(
-        &state,
-        &conversation_id,
-        "   ",
-    )
-    .await
-    .expect("blank title sync succeeds");
+    let blank_title_result =
+        sync_linked_planning_session_title_from_conversation(&state, &conversation_id, "   ")
+            .await
+            .expect("blank title sync succeeds");
     assert!(blank_title_result.is_none());
 
     let missing_workspace_result = sync_linked_planning_session_title_from_conversation(

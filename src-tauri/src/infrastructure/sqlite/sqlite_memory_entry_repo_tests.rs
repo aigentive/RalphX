@@ -115,7 +115,10 @@ async fn test_create_preserves_all_optional_fields() {
     assert_eq!(loaded.source_rule_file, Some("rules/api.md".to_string()));
     assert!((loaded.quality_score.unwrap() - 0.95).abs() < 1e-9);
     assert_eq!(loaded.scope_paths, vec!["src/api/**", "tests/**"]);
-    assert!(matches!(loaded.bucket, MemoryBucket::ImplementationDiscoveries));
+    assert!(matches!(
+        loaded.bucket,
+        MemoryBucket::ImplementationDiscoveries
+    ));
 }
 
 // --- get_by_id ---
@@ -194,7 +197,9 @@ async fn test_find_by_content_hash_inactive_not_returned() {
 
     let entry = make_entry("entry-obsolete", "proj-1");
     repo.create(entry.clone()).await.unwrap();
-    repo.update_status(&entry.id, MemoryStatus::Obsolete).await.unwrap();
+    repo.update_status(&entry.id, MemoryStatus::Obsolete)
+        .await
+        .unwrap();
 
     let result = repo
         .find_by_content_hash(
@@ -230,7 +235,9 @@ async fn test_get_by_project_returns_matching_entries() {
 
     repo.create(make_entry("entry-a", "proj-a")).await.unwrap();
     repo.create(make_entry("entry-b", "proj-a")).await.unwrap();
-    repo.create(make_entry("entry-other", "proj-b")).await.unwrap();
+    repo.create(make_entry("entry-other", "proj-b"))
+        .await
+        .unwrap();
 
     let result = repo
         .get_by_project(&ProjectId::from_string("proj-a".to_string()))
@@ -377,7 +384,10 @@ async fn test_get_by_rule_file_returns_matching() {
         .unwrap();
 
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].source_rule_file, Some("rules/arch.md".to_string()));
+    assert_eq!(
+        results[0].source_rule_file,
+        Some("rules/arch.md".to_string())
+    );
 }
 
 // --- get_by_content_hash (global) ---
@@ -431,7 +441,9 @@ async fn test_update_status_not_found_returns_error() {
     let repo = SqliteMemoryEntryRepository::from_shared(db.shared_conn());
 
     let missing_id = MemoryEntryId::from("ghost-id".to_string());
-    let result = repo.update_status(&missing_id, MemoryStatus::Archived).await;
+    let result = repo
+        .update_status(&missing_id, MemoryStatus::Archived)
+        .await;
 
     assert!(result.is_err());
     let err = result.unwrap_err();
@@ -607,10 +619,7 @@ async fn test_get_by_paths_empty_paths_returns_empty() {
     repo.create(entry).await.unwrap();
 
     let results = repo
-        .get_by_paths(
-            &ProjectId::from_string("proj-1".to_string()),
-            &[],
-        )
+        .get_by_paths(&ProjectId::from_string("proj-1".to_string()), &[])
         .await
         .unwrap();
 

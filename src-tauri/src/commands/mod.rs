@@ -77,19 +77,19 @@ pub mod question_commands;
 #[cfg(test)]
 mod question_commands_tests;
 pub mod registry;
+pub mod release_notes_commands;
 pub mod remote_chat_commands;
-pub mod remote_transcript_commands;
 #[cfg(test)]
 mod remote_chat_commands_tests;
-pub mod release_notes_commands;
-pub mod repository_settings_commands;
-#[cfg(test)]
-mod repository_settings_commands_tests;
 pub mod remote_device_commands;
 pub mod remote_environment_commands;
 pub mod remote_host_commands;
+pub mod remote_transcript_commands;
 #[cfg(debug_assertions)]
 pub mod remote_transport_spike_commands;
+pub mod repository_settings_commands;
+#[cfg(test)]
+mod repository_settings_commands_tests;
 pub mod research_commands;
 pub mod review_commands;
 pub mod review_commands_types;
@@ -364,8 +364,9 @@ pub use agent_sidebar_commands::{
     get_bulk_workspace_publication_states, BulkPublicationStateResponse,
 };
 pub use unified_chat_commands::{
-    archive_agent_conversation, create_agent_conversation, delete_queued_agent_message,
-    fork_agent_conversation, get_agent_conversation, get_agent_conversation_messages_page,
+    archive_agent_conversation, commit_agent_conversation_workspace_locally,
+    create_agent_conversation, delete_queued_agent_message, fork_agent_conversation,
+    get_agent_conversation, get_agent_conversation_messages_page,
     get_agent_conversation_runtime_index, get_agent_conversation_runtime_statuses,
     get_agent_conversation_summary, get_agent_conversation_timeline_page,
     get_agent_conversation_workspace, get_agent_conversation_workspace_freshness,
@@ -375,7 +376,6 @@ pub use unified_chat_commands::{
     list_agent_conversation_workspaces_by_project, list_agent_conversations,
     list_agent_conversations_page, precompute_agent_conversation_workspace_pr_description,
     publish_agent_conversation_workspace, queue_agent_message,
-    commit_agent_conversation_workspace_locally,
     reconcile_agent_conversation_workspace_publication, restore_agent_conversation,
     send_agent_message, set_agent_conversation_workspace_auto_publish,
     set_agent_conversation_workspace_pr_supervision, start_agent_conversation, stop_agent,

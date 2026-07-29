@@ -38,8 +38,7 @@ mod enrichment_tests {
         project_repo: Arc<dyn ProjectRepository>,
         session_repo: Arc<dyn IdeationSessionRepository>,
     ) -> EnrichedEventEmitter {
-        EnrichedEventEmitter::new(None)
-            .with_enrichment_repos(task_repo, project_repo, session_repo)
+        EnrichedEventEmitter::new(None).with_enrichment_repos(task_repo, project_repo, session_repo)
     }
 
     #[tokio::test]

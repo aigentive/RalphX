@@ -631,20 +631,12 @@ async fn test_concurrent_transition_task_only_one_triggers_on_enter() {
         r1, r2
     );
     assert!(
-        r1.is_ok()
-            || matches!(
-                &r1,
-                Err(crate::error::AppError::InvalidTransition { .. })
-            ),
+        r1.is_ok() || matches!(&r1, Err(crate::error::AppError::InvalidTransition { .. })),
         "Caller 1 must either win or observe a validated transition loss: {:?}",
         r1
     );
     assert!(
-        r2.is_ok()
-            || matches!(
-                &r2,
-                Err(crate::error::AppError::InvalidTransition { .. })
-            ),
+        r2.is_ok() || matches!(&r2, Err(crate::error::AppError::InvalidTransition { .. })),
         "Caller 2 must either win or observe a validated transition loss: {:?}",
         r2
     );

@@ -9,11 +9,11 @@ use serde_json::Value;
 use tokio::time::Duration;
 use tokio_util::bytes::Bytes;
 
+use crate::application::linear_integration_service::LinearAttachment;
 use crate::application::{
     LinearApiClient, LinearAuthContext, LinearComment, LinearIssueContent, LinearIssueSummary,
     LinearLabel, LinearProject, LinearUser, LinearWorkflowState,
 };
-use crate::application::linear_integration_service::LinearAttachment;
 use crate::domain::services::ComposerIntegrationReference;
 
 const LINEAR_GRAPHQL_ENDPOINT: &str = "https://api.linear.app/graphql";
@@ -789,7 +789,10 @@ fn workflow_states_from_data(data: &Value) -> Result<Vec<LinearWorkflowState>, S
         .iter()
         .filter_map(|node| {
             let state = workflow_state_from_node(node)?;
-            let state_type = node.get("type").and_then(Value::as_str).unwrap_or(&state.name);
+            let state_type = node
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or(&state.name);
             let position = node
                 .get("position")
                 .and_then(Value::as_f64)
@@ -798,9 +801,11 @@ fn workflow_states_from_data(data: &Value) -> Result<Vec<LinearWorkflowState>, S
         })
         .collect();
     ordered.sort_by(|left, right| {
-        left.0
-            .cmp(&right.0)
-            .then_with(|| left.1.partial_cmp(&right.1).unwrap_or(std::cmp::Ordering::Equal))
+        left.0.cmp(&right.0).then_with(|| {
+            left.1
+                .partial_cmp(&right.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
     });
     Ok(ordered.into_iter().map(|(_, _, state)| state).collect())
 }
@@ -989,7 +994,9 @@ fn issue_content_from_data(data: &Value, reference_id: &str) -> Result<LinearIss
 
 fn issue_summary_from_node(node: &Value) -> Option<LinearIssueSummary> {
     let state = node.get("state");
-    let state_type = state.and_then(|state| state.get("type")).and_then(Value::as_str);
+    let state_type = state
+        .and_then(|state| state.get("type"))
+        .and_then(Value::as_str);
     let state_name = state
         .and_then(|state| state.get("name"))
         .and_then(|value| value.as_str())
@@ -1106,7 +1113,12 @@ fn issue_attachments_from_node(node: &Value) -> Vec<LinearAttachment> {
     node.get("attachments")
         .and_then(|attachments| attachments.get("nodes"))
         .and_then(Value::as_array)
-        .map(|nodes| nodes.iter().filter_map(linear_attachment_from_node).collect())
+        .map(|nodes| {
+            nodes
+                .iter()
+                .filter_map(linear_attachment_from_node)
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -1376,7 +1388,10 @@ mod tests {
         .expect("states should parse");
 
         assert_eq!(
-            states.iter().map(|state| state.id.as_str()).collect::<Vec<_>>(),
+            states
+                .iter()
+                .map(|state| state.id.as_str())
+                .collect::<Vec<_>>(),
             vec!["doing", "todo", "backlog", "done"],
         );
     }
@@ -1510,7 +1525,10 @@ mod tests {
         assert_eq!(issues[0].excerpt.as_deref(), Some("All fields"));
         assert_eq!(issues[0].state_name.as_deref(), Some("Todo"));
         assert_eq!(issues[0].assignee.as_deref(), Some("A. User"));
-        assert_eq!(issues[0].updated_at.as_deref(), Some("2026-06-21T08:00:00Z"));
+        assert_eq!(
+            issues[0].updated_at.as_deref(),
+            Some("2026-06-21T08:00:00Z")
+        );
 
         assert_eq!(issues[1].id, "issue-2");
         assert!(issues[1].key.is_none());
@@ -1592,7 +1610,10 @@ mod tests {
         assert_eq!(content.state_name.as_deref(), Some("In Progress"));
         assert_eq!(content.assignee.as_deref(), Some("A. User"));
         assert_eq!(content.creator.as_deref(), Some("C. User"));
-        assert_eq!(content.labels, vec!["backend".to_string(), "urgent".to_string()]);
+        assert_eq!(
+            content.labels,
+            vec!["backend".to_string(), "urgent".to_string()]
+        );
         assert_eq!(content.project.as_deref(), Some("Platform"));
         assert_eq!(content.updated_at.as_deref(), Some("2026-06-18T08:00:00Z"));
         assert_eq!(content.attachments.len(), 1);
@@ -2053,8 +2074,14 @@ mod tests {
     #[test]
     fn required_trimmed_accepts_trimmed_value_and_rejects_blank() {
         assert_eq!(required_trimmed("  abc  ", "msg").unwrap(), "abc");
-        assert_eq!(required_trimmed("   ", "is required").unwrap_err(), "is required");
-        assert_eq!(required_trimmed("", "is required").unwrap_err(), "is required");
+        assert_eq!(
+            required_trimmed("   ", "is required").unwrap_err(),
+            "is required"
+        );
+        assert_eq!(
+            required_trimmed("", "is required").unwrap_err(),
+            "is required"
+        );
     }
 
     #[tokio::test]
@@ -2065,11 +2092,17 @@ mod tests {
         };
 
         assert_eq!(
-            client.update_issue_state(&auth, "  ", "state-1").await.unwrap_err(),
+            client
+                .update_issue_state(&auth, "  ", "state-1")
+                .await
+                .unwrap_err(),
             "Linear issue id is required"
         );
         assert_eq!(
-            client.update_issue_state(&auth, "issue-1", "  ").await.unwrap_err(),
+            client
+                .update_issue_state(&auth, "issue-1", "  ")
+                .await
+                .unwrap_err(),
             "Linear workflow state id is required"
         );
     }
@@ -2095,11 +2128,17 @@ mod tests {
         };
 
         assert_eq!(
-            client.create_comment(&auth, "  ", "body").await.unwrap_err(),
+            client
+                .create_comment(&auth, "  ", "body")
+                .await
+                .unwrap_err(),
             "Linear issue id is required"
         );
         assert_eq!(
-            client.create_comment(&auth, "issue-1", "   ").await.unwrap_err(),
+            client
+                .create_comment(&auth, "issue-1", "   ")
+                .await
+                .unwrap_err(),
             "Linear comment body is required"
         );
     }
@@ -2112,7 +2151,10 @@ mod tests {
         };
 
         assert_eq!(
-            client.list_issue_team_labels(&auth, "  ").await.unwrap_err(),
+            client
+                .list_issue_team_labels(&auth, "  ")
+                .await
+                .unwrap_err(),
             "Linear issue id is required"
         );
     }

@@ -6,10 +6,10 @@
 use std::collections::HashSet;
 
 const STOP_WORDS: &[&str] = &[
-    "a", "an", "the", "is", "are", "was", "were", "be", "been", "has", "have", "had", "do",
-    "does", "did", "will", "would", "should", "could", "can", "may", "might", "on", "in", "at",
-    "for", "of", "to", "by", "with", "from", "that", "this", "these", "those", "it", "its",
-    "and", "but", "or", "so", "yet",
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "has", "have", "had", "do", "does",
+    "did", "will", "would", "should", "could", "can", "may", "might", "on", "in", "at", "for",
+    "of", "to", "by", "with", "from", "that", "this", "these", "those", "it", "its", "and", "but",
+    "or", "so", "yet",
 ];
 // NEVER strip: "no", "not", "missing", "lacks", "without", "absent"
 

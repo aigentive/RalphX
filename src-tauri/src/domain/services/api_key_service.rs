@@ -151,10 +151,7 @@ impl ApiKeyService {
             .to_string();
         let now_str = now.format(TIMESTAMP_FORMAT).to_string();
 
-        let project_ids = repo
-            .get_projects(&old_key_id)
-            .await
-            .unwrap_or_default();
+        let project_ids = repo.get_projects(&old_key_id).await.unwrap_or_default();
 
         let new_key = ApiKey {
             id: ApiKeyId::new(),
@@ -180,7 +177,13 @@ impl ApiKeyService {
         .await?;
 
         let _ = repo
-            .log_audit(new_key_id.as_str(), source.audit_source_name(), None, true, None)
+            .log_audit(
+                new_key_id.as_str(),
+                source.audit_source_name(),
+                None,
+                true,
+                None,
+            )
             .await;
 
         Ok(ApiKeyCreated {

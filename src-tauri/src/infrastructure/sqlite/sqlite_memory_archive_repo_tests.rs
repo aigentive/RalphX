@@ -206,7 +206,11 @@ async fn test_get_by_id_not_found() {
 #[tokio::test]
 async fn test_delete() {
     let repo = setup_test_repo();
-    let job = MemoryArchiveJob::new(pid(), ArchiveJobType::MemorySnapshot, ArchiveJobPayload::memory_snapshot("mem_1"));
+    let job = MemoryArchiveJob::new(
+        pid(),
+        ArchiveJobType::MemorySnapshot,
+        ArchiveJobPayload::memory_snapshot("mem_1"),
+    );
     let job_id = job.id.clone();
 
     repo.create(job).await.unwrap();
@@ -223,9 +227,27 @@ async fn test_get_by_project() {
     let repo = setup_test_repo();
     insert_test_project(repo.db(), "test-project-2", "/test/path2");
 
-    repo.create(MemoryArchiveJob::new(pid(), ArchiveJobType::MemorySnapshot, ArchiveJobPayload::memory_snapshot("m1"))).await.unwrap();
-    repo.create(MemoryArchiveJob::new(pid(), ArchiveJobType::RuleSnapshot, ArchiveJobPayload::rule_snapshot("r1"))).await.unwrap();
-    repo.create(MemoryArchiveJob::new(pid2(), ArchiveJobType::MemorySnapshot, ArchiveJobPayload::memory_snapshot("m2"))).await.unwrap();
+    repo.create(MemoryArchiveJob::new(
+        pid(),
+        ArchiveJobType::MemorySnapshot,
+        ArchiveJobPayload::memory_snapshot("m1"),
+    ))
+    .await
+    .unwrap();
+    repo.create(MemoryArchiveJob::new(
+        pid(),
+        ArchiveJobType::RuleSnapshot,
+        ArchiveJobPayload::rule_snapshot("r1"),
+    ))
+    .await
+    .unwrap();
+    repo.create(MemoryArchiveJob::new(
+        pid2(),
+        ArchiveJobType::MemorySnapshot,
+        ArchiveJobPayload::memory_snapshot("m2"),
+    ))
+    .await
+    .unwrap();
 
     assert_eq!(repo.get_by_project(&pid()).await.unwrap().len(), 2);
     assert_eq!(repo.get_by_project(&pid2()).await.unwrap().len(), 1);
@@ -243,8 +265,16 @@ async fn test_get_by_project_empty() {
 #[tokio::test]
 async fn test_get_by_project_and_status() {
     let repo = setup_test_repo();
-    let mut job1 = MemoryArchiveJob::new(pid(), ArchiveJobType::MemorySnapshot, ArchiveJobPayload::memory_snapshot("m1"));
-    let job2 = MemoryArchiveJob::new(pid(), ArchiveJobType::RuleSnapshot, ArchiveJobPayload::rule_snapshot("r1"));
+    let mut job1 = MemoryArchiveJob::new(
+        pid(),
+        ArchiveJobType::MemorySnapshot,
+        ArchiveJobPayload::memory_snapshot("m1"),
+    );
+    let job2 = MemoryArchiveJob::new(
+        pid(),
+        ArchiveJobType::RuleSnapshot,
+        ArchiveJobPayload::rule_snapshot("r1"),
+    );
 
     repo.create(job1.clone()).await.unwrap();
     repo.create(job2).await.unwrap();
@@ -252,14 +282,23 @@ async fn test_get_by_project_and_status() {
     job1.start();
     repo.update(&job1).await.unwrap();
 
-    let pending = repo.get_by_project_and_status(&pid(), ArchiveJobStatus::Pending).await.unwrap();
+    let pending = repo
+        .get_by_project_and_status(&pid(), ArchiveJobStatus::Pending)
+        .await
+        .unwrap();
     assert_eq!(pending.len(), 1);
 
-    let running = repo.get_by_project_and_status(&pid(), ArchiveJobStatus::Running).await.unwrap();
+    let running = repo
+        .get_by_project_and_status(&pid(), ArchiveJobStatus::Running)
+        .await
+        .unwrap();
     assert_eq!(running.len(), 1);
     assert_eq!(running[0].id, job1.id);
 
-    let done = repo.get_by_project_and_status(&pid(), ArchiveJobStatus::Done).await.unwrap();
+    let done = repo
+        .get_by_project_and_status(&pid(), ArchiveJobStatus::Done)
+        .await
+        .unwrap();
     assert!(done.is_empty());
 }
 
@@ -268,14 +307,38 @@ async fn test_get_by_project_and_status() {
 #[tokio::test]
 async fn test_get_by_project_and_type() {
     let repo = setup_test_repo();
-    repo.create(MemoryArchiveJob::new(pid(), ArchiveJobType::MemorySnapshot, ArchiveJobPayload::memory_snapshot("m1"))).await.unwrap();
-    repo.create(MemoryArchiveJob::new(pid(), ArchiveJobType::MemorySnapshot, ArchiveJobPayload::memory_snapshot("m2"))).await.unwrap();
-    repo.create(MemoryArchiveJob::new(pid(), ArchiveJobType::RuleSnapshot, ArchiveJobPayload::rule_snapshot("r1"))).await.unwrap();
+    repo.create(MemoryArchiveJob::new(
+        pid(),
+        ArchiveJobType::MemorySnapshot,
+        ArchiveJobPayload::memory_snapshot("m1"),
+    ))
+    .await
+    .unwrap();
+    repo.create(MemoryArchiveJob::new(
+        pid(),
+        ArchiveJobType::MemorySnapshot,
+        ArchiveJobPayload::memory_snapshot("m2"),
+    ))
+    .await
+    .unwrap();
+    repo.create(MemoryArchiveJob::new(
+        pid(),
+        ArchiveJobType::RuleSnapshot,
+        ArchiveJobPayload::rule_snapshot("r1"),
+    ))
+    .await
+    .unwrap();
 
-    let mem = repo.get_by_project_and_type(&pid(), ArchiveJobType::MemorySnapshot).await.unwrap();
+    let mem = repo
+        .get_by_project_and_type(&pid(), ArchiveJobType::MemorySnapshot)
+        .await
+        .unwrap();
     assert_eq!(mem.len(), 2);
 
-    let rule = repo.get_by_project_and_type(&pid(), ArchiveJobType::RuleSnapshot).await.unwrap();
+    let rule = repo
+        .get_by_project_and_type(&pid(), ArchiveJobType::RuleSnapshot)
+        .await
+        .unwrap();
     assert_eq!(rule.len(), 1);
 }
 
@@ -286,8 +349,16 @@ async fn test_claim_next_for_project_returns_oldest_pending() {
     let repo = setup_test_repo();
     insert_test_project(repo.db(), "test-project-2", "/test/path2");
 
-    let job1 = MemoryArchiveJob::new(pid(), ArchiveJobType::MemorySnapshot, ArchiveJobPayload::memory_snapshot("m1"));
-    let job2 = MemoryArchiveJob::new(pid2(), ArchiveJobType::RuleSnapshot, ArchiveJobPayload::rule_snapshot("r1"));
+    let job1 = MemoryArchiveJob::new(
+        pid(),
+        ArchiveJobType::MemorySnapshot,
+        ArchiveJobPayload::memory_snapshot("m1"),
+    );
+    let job2 = MemoryArchiveJob::new(
+        pid2(),
+        ArchiveJobType::RuleSnapshot,
+        ArchiveJobPayload::rule_snapshot("r1"),
+    );
 
     repo.create(job1.clone()).await.unwrap();
     tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
@@ -316,7 +387,11 @@ async fn test_claim_next_for_project_returns_none_when_empty() {
 #[tokio::test]
 async fn test_claim_next_for_project_picks_failed_jobs() {
     let repo = setup_test_repo();
-    let mut job = MemoryArchiveJob::new(pid(), ArchiveJobType::MemorySnapshot, ArchiveJobPayload::memory_snapshot("m1"));
+    let mut job = MemoryArchiveJob::new(
+        pid(),
+        ArchiveJobType::MemorySnapshot,
+        ArchiveJobPayload::memory_snapshot("m1"),
+    );
     repo.create(job.clone()).await.unwrap();
 
     job.start();
@@ -336,21 +411,52 @@ async fn test_claim_next_for_project_picks_failed_jobs() {
 async fn test_count_by_status() {
     let repo = setup_test_repo();
 
-    assert_eq!(repo.count_by_status(ArchiveJobStatus::Pending).await.unwrap(), 0);
+    assert_eq!(
+        repo.count_by_status(ArchiveJobStatus::Pending)
+            .await
+            .unwrap(),
+        0
+    );
 
-    let j1 = MemoryArchiveJob::new(pid(), ArchiveJobType::MemorySnapshot, ArchiveJobPayload::memory_snapshot("m1"));
-    let mut j2 = MemoryArchiveJob::new(pid(), ArchiveJobType::RuleSnapshot, ArchiveJobPayload::rule_snapshot("r1"));
+    let j1 = MemoryArchiveJob::new(
+        pid(),
+        ArchiveJobType::MemorySnapshot,
+        ArchiveJobPayload::memory_snapshot("m1"),
+    );
+    let mut j2 = MemoryArchiveJob::new(
+        pid(),
+        ArchiveJobType::RuleSnapshot,
+        ArchiveJobPayload::rule_snapshot("r1"),
+    );
     repo.create(j1).await.unwrap();
     repo.create(j2.clone()).await.unwrap();
 
-    assert_eq!(repo.count_by_status(ArchiveJobStatus::Pending).await.unwrap(), 2);
+    assert_eq!(
+        repo.count_by_status(ArchiveJobStatus::Pending)
+            .await
+            .unwrap(),
+        2
+    );
 
     j2.start();
     repo.update(&j2).await.unwrap();
 
-    assert_eq!(repo.count_by_status(ArchiveJobStatus::Pending).await.unwrap(), 1);
-    assert_eq!(repo.count_by_status(ArchiveJobStatus::Running).await.unwrap(), 1);
-    assert_eq!(repo.count_by_status(ArchiveJobStatus::Done).await.unwrap(), 0);
+    assert_eq!(
+        repo.count_by_status(ArchiveJobStatus::Pending)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        repo.count_by_status(ArchiveJobStatus::Running)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        repo.count_by_status(ArchiveJobStatus::Done).await.unwrap(),
+        0
+    );
 }
 
 // ─── count_claimable_for_project ─────────────────────────────────────────────
@@ -360,9 +466,27 @@ async fn test_count_claimable_for_project() {
     let repo = setup_test_repo();
     insert_test_project(repo.db(), "test-project-2", "/test/path2");
 
-    repo.create(MemoryArchiveJob::new(pid(), ArchiveJobType::MemorySnapshot, ArchiveJobPayload::memory_snapshot("m1"))).await.unwrap();
-    repo.create(MemoryArchiveJob::new(pid(), ArchiveJobType::RuleSnapshot, ArchiveJobPayload::rule_snapshot("r1"))).await.unwrap();
-    repo.create(MemoryArchiveJob::new(pid2(), ArchiveJobType::MemorySnapshot, ArchiveJobPayload::memory_snapshot("m2"))).await.unwrap();
+    repo.create(MemoryArchiveJob::new(
+        pid(),
+        ArchiveJobType::MemorySnapshot,
+        ArchiveJobPayload::memory_snapshot("m1"),
+    ))
+    .await
+    .unwrap();
+    repo.create(MemoryArchiveJob::new(
+        pid(),
+        ArchiveJobType::RuleSnapshot,
+        ArchiveJobPayload::rule_snapshot("r1"),
+    ))
+    .await
+    .unwrap();
+    repo.create(MemoryArchiveJob::new(
+        pid2(),
+        ArchiveJobType::MemorySnapshot,
+        ArchiveJobPayload::memory_snapshot("m2"),
+    ))
+    .await
+    .unwrap();
 
     assert_eq!(repo.count_claimable_for_project(&pid()).await.unwrap(), 2);
     assert_eq!(repo.count_claimable_for_project(&pid2()).await.unwrap(), 1);
@@ -377,7 +501,11 @@ async fn test_count_claimable_for_project() {
 #[tokio::test]
 async fn test_delete_completed_older_than_removes_old_done_jobs() {
     let repo = setup_test_repo();
-    let mut job = MemoryArchiveJob::new(pid(), ArchiveJobType::MemorySnapshot, ArchiveJobPayload::memory_snapshot("m1"));
+    let mut job = MemoryArchiveJob::new(
+        pid(),
+        ArchiveJobType::MemorySnapshot,
+        ArchiveJobPayload::memory_snapshot("m1"),
+    );
     repo.create(job.clone()).await.unwrap();
 
     job.start();
@@ -394,7 +522,11 @@ async fn test_delete_completed_older_than_removes_old_done_jobs() {
 #[tokio::test]
 async fn test_delete_completed_older_than_keeps_recent_jobs() {
     let repo = setup_test_repo();
-    let mut job = MemoryArchiveJob::new(pid(), ArchiveJobType::MemorySnapshot, ArchiveJobPayload::memory_snapshot("m1"));
+    let mut job = MemoryArchiveJob::new(
+        pid(),
+        ArchiveJobType::MemorySnapshot,
+        ArchiveJobPayload::memory_snapshot("m1"),
+    );
     repo.create(job.clone()).await.unwrap();
 
     job.start();
@@ -411,7 +543,11 @@ async fn test_delete_completed_older_than_keeps_recent_jobs() {
 async fn test_delete_completed_older_than_ignores_non_done_jobs() {
     let repo = setup_test_repo();
     // Pending job with old created_at — should NOT be deleted (only 'done' status)
-    let job = MemoryArchiveJob::new(pid(), ArchiveJobType::MemorySnapshot, ArchiveJobPayload::memory_snapshot("m1"));
+    let job = MemoryArchiveJob::new(
+        pid(),
+        ArchiveJobType::MemorySnapshot,
+        ArchiveJobPayload::memory_snapshot("m1"),
+    );
     let job_id = job.id.clone();
     repo.create(job).await.unwrap();
 
@@ -427,9 +563,25 @@ async fn test_delete_by_project() {
     let repo = setup_test_repo();
     insert_test_project(repo.db(), "test-project-2", "/test/path2");
 
-    repo.create(MemoryArchiveJob::new(pid(), ArchiveJobType::MemorySnapshot, ArchiveJobPayload::memory_snapshot("m1"))).await.unwrap();
-    repo.create(MemoryArchiveJob::new(pid(), ArchiveJobType::RuleSnapshot, ArchiveJobPayload::rule_snapshot("r1"))).await.unwrap();
-    let j2 = MemoryArchiveJob::new(pid2(), ArchiveJobType::MemorySnapshot, ArchiveJobPayload::memory_snapshot("m2"));
+    repo.create(MemoryArchiveJob::new(
+        pid(),
+        ArchiveJobType::MemorySnapshot,
+        ArchiveJobPayload::memory_snapshot("m1"),
+    ))
+    .await
+    .unwrap();
+    repo.create(MemoryArchiveJob::new(
+        pid(),
+        ArchiveJobType::RuleSnapshot,
+        ArchiveJobPayload::rule_snapshot("r1"),
+    ))
+    .await
+    .unwrap();
+    let j2 = MemoryArchiveJob::new(
+        pid2(),
+        ArchiveJobType::MemorySnapshot,
+        ArchiveJobPayload::memory_snapshot("m2"),
+    );
     let j2_id = j2.id.clone();
     repo.create(j2).await.unwrap();
 

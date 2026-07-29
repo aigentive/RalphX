@@ -106,7 +106,10 @@ fn test_configure_connection_sets_synchronous_normal() {
         .pragma_query_value(None, "synchronous", |row| row.get(0))
         .unwrap();
 
-    assert_eq!(synchronous, 1, "Expected synchronous=NORMAL (1), got {synchronous}");
+    assert_eq!(
+        synchronous, 1,
+        "Expected synchronous=NORMAL (1), got {synchronous}"
+    );
 }
 
 #[test]
@@ -124,7 +127,8 @@ fn test_wal_checkpoint_removes_sidecar_files() {
 
     // WAL sidecar may or may not exist yet depending on SQLite internals.
     // Run checkpoint to fold WAL back into main DB.
-    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)").unwrap();
+    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+        .unwrap();
 
     let wal_path = dir.path().join("checkpoint_test.db-wal");
     let shm_path = dir.path().join("checkpoint_test.db-shm");

@@ -150,7 +150,12 @@ async fn test_delayed_startup_cleanup_preserves_current_boot_agent_and_run() {
     runner.run().await;
 
     assert!(!app_state.running_agent_registry.is_running(&old_key).await);
-    assert!(app_state.running_agent_registry.is_running(&current_key).await);
+    assert!(
+        app_state
+            .running_agent_registry
+            .is_running(&current_key)
+            .await
+    );
     assert!(old_token.is_cancelled());
     assert!(!current_token.is_cancelled());
 
@@ -2084,18 +2089,14 @@ async fn test_startup_quota_sync_before_resumption() {
 #[test]
 fn is_waiting_for_global_idle_returns_false_when_no_metadata() {
     let task = Task::new(ProjectId::new(), "Test".to_string());
-    assert!(!StartupJobRunner::is_waiting_for_global_idle(
-        &task, 1
-    ));
+    assert!(!StartupJobRunner::is_waiting_for_global_idle(&task, 1));
 }
 
 #[test]
 fn is_waiting_for_global_idle_returns_false_when_no_main_merge_deferred_flag() {
     let mut task = Task::new(ProjectId::new(), "Test".to_string());
     task.metadata = Some(r#"{"other": "data"}"#.to_string());
-    assert!(!StartupJobRunner::is_waiting_for_global_idle(
-        &task, 1
-    ));
+    assert!(!StartupJobRunner::is_waiting_for_global_idle(&task, 1));
 }
 
 #[test]
@@ -2103,9 +2104,7 @@ fn is_waiting_for_global_idle_returns_false_when_main_merge_deferred_but_no_agen
     let mut task = Task::new(ProjectId::new(), "Test".to_string());
     task.metadata = Some(serde_json::json!({"main_merge_deferred": true}).to_string());
     // running_count = 0 means all agents completed
-    assert!(!StartupJobRunner::is_waiting_for_global_idle(
-        &task, 0
-    ));
+    assert!(!StartupJobRunner::is_waiting_for_global_idle(&task, 0));
 }
 
 #[test]
@@ -2113,12 +2112,8 @@ fn is_waiting_for_global_idle_returns_true_when_main_merge_deferred_and_agents_r
     let mut task = Task::new(ProjectId::new(), "Test".to_string());
     task.metadata = Some(serde_json::json!({"main_merge_deferred": true}).to_string());
     // running_count > 0 means agents are still running
-    assert!(StartupJobRunner::is_waiting_for_global_idle(
-        &task, 1
-    ));
-    assert!(StartupJobRunner::is_waiting_for_global_idle(
-        &task, 5
-    ));
+    assert!(StartupJobRunner::is_waiting_for_global_idle(&task, 1));
+    assert!(StartupJobRunner::is_waiting_for_global_idle(&task, 5));
 }
 
 #[tokio::test]

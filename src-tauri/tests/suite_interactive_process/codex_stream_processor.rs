@@ -137,7 +137,10 @@ fn extract_codex_command_execution_captures_output_and_exit_code() {
 
     assert_eq!(execution.id.as_deref(), Some("item_2"));
     assert_eq!(execution.status.as_deref(), Some("completed"));
-    assert_eq!(execution.aggregated_output.as_deref(), Some("cargo test ok"));
+    assert_eq!(
+        execution.aggregated_output.as_deref(),
+        Some("cargo test ok")
+    );
     assert_eq!(execution.exit_code, Some(0));
 }
 

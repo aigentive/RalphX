@@ -154,8 +154,8 @@ async fn create_test_stdin() -> (tokio::process::ChildStdin, tokio::process::Chi
 async fn test_cleanup_orphan_agents_with_ipr_removes_ipr_entries() {
     let registry = Arc::new(MemoryRunningAgentRegistry::new());
     let ipr = Arc::new(InteractiveProcessRegistry::new());
-    let validator = ResumeValidator::new(registry.clone())
-        .with_interactive_process_registry(Arc::clone(&ipr));
+    let validator =
+        ResumeValidator::new(registry.clone()).with_interactive_process_registry(Arc::clone(&ipr));
     let task = create_test_task();
 
     // Register agent in both running registry and IPR
@@ -165,7 +165,10 @@ async fn test_cleanup_orphan_agents_with_ipr_removes_ipr_entries() {
     let (stdin, _child) = create_test_stdin().await;
     let ipr_key = InteractiveProcessKey::new("task_execution", task.id.as_str());
     ipr.register(ipr_key.clone(), stdin).await;
-    assert!(ipr.has_process(&ipr_key).await, "Precondition: IPR has entry");
+    assert!(
+        ipr.has_process(&ipr_key).await,
+        "Precondition: IPR has entry"
+    );
 
     let result = validator.cleanup_orphan_agents(&task).await;
 
@@ -191,8 +194,8 @@ async fn test_cleanup_orphan_agents_with_ipr_removes_ipr_entries() {
 async fn test_cleanup_orphan_agents_with_ipr_handles_multiple_context_types() {
     let registry = Arc::new(MemoryRunningAgentRegistry::new());
     let ipr = Arc::new(InteractiveProcessRegistry::new());
-    let validator = ResumeValidator::new(registry.clone())
-        .with_interactive_process_registry(Arc::clone(&ipr));
+    let validator =
+        ResumeValidator::new(registry.clone()).with_interactive_process_registry(Arc::clone(&ipr));
     let task = create_test_task();
 
     // Register agents in multiple context types
@@ -240,5 +243,8 @@ async fn test_cleanup_orphan_agents_without_ipr_still_cleans_registry() {
 
     assert!(result.is_valid);
     assert!(result.warnings[0].contains("Stopped 1 orphan agent"));
-    assert!(!registry.is_running(&key).await, "Agent must still be stopped");
+    assert!(
+        !registry.is_running(&key).await,
+        "Agent must still be stopped"
+    );
 }

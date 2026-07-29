@@ -10,6 +10,10 @@ pub mod auth_endpoints;
 #[cfg(test)]
 mod auth_tests;
 pub mod capture;
+pub mod counters;
+#[cfg(test)]
+#[path = "counters_tests.rs"]
+mod counters_tests;
 pub mod endpoints;
 #[cfg(test)]
 mod endpoints_tests;

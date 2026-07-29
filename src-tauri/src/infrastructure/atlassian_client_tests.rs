@@ -11,8 +11,8 @@ use crate::domain::services::ComposerIntegrationReference;
 use super::atlassian_client::{
     add_jira_comment, assign_jira_issue_to_current_user, build_confluence_search_cql,
     build_jira_search_jql, clear_jira_issue_assignee, confluence_page_id_query, fetch_confluence,
-    fetch_jira, list_jira_issue_transitions, search_confluence, search_jira,
-    transition_jira_issue, AtlassianJsonRequester, HyperAtlassianApiClient, RequestAuth,
+    fetch_jira, list_jira_issue_transitions, search_confluence, search_jira, transition_jira_issue,
+    AtlassianJsonRequester, HyperAtlassianApiClient, RequestAuth,
 };
 
 #[derive(Clone, Debug)]

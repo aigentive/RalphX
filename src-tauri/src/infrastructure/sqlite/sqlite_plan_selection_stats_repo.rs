@@ -100,8 +100,10 @@ impl PlanSelectionStatsRepository for SqlitePlanSelectionStatsRepository {
         }
 
         let project_id_str = project_id.as_str().to_string();
-        let session_id_strs: Vec<String> =
-            session_ids.iter().map(|id| id.as_str().to_string()).collect();
+        let session_id_strs: Vec<String> = session_ids
+            .iter()
+            .map(|id| id.as_str().to_string())
+            .collect();
         let session_ids_owned = session_ids.to_vec();
 
         self.db

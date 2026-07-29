@@ -11,6 +11,7 @@ use crate::infrastructure::tailscale::{
     parse_status, HttpEndpointProbe, RealTailscaleCommandRunner, RemoteEndpointProbe,
     TailscaleCommandRunner, TailscaleSelfAddressProvider,
 };
+use crate::remote_server::counters::RemoteStreamCounterSnapshot;
 use crate::remote_server::endpoints::{advertised_endpoints, AdvertisedEndpoint};
 use crate::remote_server::settings::{
     RemoteExposureMode, RemoteHostSettings, RemoteHostSettingsStore, DEFAULT_REMOTE_PORT,
@@ -42,6 +43,12 @@ pub struct RemoteListenerStatus {
     /// Machine-readable degradation cause; branch on this, never on the reason prose
     /// (rule 5).
     pub serve_degraded_kind: Option<RemoteServeDegradedKind>,
+    /// Event-stream observability for THIS boot (§5.5, R-11).
+    ///
+    /// `None` when no stream is installed (host disabled, or never configured), which is
+    /// distinct from an installed stream reporting all zeros — the pane must not render
+    /// "0 resets" for a host that is not streaming at all.
+    pub stream_counters: Option<RemoteStreamCounterSnapshot>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -70,6 +77,7 @@ async fn listener_status(
         serve_active: serve.active,
         serve_degraded_reason: serve.degraded_reason,
         serve_degraded_kind: serve.degraded_kind,
+        stream_counters: handle.stream().map(|stream| stream.counters().snapshot()),
     }
 }
 
@@ -140,6 +148,7 @@ fn unconfigured_status() -> RemoteListenerStatus {
         serve_active: false,
         serve_degraded_reason: None,
         serve_degraded_kind: None,
+        stream_counters: None,
     }
 }
 

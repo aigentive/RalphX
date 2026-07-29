@@ -30,7 +30,8 @@ fn test_execution_complete_request_snake_case() {
             "test_summary": "3 passed, 1 failed"
         }
     }"#;
-    let req: ExecutionCompleteRequest = serde_json::from_str(json).expect("snake_case parse failed");
+    let req: ExecutionCompleteRequest =
+        serde_json::from_str(json).expect("snake_case parse failed");
     assert_eq!(req.summary.as_deref(), Some("All done"));
     let tr = req.test_result.expect("test_result should be present");
     assert!(tr.tests_ran);

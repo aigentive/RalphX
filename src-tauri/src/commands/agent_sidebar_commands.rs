@@ -391,7 +391,10 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
         });
     }
     if has_no_project_rows {
-        project_labels.push((NO_PROJECT_GROUP_KEY.to_string(), NO_PROJECT_GROUP_LABEL.to_string()));
+        project_labels.push((
+            NO_PROJECT_GROUP_KEY.to_string(),
+            NO_PROJECT_GROUP_LABEL.to_string(),
+        ));
     }
 
     rows.sort_by(|left, right| {
@@ -1861,9 +1864,12 @@ mod tests {
         let now = Utc::now();
 
         let project_conversation = create_conversation(&state, &alpha.id, "Alpha work", now).await;
-        let standalone_conversation =
-            create_standalone_conversation(&state, "Standalone chat", now - chrono::Duration::minutes(1))
-                .await;
+        let standalone_conversation = create_standalone_conversation(
+            &state,
+            "Standalone chat",
+            now - chrono::Duration::minutes(1),
+        )
+        .await;
 
         let mut input = sidebar_input(&alpha.id);
         input.group_by = Some("project".to_string());
@@ -1878,7 +1884,10 @@ mod tests {
             "the requested project group plus a data-driven 'No project' group"
         );
         assert_eq!(response.groups[0].key, alpha.id.as_str());
-        assert_eq!(response.groups[0].rows[0].conversation.id, project_conversation.id.as_str());
+        assert_eq!(
+            response.groups[0].rows[0].conversation.id,
+            project_conversation.id.as_str()
+        );
 
         let no_project_group = &response.groups[1];
         assert_eq!(no_project_group.key, "__no_project__");
@@ -1888,7 +1897,10 @@ mod tests {
             no_project_group.rows[0].conversation.id,
             standalone_conversation.id.as_str()
         );
-        assert_eq!(no_project_group.rows[0].conversation.context_type, "standalone");
+        assert_eq!(
+            no_project_group.rows[0].conversation.context_type,
+            "standalone"
+        );
         assert!(no_project_group.rows[0].workspace.is_none());
     }
 
@@ -1914,7 +1926,10 @@ mod tests {
 
         assert_eq!(response.groups.len(), 1);
         assert_eq!(response.groups[0].key, alpha.id.as_str());
-        assert!(!response.groups.iter().any(|group| group.key == "__no_project__"));
+        assert!(!response
+            .groups
+            .iter()
+            .any(|group| group.key == "__no_project__"));
     }
 
     #[tokio::test]

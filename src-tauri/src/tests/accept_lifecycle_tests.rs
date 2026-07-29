@@ -35,10 +35,7 @@ fn make_parent(project_id: &ProjectId) -> IdeationSession {
     IdeationSession::new(project_id.clone())
 }
 
-fn make_verification_child(
-    project_id: &ProjectId,
-    parent: &IdeationSession,
-) -> IdeationSession {
+fn make_verification_child(project_id: &ProjectId, parent: &IdeationSession) -> IdeationSession {
     let mut child = IdeationSession::new(project_id.clone());
     child.session_purpose = SessionPurpose::Verification;
     child.parent_session_id = Some(parent.id.clone());
@@ -69,12 +66,15 @@ async fn test_accept_path_stops_agent_and_archives_verification_child() {
     state.ideation_session_repo.create(parent).await.unwrap();
 
     // Seed active verification child session
-    let child_session = make_verification_child(&project_id, &state
-        .ideation_session_repo
-        .get_by_id(&parent_id)
-        .await
-        .unwrap()
-        .unwrap());
+    let child_session = make_verification_child(
+        &project_id,
+        &state
+            .ideation_session_repo
+            .get_by_id(&parent_id)
+            .await
+            .unwrap()
+            .unwrap(),
+    );
     let child_id = child_session.id.clone();
     state
         .ideation_session_repo
@@ -166,12 +166,15 @@ async fn test_accept_path_archives_child_without_registered_agent() {
     let parent_id = parent.id.clone();
     state.ideation_session_repo.create(parent).await.unwrap();
 
-    let child_session = make_verification_child(&project_id, &state
-        .ideation_session_repo
-        .get_by_id(&parent_id)
-        .await
-        .unwrap()
-        .unwrap());
+    let child_session = make_verification_child(
+        &project_id,
+        &state
+            .ideation_session_repo
+            .get_by_id(&parent_id)
+            .await
+            .unwrap()
+            .unwrap(),
+    );
     let child_id = child_session.id.clone();
     state
         .ideation_session_repo
@@ -267,12 +270,15 @@ async fn test_terminal_state_verified_stops_agent_and_archives_child() {
     state.ideation_session_repo.create(parent).await.unwrap();
 
     // Active verification child with a running agent
-    let child_session = make_verification_child(&project_id, &state
-        .ideation_session_repo
-        .get_by_id(&parent_id)
-        .await
-        .unwrap()
-        .unwrap());
+    let child_session = make_verification_child(
+        &project_id,
+        &state
+            .ideation_session_repo
+            .get_by_id(&parent_id)
+            .await
+            .unwrap()
+            .unwrap(),
+    );
     let child_id = child_session.id.clone();
     state
         .ideation_session_repo

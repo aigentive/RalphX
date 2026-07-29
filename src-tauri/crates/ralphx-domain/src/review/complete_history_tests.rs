@@ -43,7 +43,8 @@ fn pending_review_or_new_reuses_pending_review_when_present() {
     let mut approved = Review::new(project_id.clone(), task_id.clone(), ReviewerType::Ai);
     approved.status = ReviewStatus::Approved;
 
-    let (is_new, review) = pending_review_or_new(vec![approved, pending.clone()], project_id, task_id);
+    let (is_new, review) =
+        pending_review_or_new(vec![approved, pending.clone()], project_id, task_id);
 
     assert!(!is_new);
     assert_eq!(review.id, pending.id);
