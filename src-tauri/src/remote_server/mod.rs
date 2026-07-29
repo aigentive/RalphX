@@ -13,6 +13,16 @@ pub mod capture;
 pub mod endpoints;
 #[cfg(test)]
 mod endpoints_tests;
+// --- PR 3.2: two-instance chat-stream validation harness (shared fixture, extended by 3.4) ---
+//
+// `feature = "test-utils"`, not `cfg(test)`: the fixture is consumed by PR 3.4's integration
+// test binary, which cannot see `cfg(test)` items, and it needs `tauri::test::MockRuntime`
+// — which is exactly what `test-utils = ["tauri/test"]` turns on.
+#[cfg(feature = "test-utils")]
+pub mod harness;
+#[cfg(all(test, feature = "test-utils"))]
+mod harness_tests;
+// --- end PR 3.2 block ---
 #[cfg(test)]
 mod listener_tests;
 pub mod rate_limit;
@@ -512,7 +522,10 @@ impl RemoteListenerRuntime {
 
     /// Test resolution: a dispatcher and nothing else, so attachments and the `/api` remount
     /// take exactly the fail-closed branches they take in production when wiring is absent.
-    #[cfg(test)]
+    ///
+    /// Also reachable under `test-utils` (not just `cfg(test)`) so the PR 3.2 harness — and the
+    /// PR 3.4 integration binary built on it — can boot the listener without a Wry `AppHandle`.
+    #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn for_tests(invoke_dispatcher: Arc<dyn RemoteInvokeDispatcher>) -> Self {
         Self {
             invoke_dispatcher,
