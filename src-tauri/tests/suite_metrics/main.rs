@@ -7,7 +7,7 @@ fn merged_suite_requires_nextest() {
     }
 }
 
-mod metrics_delivery_trends;
 mod metrics_integration;
-mod metrics_pr_insights;
 mod metrics_schema_validation;
+mod metrics_delivery_trends;
+mod metrics_pr_insights;

@@ -28,7 +28,8 @@ mod tests {
         let result = std::thread::spawn(|| {
             // If someone reintroduces tokio::spawn in the constructor,
             // this will panic: "there is no reactor running"
-            let _emitter = crate::application::ThrottledEmitter::new(Arc::new(NullEventSink));
+            let _emitter =
+                crate::application::ThrottledEmitter::new(Arc::new(NullEventSink));
             drop(_emitter);
         })
         .join();

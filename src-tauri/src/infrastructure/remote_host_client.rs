@@ -156,7 +156,8 @@ pub trait RemoteHostClient: Send + Sync {
     ) -> Result<bool, RemoteHostClientError>;
 
     /// Best-effort self-revocation of `token` on the host (staged remove, P-27).
-    async fn revoke_token(&self, base_url: &str, token: &str) -> Result<(), RemoteHostClientError>;
+    async fn revoke_token(&self, base_url: &str, token: &str)
+        -> Result<(), RemoteHostClientError>;
 
     /// `POST /remote/v1/invoke` — one bearer-authenticated command dispatch (§3.1).
     ///
@@ -276,7 +277,10 @@ impl HyperRemoteHostClient {
             .map_err(|_| {
                 // Timeout, not Unreachable: the request WAS sent, so the outcome is
                 // unknown rather than provably nothing (§3.3).
-                RemoteHostClientError::Timeout(format!("no answer after {}s", timeout.as_secs()))
+                RemoteHostClientError::Timeout(format!(
+                    "no answer after {}s",
+                    timeout.as_secs()
+                ))
             })?
             .map_err(|error| RemoteHostClientError::Unreachable(error.to_string()))?;
         let status = response.status();
@@ -387,7 +391,11 @@ impl RemoteHostClient for HyperRemoteHostClient {
         Err(rejected(status, &body))
     }
 
-    async fn revoke_token(&self, base_url: &str, token: &str) -> Result<(), RemoteHostClientError> {
+    async fn revoke_token(
+        &self,
+        base_url: &str,
+        token: &str,
+    ) -> Result<(), RemoteHostClientError> {
         let url = join_url(base_url, REMOTE_REVOKE_PATH);
         let (status, body) = self
             .request_json(Method::POST, &url, Some(token), None)
@@ -529,21 +537,10 @@ pub type MockHostResult<T> = Result<T, RemoteHostClientError>;
 /// Recorded call log entry for assertion in tests.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RecordedHostCall {
-    Descriptor {
-        base_url: String,
-    },
-    Pair {
-        base_url: String,
-        request: PairWireRequest,
-    },
-    Validate {
-        base_url: String,
-        token: String,
-    },
-    Revoke {
-        base_url: String,
-        token: String,
-    },
+    Descriptor { base_url: String },
+    Pair { base_url: String, request: PairWireRequest },
+    Validate { base_url: String, token: String },
+    Revoke { base_url: String, token: String },
     Invoke {
         base_url: String,
         token: String,
@@ -619,7 +616,11 @@ impl MockRemoteHostClient {
 
     /// Scripts the next remounted-route answer.
     pub fn script_fetch(&self, status: u16, body: impl Into<String>) {
-        self.script_fetch_with_headers(status, body, vec![("content-type", "application/json")]);
+        self.script_fetch_with_headers(
+            status,
+            body,
+            vec![("content-type", "application/json")],
+        );
     }
 
     /// Scripts the next remounted-route answer together with the host's raw response
@@ -645,10 +646,7 @@ impl MockRemoteHostClient {
     }
 
     fn record(&self, call: RecordedHostCall) {
-        self.calls
-            .lock()
-            .expect("mock call log poisoned")
-            .push(call);
+        self.calls.lock().expect("mock call log poisoned").push(call);
     }
 }
 
@@ -697,7 +695,11 @@ impl RemoteHostClient for MockRemoteHostClient {
             .clone()
     }
 
-    async fn revoke_token(&self, base_url: &str, token: &str) -> Result<(), RemoteHostClientError> {
+    async fn revoke_token(
+        &self,
+        base_url: &str,
+        token: &str,
+    ) -> Result<(), RemoteHostClientError> {
         self.record(RecordedHostCall::Revoke {
             base_url: base_url.to_string(),
             token: token.to_string(),
@@ -1090,10 +1092,9 @@ mod tests {
             response.headers
         );
         assert!(
-            response
-                .headers
-                .iter()
-                .all(|(name, _)| name.chars().all(|ch| !ch.is_ascii_uppercase())),
+            response.headers.iter().all(|(name, _)| name
+                .chars()
+                .all(|ch| !ch.is_ascii_uppercase())),
             "header names must be lowercased: {:?}",
             response.headers
         );

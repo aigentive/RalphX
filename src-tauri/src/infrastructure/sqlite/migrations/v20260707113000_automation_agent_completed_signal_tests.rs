@@ -1,6 +1,8 @@
 use rusqlite::params;
 
-use super::{run_migrations_through, v20260707113000_automation_agent_completed_signal};
+use super::{
+    run_migrations_through, v20260707113000_automation_agent_completed_signal,
+};
 use crate::infrastructure::sqlite::open_memory_connection;
 
 #[test]

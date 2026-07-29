@@ -501,8 +501,11 @@ impl GitService {
     /// git errors (corrupt repo, invalid ref, timeout) collapse to `Ok(false)` — callers
     /// use `.unwrap_or(false)` so failures safely skip branch deletion.
     pub async fn is_ancestor(repo_path: &Path, commit: &str, target: &str) -> AppResult<bool> {
-        let output =
-            git_cmd::run(&["merge-base", "--is-ancestor", commit, target], repo_path).await;
+        let output = git_cmd::run(
+            &["merge-base", "--is-ancestor", commit, target],
+            repo_path,
+        )
+        .await;
         Ok(output.map_or(false, |o| o.status.success()))
     }
 
@@ -519,10 +522,7 @@ impl GitService {
                 branch: source_branch.to_string(),
             });
         }
-        if !Self::branch_exists(repo, target_branch)
-            .await
-            .unwrap_or(false)
-        {
+        if !Self::branch_exists(repo, target_branch).await.unwrap_or(false) {
             warn!("Target branch '{}' does not exist", target_branch);
             return Some(MergeAttemptResult::BranchNotFound {
                 branch: target_branch.to_string(),
@@ -564,9 +564,10 @@ impl GitService {
         if is_anc {
             return (true, "ancestor");
         }
-        let same_content = Self::branches_have_same_content(repo, source_branch, target_branch)
-            .await
-            .unwrap_or(false);
+        let same_content =
+            Self::branches_have_same_content(repo, source_branch, target_branch)
+                .await
+                .unwrap_or(false);
         if same_content {
             (true, "content_match")
         } else {

@@ -152,7 +152,10 @@ fn read_by_id(conn: &Connection, id: &str) -> AppResult<Option<RemoteEnvironment
 
 #[async_trait]
 impl RemoteEnvironmentRepository for SqliteRemoteEnvironmentRepository {
-    async fn upsert_paired(&self, params: UpsertPairedEnvironment) -> AppResult<RemoteEnvironment> {
+    async fn upsert_paired(
+        &self,
+        params: UpsertPairedEnvironment,
+    ) -> AppResult<RemoteEnvironment> {
         self.db
             .run_transaction(move |conn| {
                 let scopes_json = serialize_json("scopes", &params.scopes)?;
@@ -161,7 +164,8 @@ impl RemoteEnvironmentRepository for SqliteRemoteEnvironmentRepository {
                         // Dedup merge (§6.1): same host through a second URL keeps the
                         // one row (and its Keychain ref) and records the new endpoint.
                         let mut candidate_urls = existing.candidate_urls.clone();
-                        if params.url != existing.base_url && !candidate_urls.contains(&params.url)
+                        if params.url != existing.base_url
+                            && !candidate_urls.contains(&params.url)
                         {
                             candidate_urls.push(params.url.clone());
                         }

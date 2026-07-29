@@ -7,4 +7,6 @@ pub use config::{
     TasksFeatureState,
 };
 pub use effort_settings::{EffortBucket, EffortLevel, IdeationEffortSettings};
-pub use model_settings::{model_bucket_for_agent, IdeationModelSettings, ModelBucket, ModelLevel};
+pub use model_settings::{
+    model_bucket_for_agent, IdeationModelSettings, ModelBucket, ModelLevel,
+};

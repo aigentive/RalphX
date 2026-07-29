@@ -222,7 +222,10 @@ async fn test_reconciliation_proceeds_when_no_ipr_process() {
     // No IPR entry — process is NOT alive between turns
     let ipr_key = InteractiveProcessKey::new(context_type_str, context_id);
     let has_ipr = ipr.has_process(&ipr_key).await;
-    assert!(!has_ipr, "No IPR entry: reconciliation should proceed");
+    assert!(
+        !has_ipr,
+        "No IPR entry: reconciliation should proceed"
+    );
 
     // Reconciliation would clear stale registry entry before re-spawning
     let _ = running_agent_registry.stop(&agent_key).await;
@@ -277,17 +280,9 @@ async fn test_pause_stop_execution_clears_all_ipr_entries() {
     // Verify all entries are registered
     for (ctx_type, ctx_id) in &contexts {
         let ipr_key = InteractiveProcessKey::new(*ctx_type, *ctx_id);
-        assert!(
-            ipr.has_process(&ipr_key).await,
-            "Precondition: {} entry exists",
-            ctx_id
-        );
+        assert!(ipr.has_process(&ipr_key).await, "Precondition: {} entry exists", ctx_id);
     }
-    assert_eq!(
-        execution_state.running_count(),
-        3,
-        "Precondition: 3 running"
-    );
+    assert_eq!(execution_state.running_count(), 3, "Precondition: 3 running");
 
     // --- Simulate pause_execution / stop_execution ---
     // Both commands do: stop_all() + clear()
@@ -324,10 +319,7 @@ async fn test_stop_clear_idempotent_on_empty() {
 
     // Verify has_process returns false for an arbitrary key (empty registry)
     let key = InteractiveProcessKey::new("task_execution", "nonexistent");
-    assert!(
-        !ipr.has_process(&key).await,
-        "Empty registry must report no process"
-    );
+    assert!(!ipr.has_process(&key).await, "Empty registry must report no process");
 }
 
 // ============================================================================

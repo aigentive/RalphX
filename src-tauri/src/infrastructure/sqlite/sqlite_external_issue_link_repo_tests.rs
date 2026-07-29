@@ -285,7 +285,10 @@ async fn sqlite_repo_failed_ticket_operation_sets_completion_and_error() {
     let mut failed = sample_ticket_operation(None);
     failed.status = ProviderTicketOperationStatus::Failed;
     failed.error_message = Some("provider rejected transition".to_string());
-    let stored = repo.upsert_provider_ticket_operation(failed).await.unwrap();
+    let stored = repo
+        .upsert_provider_ticket_operation(failed)
+        .await
+        .unwrap();
 
     assert_eq!(stored.status, ProviderTicketOperationStatus::Failed);
     assert!(
@@ -345,7 +348,10 @@ async fn sqlite_repo_upsert_updates_existing_operation_by_client_operation_id() 
     update.provider_operation_id = Some("linear-comment-77".to_string());
     update.metadata_json = Some(r#"{"attempt":3}"#.to_string());
     update.external_key = Some("LIN-99".to_string());
-    let updated = repo.upsert_provider_ticket_operation(update).await.unwrap();
+    let updated = repo
+        .upsert_provider_ticket_operation(update)
+        .await
+        .unwrap();
 
     assert_eq!(updated.id, created.id, "client_operation_id keys the row");
     assert_eq!(updated.status, ProviderTicketOperationStatus::Succeeded);
@@ -432,13 +438,7 @@ async fn sqlite_repo_list_ticket_operations_honors_optional_filters() {
 
     // None local_project_id filter ("?5 IS NULL OR local_project_id = ?5") returns the match.
     let no_project_filter = repo
-        .list_provider_ticket_operations_for_ticket(
-            "linear",
-            "issue",
-            "lin_123",
-            Some("LIN-42"),
-            None,
-        )
+        .list_provider_ticket_operations_for_ticket("linear", "issue", "lin_123", Some("LIN-42"), None)
         .await
         .unwrap();
     assert_eq!(no_project_filter.len(), 1);
@@ -481,10 +481,7 @@ async fn sqlite_repo_update_ticket_operation_status_success_failure_and_missing(
         .unwrap()
         .expect("operation should update");
     assert_eq!(succeeded.status, ProviderTicketOperationStatus::Succeeded);
-    assert_eq!(
-        succeeded.provider_operation_id.as_deref(),
-        Some("provider-op-1")
-    );
+    assert_eq!(succeeded.provider_operation_id.as_deref(), Some("provider-op-1"));
     assert!(succeeded.completed_at.is_some());
 
     // Failure path: status + error_message + completed_at recorded.

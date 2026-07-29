@@ -15,7 +15,9 @@ use ralphx_lib::domain::entities::{
     InternalStatus, MethodologyExtension, MethodologyId, MethodologyPhase, WorkflowColumn,
     WorkflowSchema,
 };
-use ralphx_lib::infrastructure::sqlite::{SqliteMethodologyRepository, SqliteWorkflowRepository};
+use ralphx_lib::infrastructure::sqlite::{
+    SqliteMethodologyRepository, SqliteWorkflowRepository,
+};
 use ralphx_lib::testing::SqliteStateFixture;
 
 // ============================================================================

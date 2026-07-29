@@ -411,10 +411,7 @@ fn test_review_issue_validation_error_display() {
 fn test_complete_review_validation_error_display() {
     let err =
         CompleteReviewValidationError::InvalidIssue(2, ReviewIssueValidationError::EmptyTitle);
-    assert_eq!(
-        err.to_string(),
-        "issue at index 2: issue title cannot be empty"
-    );
+    assert_eq!(err.to_string(), "issue at index 2: issue title cannot be empty");
 }
 
 #[test]

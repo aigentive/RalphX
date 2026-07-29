@@ -430,7 +430,9 @@ fn a_durable_frame_from_another_epoch_tears_the_session_down() {
         .expect("the epoch guard should exist");
     let arm = &body[guard..];
     let teardown = arm
-        .find("close_with_teardown(socket, ResetReason::EpochChanged)")
+        // Tracks the signature: PR 3.3 threads the observability counters through the
+        // teardown so every reset is attributed at its single choke point.
+        .find("close_with_teardown(socket, counters, ResetReason::EpochChanged)")
         .expect("the epoch guard must tear the session down");
     assert!(
         arm[..teardown].find("continue").is_none(),

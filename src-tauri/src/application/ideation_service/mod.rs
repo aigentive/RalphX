@@ -10,8 +10,8 @@
 mod types;
 
 pub use types::{
-    CreateProposalOptions, PlanArtifactConfig, SessionStats, SessionWithData,
-    UpdateProposalOptions, UpdateSource,
+    CreateProposalOptions, PlanArtifactConfig, SessionStats, SessionWithData, UpdateProposalOptions,
+    UpdateSource,
 };
 
 use crate::domain::entities::{
@@ -82,9 +82,7 @@ where
     ) -> AppResult<IdeationSession> {
         let session = match title {
             Some(t) => IdeationSession::new_with_title(project_id, t),
-            None => {
-                IdeationSession::new_with_title(project_id, build_default_ideation_session_title())
-            }
+            None => IdeationSession::new_with_title(project_id, build_default_ideation_session_title()),
         };
 
         self.session_repo.create(session).await

@@ -90,7 +90,13 @@ fn insert_task(conn: &Connection, id: &str, project_id: &str, status: &str) {
     .unwrap();
 }
 
-fn insert_history(conn: &Connection, id: &str, task_id: &str, to_status: &str, created_at: &str) {
+fn insert_history(
+    conn: &Connection,
+    id: &str,
+    task_id: &str,
+    to_status: &str,
+    created_at: &str,
+) {
     conn.execute(
         "INSERT INTO task_state_history (id, task_id, to_status, created_at) VALUES (?1, ?2, ?3, ?4)",
         rusqlite::params![id, task_id, to_status, created_at],
@@ -216,14 +222,10 @@ async fn ipc_contract_insights_metric_commands_default_all_projects_and_filter_b
     assert_eq!(all_stats.agent_success_count, 1);
     assert_eq!(all_stats.agent_total_count, 2);
 
-    let cached_all_stats = get_insights_stats(
-        Some("   ".to_string()),
-        Some(0),
-        Some(0),
-        app.state::<AppState>(),
-    )
-    .await
-    .expect("blank project filter should use cached all-project stats");
+    let cached_all_stats =
+        get_insights_stats(Some("   ".to_string()), Some(0), Some(0), app.state::<AppState>())
+            .await
+            .expect("blank project filter should use cached all-project stats");
     assert_eq!(cached_all_stats.task_count, 2);
 
     let filtered_stats = get_insights_stats(
@@ -279,14 +281,10 @@ async fn ipc_contract_insights_metric_commands_default_all_projects_and_filter_b
     assert_eq!(all_prs.summary.total_prs, 2);
     assert_eq!(all_prs.summary.direct_workspace_prs, 2);
 
-    let cached_all_prs = get_insights_pr_insights(
-        Some(" ".to_string()),
-        Some(0),
-        Some(0),
-        app.state::<AppState>(),
-    )
-    .await
-    .expect("blank project filter should use cached all-project PR insights");
+    let cached_all_prs =
+        get_insights_pr_insights(Some(" ".to_string()), Some(0), Some(0), app.state::<AppState>())
+            .await
+            .expect("blank project filter should use cached all-project PR insights");
     assert_eq!(cached_all_prs.summary.total_prs, 2);
 
     let filtered_prs = get_insights_pr_insights(
@@ -300,23 +298,15 @@ async fn ipc_contract_insights_metric_commands_default_all_projects_and_filter_b
     assert_eq!(filtered_prs.summary.total_prs, 1);
     assert_eq!(filtered_prs.summary.merged_prs, 1);
 
-    let project_prs = get_project_pr_insights(
-        project_one_id.clone(),
-        Some(0),
-        Some(0),
-        app.state::<AppState>(),
-    )
-    .await
-    .expect("project PR insights should load");
+    let project_prs =
+        get_project_pr_insights(project_one_id.clone(), Some(0), Some(0), app.state::<AppState>())
+            .await
+            .expect("project PR insights should load");
     assert_eq!(project_prs.summary.total_prs, 1);
-    let cached_project_prs = get_project_pr_insights(
-        project_one_id.clone(),
-        Some(0),
-        Some(0),
-        app.state::<AppState>(),
-    )
-    .await
-    .expect("project PR insights should be cached");
+    let cached_project_prs =
+        get_project_pr_insights(project_one_id.clone(), Some(0), Some(0), app.state::<AppState>())
+            .await
+            .expect("project PR insights should be cached");
     assert_eq!(cached_project_prs.summary.total_prs, 1);
 
     invalidate_project_stats_cache(&project_one_id);
@@ -562,16 +552,8 @@ fn test_eme_simple_tier_5_tasks() {
 
     assert_eq!(eme.task_count, 5);
     // Simple: base=1.0 low, ×1.3 = 1.3 high per task → 5 tasks: 5.0 / 6.5
-    assert!(
-        (eme.low_hours - 5.0).abs() < 0.1,
-        "low_hours={}",
-        eme.low_hours
-    );
-    assert!(
-        (eme.high_hours - 6.5).abs() < 0.1,
-        "high_hours={}",
-        eme.high_hours
-    );
+    assert!((eme.low_hours - 5.0).abs() < 0.1, "low_hours={}", eme.low_hours);
+    assert!((eme.high_hours - 6.5).abs() < 0.1, "high_hours={}", eme.high_hours);
 }
 
 #[test]
@@ -611,16 +593,8 @@ fn test_eme_mixed_tiers() {
     // total low = 1 + 2 + 4 + 1 + 1 + 1 = 10.0
     // total high = 1.3 + 2.6 + 5.2 + 1.3 + 1.3 + 1.3 = 13.0
     assert_eq!(eme.task_count, 6);
-    assert!(
-        (eme.low_hours - 10.0).abs() < 0.5,
-        "low_hours={}",
-        eme.low_hours
-    );
-    assert!(
-        (eme.high_hours - 13.0).abs() < 0.5,
-        "high_hours={}",
-        eme.high_hours
-    );
+    assert!((eme.low_hours - 10.0).abs() < 0.5, "low_hours={}", eme.low_hours);
+    assert!((eme.high_hours - 13.0).abs() < 0.5, "high_hours={}", eme.high_hours);
 }
 
 #[test]
@@ -642,16 +616,8 @@ fn test_eme_review_cycle_bumps_tier() {
 
     // Senior defaults: Medium base=2.0, calendar=1.3
     // low=2.0, high=2.0×1.3=2.6 per task → 5×: 10.0/13.0
-    assert!(
-        (eme.low_hours - 10.0).abs() < 0.5,
-        "low_hours={}",
-        eme.low_hours
-    );
-    assert!(
-        (eme.high_hours - 13.0).abs() < 0.5,
-        "high_hours={}",
-        eme.high_hours
-    );
+    assert!((eme.low_hours - 10.0).abs() < 0.5, "low_hours={}", eme.low_hours);
+    assert!((eme.high_hours - 13.0).abs() < 0.5, "high_hours={}", eme.high_hours);
 }
 
 #[test]
@@ -753,16 +719,8 @@ fn test_eme_uses_custom_base_hours_override() {
     let eme = stats.eme.expect("EME should be present");
 
     // Custom: Simple 1.0 × 4.0 = 4.0 low, ×2.0 = 8.0 high per task → 5×: 20.0/40.0
-    assert!(
-        (eme.low_hours - 20.0).abs() < 0.1,
-        "low_hours={}",
-        eme.low_hours
-    );
-    assert!(
-        (eme.high_hours - 40.0).abs() < 0.1,
-        "high_hours={}",
-        eme.high_hours
-    );
+    assert!((eme.low_hours - 20.0).abs() < 0.1, "low_hours={}", eme.low_hours);
+    assert!((eme.high_hours - 40.0).abs() < 0.1, "high_hours={}", eme.high_hours);
 }
 
 #[test]
@@ -787,16 +745,8 @@ fn test_eme_calendar_factor_override() {
     let eme = stats.eme.expect("EME present");
 
     // Simple base=1.0 low, ×2.0 = 2.0 high per task → 5×: 5.0/10.0
-    assert!(
-        (eme.low_hours - 5.0).abs() < 0.1,
-        "low_hours={}",
-        eme.low_hours
-    );
-    assert!(
-        (eme.high_hours - 10.0).abs() < 0.1,
-        "high_hours={}",
-        eme.high_hours
-    );
+    assert!((eme.low_hours - 5.0).abs() < 0.1, "low_hours={}", eme.low_hours);
+    assert!((eme.high_hours - 10.0).abs() < 0.1, "high_hours={}", eme.high_hours);
 }
 
 #[test]
@@ -827,28 +777,12 @@ fn test_different_projects_use_independent_configs() {
     let eme2 = stats2.eme.unwrap();
 
     // proj1: Simple 1.0 × 4.0 = 4.0 low, ×1.0 = 4.0 high → 5×: 20.0/20.0
-    assert!(
-        (eme1.low_hours - 20.0).abs() < 0.1,
-        "proj1 low={}",
-        eme1.low_hours
-    );
-    assert!(
-        (eme1.high_hours - 20.0).abs() < 0.1,
-        "proj1 high={}",
-        eme1.high_hours
-    );
+    assert!((eme1.low_hours - 20.0).abs() < 0.1, "proj1 low={}", eme1.low_hours);
+    assert!((eme1.high_hours - 20.0).abs() < 0.1, "proj1 high={}", eme1.high_hours);
 
     // proj2: Senior default Simple base=1.0, calendar=1.3 → low=1.0, high=1.3 per task → 5×: 5.0/6.5
-    assert!(
-        (eme2.low_hours - 5.0).abs() < 0.1,
-        "proj2 low={}",
-        eme2.low_hours
-    );
-    assert!(
-        (eme2.high_hours - 6.5).abs() < 0.1,
-        "proj2 high={}",
-        eme2.high_hours
-    );
+    assert!((eme2.low_hours - 5.0).abs() < 0.1, "proj2 low={}", eme2.low_hours);
+    assert!((eme2.high_hours - 6.5).abs() < 0.1, "proj2 high={}", eme2.high_hours);
 }
 
 // ─── Cache invalidation ───────────────────────────────────────────────────────
@@ -885,10 +819,7 @@ fn test_invalidate_project_stats_cache_removes_entry() {
 
     invalidate_project_stats_cache(project_id);
 
-    assert!(
-        !STATS_CACHE.contains_key(&cache_key),
-        "cache entry should be evicted"
-    );
+    assert!(!STATS_CACHE.contains_key(&cache_key), "cache entry should be evicted");
     assert!(
         !STATS_CACHE.contains_key(&all_cache_key),
         "all-project cache entry should be evicted"
@@ -912,10 +843,7 @@ fn test_invalidate_also_clears_column_metrics_cache() {
 
     invalidate_project_stats_cache(project_id);
 
-    assert!(
-        !COLUMN_METRICS_CACHE.contains_key(project_id),
-        "column metrics cache should also be evicted"
-    );
+    assert!(!COLUMN_METRICS_CACHE.contains_key(project_id), "column metrics cache should also be evicted");
 }
 
 // ─── Column metrics ───────────────────────────────────────────────────────────
@@ -931,16 +859,8 @@ fn test_column_metrics_empty_project() {
     // Always returns 5 fixed columns, all with zero counts
     assert_eq!(metrics.len(), 5);
     for col in &metrics {
-        assert_eq!(
-            col.task_count, 0,
-            "column {} should have 0 tasks",
-            col.column_id
-        );
-        assert_eq!(
-            col.avg_age_hours, 0.0,
-            "column {} should have 0 avg age",
-            col.column_id
-        );
+        assert_eq!(col.task_count, 0, "column {} should have 0 tasks", col.column_id);
+        assert_eq!(col.avg_age_hours, 0.0, "column {} should have 0 avg age", col.column_id);
     }
 }
 
@@ -960,10 +880,7 @@ fn test_column_metrics_tasks_distributed_across_columns() {
 
     let backlog = metrics.iter().find(|m| m.column_id == "backlog").unwrap();
     let ready = metrics.iter().find(|m| m.column_id == "ready").unwrap();
-    let in_progress = metrics
-        .iter()
-        .find(|m| m.column_id == "in_progress")
-        .unwrap();
+    let in_progress = metrics.iter().find(|m| m.column_id == "in_progress").unwrap();
     let in_review = metrics.iter().find(|m| m.column_id == "in_review").unwrap();
     let done = metrics.iter().find(|m| m.column_id == "done").unwrap();
 
@@ -1005,10 +922,7 @@ fn test_column_metrics_revision_needed_in_ready_column() {
 
     let metrics = compute_column_metrics(&conn, "proj1").unwrap();
     let ready = metrics.iter().find(|m| m.column_id == "ready").unwrap();
-    assert_eq!(
-        ready.task_count, 2,
-        "revision_needed should be in the ready column"
-    );
+    assert_eq!(ready.task_count, 2, "revision_needed should be in the ready column");
 }
 
 // ─── Task metrics ─────────────────────────────────────────────────────────────
@@ -1123,13 +1037,7 @@ fn test_column_dwell_times_maps_states_to_columns() {
 
     insert_history(&conn, "dw1", "t1", "ready", "2026-01-01T10:00:00+00:00");
     insert_history(&conn, "dw2", "t1", "executing", "2026-01-01T11:00:00+00:00");
-    insert_history(
-        &conn,
-        "dw3",
-        "t1",
-        "pending_review",
-        "2026-01-01T13:00:00+00:00",
-    );
+    insert_history(&conn, "dw3", "t1", "pending_review", "2026-01-01T13:00:00+00:00");
     insert_history(&conn, "dw4", "t1", "merged", "2026-01-01T13:30:00+00:00");
 
     let stats = compute_project_stats(&conn, "proj1", 0, 0).unwrap();
@@ -1138,35 +1046,14 @@ fn test_column_dwell_times_maps_states_to_columns() {
     // Should have: ready(60m), in_progress(120m), in_review(30m)
     assert_eq!(dwell.len(), 3, "expected 3 columns with dwell times");
 
-    let ready = dwell
-        .iter()
-        .find(|d| d.column_id == "ready")
-        .expect("ready column");
-    assert!(
-        (ready.avg_minutes - 60.0).abs() < 1.0,
-        "ready avg={}",
-        ready.avg_minutes
-    );
+    let ready = dwell.iter().find(|d| d.column_id == "ready").expect("ready column");
+    assert!((ready.avg_minutes - 60.0).abs() < 1.0, "ready avg={}", ready.avg_minutes);
 
-    let in_progress = dwell
-        .iter()
-        .find(|d| d.column_id == "in_progress")
-        .expect("in_progress column");
-    assert!(
-        (in_progress.avg_minutes - 120.0).abs() < 1.0,
-        "in_progress avg={}",
-        in_progress.avg_minutes
-    );
+    let in_progress = dwell.iter().find(|d| d.column_id == "in_progress").expect("in_progress column");
+    assert!((in_progress.avg_minutes - 120.0).abs() < 1.0, "in_progress avg={}", in_progress.avg_minutes);
 
-    let in_review = dwell
-        .iter()
-        .find(|d| d.column_id == "in_review")
-        .expect("in_review column");
-    assert!(
-        (in_review.avg_minutes - 30.0).abs() < 1.0,
-        "in_review avg={}",
-        in_review.avg_minutes
-    );
+    let in_review = dwell.iter().find(|d| d.column_id == "in_review").expect("in_review column");
+    assert!((in_review.avg_minutes - 30.0).abs() < 1.0, "in_review avg={}", in_review.avg_minutes);
 }
 
 #[test]
@@ -1198,17 +1085,9 @@ fn test_column_dwell_times_averages_across_tasks() {
     insert_history(&conn, "b3", "t2", "merged", "2026-01-02T13:00:00+00:00");
 
     let stats = compute_project_stats(&conn, "proj1", 0, 0).unwrap();
-    let ready = stats
-        .column_dwell_times
-        .iter()
-        .find(|d| d.column_id == "ready")
-        .expect("ready");
+    let ready = stats.column_dwell_times.iter().find(|d| d.column_id == "ready").expect("ready");
 
     // Average of 60m and 120m = 90m
-    assert!(
-        (ready.avg_minutes - 90.0).abs() < 1.0,
-        "ready avg={}",
-        ready.avg_minutes
-    );
+    assert!((ready.avg_minutes - 90.0).abs() < 1.0, "ready avg={}", ready.avg_minutes);
     assert_eq!(ready.sample_size, 2);
 }

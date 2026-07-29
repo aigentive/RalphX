@@ -1,5 +1,5 @@
-use super::ScopeDriftClassification;
 use crate::entities::{IssueCategory, IssueSeverity, TaskStepId};
+use super::ScopeDriftClassification;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
@@ -322,10 +322,7 @@ impl CompleteReviewInput {
     }
 
     pub fn is_approved(&self) -> bool {
-        matches!(
-            self.outcome,
-            ReviewToolOutcome::Approved | ReviewToolOutcome::ApprovedNoChanges
-        )
+        matches!(self.outcome, ReviewToolOutcome::Approved | ReviewToolOutcome::ApprovedNoChanges)
     }
 
     pub fn is_needs_changes(&self) -> bool {

@@ -9,8 +9,8 @@ use rusqlite::Connection;
 use super::DbConnection;
 use crate::domain::entities::ProjectId;
 use crate::domain::ideation::{EffortLevel, IdeationEffortSettings};
-use crate::error::AppError;
 use ralphx_domain::repositories::IdeationEffortSettingsRepository;
+use crate::error::AppError;
 
 pub struct SqliteIdeationEffortSettingsRepository {
     db: DbConnection,
@@ -165,7 +165,8 @@ fn parse_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<IdeationEffortSettings
     let updated_at_str: String = row.get(4)?;
 
     let project_id = project_id_str.map(ProjectId);
-    let primary_effort = EffortLevel::from_str(&primary_effort_str).unwrap_or(EffortLevel::Inherit);
+    let primary_effort =
+        EffortLevel::from_str(&primary_effort_str).unwrap_or(EffortLevel::Inherit);
     let verifier_effort =
         EffortLevel::from_str(&verifier_effort_str).unwrap_or(EffortLevel::Inherit);
     let updated_at = chrono::DateTime::parse_from_rfc3339(&updated_at_str)

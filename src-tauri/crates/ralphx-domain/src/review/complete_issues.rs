@@ -25,12 +25,8 @@ pub fn build_review_issue_entities(
     issues
         .into_iter()
         .map(|issue| {
-            let mut entity = ReviewIssueEntity::new(
-                review_note_id.clone(),
-                task_id.clone(),
-                issue.title,
-                issue.severity,
-            );
+            let mut entity =
+                ReviewIssueEntity::new(review_note_id.clone(), task_id.clone(), issue.title, issue.severity);
             entity.description = issue.description;
             entity.category = issue.category;
             entity.step_id = issue.step_id;

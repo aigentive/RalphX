@@ -79,15 +79,16 @@ impl WebhookPublisher {
 
 #[async_trait]
 impl WebhookPublisherTrait for WebhookPublisher {
-    async fn publish(&self, event_type: EventType, project_id: &str, payload: serde_json::Value) {
+    async fn publish(
+        &self,
+        event_type: EventType,
+        project_id: &str,
+        payload: serde_json::Value,
+    ) {
         info!(event_type = %event_type, project_id, "WebhookPublisher::publish called");
 
         let webhooks = self.get_webhooks_for_project(project_id).await;
-        info!(
-            project_id,
-            count = webhooks.len(),
-            "Loaded webhooks for project"
-        );
+        info!(project_id, count = webhooks.len(), "Loaded webhooks for project");
 
         let matching: Vec<_> = webhooks
             .into_iter()
@@ -328,3 +329,4 @@ pub(crate) fn compute_hmac_signature(secret: &str, data: &[u8]) -> Result<String
         s
     }))
 }
+

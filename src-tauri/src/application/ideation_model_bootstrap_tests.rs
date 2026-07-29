@@ -22,9 +22,7 @@ async fn test_seeds_when_empty() {
 async fn test_idempotent_when_already_seeded() {
     let repo = Arc::new(MemoryIdeationModelSettingsRepository::new());
     // Pre-seed with user values
-    repo.upsert_global("opus", "sonnet", "inherit", "inherit")
-        .await
-        .unwrap();
+    repo.upsert_global("opus", "sonnet", "inherit", "inherit").await.unwrap();
 
     let result = seed_ideation_model_settings(Arc::clone(&repo) as _)
         .await
@@ -56,9 +54,7 @@ async fn test_idempotent_on_repeated_calls() {
 async fn test_preserves_user_configured_inherit_values() {
     let repo = Arc::new(MemoryIdeationModelSettingsRepository::new());
     // Pre-seed explicitly with inherit values (user chose inherit, not just default)
-    repo.upsert_global("inherit", "inherit", "inherit", "inherit")
-        .await
-        .unwrap();
+    repo.upsert_global("inherit", "inherit", "inherit", "inherit").await.unwrap();
 
     let result = seed_ideation_model_settings(Arc::clone(&repo) as _)
         .await

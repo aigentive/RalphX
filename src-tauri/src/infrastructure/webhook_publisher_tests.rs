@@ -9,9 +9,7 @@ mod tests {
 
     use crate::domain::repositories::external_events_repository::ExternalEventsRepository;
     use crate::domain::repositories::{WebhookRegistration, WebhookRegistrationRepository};
-    use crate::domain::services::payload_enrichment::{
-        PresentationKind, WebhookPresentationContext,
-    };
+    use crate::domain::services::payload_enrichment::{PresentationKind, WebhookPresentationContext};
     use crate::domain::state_machine::services::WebhookPublisher as WebhookPublisherTrait;
     use crate::infrastructure::memory::{
         MemoryExternalEventsRepository, MemoryWebhookRegistrationRepository,
@@ -96,7 +94,9 @@ mod tests {
             .insert_event(&event_type.to_string(), project_id, &payload.to_string())
             .await
             .expect("insert_event must not fail");
-        publisher.publish(event_type, project_id, payload).await;
+        publisher
+            .publish(event_type, project_id, payload)
+            .await;
     }
 
     // ============================================================================
@@ -130,7 +130,12 @@ mod tests {
             _headers: HashMap<String, String>,
         ) -> Result<u16, WebhookDeliveryError> {
             self.calls.lock().unwrap().push(url.to_string());
-            let status = self.responses.lock().unwrap().pop_front().unwrap_or(200);
+            let status = self
+                .responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or(200);
             Ok(status)
         }
     }
@@ -155,7 +160,11 @@ mod tests {
         }
     }
 
-    async fn seed_repo(repo: &MemoryWebhookRegistrationRepository, reg: WebhookRegistration) {
+
+    async fn seed_repo(
+        repo: &MemoryWebhookRegistrationRepository,
+        reg: WebhookRegistration,
+    ) {
         repo.upsert(reg).await.unwrap();
     }
 
@@ -187,11 +196,7 @@ mod tests {
         // Let the spawned task complete
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        assert_eq!(
-            mock_client.call_count(),
-            1,
-            "Expected exactly 1 HTTP call on success"
-        );
+        assert_eq!(mock_client.call_count(), 1, "Expected exactly 1 HTTP call on success");
 
         let calls = mock_client.calls.lock().unwrap();
         assert_eq!(calls[0].url, "http://example.com/hook");
@@ -212,7 +217,8 @@ mod tests {
 
         // Respond with two 503s then success
         let seq_client = Arc::new(SequencedMockHttpClient::new(vec![503, 503, 200]));
-        let publisher = WebhookPublisher::new(Arc::clone(&repo) as _, Arc::clone(&seq_client) as _);
+        let publisher =
+            WebhookPublisher::new(Arc::clone(&repo) as _, Arc::clone(&seq_client) as _);
 
         publisher
             .publish(
@@ -279,7 +285,8 @@ mod tests {
 
         // All 3 attempts return 503 — retries exhausted
         let seq_client = Arc::new(SequencedMockHttpClient::new(vec![503, 503, 503]));
-        let publisher = WebhookPublisher::new(Arc::clone(&repo) as _, Arc::clone(&seq_client) as _);
+        let publisher =
+            WebhookPublisher::new(Arc::clone(&repo) as _, Arc::clone(&seq_client) as _);
 
         publisher
             .publish(
@@ -333,11 +340,7 @@ mod tests {
             )
             .await;
         tokio::time::sleep(Duration::from_millis(50)).await;
-        assert_eq!(
-            mock_client.call_count(),
-            1,
-            "First publish must call 1 webhook"
-        );
+        assert_eq!(mock_client.call_count(), 1, "First publish must call 1 webhook");
 
         // Add a second webhook to the repo while cache still holds old data
         seed_repo(
@@ -392,18 +395,13 @@ mod tests {
         // Must be exactly 64 lowercase hex chars (SHA256 output = 32 bytes = 64 hex chars)
         assert_eq!(signature.len(), 64, "HMAC-SHA256 hex must be 64 chars");
         assert!(
-            signature
-                .chars()
-                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            signature.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
             "Signature must be lowercase hex"
         );
 
         // Must be deterministic
         let signature2 = compute_hmac_signature(secret, payload).expect("HMAC should not fail");
-        assert_eq!(
-            signature, signature2,
-            "HMAC signature must be deterministic"
-        );
+        assert_eq!(signature, signature2, "HMAC signature must be deterministic");
 
         // Different secrets must produce different signatures
         let other_sig =
@@ -708,9 +706,18 @@ mod tests {
             "merge_completed",
             "presentation_kind must be merge_completed"
         );
-        assert_eq!(captured["project_name"].as_str().unwrap(), "Test Project");
-        assert_eq!(captured["session_title"].as_str().unwrap(), "Test Session");
-        assert_eq!(captured["task_title"].as_str().unwrap(), "Test Task");
+        assert_eq!(
+            captured["project_name"].as_str().unwrap(),
+            "Test Project"
+        );
+        assert_eq!(
+            captured["session_title"].as_str().unwrap(),
+            "Test Session"
+        );
+        assert_eq!(
+            captured["task_title"].as_str().unwrap(),
+            "Test Task"
+        );
 
         // Backward compat: original fields still present
         assert_eq!(captured["task_id"].as_str().unwrap(), "task-wp-test");
@@ -718,9 +725,6 @@ mod tests {
         assert_eq!(captured["session_id"].as_str().unwrap(), "session-wp-test");
         assert_eq!(captured["commit_sha"].as_str().unwrap(), "abc123def456");
         assert_eq!(captured["target_branch"].as_str().unwrap(), "main");
-        assert!(
-            captured.get("timestamp").is_some(),
-            "timestamp must be present"
-        );
+        assert!(captured.get("timestamp").is_some(), "timestamp must be present");
     }
 }

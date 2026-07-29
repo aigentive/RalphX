@@ -85,7 +85,10 @@ impl TicketCanonicalBranchRepository for SqliteTicketCanonicalBranchRepository {
             .await
     }
 
-    async fn upsert(&self, branch: TicketCanonicalBranch) -> AppResult<TicketCanonicalBranch> {
+    async fn upsert(
+        &self,
+        branch: TicketCanonicalBranch,
+    ) -> AppResult<TicketCanonicalBranch> {
         let fetch_project_id = branch.project_id.as_str().to_string();
         let fetch_provider = branch.provider.clone();
         let fetch_issue_key = branch.issue_key.clone();

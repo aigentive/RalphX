@@ -48,10 +48,7 @@ async fn test_cleanup_single_task_deletes_from_db() {
 
     // Verify task is archived
     let task = state.task_repo.get_by_id(&task_id).await.unwrap().unwrap();
-    assert!(
-        task.archived_at.is_some(),
-        "Task should be archived after cleanup"
-    );
+    assert!(task.archived_at.is_some(), "Task should be archived after cleanup");
 }
 
 #[tokio::test]
@@ -71,16 +68,8 @@ async fn test_cleanup_task_ref_deletes_from_db() {
     let agent_stopped = service.cleanup_task_ref(&created).await.unwrap();
     assert!(!agent_stopped); // backlog task has no active agent
 
-    let task = state
-        .task_repo
-        .get_by_id(&created.id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        task.archived_at.is_some(),
-        "Task should be archived after cleanup_task_ref"
-    );
+    let task = state.task_repo.get_by_id(&created.id).await.unwrap().unwrap();
+    assert!(task.archived_at.is_some(), "Task should be archived after cleanup_task_ref");
 }
 
 #[tokio::test]
@@ -131,15 +120,8 @@ async fn test_cleanup_tasks_batch() {
 
     // Verify all tasks are archived
     let remaining = state.task_repo.get_by_project(&project_id).await.unwrap();
-    assert_eq!(
-        remaining.len(),
-        3,
-        "All tasks should still be in DB (archived)"
-    );
-    assert!(
-        remaining.iter().all(|t| t.archived_at.is_some()),
-        "All tasks should be archived"
-    );
+    assert_eq!(remaining.len(), 3, "All tasks should still be in DB (archived)");
+    assert!(remaining.iter().all(|t| t.archived_at.is_some()), "All tasks should be archived");
 }
 
 #[tokio::test]
@@ -236,19 +218,9 @@ async fn test_cleanup_tasks_in_group_by_status() {
     let report = service.cleanup_tasks_in_group(group).await.unwrap();
 
     assert_eq!(report.tasks_archived, 2);
-    let task1 = state
-        .task_repo
-        .get_by_id(&created1.id)
-        .await
-        .unwrap()
-        .unwrap();
+    let task1 = state.task_repo.get_by_id(&created1.id).await.unwrap().unwrap();
     assert!(task1.archived_at.is_some(), "Task 1 should be archived");
-    let task2 = state
-        .task_repo
-        .get_by_id(&created2.id)
-        .await
-        .unwrap()
-        .unwrap();
+    let task2 = state.task_repo.get_by_id(&created2.id).await.unwrap().unwrap();
     assert!(task2.archived_at.is_some(), "Task 2 should be archived");
 }
 
@@ -450,10 +422,7 @@ async fn test_cleanup_tasks_archives_task_idempotently() {
 
     // Verify task is archived
     let task = test_repo.get_by_id(&task_id).await.unwrap().unwrap();
-    assert!(
-        task.archived_at.is_some(),
-        "Task should be archived after cleanup"
-    );
+    assert!(task.archived_at.is_some(), "Task should be archived after cleanup");
 }
 
 // ── IPR cleanup tests ──────────────────────────────────────────────────
@@ -497,10 +466,7 @@ async fn test_cleanup_removes_ipr_entry_for_executing_task() {
     let (stdin, _child) = create_test_stdin().await;
     let ipr_key = InteractiveProcessKey::new("task_execution", task.id.as_str());
     ipr.register(ipr_key.clone(), stdin).await;
-    assert!(
-        ipr.has_process(&ipr_key).await,
-        "Precondition: IPR has entry"
-    );
+    assert!(ipr.has_process(&ipr_key).await, "Precondition: IPR has entry");
 
     // Register in running agent registry
     let agent_key = RunningAgentKey::new("task_execution", task.id.as_str());
@@ -578,11 +544,7 @@ async fn test_cleanup_batch_removes_all_ipr_entries() {
     let (stdin2, _child2) = create_test_stdin().await;
     let ipr_key2 = InteractiveProcessKey::new("review", task2.id.as_str());
     ipr.register(ipr_key2.clone(), stdin2).await;
-    assert_eq!(
-        ipr.dump_state().await.len(),
-        2,
-        "Precondition: both entries registered"
-    );
+    assert_eq!(ipr.dump_state().await.len(), 2, "Precondition: both entries registered");
 
     // Register both in running agent registry
     state
@@ -621,11 +583,7 @@ async fn test_cleanup_batch_removes_all_ipr_entries() {
         .await;
 
     assert_eq!(report.tasks_archived, 2);
-    assert_eq!(
-        ipr.dump_state().await.len(),
-        0,
-        "All IPR entries must be removed"
-    );
+    assert_eq!(ipr.dump_state().await.len(), 0, "All IPR entries must be removed");
 }
 
 /// Without IPR set on service, cleanup still works (backward compat).
@@ -706,14 +664,7 @@ impl RunningAgentRegistry for AlwaysErrStopRegistry {
         cancellation_token: Option<tokio_util::sync::CancellationToken>,
     ) {
         self.0
-            .register(
-                key,
-                pid,
-                conversation_id,
-                agent_run_id,
-                worktree_path,
-                cancellation_token,
-            )
+            .register(key, pid, conversation_id, agent_run_id, worktree_path, cancellation_token)
             .await;
     }
 
@@ -784,9 +735,7 @@ impl RunningAgentRegistry for AlwaysErrStopRegistry {
         conversation_id: String,
         agent_run_id: String,
     ) -> Result<(), TryRegisterError> {
-        self.0
-            .try_register(key, conversation_id, agent_run_id)
-            .await
+        self.0.try_register(key, conversation_id, agent_run_id).await
     }
 
     async fn renew_reservation(
@@ -846,10 +795,7 @@ async fn test_stop_ideation_agent_ideation_key_cleanup() {
     let (stdin, _child) = create_test_stdin().await;
     let ipr_key = InteractiveProcessKey::new("ideation", session_id);
     ipr.register(ipr_key.clone(), stdin).await;
-    assert!(
-        ipr.has_process(&ipr_key).await,
-        "Precondition: IPR has entry"
-    );
+    assert!(ipr.has_process(&ipr_key).await, "Precondition: IPR has entry");
 
     let agent_key = RunningAgentKey::new("ideation", session_id);
     state
@@ -875,10 +821,7 @@ async fn test_stop_ideation_agent_ideation_key_cleanup() {
     let stopped = service.stop_ideation_session_agent(session_id).await;
 
     assert!(stopped, "Helper must return true when process found");
-    assert!(
-        !ipr.has_process(&ipr_key).await,
-        "IPR entry must be removed"
-    );
+    assert!(!ipr.has_process(&ipr_key).await, "IPR entry must be removed");
     assert_eq!(ipr.dump_state().await.len(), 0, "IPR must be empty");
     assert!(
         !state.running_agent_registry.is_running(&agent_key).await,
@@ -897,10 +840,7 @@ async fn test_stop_ideation_agent_session_key_cleanup() {
     let (stdin, _child) = create_test_stdin().await;
     let ipr_key = InteractiveProcessKey::new("session", session_id);
     ipr.register(ipr_key.clone(), stdin).await;
-    assert!(
-        ipr.has_process(&ipr_key).await,
-        "Precondition: IPR has entry"
-    );
+    assert!(ipr.has_process(&ipr_key).await, "Precondition: IPR has entry");
 
     let agent_key = RunningAgentKey::new("session", session_id);
     state
@@ -926,10 +866,7 @@ async fn test_stop_ideation_agent_session_key_cleanup() {
     let stopped = service.stop_ideation_session_agent(session_id).await;
 
     assert!(stopped, "Helper must return true when process found");
-    assert!(
-        !ipr.has_process(&ipr_key).await,
-        "IPR entry must be removed"
-    );
+    assert!(!ipr.has_process(&ipr_key).await, "IPR entry must be removed");
     assert_eq!(ipr.dump_state().await.len(), 0, "IPR must be empty");
     assert!(
         !state.running_agent_registry.is_running(&agent_key).await,
@@ -954,10 +891,7 @@ async fn test_stop_ideation_agent_no_process_returns_false() {
 
     let stopped = service.stop_ideation_session_agent(session_id).await;
 
-    assert!(
-        !stopped,
-        "Helper must return false when no process is registered"
-    );
+    assert!(!stopped, "Helper must return false when no process is registered");
     assert_eq!(ipr.dump_state().await.len(), 0, "IPR must remain empty");
 }
 
@@ -1071,8 +1005,7 @@ async fn test_stop_ideation_agent_event_context_type_ideation_key() {
     let session_id = "event-ideation-session";
 
     let (stdin, _child) = create_test_stdin().await;
-    ipr.register(InteractiveProcessKey::new("ideation", session_id), stdin)
-        .await;
+    ipr.register(InteractiveProcessKey::new("ideation", session_id), stdin).await;
 
     state
         .running_agent_registry
@@ -1124,8 +1057,7 @@ async fn test_stop_ideation_agent_event_context_type_session_key() {
     let session_id = "event-session-session";
 
     let (stdin, _child) = create_test_stdin().await;
-    ipr.register(InteractiveProcessKey::new("session", session_id), stdin)
-        .await;
+    ipr.register(InteractiveProcessKey::new("session", session_id), stdin).await;
 
     state
         .running_agent_registry
@@ -1209,11 +1141,7 @@ async fn test_stop_ideation_agent_probes_ideation_key_only() {
         !ipr.has_process(&ideation_key).await,
         "'ideation' IPR entry must be removed"
     );
-    assert_eq!(
-        ipr.dump_state().await.len(),
-        0,
-        "No IPR entries must remain"
-    );
+    assert_eq!(ipr.dump_state().await.len(), 0, "No IPR entries must remain");
     assert!(
         !state
             .running_agent_registry
@@ -1271,11 +1199,7 @@ async fn test_stop_ideation_agent_probes_session_key_only() {
         !ipr.has_process(&session_key).await,
         "'session' IPR entry must be removed"
     );
-    assert_eq!(
-        ipr.dump_state().await.len(),
-        0,
-        "No IPR entries must remain"
-    );
+    assert_eq!(ipr.dump_state().await.len(), 0, "No IPR entries must remain");
     assert!(
         !state
             .running_agent_registry
@@ -1332,10 +1256,7 @@ async fn test_call_site_http_path_none_app_handle() {
     let stopped = service.stop_ideation_session_agent(session_id).await;
 
     assert!(stopped, "HTTP path: helper returns true when process found");
-    assert!(
-        !ipr.has_process(&ipr_key).await,
-        "IPR entry removed in HTTP path"
-    );
+    assert!(!ipr.has_process(&ipr_key).await, "IPR entry removed in HTTP path");
     assert!(
         !state
             .running_agent_registry
@@ -1383,10 +1304,7 @@ async fn test_call_site_archive_path_cleanup_then_status_update() {
     // Step 1: stop ideation agent (mirrors archive_ideation_session before update_status)
     let stopped = service.stop_ideation_session_agent(&session_id_str).await;
     assert!(stopped, "Archive: agent must be stopped");
-    assert!(
-        !ipr.has_process(&ipr_key).await,
-        "IPR cleared before status update"
-    );
+    assert!(!ipr.has_process(&ipr_key).await, "IPR cleared before status update");
 
     // Step 2: update session status (mirrors archive_ideation_session after stop)
     let session = IdeationSession::new(project_id);
@@ -1452,10 +1370,7 @@ async fn test_call_site_accept_path_only_when_session_converted() {
     let session_converted = true;
     if session_converted {
         let stopped = service.stop_ideation_session_agent(session_id).await;
-        assert!(
-            stopped,
-            "Accept: helper returns true when session_converted == true"
-        );
+        assert!(stopped, "Accept: helper returns true when session_converted == true");
     }
     assert!(
         !ipr.has_process(&ipr_key).await,

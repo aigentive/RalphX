@@ -4,7 +4,6 @@
 pub mod agents;
 pub mod atlassian_client;
 pub mod clickup_client;
-pub mod external_mcp_supervisor;
 pub(crate) mod git_auth;
 #[cfg(test)]
 mod git_auth_tests;
@@ -15,13 +14,14 @@ pub mod login_shell_env;
 pub mod memory;
 pub mod remote_host_client;
 pub mod remote_ws_client;
-pub mod secret_store;
 pub mod services;
+pub mod secret_store;
 pub mod sqlite;
 pub(crate) mod subprocess_env_policy;
 pub mod supervisor;
 pub(crate) mod tailscale;
 pub mod tool_paths;
+pub mod external_mcp_supervisor;
 pub mod webhook_http_client;
 pub mod webhook_publisher;
 
@@ -31,9 +31,6 @@ pub use agents::{
 };
 pub use atlassian_client::HyperAtlassianApiClient;
 pub use clickup_client::HyperClickUpApiClient;
-pub use external_mcp_supervisor::{
-    ExternalMcpHandle, ExternalMcpReadinessState, ExternalMcpSupervisor,
-};
 pub use granola_client::HyperGranolaApiClient;
 pub use linear_client::HyperLinearApiClient;
 pub use remote_host_client::{
@@ -45,6 +42,9 @@ pub use remote_ws_client::{
 pub use services::GhCliGithubService;
 pub use sqlite::{get_default_db_path, open_connection, open_memory_connection, run_migrations};
 pub use supervisor::{EventBus, EventSubscriber};
+pub use external_mcp_supervisor::{
+    ExternalMcpHandle, ExternalMcpReadinessState, ExternalMcpSupervisor,
+};
 pub use webhook_http_client::{
     HyperWebhookClient, MockWebhookHttpClient, RecordedCall, WebhookDeliveryError,
     WebhookHttpClient,
@@ -54,15 +54,15 @@ pub use webhook_publisher::WebhookPublisher as ConcreteWebhookPublisher;
 #[cfg(test)]
 mod atlassian_client_tests;
 #[cfg(test)]
+mod jira_agile_client_tests;
+#[cfg(test)]
 mod clickup_client_tests;
 #[cfg(test)]
 mod external_mcp_supervisor_tests;
 #[cfg(test)]
-mod git_auth_policy_tests;
-#[cfg(test)]
 mod granola_client_tests;
 #[cfg(test)]
-mod jira_agile_client_tests;
+mod git_auth_policy_tests;
 #[cfg(test)]
 mod login_shell_env_tests;
 #[cfg(test)]

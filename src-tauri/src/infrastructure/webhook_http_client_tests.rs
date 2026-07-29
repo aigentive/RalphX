@@ -35,10 +35,7 @@ mod tests {
             .await;
 
         assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            WebhookDeliveryError::Request(_)
-        ));
+        assert!(matches!(result.unwrap_err(), WebhookDeliveryError::Request(_)));
         // Still records the call even on error
         assert_eq!(client.call_count(), 1);
     }

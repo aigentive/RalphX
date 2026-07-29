@@ -256,7 +256,12 @@ impl ActivityEventRepository for SqliteActivityEventRepository {
                      LIMIT ?4",
                     filter_clause
                 );
-                let mut params = vec![task_id_str, cursor_ts, cursor_id, fetch_limit.to_string()];
+                let mut params = vec![
+                    task_id_str,
+                    cursor_ts,
+                    cursor_id,
+                    fetch_limit.to_string(),
+                ];
                 params.extend(filter_params);
                 (sql, params)
             } else {

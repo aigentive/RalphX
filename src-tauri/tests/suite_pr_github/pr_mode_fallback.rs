@@ -78,11 +78,7 @@ async fn test_no_github_service_poller_is_noop() {
     let execution_state = Arc::new(ExecutionState::new());
 
     let project = Project::new("Test Project".to_string(), "/tmp/test-repo".to_string());
-    app_state
-        .project_repo
-        .create(project.clone())
-        .await
-        .unwrap();
+    app_state.project_repo.create(project.clone()).await.unwrap();
 
     let mut task = Task::new(project.id.clone(), "No-github-service task".to_string());
     task.internal_status = InternalStatus::Merging;
@@ -171,11 +167,7 @@ async fn test_reconciler_without_pr_registry_falls_through_for_pr_task() {
     let execution_state = Arc::new(ExecutionState::new());
 
     let project = Project::new("Test Project".to_string(), "/tmp/test-repo".to_string());
-    app_state
-        .project_repo
-        .create(project.clone())
-        .await
-        .unwrap();
+    app_state.project_repo.create(project.clone()).await.unwrap();
 
     let mut task = Task::new(project.id.clone(), "PR task no registry".to_string());
     task.internal_status = InternalStatus::Merging;
@@ -232,11 +224,7 @@ async fn test_mode_switch_task_gets_retried() {
     let execution_state = Arc::new(ExecutionState::new());
 
     let project = Project::new("Test Project".to_string(), "/tmp/test-repo".to_string());
-    app_state
-        .project_repo
-        .create(project.clone())
-        .await
-        .unwrap();
+    app_state.project_repo.create(project.clone()).await.unwrap();
 
     // Task with mode_switch=true AND circuit_breaker_active=true
     let mut task = Task::new(project.id.clone(), "Mode switch task".to_string());
@@ -259,11 +247,7 @@ async fn test_mode_switch_task_gets_retried() {
         })
         .to_string(),
     );
-    app_state
-        .task_repo
-        .create(blocked_task.clone())
-        .await
-        .unwrap();
+    app_state.task_repo.create(blocked_task.clone()).await.unwrap();
 
     let reconciler = build_reconciler(&app_state, &execution_state);
 
@@ -303,11 +287,7 @@ async fn test_non_pr_plan_branch_skips_pr_polling() {
     let execution_state = Arc::new(ExecutionState::new());
 
     let project = Project::new("Test Project".to_string(), "/tmp/test-repo".to_string());
-    app_state
-        .project_repo
-        .create(project.clone())
-        .await
-        .unwrap();
+    app_state.project_repo.create(project.clone()).await.unwrap();
 
     let mut task = Task::new(project.id.clone(), "Non-eligible PR task".to_string());
     task.internal_status = InternalStatus::Merging;

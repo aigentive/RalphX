@@ -25,8 +25,9 @@ impl TestContext {
             as Arc<dyn MemoryEntryRepository>;
         let memory_event_repo = Arc::new(SqliteMemoryEventRepository::new(db.new_connection()))
             as Arc<dyn MemoryEventRepository>;
-        let memory_archive_repo = Arc::new(SqliteMemoryArchiveRepository::new(db.new_connection()))
-            as Arc<dyn MemoryArchiveRepository>;
+        let memory_archive_repo =
+            Arc::new(SqliteMemoryArchiveRepository::new(db.new_connection()))
+                as Arc<dyn MemoryArchiveRepository>;
 
         let service =
             RuleIngestionService::new(memory_entry_repo, memory_event_repo, memory_archive_repo);

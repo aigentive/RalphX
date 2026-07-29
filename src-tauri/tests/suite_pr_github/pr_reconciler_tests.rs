@@ -7,9 +7,9 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::common::MockGithubService;
 use async_trait::async_trait;
 use chrono::Utc;
+use crate::common::MockGithubService;
 use ralphx_lib::application::pr_startup_recovery::{recover_missing_draft_prs, recover_pr_pollers};
 use ralphx_lib::application::services::PrPollerRegistry;
 use ralphx_lib::application::{AppState, ReconciliationRunner, TaskTransitionService};
@@ -49,12 +49,10 @@ impl PlanPrDescriptionDrafter for StaticPlanPrDescriptionDrafter {
         _review_state: PrReviewState,
     ) -> ralphx_lib::error::AppResult<ralphx_lib::domain::entities::AgentWorkspacePrDescription>
     {
-        Ok(
-            ralphx_lib::domain::entities::AgentWorkspacePrDescription::new(
-                None,
-                "## Summary\n\nStartup recovery drafted body".to_string(),
-            ),
-        )
+        Ok(ralphx_lib::domain::entities::AgentWorkspacePrDescription::new(
+            None,
+            "## Summary\n\nStartup recovery drafted body".to_string(),
+        ))
     }
 }
 

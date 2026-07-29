@@ -4,21 +4,15 @@ use crate::entities::TaskId;
 #[test]
 fn parses_scope_drift_classification() {
     assert_eq!(
-        "adjacent_scope_expansion"
-            .parse::<ScopeDriftClassification>()
-            .unwrap(),
+        "adjacent_scope_expansion".parse::<ScopeDriftClassification>().unwrap(),
         ScopeDriftClassification::AdjacentScopeExpansion
     );
     assert_eq!(
-        "plan_correction"
-            .parse::<ScopeDriftClassification>()
-            .unwrap(),
+        "plan_correction".parse::<ScopeDriftClassification>().unwrap(),
         ScopeDriftClassification::PlanCorrection
     );
     assert_eq!(
-        "unrelated_drift"
-            .parse::<ScopeDriftClassification>()
-            .unwrap(),
+        "unrelated_drift".parse::<ScopeDriftClassification>().unwrap(),
         ScopeDriftClassification::UnrelatedDrift
     );
 }
@@ -26,9 +20,7 @@ fn parses_scope_drift_classification() {
 #[test]
 fn rejects_invalid_scope_drift_classification() {
     let err = "bad".parse::<ScopeDriftClassification>().unwrap_err();
-    assert!(err
-        .to_string()
-        .contains("invalid scope drift classification"));
+    assert!(err.to_string().contains("invalid scope drift classification"));
 }
 
 #[test]

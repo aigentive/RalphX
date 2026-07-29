@@ -13,11 +13,11 @@ mod types;
 
 pub use types::{ApplyProposalsOptions, ApplyProposalsResult, SelectionValidation, TargetColumn};
 
-use crate::domain::entities::ideation::PLAN_CONTRACT_V2;
 use crate::domain::entities::{
     IdeationSessionId, IdeationSessionStatus, ProposalStatus, TaskProposal, TaskProposalId,
     TaskStep,
 };
+use crate::domain::entities::ideation::PLAN_CONTRACT_V2;
 use crate::domain::repositories::{
     IdeationSessionRepository, ProposalDependencyRepository, TaskDependencyRepository,
     TaskProposalRepository, TaskRepository, TaskStepRepository,

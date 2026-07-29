@@ -261,10 +261,7 @@ impl MockRemoteWsClient {
     }
 
     pub fn dialed_urls(&self) -> Vec<String> {
-        self.dialed
-            .lock()
-            .expect("mock ws dial log poisoned")
-            .clone()
+        self.dialed.lock().expect("mock ws dial log poisoned").clone()
     }
 }
 

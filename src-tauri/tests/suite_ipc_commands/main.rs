@@ -13,12 +13,12 @@ mod support;
 #[path = "../common/mod.rs"]
 mod common;
 
-mod agent_conversation_start_mcp_preflight;
 mod agent_conversation_start_persona_binding;
 mod agent_conversation_start_persona_project;
 mod agent_conversation_start_persona_refine;
 mod agent_conversation_start_persona_seeded;
 mod agent_conversation_start_persona_standalone;
+mod agent_conversation_start_mcp_preflight;
 mod agent_conversation_start_plan_workspace;
 mod agent_conversation_start_pr_workspace;
 mod agent_conversation_start_seeded;

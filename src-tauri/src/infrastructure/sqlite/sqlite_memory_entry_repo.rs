@@ -397,10 +397,7 @@ impl MemoryEntryRepository for SqliteMemoryEntryRepository {
         let affected = self
             .db
             .run(move |conn| {
-                Ok(conn.execute(
-                    "DELETE FROM memory_entries WHERE id = ?1",
-                    [id_str.as_str()],
-                )?)
+                Ok(conn.execute("DELETE FROM memory_entries WHERE id = ?1", [id_str.as_str()])?)
             })
             .await?;
 

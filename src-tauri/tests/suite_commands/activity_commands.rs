@@ -156,10 +156,7 @@ async fn list_task_activity_events_clamps_limit_and_applies_filter() {
     assert_eq!(page.events[0].event_type, "text");
     assert_eq!(page.events[0].role, "agent");
     assert_eq!(page.events[0].internal_status.as_deref(), Some("executing"));
-    assert_eq!(
-        page.events[0].metadata.as_deref(),
-        Some(r#"{"tool":"bash"}"#)
-    );
+    assert_eq!(page.events[0].metadata.as_deref(), Some(r#"{"tool":"bash"}"#));
     assert!(!page.has_more);
 }
 
@@ -198,10 +195,7 @@ async fn list_session_activity_events_and_count_use_session_filter() {
     .await
     .expect("session events should list");
     assert_eq!(page.events.len(), 1);
-    assert_eq!(
-        page.events[0].ideation_session_id.as_deref(),
-        Some(session_id.as_str())
-    );
+    assert_eq!(page.events[0].ideation_session_id.as_deref(), Some(session_id.as_str()));
 
     let count = count_session_activity_events(
         session_id.as_str().to_string(),

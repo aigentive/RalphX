@@ -25,7 +25,10 @@ fn test_none_metadata_produces_empty_arrays() {
     assert_eq!(payload["max_rounds"], serde_json::Value::Null);
     assert_eq!(payload["gap_score"], serde_json::Value::Null);
     assert_eq!(payload["convergence_reason"], serde_json::Value::Null);
-    assert_eq!(payload["current_gaps"], serde_json::Value::Array(vec![]));
+    assert_eq!(
+        payload["current_gaps"],
+        serde_json::Value::Array(vec![])
+    );
     assert_eq!(payload["rounds"], serde_json::Value::Array(vec![]));
 }
 
@@ -43,7 +46,10 @@ fn test_none_metadata_with_convergence_reason_override() {
     assert_eq!(payload["status"], "skipped");
     assert_eq!(payload["generation"], 7);
     assert_eq!(payload["convergence_reason"], "user_reverted");
-    assert_eq!(payload["current_gaps"], serde_json::Value::Array(vec![]));
+    assert_eq!(
+        payload["current_gaps"],
+        serde_json::Value::Array(vec![])
+    );
     assert_eq!(payload["rounds"], serde_json::Value::Array(vec![]));
 }
 
@@ -185,7 +191,10 @@ fn test_some_snapshot_empty_gaps_and_rounds() {
     assert_eq!(payload["generation"], 5);
     assert_eq!(payload["gap_score"], 0u32);
     assert_eq!(payload["convergence_reason"], serde_json::Value::Null);
-    assert_eq!(payload["current_gaps"], serde_json::Value::Array(vec![]));
+    assert_eq!(
+        payload["current_gaps"],
+        serde_json::Value::Array(vec![])
+    );
     assert_eq!(payload["rounds"], serde_json::Value::Array(vec![]));
 }
 
@@ -289,20 +298,14 @@ fn test_fixture_schema_matches_canonical_payload() {
         assert!(gap.get("category").is_some(), "gap missing category");
         assert!(gap.get("description").is_some(), "gap missing description");
         // why_it_matters is optional (may be null)
-        assert!(
-            gap.get("why_it_matters").is_some(),
-            "gap missing why_it_matters key"
-        );
+        assert!(gap.get("why_it_matters").is_some(), "gap missing why_it_matters key");
     }
 
     // Verify rounds items have the expected shape
     let rounds = fixture["rounds"].as_array().unwrap();
     assert!(!rounds.is_empty(), "fixture must have at least one round");
     for round in rounds {
-        assert!(
-            round.get("fingerprints").is_some(),
-            "round missing fingerprints"
-        );
+        assert!(round.get("fingerprints").is_some(), "round missing fingerprints");
         assert!(round.get("gap_score").is_some(), "round missing gap_score");
     }
 
@@ -340,13 +343,15 @@ fn test_payload_shape_matches_fixture_schema() {
                 source: None,
             },
         ],
-        rounds: vec![VerificationRoundSnapshot {
-            round: 1,
-            fingerprints: vec!["no-auth-admin".to_string(), "missing-tests".to_string()],
-            gap_score: 13,
-            gaps: vec![],
-            parse_failed: false,
-        }],
+        rounds: vec![
+            VerificationRoundSnapshot {
+                round: 1,
+                fingerprints: vec!["no-auth-admin".to_string(), "missing-tests".to_string()],
+                gap_score: 13,
+                gaps: vec![],
+                parse_failed: false,
+            },
+        ],
         convergence_reason: None,
     };
 

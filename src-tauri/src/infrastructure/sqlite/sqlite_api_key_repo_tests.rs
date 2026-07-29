@@ -65,10 +65,7 @@ fn make_key(name: &str) -> ApiKey {
 #[test]
 fn test_generate_raw_key_format() {
     let key = generate_raw_key();
-    assert!(
-        key.starts_with("rxk_live_"),
-        "key should start with rxk_live_"
-    );
+    assert!(key.starts_with("rxk_live_"), "key should start with rxk_live_");
     assert_eq!(key.len(), 41, "rxk_live_ (9) + 32 chars = 41");
 }
 
@@ -77,11 +74,7 @@ fn test_hash_key_deterministic() {
     let hash1 = hash_key("test_key_value");
     let hash2 = hash_key("test_key_value");
     assert_eq!(hash1, hash2, "same input must produce same hash");
-    assert_ne!(
-        hash_key("a"),
-        hash_key("b"),
-        "different inputs must produce different hashes"
-    );
+    assert_ne!(hash_key("a"), hash_key("b"), "different inputs must produce different hashes");
 }
 
 #[test]
@@ -107,10 +100,7 @@ fn test_permissions_bitmask() {
         metadata: None,
     };
     assert!(key.has_permission(PERMISSION_READ), "should have read");
-    assert!(
-        !key.has_permission(PERMISSION_WRITE),
-        "should NOT have write"
-    );
+    assert!(!key.has_permission(PERMISSION_WRITE), "should NOT have write");
     assert!(key.has_permission(PERMISSION_ADMIN), "should have admin");
 }
 
@@ -131,10 +121,7 @@ fn test_is_in_grace_period_true() {
         grace_expires_at: Some(future),
         metadata: None,
     };
-    assert!(
-        key.is_in_grace_period(),
-        "key within grace period should return true"
-    );
+    assert!(key.is_in_grace_period(), "key within grace period should return true");
 }
 
 #[test]
@@ -152,10 +139,7 @@ fn test_is_in_grace_period_false_expired() {
         grace_expires_at: Some(past),
         metadata: None,
     };
-    assert!(
-        !key.is_in_grace_period(),
-        "expired grace period should return false"
-    );
+    assert!(!key.is_in_grace_period(), "expired grace period should return false");
 }
 
 #[tokio::test]
@@ -165,11 +149,7 @@ async fn test_create_and_get_by_id() {
     let id = key.id.clone();
 
     let created = repo.create(key).await.expect("create failed");
-    let found = repo
-        .get_by_id(&id)
-        .await
-        .expect("get_by_id failed")
-        .expect("not found");
+    let found = repo.get_by_id(&id).await.expect("get_by_id failed").expect("not found");
 
     assert_eq!(found.id, id);
     assert_eq!(found.name, "Test Key");
@@ -183,10 +163,7 @@ async fn test_create_and_get_by_id() {
 async fn test_get_by_id_missing_returns_none() {
     let repo = setup_repo();
     let missing_id = ApiKeyId::from_string("nonexistent-id");
-    let result = repo
-        .get_by_id(&missing_id)
-        .await
-        .expect("get should succeed");
+    let result = repo.get_by_id(&missing_id).await.expect("get should succeed");
     assert!(result.is_none());
 }
 
@@ -211,11 +188,7 @@ async fn test_get_by_hash() {
     };
 
     repo.create(key).await.expect("create failed");
-    let found = repo
-        .get_by_hash(&hash)
-        .await
-        .expect("get_by_hash failed")
-        .expect("not found");
+    let found = repo.get_by_hash(&hash).await.expect("get_by_hash failed").expect("not found");
     assert_eq!(found.key_hash, hash);
     assert_eq!(found.name, "Hash Test");
 }
@@ -223,10 +196,7 @@ async fn test_get_by_hash() {
 #[tokio::test]
 async fn test_get_by_hash_missing_returns_none() {
     let repo = setup_repo();
-    let result = repo
-        .get_by_hash("nonexistent_hash")
-        .await
-        .expect("should succeed");
+    let result = repo.get_by_hash("nonexistent_hash").await.expect("should succeed");
     assert!(result.is_none());
 }
 
@@ -255,10 +225,7 @@ async fn test_revoke_sets_revoked_at() {
     repo.revoke(&id).await.expect("revoke");
 
     let found = repo.get_by_id(&id).await.expect("get").expect("found");
-    assert!(
-        found.revoked_at.is_some(),
-        "revoked_at must be set after revoke"
-    );
+    assert!(found.revoked_at.is_some(), "revoked_at must be set after revoke");
     assert!(!found.is_active(), "is_active should be false after revoke");
 }
 
@@ -273,9 +240,7 @@ async fn test_set_and_get_projects() {
     insert_test_project(repo.db(), "proj-2");
 
     let project_ids = vec!["proj-1".to_string(), "proj-2".to_string()];
-    repo.set_projects(&id, &project_ids)
-        .await
-        .expect("set_projects");
+    repo.set_projects(&id, &project_ids).await.expect("set_projects");
 
     let mut found = repo.get_projects(&id).await.expect("get_projects");
     found.sort();
@@ -295,23 +260,15 @@ async fn test_set_projects_replaces_existing() {
     insert_test_project(repo.db(), "new-proj-1");
     insert_test_project(repo.db(), "new-proj-2");
 
-    repo.set_projects(&id, &["old-proj".to_string()])
-        .await
-        .expect("first set");
+    repo.set_projects(&id, &["old-proj".to_string()]).await.expect("first set");
     repo.set_projects(&id, &["new-proj-1".to_string(), "new-proj-2".to_string()])
         .await
         .expect("second set");
 
     let mut found = repo.get_projects(&id).await.expect("get_projects");
     found.sort();
-    assert_eq!(
-        found,
-        vec!["new-proj-1".to_string(), "new-proj-2".to_string()]
-    );
-    assert!(
-        !found.contains(&"old-proj".to_string()),
-        "old project should be replaced"
-    );
+    assert_eq!(found, vec!["new-proj-1".to_string(), "new-proj-2".to_string()]);
+    assert!(!found.contains(&"old-proj".to_string()), "old project should be replaced");
 }
 
 #[tokio::test]
@@ -335,15 +292,10 @@ async fn test_set_grace_period() {
     let grace_time = (chrono::Utc::now() + chrono::Duration::seconds(60))
         .format("%Y-%m-%dT%H:%M:%SZ")
         .to_string();
-    repo.set_grace_period(&id, &grace_time)
-        .await
-        .expect("set_grace_period");
+    repo.set_grace_period(&id, &grace_time).await.expect("set_grace_period");
 
     let found = repo.get_by_id(&id).await.expect("get").expect("found");
-    assert!(
-        found.grace_expires_at.is_some(),
-        "grace_expires_at should be set"
-    );
+    assert!(found.grace_expires_at.is_some(), "grace_expires_at should be set");
     assert_eq!(found.grace_expires_at.unwrap(), grace_time);
 }
 
@@ -355,9 +307,7 @@ async fn test_update_last_used() {
     repo.create(key).await.expect("create");
 
     let ts = "2026-03-06T12:00:00Z".to_string();
-    repo.update_last_used(&id, &ts)
-        .await
-        .expect("update_last_used");
+    repo.update_last_used(&id, &ts).await.expect("update_last_used");
 
     let found = repo.get_by_id(&id).await.expect("get").expect("found");
     assert_eq!(found.last_used_at.as_deref(), Some("2026-03-06T12:00:00Z"));
@@ -441,10 +391,7 @@ async fn test_rotate_key_atomic_success() {
         .expect("get new key")
         .expect("new key not found");
     assert_eq!(found_new.name, "Original Key");
-    assert!(
-        found_new.revoked_at.is_none(),
-        "new key should not be revoked"
-    );
+    assert!(found_new.revoked_at.is_none(), "new key should not be revoked");
 
     // Old key must have grace period AND revoked_at set
     let found_old = repo
@@ -457,10 +404,7 @@ async fn test_rotate_key_atomic_success() {
         Some(grace_expires_at.as_str()),
         "old key must have grace_expires_at set"
     );
-    assert!(
-        found_old.is_in_grace_period(),
-        "old key must be in grace period"
-    );
+    assert!(found_old.is_in_grace_period(), "old key must be in grace period");
     assert!(
         found_old.revoked_at.is_some(),
         "old key must have revoked_at set after rotation"
@@ -583,14 +527,8 @@ async fn test_old_key_inactive_after_grace_expires() {
         .expect("get old key")
         .expect("old key not found");
 
-    assert!(
-        found_old.revoked_at.is_some(),
-        "old key must have revoked_at set"
-    );
-    assert!(
-        !found_old.is_active(),
-        "old key must not be active after revocation"
-    );
+    assert!(found_old.revoked_at.is_some(), "old key must have revoked_at set");
+    assert!(!found_old.is_active(), "old key must not be active after revocation");
     assert!(
         !found_old.is_in_grace_period(),
         "grace period has expired, is_in_grace_period() must return false"
@@ -635,10 +573,7 @@ async fn test_old_key_usable_during_grace_period() {
         "old key must have revoked_at set immediately after rotation"
     );
     // is_active() checks revoked_at only — key is revoked
-    assert!(
-        !found_old.is_active(),
-        "old key must not be active (revoked_at is set)"
-    );
+    assert!(!found_old.is_active(), "old key must not be active (revoked_at is set)");
     // but the grace window is still open, so the key remains usable
     assert!(
         found_old.is_in_grace_period(),
@@ -671,13 +606,13 @@ async fn test_set_projects_transaction_rollback_preserves_existing_associations(
 
     // Trigger failure: duplicate project_id causes PRIMARY KEY violation on the second INSERT
     let result = repo
-        .set_projects(&id, &["safe-proj".to_string(), "safe-proj".to_string()])
+        .set_projects(
+            &id,
+            &["safe-proj".to_string(), "safe-proj".to_string()],
+        )
         .await;
 
-    assert!(
-        result.is_err(),
-        "set_projects with duplicate project_id must fail"
-    );
+    assert!(result.is_err(), "set_projects with duplicate project_id must fail");
 
     // The DELETE must have been rolled back — original association still present
     let after = repo.get_projects(&id).await.expect("get after rollback");
@@ -775,10 +710,7 @@ async fn test_update_api_key_permissions_create_project_roundtrip() {
 
     // Verify CREATE_PROJECT is set after update
     let after = repo.get_by_id(&id).await.expect("get").expect("found");
-    assert_eq!(
-        after.permissions, 11,
-        "permissions should be 11 (READ|WRITE|CREATE_PROJECT)"
-    );
+    assert_eq!(after.permissions, 11, "permissions should be 11 (READ|WRITE|CREATE_PROJECT)");
     assert!(
         after.has_permission(PERMISSION_CREATE_PROJECT),
         "should have CREATE_PROJECT after update"
@@ -818,11 +750,7 @@ async fn test_create_key_atomic_success_no_projects() {
     assert_eq!(created.id, key_id);
     assert_eq!(created.name, "Atomic Create No Projects");
 
-    let found = repo
-        .get_by_id(&key_id)
-        .await
-        .expect("get_by_id")
-        .expect("not found");
+    let found = repo.get_by_id(&key_id).await.expect("get_by_id").expect("not found");
     assert_eq!(found.id, key_id);
     let projects = repo.get_projects(&key_id).await.expect("get_projects");
     assert!(projects.is_empty(), "should have no project associations");
@@ -847,11 +775,7 @@ async fn test_create_key_atomic_success_with_projects() {
 
     assert_eq!(created.id, key_id);
 
-    let found = repo
-        .get_by_id(&key_id)
-        .await
-        .expect("get_by_id")
-        .expect("not found");
+    let found = repo.get_by_id(&key_id).await.expect("get_by_id").expect("not found");
     assert_eq!(found.name, "Atomic Create With Projects");
 
     let mut projects = repo.get_projects(&key_id).await.expect("get_projects");
@@ -878,16 +802,10 @@ async fn test_create_key_atomic_rollback_on_duplicate_project() {
         })
         .await;
 
-    assert!(
-        result.is_err(),
-        "create_key_atomic must fail on duplicate project_id"
-    );
+    assert!(result.is_err(), "create_key_atomic must fail on duplicate project_id");
 
     // The key must NOT exist — entire transaction was rolled back
-    let found = repo
-        .get_by_id(&key_id)
-        .await
-        .expect("get_by_id should not error");
+    let found = repo.get_by_id(&key_id).await.expect("get_by_id should not error");
     assert!(
         found.is_none(),
         "key must not exist after failed atomic create (no orphaned keys)"

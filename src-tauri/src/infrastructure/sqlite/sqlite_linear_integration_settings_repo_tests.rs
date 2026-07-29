@@ -77,8 +77,5 @@ async fn sqlite_repo_from_db_uses_existing_connection_wrapper() {
 
     let stored = repo.get().await.unwrap();
     assert_eq!(stored.token_secret_ref.as_deref(), Some("secret-ref"));
-    assert_eq!(
-        stored.validation_status,
-        IntegrationValidationStatus::Pending
-    );
+    assert_eq!(stored.validation_status, IntegrationValidationStatus::Pending);
 }

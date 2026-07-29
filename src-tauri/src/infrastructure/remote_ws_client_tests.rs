@@ -46,7 +46,15 @@ fn ws_events_url_rejects_non_http_schemes() {
 #[test]
 fn ws_events_url_rejects_malformed_tickets() {
     for ticket in [
-        "", "a b", "a?b", "a&b=1", "a#frag", "a/b", "a%2Fb", "über", "a\nb",
+        "",
+        "a b",
+        "a?b",
+        "a&b=1",
+        "a#frag",
+        "a/b",
+        "a%2Fb",
+        "über",
+        "a\nb",
     ] {
         let error = ws_events_url("https://host.example", ticket)
             .expect_err("malformed ticket must be rejected");

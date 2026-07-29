@@ -19,9 +19,7 @@ impl std::error::Error for ParseReviewDecisionError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompleteReviewPolicyError {
-    MissingScopeDriftClassification {
-        out_of_scope_files: Vec<String>,
-    },
+    MissingScopeDriftClassification { out_of_scope_files: Vec<String> },
     CannotApproveUnrelatedDrift,
     EscalationRequiresRevisionExhaustion {
         revision_count: u32,
@@ -61,9 +59,7 @@ impl std::fmt::Display for CompleteReviewPolicyError {
 
 impl std::error::Error for CompleteReviewPolicyError {}
 
-pub fn parse_review_decision(
-    decision: &str,
-) -> Result<ReviewToolOutcome, ParseReviewDecisionError> {
+pub fn parse_review_decision(decision: &str) -> Result<ReviewToolOutcome, ParseReviewDecisionError> {
     match decision {
         "approved" => Ok(ReviewToolOutcome::Approved),
         "approved_no_changes" => Ok(ReviewToolOutcome::ApprovedNoChanges),

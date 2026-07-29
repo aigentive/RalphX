@@ -87,10 +87,7 @@ fn test_task_state_history_table_exists() {
 #[test]
 fn test_task_steps_table_exists() {
     let conn = setup_migrated_db();
-    assert!(
-        table_exists(&conn, "task_steps"),
-        "task_steps table must exist"
-    );
+    assert!(table_exists(&conn, "task_steps"), "task_steps table must exist");
 }
 
 #[test]

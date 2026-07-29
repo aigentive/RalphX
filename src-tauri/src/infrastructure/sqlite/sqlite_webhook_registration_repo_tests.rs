@@ -143,10 +143,7 @@ async fn test_upsert_refreshes_project_ids_and_preserves_id_and_secret() {
     // Same id preserved
     assert_eq!(result.id, "wh-1", "Existing id must be preserved");
     // Secret preserved (not regenerated on re-registration)
-    assert_eq!(
-        result.secret, "original-secret-abcdef",
-        "Secret must be preserved"
-    );
+    assert_eq!(result.secret, "original-secret-abcdef", "Secret must be preserved");
     // project_ids refreshed
     assert_eq!(
         result.project_ids, "[\"proj-1\",\"proj-2\"]",

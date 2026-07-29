@@ -360,12 +360,10 @@ async fn list_remote_environments_maps_a_seeded_environment() {
         Arc::new(crate::infrastructure::UnavailableRemoteHostClient::new(
             "not needed by list",
         )),
-        Arc::new(
-            crate::application::remote_event_relay::RemoteEventRelay::new(
-                Arc::new(crate::infrastructure::remote_ws_client::MockRemoteWsClient::new()),
-                Arc::new(crate::application::remote_event_relay::NoopFrameSink),
-            ),
-        ),
+        Arc::new(crate::application::remote_event_relay::RemoteEventRelay::new(
+            Arc::new(crate::infrastructure::remote_ws_client::MockRemoteWsClient::new()),
+            Arc::new(crate::application::remote_event_relay::NoopFrameSink),
+        )),
     );
     let app = test_app_with_service(service);
 

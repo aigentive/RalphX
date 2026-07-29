@@ -426,10 +426,12 @@ async fn skip_qa_command_marks_all_effective_steps_skipped_and_errors_when_missi
     assert_eq!(results.overall_status, "pending");
     assert_eq!(results.steps.len(), 2);
     assert!(results.steps.iter().all(|step| step.status == "skipped"));
-    assert!(results
-        .steps
-        .iter()
-        .all(|step| step.error.as_deref() == Some("QA skipped by user")));
+    assert!(
+        results
+            .steps
+            .iter()
+            .all(|step| step.error.as_deref() == Some("QA skipped by user"))
+    );
 }
 
 // ==================== Response Conversion Tests ====================
@@ -507,17 +509,17 @@ async fn task_qa_response_conversion_includes_refinement_results_and_timestamps(
         response.actual_implementation.as_deref(),
         Some("Implemented button behavior")
     );
-    assert_eq!(
-        response.refinement_agent_id.as_deref(),
-        Some("refine-agent")
-    );
+    assert_eq!(response.refinement_agent_id.as_deref(), Some("refine-agent"));
     assert!(response.refinement_completed_at.is_some());
     assert_eq!(response.refined_test_steps.expect("refined steps").len(), 1);
     assert_eq!(response.test_agent_id.as_deref(), Some("test-agent"));
     assert!(response.test_completed_at.is_some());
     assert_eq!(response.screenshots, vec!["passed.png"]);
     assert_eq!(
-        response.test_results.expect("test results").steps[0]
+        response
+            .test_results
+            .expect("test results")
+            .steps[0]
             .screenshot
             .as_deref(),
         Some("passed.png")

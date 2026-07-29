@@ -3,9 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::sync::RwLock;
 
-use crate::domain::integrations::{
-    GranolaIntegrationSettings, GranolaIntegrationSettingsRepository,
-};
+use crate::domain::integrations::{GranolaIntegrationSettings, GranolaIntegrationSettingsRepository};
 
 pub struct MemoryGranolaIntegrationSettingsRepository {
     settings: Arc<RwLock<GranolaIntegrationSettings>>,

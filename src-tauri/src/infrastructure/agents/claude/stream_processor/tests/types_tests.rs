@@ -21,10 +21,7 @@ fn test_tool_call_serialization() {
 
     let parsed: ToolCall = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed.name, "create_task_proposal");
-    assert_eq!(
-        parsed.parent_tool_use_id.as_deref(),
-        Some("toolu_parent_123")
-    );
+    assert_eq!(parsed.parent_tool_use_id.as_deref(), Some("toolu_parent_123"));
     assert!(parsed.diff_context.is_none());
 }
 
@@ -158,31 +155,13 @@ fn test_tool_call_stats_serialized_as_camel_case() {
     // Verify field is present
     assert!(json.contains("\"stats\""), "stats field should be present");
     // Verify camelCase serialization (not snake_case)
-    assert!(
-        json.contains("\"totalTokens\""),
-        "should use camelCase totalTokens"
-    );
-    assert!(
-        json.contains("\"totalToolUses\""),
-        "should use camelCase totalToolUses"
-    );
-    assert!(
-        json.contains("\"durationMs\""),
-        "should use camelCase durationMs"
-    );
+    assert!(json.contains("\"totalTokens\""), "should use camelCase totalTokens");
+    assert!(json.contains("\"totalToolUses\""), "should use camelCase totalToolUses");
+    assert!(json.contains("\"durationMs\""), "should use camelCase durationMs");
     // Verify snake_case is NOT used
-    assert!(
-        !json.contains("\"total_tokens\""),
-        "should NOT use snake_case total_tokens"
-    );
-    assert!(
-        !json.contains("\"total_tool_uses\""),
-        "should NOT use snake_case total_tool_uses"
-    );
-    assert!(
-        !json.contains("\"duration_ms\""),
-        "should NOT use snake_case duration_ms"
-    );
+    assert!(!json.contains("\"total_tokens\""), "should NOT use snake_case total_tokens");
+    assert!(!json.contains("\"total_tool_uses\""), "should NOT use snake_case total_tool_uses");
+    assert!(!json.contains("\"duration_ms\""), "should NOT use snake_case duration_ms");
     // Verify values
     assert!(json.contains("12345"));
     assert!(json.contains("45000"));
@@ -211,18 +190,12 @@ fn test_tool_call_without_stats_field_is_absent() {
     let json = serde_json::to_string(&tool_call).unwrap();
 
     // Field must be absent (not present as null) — ensures old rows remain compatible
-    assert!(
-        !json.contains("\"stats\""),
-        "stats field should be absent when None"
-    );
+    assert!(!json.contains("\"stats\""), "stats field should be absent when None");
 
     // Deserializing old JSON (no stats key) should yield stats: None
     let old_json = r#"{"id":"toolu_old","name":"Read","arguments":{},"result":"output"}"#;
     let old: ToolCall = serde_json::from_str(old_json).unwrap();
-    assert!(
-        old.stats.is_none(),
-        "old rows without stats key should deserialize to None"
-    );
+    assert!(old.stats.is_none(), "old rows without stats key should deserialize to None");
     assert!(old.parent_tool_use_id.is_none());
 }
 
@@ -286,10 +259,7 @@ fn test_task_completed_injects_stats_into_tool_call() {
     // Verify serialization produces the camelCase JSON that will be stored in DB
     let json = serde_json::to_value(tool_call).unwrap();
     let stats_json = &json["stats"];
-    assert!(
-        stats_json.is_object(),
-        "stats should serialize as an object"
-    );
+    assert!(stats_json.is_object(), "stats should serialize as an object");
     assert_eq!(stats_json["totalTokens"], 9876);
     assert_eq!(stats_json["totalToolUses"], 5);
     assert_eq!(stats_json["durationMs"], 30000);

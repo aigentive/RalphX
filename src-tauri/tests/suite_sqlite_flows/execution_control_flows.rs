@@ -38,12 +38,7 @@ fn setup_execution_test() -> (SqliteTestDb, TaskStateMachineRepository, ProjectI
 }
 
 /// Helper to create multiple tasks
-fn setup_multiple_tasks() -> (
-    SqliteTestDb,
-    TaskStateMachineRepository,
-    ProjectId,
-    Vec<TaskId>,
-) {
+fn setup_multiple_tasks() -> (SqliteTestDb, TaskStateMachineRepository, ProjectId, Vec<TaskId>) {
     let db = SqliteTestDb::new("execution-control-flows-multi");
     let conn = db.new_connection();
 
@@ -546,7 +541,10 @@ async fn test_settings_ui_command_removal_full_workflow() {
     }
 
     // Verify that we only have install phase entries (no setup phase)
-    let setup_count = execution_log.iter().filter(|e| e.phase == "setup").count();
+    let setup_count = execution_log
+        .iter()
+        .filter(|e| e.phase == "setup")
+        .count();
     assert_eq!(
         setup_count, 0,
         "Should have NO setup phase entries when custom_analysis has empty worktree_setup. \

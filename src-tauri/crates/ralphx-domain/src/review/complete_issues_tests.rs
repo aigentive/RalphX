@@ -39,11 +39,8 @@ fn build_review_note_issues_uses_description_fallbacks() {
 fn build_review_issue_entities_preserves_structured_issue_fields() {
     let review_note_id = ReviewNoteId::from_string("note-1");
     let task_id = TaskId::from_string("task-1".to_string());
-    let entities = build_review_issue_entities(
-        vec![sample_parsed_issue()],
-        review_note_id.clone(),
-        task_id.clone(),
-    );
+    let entities =
+        build_review_issue_entities(vec![sample_parsed_issue()], review_note_id.clone(), task_id.clone());
 
     assert_eq!(entities.len(), 1);
     let entity = &entities[0];
@@ -53,8 +50,5 @@ fn build_review_issue_entities_preserves_structured_issue_fields() {
     assert_eq!(entity.description.as_deref(), Some("Add the null guard"));
     assert_eq!(entity.file_path.as_deref(), Some("src/main.rs"));
     assert_eq!(entity.line_number, Some(42));
-    assert_eq!(
-        entity.code_snippet.as_deref(),
-        Some("let value = maybe.unwrap();")
-    );
+    assert_eq!(entity.code_snippet.as_deref(), Some("let value = maybe.unwrap();"));
 }

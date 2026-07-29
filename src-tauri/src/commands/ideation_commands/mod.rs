@@ -64,9 +64,9 @@ pub use ideation_commands_dependencies::build_dependency_graph;
 #[cfg(test)]
 mod ideation_commands_append_tests;
 #[cfg(test)]
-mod ideation_commands_apply_tests;
-#[cfg(test)]
 mod ideation_commands_cross_project_tests;
+#[cfg(test)]
+mod ideation_commands_apply_tests;
 #[cfg(test)]
 mod ideation_commands_orchestrator_tests;
 #[cfg(test)]

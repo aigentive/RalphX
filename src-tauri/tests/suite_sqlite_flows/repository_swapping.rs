@@ -16,7 +16,9 @@ use std::sync::Arc;
 
 use ralphx_lib::application::AppState;
 use ralphx_lib::domain::entities::{GitMode, InternalStatus, Project, Task};
-use ralphx_lib::infrastructure::sqlite::{SqliteProjectRepository, SqliteTaskRepository};
+use ralphx_lib::infrastructure::sqlite::{
+    SqliteProjectRepository, SqliteTaskRepository,
+};
 use ralphx_lib::testing::SqliteStateFixture;
 
 /// Helper to create AppState with memory repositories

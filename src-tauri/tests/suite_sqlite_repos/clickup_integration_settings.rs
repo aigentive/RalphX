@@ -56,14 +56,8 @@ async fn sqlite_repo_returns_defaults_and_preserves_invalid_state() {
     let saved = repo.upsert(&settings).await.unwrap();
     let stored = repo.get().await.unwrap();
 
-    assert_eq!(
-        saved.validation_status,
-        IntegrationValidationStatus::Invalid
-    );
-    assert_eq!(
-        stored.validation_status,
-        IntegrationValidationStatus::Invalid
-    );
+    assert_eq!(saved.validation_status, IntegrationValidationStatus::Invalid);
+    assert_eq!(stored.validation_status, IntegrationValidationStatus::Invalid);
     assert_eq!(
         stored.last_error.as_deref(),
         Some("ClickUp rejected credentials")

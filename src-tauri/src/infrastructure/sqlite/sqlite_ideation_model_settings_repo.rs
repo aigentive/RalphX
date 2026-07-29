@@ -9,8 +9,8 @@ use rusqlite::Connection;
 use super::DbConnection;
 use crate::domain::entities::ProjectId;
 use crate::domain::ideation::model_settings::{IdeationModelSettings, ModelLevel};
-use crate::error::{AppError, AppResult};
 use ralphx_domain::repositories::IdeationModelSettingsRepository;
+use crate::error::{AppError, AppResult};
 
 pub struct SqliteIdeationModelSettingsRepository {
     db: DbConnection,
@@ -222,8 +222,10 @@ fn parse_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<IdeationModelSettings>
     let updated_at_str: String = row.get(6)?;
 
     let project_id = project_id_str.map(ProjectId);
-    let primary_model = ModelLevel::from_str(&primary_model_str).unwrap_or(ModelLevel::Inherit);
-    let verifier_model = ModelLevel::from_str(&verifier_model_str).unwrap_or(ModelLevel::Inherit);
+    let primary_model =
+        ModelLevel::from_str(&primary_model_str).unwrap_or(ModelLevel::Inherit);
+    let verifier_model =
+        ModelLevel::from_str(&verifier_model_str).unwrap_or(ModelLevel::Inherit);
     let verifier_subagent_model =
         ModelLevel::from_str(&verifier_subagent_model_str).unwrap_or(ModelLevel::Inherit);
     let ideation_subagent_model = ModelLevel::from_str(&ideation_subagent_model_str)

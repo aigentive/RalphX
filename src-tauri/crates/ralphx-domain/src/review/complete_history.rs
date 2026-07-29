@@ -3,8 +3,7 @@ use crate::entities::{
 };
 
 pub fn count_revision_cycles(notes: &[ReviewNote]) -> u32 {
-    notes
-        .iter()
+    notes.iter()
         .filter(|note| note.outcome == ReviewOutcome::ChangesRequested)
         .count() as u32
 }

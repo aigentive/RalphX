@@ -7,17 +7,17 @@ pub use live_flags::{agent_personas_enabled, standalone_conversations_enabled};
 pub use ui_config::{UiConfig, UiFeatureFlagsConfig};
 
 use crate::domain::agents::{
-    standard_agent_lane_defaults, AgentHarnessKind, AgentLane, AgentLaneSettings, LogicalEffort,
-    CLAUDE_DEFAULT_ALLOW_DANGEROUSLY_SKIP_PERMISSIONS, CLAUDE_DEFAULT_DANGEROUSLY_SKIP_PERMISSIONS,
-    CLAUDE_DEFAULT_PERMISSION_MODE,
+    standard_agent_lane_defaults, AgentHarnessKind, AgentLane, AgentLaneSettings,
+    LogicalEffort, CLAUDE_DEFAULT_ALLOW_DANGEROUSLY_SKIP_PERMISSIONS,
+    CLAUDE_DEFAULT_DANGEROUSLY_SKIP_PERMISSIONS, CLAUDE_DEFAULT_PERMISSION_MODE,
 };
 use crate::domain::execution::{ExecutionSettings, GlobalExecutionSettings};
 use crate::infrastructure::agents::harness_agent_catalog::{
     internal_mcp_server_name, list_canonical_prompt_backed_agents, load_canonical_agent_definition,
-    load_canonical_agent_definition_for_profile, resolve_harness_agent_prompt_path,
-    resolve_project_root_from_catalog_path, resolve_project_root_from_plugin_dir,
-    try_load_canonical_claude_metadata, try_load_canonical_claude_metadata_for_profile,
-    AgentPromptHarness, CanonicalClaudeToolSpec,
+    load_canonical_agent_definition_for_profile,
+    resolve_harness_agent_prompt_path, resolve_project_root_from_catalog_path,
+    resolve_project_root_from_plugin_dir, try_load_canonical_claude_metadata,
+    try_load_canonical_claude_metadata_for_profile, AgentPromptHarness, CanonicalClaudeToolSpec,
 };
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -329,10 +329,8 @@ struct ExternalMcpConfigOverlay {
     external_mcp: Option<ExternalMcpConfigRawOverlay>,
 }
 
-const EMBEDDED_CONFIG: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../config/ralphx.yaml"
-));
+const EMBEDDED_CONFIG: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../config/ralphx.yaml"));
 const EMBEDDED_EXTERNAL_MCP_CONFIG: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../config/external-mcp.yaml"
@@ -508,8 +506,7 @@ fn load_claude_config_overlay() -> Option<(PathBuf, ClaudeConfigOverlay)> {
 }
 
 fn apply_codex_config_overlay(cfg: &mut RalphxConfig, overlay: CodexConfigOverlay) {
-    cfg.agent_harness_defaults
-        .extend(overlay.agent_harness_defaults);
+    cfg.agent_harness_defaults.extend(overlay.agent_harness_defaults);
 }
 
 fn parse_codex_config_overlay(yaml: &str) -> Option<CodexConfigOverlay> {
@@ -531,12 +528,10 @@ fn load_codex_config_overlay() -> Option<(PathBuf, CodexConfigOverlay)> {
 }
 
 fn parse_process_config_overlay(yaml: &str) -> Option<ProcessConfigOverlay> {
-    serde_yaml::from_str::<ProcessConfigOverlay>(yaml)
-        .map_err(|e| {
-            tracing::warn!(error = %e, "Failed to parse process config overlay");
-            e
-        })
-        .ok()
+    serde_yaml::from_str::<ProcessConfigOverlay>(yaml).map_err(|e| {
+        tracing::warn!(error = %e, "Failed to parse process config overlay");
+        e
+    }).ok()
 }
 
 fn apply_process_config_overlay(cfg: &mut LoadedConfig, overlay: ProcessConfigOverlay) {
@@ -554,7 +549,10 @@ fn load_process_config_overlay() -> Option<(PathBuf, ProcessConfigOverlay)> {
     Some((path, overlay))
 }
 
-fn apply_external_mcp_config_overlay(cfg: &mut RalphxConfig, overlay: ExternalMcpConfigOverlay) {
+fn apply_external_mcp_config_overlay(
+    cfg: &mut RalphxConfig,
+    overlay: ExternalMcpConfigOverlay,
+) {
     let Some(overlay) = overlay.external_mcp else {
         return;
     };
@@ -595,9 +593,7 @@ fn apply_external_mcp_config_overlay(cfg: &mut RalphxConfig, overlay: ExternalMc
     if let Some(external_message_queue_cap) = overlay.external_message_queue_cap {
         cfg.external_mcp.external_message_queue_cap = external_message_queue_cap;
     }
-    if let Some(external_session_similarity_threshold) =
-        overlay.external_session_similarity_threshold
-    {
+    if let Some(external_session_similarity_threshold) = overlay.external_session_similarity_threshold {
         cfg.external_mcp.external_session_similarity_threshold =
             external_session_similarity_threshold;
     }
@@ -608,12 +604,10 @@ fn apply_external_mcp_config_overlay(cfg: &mut RalphxConfig, overlay: ExternalMc
 }
 
 fn parse_external_mcp_config_overlay(yaml: &str) -> Option<ExternalMcpConfigOverlay> {
-    serde_yaml::from_str::<ExternalMcpConfigOverlay>(yaml)
-        .map_err(|e| {
-            tracing::warn!(error = %e, "Failed to parse external MCP config overlay");
-            e
-        })
-        .ok()
+    serde_yaml::from_str::<ExternalMcpConfigOverlay>(yaml).map_err(|e| {
+        tracing::warn!(error = %e, "Failed to parse external MCP config overlay");
+        e
+    }).ok()
 }
 
 fn load_external_mcp_config_overlay_from_path(
@@ -792,13 +786,16 @@ fn canonical_agent_project_root_from_config_path(
 }
 
 fn resolve_system_prompt_file(project_root: &Path, raw: &AgentConfigRaw) -> String {
-    let canonical_prompt =
-        resolve_harness_agent_prompt_path(project_root, &raw.name, AgentPromptHarness::Claude)
-            .and_then(|path| {
-                path.strip_prefix(project_root)
-                    .ok()
-                    .map(|relative| relative.to_string_lossy().to_string())
-            });
+    let canonical_prompt = resolve_harness_agent_prompt_path(
+        project_root,
+        &raw.name,
+        AgentPromptHarness::Claude,
+    )
+    .and_then(|path| {
+        path.strip_prefix(project_root)
+            .ok()
+            .map(|relative| relative.to_string_lossy().to_string())
+    });
 
     if let Some(canonical_prompt) = canonical_prompt {
         if raw.system_prompt_file.as_deref().is_some()
@@ -1702,17 +1699,11 @@ pub fn get_agent_config_for_profile(
         return Some(config);
     };
     let project_root = canonical_agent_project_root();
-    let definition = load_canonical_agent_definition_for_profile(
-        &project_root,
-        lookup_name,
-        Some(profile_name),
-    )?;
-    let metadata = try_load_canonical_claude_metadata_for_profile(
-        &project_root,
-        lookup_name,
-        Some(profile_name),
-    )
-    .ok()?;
+    let definition =
+        load_canonical_agent_definition_for_profile(&project_root, lookup_name, Some(profile_name))?;
+    let metadata =
+        try_load_canonical_claude_metadata_for_profile(&project_root, lookup_name, Some(profile_name))
+            .ok()?;
 
     if !definition.capabilities.mcp_tools.is_empty() {
         config.allowed_mcp_tools = definition.capabilities.mcp_tools;
@@ -1720,7 +1711,8 @@ pub fn get_agent_config_for_profile(
     if let Some(spec) = metadata.tools.as_ref() {
         let tools = runtime_tools_spec_from_canonical(spec);
         config.mcp_only = tools.mcp_only;
-        config.resolved_cli_tools = resolve_tools_from_spec(lookup_name, &tools, &loaded.tool_sets);
+        config.resolved_cli_tools =
+            resolve_tools_from_spec(lookup_name, &tools, &loaded.tool_sets);
     }
     config.preapproved_cli_tools = metadata.preapproved_cli_tools;
     if metadata.model.is_some() {

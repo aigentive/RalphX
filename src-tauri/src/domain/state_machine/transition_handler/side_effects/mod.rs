@@ -235,8 +235,7 @@ impl<'a> super::TransitionHandler<'a> {
                             return;
                         }
                         Ok(false) => {
-                            if let Err(error) = pbr.update_pr_eligible(&plan_branch.id, false).await
-                            {
+                            if let Err(error) = pbr.update_pr_eligible(&plan_branch.id, false).await {
                                 tracing::warn!(
                                     task_id = task_id_str,
                                     plan_branch_id = plan_branch.id.as_str(),

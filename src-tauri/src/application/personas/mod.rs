@@ -6,8 +6,8 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::domain::entities::{
-    AgentConversationWorkspaceMode, ChatContextType, ChatConversation, Persona, PersonaId,
-    PersonaScopeFilter, PersonaStatus, ProjectId,
+    AgentConversationWorkspaceMode, ChatContextType, ChatConversation, Persona,
+    PersonaId, PersonaScopeFilter, PersonaStatus, ProjectId,
 };
 use crate::domain::repositories::{ChatConversationRepository, PersonaRepository};
 use crate::error::{AppError, AppResult};
@@ -214,8 +214,7 @@ impl PersonaService {
                 .create_seeded_bound_draft(feature_enabled, &conversation, source_id)
                 .await
             {
-                if let Err(cleanup_error) =
-                    self.chat_conversation_repo.delete(&conversation.id).await
+                if let Err(cleanup_error) = self.chat_conversation_repo.delete(&conversation.id).await
                 {
                     tracing::warn!(
                         conversation_id = %conversation.id,
@@ -536,22 +535,22 @@ fn ensure_enabled(feature_enabled: bool) -> AppResult<()> {
     }
 }
 
+#[path = "persona_service_test_support.rs"]
+mod persona_service_test_support;
 #[path = "persona_service_artifact_tests.rs"]
 mod persona_service_artifact_tests;
 #[path = "persona_service_lifecycle_tests.rs"]
 mod persona_service_lifecycle_tests;
-#[path = "persona_service_test_support.rs"]
-mod persona_service_test_support;
-#[path = "persona_service_usage_restore_tests.rs"]
-mod persona_service_usage_restore_tests;
 #[path = "persona_service_validation_tests.rs"]
 mod persona_service_validation_tests;
+#[path = "persona_service_usage_restore_tests.rs"]
+mod persona_service_usage_restore_tests;
 
-#[path = "persona_update_approval_binding_tests.rs"]
-mod persona_update_approval_binding_tests;
-#[path = "persona_update_approval_recovery_tests.rs"]
-mod persona_update_approval_recovery_tests;
 #[path = "persona_update_approval_test_support.rs"]
 mod persona_update_approval_test_support;
 #[path = "persona_update_approval_transaction_tests.rs"]
 mod persona_update_approval_transaction_tests;
+#[path = "persona_update_approval_binding_tests.rs"]
+mod persona_update_approval_binding_tests;
+#[path = "persona_update_approval_recovery_tests.rs"]
+mod persona_update_approval_recovery_tests;

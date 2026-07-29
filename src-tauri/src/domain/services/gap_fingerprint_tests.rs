@@ -81,9 +81,5 @@ fn test_gap_score_mixed_severities() {
             source: None,
         },
     ];
-    assert_eq!(
-        gap_score(&gaps),
-        14,
-        "critical(10) + high(3) + medium(1) = 14"
-    );
+    assert_eq!(gap_score(&gaps), 14, "critical(10) + high(3) + medium(1) = 14");
 }

@@ -42,7 +42,9 @@ pub use github_service::{
     PrStatus, PrSyncState,
 };
 pub use index_rewriter::{IndexRewriter, RewriteResult};
-pub use verification_events::{build_verification_payload, build_verification_started_snapshot};
+pub use verification_events::{
+    build_verification_payload, build_verification_started_snapshot,
+};
 pub use verification_gate::{
     check_verification_gate, resolve_effective_gate_policy, EffectiveGatePolicy,
 };

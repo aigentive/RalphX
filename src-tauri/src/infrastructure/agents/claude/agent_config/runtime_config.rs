@@ -1228,8 +1228,7 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
             matches!(v.to_lowercase().as_str(), "true" | "1");
     }
     if let Some(v) = lookup("RALPHX_UI_REMOTE_ENVIRONMENTS") {
-        cfg.ui_feature_flags.remote_environments =
-            matches!(v.to_lowercase().as_str(), "true" | "1");
+        cfg.ui_feature_flags.remote_environments = matches!(v.to_lowercase().as_str(), "true" | "1");
     }
 }
 

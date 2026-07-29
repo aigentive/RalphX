@@ -8,12 +8,7 @@ fn setup_test_db() -> Connection {
     Connection::open_in_memory().expect("in-memory database should open")
 }
 
-fn insert_environment(
-    conn: &Connection,
-    id: &str,
-    environment_id: &str,
-    status: &str,
-) -> Result<usize, rusqlite::Error> {
+fn insert_environment(conn: &Connection, id: &str, environment_id: &str, status: &str) -> Result<usize, rusqlite::Error> {
     conn.execute(
         "INSERT INTO remote_environments (
             id, environment_id, name, base_url, candidate_urls,
@@ -73,13 +68,8 @@ fn migration_rejects_unknown_status_values() {
         .expect("migration should create remote_environments");
 
     for status in ["active", "pending_add", "pending_delete"] {
-        insert_environment(
-            &conn,
-            &format!("row-{status}"),
-            &format!("env-{status}"),
-            status,
-        )
-        .unwrap_or_else(|error| panic!("{status} should be accepted: {error}"));
+        insert_environment(&conn, &format!("row-{status}"), &format!("env-{status}"), status)
+            .unwrap_or_else(|error| panic!("{status} should be accepted: {error}"));
     }
     assert!(
         insert_environment(&conn, "row-bad", "env-bad", "half_paired").is_err(),

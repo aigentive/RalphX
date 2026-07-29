@@ -200,7 +200,10 @@ async fn abandon_active_for_artifact_does_not_affect_different_artifacts() {
     assert_eq!(count, 1, "Only target artifact branch abandoned");
 
     // Verify other artifact's branch is still active
-    let other_branches = repo.get_by_plan_artifact_id(&other_artifact).await.unwrap();
+    let other_branches = repo
+        .get_by_plan_artifact_id(&other_artifact)
+        .await
+        .unwrap();
     assert_eq!(other_branches.len(), 1);
     assert_eq!(
         other_branches[0].status,

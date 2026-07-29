@@ -216,18 +216,12 @@ impl TaskQARepository for SqliteTaskQARepository {
         let task_id = task_qa.task_id.as_str().to_string();
         let prep_agent_id = task_qa.prep_agent_id.clone();
         let prep_started_at = task_qa.prep_started_at.map(|dt| Self::format_datetime(&dt));
-        let prep_completed_at = task_qa
-            .prep_completed_at
-            .map(|dt| Self::format_datetime(&dt));
+        let prep_completed_at = task_qa.prep_completed_at.map(|dt| Self::format_datetime(&dt));
         let actual_implementation = task_qa.actual_implementation.clone();
         let refinement_agent_id = task_qa.refinement_agent_id.clone();
-        let refinement_completed_at = task_qa
-            .refinement_completed_at
-            .map(|dt| Self::format_datetime(&dt));
+        let refinement_completed_at = task_qa.refinement_completed_at.map(|dt| Self::format_datetime(&dt));
         let test_agent_id = task_qa.test_agent_id.clone();
-        let test_completed_at = task_qa
-            .test_completed_at
-            .map(|dt| Self::format_datetime(&dt));
+        let test_completed_at = task_qa.test_completed_at.map(|dt| Self::format_datetime(&dt));
         let created_at = Self::format_datetime(&task_qa.created_at);
 
         self.db.run(move |conn| {
@@ -261,22 +255,17 @@ impl TaskQARepository for SqliteTaskQARepository {
 
     async fn get_by_id(&self, id: &TaskQAId) -> AppResult<Option<TaskQA>> {
         let id_str = id.as_str().to_string();
-        let result = self
-            .db
-            .query_optional(move |conn| {
-                conn.query_row(
-                    &format!("{} WHERE id = ?1", SELECT_TASK_QA),
-                    [&id_str],
-                    extract_row,
-                )
-            })
-            .await?;
+        let result = self.db.query_optional(move |conn| {
+            conn.query_row(
+                &format!("{} WHERE id = ?1", SELECT_TASK_QA),
+                [&id_str],
+                extract_row,
+            )
+        }).await?;
 
         match result {
             Some((id, task_id, ac, qs, pa, ps, pc, ai, rs, ra, rc, tr, ss, ta, tc, ca)) => {
-                Ok(Some(Self::row_to_task_qa(
-                    id, task_id, ac, qs, pa, ps, pc, ai, rs, ra, rc, tr, ss, ta, tc, ca,
-                )?))
+                Ok(Some(Self::row_to_task_qa(id, task_id, ac, qs, pa, ps, pc, ai, rs, ra, rc, tr, ss, ta, tc, ca)?))
             }
             None => Ok(None),
         }
@@ -284,22 +273,17 @@ impl TaskQARepository for SqliteTaskQARepository {
 
     async fn get_by_task_id(&self, task_id: &TaskId) -> AppResult<Option<TaskQA>> {
         let task_id_str = task_id.as_str().to_string();
-        let result = self
-            .db
-            .query_optional(move |conn| {
-                conn.query_row(
-                    &format!("{} WHERE task_id = ?1", SELECT_TASK_QA),
-                    [&task_id_str],
-                    extract_row,
-                )
-            })
-            .await?;
+        let result = self.db.query_optional(move |conn| {
+            conn.query_row(
+                &format!("{} WHERE task_id = ?1", SELECT_TASK_QA),
+                [&task_id_str],
+                extract_row,
+            )
+        }).await?;
 
         match result {
             Some((id, task_id, ac, qs, pa, ps, pc, ai, rs, ra, rc, tr, ss, ta, tc, ca)) => {
-                Ok(Some(Self::row_to_task_qa(
-                    id, task_id, ac, qs, pa, ps, pc, ai, rs, ra, rc, tr, ss, ta, tc, ca,
-                )?))
+                Ok(Some(Self::row_to_task_qa(id, task_id, ac, qs, pa, ps, pc, ai, rs, ra, rc, tr, ss, ta, tc, ca)?))
             }
             None => Ok(None),
         }
@@ -322,20 +306,18 @@ impl TaskQARepository for SqliteTaskQARepository {
         let id_str = id.as_str().to_string();
         let agent_id = agent_id.to_string();
 
-        self.db
-            .run(move |conn| {
-                conn.execute(
-                    "UPDATE task_qa SET
+        self.db.run(move |conn| {
+            conn.execute(
+                "UPDATE task_qa SET
                     prep_agent_id = ?1,
                     acceptance_criteria = ?2,
                     qa_test_steps = ?3,
                     prep_completed_at = ?4
                 WHERE id = ?5",
-                    rusqlite::params![agent_id, criteria_json, steps_json, now, id_str],
-                )?;
-                Ok(())
-            })
-            .await
+                rusqlite::params![agent_id, criteria_json, steps_json, now, id_str],
+            )?;
+            Ok(())
+        }).await
     }
 
     async fn update_refinement(
@@ -353,20 +335,18 @@ impl TaskQARepository for SqliteTaskQARepository {
         let agent_id = agent_id.to_string();
         let actual_implementation = actual_implementation.to_string();
 
-        self.db
-            .run(move |conn| {
-                conn.execute(
-                    "UPDATE task_qa SET
+        self.db.run(move |conn| {
+            conn.execute(
+                "UPDATE task_qa SET
                     refinement_agent_id = ?1,
                     actual_implementation = ?2,
                     refined_test_steps = ?3,
                     refinement_completed_at = ?4
                 WHERE id = ?5",
-                    rusqlite::params![agent_id, actual_implementation, steps_json, now, id_str],
-                )?;
-                Ok(())
-            })
-            .await
+                rusqlite::params![agent_id, actual_implementation, steps_json, now, id_str],
+            )?;
+            Ok(())
+        }).await
     }
 
     async fn update_results(
@@ -392,36 +372,30 @@ impl TaskQARepository for SqliteTaskQARepository {
         let id_str = id.as_str().to_string();
         let agent_id = agent_id.to_string();
 
-        self.db
-            .run(move |conn| {
-                conn.execute(
-                    "UPDATE task_qa SET
+        self.db.run(move |conn| {
+            conn.execute(
+                "UPDATE task_qa SET
                     test_agent_id = ?1,
                     test_results = ?2,
                     screenshots = ?3,
                     test_completed_at = ?4
                 WHERE id = ?5",
-                    rusqlite::params![agent_id, results_json, screenshots_json, now, id_str],
-                )?;
-                Ok(())
-            })
-            .await
+                rusqlite::params![agent_id, results_json, screenshots_json, now, id_str],
+            )?;
+            Ok(())
+        }).await
     }
 
     async fn get_pending_prep(&self) -> AppResult<Vec<TaskQA>> {
-        let rows: Vec<_> = self
-            .db
-            .run(move |conn| {
-                let mut stmt = conn.prepare(&format!(
-                    "{} WHERE acceptance_criteria IS NULL",
-                    SELECT_TASK_QA
-                ))?;
-                let rows = stmt
-                    .query_map([], extract_row)?
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(rows)
-            })
-            .await?;
+        let rows: Vec<_> = self.db.run(move |conn| {
+            let mut stmt = conn.prepare(
+                &format!("{} WHERE acceptance_criteria IS NULL", SELECT_TASK_QA),
+            )?;
+            let rows = stmt
+                .query_map([], extract_row)?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        }).await?;
 
         let mut results = Vec::new();
         for (id, task_id, ac, qs, pa, ps, pc, ai, rs, ra, rc, tr, ss, ta, tc, ca) in rows {
@@ -436,36 +410,30 @@ impl TaskQARepository for SqliteTaskQARepository {
 
     async fn delete(&self, id: &TaskQAId) -> AppResult<()> {
         let id_str = id.as_str().to_string();
-        self.db
-            .run(move |conn| {
-                conn.execute("DELETE FROM task_qa WHERE id = ?1", [id_str])?;
-                Ok(())
-            })
-            .await
+        self.db.run(move |conn| {
+            conn.execute("DELETE FROM task_qa WHERE id = ?1", [id_str])?;
+            Ok(())
+        }).await
     }
 
     async fn delete_by_task_id(&self, task_id: &TaskId) -> AppResult<()> {
         let task_id_str = task_id.as_str().to_string();
-        self.db
-            .run(move |conn| {
-                conn.execute("DELETE FROM task_qa WHERE task_id = ?1", [task_id_str])?;
-                Ok(())
-            })
-            .await
+        self.db.run(move |conn| {
+            conn.execute("DELETE FROM task_qa WHERE task_id = ?1", [task_id_str])?;
+            Ok(())
+        }).await
     }
 
     async fn exists_for_task(&self, task_id: &TaskId) -> AppResult<bool> {
         let task_id_str = task_id.as_str().to_string();
-        self.db
-            .run(move |conn| {
-                let count: i32 = conn.query_row(
-                    "SELECT COUNT(*) FROM task_qa WHERE task_id = ?1",
-                    [task_id_str],
-                    |row| row.get(0),
-                )?;
-                Ok(count > 0)
-            })
-            .await
+        self.db.run(move |conn| {
+            let count: i32 = conn.query_row(
+                "SELECT COUNT(*) FROM task_qa WHERE task_id = ?1",
+                [task_id_str],
+                |row| row.get(0),
+            )?;
+            Ok(count > 0)
+        }).await
     }
 }
 

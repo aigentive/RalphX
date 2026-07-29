@@ -24,7 +24,11 @@ fn create_test_project(db: &SqliteTestDb) -> ProjectId {
     id
 }
 
-fn make_event(project_id: ProjectId, event_type: &str, actor: MemoryActorType) -> MemoryEvent {
+fn make_event(
+    project_id: ProjectId,
+    event_type: &str,
+    actor: MemoryActorType,
+) -> MemoryEvent {
     MemoryEvent::new(project_id, event_type, actor, json!({"key": "value"}))
 }
 
@@ -36,11 +40,7 @@ async fn test_create_returns_event() {
     let project_id = create_test_project(&db);
     let repo = SqliteMemoryEventRepository::from_shared(db.shared_conn());
 
-    let event = make_event(
-        project_id.clone(),
-        "memory_created",
-        MemoryActorType::System,
-    );
+    let event = make_event(project_id.clone(), "memory_created", MemoryActorType::System);
     let event_id = event.id.clone();
 
     let result = repo.create(event).await;
@@ -118,11 +118,7 @@ async fn test_create_duplicate_id_fails() {
     let project_id = create_test_project(&db);
     let repo = SqliteMemoryEventRepository::from_shared(db.shared_conn());
 
-    let event = make_event(
-        project_id.clone(),
-        "memory_created",
-        MemoryActorType::System,
-    );
+    let event = make_event(project_id.clone(), "memory_created", MemoryActorType::System);
     repo.create(event.clone()).await.unwrap();
 
     let result = repo.create(event).await;
@@ -144,11 +140,7 @@ async fn test_get_by_project_returns_all_events() {
         "event_2",
         MemoryActorType::MemoryMaintainer,
     );
-    let e3 = make_event(
-        project_id.clone(),
-        "event_3",
-        MemoryActorType::MemoryCapture,
-    );
+    let e3 = make_event(project_id.clone(), "event_3", MemoryActorType::MemoryCapture);
 
     repo.create(e1).await.unwrap();
     repo.create(e2).await.unwrap();
@@ -228,11 +220,7 @@ async fn test_get_by_type_returns_matching_events() {
     let project_id = create_test_project(&db);
     let repo = SqliteMemoryEventRepository::from_shared(db.shared_conn());
 
-    let e1 = make_event(
-        project_id.clone(),
-        "memory_created",
-        MemoryActorType::System,
-    );
+    let e1 = make_event(project_id.clone(), "memory_created", MemoryActorType::System);
     let e2 = make_event(
         project_id.clone(),
         "memory_updated",

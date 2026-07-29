@@ -337,10 +337,7 @@ async fn reconnecting_the_same_environment_supersedes_without_killing_the_replac
     let (name, payload) = recv_event(&mut f).await;
     assert_eq!(name, REMOTE_STREAM_CLOSED_EVENT);
     assert_eq!(payload["environmentId"], ROW_ID);
-    assert!(
-        handle_a.was_closed(),
-        "the superseded socket must be closed"
-    );
+    assert!(handle_a.was_closed(), "the superseded socket must be closed");
     // …and the NEW session survived it: still registered, still relaying.
     assert!(f.relay.is_connected(ROW_ID));
     handle_b

@@ -120,10 +120,7 @@ async fn upsert_updates_existing_row_and_preserves_created_timestamp() {
 
     assert_eq!(saved_again.model_id, "gpt-5.6");
     assert_eq!(saved_again.label, "GPT-5.6 Preview");
-    assert_eq!(
-        saved_again.description.as_deref(),
-        Some("Updated description")
-    );
+    assert_eq!(saved_again.description.as_deref(), Some("Updated description"));
     assert_eq!(
         saved_again.supported_efforts,
         vec![LogicalEffort::High, LogicalEffort::XHigh]

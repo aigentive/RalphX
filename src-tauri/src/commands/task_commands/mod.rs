@@ -52,9 +52,10 @@ pub use helpers::{default_target, emit_queue_changed, emit_task_lifecycle_event,
 
 // Re-export query commands
 pub use query::{
-    get_archived_count, get_session_task_history_availability, get_task, get_task_agent_workspace,
-    get_task_dependency_graph, get_task_state_transitions, get_task_timeline_events,
-    get_tasks_awaiting_review, get_valid_transitions, list_tasks, search_tasks,
+    get_archived_count, get_session_task_history_availability, get_task,
+    get_task_agent_workspace, get_task_dependency_graph,
+    get_task_state_transitions, get_task_timeline_events, get_tasks_awaiting_review,
+    get_valid_transitions, list_tasks, search_tasks,
 };
 
 // Re-export mutation commands

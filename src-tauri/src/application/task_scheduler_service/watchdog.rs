@@ -79,7 +79,9 @@ impl ReadyWatchdog {
             }
         };
 
-        let retryable_pending_review_count = match self.count_retryable_pending_review_tasks().await
+        let retryable_pending_review_count = match self
+            .count_retryable_pending_review_tasks()
+            .await
         {
             Ok(count) => count,
             Err(e) => {
@@ -137,8 +139,7 @@ impl ReadyWatchdog {
                 let Some(metadata_str) = task.metadata.as_deref() else {
                     continue;
                 };
-                let Ok(metadata_val) = serde_json::from_str::<serde_json::Value>(metadata_str)
-                else {
+                let Ok(metadata_val) = serde_json::from_str::<serde_json::Value>(metadata_str) else {
                     continue;
                 };
                 let freshness = FreshnessMetadata::from_task_metadata(&metadata_val);

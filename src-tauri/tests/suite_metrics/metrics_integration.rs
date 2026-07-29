@@ -5,7 +5,8 @@
 // against the real production schema.
 
 use ralphx_lib::commands::metrics_commands::{
-    compute_insights_stats, compute_insights_trends, compute_project_stats, compute_project_trends,
+    compute_insights_stats, compute_insights_trends, compute_project_stats,
+    compute_project_trends,
 };
 use ralphx_lib::testing::SqliteTestDb;
 
@@ -205,10 +206,7 @@ fn test_eme_returns_none_below_threshold() {
     }
 
     let stats = compute_project_stats(&conn, "proj1", 0, 0).expect("compute_project_stats");
-    assert!(
-        stats.eme.is_none(),
-        "EME should be None for < 5 merged tasks"
-    );
+    assert!(stats.eme.is_none(), "EME should be None for < 5 merged tasks");
 }
 
 #[test]
@@ -225,22 +223,12 @@ fn test_eme_returns_estimate_at_threshold() {
     }
 
     let stats = compute_project_stats(&conn, "proj1", 0, 0).expect("compute_project_stats");
-    let eme = stats
-        .eme
-        .expect("EME should be present for 5+ merged tasks");
+    let eme = stats.eme.expect("EME should be present for 5+ merged tasks");
 
     assert_eq!(eme.task_count, 5);
     // Simple: base=1.0 low, ×1.3 = 1.3 high per task → 5 tasks: 5.0 / 6.5
-    assert!(
-        (eme.low_hours - 5.0).abs() < 0.1,
-        "low_hours={}",
-        eme.low_hours
-    );
-    assert!(
-        (eme.high_hours - 6.5).abs() < 0.1,
-        "high_hours={}",
-        eme.high_hours
-    );
+    assert!((eme.low_hours - 5.0).abs() < 0.1, "low_hours={}", eme.low_hours);
+    assert!((eme.high_hours - 6.5).abs() < 0.1, "high_hours={}", eme.high_hours);
 }
 
 #[test]
@@ -426,11 +414,7 @@ fn test_insights_trends_aggregate_task_and_delivery_throughput() {
 
     let trends = compute_insights_trends(&conn, 0, 0).expect("compute_insights_trends");
 
-    let throughput_total: f64 = trends
-        .weekly_throughput
-        .iter()
-        .map(|point| point.value)
-        .sum();
+    let throughput_total: f64 = trends.weekly_throughput.iter().map(|point| point.value).sum();
     let delivery_total: i64 = trends
         .weekly_delivery_throughput
         .iter()

@@ -93,10 +93,7 @@ async fn sqlite_store_covers_issue_link_upsert_read_and_validation() {
         .unwrap()
         .expect("updated Linear issue link should be readable");
     assert_eq!(link.provider, SyncProvider::Linear);
-    assert_eq!(
-        link.project_id,
-        ProjectId::from_string(PROJECT_ID.to_string())
-    );
+    assert_eq!(link.project_id, ProjectId::from_string(PROJECT_ID.to_string()));
     assert_eq!(link.task_id, Some(TaskId::from_string(TASK_ID.to_string())));
     assert_eq!(link.external_key.as_deref(), Some("LIN-123"));
     assert_eq!(link.last_external_status.as_deref(), Some("In Progress"));

@@ -39,7 +39,8 @@ pub trait RemoteEnvironmentRepository: Send + Sync {
     /// exists — merges `url` into `candidate_urls`, refreshes name/scopes/protocol
     /// version, and resets the row to `pending_add` for the staged re-pair.
     /// Exactly one row per host identity in both branches.
-    async fn upsert_paired(&self, params: UpsertPairedEnvironment) -> AppResult<RemoteEnvironment>;
+    async fn upsert_paired(&self, params: UpsertPairedEnvironment)
+        -> AppResult<RemoteEnvironment>;
 
     async fn get(&self, id: &RemoteEnvironmentId) -> AppResult<Option<RemoteEnvironment>>;
 

@@ -36,7 +36,10 @@ fn sk_ant_key_is_redacted() {
 #[test]
 fn sk_ant_key_in_sentence_is_redacted() {
     let input = "Authorization: sk-ant-api03-AAAAAAAAAAAAAAAAAAAAA extra";
-    assert_eq!(redact(input), "Authorization: sk-ant-***REDACTED*** extra");
+    assert_eq!(
+        redact(input),
+        "Authorization: sk-ant-***REDACTED*** extra"
+    );
 }
 
 // ── Pattern 2: sk-or-v1- ─────────────────────────────────────────────────────
@@ -87,7 +90,10 @@ fn sk_or_v1_not_degraded_to_generic_sk_replacement() {
 #[test]
 fn bearer_token_is_redacted() {
     let input = "Authorization: Bearer abcdefghijklmnopqrstu"; // 21 chars
-    assert_eq!(redact(input), "Authorization: Bearer ***REDACTED***");
+    assert_eq!(
+        redact(input),
+        "Authorization: Bearer ***REDACTED***"
+    );
 }
 
 #[test]

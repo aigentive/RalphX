@@ -36,7 +36,10 @@ impl MemoryRemoteEnvironmentRepository {
 
 #[async_trait]
 impl RemoteEnvironmentRepository for MemoryRemoteEnvironmentRepository {
-    async fn upsert_paired(&self, params: UpsertPairedEnvironment) -> AppResult<RemoteEnvironment> {
+    async fn upsert_paired(
+        &self,
+        params: UpsertPairedEnvironment,
+    ) -> AppResult<RemoteEnvironment> {
         let mut environments = self.environments.write().await;
         let existing = environments
             .values()

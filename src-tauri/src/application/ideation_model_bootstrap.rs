@@ -16,7 +16,10 @@ pub struct IdeationModelBootstrapResult {
 pub async fn seed_ideation_model_settings(
     repo: Arc<dyn IdeationModelSettingsRepository>,
 ) -> Result<IdeationModelBootstrapResult, String> {
-    let existing = repo.get_global().await.map_err(|e| e.to_string())?;
+    let existing = repo
+        .get_global()
+        .await
+        .map_err(|e| e.to_string())?;
 
     if existing.is_some() {
         return Ok(IdeationModelBootstrapResult {
@@ -31,9 +34,7 @@ pub async fn seed_ideation_model_settings(
 
     tracing::info!("ideation_model_bootstrap: seeded global inherit/inherit row");
 
-    Ok(IdeationModelBootstrapResult {
-        seeded_global: true,
-    })
+    Ok(IdeationModelBootstrapResult { seeded_global: true })
 }
 
 #[cfg(test)]

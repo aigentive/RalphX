@@ -1,7 +1,7 @@
 pub mod overlay_resolver;
+pub mod team_prompt_contract;
 #[cfg(test)]
 mod overlay_resolver_tests;
-pub mod team_prompt_contract;
 #[cfg(test)]
 mod team_prompt_contract_tests;
 

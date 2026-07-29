@@ -1,9 +1,9 @@
 use super::SqliteTaskProposalRepository;
 use crate::domain::entities::{
     ArtifactId, BusinessValueFactor, Complexity, ComplexityFactor, CriticalPathFactor,
-    DependencyFactor, IdeationSessionId, Priority, PriorityAssessment, PriorityAssessmentFactors,
-    ProjectId, ProposalCategory, ProposalStatus, TaskId, TaskProposal, TaskProposalId,
-    UserHintFactor,
+    DependencyFactor, IdeationSessionId, Priority, PriorityAssessment,
+    PriorityAssessmentFactors, ProposalCategory, ProposalStatus, TaskId, TaskProposalId,
+    UserHintFactor, ProjectId, TaskProposal,
 };
 use crate::domain::repositories::TaskProposalRepository;
 use crate::testing::SqliteTestDb;
@@ -23,7 +23,11 @@ fn create_test_project(db: &SqliteTestDb, id: &ProjectId, name: &str, path: &str
     });
 }
 
-fn create_test_session(db: &SqliteTestDb, session_id: &IdeationSessionId, project_id: &ProjectId) {
+fn create_test_session(
+    db: &SqliteTestDb,
+    session_id: &IdeationSessionId,
+    project_id: &ProjectId,
+) {
     db.with_connection(|conn| {
         conn.execute(
             "INSERT INTO ideation_sessions (id, project_id, status, created_at, updated_at)
@@ -117,10 +121,7 @@ async fn test_create_with_all_fields() {
 
     assert!(result.is_ok());
     let created = result.unwrap();
-    assert_eq!(
-        created.description,
-        Some("Detailed description".to_string())
-    );
+    assert_eq!(created.description, Some("Detailed description".to_string()));
     assert_eq!(created.steps, Some(r#"["Step 1", "Step 2"]"#.to_string()));
     assert_eq!(created.estimated_complexity, Complexity::Complex);
 }
@@ -385,17 +386,12 @@ async fn test_update_priority_sets_assessment_fields() {
     repo.create(proposal.clone()).await.unwrap();
 
     let assessment = create_test_assessment(&proposal.id);
-    repo.update_priority(&proposal.id, &assessment)
-        .await
-        .unwrap();
+    repo.update_priority(&proposal.id, &assessment).await.unwrap();
 
     let found = repo.get_by_id(&proposal.id).await.unwrap().unwrap();
     assert_eq!(found.suggested_priority, assessment.suggested_priority);
     assert_eq!(found.priority_score, assessment.priority_score);
-    assert_eq!(
-        found.priority_reason,
-        Some(assessment.priority_reason.clone())
-    );
+    assert_eq!(found.priority_reason, Some(assessment.priority_reason.clone()));
 }
 
 #[tokio::test]
@@ -412,15 +408,10 @@ async fn test_update_priority_stores_factors_as_json() {
     repo.create(proposal.clone()).await.unwrap();
 
     let assessment = create_test_assessment(&proposal.id);
-    repo.update_priority(&proposal.id, &assessment)
-        .await
-        .unwrap();
+    repo.update_priority(&proposal.id, &assessment).await.unwrap();
 
     let found = repo.get_by_id(&proposal.id).await.unwrap().unwrap();
-    assert_eq!(
-        found.priority_reason,
-        Some(assessment.priority_reason.clone())
-    );
+    assert_eq!(found.priority_reason, Some(assessment.priority_reason.clone()));
     assert_eq!(found.suggested_priority, assessment.suggested_priority);
     assert_eq!(found.priority_score, assessment.priority_score);
 }
@@ -503,9 +494,7 @@ async fn test_set_created_task_id_links_proposal_to_task() {
 
     repo.create(proposal.clone()).await.unwrap();
 
-    repo.set_created_task_id(&proposal.id, &task_id)
-        .await
-        .unwrap();
+    repo.set_created_task_id(&proposal.id, &task_id).await.unwrap();
 
     let found = repo.get_by_id(&proposal.id).await.unwrap().unwrap();
     assert_eq!(found.created_task_id, Some(task_id));
@@ -529,9 +518,7 @@ async fn test_set_created_task_id_updates_timestamp() {
 
     tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
-    repo.set_created_task_id(&proposal.id, &task_id)
-        .await
-        .unwrap();
+    repo.set_created_task_id(&proposal.id, &task_id).await.unwrap();
 
     let found = repo.get_by_id(&proposal.id).await.unwrap().unwrap();
     assert!(found.updated_at >= original);
@@ -593,11 +580,7 @@ async fn test_reorder_updates_sort_order() {
     repo.create(proposal3.clone()).await.unwrap();
 
     // Reorder: move third to first position
-    let new_order = vec![
-        proposal3.id.clone(),
-        proposal1.id.clone(),
-        proposal2.id.clone(),
-    ];
+    let new_order = vec![proposal3.id.clone(), proposal1.id.clone(), proposal2.id.clone()];
     repo.reorder(&session_id, new_order).await.unwrap();
 
     let proposals = repo.get_by_session(&session_id).await.unwrap();
@@ -630,9 +613,7 @@ async fn test_reorder_only_affects_specified_session() {
     repo.create(proposal2.clone()).await.unwrap();
 
     // Reorder session1 only
-    repo.reorder(&session_id1, vec![proposal1.id.clone()])
-        .await
-        .unwrap();
+    repo.reorder(&session_id1, vec![proposal1.id.clone()]).await.unwrap();
 
     // Session 2 should be unaffected
     let found = repo.get_by_id(&proposal2.id).await.unwrap().unwrap();
@@ -962,8 +943,9 @@ fn test_create_sync_inserts_and_returns_proposal() {
     create_test_session(&db, &session_id, &project_id);
 
     let proposal = create_test_proposal(&session_id, "Sync Create");
-    let result = db
-        .with_connection(|conn| SqliteTaskProposalRepository::create_sync(conn, proposal.clone()));
+    let result = db.with_connection(|conn| {
+        SqliteTaskProposalRepository::create_sync(conn, proposal.clone())
+    });
 
     assert!(result.is_ok());
     let created = result.unwrap();
@@ -986,9 +968,8 @@ fn test_count_by_session_sync_returns_correct_count() {
         SqliteTaskProposalRepository::create_sync(conn, p2).unwrap();
     });
 
-    let count = db.with_connection(|conn| {
-        SqliteTaskProposalRepository::count_by_session_sync(conn, session_id.as_str())
-    });
+    let count = db
+        .with_connection(|conn| SqliteTaskProposalRepository::count_by_session_sync(conn, session_id.as_str()));
     assert!(count.is_ok());
     assert_eq!(count.unwrap(), 2);
 }
@@ -1001,9 +982,8 @@ fn test_count_by_session_sync_returns_zero_when_empty() {
     create_test_project(&db, &project_id, "Test Project", "/test/path");
     create_test_session(&db, &session_id, &project_id);
 
-    let count = db.with_connection(|conn| {
-        SqliteTaskProposalRepository::count_by_session_sync(conn, session_id.as_str())
-    });
+    let count = db
+        .with_connection(|conn| SqliteTaskProposalRepository::count_by_session_sync(conn, session_id.as_str()));
     assert!(count.is_ok());
     assert_eq!(count.unwrap(), 0);
 }
@@ -1023,8 +1003,7 @@ fn test_update_sync_modifies_proposal_and_returns_updated() {
 
     let mut updated = proposal.clone();
     updated.title = "After Update".to_string();
-    let result =
-        db.with_connection(|conn| SqliteTaskProposalRepository::update_sync(conn, &updated));
+    let result = db.with_connection(|conn| SqliteTaskProposalRepository::update_sync(conn, &updated));
 
     assert!(result.is_ok());
     let returned = result.unwrap();
@@ -1074,11 +1053,7 @@ fn test_delete_sync_with_wrong_session_is_noop() {
 
     // Delete with wrong session_id — should not remove the row
     let result = db.with_connection(|conn| {
-        SqliteTaskProposalRepository::delete_sync(
-            conn,
-            proposal.id.as_str(),
-            other_session.as_str(),
-        )
+        SqliteTaskProposalRepository::delete_sync(conn, proposal.id.as_str(), other_session.as_str())
     });
     assert!(result.is_ok()); // no error, just no-op
 

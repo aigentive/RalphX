@@ -163,12 +163,10 @@ impl MemoryArchiveRepository for SqliteMemoryArchiveRepository {
 
     async fn delete(&self, id: &MemoryArchiveJobId) -> AppResult<()> {
         let id_str = id.0.clone();
-        self.db
-            .run(move |conn| {
-                conn.execute("DELETE FROM memory_archive_jobs WHERE id = ?1", [id_str])?;
-                Ok(())
-            })
-            .await
+        self.db.run(move |conn| {
+            conn.execute("DELETE FROM memory_archive_jobs WHERE id = ?1", [id_str])?;
+            Ok(())
+        }).await
     }
 
     async fn get_by_project(&self, project_id: &ProjectId) -> AppResult<Vec<MemoryArchiveJob>> {
@@ -335,29 +333,25 @@ impl MemoryArchiveRepository for SqliteMemoryArchiveRepository {
 
     async fn count_by_status(&self, status: ArchiveJobStatus) -> AppResult<u32> {
         let status_str = status.to_string();
-        self.db
-            .run(move |conn| {
-                let count: i64 = conn.query_row(
-                    "SELECT COUNT(*) FROM memory_archive_jobs WHERE status = ?1",
-                    [status_str],
-                    |row| row.get(0),
-                )?;
-                Ok(count as u32)
-            })
-            .await
+        self.db.run(move |conn| {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM memory_archive_jobs WHERE status = ?1",
+                [status_str],
+                |row| row.get(0),
+            )?;
+            Ok(count as u32)
+        }).await
     }
 
     async fn count_claimable(&self) -> AppResult<u32> {
-        self.db
-            .run(move |conn| {
-                let count: i64 = conn.query_row(
+        self.db.run(move |conn| {
+            let count: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM memory_archive_jobs WHERE status IN ('pending', 'failed')",
                 [],
                 |row| row.get(0),
             )?;
-                Ok(count as u32)
-            })
-            .await
+            Ok(count as u32)
+        }).await
     }
 
     async fn count_claimable_for_project(&self, project_id: &ProjectId) -> AppResult<u32> {
@@ -374,29 +368,25 @@ impl MemoryArchiveRepository for SqliteMemoryArchiveRepository {
 
     async fn delete_completed_older_than(&self, days: u32) -> AppResult<u32> {
         let cutoff_str = (Utc::now() - chrono::Duration::days(days as i64)).to_rfc3339();
-        self.db
-            .run(move |conn| {
-                let deleted = conn.execute(
-                    "DELETE FROM memory_archive_jobs
+        self.db.run(move |conn| {
+            let deleted = conn.execute(
+                "DELETE FROM memory_archive_jobs
                  WHERE status = 'done' AND completed_at < ?1",
-                    [cutoff_str],
-                )?;
-                Ok(deleted as u32)
-            })
-            .await
+                [cutoff_str],
+            )?;
+            Ok(deleted as u32)
+        }).await
     }
 
     async fn delete_by_project(&self, project_id: &ProjectId) -> AppResult<()> {
         let project_id_str = project_id.as_str().to_string();
-        self.db
-            .run(move |conn| {
-                conn.execute(
-                    "DELETE FROM memory_archive_jobs WHERE project_id = ?1",
-                    [project_id_str],
-                )?;
-                Ok(())
-            })
-            .await
+        self.db.run(move |conn| {
+            conn.execute(
+                "DELETE FROM memory_archive_jobs WHERE project_id = ?1",
+                [project_id_str],
+            )?;
+            Ok(())
+        }).await
     }
 }
 

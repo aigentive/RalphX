@@ -30,12 +30,7 @@ struct NoOpWebhookPublisher;
 
 #[async_trait]
 impl WebhookPublisherTrait for NoOpWebhookPublisher {
-    async fn publish(
-        &self,
-        _event_type: EventType,
-        _project_id: &str,
-        _payload: serde_json::Value,
-    ) {
+    async fn publish(&self, _event_type: EventType, _project_id: &str, _payload: serde_json::Value) {
         // intentionally empty — enrichment tests verify stored events, not webhook delivery
     }
 }
@@ -140,24 +135,15 @@ async fn test_plan_created_payload_includes_enrichment_fields() {
     );
     let hc = payload["human_context"].as_str().unwrap();
     assert!(!hc.is_empty(), "human_context must not be empty");
-    assert!(
-        hc.contains("My Project"),
-        "human_context must include project_name"
-    );
-    assert!(
-        hc.contains("My Ideation Session"),
-        "human_context must include session_title"
-    );
+    assert!(hc.contains("My Project"), "human_context must include project_name");
+    assert!(hc.contains("My Ideation Session"), "human_context must include session_title");
 
     // Backward compat: original fields still present
     assert_eq!(payload["session_id"].as_str().unwrap(), "session-pc-test");
     assert_eq!(payload["project_id"].as_str().unwrap(), project_id);
     assert_eq!(payload["artifact_id"].as_str().unwrap(), "artifact-pc-test");
     assert_eq!(payload["plan_title"].as_str().unwrap(), "My Plan");
-    assert!(
-        payload.get("timestamp").is_some(),
-        "timestamp must be present"
-    );
+    assert!(payload.get("timestamp").is_some(), "timestamp must be present");
 }
 
 // ============================================================================
@@ -211,10 +197,7 @@ async fn test_plan_created_without_session_title_omits_key() {
     );
     // human_context with only project_name = "[My Project]"
     let hc = payload["human_context"].as_str().unwrap();
-    assert!(
-        hc.contains("My Project"),
-        "human_context must include project_name"
-    );
+    assert!(hc.contains("My Project"), "human_context must include project_name");
 
     // presentation_kind must still be present
     assert_eq!(
@@ -272,29 +255,14 @@ async fn test_verified_payload_includes_enrichment_fields() {
         "presentation_kind must be verified"
     );
     let hc = payload["human_context"].as_str().unwrap();
-    assert!(
-        hc.contains("Verified Project"),
-        "human_context must include project_name"
-    );
-    assert!(
-        hc.contains("Verification Session"),
-        "human_context must include session_title"
-    );
+    assert!(hc.contains("Verified Project"), "human_context must include project_name");
+    assert!(hc.contains("Verification Session"), "human_context must include session_title");
 
     // Backward compat: original fields still present
-    assert_eq!(
-        payload["session_id"].as_str().unwrap(),
-        "session-verified-test"
-    );
+    assert_eq!(payload["session_id"].as_str().unwrap(), "session-verified-test");
     assert_eq!(payload["project_id"].as_str().unwrap(), project_id);
-    assert_eq!(
-        payload["convergence_reason"].as_str().unwrap(),
-        "All gaps resolved"
-    );
-    assert!(
-        payload.get("timestamp").is_some(),
-        "timestamp must be present"
-    );
+    assert_eq!(payload["convergence_reason"].as_str().unwrap(), "All gaps resolved");
+    assert!(payload.get("timestamp").is_some(), "timestamp must be present");
 }
 
 // ============================================================================
@@ -345,25 +313,13 @@ async fn test_session_accepted_payload_includes_enrichment_fields() {
         "presentation_kind must be session_accepted"
     );
     let hc = payload["human_context"].as_str().unwrap();
-    assert!(
-        hc.contains("Accepted Project"),
-        "human_context must include project_name"
-    );
-    assert!(
-        hc.contains("Planning Session"),
-        "human_context must include session_title"
-    );
+    assert!(hc.contains("Accepted Project"), "human_context must include project_name");
+    assert!(hc.contains("Planning Session"), "human_context must include session_title");
 
     // Backward compat: original fields still present
-    assert_eq!(
-        payload["session_id"].as_str().unwrap(),
-        "session-accepted-test"
-    );
+    assert_eq!(payload["session_id"].as_str().unwrap(), "session-accepted-test");
     assert_eq!(payload["project_id"].as_str().unwrap(), project_id);
-    assert!(
-        payload.get("timestamp").is_some(),
-        "timestamp must be present"
-    );
+    assert!(payload.get("timestamp").is_some(), "timestamp must be present");
 }
 
 // ============================================================================

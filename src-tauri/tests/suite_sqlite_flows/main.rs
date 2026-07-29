@@ -7,15 +7,15 @@ fn merged_suite_requires_nextest() {
     }
 }
 
-mod artifact_integration;
-mod execution_control_flows;
-mod gsd_integration;
-mod linear_webhook_reconciliation;
-mod methodology_integration;
-mod per_project_execution_scoping;
-mod qa_system_flows;
-mod repository_swapping;
-mod research_integration;
-mod review_flows;
 mod state_machine_flows;
+mod qa_system_flows;
+mod review_flows;
+mod execution_control_flows;
+mod per_project_execution_scoping;
 mod workflow_integration;
+mod artifact_integration;
+mod methodology_integration;
+mod gsd_integration;
+mod research_integration;
+mod repository_swapping;
+mod linear_webhook_reconciliation;

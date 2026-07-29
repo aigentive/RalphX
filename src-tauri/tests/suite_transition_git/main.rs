@@ -10,15 +10,15 @@ fn merged_suite_requires_nextest() {
 #[path = "../support/mod.rs"]
 mod support;
 
-mod deferred_main_merge_integration;
-mod external_handlers;
-mod git_handlers;
-mod merge_system_hardening;
-mod reviewing_initial_recovery;
-mod reviews_handlers;
-mod startup_jobs_runner;
-mod steps_handlers;
-mod transition_handler_concurrent_freshness;
 mod transition_handler_freshness;
 mod transition_handler_freshness_integration;
+mod transition_handler_concurrent_freshness;
 mod webhook_pipeline_integration;
+mod reviewing_initial_recovery;
+mod startup_jobs_runner;
+mod merge_system_hardening;
+mod deferred_main_merge_integration;
+mod steps_handlers;
+mod reviews_handlers;
+mod git_handlers;
+mod external_handlers;

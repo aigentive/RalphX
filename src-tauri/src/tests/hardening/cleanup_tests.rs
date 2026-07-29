@@ -584,7 +584,16 @@ async fn test_fix_complete_merge_internal_clears_task_branch_and_worktree_path()
     let task_repo =
         s.task_repo.clone() as std::sync::Arc<dyn crate::domain::repositories::TaskRepository>;
     let result = complete_merge_internal(
-        &mut task, &project, &head_sha, "", "main", &task_repo, None, None, None, None,
+        &mut task,
+        &project,
+        &head_sha,
+        "",
+        "main",
+        &task_repo,
+        None,
+        None,
+        None,
+        None,
     )
     .await;
 
