@@ -986,18 +986,37 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
                         released,
                         "Released terminal managed Team workspace reservations during startup recovery"
                     );
+                    let task_service = crate::application::AgentTaskService::new(Arc::clone(
+                        &app_state.agent_task_repo,
+                    ));
                     match app_state
                         .managed_team
-                        .release_delivery_projection_after_recovery()
+                        .recover_pending_exits(&task_service)
                         .await
                     {
-                        Ok(projected) => tracing::info!(
-                            projected,
-                            "Managed Team delivery projection released after assignment recovery"
-                        ),
+                        Ok(recovered) => {
+                            tracing::info!(
+                                recovered,
+                                "Resumed staged managed Team exits during startup recovery"
+                            );
+                            match app_state
+                                .managed_team
+                                .release_delivery_projection_after_recovery()
+                                .await
+                            {
+                                Ok(projected) => tracing::info!(
+                                    projected,
+                                    "Managed Team delivery projection released after assignment recovery"
+                                ),
+                                Err(error) => tracing::error!(
+                                    %error,
+                                    "Managed Team delivery projection remains deferred after recovery"
+                                ),
+                            }
+                        }
                         Err(error) => tracing::error!(
                             %error,
-                            "Managed Team delivery projection remains deferred after recovery"
+                            "Managed Team pending exit recovery failed; delivery projection remains fenced"
                         ),
                     }
                 }

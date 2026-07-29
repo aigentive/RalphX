@@ -299,3 +299,85 @@ async fn pending_exit_recovery_keeps_team_mode_until_the_final_conversation_writ
         CoordinationMode::Solo
     );
 }
+
+#[tokio::test]
+async fn startup_recovery_resumes_a_staged_exit_with_its_recorded_action() {
+    let parts = parts().await;
+    let team = team(&parts).await;
+    assert!(parts
+        .transitions
+        .mark_pending_exit(
+            &team.id,
+            team.version,
+            TeamExitMarker {
+                coordination_mode: CoordinationMode::Solo,
+                exit_action: "suspend".to_string(),
+            },
+        )
+        .await
+        .unwrap());
+
+    assert_eq!(
+        parts
+            .service
+            .recover_pending_exits(&parts.tasks)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        parts
+            .conversations
+            .get_by_id(&team.coordinator_conversation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .coordination_mode,
+        CoordinationMode::Solo
+    );
+    assert_eq!(
+        parts
+            .teams
+            .get_session(&team.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        TeamSessionStatus::Suspended
+    );
+}
+
+#[tokio::test]
+async fn startup_recovery_leaves_sessions_without_an_exit_marker_untouched() {
+    let parts = parts().await;
+    let team = team(&parts).await;
+
+    assert_eq!(
+        parts
+            .service
+            .recover_pending_exits(&parts.tasks)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        parts
+            .teams
+            .get_session(&team.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        TeamSessionStatus::Active
+    );
+    assert_eq!(
+        parts
+            .conversations
+            .get_by_id(&team.coordinator_conversation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .coordination_mode,
+        CoordinationMode::RxNativeTeam
+    );
+}

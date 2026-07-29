@@ -14,6 +14,9 @@ use crate::domain::entities::{ChatConversationId, CoordinationMode, TeamRunBindi
 use crate::domain::repositories::TeamRepository;
 use crate::error::{AppError, AppResult};
 
+use crate::application::AgentTaskService;
+
+use super::exit::TeamExitAction;
 use super::service::ManagedTeamService;
 
 #[derive(Debug, Clone)]
@@ -124,6 +127,21 @@ impl ManagedTeamStartupBarrier {
 }
 
 impl ManagedTeamService {
+    /// Resumes staged Team exits whose durable marker survived a process
+    /// interruption. Sessions without a marker are deliberately untouched.
+    pub async fn recover_pending_exits(&self, task_service: &AgentTaskService) -> AppResult<usize> {
+        let mut recovered = 0usize;
+        for session in self.team_repo.list_open_sessions().await? {
+            let Some(action) = session.pending_exit_action.as_deref() else {
+                continue;
+            };
+            self.exit_team(task_service, &session.id, TeamExitAction::parse(action)?)
+                .await?;
+            recovered += 1;
+        }
+        Ok(recovered)
+    }
+
     /// Startup and compensation recovery release reservations as soon as the
     /// exact owning binding is terminal. The binding identity is the authority;
     /// a newer member generation cannot release a replacement reservation.

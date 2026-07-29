@@ -2,13 +2,22 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::application::managed_team::ManagedTeamStartupBarrier;
+use crate::application::managed_team::{ManagedTeamService, ManagedTeamStartupBarrier};
+use crate::application::AgentTaskService;
 use crate::domain::entities::{
     ChatConversationId, CoordinationMode, TeamMember, TeamMemberId, TeamSession, TeamSessionId,
 };
-use crate::domain::repositories::TeamRepository;
+use crate::domain::repositories::{
+    AgentTaskRepository, TeamRepository, UiFeatureFlagOverridesRepository,
+};
 use crate::error::{AppError, AppResult};
-use crate::infrastructure::memory::MemoryTeamRepository;
+use crate::infrastructure::memory::{
+    MemoryAgentRunRepository, MemoryAgentTaskRepository, MemoryChatConversationRepository,
+    MemoryQueuedMessageRepository, MemoryTeamCoordinationTransitionRepository,
+    MemoryTeamMessageRepository, MemoryTeamRepository, MemoryTeamRunBindingRepository,
+    MemoryTeamWakeBatchRepository, MemoryTeamWorkspaceReservationRepository,
+    MemoryUiFeatureFlagOverridesRepository,
+};
 use crate::testing::team_fixtures::{team_conversation_id, team_session};
 
 struct FailingTeamRepo;
@@ -119,4 +128,29 @@ async fn test_ready_barrier_fences_only_open_team_conversations() {
             .should_fence_resumption(CoordinationMode::Solo, &team_conversation_id(1))
             .await
     );
+}
+
+#[tokio::test]
+async fn pending_exit_recovery_propagates_session_scan_errors() {
+    let service = ManagedTeamService::new(
+        Arc::new(FailingTeamRepo),
+        Arc::new(MemoryTeamCoordinationTransitionRepository::new()),
+        Arc::new(MemoryTeamRunBindingRepository::new()),
+        Arc::new(MemoryTeamMessageRepository::new()),
+        Arc::new(MemoryTeamWakeBatchRepository::new()),
+        Arc::new(MemoryQueuedMessageRepository::new()),
+        Arc::new(MemoryChatConversationRepository::new()),
+        Arc::new(MemoryAgentRunRepository::new()),
+        Arc::new(MemoryTeamWorkspaceReservationRepository::new()),
+        Arc::new(MemoryUiFeatureFlagOverridesRepository::new())
+            as Arc<dyn UiFeatureFlagOverridesRepository>,
+    );
+    let task_service = AgentTaskService::new(
+        Arc::new(MemoryAgentTaskRepository::new()) as Arc<dyn AgentTaskRepository>
+    );
+
+    assert!(matches!(
+        service.recover_pending_exits(&task_service).await,
+        Err(AppError::Database(_))
+    ));
 }

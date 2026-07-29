@@ -431,11 +431,20 @@ async fn broadcast_resolves_current_generation_recipients_as_one_envelope() {
 async fn cross_team_coordinator_spoof_is_rejected_before_envelope_write() {
     let parts = build_parts();
     let _team = ready_team(&parts).await;
+    let other_conversation_id = team_conversation_id(2);
+    let mut other_conversation =
+        ChatConversation::new_project(ProjectId::from_string("project-2".to_string()));
+    other_conversation.id = other_conversation_id;
+    parts
+        .conversation_repo
+        .create(other_conversation)
+        .await
+        .unwrap();
     let other = parts
         .service
         .ensure_team(
             ProjectId::from_string("project-2".to_string()),
-            &team_conversation_id(2),
+            &other_conversation_id,
         )
         .await
         .unwrap();

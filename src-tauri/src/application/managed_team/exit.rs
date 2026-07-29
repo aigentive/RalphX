@@ -135,13 +135,14 @@ impl ManagedTeamService {
                     .map_err(AppError::Validation)?;
                 if !self
                     .team_repo
-                    .update_member(suspended, member.generation)
+                    .update_member(suspended.clone(), member.generation)
                     .await?
                 {
                     return Err(AppError::Conflict(
                         "managed Team member changed while suspending".to_string(),
                     ));
                 }
+                self.emit_member_updated(&suspended).await;
             }
         }
         self.transition_session(session, TeamSessionStatus::Suspended)
@@ -238,13 +239,14 @@ impl ManagedTeamService {
                 stopped.delegated_session_id = None;
                 if !self
                     .team_repo
-                    .update_member(stopped, member.generation)
+                    .update_member(stopped.clone(), member.generation)
                     .await?
                 {
                     return Err(AppError::Conflict(
                         "managed Team member changed while draining".to_string(),
                     ));
                 }
+                self.emit_member_updated(&stopped).await;
             }
         }
         self.transition_session(session, TeamSessionStatus::Closed)

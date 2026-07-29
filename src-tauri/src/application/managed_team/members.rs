@@ -85,7 +85,8 @@ impl ManagedTeamService {
             return Err(AppError::NotFound("managed Team was not found".to_string()));
         }
         let now = Utc::now();
-        self.team_repo
+        let member = self
+            .team_repo
             .create_member(TeamMember {
                 id: TeamMemberId::new(),
                 team_id: team_id.clone(),
@@ -107,7 +108,9 @@ impl ManagedTeamService {
                 updated_at: now,
                 stopped_at: None,
             })
-            .await
+            .await?;
+        self.emit_member_updated(&member).await;
+        Ok(member)
     }
 
     pub async fn idle_members(&self, team_id: &TeamSessionId) -> AppResult<Vec<TeamMember>> {
@@ -274,6 +277,7 @@ impl ManagedTeamService {
                     "managed Team member changed before assignment planning".to_string(),
                 ));
             }
+            self.emit_member_updated(&working).await;
 
             let binding = self
                 .run_binding_repo
@@ -478,6 +482,7 @@ impl ManagedTeamService {
                     "managed Team member changed before stop".to_string(),
                 ));
             }
+            self.emit_member_updated(&member).await;
         }
         Ok(member)
     }
@@ -568,11 +573,16 @@ impl ManagedTeamService {
             idle.current_run_id = None;
             idle.delegated_session_id = None;
             idle.last_error = Some(reason.to_string());
-            if !self.team_repo.update_member(idle, generation).await? {
+            if !self
+                .team_repo
+                .update_member(idle.clone(), generation)
+                .await?
+            {
                 return Err(AppError::Conflict(
                     "Team member changed during orphan recovery".to_string(),
                 ));
             }
+            self.emit_member_updated(&idle).await;
         }
         Ok(())
     }
@@ -683,11 +693,16 @@ impl ManagedTeamService {
             idle.current_run_id = None;
             idle.delegated_session_id = None;
             idle.last_error = reason.map(str::to_string);
-            if !self.team_repo.update_member(idle, generation).await? {
+            if !self
+                .team_repo
+                .update_member(idle.clone(), generation)
+                .await?
+            {
                 return Err(AppError::Conflict(
                     "Team member changed during settlement".to_string(),
                 ));
             }
+            self.emit_member_updated(&idle).await;
         }
         Ok(())
     }
@@ -765,10 +780,14 @@ impl ManagedTeamService {
                     member.current_run_id = None;
                     member.delegated_session_id = None;
                     member.last_error = Some(reason.to_string());
-                    let _ = self
+                    if self
                         .team_repo
-                        .update_member(member, original_member.generation)
-                        .await;
+                        .update_member(member.clone(), original_member.generation)
+                        .await
+                        .unwrap_or(false)
+                    {
+                        self.emit_member_updated(&member).await;
+                    }
                 }
             }
         }

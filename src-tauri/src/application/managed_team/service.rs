@@ -6,12 +6,15 @@
 
 use std::sync::Arc;
 
+use ralphx_events::{emit_serialized, EventSink, NullEventSink};
+use serde::Serialize;
+
 use crate::application::managed_team::budgets::ManagedTeamUsage;
 use crate::application::managed_team::lifecycle::{new_coordinator_run_binding, new_team_session};
 use crate::application::managed_team::recovery::ManagedTeamStartupBarrier;
 use crate::domain::entities::{
-    AgentRunId, ChatConversationId, ProjectId, TeamMember, TeamRunBinding, TeamSession,
-    TeamSessionId,
+    AgentRunId, ChatContextType, ChatConversationId, ProjectId, TeamMember, TeamMemberStatus,
+    TeamRunBinding, TeamRunBindingStatus, TeamSession, TeamSessionId,
 };
 use crate::domain::repositories::{
     AgentRunRepository, ChatConversationRepository, QueuedMessageRepository,
@@ -19,7 +22,7 @@ use crate::domain::repositories::{
     TeamRunBindingRepository, TeamWakeBatchRepository, TeamWorkspaceReservationRepository,
     UiFeatureFlagOverridesRepository,
 };
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 
 /// Session plus roster projection returned by status reads.
 #[derive(Debug, Clone)]
@@ -40,7 +43,29 @@ pub struct ManagedTeamService {
     pub(super) agent_run_repo: Arc<dyn AgentRunRepository>,
     pub(super) reservation_repo: Arc<dyn TeamWorkspaceReservationRepository>,
     pub(super) feature_overrides_repo: Arc<dyn UiFeatureFlagOverridesRepository>,
+    event_sink: Arc<dyn EventSink>,
     startup_barrier: Arc<ManagedTeamStartupBarrier>,
+}
+
+#[derive(Serialize)]
+struct ManagedTeamMemberEventPayload {
+    conversation_id: String,
+    member: ManagedTeamMemberEventMember,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent_run_id: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ManagedTeamMemberEventMember {
+    id: String,
+    team_id: String,
+    name: String,
+    normalized_name: String,
+    canonical_agent_name: String,
+    role_summary: String,
+    status: TeamMemberStatus,
+    generation: i64,
 }
 
 impl ManagedTeamService {
@@ -57,6 +82,35 @@ impl ManagedTeamService {
         reservation_repo: Arc<dyn TeamWorkspaceReservationRepository>,
         feature_overrides_repo: Arc<dyn UiFeatureFlagOverridesRepository>,
     ) -> Self {
+        Self::new_with_event_sink(
+            team_repo,
+            coordination_transition_repo,
+            run_binding_repo,
+            message_repo,
+            wake_batch_repo,
+            queued_message_repo,
+            chat_conversation_repo,
+            agent_run_repo,
+            reservation_repo,
+            feature_overrides_repo,
+            Arc::new(NullEventSink),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_event_sink(
+        team_repo: Arc<dyn TeamRepository>,
+        coordination_transition_repo: Arc<dyn TeamCoordinationTransitionRepository>,
+        run_binding_repo: Arc<dyn TeamRunBindingRepository>,
+        message_repo: Arc<dyn TeamMessageRepository>,
+        wake_batch_repo: Arc<dyn TeamWakeBatchRepository>,
+        queued_message_repo: Arc<dyn QueuedMessageRepository>,
+        chat_conversation_repo: Arc<dyn ChatConversationRepository>,
+        agent_run_repo: Arc<dyn AgentRunRepository>,
+        reservation_repo: Arc<dyn TeamWorkspaceReservationRepository>,
+        feature_overrides_repo: Arc<dyn UiFeatureFlagOverridesRepository>,
+        event_sink: Arc<dyn EventSink>,
+    ) -> Self {
         Self {
             team_repo,
             coordination_transition_repo,
@@ -68,6 +122,7 @@ impl ManagedTeamService {
             agent_run_repo,
             reservation_repo,
             feature_overrides_repo,
+            event_sink,
             startup_barrier: Arc::new(ManagedTeamStartupBarrier::new()),
         }
     }
@@ -84,6 +139,53 @@ impl ManagedTeamService {
         Arc::clone(&self.run_binding_repo)
     }
 
+    pub fn wake_batch_repo(&self) -> Arc<dyn TeamWakeBatchRepository> {
+        Arc::clone(&self.wake_batch_repo)
+    }
+
+    pub(super) async fn emit_member_updated(&self, member: &TeamMember) {
+        let Ok(Some(session)) = self.team_repo.get_session(&member.team_id).await else {
+            return;
+        };
+        let parent_run_id = self
+            .run_binding_repo
+            .list_for_team(&member.team_id)
+            .await
+            .ok()
+            .and_then(|bindings| {
+                bindings
+                    .into_iter()
+                    .filter(|binding| {
+                        binding.team_member_id.is_none()
+                            && matches!(
+                                binding.status,
+                                TeamRunBindingStatus::Planned
+                                    | TeamRunBindingStatus::Launching
+                                    | TeamRunBindingStatus::Running
+                            )
+                    })
+                    .max_by_key(|binding| binding.created_at)
+                    .map(|binding| binding.agent_run_id.as_str().to_string())
+            });
+        let payload = ManagedTeamMemberEventPayload {
+            conversation_id: session.coordinator_conversation_id.as_str(),
+            member: ManagedTeamMemberEventMember {
+                id: member.id.as_str().to_string(),
+                team_id: member.team_id.as_str().to_string(),
+                name: member.name.clone(),
+                normalized_name: member.normalized_name.clone(),
+                canonical_agent_name: member.canonical_agent_name.clone(),
+                role_summary: member.role_summary.clone(),
+                status: member.status,
+                generation: member.generation,
+            },
+            parent_run_id,
+        };
+        if let Err(error) = emit_serialized(&*self.event_sink, "team:member_updated", &payload) {
+            tracing::warn!(%error, "Managed Team member event serialization failed");
+        }
+    }
+
     /// Whether the Team capability override is enabled. Read errors propagate
     /// as typed errors; callers must not treat them as "disabled".
     pub async fn team_capability_enabled(&self) -> AppResult<bool> {
@@ -98,6 +200,21 @@ impl ManagedTeamService {
         project_id: ProjectId,
         conversation_id: &ChatConversationId,
     ) -> AppResult<TeamSession> {
+        let conversation = self
+            .chat_conversation_repo
+            .get_by_id(conversation_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::NotFound("Team coordinator conversation was not found".to_string())
+            })?;
+        if conversation.context_type != ChatContextType::Project
+            || conversation.context_id != project_id.as_str()
+        {
+            return Err(AppError::Conflict(
+                "Team coordinator conversation does not belong to the requested project"
+                    .to_string(),
+            ));
+        }
         let session = new_team_session(project_id, *conversation_id);
         self.coordination_transition_repo
             .enter_team(conversation_id, session)

@@ -3,9 +3,12 @@ use std::sync::Arc;
 use crate::application::managed_team::{
     ManagedTeamMemberUsage, ManagedTeamService, ManagedTeamUsage,
 };
-use crate::domain::entities::{AgentRun, AgentRunUsage, ProjectId, TeamBudgetPolicy};
+use crate::domain::entities::{
+    AgentRun, AgentRunUsage, ChatConversation, ProjectId, TeamBudgetPolicy,
+};
 use crate::domain::repositories::{
-    AgentRunRepository, TeamRepository, UiFeatureFlagOverridesRepository,
+    AgentRunRepository, ChatConversationRepository, TeamRepository,
+    UiFeatureFlagOverridesRepository,
 };
 use crate::infrastructure::memory::{
     MemoryAgentRunRepository, MemoryChatConversationRepository, MemoryQueuedMessageRepository,
@@ -19,10 +22,12 @@ fn service() -> (
     ManagedTeamService,
     Arc<MemoryAgentRunRepository>,
     Arc<MemoryTeamRepository>,
+    Arc<MemoryChatConversationRepository>,
 ) {
     let sessions = MemoryTeamRepository::new_shared_sessions();
     let teams = Arc::new(MemoryTeamRepository::with_sessions(Arc::clone(&sessions)));
     let runs = Arc::new(MemoryAgentRunRepository::new());
+    let conversations = Arc::new(MemoryChatConversationRepository::new());
     let service = ManagedTeamService::new(
         Arc::clone(&teams) as Arc<_>,
         Arc::new(MemoryTeamCoordinationTransitionRepository::with_sessions(
@@ -32,19 +37,23 @@ fn service() -> (
         Arc::new(MemoryTeamMessageRepository::new()),
         Arc::new(MemoryTeamWakeBatchRepository::new()),
         Arc::new(MemoryQueuedMessageRepository::new()),
-        Arc::new(MemoryChatConversationRepository::new()),
+        Arc::clone(&conversations) as Arc<dyn ChatConversationRepository>,
         Arc::clone(&runs) as Arc<dyn AgentRunRepository>,
         Arc::new(MemoryTeamWorkspaceReservationRepository::new()),
         Arc::new(MemoryUiFeatureFlagOverridesRepository::new())
             as Arc<dyn UiFeatureFlagOverridesRepository>,
     );
-    (service, runs, teams)
+    (service, runs, teams, conversations)
 }
 
 #[tokio::test]
 async fn team_usage_is_derived_from_run_bindings_and_agent_runs() {
-    let (service, runs, teams) = service();
+    let (service, runs, teams, conversations) = service();
     let conversation = team_conversation_id(1);
+    let mut coordinator =
+        ChatConversation::new_project(ProjectId::from_string("project-1".to_string()));
+    coordinator.id = conversation;
+    conversations.create(coordinator).await.unwrap();
     let team = service
         .ensure_team(
             ProjectId::from_string("project-1".to_string()),

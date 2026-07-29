@@ -1,10 +1,13 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use ralphx_events::{EventSink, RecordingEventSink};
 
 use crate::application::managed_team::ManagedTeamService;
-use crate::domain::entities::{ProjectId, UiFeatureFlagOverrides};
-use crate::domain::repositories::{TeamRunBindingRepository, UiFeatureFlagOverridesRepository};
+use crate::domain::entities::{ChatConversation, ProjectId, UiFeatureFlagOverrides};
+use crate::domain::repositories::{
+    ChatConversationRepository, TeamRunBindingRepository, UiFeatureFlagOverridesRepository,
+};
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::memory::{
     MemoryAgentRunRepository, MemoryChatConversationRepository, MemoryQueuedMessageRepository,
@@ -38,11 +41,13 @@ struct ServiceParts {
     service: ManagedTeamService,
     run_binding_repo: Arc<MemoryTeamRunBindingRepository>,
     overrides_repo: Arc<MemoryUiFeatureFlagOverridesRepository>,
+    conversations: Arc<MemoryChatConversationRepository>,
 }
 
 fn build_service() -> ServiceParts {
     let run_binding_repo = Arc::new(MemoryTeamRunBindingRepository::new());
     let overrides_repo = Arc::new(MemoryUiFeatureFlagOverridesRepository::new());
+    let conversations = Arc::new(MemoryChatConversationRepository::new());
     let sessions = MemoryTeamRepository::new_shared_sessions();
     let service = ManagedTeamService::new(
         Arc::new(MemoryTeamRepository::with_sessions(Arc::clone(&sessions))),
@@ -53,7 +58,7 @@ fn build_service() -> ServiceParts {
         Arc::new(MemoryTeamMessageRepository::new()),
         Arc::new(MemoryTeamWakeBatchRepository::new()),
         Arc::new(MemoryQueuedMessageRepository::new()),
-        Arc::new(MemoryChatConversationRepository::new()),
+        Arc::clone(&conversations) as Arc<dyn ChatConversationRepository>,
         Arc::new(MemoryAgentRunRepository::new()),
         Arc::new(MemoryTeamWorkspaceReservationRepository::new()),
         Arc::clone(&overrides_repo) as Arc<dyn UiFeatureFlagOverridesRepository>,
@@ -62,7 +67,18 @@ fn build_service() -> ServiceParts {
         service,
         run_binding_repo,
         overrides_repo,
+        conversations,
     }
+}
+
+async fn create_project_conversation(
+    conversations: &MemoryChatConversationRepository,
+    project_id: ProjectId,
+    conversation_id: crate::domain::entities::ChatConversationId,
+) {
+    let mut conversation = ChatConversation::new_project(project_id);
+    conversation.id = conversation_id;
+    conversations.create(conversation).await.unwrap();
 }
 
 fn build_service_with_failing_overrides() -> ManagedTeamService {
@@ -80,6 +96,34 @@ fn build_service_with_failing_overrides() -> ManagedTeamService {
     )
 }
 
+fn build_service_with_event_sink(sink: Arc<dyn EventSink>) -> ServiceParts {
+    let run_binding_repo = Arc::new(MemoryTeamRunBindingRepository::new());
+    let overrides_repo = Arc::new(MemoryUiFeatureFlagOverridesRepository::new());
+    let conversations = Arc::new(MemoryChatConversationRepository::new());
+    let sessions = MemoryTeamRepository::new_shared_sessions();
+    let service = ManagedTeamService::new_with_event_sink(
+        Arc::new(MemoryTeamRepository::with_sessions(Arc::clone(&sessions))),
+        Arc::new(MemoryTeamCoordinationTransitionRepository::with_sessions(
+            sessions,
+        )),
+        Arc::clone(&run_binding_repo) as Arc<dyn TeamRunBindingRepository>,
+        Arc::new(MemoryTeamMessageRepository::new()),
+        Arc::new(MemoryTeamWakeBatchRepository::new()),
+        Arc::new(MemoryQueuedMessageRepository::new()),
+        Arc::clone(&conversations) as Arc<dyn ChatConversationRepository>,
+        Arc::new(MemoryAgentRunRepository::new()),
+        Arc::new(MemoryTeamWorkspaceReservationRepository::new()),
+        Arc::clone(&overrides_repo) as Arc<dyn UiFeatureFlagOverridesRepository>,
+        sink,
+    );
+    ServiceParts {
+        service,
+        run_binding_repo,
+        overrides_repo,
+        conversations,
+    }
+}
+
 async fn enable_team(overrides_repo: &MemoryUiFeatureFlagOverridesRepository) {
     overrides_repo
         .update_agent_capabilities(Some(true), None, None)
@@ -91,6 +135,12 @@ async fn enable_team(overrides_repo: &MemoryUiFeatureFlagOverridesRepository) {
 async fn test_ensure_team_is_idempotent_per_conversation() {
     let parts = build_service();
     let conversation = team_conversation_id(1);
+    create_project_conversation(
+        &parts.conversations,
+        ProjectId::from_string("project-1".to_string()),
+        conversation,
+    )
+    .await;
 
     let first = parts
         .service
@@ -118,6 +168,152 @@ async fn test_ensure_team_is_idempotent_per_conversation() {
         .unwrap();
     assert_eq!(status.session.id, first.id);
     assert!(status.members.is_empty());
+}
+
+#[tokio::test]
+async fn test_ensure_team_rejects_unknown_coordinator_conversation() {
+    let parts = build_service();
+
+    let result = parts
+        .service
+        .ensure_team(
+            ProjectId::from_string("project-1".to_string()),
+            &team_conversation_id(99),
+        )
+        .await;
+
+    assert!(
+        matches!(result, Err(AppError::NotFound(_))),
+        "unknown coordinator conversations must not create durable Teams"
+    );
+}
+
+#[tokio::test]
+async fn test_ensure_team_rejects_cross_project_coordinator_conversation() {
+    let parts = build_service();
+    let conversation = team_conversation_id(1);
+    create_project_conversation(
+        &parts.conversations,
+        ProjectId::from_string("project-a".to_string()),
+        conversation,
+    )
+    .await;
+
+    let result = parts
+        .service
+        .ensure_team(
+            ProjectId::from_string("project-b".to_string()),
+            &conversation,
+        )
+        .await;
+
+    assert!(
+        matches!(result, Err(AppError::Conflict(_))),
+        "a coordinator conversation must remain scoped to its owning project"
+    );
+}
+
+#[tokio::test]
+async fn member_transitions_emit_frontend_roster_payload_after_the_write_succeeds() {
+    let sink = RecordingEventSink::new();
+    let parts = build_service_with_event_sink(Arc::new(sink.clone()));
+    let conversation = team_conversation_id(1);
+    create_project_conversation(
+        &parts.conversations,
+        ProjectId::from_string("project-1".to_string()),
+        conversation,
+    )
+    .await;
+    let team = parts
+        .service
+        .ensure_team(
+            ProjectId::from_string("project-1".to_string()),
+            &conversation,
+        )
+        .await
+        .unwrap();
+
+    let member = parts
+        .service
+        .add_member(
+            &team.id,
+            crate::application::managed_team::ManagedTeamMemberSpec {
+                name: "Event member".to_string(),
+                canonical_agent_name: "ralphx-general-worker".to_string(),
+                role_summary: "event test member".to_string(),
+                harness: None,
+                logical_model: None,
+                logical_effort: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        sink.events(),
+        vec![ralphx_events::RecordedEvent {
+            event: "team:member_updated".to_string(),
+            payload: serde_json::json!({
+                "conversation_id": conversation.as_str(),
+                "member": {
+                    "id": member.id.as_str(),
+                    "teamId": member.team_id.as_str(),
+                    "name": "Event member",
+                    "normalizedName": "event member",
+                    "canonicalAgentName": "ralphx-general-worker",
+                    "roleSummary": "event test member",
+                    "status": "idle",
+                    "generation": 0,
+                }
+            }),
+        }]
+    );
+}
+
+#[tokio::test]
+async fn failed_member_cas_does_not_emit_a_member_updated_event() {
+    let sink = RecordingEventSink::new();
+    let parts = build_service_with_event_sink(Arc::new(sink.clone()));
+    let conversation = team_conversation_id(1);
+    create_project_conversation(
+        &parts.conversations,
+        ProjectId::from_string("project-1".to_string()),
+        conversation,
+    )
+    .await;
+    let team = parts
+        .service
+        .ensure_team(
+            ProjectId::from_string("project-1".to_string()),
+            &conversation,
+        )
+        .await
+        .unwrap();
+    let member = parts
+        .service
+        .add_member(
+            &team.id,
+            crate::application::managed_team::ManagedTeamMemberSpec {
+                name: "CAS member".to_string(),
+                canonical_agent_name: "ralphx-general-worker".to_string(),
+                role_summary: "cas test member".to_string(),
+                harness: None,
+                logical_model: None,
+                logical_effort: None,
+            },
+        )
+        .await
+        .unwrap();
+    let recorded_after_create = sink.events();
+
+    assert!(matches!(
+        parts
+            .service
+            .stop_member(&team.id, &member.normalized_name, member.generation + 1)
+            .await,
+        Err(AppError::Conflict(_))
+    ));
+    assert_eq!(sink.events(), recorded_after_create);
 }
 
 #[tokio::test]
@@ -162,6 +358,12 @@ async fn test_preallocate_creates_team_and_member_null_binding() {
     let parts = build_service();
     enable_team(&parts.overrides_repo).await;
     let conversation = team_conversation_id(1);
+    create_project_conversation(
+        &parts.conversations,
+        ProjectId::from_string("project-1".to_string()),
+        conversation,
+    )
+    .await;
 
     let binding = parts
         .service
@@ -230,6 +432,12 @@ async fn test_duplicate_run_binding_rejected() {
     let parts = build_service();
     enable_team(&parts.overrides_repo).await;
     let conversation = team_conversation_id(1);
+    create_project_conversation(
+        &parts.conversations,
+        ProjectId::from_string("project-1".to_string()),
+        conversation,
+    )
+    .await;
 
     parts
         .service

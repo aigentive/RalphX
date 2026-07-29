@@ -7,13 +7,13 @@ use crate::application::managed_team::{
 use crate::application::AgentTaskService;
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
-    AgentRun, AgentRunId, AgentTaskAssignmentId, AgentTaskCreate, AgentTaskScope,
+    AgentRun, AgentRunId, AgentTaskAssignmentId, AgentTaskCreate, AgentTaskScope, ChatConversation,
     DelegatedSessionId, ProjectId, TeamMemberStatus, TeamRunBindingStatus, TeamWorkClassification,
     TeamWorkspaceReservation, TeamWorkspaceReservationId,
 };
 use crate::domain::repositories::{
-    AgentRunRepository, AgentTaskRepository, TeamRepository, TeamRunBindingRepository,
-    TeamWorkspaceReservationRepository, UiFeatureFlagOverridesRepository,
+    AgentRunRepository, AgentTaskRepository, TeamWorkspaceReservationRepository,
+    UiFeatureFlagOverridesRepository,
 };
 use crate::infrastructure::memory::{
     MemoryAgentRunRepository, MemoryAgentTaskRepository, MemoryChatConversationRepository,
@@ -77,6 +77,12 @@ fn task(title: &str) -> AgentTaskCreate {
 }
 
 async fn create_member(service: &ManagedTeamService) -> crate::domain::entities::TeamMember {
+    ensure_project_conversation(
+        service,
+        ProjectId::from_string("project-1".to_string()),
+        team_conversation_id(1),
+    )
+    .await;
     let team = service
         .ensure_team(
             ProjectId::from_string("project-1".to_string()),
@@ -98,6 +104,28 @@ async fn create_member(service: &ManagedTeamService) -> crate::domain::entities:
         )
         .await
         .unwrap()
+}
+
+async fn ensure_project_conversation(
+    service: &ManagedTeamService,
+    project_id: ProjectId,
+    conversation_id: crate::domain::entities::ChatConversationId,
+) {
+    if service
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .unwrap()
+        .is_none()
+    {
+        let mut conversation = ChatConversation::new_project(project_id);
+        conversation.id = conversation_id;
+        service
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .unwrap();
+    }
 }
 
 #[tokio::test]
@@ -169,6 +197,12 @@ async fn mixed_claude_codex_leads_and_members_follow_the_same_assignment_saga() 
         (AgentHarnessKind::Codex, AgentHarnessKind::Claude),
     ] {
         let (service, runs) = build_service_with_runs();
+        ensure_project_conversation(
+            &service,
+            ProjectId::from_string("project-1".to_string()),
+            team_conversation_id(1),
+        )
+        .await;
         let team = service
             .ensure_team(
                 ProjectId::from_string("project-1".to_string()),
