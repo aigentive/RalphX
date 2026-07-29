@@ -6,16 +6,17 @@
     "invokedCommands": 499,
     "dynamicExpressions": 0,
     "seamBypasses": 0,
-    "unclassified": 419,
-    "line": "PASS: remote transport drift — 499 invoke command name(s), 0 dynamic, 0 seam bypasses; 419 unclassified (baseline, → 0 in PR 3.1)."
+    "manifestClassified": 190,
+    "unclassified": 257,
+    "line": "PASS: remote transport drift — 499 invoke command name(s), 0 dynamic, 0 seam bypasses; 190 manifest-classified; 257 unclassified (baseline, → 0 in PR 3.1)."
   },
   "totals": {
     "invokedCommandNames": 499,
     "remoteRegistered": 57,
     "localOnlyRows": 29,
     "ledgerRows": 546,
-    "unclassified": 419,
-    "assignedToBatches": 419,
+    "unclassified": 257,
+    "assignedToBatches": 257,
     "batches": 14
   },
   "dispositionModel": {
@@ -41,24 +42,24 @@
     }
   },
   "dispositionTotals": {
-    "registerCandidate": 257,
-    "v1DeferredElevated": 26,
-    "hostDeniedSpawn": 49,
-    "hostDeniedClass": 87
+    "registerCandidate": 257
   },
   "batches": [
     {
       "id": "B0",
       "order": 1,
       "title": "P-11 third-disposition mechanism (prerequisite, no registrations)",
-      "rationale": "Today the drift scan classifies a name as remote-registered OR local-only. 159 of the 447 gap names are neither and never will be: they are host-side commands the facade denies (Denied class, SpawnsProcess) or defers (Elevated). Phase doc key point 6 fixes the intended resolution — those names resolve for P-11 'via the module-`Denied` rows the ledger renders into `remote-commands.json`', explicitly NOT via a client-local reason. The scan must learn to read the manifest as a third classification source before ANY batch can move the unclassified count to zero. Landing this first also makes every later batch's delta measurable.",
+      "rationale": "LANDED (PR 3.1-b batch B0). The drift scan used to admit two answers — remote-registered, or client-local with a reason. 162 of the then-419 gap names were neither and never will be: host commands the facade denies (Denied class, SpawnsProcess) or defers (Elevated), and writing them into `local-only-commands.ts` would have put a false statement in a file whose whole value is that its reasons are true. `ralphx_remote_protocol::v1_resolution` now derives the verdict from the ledger row, `capability_ledger_tests` renders it as `v1Resolution` on every manifest row, and the scan reads it as a third classification source. The ratchet moved 419 → 257 with zero registrations. Every later batch's delta is now measurable.",
+      "retiredBy": null,
+      "retiredNote": null,
       "work": [
-        "Extend `scripts/check-remote-transport-drift.mjs` to read `docs/generated/remote-commands.json` and treat a name as classified when its ledger row is host-denied (class `denied`, or any capability set `class_permits` rejects at v1 classes) — with the ledger row, not a name list, as the authority.",
-        "Decide and encode the `Elevated`/v1-deferred disposition: same manifest path with a distinct reason, or an explicit deferred list that CI shrinks. Do not let it fall into `local-only-commands.ts` (key point 6).",
-        "Add self-test detector cases: a manifest-denied name classifies; a name absent from every source still fails; a name that is BOTH registered and manifest-denied fails (that is a ledger/registry contradiction).",
-        "Keep the ratchet: the baseline file may only shrink, and is deleted when the count reaches zero."
+        "DONE — `v1_resolution(class, capabilities)` in `ralphx-remote-protocol` derives one of `registerable` / `host-denied` / `host-denied-spawns-process` / `v1-deferred`. The ledger row is the authority; nothing downstream re-derives `class_permits`.",
+        "DONE — the `Elevated`/v1-deferred disposition rides the SAME manifest path under a distinct reason code, not a side list and not `local-only-commands.ts` (key point 6). CI shrinks it as Elevated rows are reclassified.",
+        "DONE — 9 new scan self-test cases (26 → 35): each refusal class classifies, a registerable name does not, a name absent from every source stays unclassified, an unknown resolution literal throws, a registered-and-refused row throws, and an absent/shapeless/field-less manifest classifies nothing.",
+        "DONE — the ratchet held: the baseline shrank 419 → 257 and is still delete-on-zero.",
+        "NOTE — `host-only-ux` needed no separate annotation list: all 162 manifest-resolvable names carry a Denied or Elevated ledger row already, so the census's taxonomy covers the set with no side file."
       ],
-      "gate": "Scan self-test grows by the new detector cases; the PASS line reports the unclassified count falling by exactly the manifest-resolved set (expected −159 with no registrations).",
+      "gate": "MET — scan self-test 26 → 35 cases; the PASS line reports 190 manifest-classified and the unclassified count fell 419 → 257, exactly the 162-name manifest-resolved set, with zero registrations.",
       "commandCount": 0,
       "modules": [],
       "dispositionCounts": {},
@@ -72,13 +73,15 @@
       "order": 2,
       "title": "Task core — lifecycle, steps, execution, gates",
       "rationale": "The 1.5-A surface already registered the neighbouring commands (`move_task`, `unblock_task`, `answer_user_question`, the brakes), so the injection table, the `authz:` predicate shape and the P-4 parity rows for these argument shapes are proven on this exact module family. Lowest parity risk, highest reuse — the right batch to shake out the per-batch harness before it meets 41-command modules.",
+      "retiredBy": null,
+      "retiredNote": null,
       "work": [
         "Hand-audit each command's downstream authority (detector (a) transitions, detector (b) spawn-triggering state writes, content-surface writes) and assign class + capability set in `capability_ledger.rs`.",
         "P-4 parity rows FIRST (flat args, struct-wrapped, camelCase, `Option`, error path) per C-11.",
         "Confirm the brakes in these modules stay `ui:operate` (A-14) and that no arming transition lands below the `AgentControl` floor."
       ],
       "gate": "P-17 suite green; P-17b generated scope entries exist for every new AgentControl member; C-9 dual-lens review recorded.",
-      "commandCount": 29,
+      "commandCount": 27,
       "modules": [
         "execution_commands",
         "permission_commands",
@@ -87,11 +90,10 @@
         "task_step_commands"
       ],
       "dispositionCounts": {
-        "registerCandidate": 27,
-        "hostDeniedClass": 2
+        "registerCandidate": 27
       },
       "registerCandidates": 27,
-      "nonRegistering": 2,
+      "nonRegistering": 0,
       "commandsByModule": {
         "execution_commands": [
           "get_execution_status",
@@ -115,8 +117,6 @@
         "task_commands": [
           "archive_task",
           "archive_tasks_in_group",
-          "cleanup_task",
-          "cleanup_tasks_in_group",
           "pause_execution_plan",
           "restore_task",
           "resume_execution_plan",
@@ -136,8 +136,6 @@
       "commands": [
         "archive_task",
         "archive_tasks_in_group",
-        "cleanup_task",
-        "cleanup_tasks_in_group",
         "complete_step",
         "fail_step",
         "get_execution_status",
@@ -170,6 +168,8 @@
       "order": 3,
       "title": "Chat + agent conversation surface (unblocks PR 3.2)",
       "rationale": "PR 3.2's whole premise is that chat send paths answer `REMOTE_FORBIDDEN` without `ui:agent` rather than `REMOTE_COMMAND_UNAVAILABLE` — which requires them registered. 2.6 shipped the honest interim (composer renders UNAVAILABLE remotely) and its product note says it 'flips with no client change when 3.1 registers them'. This is the batch that flips it, so it must land before 3.2 starts. It is also the highest-risk batch: `send_message` is a detector-(a) steer sink and the module contains the workspace-publish `git push` surface that stays denied.",
+      "retiredBy": null,
+      "retiredNote": null,
       "work": [
         "Split the module by authority: the send/steer commands register as `AgentControl`; the publish/PR surface (`publish_agent_conversation_workspace`, `update_agent_conversation_workspace_from_base`, `close_agent_workspace_pr`) stays denied, and `set_agent_conversation_workspace_auto_publish` is an already-proven detector-(c) rejection.",
         "Verify per command that the process-launch sink sits BEYOND the steer-sink cut (`chat_service.send_message`) rather than inside the command's own closure — the cut is what makes chat send registerable while `resume_task` is not. Any command whose own closure resolves a CLI path is a detector-(c) rejection, not a registration.",
@@ -177,7 +177,7 @@
         "DONE (PR 3.1-b batch 3): `conversation_stats_commands` — all four usage-aggregate reads registered at `ui:read`, so the module no longer appears in this batch's module list. Batch 3's `probe_b2_module_batch_audit` also published detector output for every remaining B2 member; start from it rather than re-deriving. Its headline finding: `get_agent_conversation`, `get_agent_conversation_messages_page` and `get_agent_conversation_timeline_page` — the three transcript reads PR 3.2 needs — all fire detector (a), so they are NOT free reads and need their own hand-trace."
       ],
       "gate": "P-17 green; C-9 dual-lens review recorded; the five 2.6-surfaced ops resolve per this census's `resolvedItems.unregisteredUiAgentOps`.",
-      "commandCount": 47,
+      "commandCount": 42,
       "modules": [
         "agent_composer_commands",
         "agent_model_commands",
@@ -186,11 +186,10 @@
         "unified_chat_commands"
       ],
       "dispositionCounts": {
-        "registerCandidate": 42,
-        "hostDeniedClass": 5
+        "registerCandidate": 42
       },
       "registerCandidates": 42,
-      "nonRegistering": 5,
+      "nonRegistering": 0,
       "commandsByModule": {
         "agent_composer_commands": [
           "list_agent_composer_skills",
@@ -198,7 +197,6 @@
           "search_agent_composer_plan_references"
         ],
         "agent_model_commands": [
-          "delete_custom_agent_model",
           "upsert_custom_agent_model"
         ],
         "agent_sidebar_commands": [
@@ -212,10 +210,8 @@
         "unified_chat_commands": [
           "abort_seeded_agent_conversation",
           "archive_agent_conversation",
-          "close_agent_workspace_pr",
           "commit_agent_conversation_workspace_locally",
           "create_agent_conversation",
-          "delete_queued_agent_message",
           "fork_agent_conversation",
           "get_agent_conversation",
           "get_agent_conversation_messages_page",
@@ -234,7 +230,6 @@
           "list_agent_conversations",
           "list_agent_conversations_page",
           "precompute_agent_conversation_workspace_pr_description",
-          "publish_agent_conversation_workspace",
           "reconcile_agent_conversation_workspace_publication",
           "restore_agent_conversation",
           "send_agent_message",
@@ -246,19 +241,15 @@
           "switch_agent_conversation_mode",
           "switch_agent_conversation_persona",
           "update_agent_conversation_coordination_mode",
-          "update_agent_conversation_title",
-          "update_agent_conversation_workspace_from_base"
+          "update_agent_conversation_title"
         ]
       },
       "commands": [
         "abort_seeded_agent_conversation",
         "add_conversation_folder_reference",
         "archive_agent_conversation",
-        "close_agent_workspace_pr",
         "commit_agent_conversation_workspace_locally",
         "create_agent_conversation",
-        "delete_custom_agent_model",
-        "delete_queued_agent_message",
         "fork_agent_conversation",
         "get_agent_conversation",
         "get_agent_conversation_messages_page",
@@ -280,7 +271,6 @@
         "list_agent_sidebar_conversations",
         "list_conversation_folder_references",
         "precompute_agent_conversation_workspace_pr_description",
-        "publish_agent_conversation_workspace",
         "reconcile_agent_conversation_workspace_publication",
         "remove_conversation_folder_reference",
         "restore_agent_conversation",
@@ -296,7 +286,6 @@
         "switch_agent_conversation_persona",
         "update_agent_conversation_coordination_mode",
         "update_agent_conversation_title",
-        "update_agent_conversation_workspace_from_base",
         "upsert_custom_agent_model"
       ]
     },
@@ -305,6 +294,8 @@
       "order": 4,
       "title": "Review, QA, merge pipeline, validation",
       "rationale": "Approval/review commands write the agent-consumed content surface (`MutatesAgentConsumedContent` already appears on 6 of them), which is exactly the capability whose floor P-17d enforces. Grouping them keeps that audit in one review rather than spread across batches.",
+      "retiredBy": null,
+      "retiredNote": null,
       "work": [
         "Confirm every content-surface writer keeps `MutatesAgentConsumedContent` and lands at or above the AgentControl floor.",
         "Check the merge-pipeline members against the destructive-git deny list (`cleanup_task_branch`, `resolve_merge_conflict` are Denied and must not ride in on module similarity)."
@@ -402,12 +393,14 @@
       "order": 5,
       "title": "Ideation, plans, methodology, workflow",
       "rationale": "The largest single module in the gap (42). It is also where the known detector-(c) rejection `apply_proposals_to_kanban` lives, so the batch must be sized to absorb a mid-batch reclassification without stalling the others.",
+      "retiredBy": null,
+      "retiredNote": null,
       "work": [
         "Expect a non-empty detector-(c) rejection subset; record each rejection in the manifest disposition rather than downgrading the class.",
         "`delete_task_proposal` is Denied (deletesEntity) — it stays a manifest disposition inside this batch."
       ],
       "gate": "P-17 green; C-9 review recorded; rejected members appear as manifest dispositions, never as local-only rows.",
-      "commandCount": 64,
+      "commandCount": 63,
       "modules": [
         "agent_plan_commands",
         "ideation_commands",
@@ -416,11 +409,10 @@
         "workflow_commands"
       ],
       "dispositionCounts": {
-        "registerCandidate": 63,
-        "hostDeniedClass": 1
+        "registerCandidate": 63
       },
       "registerCandidates": 63,
-      "nonRegistering": 1,
+      "nonRegistering": 0,
       "commandsByModule": {
         "agent_plan_commands": [
           "activate_agent_plan_direct_implementation",
@@ -438,7 +430,6 @@
           "create_cross_project_session",
           "create_ideation_session",
           "create_task_proposal",
-          "delete_task_proposal",
           "export_ideation_session",
           "get_agent_harness_availability",
           "get_agent_lane_settings",
@@ -513,7 +504,6 @@
         "create_task_proposal",
         "create_workflow",
         "deactivate_methodology",
-        "delete_task_proposal",
         "export_ideation_session",
         "get_active_execution_plan",
         "get_active_methodology",
@@ -569,12 +559,14 @@
       "order": 6,
       "title": "Automation, research, metrics, activity",
       "rationale": "Automation run/restart are two of the five 2.6-surfaced ops; the rest are read-shaped commands that were swept to the conservative module default and are the cheapest reclassification wins in the gap.",
+      "retiredBy": null,
+      "retiredNote": null,
       "work": [
         "Re-audit the conservative-module-default rows: a genuinely inert read here may drop to `Read`/`Operate`, but only with sink evidence — the floor may not be undershot.",
         "`trigger_automation_run_now` / `restart_automation` route through the scheduler seam; confirm the arming-transition targets are visible to detector (a) before assigning."
       ],
       "gate": "P-17 green; C-9 review recorded.",
-      "commandCount": 36,
+      "commandCount": 34,
       "modules": [
         "activity_commands",
         "automation_commands",
@@ -582,11 +574,10 @@
         "research_commands"
       ],
       "dispositionCounts": {
-        "registerCandidate": 34,
-        "hostDeniedClass": 2
+        "registerCandidate": 34
       },
       "registerCandidates": 34,
-      "nonRegistering": 2,
+      "nonRegistering": 0,
       "commandsByModule": {
         "activity_commands": [
           "count_session_activity_events",
@@ -598,8 +589,6 @@
         "automation_commands": [
           "cancel_automation_run",
           "create_automation_draft",
-          "delete_automation",
-          "delete_automation_run",
           "get_automation",
           "list_automations",
           "pause_automation",
@@ -638,8 +627,6 @@
         "count_session_activity_events",
         "count_task_activity_events",
         "create_automation_draft",
-        "delete_automation",
-        "delete_automation_run",
         "get_automation",
         "get_insights_pr_insights",
         "get_insights_stats",
@@ -677,12 +664,14 @@
       "order": 7,
       "title": "Personas, role defaults, MCP policy, review settings",
       "rationale": "Configuration-of-future-authority shapes cluster here: a persona/role/policy write does not act now but changes what a later spawn is allowed to do. This is the `update_custom_analysis` family of risk (§3.3 backstop-1 residual), so it gets one focused dual-lens review instead of being sprinkled across batches.",
+      "retiredBy": null,
+      "retiredNote": null,
       "work": [
         "For each command ask the deferred-authority question explicitly: does this write change what a FUTURE agent process may do? If yes it is at least `AgentControl` with `ConfiguresFutureProcessAuthority`, regardless of how inert the immediate action looks.",
         "`delete_persona`-shaped members stay Denied (deletesEntity)."
       ],
       "gate": "P-17 green; C-9 review recorded with the deferred-authority lens explicitly exercised.",
-      "commandCount": 28,
+      "commandCount": 27,
       "modules": [
         "manual_role_default_commands",
         "mcp_policy_commands",
@@ -690,11 +679,10 @@
         "workspace_review_settings_commands"
       ],
       "dispositionCounts": {
-        "registerCandidate": 27,
-        "hostDeniedClass": 1
+        "registerCandidate": 27
       },
       "registerCandidates": 27,
-      "nonRegistering": 1,
+      "nonRegistering": 0,
       "commandsByModule": {
         "manual_role_default_commands": [
           "clear_manual_role_default",
@@ -718,7 +706,6 @@
           "approve_persona_as_new",
           "archive_persona",
           "create_persona_draft",
-          "delete_persona_draft",
           "get_persona",
           "list_persona_usage",
           "list_personas",
@@ -741,7 +728,6 @@
         "clear_mcp_server_override",
         "clear_mcp_tool_override",
         "create_persona_draft",
-        "delete_persona_draft",
         "get_agent_conversation_role_default",
         "get_manual_role_defaults",
         "get_mcp_catalog",
@@ -769,6 +755,8 @@
       "order": 8,
       "title": "Artifacts, task context, notifications, app chrome",
       "rationale": "The tail. Mixed reads and small writes; also the batch that must decide which names are genuinely CLIENT-LOCAL (updater channel, window/dock chrome) and therefore belong in `local-only-commands.ts` with an honest reason — the only batch expected to add local-only rows.",
+      "retiredBy": null,
+      "retiredNote": null,
       "work": [
         "Split client-local from host-owned per command: `update_channel_commands` and parts of `ui_commands` are plausible `local-only` rows; artifacts and task context are host state and must register or be manifest-disposed.",
         "`get_task_context` and the prompt-builder reads are content-surface members (ledger-soundness round found 5 dropped worker content reads) — re-check the surface enumeration before assigning.",
@@ -877,461 +865,89 @@
       "order": 9,
       "title": "Credential + integration surface (disposition only, no registrations)",
       "rationale": "Every member is `TouchesCredentials` or `ConfiguresFutureProcessAuthority`. API-key management is compile-denied from the facade (§4.3) and the integration-settings saves are the round-3 module deny list. Nothing here registers in v1; the entire batch is manifest disposition, so it is pure throughput once B0 lands — 72 names retired with zero registration risk.",
+      "retiredBy": "B0",
+      "retiredNote": null,
       "work": [
         "Confirm each ledger row already carries the denying capability; add missing rows rather than adding local-only reasons.",
         "The ticketing reads are Elevated-not-Denied (they read a credentialed provider): decide once, for the whole module, whether v1 defers them or the reads split from the writes in a later phase. Record the decision in the ledger reason."
       ],
       "gate": "Manifest regenerated and diff-clean; unclassified count drops by exactly this batch's size; zero new local-only rows.",
-      "commandCount": 72,
-      "modules": [
-        "api_key_commands",
-        "atlassian_commands",
-        "clickup_commands",
-        "external_mcp_commands",
-        "granola_commands",
-        "harness_provider_commands",
-        "linear_commands",
-        "ticketing_commands"
-      ],
-      "dispositionCounts": {
-        "v1DeferredElevated": 20,
-        "hostDeniedClass": 52
-      },
+      "commandCount": 0,
+      "modules": [],
+      "dispositionCounts": {},
       "registerCandidates": 0,
-      "nonRegistering": 72,
-      "commandsByModule": {
-        "api_key_commands": [
-          "create_api_key",
-          "get_api_key_audit_log",
-          "list_api_keys",
-          "revoke_api_key",
-          "rotate_api_key",
-          "update_api_key_permissions",
-          "update_api_key_projects"
-        ],
-        "atlassian_commands": [
-          "assign_agent_conversation_jira_issue",
-          "assign_agent_conversation_jira_issue_to_me",
-          "build_atlassian_oauth_authorization_url",
-          "clear_agent_conversation_jira_issue",
-          "complete_atlassian_oauth_local_callback",
-          "disconnect_atlassian_integration",
-          "exchange_atlassian_oauth_code",
-          "get_agent_conversation_jira_issue",
-          "get_atlassian_integration_settings",
-          "refresh_agent_conversation_jira_issue",
-          "resolve_atlassian_resource_urls",
-          "save_atlassian_integration_settings",
-          "search_atlassian_resources",
-          "start_atlassian_oauth_local_callback",
-          "validate_atlassian_integration"
-        ],
-        "clickup_commands": [
-          "disconnect_clickup_integration",
-          "get_clickup_integration_settings",
-          "list_clickup_workspaces",
-          "save_clickup_integration_settings",
-          "search_clickup_tasks",
-          "validate_clickup_integration"
-        ],
-        "external_mcp_commands": [
-          "get_external_mcp_config",
-          "update_external_mcp_config"
-        ],
-        "granola_commands": [
-          "assign_agent_conversation_granola_note",
-          "clear_agent_conversation_granola_note",
-          "get_agent_conversation_granola_note",
-          "get_granola_integration_settings",
-          "get_granola_note_detail",
-          "list_granola_notes",
-          "refresh_agent_conversation_granola_note",
-          "save_granola_integration_settings",
-          "validate_granola_integration_settings"
-        ],
-        "harness_provider_commands": [
-          "get_agent_provider_settings",
-          "update_agent_provider_settings"
-        ],
-        "linear_commands": [
-          "assign_agent_conversation_linear_issue",
-          "clear_agent_conversation_linear_issue",
-          "disconnect_linear_integration",
-          "get_agent_conversation_linear_issue",
-          "get_linear_integration_settings",
-          "get_linear_webhook_config",
-          "refresh_agent_conversation_linear_issue",
-          "save_linear_integration_settings",
-          "save_linear_webhook_signing_secret",
-          "search_linear_issues",
-          "validate_linear_integration"
-        ],
-        "ticketing_commands": [
-          "add_ticket_comment",
-          "assign_ticket",
-          "clear_ticket_assignee",
-          "get_conversation_ticket",
-          "get_ticket_associations",
-          "get_ticket_detail",
-          "list_ticket_filter_options",
-          "list_ticket_labels",
-          "list_ticket_transitions",
-          "list_ticketing_columns",
-          "list_ticketing_containers",
-          "list_ticketing_providers",
-          "list_ticketing_status_catalog",
-          "list_tickets",
-          "refresh_ticketing_status_catalog",
-          "refresh_tickets",
-          "set_ticket_labels",
-          "start_ralphx_work_from_ticket",
-          "transition_ticket_status",
-          "update_ticketing_status_presentation"
-        ]
-      },
-      "commands": [
-        "add_ticket_comment",
-        "assign_agent_conversation_granola_note",
-        "assign_agent_conversation_jira_issue",
-        "assign_agent_conversation_jira_issue_to_me",
-        "assign_agent_conversation_linear_issue",
-        "assign_ticket",
-        "build_atlassian_oauth_authorization_url",
-        "clear_agent_conversation_granola_note",
-        "clear_agent_conversation_jira_issue",
-        "clear_agent_conversation_linear_issue",
-        "clear_ticket_assignee",
-        "complete_atlassian_oauth_local_callback",
-        "create_api_key",
-        "disconnect_atlassian_integration",
-        "disconnect_clickup_integration",
-        "disconnect_linear_integration",
-        "exchange_atlassian_oauth_code",
-        "get_agent_conversation_granola_note",
-        "get_agent_conversation_jira_issue",
-        "get_agent_conversation_linear_issue",
-        "get_agent_provider_settings",
-        "get_api_key_audit_log",
-        "get_atlassian_integration_settings",
-        "get_clickup_integration_settings",
-        "get_conversation_ticket",
-        "get_external_mcp_config",
-        "get_granola_integration_settings",
-        "get_granola_note_detail",
-        "get_linear_integration_settings",
-        "get_linear_webhook_config",
-        "get_ticket_associations",
-        "get_ticket_detail",
-        "list_api_keys",
-        "list_clickup_workspaces",
-        "list_granola_notes",
-        "list_ticket_filter_options",
-        "list_ticket_labels",
-        "list_ticket_transitions",
-        "list_ticketing_columns",
-        "list_ticketing_containers",
-        "list_ticketing_providers",
-        "list_ticketing_status_catalog",
-        "list_tickets",
-        "refresh_agent_conversation_granola_note",
-        "refresh_agent_conversation_jira_issue",
-        "refresh_agent_conversation_linear_issue",
-        "refresh_ticketing_status_catalog",
-        "refresh_tickets",
-        "resolve_atlassian_resource_urls",
-        "revoke_api_key",
-        "rotate_api_key",
-        "save_atlassian_integration_settings",
-        "save_clickup_integration_settings",
-        "save_granola_integration_settings",
-        "save_linear_integration_settings",
-        "save_linear_webhook_signing_secret",
-        "search_atlassian_resources",
-        "search_clickup_tasks",
-        "search_linear_issues",
-        "set_ticket_labels",
-        "start_atlassian_oauth_local_callback",
-        "start_ralphx_work_from_ticket",
-        "transition_ticket_status",
-        "update_agent_provider_settings",
-        "update_api_key_permissions",
-        "update_api_key_projects",
-        "update_external_mcp_config",
-        "update_ticketing_status_presentation",
-        "validate_atlassian_integration",
-        "validate_clickup_integration",
-        "validate_granola_integration_settings",
-        "validate_linear_integration"
-      ]
+      "nonRegistering": 0,
+      "commandsByModule": {},
+      "commands": []
     },
     {
       "id": "D2",
       "order": 10,
       "title": "Process-launch getters and git/gh surface (disposition only)",
       "rationale": "The 'getter that shells out' family plus the destructive-git and installer surfaces. `SpawnsProcess` is not exposable at any v1 scope, so these are dispositions, not registrations. `get_project`/`list_projects` are carved out into R1 because they are the one case where the spawn is removable rather than inherent.",
+      "retiredBy": "B0",
+      "retiredNote": null,
       "work": [
         "Verify each row carries `SpawnsProcess` (detector (c) is the floor: a Read/Operate row reaching a launch sink fails CI).",
         "`get_task_file_changes` / `get_file_diff` / `get_codex_cli_diagnostics` are the named getter-spawns — they stay denied even though they read like reads."
       ],
       "gate": "Manifest diff-clean; detector-(c) floor test green; unclassified count drops by exactly this batch's size.",
-      "commandCount": 60,
-      "modules": [
-        "agent_issue_report_commands",
-        "diff_commands",
-        "git_commands",
-        "github_commands",
-        "plan_branch_commands",
-        "project_commands",
-        "provider_cli_management_commands",
-        "workspace_open_commands"
-      ],
-      "dispositionCounts": {
-        "hostDeniedSpawn": 47,
-        "hostDeniedClass": 13
-      },
+      "commandCount": 0,
+      "modules": [],
+      "dispositionCounts": {},
       "registerCandidates": 0,
-      "nonRegistering": 60,
-      "commandsByModule": {
-        "agent_issue_report_commands": [
-          "build_agent_issue_report",
-          "submit_agent_issue_report"
-        ],
-        "diff_commands": [
-          "detect_merge_conflicts",
-          "get_agent_conversation_workspace_change_summary",
-          "get_agent_conversation_workspace_commit_file_changes",
-          "get_agent_conversation_workspace_commit_file_diff",
-          "get_agent_conversation_workspace_commits",
-          "get_agent_conversation_workspace_cumulative_file_changes",
-          "get_agent_conversation_workspace_cumulative_file_diff",
-          "get_agent_conversation_workspace_file_changes",
-          "get_agent_conversation_workspace_file_diff",
-          "get_agent_conversation_workspace_pr_annotations",
-          "get_agent_conversation_workspace_repair_change_summary",
-          "get_agent_conversation_workspace_repair_conflict_file_diff",
-          "get_agent_conversation_workspace_repair_staged_file_changes",
-          "get_agent_conversation_workspace_repair_staged_file_diff",
-          "get_agent_conversation_workspace_repair_unstaged_file_changes",
-          "get_agent_conversation_workspace_repair_unstaged_file_diff",
-          "get_agent_conversation_workspace_review",
-          "get_agent_conversation_workspace_review_hunk_annotations",
-          "get_agent_conversation_workspace_staged_file_changes",
-          "get_agent_conversation_workspace_staged_file_diff",
-          "get_agent_conversation_workspace_unstaged_file_changes",
-          "get_agent_conversation_workspace_unstaged_file_diff",
-          "get_commit_file_changes",
-          "get_commit_file_diff",
-          "get_conflict_file_diff",
-          "get_file_diff",
-          "get_task_file_changes"
-        ],
-        "git_commands": [
-          "get_task_commits",
-          "resolve_merge_conflict",
-          "retry_merge"
-        ],
-        "github_commands": [
-          "get_github_branch_overview",
-          "get_github_connection_status",
-          "get_pull_request_detail"
-        ],
-        "plan_branch_commands": [
-          "enable_feature_branch",
-          "get_plan_branch",
-          "get_plan_branch_by_task_id",
-          "get_project_plan_branches"
-        ],
-        "project_commands": [
-          "archive_project",
-          "create_project",
-          "get_git_auth_diagnostics",
-          "get_git_branches",
-          "get_git_current_branch",
-          "get_git_default_branch",
-          "get_git_remote_url",
-          "login_gh_with_browser",
-          "read_pr_template",
-          "resume_deferred_git_startup",
-          "search_github_pull_requests",
-          "setup_gh_git_auth",
-          "switch_git_origin_to_ssh",
-          "update_custom_analysis",
-          "update_github_pr_enabled",
-          "update_project",
-          "write_pr_template"
-        ],
-        "provider_cli_management_commands": [
-          "auto_update_managed_provider_clis",
-          "get_managed_provider_cli_status",
-          "install_or_update_managed_provider_cli"
-        ],
-        "workspace_open_commands": [
-          "list_workspace_open_targets"
-        ]
-      },
-      "commands": [
-        "archive_project",
-        "auto_update_managed_provider_clis",
-        "build_agent_issue_report",
-        "create_project",
-        "detect_merge_conflicts",
-        "enable_feature_branch",
-        "get_agent_conversation_workspace_change_summary",
-        "get_agent_conversation_workspace_commit_file_changes",
-        "get_agent_conversation_workspace_commit_file_diff",
-        "get_agent_conversation_workspace_commits",
-        "get_agent_conversation_workspace_cumulative_file_changes",
-        "get_agent_conversation_workspace_cumulative_file_diff",
-        "get_agent_conversation_workspace_file_changes",
-        "get_agent_conversation_workspace_file_diff",
-        "get_agent_conversation_workspace_pr_annotations",
-        "get_agent_conversation_workspace_repair_change_summary",
-        "get_agent_conversation_workspace_repair_conflict_file_diff",
-        "get_agent_conversation_workspace_repair_staged_file_changes",
-        "get_agent_conversation_workspace_repair_staged_file_diff",
-        "get_agent_conversation_workspace_repair_unstaged_file_changes",
-        "get_agent_conversation_workspace_repair_unstaged_file_diff",
-        "get_agent_conversation_workspace_review",
-        "get_agent_conversation_workspace_review_hunk_annotations",
-        "get_agent_conversation_workspace_staged_file_changes",
-        "get_agent_conversation_workspace_staged_file_diff",
-        "get_agent_conversation_workspace_unstaged_file_changes",
-        "get_agent_conversation_workspace_unstaged_file_diff",
-        "get_commit_file_changes",
-        "get_commit_file_diff",
-        "get_conflict_file_diff",
-        "get_file_diff",
-        "get_git_auth_diagnostics",
-        "get_git_branches",
-        "get_git_current_branch",
-        "get_git_default_branch",
-        "get_git_remote_url",
-        "get_github_branch_overview",
-        "get_github_connection_status",
-        "get_managed_provider_cli_status",
-        "get_plan_branch",
-        "get_plan_branch_by_task_id",
-        "get_project_plan_branches",
-        "get_pull_request_detail",
-        "get_task_commits",
-        "get_task_file_changes",
-        "install_or_update_managed_provider_cli",
-        "list_workspace_open_targets",
-        "login_gh_with_browser",
-        "read_pr_template",
-        "resolve_merge_conflict",
-        "resume_deferred_git_startup",
-        "retry_merge",
-        "search_github_pull_requests",
-        "setup_gh_git_auth",
-        "submit_agent_issue_report",
-        "switch_git_origin_to_ssh",
-        "update_custom_analysis",
-        "update_github_pr_enabled",
-        "update_project",
-        "write_pr_template"
-      ]
+      "nonRegistering": 0,
+      "commandsByModule": {},
+      "commands": []
     },
     {
       "id": "R1",
       "order": 11,
       "title": "`get_project` / `list_projects` — spawn-free read path",
       "rationale": "The only commands in the gap whose process authority is INCIDENTAL. Both are pure repository reads; the single spawning field is `repository_capability`, computed per project by shelling out to git in `project_response()`. Removing that inline shell-out makes the highest-traffic read on the whole remote surface registerable as `Read`. See `resolvedItems.projectGetters` for the proposed path and the rejected alternatives.",
+      "retiredBy": "B0",
+      "retiredNote": "NOT closed, though: leaving the ratchet is a bookkeeping fact, not an answer. Both names are manifest-classified `host-denied-spawns-process` because the getter shells out TODAY; §5.1's open question is whether to remove the spawn so they can be registered, and that owner call still stands. If it is answered yes, these rows change class and re-enter as registration work.",
       "work": [
         "Land the cache-backed capability read (option A in `resolvedItems.projectGetters`) as its own change with its own tests — NOT inside a registration batch.",
         "Only after the shell-out is gone: re-run detector (c), drop the `SpawnsProcess` capability, reclassify to `Read`, register both.",
         "If option A is rejected by the owner, both names fall back into D2 as v1-deferred dispositions and the frontend project list stays a fetch-route question (3.1 open question 4)."
       ],
       "gate": "Detector (c) reports no launch sink in either closure; P-4 parity rows for both; the manifest shows class `read` with an empty capability set.",
-      "commandCount": 2,
-      "modules": [
-        "project_commands"
-      ],
-      "dispositionCounts": {
-        "hostDeniedSpawn": 2
-      },
+      "commandCount": 0,
+      "modules": [],
+      "dispositionCounts": {},
       "registerCandidates": 0,
-      "nonRegistering": 2,
-      "commandsByModule": {
-        "project_commands": [
-          "get_project",
-          "list_projects"
-        ]
-      },
-      "commands": [
-        "get_project",
-        "list_projects"
-      ]
+      "nonRegistering": 0,
+      "commandsByModule": {},
+      "commands": []
     },
     {
       "id": "D3",
       "order": 12,
       "title": "Host chrome, terminal, repository settings, test data (disposition only)",
       "rationale": "Terminal is the phase doc's worked example of the third disposition: its invoke names resolve for P-11 through the module-`Denied` (`PtyControl`) rows, NEVER through a client-local reason. Test data is hard-denied outright (total-data-loss blast radius). Startup/repository settings are `HostManagement`/`ConfiguresFutureProcessAuthority` — v1-deferred.",
+      "retiredBy": "B0",
+      "retiredNote": null,
       "work": [
         "Assert the terminal names resolve through the manifest path introduced in B0; a `local-only` row for any of them is a defect, not a shortcut.",
         "Keep `report_startup_frontend_milestone` honest: it is a client-originated report about the LOCAL app boot — check whether it is genuinely client-local (local-only row) rather than host-deferred."
       ],
       "gate": "Manifest diff-clean; a planted local-only row for a terminal command fails CI.",
-      "commandCount": 14,
-      "modules": [
-        "agent_terminal_commands",
-        "repository_settings_commands",
-        "startup_commands",
-        "test_data_commands"
-      ],
-      "dispositionCounts": {
-        "hostDeniedClass": 8,
-        "v1DeferredElevated": 6
-      },
+      "commandCount": 0,
+      "modules": [],
+      "dispositionCounts": {},
       "registerCandidates": 0,
-      "nonRegistering": 14,
-      "commandsByModule": {
-        "agent_terminal_commands": [
-          "clear_agent_terminal",
-          "close_agent_terminal",
-          "resize_agent_terminal",
-          "restart_agent_terminal",
-          "write_agent_terminal"
-        ],
-        "repository_settings_commands": [
-          "get_repository_settings",
-          "update_repository_settings"
-        ],
-        "startup_commands": [
-          "get_startup_diagnostics",
-          "get_startup_status",
-          "report_startup_frontend_milestone",
-          "retry_startup"
-        ],
-        "test_data_commands": [
-          "clear_test_data",
-          "seed_test_data",
-          "seed_visual_audit_data"
-        ]
-      },
-      "commands": [
-        "clear_agent_terminal",
-        "clear_test_data",
-        "close_agent_terminal",
-        "get_repository_settings",
-        "get_startup_diagnostics",
-        "get_startup_status",
-        "report_startup_frontend_milestone",
-        "resize_agent_terminal",
-        "restart_agent_terminal",
-        "retry_startup",
-        "seed_test_data",
-        "seed_visual_audit_data",
-        "update_repository_settings",
-        "write_agent_terminal"
-      ]
+      "nonRegistering": 0,
+      "commandsByModule": {},
+      "commands": []
     },
     {
       "id": "A1",
       "order": 13,
       "title": "Chat attachments — disposition + remote rendering (deferred from 2.6/review-4)",
       "rationale": "2.6-a shipped the honest interim: under a remote environment `getImagePreviewSrc()` returns `null` and every attachment renders as a placeholder card, because `convertFileSrc` mints an `asset://` URL for a path on the CLIENT's filesystem while `attachment.filePath` names a file on the HOST. The comment at `MessageAttachments.tsx:92-94` defers the real fix to 3.1. The three attachment commands are Denied (`writesArbitraryPath` / `deletesEntity`) and stay dispositions — the rendering work is a FETCH-path change, not a command registration, which is exactly 3.1 open question 4 and needs an explicit call.",
+      "retiredBy": "B0",
+      "retiredNote": "NOT closed: the attachment names leave the ratchet, but remote attachment RENDERING is a fetch route, not an invoke command, and §5.3's `ChatAttachmentGallery.tsx` gap plus the 1.5-C endpoint dependency are untouched by B0.",
       "work": [
         "Blocked on 1.5-C: `/remote/v1/attachments/{id}` does not exist on this base (no `attachments` route in `remote_server/`). Do not start A1 until the 1.5 lane lands it.",
         "Branch preview-source resolution on env kind in BOTH renderers — `MessageAttachments.tsx:115` and `ChatAttachmentGallery.tsx:97` (2.6 only hardened the first; the gallery still calls `convertFileSrc` unconditionally, which is a live gap this census surfaces).",
@@ -1340,33 +956,21 @@
         "Disposition the three commands through the manifest (upload/delete are `writesArbitraryPath` fs sinks; `list_message_attachments` is denied by module)."
       ],
       "gate": "A remote attachment renders through the scoped endpoint; a local one still uses `convertFileSrc`; P-1 route-allowlist equality still holds; the three commands are manifest-disposed with zero local-only rows.",
-      "commandCount": 3,
-      "modules": [
-        "chat_attachment_commands"
-      ],
-      "dispositionCounts": {
-        "hostDeniedClass": 3
-      },
+      "commandCount": 0,
+      "modules": [],
+      "dispositionCounts": {},
       "registerCandidates": 0,
-      "nonRegistering": 3,
-      "commandsByModule": {
-        "chat_attachment_commands": [
-          "delete_chat_attachment",
-          "list_message_attachments",
-          "upload_chat_attachment"
-        ]
-      },
-      "commands": [
-        "delete_chat_attachment",
-        "list_message_attachments",
-        "upload_chat_attachment"
-      ]
+      "nonRegistering": 0,
+      "commandsByModule": {},
+      "commands": []
     },
     {
       "id": "X1",
       "order": 14,
       "title": "Orphan invokes — no local handler exists",
       "rationale": "RESOLVED in PR 3.1-b. Five gap names were absent from `src-tauri/src/commands/registry.rs` `generate_handler!` AND from the ledger (which is exhaustive over it), so every call rejected at runtime with no remote environment involved. The reachability audit found none of the five was wired to any component or event handler — the wrappers were dead code kept alive only by their own unit tests — so all five were resolved by DELETING the call site rather than by minting host authority the product does not use. This batch is now empty and stays here as the record of that call.",
+      "retiredBy": null,
+      "retiredNote": null,
       "work": [
         "`add_proposal_dependency` — deleted at both call sites (`api/ideation.ts` `dependencies.add`, `api/proposal.ts` `addProposalDependency`) plus the `addDependency` mutation in `hooks/useDependencyGraph.ts`. Its owning hook `useDependencyMutations` had no consumer at all: the UI reads the dependency graph and never writes edges, so there was no product asymmetry to fix by adding the missing command.",
         "`create_child_session` / `get_parent_session_context` — deleted from `api/ideation.ts` (zero callers, zero tests). The capability is not lost: both are live HTTP routes (`POST /api/create_child_session`, `GET /api/parent_session_context/:session_id`), which is how the backend actually reaches them.",
@@ -1439,17 +1043,6 @@
       ],
       "disposition": "registerCandidate",
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "add_ticket_comment",
-      "batch": "D1",
-      "module": "ticketing_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "v1DeferredElevated",
-      "ledgerReason": "ticket integration credential/network surface"
     },
     {
       "command": "analyze_dependencies",
@@ -1562,17 +1155,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "archive_project",
-      "batch": "D2",
-      "module": "project_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "project git/gh and deferred shell authority"
-    },
-    {
       "command": "archive_task",
       "batch": "B1",
       "module": "task_commands",
@@ -1617,94 +1199,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "assign_agent_conversation_granola_note",
-      "batch": "D1",
-      "module": "granola_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
-    },
-    {
-      "command": "assign_agent_conversation_jira_issue",
-      "batch": "D1",
-      "module": "atlassian_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
-    },
-    {
-      "command": "assign_agent_conversation_jira_issue_to_me",
-      "batch": "D1",
-      "module": "atlassian_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
-    },
-    {
-      "command": "assign_agent_conversation_linear_issue",
-      "batch": "D1",
-      "module": "linear_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
-    },
-    {
-      "command": "assign_ticket",
-      "batch": "D1",
-      "module": "ticketing_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "v1DeferredElevated",
-      "ledgerReason": "ticket integration credential/network surface"
-    },
-    {
-      "command": "auto_update_managed_provider_clis",
-      "batch": "D2",
-      "module": "provider_cli_management_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "provider CLI installer surface"
-    },
-    {
-      "command": "build_agent_issue_report",
-      "batch": "D2",
-      "module": "agent_issue_report_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "spawns diagnostic report tooling"
-    },
-    {
-      "command": "build_atlassian_oauth_authorization_url",
-      "batch": "D1",
-      "module": "atlassian_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
-    },
-    {
       "command": "cancel_automation_run",
       "batch": "B5",
       "module": "automation_commands",
@@ -1716,28 +1210,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "cleanup_task",
-      "batch": "B1",
-      "module": "task_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "destructive task cleanup"
-    },
-    {
-      "command": "cleanup_tasks_in_group",
-      "batch": "B1",
-      "module": "task_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "destructive task cleanup across a whole group"
-    },
-    {
       "command": "clear_active_plan",
       "batch": "B4",
       "module": "plan_commands",
@@ -1747,50 +1219,6 @@
       ],
       "disposition": "registerCandidate",
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "clear_agent_conversation_granola_note",
-      "batch": "D1",
-      "module": "granola_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
-    },
-    {
-      "command": "clear_agent_conversation_jira_issue",
-      "batch": "D1",
-      "module": "atlassian_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
-    },
-    {
-      "command": "clear_agent_conversation_linear_issue",
-      "batch": "D1",
-      "module": "linear_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
-    },
-    {
-      "command": "clear_agent_terminal",
-      "batch": "D3",
-      "module": "agent_terminal_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "ptyControl"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "terminal PTY control"
     },
     {
       "command": "clear_manual_role_default",
@@ -1826,50 +1254,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "clear_test_data",
-      "batch": "D3",
-      "module": "test_data_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "deletesEntity"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "test-data mutation is never remotely operable"
-    },
-    {
-      "command": "clear_ticket_assignee",
-      "batch": "D1",
-      "module": "ticketing_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "v1DeferredElevated",
-      "ledgerReason": "ticket integration credential/network surface"
-    },
-    {
-      "command": "close_agent_terminal",
-      "batch": "D3",
-      "module": "agent_terminal_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "ptyControl"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "terminal PTY control"
-    },
-    {
-      "command": "close_agent_workspace_pr",
-      "batch": "B2",
-      "module": "unified_chat_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "closes the remote pull request an agent workspace published"
-    },
-    {
       "command": "commit_agent_conversation_workspace_locally",
       "batch": "B2",
       "module": "unified_chat_commands",
@@ -1879,17 +1263,6 @@
       ],
       "disposition": "registerCandidate",
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "complete_atlassian_oauth_local_callback",
-      "batch": "D1",
-      "module": "atlassian_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
     },
     {
       "command": "complete_step",
@@ -1948,17 +1321,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "create_api_key",
-      "batch": "D1",
-      "module": "api_key_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "credential surface"
-    },
-    {
       "command": "create_automation_draft",
       "batch": "B5",
       "module": "automation_commands",
@@ -2014,17 +1376,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "create_project",
-      "batch": "D2",
-      "module": "project_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "project git/gh and deferred shell authority"
-    },
-    {
       "command": "create_task_proposal",
       "batch": "B4",
       "module": "ideation_commands",
@@ -2056,149 +1407,6 @@
       ],
       "disposition": "registerCandidate",
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "delete_automation",
-      "batch": "B5",
-      "module": "automation_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "deletesEntity"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "deletes a durable entity"
-    },
-    {
-      "command": "delete_automation_run",
-      "batch": "B5",
-      "module": "automation_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "deletesEntity"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "deletes a durable entity"
-    },
-    {
-      "command": "delete_chat_attachment",
-      "batch": "A1",
-      "module": "chat_attachment_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "deletesEntity"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "deletes a durable entity"
-    },
-    {
-      "command": "delete_custom_agent_model",
-      "batch": "B2",
-      "module": "agent_model_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "deletesEntity"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "deletes a durable entity"
-    },
-    {
-      "command": "delete_persona_draft",
-      "batch": "B6",
-      "module": "persona_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "deletesEntity"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "deletes a durable entity"
-    },
-    {
-      "command": "delete_queued_agent_message",
-      "batch": "B2",
-      "module": "unified_chat_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "deletesEntity"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "deletes a durable entity"
-    },
-    {
-      "command": "delete_task_proposal",
-      "batch": "B4",
-      "module": "ideation_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "deletesEntity"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "deletes a durable entity"
-    },
-    {
-      "command": "detect_merge_conflicts",
-      "batch": "D2",
-      "module": "diff_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "diff getters may spawn git"
-    },
-    {
-      "command": "disconnect_atlassian_integration",
-      "batch": "D1",
-      "module": "atlassian_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
-    },
-    {
-      "command": "disconnect_clickup_integration",
-      "batch": "D1",
-      "module": "clickup_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
-    },
-    {
-      "command": "disconnect_linear_integration",
-      "batch": "D1",
-      "module": "linear_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
-    },
-    {
-      "command": "enable_feature_branch",
-      "batch": "D2",
-      "module": "plan_branch_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "branch operations spawn git"
-    },
-    {
-      "command": "exchange_atlassian_oauth_code",
-      "batch": "D1",
-      "module": "atlassian_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
     },
     {
       "command": "export_ideation_session",
@@ -2290,39 +1498,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "get_agent_conversation_granola_note",
-      "batch": "D1",
-      "module": "granola_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
-    },
-    {
-      "command": "get_agent_conversation_jira_issue",
-      "batch": "D1",
-      "module": "atlassian_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
-    },
-    {
-      "command": "get_agent_conversation_linear_issue",
-      "batch": "D1",
-      "module": "linear_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
-    },
-    {
       "command": "get_agent_conversation_messages_page",
       "batch": "B2",
       "module": "unified_chat_commands",
@@ -2378,94 +1553,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "get_agent_conversation_workspace_change_summary",
-      "batch": "D2",
-      "module": "diff_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "diff getters may spawn git"
-    },
-    {
-      "command": "get_agent_conversation_workspace_commit_file_changes",
-      "batch": "D2",
-      "module": "diff_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "diff getters may spawn git"
-    },
-    {
-      "command": "get_agent_conversation_workspace_commit_file_diff",
-      "batch": "D2",
-      "module": "diff_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "diff getters may spawn git"
-    },
-    {
-      "command": "get_agent_conversation_workspace_commits",
-      "batch": "D2",
-      "module": "diff_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "diff getters may spawn git"
-    },
-    {
-      "command": "get_agent_conversation_workspace_cumulative_file_changes",
-      "batch": "D2",
-      "module": "diff_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "diff getters may spawn git"
-    },
-    {
-      "command": "get_agent_conversation_workspace_cumulative_file_diff",
-      "batch": "D2",
-      "module": "diff_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "diff getters may spawn git"
-    },
-    {
-      "command": "get_agent_conversation_workspace_file_changes",
-      "batch": "D2",
-      "module": "diff_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "diff getters may spawn git"
-    },
-    {
-      "command": "get_agent_conversation_workspace_file_diff",
-      "batch": "D2",
-      "module": "diff_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "diff getters may spawn git"
-    },
-    {
       "command": "get_agent_conversation_workspace_freshness",
       "batch": "B2",
       "module": "unified_chat_commands",
@@ -2475,149 +1562,6 @@
       ],
       "disposition": "registerCandidate",
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_agent_conversation_workspace_pr_annotations",
-      "batch": "D2",
-      "module": "diff_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "diff getters may spawn git"
-    },
-    {
-      "command": "get_agent_conversation_workspace_repair_change_summary",
-      "batch": "D2",
-      "module": "diff_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "diff getters may spawn git"
-    },
-    {
-      "command": "get_agent_conversation_workspace_repair_conflict_file_diff",
-      "batch": "D2",
-      "module": "diff_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "diff getters may spawn git"
-    },
-    {
-      "command": "get_agent_conversation_workspace_repair_staged_file_changes",
-      "batch": "D2",
-      "module": "diff_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "diff getters may spawn git"
-    },
-    {
-      "command": "get_agent_conversation_workspace_repair_staged_file_diff",
-      "batch": "D2",
-      "module": "diff_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "diff getters may spawn git"
-    },
-    {
-      "command": "get_agent_conversation_workspace_repair_unstaged_file_changes",
-      "batch": "D2",
-      "module": "diff_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "diff getters may spawn git"
-    },
-    {
-      "command": "get_agent_conversation_workspace_repair_unstaged_file_diff",
-      "batch": "D2",
-      "module": "diff_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "diff getters may spawn git"
-    },
-    {
-      "command": "get_agent_conversation_workspace_review",
-      "batch": "D2",
-      "module": "diff_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "diff getters may spawn git"
-    },
-    {
-      "command": "get_agent_conversation_workspace_review_hunk_annotations",
-      "batch": "D2",
-      "module": "diff_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "diff getters may spawn git"
-    },
-    {
-      "command": "get_agent_conversation_workspace_staged_file_changes",
-      "batch": "D2",
-      "module": "diff_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "diff getters may spawn git"
-    },
-    {
-      "command": "get_agent_conversation_workspace_staged_file_diff",
-      "batch": "D2",
-      "module": "diff_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "diff getters may spawn git"
-    },
-    {
-      "command": "get_agent_conversation_workspace_unstaged_file_changes",
-      "batch": "D2",
-      "module": "diff_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "diff getters may spawn git"
-    },
-    {
-      "command": "get_agent_conversation_workspace_unstaged_file_diff",
-      "batch": "D2",
-      "module": "diff_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "diff getters may spawn git"
     },
     {
       "command": "get_agent_harness_availability",
@@ -2653,17 +1597,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "get_agent_provider_settings",
-      "batch": "D1",
-      "module": "harness_provider_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "configuresFutureProcessAuthority"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "configures future provider process authority"
-    },
-    {
       "command": "get_agent_run_status_unified",
       "batch": "B2",
       "module": "unified_chat_commands",
@@ -2695,17 +1628,6 @@
       ],
       "disposition": "registerCandidate",
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_api_key_audit_log",
-      "batch": "D1",
-      "module": "api_key_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "credential surface"
     },
     {
       "command": "get_artifact",
@@ -2807,17 +1729,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "get_atlassian_integration_settings",
-      "batch": "D1",
-      "module": "atlassian_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
-    },
-    {
       "command": "get_automation",
       "batch": "B5",
       "module": "automation_commands",
@@ -2873,61 +1784,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "get_clickup_integration_settings",
-      "batch": "D1",
-      "module": "clickup_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
-    },
-    {
-      "command": "get_commit_file_changes",
-      "batch": "D2",
-      "module": "diff_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "diff getters may spawn git"
-    },
-    {
-      "command": "get_commit_file_diff",
-      "batch": "D2",
-      "module": "diff_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "diff getters may spawn git"
-    },
-    {
-      "command": "get_conflict_file_diff",
-      "batch": "D2",
-      "module": "diff_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "diff getters may spawn git"
-    },
-    {
-      "command": "get_conversation_ticket",
-      "batch": "D1",
-      "module": "ticketing_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "v1DeferredElevated",
-      "ledgerReason": "ticket integration credential/network surface"
-    },
-    {
       "command": "get_current_release_notes",
       "batch": "B7",
       "module": "release_notes_commands",
@@ -2950,28 +1806,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "get_external_mcp_config",
-      "batch": "D1",
-      "module": "external_mcp_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "external MCP credential surface"
-    },
-    {
-      "command": "get_file_diff",
-      "batch": "D2",
-      "module": "diff_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "spawns git for an arbitrary file diff"
-    },
-    {
       "command": "get_fix_task_attempts",
       "batch": "B3",
       "module": "review_commands",
@@ -2981,105 +1815,6 @@
       ],
       "disposition": "registerCandidate",
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_git_auth_diagnostics",
-      "batch": "D2",
-      "module": "project_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "project git/gh and deferred shell authority"
-    },
-    {
-      "command": "get_git_branches",
-      "batch": "D2",
-      "module": "project_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "spawns git over project-controlled state"
-    },
-    {
-      "command": "get_git_current_branch",
-      "batch": "D2",
-      "module": "project_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "project git/gh and deferred shell authority"
-    },
-    {
-      "command": "get_git_default_branch",
-      "batch": "D2",
-      "module": "project_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "project git/gh and deferred shell authority"
-    },
-    {
-      "command": "get_git_remote_url",
-      "batch": "D2",
-      "module": "project_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "project git/gh and deferred shell authority"
-    },
-    {
-      "command": "get_github_branch_overview",
-      "batch": "D2",
-      "module": "github_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "GitHub CLI/network process authority"
-    },
-    {
-      "command": "get_github_connection_status",
-      "batch": "D2",
-      "module": "github_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "GitHub CLI/network process authority"
-    },
-    {
-      "command": "get_granola_integration_settings",
-      "batch": "D1",
-      "module": "granola_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
-    },
-    {
-      "command": "get_granola_note_detail",
-      "batch": "D1",
-      "module": "granola_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
     },
     {
       "command": "get_ideation_agent_workspace",
@@ -3214,39 +1949,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "get_linear_integration_settings",
-      "batch": "D1",
-      "module": "linear_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
-    },
-    {
-      "command": "get_linear_webhook_config",
-      "batch": "D1",
-      "module": "linear_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
-    },
-    {
-      "command": "get_managed_provider_cli_status",
-      "batch": "D2",
-      "module": "provider_cli_management_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "provider CLI installer surface"
-    },
-    {
       "command": "get_manual_role_defaults",
       "batch": "B6",
       "module": "manual_role_default_commands",
@@ -3379,50 +2081,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "get_plan_branch",
-      "batch": "D2",
-      "module": "plan_branch_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "branch operations spawn git"
-    },
-    {
-      "command": "get_plan_branch_by_task_id",
-      "batch": "D2",
-      "module": "plan_branch_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "branch operations spawn git"
-    },
-    {
-      "command": "get_project",
-      "batch": "R1",
-      "module": "project_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "project git/gh and deferred shell authority"
-    },
-    {
-      "command": "get_project_plan_branches",
-      "batch": "D2",
-      "module": "plan_branch_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "branch operations spawn git"
-    },
-    {
       "command": "get_project_pr_insights",
       "batch": "B5",
       "module": "metrics_commands",
@@ -3478,17 +2136,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "get_pull_request_detail",
-      "batch": "D2",
-      "module": "github_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "GitHub CLI/network process authority"
-    },
-    {
       "command": "get_qa_results",
       "batch": "B3",
       "module": "qa_commands",
@@ -3542,17 +2189,6 @@
       ],
       "disposition": "registerCandidate",
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_repository_settings",
-      "batch": "D3",
-      "module": "repository_settings_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "configuresFutureProcessAuthority"
-      ],
-      "disposition": "v1DeferredElevated",
-      "ledgerReason": "configures repository process authority"
     },
     {
       "command": "get_research_presets",
@@ -3654,28 +2290,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "get_startup_diagnostics",
-      "batch": "D3",
-      "module": "startup_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "hostManagement"
-      ],
-      "disposition": "v1DeferredElevated",
-      "ledgerReason": "startup and log-management authority"
-    },
-    {
-      "command": "get_startup_status",
-      "batch": "D3",
-      "module": "startup_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "hostManagement"
-      ],
-      "disposition": "v1DeferredElevated",
-      "ledgerReason": "startup and log-management authority"
-    },
-    {
       "command": "get_system_buckets",
       "batch": "B7",
       "module": "artifact_commands",
@@ -3698,17 +2312,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "get_task_commits",
-      "batch": "D2",
-      "module": "git_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "git process and worktree authority"
-    },
-    {
       "command": "get_task_context",
       "batch": "B7",
       "module": "task_context_commands",
@@ -3718,17 +2321,6 @@
       ],
       "disposition": "registerCandidate",
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_task_file_changes",
-      "batch": "D2",
-      "module": "diff_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "spawns git for task file changes"
     },
     {
       "command": "get_task_issues",
@@ -3806,28 +2398,6 @@
       ],
       "disposition": "registerCandidate",
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "get_ticket_associations",
-      "batch": "D1",
-      "module": "ticketing_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "v1DeferredElevated",
-      "ledgerReason": "ticket integration credential/network surface"
-    },
-    {
-      "command": "get_ticket_detail",
-      "batch": "D1",
-      "module": "ticketing_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "v1DeferredElevated",
-      "ledgerReason": "ticket integration credential/network surface"
     },
     {
       "command": "get_ui_feature_flags",
@@ -3918,17 +2488,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "install_or_update_managed_provider_cli",
-      "batch": "D2",
-      "module": "provider_cli_management_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "provider CLI installer surface"
-    },
-    {
       "command": "is_agent_running",
       "batch": "B2",
       "module": "unified_chat_commands",
@@ -4017,17 +2576,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "list_api_keys",
-      "batch": "D1",
-      "module": "api_key_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "credential surface"
-    },
-    {
       "command": "list_attention_items",
       "batch": "B7",
       "module": "notification_commands",
@@ -4050,17 +2598,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "list_clickup_workspaces",
-      "batch": "D1",
-      "module": "clickup_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
-    },
-    {
       "command": "list_conversation_folder_references",
       "batch": "B2",
       "module": "conversation_folder_reference_commands",
@@ -4072,17 +2609,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "list_granola_notes",
-      "batch": "D1",
-      "module": "granola_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
-    },
-    {
       "command": "list_ideation_sessions",
       "batch": "B4",
       "module": "ideation_commands",
@@ -4092,17 +2618,6 @@
       ],
       "disposition": "registerCandidate",
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "list_message_attachments",
-      "batch": "A1",
-      "module": "chat_attachment_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "writesArbitraryPath"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "attachment filesystem surface"
     },
     {
       "command": "list_notifications",
@@ -4147,17 +2662,6 @@
       ],
       "disposition": "registerCandidate",
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "list_projects",
-      "batch": "R1",
-      "module": "project_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "project git/gh and deferred shell authority"
     },
     {
       "command": "list_release_notes_versions",
@@ -4213,116 +2717,6 @@
       ],
       "disposition": "registerCandidate",
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "list_ticket_filter_options",
-      "batch": "D1",
-      "module": "ticketing_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "v1DeferredElevated",
-      "ledgerReason": "ticket integration credential/network surface"
-    },
-    {
-      "command": "list_ticket_labels",
-      "batch": "D1",
-      "module": "ticketing_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "v1DeferredElevated",
-      "ledgerReason": "ticket integration credential/network surface"
-    },
-    {
-      "command": "list_ticket_transitions",
-      "batch": "D1",
-      "module": "ticketing_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "v1DeferredElevated",
-      "ledgerReason": "ticket integration credential/network surface"
-    },
-    {
-      "command": "list_ticketing_columns",
-      "batch": "D1",
-      "module": "ticketing_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "v1DeferredElevated",
-      "ledgerReason": "ticket integration credential/network surface"
-    },
-    {
-      "command": "list_ticketing_containers",
-      "batch": "D1",
-      "module": "ticketing_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "v1DeferredElevated",
-      "ledgerReason": "ticket integration credential/network surface"
-    },
-    {
-      "command": "list_ticketing_providers",
-      "batch": "D1",
-      "module": "ticketing_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "v1DeferredElevated",
-      "ledgerReason": "ticket integration credential/network surface"
-    },
-    {
-      "command": "list_ticketing_status_catalog",
-      "batch": "D1",
-      "module": "ticketing_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "v1DeferredElevated",
-      "ledgerReason": "ticket integration credential/network surface"
-    },
-    {
-      "command": "list_tickets",
-      "batch": "D1",
-      "module": "ticketing_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "v1DeferredElevated",
-      "ledgerReason": "ticket integration credential/network surface"
-    },
-    {
-      "command": "list_workspace_open_targets",
-      "batch": "D2",
-      "module": "workspace_open_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "opens workspace in an external process"
-    },
-    {
-      "command": "login_gh_with_browser",
-      "batch": "D2",
-      "module": "project_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "starts interactive GitHub authentication"
     },
     {
       "command": "mark_all_notifications_read",
@@ -4437,17 +2831,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "publish_agent_conversation_workspace",
-      "batch": "B2",
-      "module": "unified_chat_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "publishes an agent conversation workspace"
-    },
-    {
       "command": "re_review_task_from_escalated",
       "batch": "B3",
       "module": "review_commands",
@@ -4457,17 +2840,6 @@
       ],
       "disposition": "registerCandidate",
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "read_pr_template",
-      "batch": "D2",
-      "module": "project_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "project git/gh and deferred shell authority"
     },
     {
       "command": "reconcile_agent_conversation_workspace_publication",
@@ -4492,39 +2864,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "refresh_agent_conversation_granola_note",
-      "batch": "D1",
-      "module": "granola_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
-    },
-    {
-      "command": "refresh_agent_conversation_jira_issue",
-      "batch": "D1",
-      "module": "atlassian_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
-    },
-    {
-      "command": "refresh_agent_conversation_linear_issue",
-      "batch": "D1",
-      "module": "linear_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
-    },
-    {
       "command": "refresh_mcp_catalog",
       "batch": "B6",
       "module": "mcp_policy_commands",
@@ -4534,28 +2873,6 @@
       ],
       "disposition": "registerCandidate",
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "refresh_ticketing_status_catalog",
-      "batch": "D1",
-      "module": "ticketing_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "v1DeferredElevated",
-      "ledgerReason": "ticket integration credential/network surface"
-    },
-    {
-      "command": "refresh_tickets",
-      "batch": "D1",
-      "module": "ticketing_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "v1DeferredElevated",
-      "ledgerReason": "ticket integration credential/network surface"
     },
     {
       "command": "reject_fix_task",
@@ -4647,17 +2964,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "report_startup_frontend_milestone",
-      "batch": "D3",
-      "module": "startup_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "hostManagement"
-      ],
-      "disposition": "v1DeferredElevated",
-      "ledgerReason": "startup and log-management authority"
-    },
-    {
       "command": "request_changes",
       "batch": "B3",
       "module": "review_commands",
@@ -4713,39 +3019,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "resize_agent_terminal",
-      "batch": "D3",
-      "module": "agent_terminal_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "ptyControl"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "terminal PTY control"
-    },
-    {
-      "command": "resolve_atlassian_resource_urls",
-      "batch": "D1",
-      "module": "atlassian_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
-    },
-    {
-      "command": "resolve_merge_conflict",
-      "batch": "D2",
-      "module": "git_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "destructive merge-conflict resolution"
-    },
-    {
       "command": "resolve_permission_request",
       "batch": "B1",
       "module": "permission_commands",
@@ -4777,17 +3050,6 @@
       ],
       "disposition": "registerCandidate",
       "ledgerReason": "steering-question"
-    },
-    {
-      "command": "restart_agent_terminal",
-      "batch": "D3",
-      "module": "agent_terminal_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "ptyControl"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "terminal PTY control"
     },
     {
       "command": "restart_automation",
@@ -4854,17 +3116,6 @@
       ],
       "disposition": "registerCandidate",
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "resume_deferred_git_startup",
-      "batch": "D2",
-      "module": "project_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "project git/gh and deferred shell authority"
     },
     {
       "command": "resume_execution",
@@ -4966,17 +3217,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "retry_merge",
-      "batch": "D2",
-      "module": "git_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "git process and worktree authority"
-    },
-    {
       "command": "retry_qa",
       "batch": "B3",
       "module": "qa_commands",
@@ -4986,94 +3226,6 @@
       ],
       "disposition": "registerCandidate",
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "retry_startup",
-      "batch": "D3",
-      "module": "startup_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "hostManagement"
-      ],
-      "disposition": "v1DeferredElevated",
-      "ledgerReason": "startup and log-management authority"
-    },
-    {
-      "command": "revoke_api_key",
-      "batch": "D1",
-      "module": "api_key_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "credential surface"
-    },
-    {
-      "command": "rotate_api_key",
-      "batch": "D1",
-      "module": "api_key_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "credential surface"
-    },
-    {
-      "command": "save_atlassian_integration_settings",
-      "batch": "D1",
-      "module": "atlassian_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
-    },
-    {
-      "command": "save_clickup_integration_settings",
-      "batch": "D1",
-      "module": "clickup_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
-    },
-    {
-      "command": "save_granola_integration_settings",
-      "batch": "D1",
-      "module": "granola_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
-    },
-    {
-      "command": "save_linear_integration_settings",
-      "batch": "D1",
-      "module": "linear_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
-    },
-    {
-      "command": "save_linear_webhook_signing_secret",
-      "batch": "D1",
-      "module": "linear_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
     },
     {
       "command": "save_metrics_config",
@@ -5120,50 +3272,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "search_atlassian_resources",
-      "batch": "D1",
-      "module": "atlassian_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
-    },
-    {
-      "command": "search_clickup_tasks",
-      "batch": "D1",
-      "module": "clickup_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
-    },
-    {
-      "command": "search_github_pull_requests",
-      "batch": "D2",
-      "module": "project_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "project git/gh and deferred shell authority"
-    },
-    {
-      "command": "search_linear_issues",
-      "batch": "D1",
-      "module": "linear_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
-    },
-    {
       "command": "seed_builtin_workflows",
       "batch": "B4",
       "module": "workflow_commands",
@@ -5173,28 +3281,6 @@
       ],
       "disposition": "registerCandidate",
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "seed_test_data",
-      "batch": "D3",
-      "module": "test_data_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "deletesEntity"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "test-data mutation is never remotely operable"
-    },
-    {
-      "command": "seed_visual_audit_data",
-      "batch": "D3",
-      "module": "test_data_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "deletesEntity"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "test-data mutation is never remotely operable"
     },
     {
       "command": "send_agent_message",
@@ -5297,17 +3383,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "set_ticket_labels",
-      "batch": "D1",
-      "module": "ticketing_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "v1DeferredElevated",
-      "ledgerReason": "ticket integration credential/network surface"
-    },
-    {
       "command": "set_update_channel",
       "batch": "B7",
       "module": "update_channel_commands",
@@ -5317,17 +3392,6 @@
       ],
       "disposition": "registerCandidate",
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "setup_gh_git_auth",
-      "batch": "D2",
-      "module": "project_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "configures git credential authority"
     },
     {
       "command": "skip_automation_judge",
@@ -5397,28 +3461,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "start_atlassian_oauth_local_callback",
-      "batch": "D1",
-      "module": "atlassian_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
-    },
-    {
-      "command": "start_ralphx_work_from_ticket",
-      "batch": "D1",
-      "module": "ticketing_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "v1DeferredElevated",
-      "ledgerReason": "ticket integration credential/network surface"
-    },
-    {
       "command": "start_research",
       "batch": "B5",
       "module": "research_commands",
@@ -5486,17 +3528,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "submit_agent_issue_report",
-      "batch": "D2",
-      "module": "agent_issue_report_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "report construction may spawn diagnostics"
-    },
-    {
       "command": "switch_agent_conversation_mode",
       "batch": "B2",
       "module": "unified_chat_commands",
@@ -5517,28 +3548,6 @@
       ],
       "disposition": "registerCandidate",
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "switch_git_origin_to_ssh",
-      "batch": "D2",
-      "module": "project_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "changes repository origin authentication"
-    },
-    {
-      "command": "transition_ticket_status",
-      "batch": "D1",
-      "module": "ticketing_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "v1DeferredElevated",
-      "ledgerReason": "ticket integration credential/network surface"
     },
     {
       "command": "trigger_automation_run_now",
@@ -5585,17 +3594,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "update_agent_conversation_workspace_from_base",
-      "batch": "B2",
-      "module": "unified_chat_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "agentControl"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "rewrites an agent workspace checkout from its base branch"
-    },
-    {
       "command": "update_agent_lane_settings",
       "batch": "B4",
       "module": "ideation_commands",
@@ -5605,39 +3603,6 @@
       ],
       "disposition": "registerCandidate",
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "update_agent_provider_settings",
-      "batch": "D1",
-      "module": "harness_provider_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "configuresFutureProcessAuthority"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "configures future provider process authority"
-    },
-    {
-      "command": "update_api_key_permissions",
-      "batch": "D1",
-      "module": "api_key_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "credential surface"
-    },
-    {
-      "command": "update_api_key_projects",
-      "batch": "D1",
-      "module": "api_key_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "credential surface"
     },
     {
       "command": "update_automation_settings",
@@ -5651,17 +3616,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "update_custom_analysis",
-      "batch": "D2",
-      "module": "project_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "executes the canonical deferred shell-authority shape"
-    },
-    {
       "command": "update_execution_settings",
       "batch": "B1",
       "module": "execution_commands",
@@ -5671,28 +3625,6 @@
       ],
       "disposition": "registerCandidate",
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "update_external_mcp_config",
-      "batch": "D1",
-      "module": "external_mcp_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "external MCP credential surface"
-    },
-    {
-      "command": "update_github_pr_enabled",
-      "batch": "D2",
-      "module": "project_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "project git/gh and deferred shell authority"
     },
     {
       "command": "update_global_execution_settings",
@@ -5816,17 +3748,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "update_project",
-      "batch": "D2",
-      "module": "project_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "project git/gh and deferred shell authority"
-    },
-    {
       "command": "update_qa_settings",
       "batch": "B3",
       "module": "qa_commands",
@@ -5836,17 +3757,6 @@
       ],
       "disposition": "registerCandidate",
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "update_repository_settings",
-      "batch": "D3",
-      "module": "repository_settings_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "configuresFutureProcessAuthority"
-      ],
-      "disposition": "v1DeferredElevated",
-      "ledgerReason": "configures repository process authority"
     },
     {
       "command": "update_review_settings",
@@ -5859,17 +3769,6 @@
       ],
       "disposition": "registerCandidate",
       "ledgerReason": "detector-b: arms require_workspace_review consumed by the auto-review spawner"
-    },
-    {
-      "command": "update_ticketing_status_presentation",
-      "batch": "D1",
-      "module": "ticketing_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "v1DeferredElevated",
-      "ledgerReason": "ticket integration credential/network surface"
     },
     {
       "command": "update_ui_feature_flags",
@@ -5905,17 +3804,6 @@
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
     },
     {
-      "command": "upload_chat_attachment",
-      "batch": "A1",
-      "module": "chat_attachment_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "writesArbitraryPath"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "attachment filesystem surface"
-    },
-    {
       "command": "upsert_custom_agent_model",
       "batch": "B2",
       "module": "agent_model_commands",
@@ -5925,50 +3813,6 @@
       ],
       "disposition": "registerCandidate",
       "ledgerReason": "conservative-module-default: may steer or arm autonomous work"
-    },
-    {
-      "command": "validate_atlassian_integration",
-      "batch": "D1",
-      "module": "atlassian_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
-    },
-    {
-      "command": "validate_clickup_integration",
-      "batch": "D1",
-      "module": "clickup_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
-    },
-    {
-      "command": "validate_granola_integration_settings",
-      "batch": "D1",
-      "module": "granola_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
-    },
-    {
-      "command": "validate_linear_integration",
-      "batch": "D1",
-      "module": "linear_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "touchesCredentials"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "integration credential surface"
     },
     {
       "command": "verify_issue",
@@ -5981,28 +3825,6 @@
       ],
       "disposition": "registerCandidate",
       "ledgerReason": "detector-d: writes worker-consumed review issue state"
-    },
-    {
-      "command": "write_agent_terminal",
-      "batch": "D3",
-      "module": "agent_terminal_commands",
-      "ledgerClass": "denied",
-      "capabilities": [
-        "ptyControl"
-      ],
-      "disposition": "hostDeniedClass",
-      "ledgerReason": "terminal PTY control"
-    },
-    {
-      "command": "write_pr_template",
-      "batch": "D2",
-      "module": "project_commands",
-      "ledgerClass": "elevated",
-      "capabilities": [
-        "spawnsProcess"
-      ],
-      "disposition": "hostDeniedSpawn",
-      "ledgerReason": "project git/gh and deferred shell authority"
     }
   ],
   "resolvedItems": {
