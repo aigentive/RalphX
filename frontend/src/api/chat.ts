@@ -2023,6 +2023,8 @@ export interface SendAgentMessageOptions {
   codexFastMode?: boolean | null;
   runtimeOverride?: ManualRoleRuntimeSelection;
   suppressUserMessage?: boolean;
+  requireApprovedLinkedPlan?: boolean;
+  expectedLinkedPlanFingerprint?: string;
   capabilityIntent?: CapabilityIntent | null;
   teamIntent?: TeamIntent | null;
   teamMessageTarget?: TeamMessageTarget | null;
@@ -2055,6 +2057,38 @@ export interface AgentConversationSourcePullRequest {
   headRefOid?: string | null;
 }
 
+export type AgentWorkspaceMaintenanceOperationSource =
+  | "base_update"
+  | "publish"
+  | "pr_conflict"
+  | "pr_autofix"
+  | "legacy";
+export type AgentWorkspaceMaintenanceOperationStage =
+  | "updating_base"
+  | "repairing"
+  | "validating"
+  | "reviewing"
+  | "publishing"
+  | "ready"
+  | "blocked";
+export type AgentWorkspaceMaintenanceOperationStatus =
+  | "active"
+  | "ready"
+  | "blocked";
+
+export interface AgentWorkspaceMaintenanceOperation {
+  operationId: string;
+  generation: number;
+  source: AgentWorkspaceMaintenanceOperationSource;
+  stage: AgentWorkspaceMaintenanceOperationStage;
+  status: AgentWorkspaceMaintenanceOperationStatus;
+  summary: string | null;
+  blocker: string | null;
+  automaticContinuation: boolean;
+  startedAt: string;
+  updatedAt: string;
+}
+
 export interface AgentConversationWorkspace {
   conversationId: string;
   projectId: string;
@@ -2077,6 +2111,7 @@ export interface AgentConversationWorkspace {
   publicationPrUrl: string | null;
   publicationPrStatus: string | null;
   publicationPushStatus: string | null;
+  maintenanceOperation?: AgentWorkspaceMaintenanceOperation | null;
   publicationMetadataAttemptId: string | null;
   publicationMetadataPhase: AgentWorkspacePublicationMetadataPhase | null;
   publicationMetadataState: AgentWorkspacePublicationMetadataState | null;
@@ -2602,7 +2637,28 @@ const AgentConversationWorkspaceSourcePullRequestResponseSchema = z.object({
   head_ref_oid: z.string().nullable().optional().default(null),
 });
 
-const AgentConversationWorkspaceResponseSchema = z.object({
+export const AgentWorkspaceMaintenanceOperationResponseSchema = z.object({
+  operation_id: z.string(),
+  generation: z.number().int().positive(),
+  source: z.enum(["base_update", "publish", "pr_conflict", "pr_autofix", "legacy"]),
+  stage: z.enum([
+    "updating_base",
+    "repairing",
+    "validating",
+    "reviewing",
+    "publishing",
+    "ready",
+    "blocked",
+  ]),
+  status: z.enum(["active", "ready", "blocked"]),
+  summary: z.string().nullable(),
+  blocker: z.string().nullable(),
+  automatic_continuation: z.boolean(),
+  started_at: z.string(),
+  updated_at: z.string(),
+});
+
+export const AgentConversationWorkspaceResponseSchema = z.object({
   conversation_id: z.string(),
   project_id: z.string(),
   mode: z.string(),
@@ -2627,6 +2683,9 @@ const AgentConversationWorkspaceResponseSchema = z.object({
   publication_pr_url: z.string().nullable(),
   publication_pr_status: z.string().nullable(),
   publication_push_status: z.string().nullable(),
+  maintenance_operation: AgentWorkspaceMaintenanceOperationResponseSchema.nullable()
+    .optional()
+    .default(null),
   publication_metadata_attempt_id: z.string().nullable().optional().default(null),
   publication_metadata_phase: z
     .enum(["prepared", "mutating", "reconciling", "settled"])
@@ -3219,6 +3278,20 @@ function transformAgentConversationWorkspace(
     publicationPrUrl: raw.publication_pr_url,
     publicationPrStatus: raw.publication_pr_status,
     publicationPushStatus: raw.publication_push_status,
+    maintenanceOperation: raw.maintenance_operation
+      ? {
+          operationId: raw.maintenance_operation.operation_id,
+          generation: raw.maintenance_operation.generation,
+          source: raw.maintenance_operation.source,
+          stage: raw.maintenance_operation.stage,
+          status: raw.maintenance_operation.status,
+          summary: raw.maintenance_operation.summary,
+          blocker: raw.maintenance_operation.blocker,
+          automaticContinuation: raw.maintenance_operation.automatic_continuation,
+          startedAt: raw.maintenance_operation.started_at,
+          updatedAt: raw.maintenance_operation.updated_at,
+        }
+      : null,
     publicationMetadataAttemptId: raw.publication_metadata_attempt_id,
     publicationMetadataPhase: raw.publication_metadata_phase,
     publicationMetadataState: raw.publication_metadata_state,
@@ -4603,6 +4676,7 @@ export async function activateAgentPlanDirectImplementation(input: {
 }): Promise<{
   workspace: AgentConversationWorkspace;
   artifactReferences: ComposerArtifactReference[];
+  planContextFingerprint: string;
 }> {
   const responseSchema = z.object({
     workspace: AgentConversationWorkspaceResponseSchema,
@@ -4616,6 +4690,7 @@ export async function activateAgentPlanDirectImplementation(input: {
         status: z.string().optional(),
       }),
     ),
+    plan_context_fingerprint: z.string().min(1),
   });
   const raw = await typedInvoke(
     "activate_agent_plan_direct_implementation",
@@ -4638,6 +4713,7 @@ export async function activateAgentPlanDirectImplementation(input: {
       ...(reference.version ? { version: reference.version } : {}),
       ...(reference.status ? { status: reference.status } : {}),
     })),
+    planContextFingerprint: raw.plan_context_fingerprint,
   };
 }
 
@@ -4715,6 +4791,15 @@ export async function sendAgentMessage(
           ? { runtimeOverride: roleRuntimeOverrideInvokeInput(options.runtimeOverride) }
           : {}),
         ...(options?.suppressUserMessage ? { suppressUserMessage: true } : {}),
+        ...(options?.requireApprovedLinkedPlan
+          ? { requireApprovedLinkedPlan: true }
+          : {}),
+        ...(options?.expectedLinkedPlanFingerprint
+          ? {
+              expectedLinkedPlanFingerprint:
+                options.expectedLinkedPlanFingerprint,
+            }
+          : {}),
         ...(options?.capabilityIntent
           ? { capabilityIntent: options.capabilityIntent }
           : options?.teamIntent

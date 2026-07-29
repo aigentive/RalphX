@@ -10,11 +10,56 @@ import type {
 import { conversationWorkspaceFixture } from "./agentsTestFixtures";
 import {
   agentWorkspaceKeys,
+  canInspectAgentWorkspaceFreshness,
   invalidateWorkspaceQueries,
   refreshWorkspaceReviewContext,
   prReviewContextForConversation,
   resolveWorkspaceReviewOwnerConversationId,
 } from "./agentWorkspaceQueries";
+
+describe("canInspectAgentWorkspaceFreshness", () => {
+  it("does not inspect Git freshness while a durable mutation is active", () => {
+    expect(
+      canInspectAgentWorkspaceFreshness(
+        conversationWorkspaceFixture({
+          maintenanceOperation: {
+            operationId: "maintenance-1",
+            generation: 1,
+            source: "base_update",
+            stage: "validating",
+            status: "active",
+            summary: "Validating the repair",
+            blocker: null,
+            automaticContinuation: true,
+            startedAt: now,
+            updatedAt: now,
+          },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("keeps Workspace Review inspectable while its durable operation is active", () => {
+    expect(
+      canInspectAgentWorkspaceFreshness(
+        conversationWorkspaceFixture({
+          maintenanceOperation: {
+            operationId: "maintenance-1",
+            generation: 1,
+            source: "base_update",
+            stage: "reviewing",
+            status: "active",
+            summary: "Waiting for Workspace Review",
+            blocker: null,
+            automaticContinuation: true,
+            startedAt: now,
+            updatedAt: now,
+          },
+        }),
+      ),
+    ).toBe(true);
+  });
+});
 
 const now = "2026-06-18T12:00:00.000Z";
 

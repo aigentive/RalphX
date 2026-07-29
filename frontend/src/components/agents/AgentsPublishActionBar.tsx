@@ -5,6 +5,7 @@ import {
   Loader2,
   XCircle,
 } from "lucide-react";
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 
 import {
@@ -35,6 +36,12 @@ export interface AgentsPublishAutomationStatus {
   label: string;
   tone: StatusPillTone;
   live?: boolean;
+}
+
+export interface AgentsPublishLiveAnnouncement {
+  operationKey: string;
+  title: string;
+  summary: string;
 }
 
 const TONE_COLORS: Record<AgentsPublishActionTone, string> = {
@@ -146,15 +153,28 @@ export function AgentsPublishActionBar({
   presentation,
   changeFacts,
   automationStatus,
+  liveAnnouncement = null,
   primaryAction,
   overflowAction,
 }: {
   presentation: AgentsPublishActionPresentation;
   changeFacts?: AgentsPublishChangeFacts | null;
   automationStatus?: AgentsPublishAutomationStatus | null;
+  liveAnnouncement?: AgentsPublishLiveAnnouncement | null;
   primaryAction: ReactNode;
   overflowAction?: ReactNode;
 }) {
+  const [announcedLiveSnapshot, setAnnouncedLiveSnapshot] =
+    useState<AgentsPublishLiveAnnouncement | null>(liveAnnouncement);
+
+  useEffect(() => {
+    setAnnouncedLiveSnapshot((current) =>
+      current?.operationKey === liveAnnouncement?.operationKey
+        ? current
+        : liveAnnouncement,
+    );
+  }, [liveAnnouncement]);
+
   return (
     <section
       className="-mx-4 grid max-w-[calc(100%+2rem)] grid-cols-1 gap-3 px-4 pb-5"
@@ -167,6 +187,11 @@ export function AgentsPublishActionBar({
         borderWidth: "0 0 1px",
       }}
     >
+      {announcedLiveSnapshot ? (
+        <div className="sr-only" aria-live="polite" role="status">
+          {announcedLiveSnapshot.title}. {announcedLiveSnapshot.summary}
+        </div>
+      ) : null}
       <div className="flex min-w-0 w-full items-center gap-2.5">
         <ActionStatusIcon
           busy={presentation.busy ?? false}

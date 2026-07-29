@@ -57,6 +57,9 @@ use crate::application::agent_planning_session_titles::{
     hydrate_agent_conversation_planning_session_title,
     sync_linked_planning_session_title_from_conversation,
 };
+use crate::application::agent_plan_context::{
+    admit_linked_edit_plan_references, linked_workspace_planning_session_is_reusable,
+};
 use crate::application::agent_workspace_bridge::{
     wake_agent_workspace_for_bridge_events,
     wake_agent_workspace_for_bridge_events_with_service_factory,
@@ -76,19 +79,20 @@ use crate::application::agent_workspace_pr_description::{
     invalidate_agent_workspace_pr_description_cache, AgentWorkspacePrDescriptionCacheKey,
     ExistingPrMetadataSnapshot, ResolvedAgentWorkspacePrTarget,
 };
-use crate::application::agent_workspace_pr_metadata_reconciliation::{
-    AgentWorkspacePrMetadataReconciliationOutcome, AgentWorkspacePrMetadataReconciliationService,
-};
 use crate::application::agent_workspace_pr_supervision_recovery::{
     build_agent_workspace_pr_supervision_recovery_deps,
-    pr_supervision_recovery_schedule_skip_reason, schedule_agent_workspace_pr_supervision_recovery,
-    AgentWorkspacePrFixReviewPublishResumer, AgentWorkspacePrSupervisionRecoveryTrigger,
+    schedule_agent_workspace_pr_supervision_recovery, AgentWorkspacePrFixReviewPublishResumer,
+    AgentWorkspacePrSupervisionRecoveryTrigger,
 };
 use crate::application::agent_workspace_publish_recovery::recover_stale_publish_repair_for_workspace_in_state;
 use crate::application::agent_workspace_publish_repair_state::{
-    claim_agent_workspace_repair, repair_run_event_classification,
-    settle_agent_workspace_failure_without_repair, settle_agent_workspace_repair_failure,
-    AgentWorkspaceRepairClaim, DEFERRED_REPAIR_WAIT_TIMEOUT_SECS,
+    classify_agent_workspace_repair_delivery, reserve_agent_workspace_repair_dispatch,
+    resume_current_agent_workspace_repair_publish, resume_ready_agent_workspace_repair_for_publish,
+    settle_agent_workspace_repair_dispatch_outcome, start_or_join_agent_workspace_repair,
+    AgentWorkspaceRepairDispatchOutcome, AgentWorkspaceRepairDispatchSettlement,
+    AgentWorkspaceRepairPublishResumeOutcome, AgentWorkspaceRepairStartOutcome,
+    AgentWorkspaceRepairStartRequest, AgentWorkspaceRepairTransitionOutcome,
+    DEFERRED_REPAIR_WAIT_TIMEOUT_SECS,
 };
 use crate::application::agent_workspace_review::{
     load_workspace_review_publish_blocker, lock_workspace_review_lifecycle,
@@ -100,8 +104,8 @@ use crate::application::chat_service::tool_result_preview::{
 };
 use crate::application::chat_service::{
     message_metadata_hidden_from_ui, running_state_from_run_status_and_idle,
-    AgentConversationCreatedPayload, AgentRunningState, AgentRuntimeStatus, SendMessageOptions,
-    SendQueuePolicy,
+    AgentConversationCreatedPayload, AgentRunningState, AgentRuntimeStatus, ChatServiceError,
+    SendMessageOptions, SendQueuePolicy,
 };
 use crate::application::git_service::{
     git_cmd::{self, GitCommandLane},
@@ -110,13 +114,17 @@ use crate::application::git_service::{
 use crate::application::ideation_workspace::prepare_ideation_analysis_state_from_agent_workspace;
 use crate::application::personas::{PERSONA_FEATURE_DISABLED_PREFIX, PERSONA_UNAVAILABLE_PREFIX};
 use crate::application::publish_resilience::{
-    classify_publish_failure, count_publish_reviewable_commits,
-    count_publishable_commits_with_base_fallback, count_unpublished_publish_commits,
-    ensure_plan_publish_branch_fresh, ensure_publish_base_pushed, ensure_publish_branch_fresh,
+    classify_publish_failure, continue_agent_workspace_repair_publish,
+    count_publish_reviewable_commits, count_publishable_commits_with_base_fallback,
+    count_unpublished_publish_commits, ensure_plan_publish_branch_fresh,
+    ensure_publish_base_pushed, ensure_publish_branch_fresh,
     inspect_publish_branch_freshness_for_source,
     inspect_publish_branch_freshness_for_source_after_fetch, push_publish_branch,
-    remote_tracking_ref_for_publish, review_base_for_publish, PublishBranchFreshnessOutcome,
-    PublishBranchFreshnessStatus, PublishFailureClass,
+    remote_tracking_ref_for_publish, review_base_for_publish,
+    verify_agent_workspace_repair_pr_handoff, AgentWorkspaceRepairPrHandoff,
+    AgentWorkspaceRepairPrHandoffResult, AgentWorkspaceRepairPublishContinuation,
+    AgentWorkspaceRepairPushOutcome, PublishBranchFreshnessOutcome, PublishBranchFreshnessStatus,
+    PublishFailureClass,
 };
 use crate::application::services::pr_auto_merge_status::{
     auto_merge_disable_failure_summary, auto_merge_enable_failure_summary,
@@ -124,7 +132,7 @@ use crate::application::services::pr_auto_merge_status::{
 };
 use crate::application::services::pr_merge_poller::sync_agent_workspace_auto_merge_preference_for_workspace;
 use crate::application::session_namer_agent::{spawn_session_namer_agent, SessionNamerTarget};
-use crate::application::{AppChatService, AppState, ChatService, ChatServiceError, SendResult};
+use crate::application::{AppChatService, AppState, ChatService, SendResult};
 use crate::commands::agent_model_commands::load_agent_model_registry;
 use crate::commands::ExecutionState;
 use crate::domain::agents::{
@@ -137,12 +145,14 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
     AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent, AgentRun,
     AgentRunId, AgentRunStatus, AgentWorkspacePrDescription, AgentWorkspacePrMetadataDecision,
-    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceSourcePullRequest, ArtifactContent,
-    ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId, ChatMessage,
-    ChatMessageId, ChatTimelineItem, CoordinationMode, DelegatedSessionId, ExecutionPlanStatus,
-    IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, IdeationSessionId,
-    InternalStatus, PersonaId, PlanBranch, PlanBranchStatus, Project, ProjectId, Task,
-    TaskCategory, TeamIntent, TeamMessageTarget, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation, AgentWorkspaceRepairPhase,
+    AgentWorkspaceRepairSource, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceSourcePullRequest,
+    ArtifactContent, ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId,
+    ChatMessage, ChatMessageId, ChatTimelineItem, CoordinationMode, DelegatedSessionId,
+    ExecutionPlanStatus, GitTargetIdentity, IdeationAnalysisBaseRefKind, IdeationSession,
+    IdeationSessionFlow, IdeationSessionId, InternalStatus, PersonaId, PlanBranch,
+    PlanBranchStatus, Project, ProjectId, Task, TaskCategory, TeamIntent, TeamMessageTarget,
+    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::execution::{
     build_running_ideation_session, build_running_process, context_matches_running_status,
@@ -150,7 +160,6 @@ use crate::domain::execution::{
 };
 use crate::domain::services::github_service::GithubServiceTrait;
 use crate::domain::services::pr_publish_service::AgentWorkspacePrPublishOutcome;
-use crate::domain::repositories::{AgentWorkspacePublicationGuard, AgentWorkspacePublicationUpdate};
 use crate::domain::services::{
     normalize_title_with_jira_key, primary_jira_key_from_composer_metadata,
     AgentWorkspacePrPublisher, ComposerArtifactReference, ComposerExcerptReference,
@@ -165,8 +174,6 @@ use crate::infrastructure::agents::claude::{git_runtime_config, ui_feature_flags
 use crate::infrastructure::git_auth::{inspect_repository_capability, RepositoryCapability};
 
 const AGENT_WORKSPACE_REPAIR_REQUESTED_STEP: &str = "repair_requested";
-const AGENT_WORKSPACE_REPAIR_DEFERRED_STEP: &str = "repair_deferred";
-const AGENT_WORKSPACE_REPAIR_SENT_STEP: &str = "repair_sent";
 const AGENT_WORKSPACE_REPAIR_ACTION_PREFIX: &str = "agent_fixable:";
 const AGENT_WORKSPACE_REPAIR_ACTION_PUBLISH: &str = "publish";
 const AGENT_WORKSPACE_REPAIR_ACTION_UPDATE_ONLY: &str = "update_only";
@@ -206,6 +213,12 @@ pub struct SendAgentMessageInput {
     /// Internal handoff messages should reach the runtime without rendering as user chat.
     #[serde(default)]
     pub suppress_user_message: bool,
+    /// Require the linked Edit workspace's current plan bundle to retain exact user approval.
+    #[serde(default)]
+    pub require_approved_linked_plan: bool,
+    /// Opaque backend activation receipt that pins a direct implementation send to one plan pair.
+    #[serde(default)]
+    pub expected_linked_plan_fingerprint: Option<String>,
     /// Structured composer project references for runtime-only prompt expansion.
     #[serde(default)]
     pub composer_project_references: Vec<ComposerProjectReference>,
@@ -412,9 +425,6 @@ pub struct AgentConversationWorkspaceResponse {
     pub publication_pr_url: Option<String>,
     pub publication_pr_status: Option<String>,
     pub publication_push_status: Option<String>,
-    pub publication_metadata_attempt_id: Option<String>,
-    pub publication_metadata_phase: Option<String>,
-    pub publication_metadata_state: Option<String>,
     pub auto_publish_enabled: bool,
     pub auto_publish_initial_pr_enabled: bool,
     pub auto_publish_paused_pr_autofix_enabled: Option<bool>,
@@ -431,6 +441,8 @@ pub struct AgentConversationWorkspaceResponse {
     pub updated_at: String,
     pub mode_switch_locked: bool,
     pub mode_switch_lock_reason: Option<String>,
+    pub maintenance_operation:
+        Option<crate::domain::entities::AgentWorkspaceRepairOperationSnapshot>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -502,13 +514,6 @@ impl From<AgentConversationWorkspace> for AgentConversationWorkspaceResponse {
             publication_pr_url: workspace.publication_pr_url,
             publication_pr_status: workspace.publication_pr_status,
             publication_push_status: workspace.publication_push_status,
-            publication_metadata_attempt_id: workspace.publication_metadata_attempt_id,
-            publication_metadata_phase: workspace
-                .publication_metadata_phase
-                .map(|phase| phase.to_string()),
-            publication_metadata_state: workspace
-                .publication_metadata_state
-                .map(|state| state.to_string()),
             auto_publish_enabled: workspace.auto_publish_enabled,
             auto_publish_initial_pr_enabled: workspace.auto_publish_initial_pr_enabled,
             auto_publish_paused_pr_autofix_enabled: workspace
@@ -529,6 +534,7 @@ impl From<AgentConversationWorkspace> for AgentConversationWorkspaceResponse {
             updated_at: workspace.updated_at.to_rfc3339(),
             mode_switch_locked: false,
             mode_switch_lock_reason: None,
+            maintenance_operation: None,
         }
     }
 }
@@ -633,26 +639,6 @@ async fn resolve_agent_conversation_workspace_mode_lock(
     Ok(AgentConversationWorkspaceModeLock::unlocked())
 }
 
-async fn linked_ideation_session_is_planning(
-    state: &AppState,
-    workspace: &AgentConversationWorkspace,
-) -> Result<bool, String> {
-    let Some(session_id) = workspace.linked_ideation_session_id.as_ref() else {
-        return Ok(false);
-    };
-
-    let Some(session) = state
-        .ideation_session_repo
-        .get_by_id(session_id)
-        .await
-        .map_err(|error| error.to_string())?
-    else {
-        return Ok(false);
-    };
-
-    Ok(session.session_flow == IdeationSessionFlow::Planning)
-}
-
 async fn ensure_plan_workspace_planning_session_link(
     state: &AppState,
     project: &Project,
@@ -662,7 +648,7 @@ async fn ensure_plan_workspace_planning_session_link(
         return Ok(false);
     }
 
-    if linked_ideation_session_is_planning(state, workspace).await? {
+    if linked_workspace_planning_session_is_reusable(state, workspace).await? {
         return Ok(false);
     }
 
@@ -1028,13 +1014,52 @@ impl AgentWorkspacePrFixReviewPublishResumer for AgentWorkspacePrFixReviewPublis
     }
 }
 
-pub(crate) async fn agent_workspace_response_for_state(
+/// Command composition for the normal publisher after the repair coordinator has already
+/// observed the exact repair-owned branch push. Application callers receive only this neutral
+/// contract, so their durable attempt/lease authority never depends outward on commands.
+pub(crate) struct AgentWorkspaceRepairPublishCommandContinuation;
+
+#[async_trait::async_trait]
+impl AgentWorkspaceRepairPublishContinuation for AgentWorkspaceRepairPublishCommandContinuation {
+    async fn publish_after_repair_push(
+        &self,
+        state: &AppState,
+        conversation_id: ChatConversationId,
+        repair_handoff: AgentWorkspaceRepairPrHandoff,
+    ) -> Result<AgentWorkspaceRepairPrHandoffResult, String> {
+        let result = publish_agent_conversation_workspace_after_repair_push(
+            state,
+            conversation_id,
+            repair_handoff,
+        )
+        .await?;
+        let pr_number = result
+            .pr_number
+            .ok_or_else(|| "normal publish completed without a pull-request number".to_string())?;
+        Ok(AgentWorkspaceRepairPrHandoffResult {
+            pr_number,
+            pr_url: result.pr_url,
+        })
+    }
+}
+
+/// Installs the command-owned publisher at the runtime composition boundary. The shared Arc in
+/// `AppState` makes the same callback visible to the paired HTTP state.
+#[doc(hidden)]
+pub fn install_agent_workspace_repair_publish_continuation(state: &AppState) {
+    state.install_agent_workspace_repair_publish_continuation(Arc::new(
+        AgentWorkspaceRepairPublishCommandContinuation,
+    ));
+}
+
+#[doc(hidden)]
+pub async fn agent_workspace_response_for_state(
     state: &AppState,
     workspace: AgentConversationWorkspace,
 ) -> Result<AgentConversationWorkspaceResponse, String> {
-    let workspace = recover_stale_publish_repair_for_workspace_in_state(state, workspace)
-        .await
-        .map_err(|e| e.to_string())?;
+    // A workspace response is a read boundary. Durable repair reconciliation can fetch, enqueue
+    // an agent, or continue publication, so it is owned by the established background PR
+    // supervision scheduler rather than by the response request.
     schedule_pr_supervision_recovery_for_workspace(
         state,
         &workspace,
@@ -1042,11 +1067,30 @@ pub(crate) async fn agent_workspace_response_for_state(
         false,
     );
 
+    agent_workspace_response_without_repair_recovery_for_state(state, workspace).await
+}
+
+/// Returns the persisted workspace and durable repair projection without starting recovery work.
+/// Preference no-ops use this read-only form so an already-enabled Auto Publish toggle cannot
+/// become a second producer for an in-flight repair continuation.
+async fn agent_workspace_response_without_repair_recovery_for_state(
+    state: &AppState,
+    workspace: AgentConversationWorkspace,
+) -> Result<AgentConversationWorkspaceResponse, String> {
     let mode_lock = resolve_agent_conversation_workspace_mode_lock(state, &workspace).await?;
     let linked_plan_branch_id = workspace.linked_plan_branch_id.clone();
     let mut response = AgentConversationWorkspaceResponse::from(workspace);
     response.mode_switch_locked = mode_lock.locked;
     response.mode_switch_lock_reason = mode_lock.reason;
+    response.maintenance_operation = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&ChatConversationId::from_string(
+            response.conversation_id.clone(),
+        ))
+        .await
+        .map_err(|error| error.to_string())?
+        .filter(|attempt| attempt.is_unsettled())
+        .map(|attempt| attempt.operation_snapshot());
 
     if let Some(plan_branch_id) = linked_plan_branch_id {
         if let Some(plan_branch) = state
@@ -1085,6 +1129,7 @@ fn schedule_external_pr_reconciliation_for_workspace(
             pr_poller_registry: Some(Arc::clone(&state.pr_poller_registry)),
             chat_service: Some(chat_service),
             agent_run_repo: Arc::clone(&state.agent_run_repo),
+            agent_workspace_repair_repo: Some(Arc::clone(&state.agent_workspace_repair_repo)),
             plan_branch_repo: Arc::clone(&state.plan_branch_repo),
             app_handle: state.app_handle.clone(),
         },
@@ -1100,9 +1145,6 @@ fn schedule_pr_supervision_recovery_for_workspace(
     trigger: AgentWorkspacePrSupervisionRecoveryTrigger,
     force: bool,
 ) {
-    if pr_supervision_recovery_schedule_skip_reason(workspace).is_some() {
-        return;
-    }
     let execution_state = state
         .app_handle
         .as_ref()
@@ -1648,6 +1690,7 @@ pub enum AgentWorkspacePostRepairAction {
 }
 
 impl AgentWorkspacePostRepairAction {
+    #[cfg(test)]
     fn as_str(self) -> &'static str {
         match self {
             Self::Publish => AGENT_WORKSPACE_REPAIR_ACTION_PUBLISH,
@@ -1655,6 +1698,7 @@ impl AgentWorkspacePostRepairAction {
         }
     }
 
+    #[cfg(test)]
     fn classification(self) -> String {
         format!("{AGENT_WORKSPACE_REPAIR_ACTION_PREFIX}{}", self.as_str())
     }
@@ -1760,7 +1804,6 @@ pub struct AgentConversationWorkspacePublicationEventResponse {
     pub status: String,
     pub summary: String,
     pub classification: Option<String>,
-    pub attempt_id: Option<String>,
     pub created_at: String,
 }
 
@@ -1775,7 +1818,6 @@ impl From<AgentConversationWorkspacePublicationEvent>
             status: event.status,
             summary: event.summary,
             classification: event.classification,
-            attempt_id: event.attempt_id,
             created_at: event.created_at.to_rfc3339(),
         }
     }
@@ -3733,7 +3775,7 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
                 AgentConversationWorkspaceMode::Ideation | AgentConversationWorkspaceMode::Tasks
             ) && workspace.linked_plan_branch_id.is_none()
             {
-                linked_ideation_session_is_planning(state, &workspace).await?
+                linked_workspace_planning_session_is_reusable(state, &workspace).await?
             } else {
                 false
             };
@@ -4000,6 +4042,16 @@ pub async fn send_agent_message(
     execution_state: State<'_, Arc<ExecutionState>>,
     app: tauri::AppHandle,
 ) -> Result<SendAgentMessageResponse, String> {
+    send_agent_message_for_state(input, state.inner(), execution_state.inner(), app).await
+}
+
+#[doc(hidden)]
+pub async fn send_agent_message_for_state<R: Runtime + 'static>(
+    input: SendAgentMessageInput,
+    state: &AppState,
+    execution_state: &Arc<ExecutionState>,
+    app: tauri::AppHandle<R>,
+) -> Result<SendAgentMessageResponse, String> {
     tracing::info!(
         context_type = %input.context_type,
         context_id = %input.context_id,
@@ -4048,9 +4100,12 @@ pub async fn send_agent_message(
         .runtime_override
         .as_ref()
         .and_then(|runtime| runtime.coordination_mode)
-        .or_else(|| input.team_intent
-        .as_ref()
-        .map(|intent| intent.coordination_mode))
+        .or_else(|| {
+            input
+                .team_intent
+                .as_ref()
+                .map(|intent| intent.coordination_mode)
+        })
         .or_else(|| {
             persisted_conversation
                 .as_ref()
@@ -4095,10 +4150,10 @@ pub async fn send_agent_message(
         .map_err(|error| error.to_string())?;
     }
 
-    let service = create_chat_service(&state, app.clone(), &execution_state);
+    let service = create_chat_service(state, app.clone(), execution_state);
 
     crate::application::validate_chat_runtime_for_context_with_override(
-        &state,
+        state,
         context_type,
         &input.context_id,
         "send_agent_message",
@@ -4117,7 +4172,7 @@ pub async fn send_agent_message(
         .filter(|model| !model.is_empty())
         .map(str::to_string);
     let (model_override, logical_effort_override) = normalize_agent_runtime_selection(
-        &state,
+        state,
         legacy_harness_override,
         model_override,
         input.logical_effort,
@@ -4137,7 +4192,7 @@ pub async fn send_agent_message(
     if context_type == ChatContextType::Project {
         let parent_conversation_id = conversation_id_override.clone();
         if let Some(forked_conversation_id) = fork_terminal_agent_conversation_for_send(
-            state.inner(),
+            state,
             &app,
             parent_conversation_id.as_ref(),
             &input.content,
@@ -4167,7 +4222,7 @@ pub async fn send_agent_message(
     if let Some(conversation_id) = conversation_id_override.as_ref() {
         invalidate_agent_workspace_pr_description_cache(conversation_id);
         if context_type == ChatContextType::Project
-            && ensure_plan_workspace_planning_session_link_for_send(state.inner(), conversation_id)
+            && ensure_plan_workspace_planning_session_link_for_send(state, conversation_id)
                 .await?
         {
             let _ = app.emit(
@@ -4176,6 +4231,23 @@ pub async fn send_agent_message(
             );
         }
     }
+    let composer_artifact_references =
+        if context_type == ChatContextType::Project {
+            if let Some(conversation_id) = conversation_id_override.as_ref() {
+                admit_linked_edit_plan_references(
+                    state,
+                    conversation_id,
+                    input.composer_artifact_references,
+                    input.require_approved_linked_plan,
+                    input.expected_linked_plan_fingerprint.as_deref(),
+                )
+                .await?
+            } else {
+                input.composer_artifact_references
+            }
+        } else {
+            input.composer_artifact_references
+        };
     let attachment_ids = parse_chat_attachment_ids(&input.attachment_ids)?;
 
     let mut response = service
@@ -4195,7 +4267,7 @@ pub async fn send_agent_message(
                 conversation_id_override,
                 composer_project_references: input.composer_project_references,
                 composer_integration_references: input.composer_integration_references,
-                composer_artifact_references: input.composer_artifact_references,
+                composer_artifact_references,
                 composer_selection_snapshot: input.composer_selection_snapshot,
                 composer_excerpt_references: input.composer_excerpt_references,
                 team_intent: input.team_intent,
@@ -4905,11 +4977,13 @@ pub async fn set_agent_conversation_workspace_pr_supervision_for_state(
         return Err("Agent conversation workspace not found".to_string());
     };
     if !workspace.allows_owned_pr_mutation() {
-        return Err(if workspace.mode == AgentConversationWorkspaceMode::ReviewPr {
-            "PR supervision is unavailable in Review PR mode".to_string()
-        } else {
-            "PR supervision is unavailable for this workspace".to_string()
-        });
+        return Err(
+            if workspace.mode == AgentConversationWorkspaceMode::ReviewPr {
+                "PR supervision is unavailable in Review PR mode".to_string()
+            } else {
+                "PR supervision is unavailable for this workspace".to_string()
+            },
+        );
     }
 
     let automation_target = resolve_agent_workspace_pr_automation_target(state, &workspace).await?;
@@ -4982,15 +5056,18 @@ pub async fn set_agent_conversation_workspace_pr_supervision_for_state(
         {
             if let Some(project) = target.project.clone() {
                 let chat_service: Arc<dyn ChatService> = Arc::new(state.build_chat_service());
-                state.pr_poller_registry.start_agent_workspace_polling(
-                    conversation_id.clone(),
-                    target.pr_number,
-                    project,
-                    target.working_dir.clone(),
-                    Arc::clone(&state.agent_conversation_workspace_repo),
-                    Arc::clone(&state.agent_run_repo),
-                    chat_service,
-                );
+                state
+                    .pr_poller_registry
+                    .start_agent_workspace_polling_with_repair_repo(
+                        conversation_id.clone(),
+                        target.pr_number,
+                        project,
+                        target.working_dir.clone(),
+                        Arc::clone(&state.agent_conversation_workspace_repo),
+                        Arc::clone(&state.agent_run_repo),
+                        Arc::clone(&state.agent_workspace_repair_repo),
+                        chat_service,
+                    );
             }
         }
     }
@@ -5039,6 +5116,72 @@ pub async fn set_agent_conversation_workspace_auto_publish(
         .await
 }
 
+/// A preference enable may resume only the exact durable `Ready + Publish` generation. The
+/// coordinator's lease/CAS transition fences stale snapshots before it can start a repair-owned
+/// Git or GitHub effect; its result is reflected by the normal response projection below.
+async fn resume_ready_publish_repair_after_auto_publish_enabled(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+) {
+    let attempt = match state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(conversation_id)
+        .await
+    {
+        Ok(Some(attempt))
+            if attempt.phase == AgentWorkspaceRepairPhase::Ready
+                && attempt.continuation == AgentWorkspaceRepairContinuation::Publish =>
+        {
+            attempt
+        }
+        Ok(_) => return,
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = %conversation_id,
+                %error,
+                "Auto Publish enable could not load the durable repair attempt"
+            );
+            return;
+        }
+    };
+
+    let transition = match resume_ready_agent_workspace_repair_for_publish(
+        state,
+        attempt,
+        "Auto Publish was enabled; resuming the durable workspace repair continuation.",
+    )
+    .await
+    {
+        Ok(transition) => transition,
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = %conversation_id,
+                %error,
+                "Auto Publish enable could not resume the durable repair continuation"
+            );
+            return;
+        }
+    };
+
+    let AgentWorkspaceRepairTransitionOutcome::Applied(attempt) = transition else {
+        return;
+    };
+    if !matches!(
+        attempt.phase,
+        AgentWorkspaceRepairPhase::ContinuationPending | AgentWorkspaceRepairPhase::Continuing
+    ) {
+        return;
+    }
+
+    if let Err(error) = continue_agent_workspace_repair_publish(state, attempt).await {
+        tracing::warn!(
+            conversation_id = %conversation_id,
+            %error,
+            "Auto Publish enable left the durable repair continuation pending reconciliation"
+        );
+    }
+}
+
 pub async fn set_agent_conversation_workspace_auto_publish_for_state(
     conversation_id: String,
     input: AgentConversationWorkspaceAutoPublishInput,
@@ -5054,11 +5197,13 @@ pub async fn set_agent_conversation_workspace_auto_publish_for_state(
         return Err("Agent conversation workspace not found".to_string());
     };
     if !workspace.allows_owned_pr_mutation() {
-        return Err(if workspace.mode == AgentConversationWorkspaceMode::ReviewPr {
-            "Auto Publish cannot be changed in Review PR mode".to_string()
-        } else {
-            "Auto Publish cannot be changed for this workspace".to_string()
-        });
+        return Err(
+            if workspace.mode == AgentConversationWorkspaceMode::ReviewPr {
+                "Auto Publish cannot be changed in Review PR mode".to_string()
+            } else {
+                "Auto Publish cannot be changed for this workspace".to_string()
+            },
+        );
     }
 
     let automation_target = resolve_agent_workspace_pr_automation_target(state, &workspace).await?;
@@ -5087,7 +5232,8 @@ pub async fn set_agent_conversation_workspace_auto_publish_for_state(
 
     if automation_target.is_none() && workspace.publication_pr_number.is_none() {
         if input.auto_publish_enabled == workspace.auto_publish_initial_pr_enabled {
-            return agent_workspace_response_for_state(state, workspace).await;
+            return agent_workspace_response_without_repair_recovery_for_state(state, workspace)
+                .await;
         }
 
         state
@@ -5116,6 +5262,10 @@ pub async fn set_agent_conversation_workspace_auto_publish_for_state(
             .await
             .map_err(|e| e.to_string())?;
 
+        if input.auto_publish_enabled {
+            resume_ready_publish_repair_after_auto_publish_enabled(state, &conversation_id).await;
+        }
+
         let updated = state
             .agent_conversation_workspace_repo
             .get_by_conversation_id(&conversation_id)
@@ -5126,7 +5276,7 @@ pub async fn set_agent_conversation_workspace_auto_publish_for_state(
     }
 
     if input.auto_publish_enabled == workspace.auto_publish_enabled {
-        return agent_workspace_response_for_state(state, workspace).await;
+        return agent_workspace_response_without_repair_recovery_for_state(state, workspace).await;
     }
 
     let auto_merge_method = workspace.pr_auto_merge_method.clone();
@@ -5268,6 +5418,10 @@ pub async fn set_agent_conversation_workspace_auto_publish_for_state(
         .await
         .map_err(|e| e.to_string())?;
 
+    if input.auto_publish_enabled {
+        resume_ready_publish_repair_after_auto_publish_enabled(state, &conversation_id).await;
+    }
+
     let updated = state
         .agent_conversation_workspace_repo
         .get_by_conversation_id(&conversation_id)
@@ -5288,7 +5442,7 @@ pub async fn reconcile_agent_conversation_workspace_publication(
         state.inner(),
         conversation_id.clone(),
         AgentWorkspaceExternalPrReconciliationTrigger::AgentRunCompleted,
-        true,
+        false,
     )
     .await?;
     schedule_pr_supervision_recovery_for_conversation_id(
@@ -6236,10 +6390,11 @@ pub async fn publish_agent_conversation_workspace(
 ) -> Result<PublishAgentConversationWorkspaceResponse, String> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let _workspace_changed_event = emit_workspace_changed_when_done(&app, &conversation_id);
-    publish_agent_conversation_workspace_for_app_state(
+    publish_agent_conversation_workspace_for_app_state_with_repair_intent(
         state.inner(),
         execution_state.inner(),
         conversation_id,
+        true,
         true,
     )
     .await
@@ -6510,280 +6665,36 @@ async fn confirm_agent_workspace_existing_pr_metadata_target(
     Ok(*snapshot)
 }
 
-async fn bind_agent_workspace_publication_target_for_reconciliation(
-    state: &AppState,
-    conversation_id: &ChatConversationId,
-    snapshot: &ExistingPrMetadataSnapshot,
-) -> Result<AgentConversationWorkspace, String> {
-    let current = state
-        .agent_conversation_workspace_repo
-        .get_by_conversation_id(conversation_id)
-        .await
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "agent workspace disappeared before PR metadata reconciliation".to_string())?;
-    let expected = AgentWorkspacePublicationGuard::from_workspace(&current);
-    let updated = state
-        .agent_conversation_workspace_repo
-        .update_publication_with_events(
-            conversation_id,
-            &expected,
-            AgentWorkspacePublicationUpdate {
-                pr_number: Some(snapshot.number),
-                pr_url: snapshot.url.clone(),
-                pr_status: Some("open".to_string()),
-                push_status: current.publication_push_status.clone(),
-            },
-            Vec::new(),
-        )
-        .await
-        .map_err(|error| error.to_string())?;
-    if !updated {
-        return Err("workspace publication changed before PR metadata reconciliation".to_string());
-    }
-    state
-        .agent_conversation_workspace_repo
-        .get_by_conversation_id(conversation_id)
-        .await
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "agent workspace disappeared after PR metadata binding".to_string())
-}
-
-async fn publication_metadata_receipt_is_authoritative(
-    state: &AppState,
-    conversation_id: &ChatConversationId,
-) -> bool {
-    match state
-        .agent_conversation_workspace_repo
-        .get_publication_metadata_receipt(conversation_id)
-        .await
-    {
-        Ok(Some(_)) => true,
-        Ok(None) => false,
-        Err(error) => {
-            tracing::warn!(
-                conversation_id = conversation_id.as_str(),
-                error = %error,
-                "Failed closed while checking PR metadata receipt authority"
-            );
-            true
-        }
-    }
-}
-
-async fn publish_existing_agent_workspace_pr_metadata_with_reconciliation(
-    state: &AppState,
-    github: &Arc<dyn GithubServiceTrait>,
-    conversation: &ChatConversation,
-    project: &Project,
-    worktree_path: &Path,
-    review_base: &str,
-    branch_head_sha: &str,
-    reviewable_commit_count: u32,
-    initial_snapshot: &ExistingPrMetadataSnapshot,
-    initial_decision: AgentWorkspacePrMetadataDecision,
-) -> Result<AgentWorkspacePrPublishOutcome, (String, bool)> {
-    let workspace = match bind_agent_workspace_publication_target_for_reconciliation(
-        state,
-        &conversation.id,
-        initial_snapshot,
-    )
-    .await
-    {
-        Ok(workspace) => workspace,
-        Err(error) => return Err((error, true)),
-    };
-    let mut decision = initial_decision;
-    let plan_markdown = resolve_linked_plan_markdown(state, &workspace).await;
-    let mut service = AgentWorkspacePrMetadataReconciliationService::new(
-        &state.agent_conversation_workspace_repo,
-        github,
-    );
-    if let Some(markdown) = plan_markdown {
-        service = service.with_plan_markdown(markdown);
-    }
-    let mut prepared = match service
-        .prepare(conversation, initial_snapshot, &decision)
-        .await
-    {
-        Ok(prepared) => prepared,
-        Err(error) => {
-            let receipt_authoritative =
-                publication_metadata_receipt_is_authoritative(state, &conversation.id).await;
-            return Err((error.to_string(), receipt_authoritative));
-        }
-    };
-
-    let refreshed_snapshot = match resolve_agent_workspace_pr_metadata_target(
-        Some(github.as_ref()),
-        worktree_path,
-        &workspace,
-    )
-    .await
-    {
-        Ok(ResolvedAgentWorkspacePrTarget::Existing(snapshot)) => *snapshot,
-        Ok(ResolvedAgentWorkspacePrTarget::NewPr) => {
-            let _ = service.recover(worktree_path, &conversation.id).await;
-            return Err((
-                "existing pull request disappeared before metadata mutation".to_string(),
-                true,
-            ));
-        }
-        Err(error) => {
-            let _ = service.recover(worktree_path, &conversation.id).await;
-            return Err((error, true));
-        }
-    };
-
-    let snapshot_for_mutation = if refreshed_snapshot.authority_fingerprint()
-        != initial_snapshot.authority_fingerprint()
-    {
-        let refreshed_target = ResolvedAgentWorkspacePrTarget::Existing(Box::new(
-            refreshed_snapshot.clone(),
-        ));
-        let cache_key = AgentWorkspacePrDescriptionCacheKey::for_target(
-            conversation.id.clone(),
-            review_base.to_string(),
-            branch_head_sha.to_string(),
-            reviewable_commit_count,
-            &refreshed_target,
-        )
-        .ok_or_else(|| {
-            (
-                "unable to bind refreshed existing PR target".to_string(),
-                true,
-            )
-        })?;
-        decision = get_or_draft_agent_workspace_pr_metadata_decision(
-            state,
-            conversation,
-            project,
-            &workspace,
-            worktree_path,
-            review_base,
-            &refreshed_target,
-            cache_key,
-        )
-        .await
-        .map_err(|error| (error.to_string(), true))?
-        .decision;
-        decision = normalize_drafted_agent_workspace_pr_metadata_decision(
-            state,
-            conversation,
-            &workspace,
-            &refreshed_target,
-            decision,
-        )
-        .await;
-        if matches!(decision, AgentWorkspacePrMetadataDecision::Preserve) {
-            let _ = service.recover(worktree_path, &conversation.id).await;
-            return Err((
-                "PR metadata redraft declined the prepared patch".to_string(),
-                true,
-            ));
-        }
-        prepared = service
-            .refresh_prepared(conversation, &refreshed_snapshot, &decision, &prepared)
-            .await
-            .map_err(|error| (error.to_string(), true))?
-            .ok_or_else(|| {
-                (
-                    "PR metadata receipt was superseded before mutation".to_string(),
-                    true,
-                )
-            })?;
-        match confirm_agent_workspace_existing_pr_metadata_target(
-            github.as_ref(),
-            worktree_path,
-            &workspace,
-            refreshed_snapshot.authority_fingerprint(),
-        )
-        .await
-        {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                let _ = service.recover(worktree_path, &conversation.id).await;
-                return Err((error, true));
-            }
-        }
-    } else {
-        refreshed_snapshot
-    };
-
-    match service
-        .execute(worktree_path, &conversation.id, &prepared)
-        .await
-        .map_err(|error| (error.to_string(), true))?
-    {
-        AgentWorkspacePrMetadataReconciliationOutcome::Applied
-        | AgentWorkspacePrMetadataReconciliationOutcome::Reconciled => {
-            Ok(AgentWorkspacePrPublishOutcome {
-                pr_number: snapshot_for_mutation.number,
-                pr_url: snapshot_for_mutation.url.unwrap_or_default(),
-                created_pr: false,
-                pr_status: "open",
-            })
-        }
-        AgentWorkspacePrMetadataReconciliationOutcome::NotAttempted => {
-            Err(("PR metadata update was not attempted".to_string(), true))
-        }
-        AgentWorkspacePrMetadataReconciliationOutcome::NotApplied => {
-            Err(("PR metadata update was not applied".to_string(), true))
-        }
-        AgentWorkspacePrMetadataReconciliationOutcome::Conflicted => {
-            Err((
-                "PR metadata update conflicted with remote changes".to_string(),
-                true,
-            ))
-        }
-        AgentWorkspacePrMetadataReconciliationOutcome::Unknown => {
-            Err((
-                "PR metadata update outcome is unknown and remains reconciling".to_string(),
-                true,
-            ))
-        }
-        AgentWorkspacePrMetadataReconciliationOutcome::Stale => {
-            Err((
-                "PR metadata receipt was superseded before settlement".to_string(),
-                true,
-            ))
-        }
-    }
-}
-
 async fn recover_duplicate_agent_workspace_pr_publish(
     state: &AppState,
-    github: &Arc<dyn GithubServiceTrait>,
+    github: &dyn GithubServiceTrait,
+    publisher: &AgentWorkspacePrPublisher<'_>,
     conversation: &ChatConversation,
     project: &Project,
     workspace: &AgentConversationWorkspace,
     worktree_path: &Path,
     review_base: &str,
+    conversation_id: ChatConversationId,
     branch_head_sha: &str,
     reviewable_commit_count: u32,
-) -> Result<(AgentWorkspacePrPublishOutcome, bool), (String, bool)> {
+) -> crate::AppResult<AgentWorkspacePrPublishOutcome> {
     let duplicate_target =
-        resolve_agent_workspace_pr_metadata_target(Some(github.as_ref()), worktree_path, workspace)
+        resolve_agent_workspace_pr_metadata_target(Some(github), worktree_path, workspace)
             .await
-            .map_err(|error| (error.to_string(), false))?;
+            .map_err(AppError::Validation)?;
     let ResolvedAgentWorkspacePrTarget::Existing(snapshot) = &duplicate_target else {
-        return Err((
+        return Err(AppError::Validation(
             "duplicate PR creation was not recoverable from the remote target".to_string(),
-            false,
         ));
     };
     let cache_key = AgentWorkspacePrDescriptionCacheKey::for_target(
-        conversation.id.clone(),
+        conversation_id,
         review_base.to_string(),
         branch_head_sha.to_string(),
         reviewable_commit_count,
         &duplicate_target,
     )
-    .ok_or_else(|| {
-        (
-            "unable to bind duplicate PR target".to_string(),
-            false,
-        )
-    })?;
+    .ok_or_else(|| AppError::Validation("unable to bind duplicate PR target".to_string()))?;
     let decision = get_or_draft_agent_workspace_pr_metadata_decision(
         state,
         conversation,
@@ -6794,8 +6705,7 @@ async fn recover_duplicate_agent_workspace_pr_publish(
         &duplicate_target,
         cache_key,
     )
-    .await
-    .map_err(|error| (error.to_string(), false))?
+    .await?
     .decision;
     let decision = normalize_drafted_agent_workspace_pr_metadata_decision(
         state,
@@ -6806,30 +6716,35 @@ async fn recover_duplicate_agent_workspace_pr_publish(
     )
     .await;
     if matches!(decision, AgentWorkspacePrMetadataDecision::Preserve) {
-        return Ok((
-            AgentWorkspacePrPublishOutcome {
-                pr_number: snapshot.number,
-                pr_url: snapshot.url.clone().unwrap_or_default(),
-                created_pr: false,
-                pr_status: "open",
-            },
-            false,
-        ));
+        return publisher
+            .publish_existing_pr_metadata_decision(
+                worktree_path,
+                conversation,
+                snapshot.number,
+                snapshot.url.as_deref(),
+                snapshot.body.as_deref(),
+                &decision,
+            )
+            .await;
     }
-    publish_existing_agent_workspace_pr_metadata_with_reconciliation(
-        state,
+    let confirmed_snapshot = confirm_agent_workspace_existing_pr_metadata_target(
         github,
-        conversation,
-        project,
         worktree_path,
-        review_base,
-        branch_head_sha,
-        reviewable_commit_count,
-        snapshot,
-        decision,
+        workspace,
+        snapshot.authority_fingerprint(),
     )
     .await
-    .map(|outcome| (outcome, true))
+    .map_err(AppError::Validation)?;
+    publisher
+        .publish_existing_pr_metadata_decision(
+            worktree_path,
+            conversation,
+            confirmed_snapshot.number,
+            confirmed_snapshot.url.as_deref(),
+            confirmed_snapshot.body.as_deref(),
+            &decision,
+        )
+        .await
 }
 
 async fn precompute_agent_conversation_workspace_pr_description_inner(
@@ -7069,7 +6984,9 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
     execution_state: &Arc<ExecutionState>,
     mut workspace: AgentConversationWorkspace,
     route_fixable_failures_to_agent: bool,
+    repair_handoff: Option<&AgentWorkspaceRepairPrHandoff>,
 ) -> Result<PublishAgentConversationWorkspaceResponse, String> {
+    let branch_already_pushed = repair_handoff.is_some();
     let publish_started = Instant::now();
     let conversation_id = workspace.conversation_id.clone();
 
@@ -7199,6 +7116,30 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
         )
         .await;
         return Err(error);
+    }
+
+    if let Some(handoff) = repair_handoff {
+        if let Err(error) = verify_agent_workspace_repair_pr_handoff(
+            &publish_target.worktree_path,
+            &publish_target.branch_name,
+            &publish_target.base_ref,
+            handoff,
+        )
+        .await
+        {
+            let error = error.to_string();
+            mark_agent_workspace_publish_failure_with_routing(
+                state,
+                &workspace,
+                &error,
+                None,
+                &repair_service,
+                false,
+                &repair_target,
+            )
+            .await;
+            return Err(error);
+        }
     }
 
     mark_agent_workspace_publish_status(state, &workspace, "checking")
@@ -7339,39 +7280,64 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
     mark_agent_workspace_publish_status(state, &workspace, "pushing")
         .await
         .map_err(|e| e.to_string())?;
-    let push_started = Instant::now();
-    if let Err(error) = push_publish_branch(
-        github,
-        &publish_target.worktree_path,
-        &publish_target.branch_name,
-    )
-    .await
-    {
-        let error = error.to_string();
-        tracing::warn!(
-            target: "ralphx_lib::commands::agent_workspace_publish",
-            conversation_id = %workspace.conversation_id,
-            project_id = %workspace.project_id,
-            branch = %publish_target.branch_name,
-            elapsed_ms = push_started.elapsed().as_millis(),
-            error = %error,
-            "Failed to push linked ideation plan publish branch"
-        );
-        let _ = state
-            .plan_branch_repo
-            .update_pr_push_status(&plan_branch.id, PrPushStatus::Failed)
-            .await;
-        mark_agent_workspace_publish_failure_with_routing(
-            state,
-            &workspace,
-            &error,
-            None,
-            &repair_service,
-            route_fixable_failures_to_agent,
-            &repair_target,
+    if let Some(handoff) = repair_handoff {
+        if let Err(error) = verify_agent_workspace_repair_pr_handoff(
+            &publish_target.worktree_path,
+            &publish_target.branch_name,
+            &publish_target.base_ref,
+            handoff,
         )
-        .await;
-        return Err(error);
+        .await
+        {
+            let error = error.to_string();
+            mark_agent_workspace_publish_failure_with_routing(
+                state,
+                &workspace,
+                &error,
+                None,
+                &repair_service,
+                false,
+                &repair_target,
+            )
+            .await;
+            return Err(error);
+        }
+    }
+    let push_started = Instant::now();
+    if !branch_already_pushed {
+        if let Err(error) = push_publish_branch(
+            github,
+            &publish_target.worktree_path,
+            &publish_target.branch_name,
+        )
+        .await
+        {
+            let error = error.to_string();
+            tracing::warn!(
+                target: "ralphx_lib::commands::agent_workspace_publish",
+                conversation_id = %workspace.conversation_id,
+                project_id = %workspace.project_id,
+                branch = %publish_target.branch_name,
+                elapsed_ms = push_started.elapsed().as_millis(),
+                error = %error,
+                "Failed to push linked ideation plan publish branch"
+            );
+            let _ = state
+                .plan_branch_repo
+                .update_pr_push_status(&plan_branch.id, PrPushStatus::Failed)
+                .await;
+            mark_agent_workspace_publish_failure_with_routing(
+                state,
+                &workspace,
+                &error,
+                None,
+                &repair_service,
+                route_fixable_failures_to_agent,
+                &repair_target,
+            )
+            .await;
+            return Err(error);
+        }
     }
     tracing::info!(
         target: "ralphx_lib::commands::agent_workspace_publish",
@@ -7485,15 +7451,18 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
     }
 
     let review_chat_service: Arc<dyn ChatService> = Arc::new(repair_service);
-    state.pr_poller_registry.start_agent_workspace_polling(
-        refreshed.conversation_id.clone(),
-        pr_number,
-        project.clone(),
-        publish_target.worktree_path.clone(),
-        Arc::clone(&state.agent_conversation_workspace_repo),
-        Arc::clone(&state.agent_run_repo),
-        review_chat_service,
-    );
+    state
+        .pr_poller_registry
+        .start_agent_workspace_polling_with_repair_repo(
+            refreshed.conversation_id.clone(),
+            pr_number,
+            project.clone(),
+            publish_target.worktree_path.clone(),
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            Arc::clone(&state.agent_run_repo),
+            Arc::clone(&state.agent_workspace_repair_repo),
+            review_chat_service,
+        );
 
     tracing::info!(
         target: "ralphx_lib::commands::agent_workspace_publish",
@@ -7523,6 +7492,174 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
     conversation_id: ChatConversationId,
     route_fixable_failures_to_agent: bool,
 ) -> Result<PublishAgentConversationWorkspaceResponse, String> {
+    publish_agent_conversation_workspace_for_app_state_with_repair_intent(
+        state,
+        execution_state,
+        conversation_id,
+        route_fixable_failures_to_agent,
+        false,
+    )
+    .await
+}
+
+/// The direct Commit & Publish entry must resume an active durable repair generation instead of
+/// bypassing its exact generation/base/lease authority through the normal publisher.
+#[doc(hidden)]
+pub async fn publish_agent_conversation_workspace_for_app_state_with_repair_intent(
+    state: &AppState,
+    execution_state: &Arc<ExecutionState>,
+    conversation_id: ChatConversationId,
+    route_fixable_failures_to_agent: bool,
+    explicit_repair_publish: bool,
+) -> Result<PublishAgentConversationWorkspaceResponse, String> {
+    if let Some(response) = resume_durable_agent_workspace_repair_publish(
+        state,
+        &conversation_id,
+        explicit_repair_publish,
+    )
+    .await?
+    {
+        return Ok(response);
+    }
+    publish_agent_conversation_workspace_for_app_state_inner(
+        state,
+        execution_state,
+        conversation_id,
+        route_fixable_failures_to_agent,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn resume_durable_agent_workspace_repair_publish(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    explicit_publish: bool,
+) -> Result<Option<PublishAgentConversationWorkspaceResponse>, String> {
+    let resume = resume_current_agent_workspace_repair_publish(
+        state,
+        conversation_id,
+        "Resuming the durable workspace repair continuation for publish.",
+        explicit_publish,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    let attempt = match resume {
+        AgentWorkspaceRepairPublishResumeOutcome::NoAttempt => return Ok(None),
+        AgentWorkspaceRepairPublishResumeOutcome::Continue(attempt) => *attempt,
+        AgentWorkspaceRepairPublishResumeOutcome::AwaitingReview => {
+            return durable_repair_publish_response(state, conversation_id, false).await.map(Some)
+        }
+        AgentWorkspaceRepairPublishResumeOutcome::Ready => {
+            return durable_repair_publish_response(state, conversation_id, false).await.map(Some)
+        }
+        AgentWorkspaceRepairPublishResumeOutcome::Blocked => {
+            return Err("The durable workspace repair is blocked; retry that repair before publishing."
+                .to_string())
+        }
+        AgentWorkspaceRepairPublishResumeOutcome::Busy => {
+            return Err("The durable workspace repair is still active; wait for it to reach a publish boundary."
+                .to_string())
+        }
+        AgentWorkspaceRepairPublishResumeOutcome::Stale => {
+            return Err("The durable workspace repair changed before publish continuation could be resumed. Refresh and retry."
+                .to_string())
+        }
+    };
+    let before_pr_number = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("Agent conversation workspace not found for {conversation_id}"))?
+        .publication_pr_number;
+    // Coverage builds need this large durable continuation future heap-allocated.
+    match Box::pin(continue_agent_workspace_repair_publish(state, attempt))
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        Some(AgentWorkspaceRepairPushOutcome::Busy) => Err(
+            "The durable workspace repair is still publishing under its current owner. Refresh and retry after it settles."
+                .to_string(),
+        ),
+        Some(AgentWorkspaceRepairPushOutcome::Stale) => Err(
+            "The durable workspace repair became stale before publish continuation could be completed. Refresh and retry."
+                .to_string(),
+        ),
+        Some(_) => durable_repair_publish_response_with_prior_pr(
+            state,
+            conversation_id,
+            before_pr_number,
+            true,
+        )
+        .await
+        .map(Some),
+        None => Err(
+            "The durable workspace repair could not prove a publish continuation runtime. Refresh and retry the repair."
+                .to_string(),
+        ),
+    }
+}
+
+async fn durable_repair_publish_response(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    pushed: bool,
+) -> Result<PublishAgentConversationWorkspaceResponse, String> {
+    durable_repair_publish_response_with_prior_pr(state, conversation_id, None, pushed).await
+}
+
+async fn durable_repair_publish_response_with_prior_pr(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    prior_pr_number: Option<i64>,
+    pushed: bool,
+) -> Result<PublishAgentConversationWorkspaceResponse, String> {
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("Agent conversation workspace not found for {conversation_id}"))?;
+    let workspace = agent_workspace_response_for_state(state, workspace).await?;
+    Ok(PublishAgentConversationWorkspaceResponse {
+        created_pr: prior_pr_number.is_none() && workspace.publication_pr_number.is_some(),
+        commit_sha: None,
+        pushed,
+        pr_number: workspace.publication_pr_number,
+        pr_url: workspace.publication_pr_url.clone(),
+        workspace,
+    })
+}
+
+/// Reuses the normal workspace PR creation/update and monitoring pipeline after a durable
+/// repair-owned branch push has already been observed. The normal publisher remains responsible
+/// for PR target reconciliation, duplicate recovery, publication projection, auto-merge refresh,
+/// and poller startup; this entry only suppresses its otherwise unconditional second push.
+pub(crate) async fn publish_agent_conversation_workspace_after_repair_push(
+    state: &AppState,
+    conversation_id: ChatConversationId,
+    repair_handoff: AgentWorkspaceRepairPrHandoff,
+) -> Result<PublishAgentConversationWorkspaceResponse, String> {
+    let execution_state = Arc::new(ExecutionState::new());
+    // The normal publisher is large enough to overflow Linux debug-test stacks when inlined here.
+    Box::pin(publish_agent_conversation_workspace_for_app_state_inner(
+        state,
+        &execution_state,
+        conversation_id,
+        false,
+        Some(repair_handoff),
+    ))
+    .await
+}
+
+async fn publish_agent_conversation_workspace_for_app_state_inner(
+    state: &AppState,
+    execution_state: &Arc<ExecutionState>,
+    conversation_id: ChatConversationId,
+    route_fixable_failures_to_agent: bool,
+    repair_handoff: Option<AgentWorkspaceRepairPrHandoff>,
+) -> Result<PublishAgentConversationWorkspaceResponse, String> {
     let _publish_guard = try_acquire_agent_workspace_publish_guard(&conversation_id)?;
     let _workspace_review_lifecycle_guard = lock_workspace_review_lifecycle(&conversation_id).await;
     publish_agent_conversation_workspace_for_app_state_unlocked(
@@ -7530,6 +7667,7 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
         execution_state,
         conversation_id,
         route_fixable_failures_to_agent,
+        repair_handoff,
     )
     .await
 }
@@ -7539,7 +7677,9 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
     execution_state: &Arc<ExecutionState>,
     conversation_id: ChatConversationId,
     route_fixable_failures_to_agent: bool,
+    repair_handoff: Option<AgentWorkspaceRepairPrHandoff>,
 ) -> Result<PublishAgentConversationWorkspaceResponse, String> {
+    let branch_already_pushed = repair_handoff.is_some();
     let _freshness_invalidation = AgentWorkspaceFreshnessInvalidationGuard::new(&conversation_id);
     let _pr_description_invalidation =
         AgentWorkspacePrDescriptionInvalidationGuard::new(&conversation_id, false);
@@ -7568,6 +7708,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
             execution_state,
             workspace,
             route_fixable_failures_to_agent,
+            repair_handoff.as_ref(),
         )
         .await;
     }
@@ -7659,6 +7800,30 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
         }
     }
     let mut repair_target = AgentConversationWorkspaceRepairTarget::from_workspace(&workspace);
+
+    if let Some(handoff) = repair_handoff.as_ref() {
+        if let Err(error) = verify_agent_workspace_repair_pr_handoff(
+            &worktree_path,
+            &workspace.branch_name,
+            &workspace.base_ref,
+            handoff,
+        )
+        .await
+        {
+            let error = error.to_string();
+            mark_agent_workspace_publish_failure_with_routing(
+                state,
+                &workspace,
+                &error,
+                None,
+                &repair_service,
+                false,
+                &repair_target,
+            )
+            .await;
+            return Err(error);
+        }
+    }
 
     let github = match state.github_service.as_ref() {
         Some(github) => github,
@@ -7800,15 +7965,34 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
 
     let repo_path = std::path::Path::new(&project.working_directory);
     let freshness_conversation_id = workspace.conversation_id.as_str();
-    let freshness_outcome = ensure_publish_branch_fresh(
-        repo_path,
-        &project,
-        &workspace.branch_name,
-        &workspace.base_ref,
-        &freshness_conversation_id,
-        None,
-    )
-    .await;
+    let freshness_outcome = if let Some(handoff) = repair_handoff.as_ref() {
+        match verify_agent_workspace_repair_pr_handoff(
+            &worktree_path,
+            &workspace.branch_name,
+            &workspace.base_ref,
+            handoff,
+        )
+        .await
+        {
+            Ok(freshness) => PublishBranchFreshnessOutcome::AlreadyFresh {
+                base_commit: freshness.target_base_commit,
+                target_ref: freshness.target_ref,
+            },
+            Err(error) => PublishBranchFreshnessOutcome::OperationalError {
+                message: error.to_string(),
+            },
+        }
+    } else {
+        ensure_publish_branch_fresh(
+            repo_path,
+            &project,
+            &workspace.branch_name,
+            &workspace.base_ref,
+            &freshness_conversation_id,
+            None,
+        )
+        .await
+    };
     let refreshed_base_commit = match freshness_outcome {
         PublishBranchFreshnessOutcome::AlreadyFresh { base_commit, .. }
         | PublishBranchFreshnessOutcome::Updated { base_commit, .. } => base_commit,
@@ -7916,7 +8100,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
             }
         },
     };
-    let pr_target = match resolve_agent_workspace_pr_metadata_target(
+    let mut pr_target = match resolve_agent_workspace_pr_metadata_target(
         Some(github.as_ref()),
         &worktree_path,
         &workspace,
@@ -8044,38 +8228,168 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
         .await
         .map_err(|e| e.to_string())?;
 
-    let push_started = Instant::now();
-    if let Err(error) = push_publish_branch(github, &worktree_path, &workspace.branch_name).await {
-        let error = error.to_string();
-        tracing::warn!(
+    if !branch_already_pushed {
+        let push_started = Instant::now();
+        if let Err(error) =
+            push_publish_branch(github, &worktree_path, &workspace.branch_name).await
+        {
+            let error = error.to_string();
+            tracing::warn!(
+                target: "ralphx_lib::commands::agent_workspace_publish",
+                conversation_id = %workspace.conversation_id,
+                project_id = %workspace.project_id,
+                branch = %workspace.branch_name,
+                elapsed_ms = push_started.elapsed().as_millis(),
+                error = %error,
+                "Failed to push agent workspace publish branch"
+            );
+            mark_agent_workspace_publish_failure_with_routing(
+                state,
+                &workspace,
+                &error,
+                None,
+                &repair_service,
+                route_fixable_failures_to_agent,
+                &repair_target,
+            )
+            .await;
+            return Err(error);
+        }
+        tracing::info!(
             target: "ralphx_lib::commands::agent_workspace_publish",
             conversation_id = %workspace.conversation_id,
             project_id = %workspace.project_id,
             branch = %workspace.branch_name,
             elapsed_ms = push_started.elapsed().as_millis(),
-            error = %error,
-            "Failed to push agent workspace publish branch"
+            "Pushed agent workspace publish branch"
         );
-        mark_agent_workspace_publish_failure_with_routing(
-            state,
-            &workspace,
-            &error,
-            None,
-            &repair_service,
-            route_fixable_failures_to_agent,
-            &repair_target,
-        )
-        .await;
-        return Err(error);
     }
-    tracing::info!(
-        target: "ralphx_lib::commands::agent_workspace_publish",
-        conversation_id = %workspace.conversation_id,
-        project_id = %workspace.project_id,
-        branch = %workspace.branch_name,
-        elapsed_ms = push_started.elapsed().as_millis(),
-        "Pushed agent workspace publish branch"
-    );
+
+    mark_agent_workspace_publish_status(state, &workspace, "pushed")
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // The draft is bound to the fetched remote target. Re-read it after the
+    // branch push, immediately before mutation, so a concurrent PR edit cannot
+    // receive a decision drafted from stale authority.
+    if let ResolvedAgentWorkspacePrTarget::Existing(snapshot) = &pr_target {
+        let refreshed_target = match resolve_agent_workspace_pr_metadata_target(
+            Some(github.as_ref()),
+            &worktree_path,
+            &workspace,
+        )
+        .await
+        {
+            Ok(target @ ResolvedAgentWorkspacePrTarget::Existing(_)) => target,
+            Ok(ResolvedAgentWorkspacePrTarget::NewPr) => {
+                let error =
+                    "existing pull request disappeared before metadata mutation".to_string();
+                mark_agent_workspace_publish_description_failure(state, &workspace, &error).await;
+                return Err(error);
+            }
+            Err(error) => {
+                mark_agent_workspace_publish_description_failure(state, &workspace, &error).await;
+                return Err(error);
+            }
+        };
+        let ResolvedAgentWorkspacePrTarget::Existing(refreshed_snapshot) = &refreshed_target else {
+            unreachable!("existing target branch handled above");
+        };
+        if matches!(
+            pr_metadata_decision,
+            AgentWorkspacePrMetadataDecision::Patch { .. }
+        ) && refreshed_snapshot.authority_fingerprint() != snapshot.authority_fingerprint()
+        {
+            let cache_key = AgentWorkspacePrDescriptionCacheKey::for_target(
+                conversation_id.clone(),
+                review_base.to_string(),
+                branch_head_sha.clone(),
+                reviewable_commit_count,
+                &refreshed_target,
+            )
+            .ok_or_else(|| "unable to bind refreshed existing PR target".to_string())?;
+            pr_metadata_decision = match get_or_draft_agent_workspace_pr_metadata_decision(
+                state,
+                &conversation,
+                &project,
+                &workspace,
+                &worktree_path,
+                review_base,
+                &refreshed_target,
+                cache_key,
+            )
+            .await
+            {
+                Ok(outcome) => {
+                    normalize_drafted_agent_workspace_pr_metadata_decision(
+                        state,
+                        &conversation,
+                        &workspace,
+                        &refreshed_target,
+                        outcome.decision,
+                    )
+                    .await
+                }
+                Err(error) => {
+                    let error = error.to_string();
+                    mark_agent_workspace_publish_description_failure(state, &workspace, &error)
+                        .await;
+                    return Err(error);
+                }
+            };
+            if matches!(
+                pr_metadata_decision,
+                AgentWorkspacePrMetadataDecision::Patch { .. }
+            ) {
+                match confirm_agent_workspace_existing_pr_metadata_target(
+                    github.as_ref(),
+                    &worktree_path,
+                    &workspace,
+                    refreshed_snapshot.authority_fingerprint(),
+                )
+                .await
+                {
+                    Ok(confirmed_snapshot) => {
+                        pr_target =
+                            ResolvedAgentWorkspacePrTarget::Existing(Box::new(confirmed_snapshot));
+                    }
+                    Err(error) => {
+                        mark_agent_workspace_publish_description_failure(state, &workspace, &error)
+                            .await;
+                        return Err(error);
+                    }
+                }
+            } else {
+                pr_target = refreshed_target;
+            }
+        } else {
+            pr_target = refreshed_target;
+        }
+    }
+
+    if let Some(handoff) = repair_handoff.as_ref() {
+        if let Err(error) = verify_agent_workspace_repair_pr_handoff(
+            &worktree_path,
+            &workspace.branch_name,
+            &workspace.base_ref,
+            handoff,
+        )
+        .await
+        {
+            let error = error.to_string();
+            mark_agent_workspace_publish_failure_with_routing(
+                state,
+                &workspace,
+                &error,
+                None,
+                &repair_service,
+                false,
+                &repair_target,
+            )
+            .await;
+            return Err(error);
+        }
+    }
 
     let plan_markdown = resolve_linked_plan_markdown(state, &workspace).await;
     let mut publisher = AgentWorkspacePrPublisher::new(github);
@@ -8083,8 +8397,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
         publisher = publisher.with_plan_markdown(markdown);
     }
     let publish_pr_started = Instant::now();
-    let pr_result: Result<(AgentWorkspacePrPublishOutcome, bool), (String, bool)> =
-        match (&pr_target, &pr_metadata_decision) {
+    let pr_result = match (&pr_target, &pr_metadata_decision) {
         (
             ResolvedAgentWorkspacePrTarget::NewPr,
             AgentWorkspacePrMetadataDecision::Patch {
@@ -8106,73 +8419,40 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
                 Err(AppError::DuplicatePr) => {
                     recover_duplicate_agent_workspace_pr_publish(
                         state,
-                        github,
+                        github.as_ref(),
+                        &publisher,
                         &conversation,
                         &project,
                         &workspace,
                         &worktree_path,
                         review_base,
+                        conversation_id.clone(),
                         &branch_head_sha,
                         reviewable_commit_count,
                     )
                     .await
                 }
-                result => result
-                    .map(|outcome| (outcome, false))
-                    .map_err(|error| (error.to_string(), false)),
+                result => result,
             }
         }
-        (ResolvedAgentWorkspacePrTarget::NewPr, _) => Err((
+        (ResolvedAgentWorkspacePrTarget::NewPr, _) => Err(AppError::Validation(
             "new pull requests require a complete metadata body patch".to_string(),
-            false,
         )),
-        (
-            ResolvedAgentWorkspacePrTarget::Existing(snapshot),
-            AgentWorkspacePrMetadataDecision::Preserve,
-        ) => {
-            match confirm_agent_workspace_existing_pr_metadata_target(
-                github.as_ref(),
-                &worktree_path,
-                &workspace,
-                snapshot.authority_fingerprint(),
-            )
-            .await
-            {
-                Ok(confirmed) => Ok((
-                    AgentWorkspacePrPublishOutcome {
-                        pr_number: confirmed.number,
-                        pr_url: confirmed.url.unwrap_or_default(),
-                        created_pr: false,
-                        pr_status: "open",
-                    },
-                    false,
-                )),
-                Err(error) => {
-                    mark_agent_workspace_publish_description_failure(state, &workspace, &error)
-                        .await;
-                    Err((error, true))
-                }
-            }
-        }
         (ResolvedAgentWorkspacePrTarget::Existing(snapshot), decision) => {
-            publish_existing_agent_workspace_pr_metadata_with_reconciliation(
-                state,
-                github,
-                &conversation,
-                &project,
-                &worktree_path,
-                review_base,
-                &branch_head_sha,
-                reviewable_commit_count,
-                snapshot,
-                decision.clone(),
-            )
-            .await
-            .map(|outcome| (outcome, true))
+            publisher
+                .publish_existing_pr_metadata_decision(
+                    &worktree_path,
+                    &conversation,
+                    snapshot.number,
+                    snapshot.url.as_deref(),
+                    snapshot.body.as_deref(),
+                    decision,
+                )
+                .await
         }
     };
-    let (outcome, receipt_settled) = match pr_result {
-        Ok((result, receipt_settled)) => {
+    let outcome = match pr_result {
+        Ok(result) => {
             tracing::info!(
                 target: "ralphx_lib::commands::agent_workspace_publish",
                 conversation_id = %workspace.conversation_id,
@@ -8183,9 +8463,10 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
                 elapsed_ms = publish_pr_started.elapsed().as_millis(),
                 "Published agent workspace draft pull request"
             );
-            (result, receipt_settled)
+            result
         }
-        Err((error, failure_authoritative)) => {
+        Err(error) => {
+            let error = error.to_string();
             tracing::warn!(
                 target: "ralphx_lib::commands::agent_workspace_publish",
                 conversation_id = %workspace.conversation_id,
@@ -8195,55 +8476,41 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
                 error = %error,
                 "Failed to publish agent workspace draft pull request"
             );
-            if !failure_authoritative {
-                mark_agent_workspace_publish_failure_with_routing(
-                    state,
-                    &workspace,
-                    &error,
-                    Some("failed"),
-                    &repair_service,
-                    route_fixable_failures_to_agent,
-                    &repair_target,
-                )
-                .await;
-            }
+            mark_agent_workspace_publish_failure_with_routing(
+                state,
+                &workspace,
+                &error,
+                Some("failed"),
+                &repair_service,
+                route_fixable_failures_to_agent,
+                &repair_target,
+            )
+            .await;
             return Err(error);
         }
     };
 
-    if !receipt_settled {
-        let current = state
-            .agent_conversation_workspace_repo
-            .get_by_conversation_id(&workspace.conversation_id)
-            .await
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "agent workspace disappeared before publication settlement".to_string())?;
-        let expected = AgentWorkspacePublicationGuard::from_workspace(&current);
-        let settled = state
-            .agent_conversation_workspace_repo
-            .update_publication_with_events(
-                &workspace.conversation_id,
-                &expected,
-                AgentWorkspacePublicationUpdate {
-                    pr_number: Some(outcome.pr_number),
-                    pr_url: Some(outcome.pr_url.clone()),
-                    pr_status: Some(outcome.pr_status.to_string()),
-                    push_status: Some("pushed".to_string()),
-                },
-                vec![AgentConversationWorkspacePublicationEvent::new(
-                    workspace.conversation_id,
-                    "published",
-                    "succeeded",
-                    "Draft pull request is ready",
-                    Some(format!("published:{}", outcome.pr_number)),
-                )],
-            )
-            .await
-            .map_err(|error| error.to_string())?;
-        if !settled {
-            return Err("workspace publication changed before final settlement".to_string());
-        }
-    }
+    state
+        .agent_conversation_workspace_repo
+        .update_publication(
+            &workspace.conversation_id,
+            Some(outcome.pr_number),
+            Some(&outcome.pr_url),
+            Some(outcome.pr_status),
+            Some("pushed"),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    append_agent_workspace_publication_event(
+        state,
+        &workspace.conversation_id,
+        "published",
+        "succeeded",
+        "Draft pull request is ready",
+        Some(format!("published:{}", outcome.pr_number)),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
 
     let mut refreshed = state
         .agent_conversation_workspace_repo
@@ -8321,15 +8588,18 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
     }
 
     let review_chat_service: Arc<dyn ChatService> = Arc::new(repair_service);
-    state.pr_poller_registry.start_agent_workspace_polling(
-        refreshed.conversation_id.clone(),
-        outcome.pr_number,
-        project.clone(),
-        worktree_path.clone(),
-        Arc::clone(&state.agent_conversation_workspace_repo),
-        Arc::clone(&state.agent_run_repo),
-        review_chat_service,
-    );
+    state
+        .pr_poller_registry
+        .start_agent_workspace_polling_with_repair_repo(
+            refreshed.conversation_id.clone(),
+            outcome.pr_number,
+            project.clone(),
+            worktree_path.clone(),
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            Arc::clone(&state.agent_run_repo),
+            Arc::clone(&state.agent_workspace_repair_repo),
+            review_chat_service,
+        );
 
     tracing::info!(
         target: "ralphx_lib::commands::agent_workspace_publish",
@@ -8452,6 +8722,17 @@ impl AgentConversationWorkspaceRepairTarget {
             worktree_path: None,
         }
     }
+}
+
+async fn canonical_agent_workspace_repair_dispatch_target(
+    target: &AgentConversationWorkspaceRepairTarget,
+) -> crate::error::AppResult<GitTargetIdentity> {
+    let worktree_path = target.worktree_path.as_ref().ok_or_else(|| {
+        AppError::Validation(
+            "workspace repair dispatch requires a resolved canonical target worktree".to_string(),
+        )
+    })?;
+    GitService::canonical_target_identity(worktree_path, &target.branch_name).await
 }
 
 #[doc(hidden)]
@@ -8728,84 +9009,140 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
 ) where
     S: ChatService + ?Sized,
 {
-    let push_status = match failure_class {
-        PublishFailureClass::AgentFixable => "needs_agent",
-        PublishFailureClass::Operational => "failed",
-    };
-    let classification = match failure_class {
-        PublishFailureClass::AgentFixable => "agent_fixable",
-        PublishFailureClass::Operational => "operational",
-    };
-    let _ = state
-        .agent_conversation_workspace_repo
-        .update_publication(
-            &workspace.conversation_id,
-            workspace.publication_pr_number,
-            workspace.publication_pr_url.as_deref(),
-            pr_status_override.or(workspace.publication_pr_status.as_deref()),
-            Some(push_status),
-        )
-        .await;
-    let _ = append_agent_workspace_publication_event(
-        state,
-        &workspace.conversation_id,
-        push_status,
-        "failed",
-        error,
-        Some(classification.to_string()),
-    )
-    .await;
-
     if !route_fixable_failures_to_agent
         || !matches!(failure_class, PublishFailureClass::AgentFixable)
     {
-        let _ = settle_agent_workspace_failure_without_repair(
-            Arc::clone(&state.agent_conversation_workspace_repo),
+        let push_status = "failed";
+        let _ = state
+            .agent_conversation_workspace_repo
+            .update_publication(
+                &workspace.conversation_id,
+                workspace.publication_pr_number,
+                workspace.publication_pr_url.as_deref(),
+                pr_status_override.or(workspace.publication_pr_status.as_deref()),
+                Some(push_status),
+            )
+            .await;
+        let _ = append_agent_workspace_publication_event(
+            state,
             &workspace.conversation_id,
             push_status,
+            "failed",
             error,
+            Some("operational".to_string()),
         )
         .await;
         return;
     }
 
-    let claim = match claim_agent_workspace_repair(
+    let start = start_or_join_agent_workspace_repair(
+        Arc::clone(&state.agent_workspace_repair_repo),
         Arc::clone(&state.agent_conversation_workspace_repo),
-        &workspace.conversation_id,
-        post_repair_action.repair_requested_summary(),
-        None,
+        AgentWorkspaceRepairStartRequest {
+            conversation_id: workspace.conversation_id.clone(),
+            source: match post_repair_action {
+                AgentWorkspacePostRepairAction::Publish => AgentWorkspaceRepairSource::Publish,
+                AgentWorkspacePostRepairAction::UpdateOnly => {
+                    AgentWorkspaceRepairSource::BaseUpdate
+                }
+            },
+            continuation: match post_repair_action {
+                AgentWorkspacePostRepairAction::Publish => {
+                    AgentWorkspaceRepairContinuation::Publish
+                }
+                AgentWorkspacePostRepairAction::UpdateOnly => {
+                    AgentWorkspaceRepairContinuation::UpdateOnly
+                }
+            },
+            target_base_ref: target.base_ref.clone(),
+            target_base_commit: workspace.base_commit.clone(),
+            verified_newer_base: false,
+            reason: error.to_string(),
+            summary: post_repair_action.repair_requested_summary().to_string(),
+            auto_merge_current: workspace.pr_auto_merge_current,
+            retry_blocked: false,
+        },
     )
-    .await
-    {
-        Ok(Some(claim)) => claim,
-        Ok(None) => return,
+    .await;
+    let attempt = match start {
+        Ok(AgentWorkspaceRepairStartOutcome::Started(attempt)) => attempt,
+        Ok(
+            AgentWorkspaceRepairStartOutcome::Joined(_)
+            | AgentWorkspaceRepairStartOutcome::SuccessorStarted(_)
+            | AgentWorkspaceRepairStartOutcome::BlockedByCurrent(_),
+        ) => return,
         Err(error) => {
+            let summary =
+                format!("Failed to persist the durable workspace repair request: {error}");
             tracing::warn!(
                 conversation_id = %workspace.conversation_id,
                 error = %error,
-                "Failed to claim agent workspace repair state"
+                "Failed to start or join the durable agent workspace repair attempt"
             );
+            let _ = state
+                .agent_conversation_workspace_repo
+                .update_publication(
+                    &workspace.conversation_id,
+                    workspace.publication_pr_number,
+                    workspace.publication_pr_url.as_deref(),
+                    pr_status_override.or(workspace.publication_pr_status.as_deref()),
+                    Some("failed"),
+                )
+                .await;
+            let _ = state
+                .agent_conversation_workspace_repo
+                .update_pr_auto_merge_state(
+                    &workspace.conversation_id,
+                    workspace.pr_auto_merge_current,
+                    Some("blocked"),
+                    Some(&summary),
+                )
+                .await;
             return;
         }
     };
 
-    if let Err(event_error) = append_agent_workspace_publication_event(
-        state,
-        &workspace.conversation_id,
-        AGENT_WORKSPACE_REPAIR_REQUESTED_STEP,
-        "started",
-        post_repair_action.repair_requested_summary(),
-        Some(post_repair_action.classification()),
-    )
-    .await
-    {
-        let summary = format!("Failed to record workspace repair request: {event_error}");
-        settle_agent_workspace_repair_dispatch_failure(state, &claim, &summary).await;
-        return;
-    }
-
+    let dispatch_target = match canonical_agent_workspace_repair_dispatch_target(target).await {
+        Ok(target) => target,
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = %workspace.conversation_id,
+                error = %error,
+                "Failed to resolve the canonical Git target before workspace repair dispatch"
+            );
+            return;
+        }
+    };
     let runtime_overrides = AgentWorkspaceRepairRuntimeOverrides::default();
     if should_defer_agent_workspace_repair_message(state, workspace).await {
+        let repair_run_id = AgentRunId::new();
+        let dispatch = match reserve_agent_workspace_repair_dispatch(
+            Arc::clone(&state.agent_workspace_repair_repo),
+            Arc::clone(&state.branch_update_repo),
+            dispatch_target.clone(),
+            attempt,
+            repair_run_id.clone(),
+            post_repair_action.repair_requested_summary(),
+            workspace.pr_auto_merge_current,
+        )
+        .await
+        {
+            Ok(AgentWorkspaceRepairDispatchOutcome::Reserved(attempt)) => attempt,
+            Ok(
+                AgentWorkspaceRepairDispatchOutcome::Stale(_)
+                | AgentWorkspaceRepairDispatchOutcome::Missing,
+            ) => {
+                return;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    conversation_id = %workspace.conversation_id,
+                    error = %error,
+                    "Failed to reserve deferred durable workspace repair dispatch"
+                );
+                return;
+            }
+        };
         spawn_deferred_agent_workspace_repair_message(
             state,
             workspace.clone(),
@@ -8813,28 +9150,41 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
             runtime_overrides,
             target.clone(),
             post_repair_action,
-            claim,
+            Some(dispatch),
+            Some(repair_run_id),
         )
         .await;
         return;
     }
 
     let repair_run_id = AgentRunId::new();
-    let repair_run_classification = repair_run_event_classification(&repair_run_id);
-    if let Err(event_error) = append_agent_workspace_publication_event(
-        state,
-        &workspace.conversation_id,
-        AGENT_WORKSPACE_REPAIR_SENT_STEP,
-        "started",
-        post_repair_action.repair_sent_summary(),
-        Some(repair_run_classification.clone()),
+    let dispatch = reserve_agent_workspace_repair_dispatch(
+        Arc::clone(&state.agent_workspace_repair_repo),
+        Arc::clone(&state.branch_update_repo),
+        dispatch_target,
+        attempt,
+        repair_run_id.clone(),
+        post_repair_action.repair_requested_summary(),
+        workspace.pr_auto_merge_current,
     )
-    .await
-    {
-        let summary = format!("Failed to reserve workspace repair dispatch: {event_error}");
-        settle_agent_workspace_repair_dispatch_failure(state, &claim, &summary).await;
-        return;
-    }
+    .await;
+    let dispatch = match dispatch {
+        Ok(AgentWorkspaceRepairDispatchOutcome::Reserved(attempt)) => attempt,
+        Ok(
+            AgentWorkspaceRepairDispatchOutcome::Stale(_)
+            | AgentWorkspaceRepairDispatchOutcome::Missing,
+        ) => {
+            return;
+        }
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = %workspace.conversation_id,
+                error = %error,
+                "Failed to reserve durable workspace repair dispatch"
+            );
+            return;
+        }
+    };
 
     match send_agent_workspace_repair_message_for_target(
         repair_service,
@@ -8848,32 +9198,30 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
     .await
     {
         Ok(result) => {
-            if let Some(authority_error) = repair_dispatch_authority_error(
-                &result,
-                &workspace.conversation_id,
-                &repair_run_id,
-            ) {
+            if let Some(authority_error) =
+                repair_dispatch_authority_error(&result, &workspace.conversation_id, &repair_run_id)
+            {
                 let repair_summary =
                     post_repair_action.repair_send_failed_summary(&authority_error);
-                settle_agent_workspace_repair_dispatch_failure(state, &claim, &repair_summary).await;
+                settle_agent_workspace_repair_dispatch_failure(
+                    state,
+                    dispatch,
+                    &repair_summary,
+                    classify_agent_workspace_repair_delivery(
+                        Ok(&result),
+                        &workspace.conversation_id,
+                        &repair_run_id,
+                    ),
+                )
+                .await;
                 return;
             }
-            if let Err(event_error) = append_agent_workspace_publication_event(
+            settle_agent_workspace_repair_dispatch_success(
                 state,
-                &workspace.conversation_id,
-                AGENT_WORKSPACE_REPAIR_SENT_STEP,
-                "succeeded",
+                dispatch,
                 post_repair_action.repair_sent_summary(),
-                Some(repair_run_classification),
             )
-            .await
-            {
-                tracing::warn!(
-                    conversation_id = %workspace.conversation_id,
-                    error = %event_error,
-                    "Failed to record successful agent workspace repair dispatch; reserved run authority remains current"
-                );
-            }
+            .await;
         }
         Err(repair_error) => {
             tracing::warn!(
@@ -8883,7 +9231,17 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
             );
             let repair_summary =
                 post_repair_action.repair_send_failed_summary(&repair_error.to_string());
-            settle_agent_workspace_repair_dispatch_failure(state, &claim, &repair_summary).await;
+            settle_agent_workspace_repair_dispatch_failure(
+                state,
+                dispatch,
+                &repair_summary,
+                classify_agent_workspace_repair_delivery(
+                    Err(&repair_error),
+                    &workspace.conversation_id,
+                    &repair_run_id,
+                ),
+            )
+            .await;
         }
     }
 }
@@ -8952,26 +9310,15 @@ async fn spawn_deferred_agent_workspace_repair_message(
     runtime_overrides: AgentWorkspaceRepairRuntimeOverrides,
     target: AgentConversationWorkspaceRepairTarget,
     post_repair_action: AgentWorkspacePostRepairAction,
-    claim: AgentWorkspaceRepairClaim,
+    dispatch: Option<AgentWorkspaceRepairAttempt>,
+    repair_run_id: Option<AgentRunId>,
 ) {
     let Some(app_handle) = state.app_handle.clone() else {
         return;
     };
-
-    if let Err(event_error) = append_agent_workspace_publication_event(
-        state,
-        &workspace.conversation_id,
-        AGENT_WORKSPACE_REPAIR_DEFERRED_STEP,
-        "started",
-        "Waiting for the active workspace agent turn to finish before sending repair",
-        Some("agent_fixable".to_string()),
-    )
-    .await
-    {
-        let summary = format!("Failed to record deferred workspace repair: {event_error}");
-        settle_agent_workspace_repair_dispatch_failure(state, &claim, &summary).await;
+    let (Some(dispatch), Some(repair_run_id)) = (dispatch, repair_run_id) else {
         return;
-    }
+    };
 
     tauri::async_runtime::spawn(async move {
         let conversation_id = workspace.conversation_id;
@@ -9002,13 +9349,16 @@ async fn spawn_deferred_agent_workspace_repair_message(
             {
                 break;
             }
-            if wait_started.elapsed()
-                >= Duration::from_secs(DEFERRED_REPAIR_WAIT_TIMEOUT_SECS)
-            {
+            if wait_started.elapsed() >= Duration::from_secs(DEFERRED_REPAIR_WAIT_TIMEOUT_SECS) {
                 let summary =
                     "Timed out waiting for active workspace agent turn before sending repair";
-                settle_agent_workspace_repair_dispatch_failure(state.inner(), &claim, summary)
-                    .await;
+                settle_agent_workspace_repair_dispatch_failure(
+                    state.inner(),
+                    dispatch,
+                    summary,
+                    AgentWorkspaceRepairDispatchSettlement::RetryableFailure,
+                )
+                .await;
                 tracing::warn!(
                     conversation_id = conversation_id.as_str(),
                     elapsed_ms = wait_started.elapsed().as_millis(),
@@ -9034,23 +9384,6 @@ async fn spawn_deferred_agent_workspace_repair_message(
             None => state.build_chat_service(),
         };
 
-        let repair_run_id = AgentRunId::new();
-        let repair_run_classification = repair_run_event_classification(&repair_run_id);
-        if let Err(event_error) = append_agent_workspace_publication_event(
-            state.inner(),
-            &conversation_id,
-            AGENT_WORKSPACE_REPAIR_SENT_STEP,
-            "started",
-            post_repair_action.deferred_repair_sent_summary(),
-            Some(repair_run_classification.clone()),
-        )
-        .await
-        {
-            let summary = format!("Failed to reserve deferred workspace repair dispatch: {event_error}");
-            settle_agent_workspace_repair_dispatch_failure(state.inner(), &claim, &summary).await;
-            return;
-        }
-
         match send_agent_workspace_repair_message_for_target(
             &repair_service,
             &workspace,
@@ -9063,37 +9396,30 @@ async fn spawn_deferred_agent_workspace_repair_message(
         .await
         {
             Ok(result) => {
-                if let Some(authority_error) = repair_dispatch_authority_error(
-                    &result,
-                    &conversation_id,
-                    &repair_run_id,
-                ) {
+                if let Some(authority_error) =
+                    repair_dispatch_authority_error(&result, &conversation_id, &repair_run_id)
+                {
                     let repair_summary =
                         post_repair_action.repair_send_failed_summary(&authority_error);
                     settle_agent_workspace_repair_dispatch_failure(
                         state.inner(),
-                        &claim,
+                        dispatch,
                         &repair_summary,
+                        classify_agent_workspace_repair_delivery(
+                            Ok(&result),
+                            &conversation_id,
+                            &repair_run_id,
+                        ),
                     )
                     .await;
                     return;
                 }
-                if let Err(event_error) = append_agent_workspace_publication_event(
+                settle_agent_workspace_repair_dispatch_success(
                     state.inner(),
-                    &conversation_id,
-                    AGENT_WORKSPACE_REPAIR_SENT_STEP,
-                    "succeeded",
+                    dispatch,
                     post_repair_action.deferred_repair_sent_summary(),
-                    Some(repair_run_classification),
                 )
-                .await
-                {
-                    tracing::warn!(
-                        conversation_id = conversation_id.as_str(),
-                        error = %event_error,
-                        "Failed to record successful deferred workspace repair dispatch; reserved run authority remains current"
-                    );
-                }
+                .await;
             }
             Err(repair_error) => {
                 tracing::warn!(
@@ -9105,8 +9431,13 @@ async fn spawn_deferred_agent_workspace_repair_message(
                     post_repair_action.repair_send_failed_summary(&repair_error.to_string());
                 settle_agent_workspace_repair_dispatch_failure(
                     state.inner(),
-                    &claim,
+                    dispatch,
                     &repair_summary,
+                    classify_agent_workspace_repair_delivery(
+                        Err(&repair_error),
+                        &conversation_id,
+                        &repair_run_id,
+                    ),
                 )
                 .await;
             }
@@ -9136,42 +9467,53 @@ async fn append_agent_workspace_publication_event(
 
 async fn settle_agent_workspace_repair_dispatch_failure(
     state: &AppState,
-    claim: &AgentWorkspaceRepairClaim,
+    attempt: AgentWorkspaceRepairAttempt,
     summary: &str,
+    settlement: AgentWorkspaceRepairDispatchSettlement,
 ) {
-    match settle_agent_workspace_repair_failure(
-        Arc::clone(&state.agent_conversation_workspace_repo),
-        claim,
+    let conversation_id = attempt.conversation_id.clone();
+    match settle_agent_workspace_repair_dispatch_outcome(
+        Arc::clone(&state.agent_workspace_repair_repo),
+        Arc::clone(&state.branch_update_repo),
+        attempt,
+        settlement,
         summary,
+        None,
     )
     .await
     {
-        Ok(true) => {
-            if let Err(error) = append_agent_workspace_publication_event(
-                state,
-                &claim.conversation_id,
-                AGENT_WORKSPACE_REPAIR_SENT_STEP,
-                "failed",
-                summary,
-                Some("operational".to_string()),
-            )
-            .await
-            {
-                tracing::warn!(
-                    conversation_id = %claim.conversation_id,
-                    error = %error,
-                    "Failed to record settled agent workspace repair dispatch failure"
-                );
-            }
-        }
-        Ok(false) => {}
+        Ok(_) => {}
         Err(error) => {
             tracing::warn!(
-                conversation_id = %claim.conversation_id,
+                conversation_id = %conversation_id,
                 error = %error,
-                "Failed to settle agent workspace repair dispatch failure"
+                "Failed to persist durable agent workspace repair dispatch failure"
             );
         }
+    }
+}
+
+async fn settle_agent_workspace_repair_dispatch_success(
+    state: &AppState,
+    attempt: AgentWorkspaceRepairAttempt,
+    summary: &str,
+) {
+    let conversation_id = attempt.conversation_id.clone();
+    if let Err(error) = settle_agent_workspace_repair_dispatch_outcome(
+        Arc::clone(&state.agent_workspace_repair_repo),
+        Arc::clone(&state.branch_update_repo),
+        attempt,
+        AgentWorkspaceRepairDispatchSettlement::Delivered,
+        summary,
+        None,
+    )
+    .await
+    {
+        tracing::warn!(
+            conversation_id = %conversation_id,
+            error = %error,
+            "Failed to persist durable agent workspace repair dispatch success"
+        );
     }
 }
 
@@ -11428,14 +11770,14 @@ pub async fn create_agent_conversation(
         .create(conversation)
         .await
         .map_err(|e| e.to_string())?;
-    if conversation.context_type == ChatContextType::Standalone
-        || conversation.is_persona_builder()
+    if conversation.context_type == ChatContextType::Standalone || conversation.is_persona_builder()
     {
         if let Err(error) = crate::application::standalone_workspace::create_workspace(
             state.app_paths.app_data_dir(),
             &conversation.id.as_str(),
         ) {
-            if let Err(cleanup_error) = state.chat_conversation_repo.delete(&conversation.id).await {
+            if let Err(cleanup_error) = state.chat_conversation_repo.delete(&conversation.id).await
+            {
                 tracing::warn!(
                     conversation_id = %conversation.id,
                     %cleanup_error,

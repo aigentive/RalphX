@@ -33,6 +33,7 @@ export class AgentsPublishPage extends BasePage {
   readonly historyContent: Locator;
   readonly automationTab: Locator;
   readonly automationContent: Locator;
+  readonly prSupervisionStatus: Locator;
   readonly reviewWalkthroughEnter: Locator;
   readonly reviewWalkthrough: Locator;
   readonly reviewWalkthroughExit: Locator;
@@ -67,6 +68,9 @@ export class AgentsPublishPage extends BasePage {
     this.automationTab = page.getByTestId("agents-publish-tab-automation");
     this.automationContent = page.getByTestId(
       "agents-publish-content-automation",
+    );
+    this.prSupervisionStatus = page.getByTestId(
+      "agents-pr-supervision-status",
     );
     this.reviewWalkthroughEnter = page.getByTestId("publish-review-walkthrough-enter");
     this.reviewWalkthrough = page.getByTestId("publish-review-walkthrough");
@@ -200,6 +204,34 @@ export class AgentsPublishPage extends BasePage {
     await expect(publishTab).toBeVisible();
     await publishTab.click();
     await expect(this.page.getByTestId("agents-publish-pane")).toBeVisible();
+  }
+
+  async openMaintenanceRepairScenario() {
+    await this.openRepairPendingScenario();
+    await this.page.evaluate((conversationId) => {
+      const queryKey = ["agents", "conversation-workspace", conversationId];
+      const workspace = window.__queryClient?.getQueryData<Record<string, unknown>>(
+        queryKey,
+      );
+      if (!workspace || !window.__queryClient) {
+        throw new Error("Expected workspace query fixture");
+      }
+      window.__queryClient.setQueryData(queryKey, {
+        ...workspace,
+        maintenanceOperation: {
+          operationId: "maintenance-visual-1",
+          generation: 1,
+          source: "base_update",
+          stage: "repairing",
+          status: "active",
+          summary: "Resolving the base conflict",
+          blocker: null,
+          automaticContinuation: true,
+          startedAt: "2026-07-25T10:00:00Z",
+          updatedAt: "2026-07-25T10:01:00Z",
+        },
+      });
+    }, REPAIR_CONVERSATION_ID);
   }
 
   async openMergedPublishScenario() {

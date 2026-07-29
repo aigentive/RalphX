@@ -665,7 +665,9 @@ async fn test_worktree_recovery_existing_branch_checkout() {
         .unwrap();
 
     // Verify branch exists
-    let branch_exists = GitService::branch_exists(repo, task_branch).await.unwrap_or(false);
+    let branch_exists = GitService::branch_exists(repo, task_branch)
+        .await
+        .unwrap_or(false);
     assert!(
         branch_exists,
         "Task branch should exist from previous attempt"
@@ -734,7 +736,9 @@ async fn test_worktree_creation_new_branch_when_not_exists() {
     let new_branch = "ralphx/test-project/task-new";
 
     // Verify branch does NOT exist
-    let branch_exists = GitService::branch_exists(repo, new_branch).await.unwrap_or(true);
+    let branch_exists = GitService::branch_exists(repo, new_branch)
+        .await
+        .unwrap_or(true);
     assert!(!branch_exists, "New task branch should not exist yet");
 
     // Create worktree with new branch
@@ -754,7 +758,9 @@ async fn test_worktree_creation_new_branch_when_not_exists() {
     assert_eq!(branch, new_branch, "Should be on the new task branch");
 
     // Verify branch now exists
-    let branch_exists_after = GitService::branch_exists(repo, new_branch).await.unwrap_or(false);
+    let branch_exists_after = GitService::branch_exists(repo, new_branch)
+        .await
+        .unwrap_or(false);
     assert!(branch_exists_after, "Branch should exist after creation");
 }
 
@@ -854,12 +860,7 @@ async fn test_create_worktree_retries_after_locked_stale_entry() {
         .output()
         .unwrap();
     Command::new("git")
-        .args([
-            "worktree",
-            "add",
-            wt_path.to_str().unwrap(),
-            "temp-branch",
-        ])
+        .args(["worktree", "add", wt_path.to_str().unwrap(), "temp-branch"])
         .current_dir(repo)
         .output()
         .unwrap();
@@ -883,7 +884,10 @@ async fn test_create_worktree_retries_after_locked_stale_entry() {
     // Worktree should now exist on the new branch
     assert!(wt_path.exists(), "Worktree should exist after retry");
     let branch = GitService::get_current_branch(&wt_path).await.unwrap();
-    assert_eq!(branch, "new-task-branch", "Worktree should be on new branch");
+    assert_eq!(
+        branch, "new-task-branch",
+        "Worktree should be on new branch"
+    );
 
     // Clean up
     let _ = GitService::delete_worktree(repo, &wt_path).await;
@@ -914,12 +918,7 @@ async fn test_checkout_existing_branch_worktree_retries_after_locked_stale_entry
         .output()
         .unwrap();
     Command::new("git")
-        .args([
-            "worktree",
-            "add",
-            wt_path.to_str().unwrap(),
-            "temp-branch",
-        ])
+        .args(["worktree", "add", wt_path.to_str().unwrap(), "temp-branch"])
         .current_dir(repo)
         .output()
         .unwrap();
@@ -943,7 +942,10 @@ async fn test_checkout_existing_branch_worktree_retries_after_locked_stale_entry
 
     assert!(wt_path.exists(), "Worktree should exist after retry");
     let branch = GitService::get_current_branch(&wt_path).await.unwrap();
-    assert_eq!(branch, "target-branch", "Worktree should be on target branch");
+    assert_eq!(
+        branch, "target-branch",
+        "Worktree should be on target branch"
+    );
 
     // Clean up
     let _ = GitService::delete_worktree(repo, &wt_path).await;
@@ -1007,7 +1009,9 @@ async fn test_checkout_existing_branch_worktree_recovers_from_already_checked_ou
     );
 
     // Verify it's on the correct branch
-    let branch = GitService::get_current_branch(&target_wt_path).await.unwrap();
+    let branch = GitService::get_current_branch(&target_wt_path)
+        .await
+        .unwrap();
     assert_eq!(
         branch, "task/stale-branch",
         "New worktree should be on the task branch"
@@ -1271,7 +1275,10 @@ async fn test_cleanup_with_explicit_path() {
         .output();
 
     // Verify the worktree dir exists before cleanup
-    assert!(worktree_dir.path().exists(), "Worktree dir should exist before cleanup");
+    assert!(
+        worktree_dir.path().exists(),
+        "Worktree dir should exist before cleanup"
+    );
 
     let project = make_test_project("/tmp/irrelevant");
     let result = GitService::cleanup_stale_worktree_artifacts(
@@ -1337,7 +1344,11 @@ async fn test_cleanup_skips_deletion_when_guard_active() {
     )
     .await;
 
-    assert!(result.is_ok(), "cleanup should succeed even with guard: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "cleanup should succeed even with guard: {:?}",
+        result.err()
+    );
     // Directory should still exist — deletion was skipped due to in-use guard
     assert!(
         worktree_dir.path().exists(),
@@ -1414,10 +1425,7 @@ async fn test_delete_worktree_prunes_even_when_path_missing() {
     let has_wt_before = worktrees_before
         .iter()
         .any(|w| w.branch.as_deref() == Some("prune-test-branch"));
-    assert!(
-        has_wt_before,
-        "Worktree should be listed before deletion"
-    );
+    assert!(has_wt_before, "Worktree should be listed before deletion");
 
     // Manually delete the directory (simulating external deletion, leaving stale git metadata)
     std::fs::remove_dir_all(&wt_path).unwrap();
@@ -1457,17 +1465,44 @@ async fn test_try_merge_in_worktree_skips_when_branches_identical() {
     let temp_dir = tempfile::tempdir().unwrap();
     let repo = temp_dir.path();
 
-    Command::new("git").args(["init"]).current_dir(repo).output().unwrap();
-    Command::new("git").args(["config", "user.email", "test@example.com"]).current_dir(repo).output().unwrap();
-    Command::new("git").args(["config", "user.name", "Test User"]).current_dir(repo).output().unwrap();
+    Command::new("git")
+        .args(["init"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "user.email", "test@example.com"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "user.name", "Test User"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
 
     std::fs::write(repo.join("file.txt"), "hello\n").unwrap();
-    Command::new("git").args(["add", "."]).current_dir(repo).output().unwrap();
-    Command::new("git").args(["commit", "-m", "initial"]).current_dir(repo).output().unwrap();
-    let _ = Command::new("git").args(["branch", "-M", "main"]).current_dir(repo).output();
+    Command::new("git")
+        .args(["add", "."])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["commit", "-m", "initial"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    let _ = Command::new("git")
+        .args(["branch", "-M", "main"])
+        .current_dir(repo)
+        .output();
 
     // Create task branch pointing at the same commit — identical content
-    Command::new("git").args(["branch", "task-branch"]).current_dir(repo).output().unwrap();
+    Command::new("git")
+        .args(["branch", "task-branch"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
 
     let merge_wt = temp_dir.path().join("merge-wt");
     let result = GitService::try_merge_in_worktree(repo, "task-branch", "main", &merge_wt).await;
@@ -1495,26 +1530,65 @@ async fn test_try_rebase_and_merge_in_worktree_skips_when_branches_identical() {
     let temp_dir = tempfile::tempdir().unwrap();
     let repo = temp_dir.path();
 
-    Command::new("git").args(["init"]).current_dir(repo).output().unwrap();
-    Command::new("git").args(["config", "user.email", "test@example.com"]).current_dir(repo).output().unwrap();
-    Command::new("git").args(["config", "user.name", "Test User"]).current_dir(repo).output().unwrap();
+    Command::new("git")
+        .args(["init"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "user.email", "test@example.com"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "user.name", "Test User"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
 
     std::fs::write(repo.join("file.txt"), "hello\n").unwrap();
-    Command::new("git").args(["add", "."]).current_dir(repo).output().unwrap();
-    Command::new("git").args(["commit", "-m", "initial"]).current_dir(repo).output().unwrap();
+    Command::new("git")
+        .args(["add", "."])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["commit", "-m", "initial"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
     // Second commit so base_commit_count > 1 (avoids early fallback to try_merge_in_worktree)
     std::fs::write(repo.join("file2.txt"), "world\n").unwrap();
-    Command::new("git").args(["add", "."]).current_dir(repo).output().unwrap();
-    Command::new("git").args(["commit", "-m", "second"]).current_dir(repo).output().unwrap();
-    let _ = Command::new("git").args(["branch", "-M", "main"]).current_dir(repo).output();
+    Command::new("git")
+        .args(["add", "."])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["commit", "-m", "second"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    let _ = Command::new("git")
+        .args(["branch", "-M", "main"])
+        .current_dir(repo)
+        .output();
 
     // Create task branch pointing at the same commit — identical content
-    Command::new("git").args(["branch", "task-branch"]).current_dir(repo).output().unwrap();
+    Command::new("git")
+        .args(["branch", "task-branch"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
 
     let rebase_wt = temp_dir.path().join("rebase-wt");
     let merge_wt = temp_dir.path().join("merge-wt");
     let result = GitService::try_rebase_and_merge_in_worktree(
-        repo, "task-branch", "main", &rebase_wt, &merge_wt,
+        repo,
+        "task-branch",
+        "main",
+        &rebase_wt,
+        &merge_wt,
     )
     .await;
 

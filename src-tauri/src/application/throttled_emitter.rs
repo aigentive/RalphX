@@ -6,10 +6,10 @@
 //
 // Non-batchable events pass through immediately.
 
+use ralphx_events::EventSink;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-use ralphx_events::EventSink;
 
 pub struct ThrottledEmitter {
     sink: Arc<dyn EventSink>,
@@ -28,23 +28,21 @@ impl ThrottledEmitter {
 
         let weak = Arc::downgrade(&emitter);
         let sink = Arc::clone(&emitter.sink);
-        thread::spawn(move || {
-            loop {
-                thread::sleep(Duration::from_millis(100));
-                let Some(strong) = weak.upgrade() else {
-                    break;
-                };
-                let events = {
-                    let mut guard = strong
-                        .pending
-                        .lock()
-                        .expect("ThrottledEmitter pending lock poisoned");
-                    std::mem::take(&mut *guard)
-                };
-                drop(strong);
-                for (event, payload) in events {
-                    sink.emit(&event, payload);
-                }
+        thread::spawn(move || loop {
+            thread::sleep(Duration::from_millis(100));
+            let Some(strong) = weak.upgrade() else {
+                break;
+            };
+            let events = {
+                let mut guard = strong
+                    .pending
+                    .lock()
+                    .expect("ThrottledEmitter pending lock poisoned");
+                std::mem::take(&mut *guard)
+            };
+            drop(strong);
+            for (event, payload) in events {
+                sink.emit(&event, payload);
             }
         });
 

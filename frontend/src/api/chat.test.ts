@@ -65,6 +65,7 @@ import {
   chatApi,
   getConversationActiveState,
   getChildSessionStatus,
+  AgentConversationWorkspaceResponseSchema,
 } from "./chat";
 import type { ConversationActiveStateResponse } from "./chat";
 import { backendApiUrl } from "./backend";
@@ -106,9 +107,6 @@ function planSeedWorkspaceResponse() {
     publication_pr_url: null,
     publication_pr_status: null,
     publication_push_status: null,
-    publication_metadata_attempt_id: "attempt-plan-1",
-    publication_metadata_phase: "reconciling",
-    publication_metadata_state: "unknown",
     status: "active",
     created_at: "2026-01-24T10:00:00Z",
     updated_at: "2026-01-24T10:05:00Z",
@@ -1611,6 +1609,18 @@ describe("chat api", () => {
         publication_pr_url: null,
         publication_pr_status: null,
         publication_push_status: null,
+        maintenance_operation: {
+          operation_id: "maintenance-1",
+          generation: 2,
+          source: "base_update",
+          stage: "repairing",
+          status: "active",
+          summary: "Resolving the base conflict",
+          blocker: null,
+          automatic_continuation: true,
+          started_at: "2026-01-24T10:00:00Z",
+          updated_at: "2026-01-24T10:01:00Z",
+        },
         publication_metadata_attempt_id: "attempt-plan-1",
         publication_metadata_phase: "reconciling",
         publication_metadata_state: "unknown",
@@ -1634,7 +1644,41 @@ describe("chat api", () => {
       projectId: "project-1",
       branchName: "ralphx/demo/agent-conversation-1",
       autoPublishInitialPrEnabled: false,
+      maintenanceOperation: {
+        operationId: "maintenance-1",
+        generation: 2,
+        stage: "repairing",
+        status: "active",
+        automaticContinuation: true,
+      },
     });
+  });
+
+  it("keeps a missing maintenance operation compatible with older backends", () => {
+    expect(
+      AgentConversationWorkspaceResponseSchema.parse(planSeedWorkspaceResponse())
+        .maintenance_operation,
+    ).toBeNull();
+  });
+
+  it("rejects an unknown maintenance operation stage", () => {
+    expect(() =>
+      AgentConversationWorkspaceResponseSchema.parse({
+        ...planSeedWorkspaceResponse(),
+        maintenance_operation: {
+          operation_id: "maintenance-1",
+          generation: 1,
+          source: "base_update",
+          stage: "not_a_stage",
+          status: "active",
+          summary: null,
+          blocker: null,
+          automatic_continuation: true,
+          started_at: "2026-01-24T10:00:00Z",
+          updated_at: "2026-01-24T10:01:00Z",
+        },
+      }),
+    ).toThrow();
   });
 
   it("opens an agent conversation workspace when Tauri returns null for Rust unit", async () => {
@@ -1839,7 +1883,6 @@ describe("chat api", () => {
         status: "started",
         summary: "Refreshing branch from base",
         classification: null,
-        attempt_id: "publish-attempt-1",
         created_at: "2026-04-26T09:01:00Z",
       },
     ]);
@@ -1855,7 +1898,6 @@ describe("chat api", () => {
       conversationId: "conversation-1",
       step: "refreshing",
       summary: "Refreshing branch from base",
-      attemptId: "publish-attempt-1",
     });
   });
 
@@ -2411,9 +2453,6 @@ describe("chat api", () => {
         publication_pr_url: null,
         publication_pr_status: null,
         publication_push_status: null,
-        publication_metadata_attempt_id: "attempt-plan-1",
-        publication_metadata_phase: "reconciling",
-        publication_metadata_state: "unknown",
         status: "active",
         created_at: "2026-01-24T10:00:00Z",
         updated_at: "2026-01-24T10:00:00Z",
@@ -2616,9 +2655,6 @@ describe("chat api", () => {
         publication_pr_url: null,
         publication_pr_status: null,
         publication_push_status: null,
-        publication_metadata_attempt_id: "attempt-plan-1",
-        publication_metadata_phase: "reconciling",
-        publication_metadata_state: "unknown",
         status: "active",
         created_at: "2026-01-24T10:00:00Z",
         updated_at: "2026-01-24T10:02:00Z",
@@ -2695,11 +2731,6 @@ describe("chat api", () => {
     });
     expect(result.conversation.agentMode).toBe("plan");
     expect(result.workspace.linkedIdeationSessionId).toBe("session-plan");
-    expect(result.workspace).toMatchObject({
-      publicationMetadataAttemptId: "attempt-plan-1",
-      publicationMetadataPhase: "reconciling",
-      publicationMetadataState: "unknown",
-    });
     expect(result.sessionId).toBe("session-plan");
     expect(result.artifact).toMatchObject({
       id: "artifact-plan",
@@ -3071,6 +3102,36 @@ describe("chat api", () => {
         },
       },
     });
+  });
+
+  it("sends an approved linked-plan policy without composer artifact references", async () => {
+    mockInvoke.mockResolvedValue({
+      conversation_id: "c1",
+      agent_run_id: "r1",
+      is_new_conversation: false,
+    });
+
+    await sendAgentMessage("project", "p1", "Implement the plan", undefined, {
+      conversationId: "c1",
+      requireApprovedLinkedPlan: true,
+      expectedLinkedPlanFingerprint: "activation-fingerprint-1",
+      suppressUserMessage: true,
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith("send_agent_message", {
+      input: {
+        contextType: "project",
+        contextId: "p1",
+        content: "Implement the plan",
+        conversationId: "c1",
+        requireApprovedLinkedPlan: true,
+        expectedLinkedPlanFingerprint: "activation-fingerprint-1",
+        suppressUserMessage: true,
+      },
+    });
+    expect(mockInvoke.mock.calls[0]?.[1]).not.toHaveProperty(
+      "input.composerArtifactReferences",
+    );
   });
 
   it("lists queued messages", async () => {

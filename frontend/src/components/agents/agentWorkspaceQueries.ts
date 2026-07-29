@@ -12,6 +12,7 @@ import type {
 } from "@/api/chat";
 
 import {
+  blocksAgentWorkspaceGitInspection,
   getAgentWorkspaceTerminalPublicationLabel,
   hasPublishedWorkspacePr,
 } from "./agentWorkspacePublishState";
@@ -305,6 +306,9 @@ const pendingFreshnessPreflights = new Set<string>();
 export function canInspectAgentWorkspaceFreshness(
   workspace: AgentConversationWorkspace | null | undefined,
 ): workspace is AgentConversationWorkspace {
+  if (blocksAgentWorkspaceGitInspection(workspace)) {
+    return false;
+  }
   const terminalPublicationLabel = getAgentWorkspaceTerminalPublicationLabel(
     workspace ?? null,
   );

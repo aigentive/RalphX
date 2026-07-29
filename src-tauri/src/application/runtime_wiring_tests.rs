@@ -20,6 +20,35 @@ fn verification_runtime_coordination_is_arc_shared() {
     ));
 }
 
+#[test]
+fn repair_publish_continuation_is_pointer_identical_in_paired_app_states() {
+    let source = crate::application::AppState::new_test();
+    let mut target = crate::application::AppState::new_test();
+
+    super::runtime_wiring::share_agent_workspace_repair_publish_continuation(&source, &mut target);
+
+    assert!(std::sync::Arc::ptr_eq(
+        &source.agent_workspace_repair_publish_continuation,
+        &target.agent_workspace_repair_publish_continuation
+    ));
+}
+
+#[test]
+fn pr_fix_review_publish_resumer_is_pointer_identical_in_paired_app_states() {
+    let source = crate::application::AppState::new_test();
+    let mut target = crate::application::AppState::new_test();
+
+    super::runtime_wiring::share_agent_workspace_pr_fix_review_publish_resumer(
+        &source,
+        &mut target,
+    );
+
+    assert!(std::sync::Arc::ptr_eq(
+        &source.agent_workspace_pr_fix_review_publish_resumer,
+        &target.agent_workspace_pr_fix_review_publish_resumer
+    ));
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn traffic_light_target_center_tracks_navbar_midline_from_titlebar_top() {

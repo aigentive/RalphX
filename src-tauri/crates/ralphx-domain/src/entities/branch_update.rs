@@ -104,6 +104,7 @@ string_enum!(GitTargetLeaseOwnerKind {
     BranchUpdateOperation => "branch_update_operation",
     MergeAttempt => "merge_attempt",
     PublicationRecovery => "publication_recovery",
+    AgentWorkspaceRepair => "agent_workspace_repair",
     Manual => "manual",
 });
 
@@ -284,6 +285,14 @@ impl GitTargetLeaseOwner {
             kind: GitTargetLeaseOwnerKind::PublicationRecovery,
             task_id: Some(task_id.into()),
             owner_id: operation_id.into(),
+        }
+    }
+
+    pub fn agent_workspace_repair(attempt_id: impl Into<String>) -> Self {
+        Self {
+            kind: GitTargetLeaseOwnerKind::AgentWorkspaceRepair,
+            task_id: None,
+            owner_id: attempt_id.into(),
         }
     }
 

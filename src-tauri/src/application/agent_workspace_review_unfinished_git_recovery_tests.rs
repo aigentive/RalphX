@@ -148,7 +148,11 @@ async fn workspace_review_unfinished_git_recovery_aborts_stale_publish_handoff()
     assert_eq!(
         after_events
             .iter()
-            .filter(|event| event.step == "pr_autofix_workspace_review_aborted")
+            .filter(|event| {
+                event.step == "legacy_repair_import_blocked"
+                    && event.status == "blocked"
+                    && event.classification.as_deref() == Some("legacy_repair_import_ambiguous")
+            })
             .count(),
         1
     );
@@ -198,6 +202,7 @@ async fn workspace_review_unfinished_git_recovery_stops_pr_supervision_before_si
             agent_run_repo: run_repo as Arc<dyn AgentRunRepository>,
             app_handle: None,
             pr_fix_review_publish_resumer: None,
+            durable_recovery_state: None,
         },
         conversation_id,
         AgentWorkspacePrSupervisionRecoveryTrigger::Startup,
