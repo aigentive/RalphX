@@ -118,6 +118,123 @@ fn unreadable_source_file_is_a_hard_error() {
     );
 }
 
+/// A fixture is not production authority surface.
+///
+/// The walk is a filesystem walk, but the graph it feeds must be the PRODUCTION program. A module
+/// compiled only under `cfg(test)` or the `test-utils` feature is not in that program, and letting
+/// it in donates call edges no production caller has. The exclusion is keyed on the `mod` item's
+/// own `cfg` rather than on a filename, so the next fixture to arrive under a different name
+/// cannot regress this silently.
+#[test]
+fn test_gated_module_declarations_are_excluded_from_the_walk() {
+    let fixture = tempfile::tempdir().expect("fixture root is creatable");
+    let root = fixture.path().to_path_buf();
+    // The crate root is owned by `lib.rs`/`main.rs`; every other directory is owned by `mod.rs`.
+    // Both owner forms are exercised, and a gated *directory* module as well as a gated file.
+    std::fs::write(
+        root.join("lib.rs"),
+        r#"
+            pub mod inner;
+            #[cfg(feature = "test-utils")]
+            pub mod fixtures;
+        "#,
+    )
+    .expect("seed crate root");
+    let inner = root.join("inner");
+    std::fs::create_dir(&inner).expect("fixture subdirectory is creatable");
+    std::fs::write(
+        inner.join("mod.rs"),
+        r#"
+            pub mod real;
+            #[cfg(feature = "test-utils")]
+            pub mod harness;
+            #[cfg(test)]
+            mod scratch;
+            #[cfg(all(test, feature = "test-utils"))]
+            mod both;
+            #[cfg(unix)]
+            pub mod platform;
+            #[cfg(feature = "latest")]
+            pub mod newest;
+        "#,
+    )
+    .expect("seed owning module file");
+    for name in ["real", "harness", "scratch", "both", "platform", "newest"] {
+        std::fs::write(
+            inner.join(format!("{name}.rs")),
+            format!("fn {name}() {{}}\n"),
+        )
+        .expect("seed module source");
+    }
+    let fixtures = root.join("fixtures");
+    std::fs::create_dir(&fixtures).expect("gated module directory is creatable");
+    std::fs::write(fixtures.join("mod.rs"), "pub mod leaf;\n").expect("seed gated module dir");
+    std::fs::write(fixtures.join("leaf.rs"), "fn leaf() {}\n").expect("seed gated leaf");
+
+    let mut out = Vec::new();
+    collect_rs_files(&root, &root, &mut out);
+    let scanned = out
+        .iter()
+        .map(|(path, _)| path.as_str())
+        .collect::<BTreeSet<_>>();
+
+    for kept in ["inner/real.rs", "inner/platform.rs", "inner/newest.rs"] {
+        assert!(
+            scanned.contains(kept),
+            "{kept} is not test-gated and must stay in the production graph: {scanned:?}"
+        );
+    }
+    for gated in [
+        "inner/harness.rs",
+        "inner/scratch.rs",
+        "inner/both.rs",
+        "fixtures/mod.rs",
+        "fixtures/leaf.rs",
+    ] {
+        assert!(
+            !scanned.contains(gated),
+            "{gated} sits behind a test-only cfg and must never be scanned: {scanned:?}"
+        );
+    }
+
+    let gates = test_gated_module_files(&root);
+    assert_eq!(
+        gates.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            "fixtures/mod.rs",
+            "inner/both.rs",
+            "inner/harness.rs",
+            "inner/scratch.rs",
+        ]),
+        "the gate enumeration and the walk exclusion must agree"
+    );
+}
+
+/// The general rule, enforced against the real tree.
+///
+/// PR 3.2 added `remote_server/harness.rs` behind `#[cfg(feature = "test-utils")]`. Because the
+/// loader excluded only `*_tests.rs`/`tests.rs`/`mocks.rs`, the fixture's `start/0` collided with
+/// `ResearchProcess::start/0` in arity-keyed dispatch and mis-attributed `start_research` to the
+/// `workspace-bridge` state surface. Fixtures must never contribute authority rows — in EITHER
+/// direction; the same collision could as easily have hidden a real writer.
+#[test]
+fn no_test_gated_module_reaches_the_production_source_load() {
+    let scanned = load_production_sources()
+        .into_iter()
+        .map(|(path, _)| path)
+        .collect::<BTreeSet<_>>();
+    for (path, gated) in test_gated_module_files(&crate_src_root()) {
+        assert!(
+            !scanned.contains(&path),
+            "{path} is declared behind `{gated}` and must not feed the authority graph"
+        );
+    }
+    assert!(
+        !scanned.contains("remote_server/harness.rs"),
+        "the PR 3.2 chat-stream fixture must stay out of the production authority graph"
+    );
+}
+
 #[test]
 fn production_source_load_reaches_the_whole_tree() {
     let files = load_production_sources();
