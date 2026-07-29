@@ -205,6 +205,10 @@ pub const MODULE_DEFAULTS: &[ModuleDefault] = &[
     // ChatService), but the default stays conservative: a future member must earn a
     // narrower row rather than inherit one.
     agent_default("remote_chat_commands"),
+    // Same construction and the same conservative default as `remote_chat_commands`: the
+    // module cannot spawn (no AppHandle, no ExecutionState, no ChatService), but a future
+    // member must still earn its own row rather than inherit a narrow one.
+    agent_default("remote_transcript_commands"),
     elevated_default(
         "remote_device_commands",
         HOST,
@@ -931,6 +935,53 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
     // per-model and per-effort buckets. No message text, no prompt, no tool input. This is a
     // usage-reporting surface, not the transcript surface; the transcript reads stay at the
     // module default and are the next batch's problem.
+    // -----------------------------------------------------------------------------------
+    // Batch 4 — the spawn-free transcript reads (the PR 3.2 dependency).
+    //
+    // The LOCAL `get_agent_conversation` / `..._messages_page` / `..._timeline_page` all fire
+    // detector (a) and stay unregistered. `probe_transcript_read_arming_paths` shows why: each
+    // opens with `wake_agent_workspace_for_bridge_events*`, which reaches the `send_message`
+    // STEER sink. The wake is incidental to the read — the local commands themselves discard
+    // its error with `tracing::warn!` and read anyway — so the answer is a seam split, not a
+    // reclassification of the local command.
+    //
+    // These three are the pure-read variants. Each delegates to an existing `*_for_app_state`
+    // seam, forks no logic, and takes only `&AppState`, so the wake is unreachable by
+    // construction rather than by review. `remote_transcript_reads_never_reach_the_wake`
+    // asserts that mechanically against the same call graph the detector uses.
+    //
+    // Content note, made explicitly because it is the reason these are the batch's most
+    // scrutinised rows: unlike the B2 stats cluster, these payloads DO carry message text and
+    // tool call/result blocks. That is the whole point — a remote transcript view is what PR
+    // 3.2 exists to validate — and it is why they sit at `ui:read` and carry no capability,
+    // rather than being folded into a lower-visibility batch. The page reads apply the same
+    // `preview_tool_payloads_for_message` truncation the local UI gets; the un-truncated
+    // escape hatches (`get_agent_message_tool_call_detail` and its timeline twin) are
+    // deliberately NOT registered.
+    CommandOverride {
+        command: "get_remote_agent_conversation",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "pure repository read of a conversation and its messages; no wake, no spawn; propagates read errors",
+        ),
+    },
+    CommandOverride {
+        command: "get_remote_agent_conversation_messages_page",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "pure repository read of a message page; no wake, no spawn; propagates read errors",
+        ),
+    },
+    CommandOverride {
+        command: "get_remote_agent_conversation_timeline_page",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "pure repository read of a timeline page; no wake, no spawn; propagates read errors",
+        ),
+    },
     CommandOverride {
         command: "get_agent_conversation_stats",
         policy: policy(

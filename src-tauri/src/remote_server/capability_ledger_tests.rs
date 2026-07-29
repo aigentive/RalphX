@@ -865,7 +865,10 @@ fn detector_b_is_calibrated_and_floor_enforced() {
     let rows = census();
     assert_eq!(
         rows.len(),
-        541,
+        // 541 -> 544: batch 4's three spawn-free transcript reads. Bumped because commands were
+        // ADDED to the census, not because the detector changed; all three are detector-silent
+        // by construction and `remote_transcript_reads_never_reach_the_wake` proves it.
+        544,
         "review the detector against the full command census"
     );
     let flagged = spawn_triggering_writers(
@@ -2739,4 +2742,145 @@ fn scope_confinements_are_enforced_by_a_live_predicate() {
             spec.name
         );
     }
+}
+
+// ---------------------------------------------------------------------------------------
+// Batch 4 — the transcript-read seam split (the PR 3.2 dependency)
+// ---------------------------------------------------------------------------------------
+
+const REMOTE_TRANSCRIPT_READS: &[&str] = &[
+    "get_remote_agent_conversation",
+    "get_remote_agent_conversation_messages_page",
+    "get_remote_agent_conversation_timeline_page",
+];
+
+const LOCAL_TRANSCRIPT_READS: &[&str] = &[
+    "get_agent_conversation",
+    "get_agent_conversation_messages_page",
+    "get_agent_conversation_timeline_page",
+];
+
+/// The split is real: the registered reads reach no arming sink, and the local ones still do.
+///
+/// Both halves matter. Without the second, this test would keep passing if the wake were
+/// removed from the local commands entirely — a much larger behavioural change — and the
+/// "split" would be proving nothing about a split. The local commands are the CALIBRATION:
+/// they establish that the detector still fires on this exact code shape, so the registered
+/// variants' silence is a property of the seam and not of a detector that stopped working.
+#[test]
+fn remote_transcript_reads_never_reach_the_wake() {
+    let graph = CallGraph::build(&load_production_sources());
+
+    for command in REMOTE_TRANSCRIPT_READS {
+        let closure = graph.closure([(*command).to_string()]);
+        assert!(
+            !closure.visited.is_empty(),
+            "`{command}` resolved to an empty closure; the graph did not find its body and \
+             this assertion would be vacuous"
+        );
+        assert!(
+            !closure_is_arming(&closure),
+            "`{command}` reaches an arming sink; the spawn-free seam has been broken"
+        );
+        assert!(
+            !tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS),
+            "`{command}` reaches a process-launch sink"
+        );
+        assert!(
+            !tokens_reach_any(&closure.tokens, TRANSITION_SINKS),
+            "`{command}` reaches a transition sink"
+        );
+        // The wake is the specific edge this split removes; name it, so a future re-introduction
+        // fails with the reason rather than with a generic detector message.
+        assert!(
+            !closure
+                .visited
+                .iter()
+                .any(|node| node.contains("wake_agent_workspace_for_bridge_events")),
+            "`{command}` reaches `wake_agent_workspace_for_bridge_events`; the whole point of \
+             this module is that it cannot"
+        );
+    }
+
+    for command in LOCAL_TRANSCRIPT_READS {
+        let closure = graph.closure([(*command).to_string()]);
+        assert!(
+            closure_is_arming(&closure),
+            "`{command}` no longer arms. If the wake was deliberately removed from the local \
+             read, delete the seam split instead of keeping a module that justifies itself by \
+             a hazard that no longer exists."
+        );
+    }
+}
+
+/// The local transcript reads stay unregistered, asserted rather than merely omitted.
+#[test]
+fn the_local_transcript_reads_stay_unregistered() {
+    for command in LOCAL_TRANSCRIPT_READS {
+        assert!(
+            find_spec(command).is_none(),
+            "`{command}` reaches the agent-wake steer sink and must not be remotely reachable; \
+             the registered answer is its `get_remote_*` twin"
+        );
+    }
+
+    // The un-truncated tool-payload escape hatches are deliberately NOT part of this batch:
+    // they return raw tool arguments and results (file contents, command output) and their
+    // reconciliation crosses the conversation boundary. Pinned so a later batch has to argue
+    // for them explicitly.
+    for command in [
+        "get_agent_message_tool_call_detail",
+        "get_agent_timeline_item_tool_call_detail",
+    ] {
+        assert!(
+            find_spec(command).is_none(),
+            "`{command}` returns un-truncated tool payloads and must stay unregistered"
+        );
+    }
+}
+
+/// The registered reads are reviewed `Read` rows, not module-default inheritance.
+#[test]
+fn the_remote_transcript_reads_are_reviewed_read_rows() {
+    let rows = census().into_iter().collect::<BTreeMap<_, _>>();
+
+    for command in REMOTE_TRANSCRIPT_READS {
+        let module = rows
+            .get(*command)
+            .unwrap_or_else(|| panic!("`{command}` must be a live Tauri command"));
+        assert_eq!(module, "remote_transcript_commands");
+        let row = policy_for(command, module).expect("ledgered");
+        assert_eq!(row.class, RiskClass::Read);
+        assert!(
+            row.capabilities.is_empty(),
+            "`{command}` is a pure read; a Read row with capabilities is a mislabel"
+        );
+        assert!(
+            !row.reason.contains("conservative-module-default"),
+            "`{command}` still carries the module-default reason; it was not reviewed"
+        );
+        assert!(
+            row.reason.contains("propagates read errors"),
+            "`{command}` must record that its reads fail closed"
+        );
+        assert!(
+            row.reason.contains("no wake"),
+            "`{command}`'s reason must record the property the seam exists to guarantee"
+        );
+        assert!(find_spec(command).is_some());
+    }
+
+    // The module default stays conservative: these three are EXCEPTIONS to it.
+    let default = MODULE_DEFAULTS
+        .iter()
+        .find(|entry| entry.module == "remote_transcript_commands")
+        .expect("module has a default");
+    assert_eq!(default.policy.class, RiskClass::AgentControl);
+
+    // `unified_chat_commands`, which owns the local twins, is untouched.
+    let chat_default = MODULE_DEFAULTS
+        .iter()
+        .find(|entry| entry.module == "unified_chat_commands")
+        .expect("module has a default");
+    assert_eq!(chat_default.policy.class, RiskClass::AgentControl);
 }

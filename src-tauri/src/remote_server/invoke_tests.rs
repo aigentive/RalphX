@@ -2094,3 +2094,183 @@ async fn the_brake_scope_predicate_does_not_confine_the_global_pause_flag() {
          transition sweep only"
     );
 }
+
+// ---------------------------------------------------------------------------------------
+// Batch 4 — the spawn-free transcript reads (the PR 3.2 dependency)
+// ---------------------------------------------------------------------------------------
+
+const REMOTE_TRANSCRIPT_READS: [&str; 3] = [
+    "get_remote_agent_conversation",
+    "get_remote_agent_conversation_messages_page",
+    "get_remote_agent_conversation_timeline_page",
+];
+
+/// A conversation with real messages. Parity over an EMPTY transcript would be satisfied by a
+/// command that returns nothing at all, which is the vacuity batch 2 called out by name.
+async fn app_with_seeded_transcript() -> (
+    tauri::App<tauri::test::MockRuntime>,
+    ralphx_domain::entities::ChatConversationId,
+) {
+    use ralphx_domain::entities::{ChatConversation, ChatMessage, IdeationSessionId};
+    use tauri::Manager;
+
+    let app = tauri::test::mock_builder()
+        .manage(crate::application::AppState::new_test())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app should build");
+
+    let state = app.state::<crate::application::AppState>();
+    let session_id = IdeationSessionId::new();
+    let conversation = ChatConversation::new_ideation(session_id.clone());
+    let conversation_id = conversation.id.clone();
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("conversation seeded");
+
+    for content in ["first user turn", "second user turn"] {
+        let mut message = ChatMessage::user_in_session(session_id.clone(), content);
+        message.conversation_id = Some(conversation_id.clone());
+        state
+            .chat_message_repo
+            .create(message)
+            .await
+            .expect("message seeded");
+    }
+
+    (app, conversation_id)
+}
+
+/// P-4 parity: each remote transcript read is byte-identical to the local `*_for_app_state`
+/// seam the local command uses after its wake.
+///
+/// This is the assertion that makes the seam split honest. The split is only safe if the
+/// remote variant returns the SAME data as the local read; a "pure" read that quietly returns
+/// less would be a silent product regression that no detector would catch.
+#[tokio::test]
+async fn p4_parity_for_the_spawn_free_transcript_reads() {
+    use tauri::Manager;
+
+    let (app, conversation_id) = app_with_seeded_transcript().await;
+    let state = app.state::<crate::application::AppState>();
+
+    // Non-vacuity: the fixture really does carry messages, and the reads really do return them.
+    let direct_full = crate::commands::unified_chat_commands::get_agent_conversation_for_app_state(
+        &state,
+        conversation_id.clone(),
+    )
+    .await
+    .expect("direct full read succeeds")
+    .expect("the seeded conversation resolves");
+    assert_eq!(
+        direct_full.messages.len(),
+        2,
+        "the fixture must carry messages, or parity over it proves nothing"
+    );
+    assert_eq!(direct_full.messages[0].content, "first user turn");
+
+    let direct_page =
+        crate::commands::unified_chat_commands::get_agent_conversation_messages_page_for_app_state(
+            &state,
+            conversation_id.clone(),
+            40,
+            0,
+        )
+        .await
+        .expect("direct page read succeeds");
+    let direct_timeline =
+        crate::commands::unified_chat_commands::get_agent_conversation_timeline_page_for_app_state(
+            &state,
+            conversation_id.clone(),
+            40,
+            None,
+        )
+        .await
+        .expect("direct timeline read succeeds");
+
+    for (command, direct, args) in [
+        (
+            "get_remote_agent_conversation",
+            registry::serialize_ok(&Some(direct_full)).unwrap(),
+            json!({"conversationId": conversation_id.as_str()}),
+        ),
+        (
+            "get_remote_agent_conversation_messages_page",
+            registry::serialize_ok(&direct_page).unwrap(),
+            json!({"conversationId": conversation_id.as_str(), "limit": 40, "offset": 0}),
+        ),
+        (
+            "get_remote_agent_conversation_timeline_page",
+            registry::serialize_ok(&direct_timeline).unwrap(),
+            json!({"conversationId": conversation_id.as_str(), "limit": 40}),
+        ),
+    ] {
+        let dispatched =
+            registry::dispatch(&app.handle().clone(), &[Scope::UiRead], command, &args)
+                .await
+                .unwrap_or_else(|error| panic!("`{command}` must dispatch at ui:read: {error:?}"));
+        assert_eq!(
+            dispatched,
+            DispatchOutcome::Ok(direct),
+            "`{command}` remote dispatch must be byte-identical to the local seam"
+        );
+    }
+}
+
+/// Scope negatives — the transcript reads sit at `Read`, so every other grant is insufficient.
+#[tokio::test]
+async fn the_spawn_free_transcript_reads_are_refused_below_ui_read() {
+    let (app, conversation_id) = app_with_seeded_transcript().await;
+
+    for command in REMOTE_TRANSCRIPT_READS {
+        let spec = registry::find_spec(command)
+            .unwrap_or_else(|| panic!("`{command}` must be registered"));
+        assert_eq!(spec.class, RiskClass::Read);
+        assert!(
+            spec.capabilities.is_empty(),
+            "`{command}` is a pure read; a Read row with capabilities is a mislabel"
+        );
+
+        for insufficient in [
+            vec![],
+            vec![Scope::UiOperate],
+            vec![Scope::UiAgent],
+            vec![Scope::UiElevated],
+            vec![Scope::UiOperate, Scope::UiAgent, Scope::UiElevated],
+        ] {
+            let refused = registry::dispatch(
+                &app.handle().clone(),
+                &insufficient,
+                command,
+                &json!({"conversationId": conversation_id.as_str()}),
+            )
+            .await
+            .expect_err("a grant without ui:read must not reach the transcript");
+            assert_eq!(refused.code, ErrorCode::RemoteForbidden);
+        }
+    }
+}
+
+/// An unknown conversation is `null`, not an error, and NOT another conversation's transcript.
+#[tokio::test]
+async fn a_remote_transcript_read_of_an_unknown_conversation_returns_nothing() {
+    let (app, _seeded) = app_with_seeded_transcript().await;
+    let unknown = ralphx_domain::entities::ChatConversationId::new();
+
+    for command in REMOTE_TRANSCRIPT_READS {
+        let outcome = registry::dispatch(
+            &app.handle().clone(),
+            &[Scope::UiRead],
+            command,
+            &json!({"conversationId": unknown.as_str()}),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("`{command}` must dispatch: {error:?}"));
+        assert_eq!(
+            outcome,
+            DispatchOutcome::Ok(serde_json::Value::Null),
+            "`{command}` must not resolve an unknown conversation to someone else's transcript"
+        );
+    }
+}

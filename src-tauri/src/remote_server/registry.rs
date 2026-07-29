@@ -1194,6 +1194,58 @@ crate::remote_commands! {
         pins: [("input", "role", "user")],
     },
 
+
+    // -----------------------------------------------------------------------------------
+    // The spawn-free transcript reads (batch 4) — the PR 3.2 dependency.
+    //
+    // The LOCAL `get_agent_conversation` and its two page reads stay ABSENT, and their
+    // absence is asserted rather than merely omitted (see
+    // `the_local_transcript_reads_stay_unregistered`). Each of them opens by waking the
+    // conversation's agent workspace, which reaches the `send_message` STEER sink; the wake
+    // is incidental to the read (the local commands discard its error and read anyway), so
+    // the answer is a seam split rather than a reclassification.
+    //
+    // These three delegate to the same `*_for_app_state` seams the local commands use, take
+    // only `&AppState`, and therefore cannot reach the wake.
+    // -----------------------------------------------------------------------------------
+    "get_remote_agent_conversation"
+        => crate::commands::remote_transcript_commands::get_remote_agent_conversation {
+        class: Read,
+        caps: [],
+        params: [
+            (arg conversation_id: String),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "get_remote_agent_conversation_messages_page"
+        => crate::commands::remote_transcript_commands::get_remote_agent_conversation_messages_page {
+        class: Read,
+        caps: [],
+        params: [
+            (arg conversation_id: String),
+            (arg limit: Option<u32>),
+            (arg offset: Option<u32>),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "get_remote_agent_conversation_timeline_page"
+        => crate::commands::remote_transcript_commands::get_remote_agent_conversation_timeline_page {
+        class: Read,
+        caps: [],
+        params: [
+            (arg conversation_id: String),
+            (arg limit: Option<u32>),
+            (arg before_sequence: Option<i64>),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+
     // Agent-consumed content surface.
     "create_task_step" => crate::commands::task_step_commands::create_task_step {
         class: AgentControl,
