@@ -10210,3 +10210,36 @@ async fn timeline_item_detail_uses_preview_fallbacks_for_partial_tool_payload() 
     assert_eq!(tool["detail_ref"]["message_id"], item.id.to_string());
     assert_eq!(tool["detail_ref"]["content_block_index"], 2);
 }
+
+/// A failed conversation lookup must refuse, not null the model fields.
+///
+/// `if let Ok(Some(conv)) = ...` collapsed a genuine "conversation absent" and a repository
+/// ERROR into the same `(None, None)`, which the run-status card renders as the model the user
+/// is talking to. A confident wrong answer, from the same function whose sibling read directly
+/// above already propagates with `?`.
+#[tokio::test]
+async fn agent_run_model_fields_propagate_a_conversation_lookup_failure() {
+    use crate::domain::entities::ChatConversationId;
+    use crate::infrastructure::memory::MemoryChatConversationRepository;
+
+    let mut state = crate::application::AppState::new_test();
+    let repo = std::sync::Arc::new(MemoryChatConversationRepository::new());
+    let conversation_id = ChatConversationId::new();
+    repo.fail_get_by_id(conversation_id.clone()).await;
+    state.chat_conversation_repo = repo;
+
+    let error = super::resolve_agent_run_model_fields(&state, &conversation_id)
+        .await
+        .expect_err("a failed conversation lookup must not null the model fields");
+    assert!(
+        error.contains("injected conversation lookup failure"),
+        "the refusal must carry the underlying cause, got: {error}"
+    );
+
+    // The absent case is still the quiet one — the fix must not turn "no conversation" into an
+    // error, which would break the legitimate `Ok(None)` path.
+    let absent = super::resolve_agent_run_model_fields(&state, &ChatConversationId::new())
+        .await
+        .expect("an absent conversation is not a failure");
+    assert_eq!(absent, (None, None));
+}
