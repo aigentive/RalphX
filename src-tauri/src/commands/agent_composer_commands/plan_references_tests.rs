@@ -2,12 +2,14 @@ use super::plan_references::{
     lookup_plan_approval, normalize_query, plan_reference_status, score_reference,
     session_can_reference_plan, PlanApprovalLookup,
 };
+use super::types::SearchAgentComposerPlanReferencesInput;
 use super::AgentComposerPlanReferenceResponse;
 use crate::application::AppState;
 use crate::domain::entities::{
     Artifact, ArtifactId, ArtifactType, IdeationSession, IdeationSessionStatus, Project, ProjectId,
     SessionPurpose,
 };
+use crate::domain::repositories::ArtifactRepository;
 use chrono::{TimeZone, Utc};
 
 fn plan_reference(
@@ -216,5 +218,65 @@ async fn lookup_plan_approval_rejects_stale_blueprint_pair() {
     assert!(
         approval.is_none(),
         "composer references must not project a stale Blueprint approval"
+    );
+}
+
+/// A failed latest-version resolve must refuse, not silently drop the session.
+///
+/// The fail-open here was two-stage: the resolver error fell back to the pre-resolution SEED
+/// id, the following `get_by_id` then missed on that stale id and `continue`d, and `truncated`
+/// is derived from `limit` alone — so a resolver outage returned a short list that reads as
+/// complete. Silent omission is worse than an error in a picker: the user cannot tell that the
+/// plan they are looking for was dropped rather than absent.
+#[tokio::test]
+async fn plan_reference_search_propagates_a_failed_latest_artifact_resolve() {
+    let mut state = AppState::new_sqlite_test();
+    let project = state
+        .project_repo
+        .create(Project::new(
+            "Composer resolver failure".to_string(),
+            "/tmp/ralphx-composer-resolver-failure".to_string(),
+        ))
+        .await
+        .unwrap();
+    let seed = crate::infrastructure::memory::MemoryArtifactRepository::new();
+    let artifact = seed
+        .create(Artifact::new_inline(
+            "Overview",
+            ArtifactType::Specification,
+            "# Overview",
+            "planner",
+        ))
+        .await
+        .unwrap();
+    state
+        .ideation_session_repo
+        .create(
+            IdeationSession::builder()
+                .project_id(project.id.clone())
+                .plan_artifact_id(artifact.id.clone())
+                .build(),
+        )
+        .await
+        .unwrap();
+
+    seed.fail_resolve_latest_artifact_id("artifact store is unavailable")
+        .await;
+    state.artifact_repo = std::sync::Arc::new(seed);
+
+    let result = super::plan_references::search_agent_composer_plan_references_for_app_state(
+        &state,
+        SearchAgentComposerPlanReferencesInput {
+            project_id: project.id.as_str().to_string(),
+            query: String::new(),
+            limit: None,
+        },
+    )
+    .await;
+
+    let error = result.expect_err("a failed resolve must not silently drop the session");
+    assert!(
+        error.contains("artifact store is unavailable"),
+        "the refusal must carry the underlying cause, got: {error}"
     );
 }
