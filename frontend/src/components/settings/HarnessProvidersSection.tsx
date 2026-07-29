@@ -810,7 +810,7 @@ export function HarnessProvidersSection() {
                   </div>
 
                   <div
-                    className={`grid gap-3 border-t border-[var(--border-subtle)] px-4 py-3 md:grid-cols-4 ${
+                    className={`grid gap-3 border-t border-[var(--border-subtle)] px-4 py-3 md:grid-cols-2 ${
                       provider.enabled
                         ? "border-b border-[var(--border-subtle)]"
                         : ""
@@ -925,7 +925,7 @@ export function HarnessProvidersSection() {
                     </div>
 
                     {showCustomEditor && (
-                      <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-2 md:col-span-4">
+                      <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-2 md:col-span-2">
                         <div className="flex flex-col gap-2 md:flex-row md:items-end">
                           <div className="min-w-0 flex-1 space-y-1">
                             <Label
@@ -1002,7 +1002,7 @@ export function HarnessProvidersSection() {
                     )}
 
                     {showEnvFileEditor && (
-                      <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-2 md:col-span-4">
+                      <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-2 md:col-span-2">
                         <div className="flex flex-col gap-2 md:flex-row md:items-end">
                           <div className="min-w-0 flex-1 space-y-1">
                             <Label
