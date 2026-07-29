@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use chrono::Utc;
+use chrono::{Duration, Utc};
 
 use super::StalePublishRepairRecoveryOutcome;
 use crate::application::agent_conversation_workspace::resolve_effective_agent_conversation_workspace_path;
@@ -12,12 +12,14 @@ use crate::application::agent_workspace_publish_repair_state::{
     release_and_clear_agent_workspace_repair_target_lease,
     reserve_agent_workspace_repair_completion_validation, reserve_agent_workspace_repair_dispatch,
     resume_current_agent_workspace_repair_publish, settle_agent_workspace_repair_dispatch_outcome,
-    transition_agent_workspace_repair_attempt, validate_agent_workspace_repair_target_lease,
-    AgentWorkspaceRepairDispatchOutcome, AgentWorkspaceRepairDispatchSettlement,
-    AgentWorkspaceRepairPublishResumeOutcome, AgentWorkspaceRepairTransitionOutcome,
+    start_or_join_agent_workspace_repair, transition_agent_workspace_repair_attempt,
+    validate_agent_workspace_repair_target_lease, AgentWorkspaceRepairDispatchOutcome,
+    AgentWorkspaceRepairDispatchSettlement, AgentWorkspaceRepairPublishResumeOutcome,
+    AgentWorkspaceRepairStartOutcome, AgentWorkspaceRepairStartRequest,
+    AgentWorkspaceRepairTransitionOutcome, ORPHANED_REPAIR_DISPATCH_RESCUE_GRACE_SECS,
 };
 use crate::application::chat_service::{ChatService, SendMessageOptions, SendQueuePolicy};
-use crate::application::AppState;
+use crate::application::{AppState, GitService};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspacePublicationEvent, AgentRunId,
     AgentRunStatus, AgentWorkspaceRepairAttempt, AgentWorkspaceRepairAttemptId,
@@ -36,6 +38,10 @@ const LEGACY_REPAIR_IMPORT_BLOCKED_CLASSIFICATION: &str = "legacy_repair_import_
 const LEGACY_REPAIR_IMPORTED_STEP: &str = "legacy_repair_imported";
 const LEGACY_REPAIR_IMPORTED_CLASSIFICATION: &str = "legacy_repair_import_exact";
 const LEGACY_REPAIR_RUN_CLASSIFICATION_PREFIX: &str = "agent_fixable:run:";
+const AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX: &str = "auto_retry_blocked_repair:";
+const AUTO_RETRY_BLOCKED_REPAIR_BASE_DELAY_SECS: i64 = 60;
+const AUTO_RETRY_BLOCKED_REPAIR_MAX_DELAY_SECS: i64 = 15 * 60;
+const MAX_AUTO_RETRY_BLOCKED_REPAIR_STREAK: u32 = 3;
 
 pub(crate) async fn recover_stale_publish_repair_for_workspace_in_state_result(
     state: &AppState,
@@ -250,7 +256,15 @@ async fn reconcile_agent_workspace_repair_attempt(
         }
         AgentWorkspaceRepairPhase::Requested => {
             if current.next_dispatch_at.is_none() {
-                return Ok(DurableRepairRecoveryOutcome::Noop);
+                if repair_attempt_has_target_lease(&current) {
+                    return redeliver_due_repair_dispatch(state, current).await;
+                }
+                if Utc::now() - current.updated_at
+                    < Duration::seconds(ORPHANED_REPAIR_DISPATCH_RESCUE_GRACE_SECS)
+                {
+                    return Ok(DurableRepairRecoveryOutcome::Noop);
+                }
+                return rescue_orphaned_repair_dispatch(state, current).await;
             }
             if !agent_workspace_repair_dispatch_is_due(&current, Utc::now()) {
                 return Ok(DurableRepairRecoveryOutcome::Noop);
@@ -258,12 +272,21 @@ async fn reconcile_agent_workspace_repair_attempt(
             redeliver_due_repair_dispatch(state, current).await
         }
         AgentWorkspaceRepairPhase::Validating => {
-            block_recovery_attempt(
-                state,
-                current,
-                "Workspace repair recovery cannot prove the interrupted dispatch or validation result. Retry the blocked operation.",
-            )
-            .await
+            let active = match current.reserved_agent_run_id.as_ref() {
+                Some(run_id) => state
+                    .agent_run_repo
+                    .get_by_id(run_id)
+                    .await?
+                    .is_some_and(|run| {
+                        run.conversation_id == current.conversation_id && run.status.is_active()
+                    }),
+                None => false,
+            };
+            if active {
+                Ok(DurableRepairRecoveryOutcome::Active)
+            } else {
+                recover_clean_interrupted_repair(state, current).await
+            }
         }
         AgentWorkspaceRepairPhase::ContinuationPending | AgentWorkspaceRepairPhase::Continuing => {
             match crate::application::publish_resilience::continue_agent_workspace_repair_publish(
@@ -316,11 +339,99 @@ async fn reconcile_agent_workspace_repair_attempt(
                 }
             }
         }
-        AgentWorkspaceRepairPhase::Ready | AgentWorkspaceRepairPhase::Blocked => {
+        AgentWorkspaceRepairPhase::Ready => {
             release_repair_lease_if_settled_boundary(state, &current).await?;
             Ok(DurableRepairRecoveryOutcome::Noop)
         }
+        AgentWorkspaceRepairPhase::Blocked => {
+            release_repair_lease_if_settled_boundary(state, &current).await?;
+            retry_safe_blocked_agent_workspace_repair(state, current).await
+        }
     }
+}
+
+fn automatic_blocked_repair_streak(attempt: &AgentWorkspaceRepairAttempt) -> u32 {
+    attempt
+        .pending_reasons
+        .iter()
+        .filter_map(|reason| reason.strip_prefix(AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX))
+        .filter_map(|streak| streak.parse::<u32>().ok())
+        .max()
+        .unwrap_or_default()
+}
+
+fn automatic_blocked_repair_retry_delay(streak: u32) -> Duration {
+    let multiplier = 1_i64 << streak.min(4);
+    Duration::seconds(
+        AUTO_RETRY_BLOCKED_REPAIR_BASE_DELAY_SECS
+            .saturating_mul(multiplier)
+            .min(AUTO_RETRY_BLOCKED_REPAIR_MAX_DELAY_SECS),
+    )
+}
+
+async fn retry_safe_blocked_agent_workspace_repair(
+    state: &AppState,
+    current: AgentWorkspaceRepairAttempt,
+) -> AppResult<DurableRepairRecoveryOutcome> {
+    if !current.continuation.is_automatic() {
+        return Ok(DurableRepairRecoveryOutcome::Noop);
+    }
+    if state
+        .agent_workspace_repair_repo
+        .get_open_repair_effect(&current.id)
+        .await?
+        .is_some()
+    {
+        return Ok(DurableRepairRecoveryOutcome::Noop);
+    }
+    let streak = automatic_blocked_repair_streak(&current);
+    if streak >= MAX_AUTO_RETRY_BLOCKED_REPAIR_STREAK
+        || Utc::now() - current.updated_at < automatic_blocked_repair_retry_delay(streak)
+    {
+        return Ok(DurableRepairRecoveryOutcome::Noop);
+    }
+    let Some(workspace) = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&current.conversation_id)
+        .await?
+    else {
+        return Ok(DurableRepairRecoveryOutcome::Noop);
+    };
+    let marker = format!("{AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX}{}", streak + 1);
+    let start = start_or_join_agent_workspace_repair(
+        Arc::clone(&state.agent_workspace_repair_repo),
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        AgentWorkspaceRepairStartRequest {
+            conversation_id: current.conversation_id.clone(),
+            source: current.source,
+            continuation: current.continuation,
+            target_base_ref: workspace.base_ref,
+            target_base_commit: workspace.base_commit,
+            verified_newer_base: false,
+            reason: marker,
+            summary: "Automatically retrying the blocked workspace repair.".to_string(),
+            auto_merge_current: workspace.pr_auto_merge_current,
+            retry_blocked: true,
+        },
+    )
+    .await?;
+    match start {
+        AgentWorkspaceRepairStartOutcome::SuccessorStarted(successor) => {
+            rescue_orphaned_repair_dispatch(state, successor).await
+        }
+        AgentWorkspaceRepairStartOutcome::Started(_)
+        | AgentWorkspaceRepairStartOutcome::Joined(_)
+        | AgentWorkspaceRepairStartOutcome::BlockedByCurrent(_) => {
+            Ok(DurableRepairRecoveryOutcome::Stale)
+        }
+    }
+}
+
+fn repair_attempt_has_target_lease(attempt: &AgentWorkspaceRepairAttempt) -> bool {
+    attempt.git_common_dir.is_some()
+        || attempt.target_ref.is_some()
+        || attempt.target_identity_version.is_some()
+        || attempt.target_lease_epoch.is_some()
 }
 
 /// A delivery that failed before a trusted repair worker ran is recoverable. The exact
@@ -434,6 +545,76 @@ async fn redeliver_due_repair_dispatch(
         state.plan_branch_repo.as_ref(),
     )
     .await?;
+    reserve_and_deliver_repair_dispatch(
+        state,
+        attempt,
+        target_identity,
+        workspace,
+        resolved.path,
+        "Retrying the durable workspace repair delivery.",
+        "Durable workspace repair delivery retry completed.",
+    )
+    .await
+}
+
+async fn rescue_orphaned_repair_dispatch(
+    state: &AppState,
+    attempt: AgentWorkspaceRepairAttempt,
+) -> AppResult<DurableRepairRecoveryOutcome> {
+    if state
+        .agent_workspace_repair_repo
+        .get_open_repair_effect(&attempt.id)
+        .await?
+        .is_some()
+    {
+        return Ok(DurableRepairRecoveryOutcome::Noop);
+    }
+    let Some(workspace) = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&attempt.conversation_id)
+        .await?
+    else {
+        return block_recovery_attempt(
+            state,
+            attempt,
+            "Workspace repair recovery cannot find its canonical workspace. Start a new repair attempt before retrying.",
+        )
+        .await;
+    };
+    let project = state
+        .project_repo
+        .get_by_id(&workspace.project_id)
+        .await?
+        .ok_or_else(|| AppError::ProjectNotFound(workspace.project_id.to_string()))?;
+    let resolved = resolve_effective_agent_conversation_workspace_path(
+        &project,
+        &workspace,
+        state.plan_branch_repo.as_ref(),
+    )
+    .await?;
+    let target_identity =
+        GitService::canonical_target_identity(&resolved.path, &workspace.branch_name).await?;
+    reserve_and_deliver_repair_dispatch(
+        state,
+        attempt,
+        target_identity,
+        workspace,
+        resolved.path,
+        "Rescuing the orphaned durable workspace repair delivery.",
+        "Recovered the orphaned durable workspace repair delivery.",
+    )
+    .await
+}
+
+async fn reserve_and_deliver_repair_dispatch(
+    state: &AppState,
+    attempt: AgentWorkspaceRepairAttempt,
+    target_identity: crate::domain::entities::GitTargetIdentity,
+    workspace: AgentConversationWorkspace,
+    working_directory: std::path::PathBuf,
+    reservation_summary: &str,
+    settlement_summary: &str,
+) -> AppResult<DurableRepairRecoveryOutcome> {
     let run_id = AgentRunId::new();
     let reserved = match reserve_agent_workspace_repair_dispatch(
         Arc::clone(&state.agent_workspace_repair_repo),
@@ -441,7 +622,7 @@ async fn redeliver_due_repair_dispatch(
         target_identity,
         attempt,
         run_id.clone(),
-        "Retrying the durable workspace repair delivery.",
+        reservation_summary,
         workspace.pr_auto_merge_current,
     )
     .await?
@@ -463,7 +644,7 @@ async fn redeliver_due_repair_dispatch(
                 queue_policy: SendQueuePolicy::RequireImmediateStart,
                 conversation_id_override: Some(workspace.conversation_id.clone()),
                 agent_name_override: Some(AGENT_WORKSPACE_REPAIR.to_string()),
-                working_directory_override: Some(resolved.path),
+                working_directory_override: Some(working_directory),
                 force_new_provider_session: true,
                 preserve_conversation_provider_session_ref: true,
                 ..Default::default()
@@ -480,7 +661,7 @@ async fn redeliver_due_repair_dispatch(
         Arc::clone(&state.branch_update_repo),
         reserved,
         settlement,
-        "Durable workspace repair delivery retry completed.",
+        settlement_summary,
         workspace.pr_auto_merge_current,
     )
     .await?

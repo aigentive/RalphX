@@ -60,6 +60,7 @@ pub(crate) const DEFERRED_REPAIR_WAIT_TIMEOUT_SECS: u64 = 300;
 const REPAIR_RUN_CLASSIFICATION_PREFIX: &str = "agent_fixable:run:";
 pub(crate) const AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION: u64 = 1;
 pub(crate) const MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES: u32 = 3;
+pub(crate) const ORPHANED_REPAIR_DISPATCH_RESCUE_GRACE_SECS: i64 = 60;
 const AGENT_WORKSPACE_REPAIR_DISPATCH_INITIAL_BACKOFF_SECS: i64 = 5;
 const AGENT_WORKSPACE_REPAIR_DISPATCH_MAX_BACKOFF_SECS: i64 = 60;
 
@@ -503,6 +504,9 @@ pub(crate) async fn record_agent_workspace_repair_validation(
     attempt.target_base_commit = Some(base_commit.to_string());
     attempt.repair_head_commit = Some(repair_head_commit.to_string());
     attempt.summary = Some(summary.to_string());
+    // A successfully validated completion supersedes any stale blocker left by an earlier
+    // blocked generation state (for example a resurrected exact-run completion).
+    attempt.blocker = None;
     attempt.updated_at = next_transition_at(Some(attempt.updated_at));
     let projection = repair_attempt_projection(&attempt, summary, auto_merge_current);
     repair_repo
@@ -1114,7 +1118,7 @@ pub(crate) async fn release_and_clear_agent_workspace_repair_target_lease(
 /// Reacquires the canonical target for a repair that was durably parked at an inactive boundary.
 /// The current phase and timestamp are checkpointed with the new fencing epoch before a review
 /// pass, manual publish, or downstream publisher can continue.
-async fn reacquire_agent_workspace_repair_target_lease_for_continuation(
+pub(crate) async fn reacquire_agent_workspace_repair_target_lease_for_continuation(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
     attempt: AgentWorkspaceRepairAttempt,
