@@ -41,7 +41,8 @@ use tauri::{Listener, Manager};
 use tokio::io::AsyncWriteExt;
 
 use super::super::chat_service_run_finalization::{
-    finalize_run_completed, run_completed_event_is_authorized,
+    finalize_run_completed, finalize_run_completed_by_id, queue_run_completed_event_authority,
+    run_completed_event_is_authorized, run_completed_without_queue_is_authorized,
 };
 
 fn test_tool_call(name: &str) -> ToolCall {
@@ -92,6 +93,9 @@ async fn seed_completed_continuation_runtime(
 struct CreateFailingAgentRunRepository {
     inner: Arc<dyn AgentRunRepository>,
     fail_create: AtomicBool,
+    fail_complete_if_running: AtomicBool,
+    fail_complete_if_prune_cancelled: AtomicBool,
+    fail_get_by_id: AtomicBool,
 }
 
 impl CreateFailingAgentRunRepository {
@@ -99,11 +103,27 @@ impl CreateFailingAgentRunRepository {
         Self {
             inner,
             fail_create: AtomicBool::new(false),
+            fail_complete_if_running: AtomicBool::new(false),
+            fail_complete_if_prune_cancelled: AtomicBool::new(false),
+            fail_get_by_id: AtomicBool::new(false),
         }
     }
 
     fn fail_creates(&self) {
         self.fail_create.store(true, Ordering::SeqCst);
+    }
+
+    fn fail_running_completion(&self) {
+        self.fail_complete_if_running.store(true, Ordering::SeqCst);
+    }
+
+    fn fail_prune_completion(&self) {
+        self.fail_complete_if_prune_cancelled
+            .store(true, Ordering::SeqCst);
+    }
+
+    fn fail_run_reads(&self) {
+        self.fail_get_by_id.store(true, Ordering::SeqCst);
     }
 }
 
@@ -119,6 +139,11 @@ impl AgentRunRepository for CreateFailingAgentRunRepository {
     }
 
     async fn get_by_id(&self, id: &AgentRunId) -> crate::AppResult<Option<AgentRun>> {
+        if self.fail_get_by_id.load(Ordering::SeqCst) {
+            return Err(crate::AppError::Database(
+                "forced agent run read failure".to_string(),
+            ));
+        }
         self.inner.get_by_id(id).await
     }
 
@@ -184,10 +209,20 @@ impl AgentRunRepository for CreateFailingAgentRunRepository {
     }
 
     async fn complete_if_running(&self, id: &AgentRunId) -> crate::AppResult<bool> {
+        if self.fail_complete_if_running.load(Ordering::SeqCst) {
+            return Err(crate::AppError::Database(
+                "forced running completion failure".to_string(),
+            ));
+        }
         self.inner.complete_if_running(id).await
     }
 
     async fn complete_if_prune_cancelled(&self, id: &AgentRunId) -> crate::AppResult<bool> {
+        if self.fail_complete_if_prune_cancelled.load(Ordering::SeqCst) {
+            return Err(crate::AppError::Database(
+                "forced prune completion failure".to_string(),
+            ));
+        }
         self.inner.complete_if_prune_cancelled(id).await
     }
 
@@ -1312,7 +1347,7 @@ async fn finalizer_completes_running_run_and_authorizes_completion_event() {
     let run_id = run.id;
     repo.create(run).await.unwrap();
 
-    assert!(finalize_run_completed(&repo, &run_id).await);
+    assert!(finalize_run_completed_by_id(&repo, &run_id.as_str()).await);
     assert!(run_completed_event_is_authorized(&repo, &run_id).await);
     assert_eq!(
         repo.get_by_id(&run_id).await.unwrap().unwrap().status,
@@ -1353,6 +1388,122 @@ async fn finalizer_preserves_user_cancel_and_suppresses_completion_event() {
         repo.get_by_id(&run_id).await.unwrap().unwrap().status,
         AgentRunStatus::Cancelled
     );
+}
+
+#[tokio::test]
+async fn finalizer_fails_closed_when_running_completion_errors() {
+    let inner: Arc<dyn AgentRunRepository> = Arc::new(MemoryAgentRunRepository::new());
+    let failing = Arc::new(CreateFailingAgentRunRepository::new(Arc::clone(&inner)));
+    let repo: Arc<dyn AgentRunRepository> = failing.clone();
+    let run = AgentRun::new(ChatConversationId::new());
+    let run_id = run.id;
+    inner.create(run).await.unwrap();
+    failing.fail_running_completion();
+
+    assert!(!finalize_run_completed(&repo, &run_id).await);
+    assert_eq!(
+        inner.get_by_id(&run_id).await.unwrap().unwrap().status,
+        AgentRunStatus::Running
+    );
+}
+
+#[tokio::test]
+async fn finalizer_fails_closed_when_prune_repair_errors() {
+    let inner: Arc<dyn AgentRunRepository> = Arc::new(MemoryAgentRunRepository::new());
+    let failing = Arc::new(CreateFailingAgentRunRepository::new(Arc::clone(&inner)));
+    let repo: Arc<dyn AgentRunRepository> = failing.clone();
+    let mut run = AgentRun::new(ChatConversationId::new());
+    run.status = AgentRunStatus::Cancelled;
+    run.completed_at = Some(Utc::now());
+    run.error_message = Some(PRUNED_STALE_AGENT_RUN.to_string());
+    let run_id = run.id;
+    inner.create(run).await.unwrap();
+    failing.fail_prune_completion();
+
+    assert!(!finalize_run_completed(&repo, &run_id).await);
+    let persisted = inner.get_by_id(&run_id).await.unwrap().unwrap();
+    assert_eq!(persisted.status, AgentRunStatus::Cancelled);
+    assert_eq!(
+        persisted.error_message.as_deref(),
+        Some(PRUNED_STALE_AGENT_RUN)
+    );
+}
+
+#[tokio::test]
+async fn completion_event_authority_fails_closed_when_run_missing() {
+    let repo: Arc<dyn AgentRunRepository> = Arc::new(MemoryAgentRunRepository::new());
+    let missing_run_id = AgentRunId::from_string("missing-run");
+
+    assert!(!run_completed_event_is_authorized(&repo, &missing_run_id).await);
+}
+
+#[tokio::test]
+async fn completion_event_authority_fails_closed_when_read_errors() {
+    let inner: Arc<dyn AgentRunRepository> = Arc::new(MemoryAgentRunRepository::new());
+    let failing = Arc::new(CreateFailingAgentRunRepository::new(Arc::clone(&inner)));
+    let repo: Arc<dyn AgentRunRepository> = failing.clone();
+    let mut run = AgentRun::new(ChatConversationId::new());
+    run.complete();
+    let run_id = run.id;
+    inner.create(run).await.unwrap();
+    failing.fail_run_reads();
+
+    assert!(!run_completed_event_is_authorized(&repo, &run_id).await);
+}
+
+#[test]
+fn no_queue_completion_event_requires_completion_authority() {
+    assert!(run_completed_without_queue_is_authorized(
+        true, false, false
+    ));
+    assert!(run_completed_without_queue_is_authorized(true, true, true));
+    assert!(!run_completed_without_queue_is_authorized(
+        false, false, true
+    ));
+    assert!(!run_completed_without_queue_is_authorized(
+        true, true, false
+    ));
+}
+
+#[tokio::test]
+async fn queue_completion_event_authority_uses_terminal_run_status() {
+    let repo: Arc<dyn AgentRunRepository> = Arc::new(MemoryAgentRunRepository::new());
+    let parent_run = AgentRun::new(ChatConversationId::new());
+    let parent_run_id = parent_run.id;
+    repo.create(parent_run).await.unwrap();
+    let mut queued_run = AgentRun::new(ChatConversationId::new());
+    queued_run.complete();
+    let queued_run_id = queued_run.id;
+    repo.create(queued_run).await.unwrap();
+
+    let outcome = super::super::chat_service_queue::QueueProcessingOutcome {
+        total_processed: 1,
+        last_run_id: Some(queued_run_id.as_str().to_string()),
+    };
+    let (terminal_run_id, authorized) =
+        queue_run_completed_event_authority(&repo, &outcome, &parent_run_id.as_str()).await;
+
+    assert_eq!(terminal_run_id, queued_run_id.as_str());
+    assert!(authorized);
+}
+
+#[tokio::test]
+async fn queue_completion_event_authority_suppresses_non_completed_parent_fallback() {
+    let repo: Arc<dyn AgentRunRepository> = Arc::new(MemoryAgentRunRepository::new());
+    let mut parent_run = AgentRun::new(ChatConversationId::new());
+    parent_run.fail("spawn failed");
+    let parent_run_id = parent_run.id;
+    repo.create(parent_run).await.unwrap();
+
+    let outcome = super::super::chat_service_queue::QueueProcessingOutcome {
+        total_processed: 0,
+        last_run_id: None,
+    };
+    let (terminal_run_id, authorized) =
+        queue_run_completed_event_authority(&repo, &outcome, &parent_run_id.as_str()).await;
+
+    assert_eq!(terminal_run_id, parent_run_id.as_str());
+    assert!(!authorized);
 }
 
 #[test]

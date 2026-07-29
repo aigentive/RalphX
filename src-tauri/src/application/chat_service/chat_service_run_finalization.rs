@@ -3,6 +3,15 @@ use std::sync::Arc;
 use crate::domain::entities::{AgentRunId, AgentRunStatus};
 use crate::domain::repositories::AgentRunRepository;
 
+use super::chat_service_queue::QueueProcessingOutcome;
+
+pub(super) async fn finalize_run_completed_by_id(
+    repo: &Arc<dyn AgentRunRepository>,
+    run_id: &str,
+) -> bool {
+    finalize_run_completed(repo, &AgentRunId::from_string(run_id)).await
+}
+
 pub(super) async fn finalize_run_completed(
     repo: &Arc<dyn AgentRunRepository>,
     run_id: &AgentRunId,
@@ -68,4 +77,23 @@ pub(super) async fn run_completed_event_is_authorized(
             false
         }
     }
+}
+
+pub(super) fn run_completed_without_queue_is_authorized(
+    completion_applied: bool,
+    skip_post_loop_finalization: bool,
+    silent_interactive_exit: bool,
+) -> bool {
+    completion_applied && (!skip_post_loop_finalization || silent_interactive_exit)
+}
+
+pub(super) async fn queue_run_completed_event_authority(
+    repo: &Arc<dyn AgentRunRepository>,
+    queue_outcome: &QueueProcessingOutcome,
+    parent_run_id: &str,
+) -> (String, bool) {
+    let terminal_run_id = queue_outcome.terminal_run_id(parent_run_id);
+    let authorized =
+        run_completed_event_is_authorized(repo, &AgentRunId::from_string(&terminal_run_id)).await;
+    (terminal_run_id, authorized)
 }

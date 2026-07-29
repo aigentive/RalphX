@@ -11,6 +11,9 @@ use tracing::Instrument;
 
 use super::chat_service_context;
 use super::chat_service_helpers::get_assistant_role;
+use super::chat_service_run_finalization::{
+    finalize_run_completed_by_id, queue_run_completed_event_authority as queue_authority,
+};
 use super::chat_service_streaming::{
     completion_tool_result_accepted, is_completion_tool_name, process_stream_background,
 };
@@ -1335,11 +1338,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                             .await;
                     } else {
                         completion_applied =
-                            super::chat_service_run_finalization::finalize_run_completed(
-                                &agent_run_repo,
-                                &AgentRunId::from_string(&agent_run_id),
-                            )
-                            .await;
+                            finalize_run_completed_by_id(&agent_run_repo, &agent_run_id).await;
                     }
                 }
 
@@ -1904,13 +1903,8 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     )
                     .await;
                     let total_processed = queue_outcome.total_processed;
-                    let terminal_run_id = queue_outcome.terminal_run_id(&agent_run_id);
-                    let will_emit_run_completed =
-                        super::chat_service_run_finalization::run_completed_event_is_authorized(
-                            &agent_run_repo,
-                            &AgentRunId::from_string(&terminal_run_id),
-                        )
-                        .await;
+                    let (terminal_run_id, will_emit_run_completed) =
+                        queue_authority(&agent_run_repo, &queue_outcome, &agent_run_id).await;
 
                     // After ALL queue processing is done, emit the final run_completed.
                     // Queue counts never grant success authority; the terminal persisted
