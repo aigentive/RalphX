@@ -126,6 +126,15 @@ pub enum AppError {
 
     #[error("The persona builder can only read text context — PDFs/images aren't supported")]
     PersonaBuilderTextAttachmentOnly,
+
+    /// Carries the measured numbers rather than a prebuilt sentence so callers
+    /// that surface this to a user can phrase and format it themselves.
+    #[error("INSUFFICIENT_DISK_SPACE: {operation} needs {required_bytes} free bytes but only {available_bytes} are available")]
+    InsufficientDiskSpace {
+        operation: String,
+        required_bytes: u64,
+        available_bytes: u64,
+    },
 }
 
 impl From<AgentError> for AppError {

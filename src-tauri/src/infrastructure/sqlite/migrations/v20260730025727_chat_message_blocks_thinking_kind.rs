@@ -15,6 +15,9 @@ use crate::error::{AppError, AppResult};
 /// refuses a migration that would have succeeded.
 const REQUIRED_FREE_SPACE_MULTIPLIER: u64 = 2;
 
+/// Reads as the tail of "RalphX needs N free to finish …" on the startup screen.
+const MIGRATION_USER_FACING_OPERATION: &str = "upgrading the chat timeline";
+
 pub fn migrate(conn: &Connection) -> AppResult<()> {
     ensure_sufficient_free_space(conn)?;
 
@@ -186,16 +189,27 @@ fn ensure_sufficient_free_space(conn: &Connection) -> AppResult<()> {
         }
     };
 
-    if available_bytes < required_bytes {
-        return Err(AppError::Database(format!(
-            "chat message block rebuild requires {required_bytes} free bytes but only {available_bytes} are available; free disk space before restarting"
-        )));
-    }
-
-    Ok(())
+    check_free_space(required_bytes, available_bytes)
 }
 
 #[cfg(not(unix))]
 fn ensure_sufficient_free_space(_conn: &Connection) -> AppResult<()> {
+    Ok(())
+}
+
+/// Split from the `statvfs` probe so the refusal itself is testable without a
+/// full disk.
+pub(super) fn check_free_space(required_bytes: u64, available_bytes: u64) -> AppResult<()> {
+    if available_bytes < required_bytes {
+        // Typed rather than `Database(String)` so the startup failure surface can
+        // recognize it and show the user an actionable message instead of the
+        // generic "could not open its local workspace".
+        return Err(AppError::InsufficientDiskSpace {
+            operation: MIGRATION_USER_FACING_OPERATION.to_string(),
+            required_bytes,
+            available_bytes,
+        });
+    }
+
     Ok(())
 }

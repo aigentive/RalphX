@@ -7,6 +7,7 @@ use super::{
     v20260730000304_chat_message_blocks_created_at_index,
     v20260730025727_chat_message_blocks_thinking_kind,
 };
+use crate::error::AppError;
 
 fn setup_test_db() -> Connection {
     Connection::open_in_memory().expect("Failed to create in-memory database")
@@ -153,4 +154,31 @@ fn rebuild_recreates_every_chat_message_block_index() {
             "idx_chat_message_blocks_tool_call".to_string(),
         ]
     );
+}
+
+/// The refusal reaches the user through the startup failure screen, which keys
+/// off the error variant. `Database(String)` there would render as the generic
+/// "RalphX could not open its local workspace" with no way to act on it.
+#[test]
+fn refuses_with_a_typed_disk_space_error_carrying_both_measurements() {
+    let error = v20260730025727_chat_message_blocks_thinking_kind::check_free_space(16_000, 3_000)
+        .expect_err("preflight should refuse when the volume is short");
+
+    assert!(
+        matches!(
+            error,
+            AppError::InsufficientDiskSpace {
+                required_bytes: 16_000,
+                available_bytes: 3_000,
+                ..
+            }
+        ),
+        "unexpected error: {error:?}"
+    );
+}
+
+#[test]
+fn allows_the_rebuild_when_free_space_exactly_meets_the_requirement() {
+    v20260730025727_chat_message_blocks_thinking_kind::check_free_space(16_000, 16_000)
+        .expect("equal free space should be accepted");
 }
