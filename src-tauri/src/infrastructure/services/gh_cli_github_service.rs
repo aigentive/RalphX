@@ -994,6 +994,26 @@ impl GithubServiceTrait for GhCliGithubService {
         parse_pr_health_output(&view_stdout.join("\n"), &comments_stdout.join("\n"))
     }
 
+    async fn rerun_failed_workflow(&self, working_dir: &Path, run_id: i64) -> AppResult<()> {
+        if run_id <= 0 {
+            return Err(AppError::Validation(
+                "GitHub Actions run id must be positive".to_string(),
+            ));
+        }
+        self.runner
+            .run_gh(
+                working_dir,
+                &[
+                    "run".to_string(),
+                    "rerun".to_string(),
+                    run_id.to_string(),
+                    "--failed".to_string(),
+                ],
+            )
+            .await
+            .map(|_| ())
+    }
+
     async fn enable_pr_auto_merge(
         &self,
         working_dir: &Path,

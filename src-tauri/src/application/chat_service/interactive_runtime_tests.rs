@@ -8,7 +8,7 @@ use super::{
     resolve_agent_name_for_send, should_inherit_parent_harness_for_fresh_spawn,
     spawn_settings_require_task_metadata, supervised_workspace_runtime_message,
 };
-use super::{ChatService, SendMessageOptions, SendQueuePolicy};
+use super::{ChatService, ChatServiceError, SendMessageOptions, SendQueuePolicy};
 use crate::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessMetadata,
     InteractiveProcessRetireAfterTurnDisposition, InteractiveProcessTurnCompleteDisposition,
@@ -271,7 +271,11 @@ async fn active_interactive_process_cannot_strand_fresh_verification_in_queue() 
         .await
         .expect_err("active process must reject a fresh verifier without queueing it");
 
-    assert!(error.to_string().contains("immediate start required"));
+    assert!(matches!(
+        error,
+        ChatServiceError::ImmediateStartRejected(ref message)
+            if message == "immediate start required, but an interactive process is active"
+    ));
     let conversation_id = conversation.id.as_str();
     assert!(
         state

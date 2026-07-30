@@ -2313,6 +2313,7 @@ export interface AgentConversationWorkspaceFreshness {
 export interface UpdateAgentConversationWorkspaceFromBaseResult {
   workspace: AgentConversationWorkspace;
   updated: boolean;
+  repairStarted: boolean;
   targetRef: string;
   baseCommit: string;
   baseStatus: AgentConversationWorkspaceBaseStatus;
@@ -3164,6 +3165,7 @@ const PrecomputeAgentConversationWorkspacePrDescriptionResponseSchema =
 const UpdateAgentConversationWorkspaceFromBaseResponseSchema = z.object({
   workspace: AgentConversationWorkspaceResponseSchema,
   updated: z.boolean(),
+  repair_started: z.boolean().optional().default(false),
   target_ref: z.string(),
   base_commit: z.string(),
   base_status: z
@@ -3810,6 +3812,7 @@ function transformUpdateAgentConversationWorkspaceFromBaseResponse(
   return {
     workspace: transformAgentConversationWorkspace(raw.workspace),
     updated: raw.updated,
+    repairStarted: raw.repair_started,
     targetRef: raw.target_ref,
     baseCommit: raw.base_commit,
     baseStatus: raw.base_status,

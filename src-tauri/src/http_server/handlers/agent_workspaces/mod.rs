@@ -130,6 +130,36 @@ use crate::error::AppError;
 pub struct CompleteAgentWorkspaceRepairRequest {
     pub summary: String,
     pub blocker: Option<String>,
+    pub resolution: Option<AgentWorkspacePrFixResolution>,
+    /// Present only on the PR-fixer compatibility route. The backend compares this with the
+    /// actual workspace head; it is never accepted as proof on its own.
+    pub reported_fix_commit_sha: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentWorkspacePrFixResolution {
+    Fixed,
+    TransientCi,
+    PreExistingOnBase,
+    NeedsHuman,
+}
+
+impl<'de> serde::Deserialize<'de> for AgentWorkspacePrFixResolution {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        match value.as_str() {
+            "fixed" => Ok(Self::Fixed),
+            "transient_ci" => Ok(Self::TransientCi),
+            "pre_existing_on_base" => Ok(Self::PreExistingOnBase),
+            "needs_human" => Ok(Self::NeedsHuman),
+            _ => Err(serde::de::Error::custom(
+                "resolution must be one of fixed, transient_ci, pre_existing_on_base, needs_human",
+            )),
+        }
+    }
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -327,6 +357,8 @@ pub struct CompleteAgentWorkspacePrFixRequest {
     pub summary: String,
     pub blocker: Option<String>,
     pub fix_commit_sha: Option<String>,
+    /// Typed, model-facing classification. Backend re-derives Git/PR authority.
+    pub resolution: Option<AgentWorkspacePrFixResolution>,
     /// Transport-owned runtime identity; intentionally absent from the model-facing tool schema.
     pub created_by_run_id: Option<String>,
 }
@@ -2418,14 +2450,18 @@ pub async fn complete_agent_workspace_pr_fix(
                 )
             })
         })?;
-    let Json(response) = repair_completion::complete_agent_workspace_repair_for_trusted_run(
-        &state,
-        conversation_id,
-        run_id,
-        CompleteAgentWorkspaceRepairRequest {
-            summary: req.summary,
-            blocker: req.blocker,
-        },
+    let Json(response) = Box::pin(
+        repair_completion::complete_agent_workspace_repair_for_trusted_run(
+            &state,
+            conversation_id,
+            run_id,
+            CompleteAgentWorkspaceRepairRequest {
+                summary: req.summary,
+                blocker: req.blocker,
+                resolution: req.resolution,
+                reported_fix_commit_sha: req.fix_commit_sha,
+            },
+        ),
     )
     .await?;
 

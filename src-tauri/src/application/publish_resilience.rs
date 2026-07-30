@@ -703,7 +703,7 @@ pub(crate) async fn observe_agent_workspace_repair_pr_handoff_effect(
         })
         .await?
     {
-        CompleteAgentWorkspaceRepairEffectOutcome::Applied(effect) => Ok(effect),
+        CompleteAgentWorkspaceRepairEffectOutcome::Applied(effect) => Ok(*effect),
         CompleteAgentWorkspaceRepairEffectOutcome::Stale(_)
         | CompleteAgentWorkspaceRepairEffectOutcome::Missing => Err(AppError::Conflict(
             "repair attempt lost authority before recording the PR handoff receipt".to_string(),
@@ -1188,7 +1188,7 @@ pub(crate) async fn initialize_agent_workspace_repair_push_effect(
         })
         .await?
     {
-        CompleteAgentWorkspaceRepairEffectOutcome::Applied(effect) => Ok(effect),
+        CompleteAgentWorkspaceRepairEffectOutcome::Applied(effect) => Ok(*effect),
         CompleteAgentWorkspaceRepairEffectOutcome::Stale(_)
         | CompleteAgentWorkspaceRepairEffectOutcome::Missing => Err(AppError::Conflict(
             "workspace repair push preflight receipt lost current attempt authority".to_string(),
@@ -1257,7 +1257,7 @@ pub(crate) async fn observe_agent_workspace_repair_push_effect(
         })
         .await?
     {
-        CompleteAgentWorkspaceRepairEffectOutcome::Applied(effect) => Ok(effect),
+        CompleteAgentWorkspaceRepairEffectOutcome::Applied(effect) => Ok(*effect),
         CompleteAgentWorkspaceRepairEffectOutcome::Stale(_)
         | CompleteAgentWorkspaceRepairEffectOutcome::Missing => Err(AppError::Conflict(
             "workspace repair push receipt lost current attempt authority".to_string(),
