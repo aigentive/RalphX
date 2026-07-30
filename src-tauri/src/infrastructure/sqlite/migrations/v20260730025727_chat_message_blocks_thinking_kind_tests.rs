@@ -1,6 +1,6 @@
 //! Tests for migration v20260730025727: chat message blocks thinking kind
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 use super::{
     v20260510185257_chat_message_blocks_timeline, v20260730025727_chat_message_blocks_thinking_kind,
@@ -44,6 +44,12 @@ fn migrated_connection() -> Connection {
         [],
     )
     .unwrap();
+    conn.execute(
+        "INSERT INTO chat_message_block_payloads (block_id, input_json, result_json, raw_block_json, updated_at)
+         VALUES ('existing', '{\"input\":true}', '{\"result\":true}', '{\"raw\":true}', 'now')",
+        [],
+    )
+    .unwrap();
     v20260730025727_chat_message_blocks_thinking_kind::migrate(&conn).unwrap();
     conn
 }
@@ -66,6 +72,29 @@ fn preserves_rows_and_enforces_rebuilt_chat_message_block_constraints() {
             "saved text".into(),
             "{\"saved\":true}".into()
         )
+    );
+
+    let payload: (String, String, String) = conn
+        .query_row(
+            "SELECT input_json, result_json, raw_block_json
+             FROM chat_message_block_payloads WHERE block_id = 'existing'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        payload,
+        (
+            "{\"input\":true}".into(),
+            "{\"result\":true}".into(),
+            "{\"raw\":true}".into()
+        )
+    );
+    assert_eq!(
+        conn.query_row("PRAGMA foreign_key_check", [], |row| row.get::<_, i64>(0))
+            .optional()
+            .unwrap(),
+        None
     );
 
     conn.execute(

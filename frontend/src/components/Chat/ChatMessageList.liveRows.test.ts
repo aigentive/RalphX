@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { StreamingContentBlock, StreamingTask } from "@/types/streaming-task";
-import { buildLiveTranscriptRows } from "./ChatMessageList.liveRows";
+import {
+  buildLiveTranscriptRows,
+  isLiveThinkingGroupKey,
+  liveThinkingGroupKey,
+} from "./ChatMessageList.liveRows";
 
 function textBlock(index: number, text = `Live update ${index}`): StreamingContentBlock {
   return { type: "text", text, seq: index };
@@ -41,6 +45,13 @@ function delegatedTask(toolUseId: string): StreamingTask {
 }
 
 describe("ChatMessageList live transcript rows", () => {
+  it("identifies keys built for live thinking rows", () => {
+    const key = liveThinkingGroupKey({ type: "thinking", text: "Reasoning", blockIndex: 2 }, 0);
+
+    expect(isLiveThinkingGroupKey(key)).toBe(true);
+    expect(isLiveThinkingGroupKey("streaming-text:block-2")).toBe(false);
+  });
+
   it("returns no rows for empty live blocks", () => {
     expect(buildLiveTranscriptRows([], new Map())).toEqual([]);
   });

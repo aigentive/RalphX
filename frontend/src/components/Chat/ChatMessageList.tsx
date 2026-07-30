@@ -45,10 +45,13 @@ import {
 } from "./scroll/controller";
 import {
   buildLiveTranscriptRows,
+  isLiveThinkingGroupKey,
   liveThinkingGroupKey,
   liveToolGroupKey,
+  synchronizeThinkingGroupExpansion,
   type LiveTranscriptRow,
   type StreamingToolUseBlock,
+  type ThinkingGroupIntent,
 } from "./ChatMessageList.liveRows";
 import type { AgentRun } from "@/types/chat-conversation";
 import { ToolActivityGroupToggle } from "./ToolActivityGroupToggle";
@@ -891,6 +894,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       () => new Set(),
     );
     const expandedToolGroupConversationRef = useRef<string | undefined>(conversationId);
+    const thinkingIntentRef = useRef<Map<string, ThinkingGroupIntent>>(new Map());
     const transcriptRootRef = useRef<HTMLDivElement | null>(null);
     const initialPaintReadyFrameRef = useRef<number | null>(null);
     const initialPaintReadyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -900,6 +904,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         return;
       }
       expandedToolGroupConversationRef.current = conversationId;
+      thinkingIntentRef.current.clear();
       setExpandedToolGroupKeys(new Set());
     }, [conversationId]);
 
@@ -988,25 +993,18 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         const next = new Set(current);
         if (next.has(groupKey)) {
           next.delete(groupKey);
+          if (isLiveThinkingGroupKey(groupKey)) {
+            thinkingIntentRef.current.set(groupKey, "collapsed");
+          }
         } else {
           next.add(groupKey);
+          if (isLiveThinkingGroupKey(groupKey)) {
+            thinkingIntentRef.current.set(groupKey, "expanded");
+          }
         }
         return next;
       });
     }, [scrollController]);
-
-    useEffect(() => {
-      const rows = buildLiveTranscriptRows(streamingContentBlocks ?? [], streamingTasks);
-      const latestRunningThinking = [...rows].reverse().find((row) => (
-        row.kind === "thinking" && !row.block.isSettled
-      ));
-      if (latestRunningThinking?.kind === "thinking") {
-        setExpandedToolGroupKeys((current) => {
-          const key = liveThinkingGroupKey(latestRunningThinking.block, latestRunningThinking.index);
-          return current.has(key) ? current : new Set(current).add(key);
-        });
-      }
-    }, [streamingContentBlocks, streamingTasks]);
 
     const cancelInitialPaintReadyJob = useCallback(() => {
       if (initialPaintReadyFrameRef.current !== null) {
@@ -1163,6 +1161,12 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         streamingTasks,
       ],
     );
+
+    useEffect(() => {
+      setExpandedToolGroupKeys((current) =>
+        synchronizeThinkingGroupExpansion(current, liveTranscriptRows, thinkingIntentRef.current),
+      );
+    }, [liveTranscriptRows]);
 
     const hasRenderableStreamingBlocks = useMemo(
       () => liveTranscriptRows.length > 0,

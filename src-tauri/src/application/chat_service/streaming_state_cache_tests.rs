@@ -1,4 +1,5 @@
 use super::*;
+use crate::http_server::types::ActiveStateResponse;
 
 fn cached_streaming_task(tool_use_id: &str) -> CachedStreamingTask {
     CachedStreamingTask {
@@ -53,6 +54,9 @@ async fn test_changing_run_id_discards_stale_transient_projection() {
         .await;
     cache.append_text("conv-123", 0, "stale text").await;
     cache
+        .append_thinking("conv-123", 0, "stale reasoning")
+        .await;
+    cache
         .upsert_tool_call(
             "conv-123",
             CachedToolCall {
@@ -77,6 +81,7 @@ async fn test_changing_run_id_discards_stale_transient_projection() {
     assert_eq!(state.run_id.as_deref(), Some("run-2"));
     assert!(state.partial_text.is_empty());
     assert!(state.partial_text_segments.is_empty());
+    assert!(state.partial_thinking_segments.is_empty());
     assert!(state.tool_calls.is_empty());
     assert!(state.streaming_tasks.is_empty());
 }
@@ -361,6 +366,30 @@ async fn test_serialize_produces_expected_json() {
     assert!(json.contains("\"toolu_001\""));
     assert!(json.contains("\"running\""));
     assert!(json.contains("\"Hello\""));
+}
+
+#[tokio::test]
+async fn test_active_state_response_serializes_partial_thinking_segments() {
+    let cache = StreamingStateCache::new();
+    cache.append_thinking("conv-123", 0, "First thought").await;
+    cache.append_thinking("conv-123", 1, "Second thought").await;
+
+    let cached_state = cache.get("conv-123").await.unwrap();
+    let response = ActiveStateResponse {
+        is_active: true,
+        run_id: cached_state.run_id,
+        tool_calls: Vec::new(),
+        streaming_tasks: Vec::new(),
+        partial_text: cached_state.partial_text,
+        partial_text_segments: cached_state.partial_text_segments,
+        partial_thinking_segments: cached_state.partial_thinking_segments,
+    };
+
+    let json = serde_json::to_value(&response).unwrap();
+    assert_eq!(
+        json["partial_thinking_segments"],
+        serde_json::json!(["First thought", "Second thought"])
+    );
 }
 
 #[tokio::test]

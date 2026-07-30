@@ -1910,6 +1910,8 @@ pub struct ActiveStateResponse {
     pub partial_text: String,
     /// Partial text content grouped by its text-block ordinal.
     pub partial_text_segments: Vec<String>,
+    /// Partial thinking content grouped by its thinking-block ordinal.
+    pub partial_thinking_segments: Vec<String>,
 }
 
 /// A tool call in the active state response.

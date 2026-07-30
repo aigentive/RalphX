@@ -204,7 +204,8 @@ export function useChatRecovery({
         const hasStreamingTasks = activeState.streaming_tasks.length > 0;
         const hasToolCalls = activeState.tool_calls.length > 0;
         const hasPartialText = activeState.partial_text.trim().length > 0;
-        if (!hasStreamingTasks && !hasToolCalls && !hasPartialText) return;
+        const hasPartialThinking = activeState.partial_thinking_segments?.some((segment) => segment.trim().length > 0) ?? false;
+        if (!hasStreamingTasks && !hasToolCalls && !hasPartialText && !hasPartialThinking) return;
 
         if (persistedStreamingContentBlocks.length === 0 && activeState.runId != null) {
           hydrationWithoutAnchorsRef.current = {
@@ -248,9 +249,17 @@ export function useChatRecovery({
               : applyTranscriptInput(transcript, {
                   kind: "partialText", runId, text: activeState.partial_text,
                 });
+            transcript = applyTranscriptInput(transcript, {
+              kind: "thinkingSegments", runId, segments: activeState.partial_thinking_segments ?? [],
+            });
             return preserveBlocksIfUnchanged(prev, mergeActiveStreamingContentBlocks(
               renderTranscriptSlots(transcript),
-              { ...activeState, partial_text: "", partial_text_segments: [] },
+              {
+                ...activeState,
+                partial_text: "",
+                partial_text_segments: [],
+                partial_thinking_segments: [],
+              },
             ));
           });
         }

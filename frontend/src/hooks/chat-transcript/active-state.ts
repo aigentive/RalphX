@@ -325,6 +325,7 @@ export function mergeActiveStreamingContentBlocks(
   activeState: {
     partial_text: string;
     partial_text_segments?: string[];
+    partial_thinking_segments?: string[];
     tool_calls: unknown[];
     streaming_tasks: ActiveStreamingTaskResponse[];
   },

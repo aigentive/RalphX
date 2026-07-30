@@ -202,6 +202,7 @@ impl StreamingStateCache {
             state.streaming_tasks.clear();
             state.partial_text.clear();
             state.partial_text_segments.clear();
+            state.partial_thinking_segments.clear();
         }
         state.run_id = run_id;
         state.updated_at = Utc::now();

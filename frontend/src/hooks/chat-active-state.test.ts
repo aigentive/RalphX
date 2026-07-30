@@ -807,6 +807,46 @@ describe("chat-active-state helpers", () => {
     ]);
   });
 
+  it("projects persisted thinking at its absolute timeline ordinal", () => {
+    const messages = [
+      messageFixture({
+        id: "message-text-before",
+        runId: "run-new",
+        timelineStatus: "streaming",
+        timelineBlockIndex: 0,
+        contentBlocks: [{ type: "text", text: "Before the tool. " }],
+      }),
+      messageFixture({
+        id: "message-tool",
+        runId: "run-new",
+        timelineStatus: "streaming",
+        timelineBlockIndex: 1,
+        contentBlocks: [{ type: "tool_use", id: "toolu_read", name: "Read", arguments: {} }],
+      }),
+      messageFixture({
+        id: "message-thinking",
+        runId: "run-new",
+        timelineStatus: "streaming",
+        timelineBlockIndex: 2,
+        contentBlocks: [{ type: "thinking", text: "Checking the result", durationMs: 200, isSettled: true }],
+      }),
+      messageFixture({
+        id: "message-text-after",
+        runId: "run-new",
+        timelineStatus: "streaming",
+        timelineBlockIndex: 3,
+        contentBlocks: [{ type: "text", text: "After the tool." }],
+      }),
+    ];
+
+    expect(projectPersistedStreamingContentBlocks(messages, "run-new")).toEqual([
+      { type: "text", text: "Before the tool. ", blockIndex: 0 },
+      { type: "tool_use", toolCall: { id: "toolu_read", name: "Read", arguments: {} } },
+      { type: "thinking", text: "Checking the result", blockIndex: 2, durationMs: 200, isSettled: true },
+      { type: "text", text: "After the tool.", blockIndex: 3 },
+    ]);
+  });
+
   it("merges indexed persisted text anchors but preserves unindexed append behavior", () => {
     expect(seedPersistedAnchors(
       [{ type: "text", text: "Hello wor", blockIndex: 0 }],

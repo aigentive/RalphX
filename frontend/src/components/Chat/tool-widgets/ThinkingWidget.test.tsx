@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, act } from "@testing-library/react";
+import { render, screen, act, fireEvent } from "@testing-library/react";
 import { ThinkingWidget } from "./ThinkingWidget";
 
 describe("ThinkingWidget", () => {
@@ -58,5 +58,26 @@ describe("ThinkingWidget", () => {
 
     const body = screen.getByTestId("thinking-scroll-body");
     expect(body.style.fontSize).toBe("11px");
+  });
+
+  it("keeps scrolling contained within its own overflow node", async () => {
+    render(<div data-testid="transcript-scroller"><ThinkingWidget text="scrollable thought" /></div>);
+    await act(() => flushHydration());
+
+    const transcript = screen.getByTestId("transcript-scroller");
+    const body = screen.getByTestId("thinking-scroll-body");
+    Object.defineProperties(body, {
+      clientHeight: { configurable: true, value: 10 },
+      scrollHeight: { configurable: true, value: 100 },
+    });
+    Object.defineProperty(transcript, "scrollTop", {
+      configurable: true,
+      get: () => 0,
+      set: () => { throw new Error("thinking must not scroll the transcript"); },
+    });
+
+    fireEvent.scroll(body, { target: { scrollTop: 40 } });
+
+    expect(body.scrollTop).toBe(40);
   });
 });

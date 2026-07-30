@@ -13,6 +13,7 @@ export function projectPersistedStreamingContentBlocks(
   activeRunId?: string,
 ): StreamingContentBlock[] {
   let textBlockIndex = 0;
+  let thinkingBlockIndex = 0;
   return messages.flatMap((message) => {
     if (message.timelineStatus !== "streaming") return [];
     if (activeRunId != null && message.runId != null && message.runId !== activeRunId) return [];
@@ -24,6 +25,17 @@ export function projectPersistedStreamingContentBlocks(
           type: "text",
           text: block.text ?? "",
           blockIndex: message.timelineBlockIndex ?? legacyBlockIndex,
+          ...(seq != null ? { seq } : {}),
+        }];
+      }
+      if (block.type === "thinking") {
+        const legacyBlockIndex = thinkingBlockIndex++;
+        return [{
+          type: "thinking",
+          text: block.text ?? "",
+          blockIndex: message.timelineBlockIndex ?? legacyBlockIndex,
+          ...(block.durationMs != null ? { durationMs: block.durationMs } : {}),
+          ...(block.isSettled != null ? { isSettled: block.isSettled } : {}),
           ...(seq != null ? { seq } : {}),
         }];
       }

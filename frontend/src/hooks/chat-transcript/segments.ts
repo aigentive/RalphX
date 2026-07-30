@@ -22,6 +22,7 @@ export type TranscriptInput =
   | { kind: "chunk"; runId: string | null; blockIndex?: number; text: string; seq?: number; receivedAt?: number; appendToPrevious: boolean }
   | { kind: "thinking"; runId: string | null; blockIndex?: number; text: string; durationMs?: number; isSettled?: boolean; seq?: number; receivedAt?: number; appendToPrevious: boolean }
   | { kind: "segments"; runId: string | null; segments: readonly string[] }
+  | { kind: "thinkingSegments"; runId: string | null; segments: readonly string[] }
   /**
    * Legacy cumulative `partial_text` from the active-state cache. It carries no
    * segment identity, so it reconciles against the in-flight (last) text slot.
@@ -144,6 +145,24 @@ export function applyTranscriptInput(state: LiveTranscriptState, input: Transcri
         ...slot,
         blockIndex,
         text: disjoint ? text : mergeStreamingTextSnapshot(text, slot.text),
+      };
+    });
+    return next;
+  }
+  if (input.kind === "thinkingSegments") {
+    input.segments.forEach((text, blockIndex) => {
+      if (!text) return;
+      const at = next.slots.findIndex((slot) => slot.kind === "block" && slot.block.type === "thinking"
+        && slot.block.blockIndex === blockIndex);
+      if (at < 0) {
+        next.slots.push({ kind: "block", block: { type: "thinking", text, blockIndex } });
+        return;
+      }
+      const slot = next.slots[at];
+      if (slot?.kind !== "block" || slot.block.type !== "thinking") return;
+      next.slots[at] = {
+        kind: "block",
+        block: { ...slot.block, text: mergeStreamingTextSnapshot(text, slot.block.text) },
       };
     });
     return next;
