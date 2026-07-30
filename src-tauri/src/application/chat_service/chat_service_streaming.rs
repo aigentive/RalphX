@@ -37,10 +37,10 @@ use crate::infrastructure::agents::claude::{
 };
 use crate::infrastructure::agents::{
     extract_codex_agent_message, extract_codex_command_execution, extract_codex_error,
-    extract_codex_file_change_snapshot, extract_codex_thread_id, extract_codex_tool_call_snapshot,
-    extract_codex_usage, parse_codex_event_line, CodexErrorSource, CodexFileChange,
-    CodexFileChangeSnapshot, CodexToolCallPhase, CodexToolCallSnapshot, CodexUsage,
-    CodexUsageSource,
+    extract_codex_file_change_snapshot, extract_codex_reasoning, extract_codex_thread_id,
+    extract_codex_tool_call_snapshot, extract_codex_usage, parse_codex_event_line,
+    CodexErrorSource, CodexFileChange, CodexFileChangeSnapshot, CodexToolCallPhase,
+    CodexToolCallSnapshot, CodexUsage, CodexUsageSource,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -3674,6 +3674,51 @@ async fn process_codex_stream_background<R: Runtime>(
                     let _ = handle.emit(
                         events::AGENT_CHUNK,
                         AgentChunkPayload {
+                            text,
+                            run_id: agent_run_id.clone(),
+                            block_index: Some(block_position),
+                            conversation_id: conversation_id_str.clone(),
+                            context_type: context_type_str.clone(),
+                            context_id: context_id_str.clone(),
+                            seq: stream_seq,
+                            append_to_previous: false,
+                        },
+                    );
+                    stream_seq += 1;
+                }
+            }
+
+            if let Some(text) = extract_codex_reasoning(&event) {
+                let block_position = current_text_block_position(&content_blocks);
+                content_blocks.push(ContentBlockItem::Thinking {
+                    text: text.clone(),
+                    duration_ms: None,
+                });
+                streaming_state_cache
+                    .append_thinking(&conversation_id_str, block_position as usize, &text)
+                    .await;
+
+                persist_assistant_message_snapshot(
+                    &chat_message_repo,
+                    &assistant_message_id,
+                    &response_text,
+                    &tool_calls,
+                    &content_blocks,
+                )
+                .await;
+                persist_timeline_snapshot(
+                    &chat_timeline_repo,
+                    &conversation_id_str,
+                    &assistant_message_id,
+                    &content_blocks,
+                    ChatTimelineItemStatus::Streaming,
+                )
+                .await;
+
+                if let Some(ref handle) = app_handle {
+                    let _ = handle.emit(
+                        events::AGENT_THINKING,
+                        AgentThinkingPayload {
                             text,
                             run_id: agent_run_id.clone(),
                             block_index: Some(block_position),

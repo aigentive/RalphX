@@ -77,12 +77,22 @@ pub struct CodexFileChange {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CodexReasoningSummary {
+    #[serde(rename = "type")]
+    pub summary_type: Option<String>,
+    #[serde(default)]
+    pub text: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CodexItem {
     pub id: Option<String>,
     #[serde(rename = "type")]
     pub item_type: String,
     #[serde(default)]
     pub text: Option<String>,
+    #[serde(default)]
+    pub summary: Option<Vec<CodexReasoningSummary>>,
     #[serde(default)]
     pub server: Option<String>,
     #[serde(default)]
@@ -160,35 +170,68 @@ pub fn parse_codex_event_line(line: &str) -> Option<CodexStreamEvent> {
         return None;
     }
 
-    let value: serde_json::Value = serde_json::from_str(trimmed).ok()?;
-    if let Some(normalized) = normalize_codex_event_msg_agent_message(&value) {
+    let value: serde_json::Value = match serde_json::from_str(trimmed) {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::debug!(%error, line = %trimmed, "Ignoring malformed Codex event line");
+            return None;
+        }
+    };
+    if let Some(normalized) = normalize_codex_event_msg(&value) {
         return Some(normalized);
     }
 
-    serde_json::from_value(value).ok()
+    let event: CodexStreamEvent = match serde_json::from_value(value) {
+        Ok(event) => event,
+        Err(error) => {
+            tracing::debug!(%error, line = %trimmed, "Ignoring unparseable Codex event line");
+            return None;
+        }
+    };
+    if !matches!(
+        event.event_type.as_str(),
+        "thread.started"
+            | "turn.started"
+            | "turn.completed"
+            | "turn.failed"
+            | "item.started"
+            | "item.updated"
+            | "item.completed"
+    ) {
+        tracing::debug!(event_type = %event.event_type, "Ignoring unrecognized Codex event type");
+    }
+    Some(event)
 }
 
-fn normalize_codex_event_msg_agent_message(value: &serde_json::Value) -> Option<CodexStreamEvent> {
+fn normalize_codex_event_msg(value: &serde_json::Value) -> Option<CodexStreamEvent> {
     if value.get("type")?.as_str()? != "event_msg" {
         return None;
     }
 
-    let msg = value.get("msg")?;
-    if msg.get("type")?.as_str()? != "agent_message" {
+    let envelope = value.get("msg").or_else(|| value.get("payload"))?;
+    let item_type = envelope.get("type")?.as_str()?;
+    if !matches!(
+        item_type,
+        "agent_message" | "agent_reasoning" | "agent_reasoning_delta"
+    ) {
         return None;
     }
 
-    let text = msg
-        .get("message")
-        .or_else(|| msg.get("text"))
+    let text = envelope
+        .get(if item_type == "agent_message" {
+            "message"
+        } else {
+            "text"
+        })
+        .or_else(|| envelope.get("text"))
         .and_then(|value| value.as_str())?
         .to_string();
-    let id = msg
+    let id = envelope
         .get("id")
         .or_else(|| value.get("id"))
         .and_then(|value| value.as_str())
         .map(str::to_string);
-    let thread_id = msg
+    let thread_id = envelope
         .get("thread_id")
         .or_else(|| value.get("thread_id"))
         .and_then(|value| value.as_str())
@@ -199,8 +242,9 @@ fn normalize_codex_event_msg_agent_message(value: &serde_json::Value) -> Option<
         thread_id,
         item: Some(CodexItem {
             id,
-            item_type: "agent_message".to_string(),
+            item_type: item_type.to_string(),
             text: Some(text),
+            summary: None,
             server: None,
             tool: None,
             arguments: None,
@@ -231,6 +275,33 @@ pub fn extract_codex_agent_message(event: &CodexStreamEvent) -> Option<String> {
     }
 
     item.text.clone()
+}
+
+pub fn extract_codex_reasoning(event: &CodexStreamEvent) -> Option<String> {
+    let item = event.item.as_ref()?;
+    let is_reasoning = matches!(
+        item.item_type.as_str(),
+        "agent_reasoning" | "agent_reasoning_delta"
+    ) && event.event_type == "item.completed"
+        || item.item_type == "reasoning" && event.event_type.starts_with("item.");
+    if !is_reasoning {
+        return None;
+    }
+
+    item.text
+        .clone()
+        .filter(|text| !text.is_empty())
+        .or_else(|| {
+            item.summary.as_ref().and_then(|summary| {
+                let text = summary
+                    .iter()
+                    .filter_map(|entry| entry.text.as_deref())
+                    .filter(|text| !text.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                (!text.is_empty()).then_some(text)
+            })
+        })
 }
 
 pub fn extract_codex_thread_id(event: &CodexStreamEvent) -> Option<String> {
@@ -428,6 +499,7 @@ mod tests {
             id: None,
             item_type: item_type.to_string(),
             text: None,
+            summary: None,
             server: None,
             tool: None,
             arguments: None,
@@ -491,6 +563,60 @@ mod tests {
         assert_eq!(
             extract_codex_agent_message(&event).as_deref(),
             Some("Working from Codex.")
+        );
+    }
+
+    #[test]
+    fn parse_event_msg_payload_agent_reasoning_normalizes_to_thinking() {
+        let event = parse_codex_event_line(
+            r#"{"timestamp":"2026-07-30T00:00:00Z","type":"event_msg","payload":{"type":"agent_reasoning","text":"**Checking git status**"}}"#,
+        )
+        .expect("event_msg payload reasoning should parse");
+
+        assert_eq!(event.event_type, "item.completed");
+        assert_eq!(
+            extract_codex_reasoning(&event).as_deref(),
+            Some("**Checking git status**")
+        );
+    }
+
+    #[test]
+    fn parse_event_msg_msg_agent_reasoning_normalizes_to_thinking() {
+        let event = parse_codex_event_line(
+            r#"{"type":"event_msg","msg":{"type":"agent_reasoning","text":"**Inspecting files**"}}"#,
+        )
+        .expect("event_msg msg reasoning should parse");
+
+        assert_eq!(event.event_type, "item.completed");
+        assert_eq!(
+            extract_codex_reasoning(&event).as_deref(),
+            Some("**Inspecting files**")
+        );
+    }
+
+    #[test]
+    fn extract_codex_reasoning_supports_flat_item_text() {
+        let event = parse_codex_event_line(
+            r#"{"type":"item.completed","item":{"type":"reasoning","text":"Checking repository status"}}"#,
+        )
+        .expect("flat reasoning item should parse");
+
+        assert_eq!(
+            extract_codex_reasoning(&event).as_deref(),
+            Some("Checking repository status")
+        );
+    }
+
+    #[test]
+    fn extract_codex_reasoning_supports_summary_item_text() {
+        let event = parse_codex_event_line(
+            r#"{"type":"item.completed","item":{"type":"reasoning","summary":[{"type":"summary_text","text":"Checking repository"},{"type":"summary_text","text":"status"}]}}"#,
+        )
+        .expect("summary reasoning item should parse");
+
+        assert_eq!(
+            extract_codex_reasoning(&event).as_deref(),
+            Some("Checking repository\nstatus")
         );
     }
 
@@ -692,6 +818,7 @@ mod tests {
                 id: Some("tool-1".to_string()),
                 item_type: "mcp_tool_call".to_string(),
                 text: None,
+                summary: None,
                 server: Some("ralphx".to_string()),
                 tool: Some("list_mcp_resources".to_string()),
                 arguments: None,
@@ -730,6 +857,7 @@ mod tests {
                 id: Some("tool-2".to_string()),
                 item_type: "mcp_tool_call".to_string(),
                 text: None,
+                summary: None,
                 server: Some("ralphx".to_string()),
                 tool: Some("delegate_start".to_string()),
                 arguments: None,

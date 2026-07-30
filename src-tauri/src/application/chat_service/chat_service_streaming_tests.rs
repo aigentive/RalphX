@@ -1238,6 +1238,64 @@ async fn codex_event_msg_agent_messages_persist_to_task_execution_transcript() {
 }
 
 #[tokio::test]
+async fn codex_reasoning_persists_as_thinking_without_entering_response_text() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let context_id = IdeationSessionId::new();
+    let pre_assistant = create_assistant_message(
+        ChatContextType::Ideation,
+        context_id.as_str(),
+        "",
+        conversation_id.clone(),
+        &[],
+        &[],
+    );
+    let pre_assistant_id = pre_assistant.id.as_str().to_string();
+    state
+        .chat_message_repo
+        .create(pre_assistant)
+        .await
+        .expect("seed assistant message");
+
+    let child = spawn_jsonl_process(&[
+        r#"{"type":"event_msg","payload":{"type":"agent_reasoning","text":"Checking git status"}}"#,
+        r#"{"type":"event_msg","msg":{"type":"agent_message","message":"Working tree is clean."}}"#,
+    ])
+    .await;
+
+    let outcome = process_codex_stream_background::<MockRuntime>(
+        child,
+        ChatContextType::Ideation,
+        context_id.as_str(),
+        &conversation_id,
+        None::<tauri::AppHandle<MockRuntime>>,
+        None,
+        None,
+        Some(state.chat_message_repo.clone()),
+        Some(state.chat_timeline_repo.clone()),
+        Some(pre_assistant_id),
+        None,
+        CancellationToken::new(),
+        StreamingStateCache::new(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        false,
+        false,
+    )
+    .await
+    .expect("Codex stream should complete");
+
+    assert_eq!(outcome.response_text, "Working tree is clean.");
+    assert!(matches!(
+        outcome.content_blocks.first(),
+        Some(ContentBlockItem::Thinking { text, .. }) if text == "Checking git status"
+    ));
+}
+
+#[tokio::test]
 async fn claude_stream_turn_complete_persists_assistant_blocks_to_timeline() {
     // Regression: when a project/task chat Claude turn ends via TurnComplete (result event),
     // the assistant content must land in BOTH chat_messages and chat_message_blocks.
