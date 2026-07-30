@@ -1028,3 +1028,60 @@ fn test_system_without_subtype_still_works() {
     assert_eq!(events.len(), 1);
     assert!(matches!(&events[0], StreamEvent::SessionId(id) if id == "sess-regular"));
 }
+
+/// With `--include-partial-messages`, text arrives only as deltas and the dedup
+/// guard suppresses the verbose Assistant summary — including its
+/// `content_blocks` push. `content_block_stop` must therefore seal the streamed
+/// text into `content_blocks`, or a delta-streamed turn persists no timeline
+/// text at all (the chat UI renders the turn as unanswered).
+#[test]
+fn test_streamed_text_reaches_content_blocks_via_content_block_stop() {
+    let mut processor = StreamProcessor::new();
+
+    for piece in ["Streamed ", "answer ", "text."] {
+        processor.process_message(StreamMessage::ContentBlockDelta {
+            index: Some(0),
+            delta: ContentDelta {
+                delta_type: "text_delta".to_string(),
+                text: Some(piece.to_string()),
+                partial_json: None,
+            },
+        });
+    }
+
+    processor.process_message(StreamMessage::ContentBlockStop { index: Some(0) });
+
+    // The verbose summary for the same message is deduped away.
+    processor.process_message(StreamMessage::Assistant {
+        message: AssistantMessage {
+            content: vec![AssistantContent::Text {
+                text: "Streamed answer text.".to_string(),
+            }],
+            stop_reason: Some("end_turn".to_string()),
+            usage: None,
+        },
+        session_id: None,
+    });
+
+    let result = processor.finish();
+    let text_blocks: Vec<&String> = result
+        .content_blocks
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlockItem::Text { text } => Some(text),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(
+        text_blocks.len(),
+        1,
+        "streamed text must land in content_blocks exactly once, got {:?}",
+        result.content_blocks
+    );
+    assert_eq!(text_blocks[0], "Streamed answer text.");
+    assert_eq!(
+        result.response_text, "Streamed answer text.",
+        "the dedup guard must still keep response_text single-copy"
+    );
+}

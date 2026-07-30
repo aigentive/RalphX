@@ -225,6 +225,8 @@ pub struct StreamTimeoutsConfig {
     pub review_parse_stall_secs: u64,
     pub default_line_read_secs: u64,
     pub default_parse_stall_secs: u64,
+    #[serde(default = "default_streaming_persistence_debounce_ms")]
+    pub streaming_persistence_debounce_ms: u64,
     #[serde(default = "default_max_wall_clock_secs")]
     pub max_wall_clock_secs: u64,
     #[serde(default = "default_completion_grace_secs")]
@@ -247,6 +249,10 @@ pub struct StreamTimeoutsConfig {
 
 fn default_max_wall_clock_secs() -> u64 {
     1800
+}
+
+fn default_streaming_persistence_debounce_ms() -> u64 {
+    1_000
 }
 
 fn default_completion_grace_secs() -> u64 {
@@ -290,6 +296,7 @@ impl Default for StreamTimeoutsConfig {
             review_parse_stall_secs: 120,
             default_line_read_secs: 600,
             default_parse_stall_secs: 180,
+            streaming_persistence_debounce_ms: default_streaming_persistence_debounce_ms(),
             max_wall_clock_secs: 1800,
             completion_grace_secs: 30,
             launch_reservation_lease_secs: 30,
@@ -784,6 +791,10 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
     env_u64!(
         cfg.stream.default_parse_stall_secs,
         "RALPHX_STREAM_DEFAULT_PARSE_STALL_SECS"
+    );
+    env_u64!(
+        cfg.stream.streaming_persistence_debounce_ms,
+        "RALPHX_STREAM_STREAMING_PERSISTENCE_DEBOUNCE_MS"
     );
     env_u64!(
         cfg.stream.max_wall_clock_secs,

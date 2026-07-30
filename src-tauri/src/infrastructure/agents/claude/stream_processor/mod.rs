@@ -219,6 +219,15 @@ impl StreamProcessor {
                     // (thinking content was already emitted as chunks)
                     self.in_thinking_block = false;
                     self.current_thinking_block.clear();
+                } else if !self.current_text_block.is_empty() {
+                    // Seal the delta-streamed text block here rather than waiting
+                    // for finish(). With --include-partial-messages the verbose
+                    // assistant summary is suppressed by the dedup guard below,
+                    // so this is the only path that puts streamed text into
+                    // content_blocks — and TurnComplete persists from there.
+                    self.content_blocks.push(ContentBlockItem::Text {
+                        text: std::mem::take(&mut self.current_text_block),
+                    });
                 }
             }
             StreamMessage::Result {

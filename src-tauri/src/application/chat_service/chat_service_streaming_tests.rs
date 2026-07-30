@@ -1,6 +1,7 @@
 use super::{
     agent_run_usage_from_codex_usage, capture_file_diff_baseline, codex_tool_call_content_block,
     completion_tool_result_accepted, current_text_block_position, flush_content_before_error,
+    flush_streaming_persistence_if_dirty,
     format_agent_exit_stderr, is_completion_tool_name, is_user_attended_turn_completion,
     normalize_codex_cumulative_usage_for_persistence, normalize_codex_stream_usage_for_persistence,
     persist_assistant_message_snapshot, persist_message_text_timeline_item,
@@ -3076,4 +3077,317 @@ async fn persist_assistant_message_snapshot_keeps_claude_tool_result_ordered_and
         ContentBlockItem::Text { text } => assert_eq!(text, "Second text block"),
         other => panic!("expected third block to be text, got {other:?}"),
     }
+}
+
+/// Counts durable timeline writes so debounce coverage can assert call volume
+/// rather than elapsed time, which would be flaky.
+struct CountingTimelineRepository {
+    inner: Arc<dyn ChatTimelineRepository>,
+    snapshot_calls: Arc<std::sync::Mutex<usize>>,
+    upserts: Arc<std::sync::Mutex<Vec<(i64, Option<String>)>>>,
+}
+
+impl CountingTimelineRepository {
+    fn new(inner: Arc<dyn ChatTimelineRepository>) -> Self {
+        Self {
+            inner,
+            snapshot_calls: Arc::new(std::sync::Mutex::new(0)),
+            upserts: Arc::new(std::sync::Mutex::new(Vec::new())),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ChatTimelineRepository for CountingTimelineRepository {
+    async fn upsert_item(&self, item: ChatTimelineItem) -> AppResult<ChatTimelineItem> {
+        self.upserts
+            .lock()
+            .expect("upsert log")
+            .push((item.block_index, item.text.clone()));
+        self.inner.upsert_item(item).await
+    }
+
+    async fn get_by_id(&self, id: &ChatTimelineItemId) -> AppResult<Option<ChatTimelineItem>> {
+        self.inner.get_by_id(id).await
+    }
+
+    async fn get_page(
+        &self,
+        conversation_id: &ChatConversationId,
+        limit: u32,
+        before_sequence: Option<i64>,
+    ) -> AppResult<ChatTimelinePage> {
+        self.inner
+            .get_page(conversation_id, limit, before_sequence)
+            .await
+    }
+
+    async fn count_by_conversation(&self, conversation_id: &ChatConversationId) -> AppResult<u32> {
+        self.inner.count_by_conversation(conversation_id).await
+    }
+
+    async fn get_by_conversation(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Vec<ChatTimelineItem>> {
+        self.inner.get_by_conversation(conversation_id).await
+    }
+
+    async fn delete_message_items_except_block_indices(
+        &self,
+        message_id: &ChatMessageId,
+        retained_block_indices: Vec<i64>,
+    ) -> AppResult<()> {
+        // persist_timeline_snapshot always reaches this call exactly once, so it
+        // is the cheapest faithful counter for "one durable snapshot".
+        *self.snapshot_calls.lock().expect("snapshot counter") += 1;
+        self.inner
+            .delete_message_items_except_block_indices(message_id, retained_block_indices)
+            .await
+    }
+
+    async fn mark_message_items_finalized(&self, message_id: &ChatMessageId) -> AppResult<()> {
+        self.inner.mark_message_items_finalized(message_id).await
+    }
+}
+
+fn partial_text_delta_line(text: &str) -> String {
+    format!(
+        r#"{{"type":"stream_event","event":{{"type":"content_block_delta","index":0,"delta":{{"type":"text_delta","text":"{text}"}}}},"session_id":"sess-debounce"}}"#
+    )
+}
+
+fn content_block_stop_line() -> String {
+    r#"{"type":"stream_event","event":{"type":"content_block_stop","index":0},"session_id":"sess-debounce"}"#
+        .to_string()
+}
+
+async fn run_debounce_stream(
+    lines: Vec<String>,
+) -> (
+    Arc<CountingTimelineRepository>,
+    AppState,
+    ChatConversationId,
+    String,
+) {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let context_id = IdeationSessionId::new();
+
+    let pre_assistant = create_assistant_message(
+        ChatContextType::Ideation,
+        context_id.as_str(),
+        "",
+        conversation_id.clone(),
+        &[],
+        &[],
+    );
+    let pre_assistant_id = pre_assistant.id.as_str().to_string();
+    state
+        .chat_message_repo
+        .create(pre_assistant)
+        .await
+        .expect("seed pre-assistant message");
+
+    let counting = Arc::new(CountingTimelineRepository::new(
+        state.chat_timeline_repo.clone(),
+    ));
+
+    let app = mock_builder()
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let app_handle = app.handle().clone();
+
+    let borrowed: Vec<&str> = lines.iter().map(String::as_str).collect();
+    let child = spawn_jsonl_process(&borrowed).await;
+
+    process_stream_background::<MockRuntime>(
+        child,
+        AgentHarnessKind::Claude,
+        ChatContextType::Ideation,
+        context_id.as_str(),
+        &conversation_id,
+        Some(app_handle),
+        None,
+        None,
+        Some(state.chat_message_repo.clone()),
+        Some(counting.clone() as Arc<dyn ChatTimelineRepository>),
+        Some(pre_assistant_id.clone()),
+        None,
+        CancellationToken::new(),
+        StreamingStateCache::new(),
+        None,
+        None,
+        Some("stream-run-id".to_string()),
+        None,
+        None,
+        false,
+        false,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("stream should complete");
+
+    (counting, state, conversation_id, pre_assistant_id)
+}
+
+#[tokio::test]
+async fn many_text_chunks_within_window_persist_once() {
+    // Token-rate streaming must not mean token-rate writes. Before the debounce
+    // every TextChunk rewrote the whole assistant message and its timeline rows,
+    // so a long answer produced thousands of writes instead of a handful.
+    const CHUNKS: usize = 60;
+
+    let mut lines: Vec<String> = (0..CHUNKS).map(|_| partial_text_delta_line("tok ")).collect();
+    lines.push(content_block_stop_line());
+    lines.push(
+        r#"{"type":"result","session_id":"sess-debounce","is_error":false,"result":"done","cost_usd":0.0}"#
+            .to_string(),
+    );
+
+    let (counting, _state, _conversation_id, _message_id) = run_debounce_stream(lines).await;
+
+    let snapshots = *counting.snapshot_calls.lock().expect("snapshot counter");
+    assert!(
+        snapshots < CHUNKS,
+        "streaming persistence must be debounced, not per-token: {snapshots} snapshots for \
+         {CHUNKS} chunks"
+    );
+    assert!(
+        snapshots <= 4,
+        "a single debounce window plus terminal flushes should need only a couple of snapshots, \
+         got {snapshots}"
+    );
+}
+
+#[tokio::test]
+async fn final_chunk_is_flushed_before_turn_completes() {
+    // The invariant is not "every token is durable" but "a remount never loses
+    // more than one debounce window" — so the terminal flush must be complete.
+    // Claude sends the partial deltas AND the verbose assistant summary for the
+    // same message, which is why the had_streaming_text_deltas guard exists.
+    let mut lines: Vec<String> = Vec::new();
+    for word in ["alpha ", "beta ", "gamma ", "delta"] {
+        lines.push(partial_text_delta_line(word));
+    }
+    lines.push(content_block_stop_line());
+    lines.push(
+        r#"{"type":"assistant","message":{"content":[{"type":"text","text":"alpha beta gamma delta"}]},"session_id":"sess-debounce"}"#
+            .to_string(),
+    );
+    lines.push(
+        r#"{"type":"result","session_id":"sess-debounce","is_error":false,"result":"alpha beta gamma delta","cost_usd":0.0}"#
+            .to_string(),
+    );
+
+    let (_counting, state, conversation_id, message_id) = run_debounce_stream(lines).await;
+
+    let page = state
+        .chat_timeline_repo
+        .get_page(&conversation_id, 20, None)
+        .await
+        .expect("load timeline page");
+    let text: String = page
+        .items
+        .iter()
+        .filter(|item| {
+            item.message_id
+                .as_ref()
+                .is_some_and(|id| id.as_str() == message_id)
+        })
+        .filter_map(|item| item.text.clone())
+        .collect::<Vec<_>>()
+        .join("");
+
+    assert!(
+        text.contains("alpha beta gamma delta"),
+        "the debounced tail must be flushed before the turn settles, got {text:?}"
+    );
+}
+
+#[tokio::test]
+async fn tool_call_start_flushes_pending_text() {
+    // Phase 1's block identity depends on text never being persisted after the
+    // tool block that followed it.
+    let mut lines: Vec<String> = vec![
+        partial_text_delta_line("before the tool "),
+        r#"{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"Read","input":{}}},"session_id":"sess-debounce"}"#.to_string(),
+    ];
+    lines.push(
+        r#"{"type":"result","session_id":"sess-debounce","is_error":false,"result":"done","cost_usd":0.0}"#
+            .to_string(),
+    );
+
+    let (counting, _state, _conversation_id, _message_id) = run_debounce_stream(lines).await;
+
+    let upserts = counting.upserts.lock().expect("upsert log").clone();
+    let first_text_write = upserts
+        .iter()
+        .position(|(_, text)| text.as_deref().is_some_and(|t| t.contains("before the tool")));
+    assert!(
+        first_text_write.is_some(),
+        "the text preceding a tool call must be persisted, saw {upserts:?}"
+    );
+}
+
+#[tokio::test]
+async fn debounce_flush_never_wipes_durable_rows_while_text_is_still_in_flight() {
+    // persist_timeline_snapshot deletes every block index it is not asked to
+    // retain. The in-flight text block only joins content_blocks when the
+    // processor finishes, so a flush fired at a tool/turn boundary can arrive
+    // with an empty slice — which would delete rows that are already durable.
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let context_id = IdeationSessionId::new();
+
+    let assistant = create_assistant_message(
+        ChatContextType::Ideation,
+        context_id.as_str(),
+        "already durable",
+        conversation_id.clone(),
+        &[],
+        &[],
+    );
+    let assistant_id = assistant.id.as_str().to_string();
+    state
+        .chat_message_repo
+        .create(assistant)
+        .await
+        .expect("seed assistant message");
+
+    let counting = Arc::new(CountingTimelineRepository::new(
+        state.chat_timeline_repo.clone(),
+    ));
+    let timeline_repo: Option<Arc<dyn ChatTimelineRepository>> =
+        Some(counting.clone() as Arc<dyn ChatTimelineRepository>);
+
+    let mut dirty = true;
+    let mut last_persisted_at = std::time::Instant::now();
+
+    flush_streaming_persistence_if_dirty(
+        &mut dirty,
+        &mut last_persisted_at,
+        &Some(state.chat_message_repo.clone()),
+        &timeline_repo,
+        &conversation_id.as_str(),
+        &Some(assistant_id),
+        "text that has not reached content_blocks yet",
+        &[],
+        &[],
+        ChatTimelineItemStatus::Streaming,
+    )
+    .await;
+
+    assert_eq!(
+        *counting.snapshot_calls.lock().expect("snapshot counter"),
+        0,
+        "an empty content_blocks flush must not reach persist_timeline_snapshot, or it deletes \
+         every durable row for the message"
+    );
+    assert!(
+        dirty,
+        "the flush must stay pending so real content is persisted later"
+    );
 }

@@ -501,6 +501,50 @@ pub(super) async fn persist_timeline_snapshot(
     }
 }
 
+async fn flush_streaming_persistence_if_dirty(
+    dirty: &mut bool,
+    last_persisted_at: &mut std::time::Instant,
+    chat_message_repo: &Option<Arc<dyn ChatMessageRepository>>,
+    chat_timeline_repo: &Option<Arc<dyn ChatTimelineRepository>>,
+    conversation_id: &str,
+    assistant_message_id: &Option<String>,
+    response_text: &str,
+    tool_calls: &[ToolCall],
+    content_blocks: &[ContentBlockItem],
+    status: ChatTimelineItemStatus,
+) {
+    if !*dirty {
+        return;
+    }
+    // The in-flight text block is not pushed into `content_blocks` until the
+    // processor finishes, so a flush can land while the slice is still empty.
+    // `persist_timeline_snapshot` deletes every block index it is not asked to
+    // retain, so flushing here would wipe rows that are already durable. Stay
+    // dirty and let a later flush persist real content.
+    if content_blocks.is_empty() {
+        return;
+    }
+
+    persist_assistant_message_snapshot(
+        chat_message_repo,
+        assistant_message_id,
+        response_text,
+        tool_calls,
+        content_blocks,
+    )
+    .await;
+    persist_timeline_snapshot(
+        chat_timeline_repo,
+        conversation_id,
+        assistant_message_id,
+        content_blocks,
+        status,
+    )
+    .await;
+    *dirty = false;
+    *last_persisted_at = std::time::Instant::now();
+}
+
 pub(super) async fn persist_message_text_timeline_item(
     chat_timeline_repo: &Option<Arc<dyn ChatTimelineRepository>>,
     message: &ChatMessage,
@@ -1312,9 +1356,16 @@ pub async fn process_stream_background<R: Runtime>(
     let completion_grace_duration =
         std::time::Duration::from_secs(stream_cfg.completion_grace_secs);
 
-    // Debounced flush for incremental persistence (every 2 seconds)
-    let mut last_flush = std::time::Instant::now();
-    const FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+    // Keep persistence rate-bounded while leaving streaming cache updates and UI events
+    // unthrottled. Terminal and content-boundary flushes make this only a tuning knob.
+    let streaming_persistence_debounce =
+        std::time::Duration::from_millis(stream_cfg.streaming_persistence_debounce_ms);
+    let mut streaming_persistence_dirty = false;
+    let mut last_streaming_persisted_at = std::time::Instant::now()
+        .checked_sub(streaming_persistence_debounce)
+        .unwrap_or_else(std::time::Instant::now);
+    const USAGE_FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+    let mut last_usage_flush = std::time::Instant::now();
 
     // Throttled heartbeat: update last_active_at every 5s on any parsed event
     let heartbeat_key = running_agent_registry
@@ -1390,6 +1441,19 @@ pub async fn process_stream_background<R: Runtime>(
                     "Stream cancelled via cancellation token, killing agent"
                 );
                 let _ = child.kill().await;
+                flush_streaming_persistence_if_dirty(
+                    &mut streaming_persistence_dirty,
+                    &mut last_streaming_persisted_at,
+                    &chat_message_repo,
+                    &chat_timeline_repo,
+                    &conversation_id_str,
+                    &assistant_message_id,
+                    &processor.response_text,
+                    &processor.tool_calls,
+                    &processor.content_blocks,
+                    ChatTimelineItemStatus::Error,
+                )
+                .await;
                 flush_content_before_error(
                     &chat_message_repo, &assistant_message_id,
                     &processor.response_text, &processor.tool_calls, &processor.content_blocks,
@@ -1723,24 +1787,22 @@ pub async fn process_stream_background<R: Runtime>(
                             .append_text(&conversation_id_str, block_position as usize, &text)
                             .await;
 
-                        // Persist text-only turns as they stream so a remount can recover the
-                        // durable timeline even before a tool call or terminal event arrives.
-                        persist_assistant_message_snapshot(
-                            &chat_message_repo,
-                            &assistant_message_id,
-                            &processor.response_text,
-                            &processor.tool_calls,
-                            &processor.content_blocks,
-                        )
-                        .await;
-                        persist_timeline_snapshot(
-                            &chat_timeline_repo,
-                            &conversation_id_str,
-                            &assistant_message_id,
-                            &processor.content_blocks,
-                            ChatTimelineItemStatus::Streaming,
-                        )
-                        .await;
+                        streaming_persistence_dirty = true;
+                        if last_streaming_persisted_at.elapsed() >= streaming_persistence_debounce {
+                            flush_streaming_persistence_if_dirty(
+                                &mut streaming_persistence_dirty,
+                                &mut last_streaming_persisted_at,
+                                &chat_message_repo,
+                                &chat_timeline_repo,
+                                &conversation_id_str,
+                                &assistant_message_id,
+                                &processor.response_text,
+                                &processor.tool_calls,
+                                &processor.content_blocks,
+                                ChatTimelineItemStatus::Streaming,
+                            )
+                            .await;
+                        }
 
                         if let Some(ref handle) = app_handle {
                             // Unified event
@@ -1799,6 +1861,19 @@ pub async fn process_stream_background<R: Runtime>(
                         }
                     }
                     StreamEvent::Thinking(text) => {
+                        flush_streaming_persistence_if_dirty(
+                            &mut streaming_persistence_dirty,
+                            &mut last_streaming_persisted_at,
+                            &chat_message_repo,
+                            &chat_timeline_repo,
+                            &conversation_id_str,
+                            &assistant_message_id,
+                            &processor.response_text,
+                            &processor.tool_calls,
+                            &processor.content_blocks,
+                            ChatTimelineItemStatus::Streaming,
+                        )
+                        .await;
                         // Activity stream event for task execution and merge
                         if matches!(
                             context_type,
@@ -1844,6 +1919,19 @@ pub async fn process_stream_background<R: Runtime>(
                         id,
                         parent_tool_use_id,
                     } => {
+                        flush_streaming_persistence_if_dirty(
+                            &mut streaming_persistence_dirty,
+                            &mut last_streaming_persisted_at,
+                            &chat_message_repo,
+                            &chat_timeline_repo,
+                            &conversation_id_str,
+                            &assistant_message_id,
+                            &processor.response_text,
+                            &processor.tool_calls,
+                            &processor.content_blocks,
+                            ChatTimelineItemStatus::Streaming,
+                        )
+                        .await;
                         // Update streaming state cache with started tool call
                         let cached_tool = CachedToolCall {
                             id: id.clone().unwrap_or_default(),
@@ -2035,6 +2123,19 @@ pub async fn process_stream_background<R: Runtime>(
                         // Captured in processor.finish()
                     }
                     StreamEvent::TurnComplete { session_id } => {
+                        flush_streaming_persistence_if_dirty(
+                            &mut streaming_persistence_dirty,
+                            &mut last_streaming_persisted_at,
+                            &chat_message_repo,
+                            &chat_timeline_repo,
+                            &conversation_id_str,
+                            &assistant_message_id,
+                            &processor.response_text,
+                            &processor.tool_calls,
+                            &processor.content_blocks,
+                            ChatTimelineItemStatus::Streaming,
+                        )
+                        .await;
                         tracing::info!(
                             conversation_id = %conversation_id_str,
                             ?session_id,
@@ -2904,24 +3005,29 @@ pub async fn process_stream_background<R: Runtime>(
             }
         }
 
-        // Debounced flush: persist accumulated content every 2s for crash recovery
-        if last_flush.elapsed() >= FLUSH_INTERVAL {
-            persist_assistant_message_snapshot(
+        if streaming_persistence_dirty
+            && last_streaming_persisted_at.elapsed() >= streaming_persistence_debounce
+        {
+            flush_streaming_persistence_if_dirty(
+                &mut streaming_persistence_dirty,
+                &mut last_streaming_persisted_at,
                 &chat_message_repo,
+                &chat_timeline_repo,
+                &conversation_id_str,
                 &assistant_message_id,
                 &processor.response_text,
                 &processor.tool_calls,
                 &processor.content_blocks,
-            )
-            .await;
-            persist_timeline_snapshot(
-                &chat_timeline_repo,
-                &conversation_id_str,
-                &assistant_message_id,
-                &processor.content_blocks,
                 ChatTimelineItemStatus::Streaming,
             )
             .await;
+        }
+
+        // Usage runs on its own cadence. Tying it to the text debounce would
+        // stall usage updates for turns that stream no text, such as a long
+        // run of tool calls.
+        if last_usage_flush.elapsed() >= USAGE_FLUSH_INTERVAL {
+            last_usage_flush = std::time::Instant::now();
             if let Some(capture) = processor.current_turn_capture() {
                 let current_turn_usage = capture.normalized.clone();
                 let usage_persisted = persist_usage_capture_run_first(
@@ -2942,7 +3048,6 @@ pub async fn process_stream_background<R: Runtime>(
                     last_emitted_usage = current_turn_usage;
                 }
             }
-            last_flush = std::time::Instant::now();
         }
 
         // Throttled heartbeat: write last_active_at every 5s on any parsed event
