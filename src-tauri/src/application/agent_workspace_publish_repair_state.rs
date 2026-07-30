@@ -63,6 +63,7 @@ pub(crate) const MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES: u32 = 3;
 pub(crate) const ORPHANED_REPAIR_DISPATCH_RESCUE_GRACE_SECS: i64 = 60;
 const AGENT_WORKSPACE_REPAIR_DISPATCH_INITIAL_BACKOFF_SECS: i64 = 5;
 const AGENT_WORKSPACE_REPAIR_DISPATCH_MAX_BACKOFF_SECS: i64 = 60;
+const AGENT_WORKSPACE_REPAIR_DISPATCH_DEFERRED_DELAY_SECS: i64 = 15;
 
 #[cfg(any(test, feature = "test-utils"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,6 +144,9 @@ pub(crate) enum AgentWorkspaceRepairDispatchOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AgentWorkspaceRepairDispatchSettlement {
     Delivered,
+    /// The chat service accepted the delivery but could not start the reserved repair turn yet.
+    /// This is capacity pressure, not a failed repair delivery, so it must not spend retry budget.
+    DeferredQueued,
     RetryableFailure,
     NonRetryableFailure,
 }
@@ -156,6 +160,9 @@ pub(crate) fn classify_agent_workspace_repair_delivery(
     run_id: &AgentRunId,
 ) -> AgentWorkspaceRepairDispatchSettlement {
     match delivery {
+        Ok(result) if result.was_queued || result.queued_as_pending => {
+            AgentWorkspaceRepairDispatchSettlement::DeferredQueued
+        }
         Ok(result)
             if !result.was_queued
                 && !result.queued_as_pending
@@ -176,6 +183,9 @@ pub(crate) fn classify_agent_workspace_repair_delivery(
         ) => AgentWorkspaceRepairDispatchSettlement::NonRetryableFailure,
         Err(ChatServiceError::MessageDeliveredNotPersisted(_)) => {
             AgentWorkspaceRepairDispatchSettlement::Delivered
+        }
+        Err(ChatServiceError::ImmediateStartRejected(_)) => {
+            AgentWorkspaceRepairDispatchSettlement::DeferredQueued
         }
         Err(
             ChatServiceError::SpawnFailed(_)
@@ -1258,6 +1268,9 @@ pub(crate) async fn settle_agent_workspace_repair_dispatch_outcome(
         retryable && attempt.dispatch_count >= MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES;
     let next_phase = match settlement {
         AgentWorkspaceRepairDispatchSettlement::Delivered => AgentWorkspaceRepairPhase::Repairing,
+        AgentWorkspaceRepairDispatchSettlement::DeferredQueued => {
+            AgentWorkspaceRepairPhase::Requested
+        }
         AgentWorkspaceRepairDispatchSettlement::RetryableFailure if !exhausted => {
             AgentWorkspaceRepairPhase::Requested
         }
@@ -1270,6 +1283,9 @@ pub(crate) async fn settle_agent_workspace_repair_dispatch_outcome(
     let expected_updated_at = attempt.updated_at;
     attempt.phase = next_phase;
     attempt.summary = Some(match settlement {
+        AgentWorkspaceRepairDispatchSettlement::DeferredQueued => {
+            format!("{summary} Waiting for the conversation to become available.")
+        }
         AgentWorkspaceRepairDispatchSettlement::RetryableFailure if !exhausted => format!(
             "{summary} Retrying delivery {}/{} automatically.",
             attempt.dispatch_count + 1,
@@ -1283,6 +1299,13 @@ pub(crate) async fn settle_agent_workspace_repair_dispatch_outcome(
     match settlement {
         AgentWorkspaceRepairDispatchSettlement::Delivered => {
             attempt.next_dispatch_at = None;
+            attempt.blocker = None;
+        }
+        AgentWorkspaceRepairDispatchSettlement::DeferredQueued => {
+            attempt.next_dispatch_at = Some(
+                Utc::now() + Duration::seconds(AGENT_WORKSPACE_REPAIR_DISPATCH_DEFERRED_DELAY_SECS),
+            );
+            attempt.reserved_agent_run_id = None;
             attempt.blocker = None;
         }
         AgentWorkspaceRepairDispatchSettlement::RetryableFailure if !exhausted => {
@@ -1312,6 +1335,7 @@ pub(crate) async fn settle_agent_workspace_repair_dispatch_outcome(
         REPAIR_SENT_STEP,
         match settlement {
             AgentWorkspaceRepairDispatchSettlement::Delivered => "succeeded",
+            AgentWorkspaceRepairDispatchSettlement::DeferredQueued => "deferred",
             AgentWorkspaceRepairDispatchSettlement::RetryableFailure if !exhausted => "retrying",
             AgentWorkspaceRepairDispatchSettlement::RetryableFailure
             | AgentWorkspaceRepairDispatchSettlement::NonRetryableFailure => "failed",

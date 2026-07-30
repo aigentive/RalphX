@@ -24,6 +24,7 @@ use crate::application::agent_workspace_publish_repair_state::{
     AgentWorkspaceRepairTransitionOutcome, DurableRepairWorkspaceReviewStartFuture,
     DurableRepairWorkspaceReviewStarter, AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION,
     DEFERRED_REPAIR_WAIT_TIMEOUT_SECS, MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES,
+    REPAIR_SENT_STEP,
 };
 use crate::application::agent_workspace_review::{
     load_agent_workspace_review_context, AgentWorkspaceReviewStart,
@@ -138,6 +139,18 @@ fn repair_delivery_classifier_blocks_deterministic_errors_and_retries_uncertain_
         );
     }
 
+    let immediate_start_rejection =
+        ChatServiceError::ImmediateStartRejected("another agent run is active".to_string());
+    assert_eq!(
+        classify_agent_workspace_repair_delivery(
+            Err(&immediate_start_rejection),
+            &conversation_id,
+            &run_id,
+        ),
+        AgentWorkspaceRepairDispatchSettlement::DeferredQueued,
+        "a busy conversation must defer instead of consuming the bounded delivery retry budget"
+    );
+
     let delivered_not_persisted =
         ChatServiceError::MessageDeliveredNotPersisted("transcript write failed".to_string());
     assert_eq!(
@@ -160,6 +173,27 @@ fn repair_delivery_classifier_blocks_deterministic_errors_and_retries_uncertain_
         AgentWorkspaceRepairDispatchSettlement::RetryableFailure,
         "a mismatched acknowledgement leaves delivery uncertain"
     );
+
+    for queued in [
+        SendResult {
+            conversation_id: conversation_id.as_str().to_string(),
+            agent_run_id: run_id.as_str().to_string(),
+            was_queued: true,
+            ..Default::default()
+        },
+        SendResult {
+            conversation_id: conversation_id.as_str().to_string(),
+            agent_run_id: run_id.as_str().to_string(),
+            queued_as_pending: true,
+            ..Default::default()
+        },
+    ] {
+        assert_eq!(
+            classify_agent_workspace_repair_delivery(Ok(&queued), &conversation_id, &run_id),
+            AgentWorkspaceRepairDispatchSettlement::DeferredQueued,
+            "an accepted queued delivery waits for capacity and must not consume retry budget"
+        );
+    }
 }
 
 fn review_boundary_git(repo: &std::path::Path, args: &[&str]) -> String {
@@ -1989,6 +2023,129 @@ async fn retryable_dispatch_failure_persists_one_due_retry_and_blocks_not_due_re
 }
 
 #[tokio::test]
+async fn immediate_start_rejection_defers_recovery_redelivery_without_consuming_dispatch_retries() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let repair_repo = Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>;
+    let branch_update_repo: Arc<dyn BranchUpdateRepository> =
+        Arc::new(MemoryBranchUpdateRepository::new());
+    let conversation_id =
+        ChatConversationId::from_string("repair-dispatch-immediate-start-deferral");
+    let target_identity = GitTargetIdentity::new(
+        PathBuf::from("/tmp/ralphx-repair-dispatch-immediate-start-deferral"),
+        "refs/heads/ralphx/repair-state",
+    )
+    .expect("valid canonical repair target identity");
+    workspace_repo
+        .create_or_update(repair_workspace(conversation_id.clone()))
+        .await
+        .expect("persist repair workspace");
+    let mut current = start_or_join_agent_workspace_repair(
+        Arc::clone(&repair_repo),
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        repair_start_request(
+            conversation_id.clone(),
+            AgentWorkspaceRepairSource::Publish,
+            AgentWorkspaceRepairContinuation::Publish,
+            "conversation is busy",
+        ),
+    )
+    .await
+    .expect("start repair attempt")
+    .into_attempt();
+
+    for delivery in 0..=MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES {
+        if current.next_dispatch_at.is_some() {
+            let expected_updated_at = current.updated_at;
+            current.next_dispatch_at = Some(chrono::Utc::now() - chrono::Duration::seconds(1));
+            current.updated_at += chrono::Duration::microseconds(1);
+            let due = repair_repo
+                .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+                    attempt: current,
+                    expected_phase: AgentWorkspaceRepairPhase::Requested,
+                    expected_updated_at,
+                    next_phase: AgentWorkspaceRepairPhase::Requested,
+                    compatibility_projection: None,
+                    events: Vec::new(),
+                })
+                .await
+                .expect("make deferred recovery delivery due");
+            let AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) = due else {
+                panic!("due checkpoint must retain current attempt authority");
+            };
+            current = attempt;
+        }
+        let dispatch = reserve_agent_workspace_repair_dispatch(
+            Arc::clone(&repair_repo),
+            Arc::clone(&branch_update_repo),
+            target_identity.clone(),
+            current,
+            AgentRunId::from_string(format!("repair-dispatch-immediate-start-{delivery}")),
+            "dispatch busy repair",
+            None,
+        )
+        .await
+        .expect("reserve deferred delivery");
+        let AgentWorkspaceRepairDispatchOutcome::Reserved(dispatch) = dispatch else {
+            panic!("each due deferred delivery must reserve exactly one run");
+        };
+        let immediate_start_rejection =
+            ChatServiceError::ImmediateStartRejected("another agent run is active".to_string());
+        let settlement = classify_agent_workspace_repair_delivery(
+            Err(&immediate_start_rejection),
+            &conversation_id,
+            dispatch
+                .reserved_agent_run_id
+                .as_ref()
+                .expect("reserved delivery has its exact run identity"),
+        );
+        assert_eq!(
+            settlement,
+            AgentWorkspaceRepairDispatchSettlement::DeferredQueued,
+            "every busy immediate-start rejection must stay outside retry exhaustion"
+        );
+        let settled = settle_agent_workspace_repair_dispatch_outcome(
+            Arc::clone(&repair_repo),
+            Arc::clone(&branch_update_repo),
+            dispatch,
+            settlement,
+            "Workspace repair delivery is waiting for the conversation to become available.",
+            None,
+        )
+        .await
+        .expect("settle busy delivery through the same durable path as recovery");
+        let AgentWorkspaceRepairTransitionOutcome::Applied(next) = settled else {
+            panic!("current busy settlement must apply");
+        };
+        assert_eq!(next.phase, AgentWorkspaceRepairPhase::Requested);
+        assert_eq!(
+            next.dispatch_count, 0,
+            "busy delivery is not a transport retry"
+        );
+        assert!(next.reserved_agent_run_id.is_none());
+        assert!(
+            next.next_dispatch_at.is_some(),
+            "recovery must revisit the deferred attempt"
+        );
+        assert!(
+            next.blocker.is_none(),
+            "a busy conversation is not user-actionable"
+        );
+        current = next;
+    }
+
+    let events = workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("load busy delivery events");
+    assert!(
+        events
+            .iter()
+            .all(|event| { event.step != REPAIR_SENT_STEP || event.status != "failed" }),
+        "busy immediate-start rejections must not publish a failed repair_sent event"
+    );
+}
+
+#[tokio::test]
 async fn exhausted_or_nonretryable_dispatch_failure_blocks_once_and_releases_lease() {
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let repair_repo = Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>;
@@ -2053,11 +2210,25 @@ async fn exhausted_or_nonretryable_dispatch_failure_blocks_once_and_releases_lea
         let AgentWorkspaceRepairDispatchOutcome::Reserved(dispatch) = dispatch else {
             panic!("due retry must reserve exactly one run");
         };
+        let spawn_failed = ChatServiceError::SpawnFailed("process start interrupted".to_string());
+        let settlement = classify_agent_workspace_repair_delivery(
+            Err(&spawn_failed),
+            &conversation_id,
+            dispatch
+                .reserved_agent_run_id
+                .as_ref()
+                .expect("reserved retry has its exact run identity"),
+        );
+        assert_eq!(
+            settlement,
+            AgentWorkspaceRepairDispatchSettlement::RetryableFailure,
+            "a genuine spawn failure must retain bounded retry behavior"
+        );
         let settled = settle_agent_workspace_repair_dispatch_outcome(
             Arc::clone(&repair_repo),
             Arc::clone(&branch_update_repo),
             dispatch,
-            AgentWorkspaceRepairDispatchSettlement::RetryableFailure,
+            settlement,
             "delivery remained unavailable",
             None,
         )

@@ -236,6 +236,21 @@ export function useAgentWorkspaceBaseUpdate({
             queryClient,
             result.workspace.conversationId,
           );
+          if (result.repairStarted) {
+            settleProgressToast(
+              progressToast,
+              "info",
+              "Repair started",
+              {
+                detail:
+                  "A new workspace repair attempt has started and will continue automatically.",
+              },
+            );
+            if (result.workspace.maintenanceOperation) {
+              syncMaintenanceOperation(result.workspace, true);
+            }
+            return;
+          }
           if (result.workspace.maintenanceOperation) {
             syncMaintenanceOperation(result.workspace, true);
             return;
