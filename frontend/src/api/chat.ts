@@ -1474,7 +1474,7 @@ function transformConversationTimelinePage(
  * unclassified, and the scanner fails the build on it. The duplication is the gate's price
  * and is deliberate; this mirrors the `sendAgentMessage`/`sendRemoteChatMessage` split.
  */
-function useRemoteTranscriptReads(): boolean {
+function remoteTranscriptReadsEnabled(): boolean {
   return isRemoteEnvironmentId(getTransportEnvironmentId());
 }
 
@@ -1492,7 +1492,7 @@ const REMOTE_MIN_PAGE_LIMIT = 1;
 const REMOTE_MAX_PAGE_LIMIT = 200;
 
 function wirePageLimit(limit: number): number {
-  if (!useRemoteTranscriptReads()) return limit;
+  if (!remoteTranscriptReadsEnabled()) return limit;
   if (!Number.isFinite(limit)) return REMOTE_MAX_PAGE_LIMIT;
   return Math.min(
     Math.max(Math.trunc(limit), REMOTE_MIN_PAGE_LIMIT),
@@ -1513,7 +1513,7 @@ export async function listConversations(
 ): Promise<ChatConversation[]> {
   const args = { contextType, contextId, includeArchived };
   const schema = z.array(ChatConversationResponseSchema);
-  const raw = useRemoteTranscriptReads()
+  const raw = remoteTranscriptReadsEnabled()
     ? await typedInvoke("list_remote_agent_conversations", args, schema)
     : await typedInvoke("list_agent_conversations", args, schema);
   return raw.map(transformConversation);
@@ -1541,7 +1541,7 @@ export async function listConversationsPage(
     offset,
     ...(normalizedSearch ? { search: normalizedSearch } : {}),
   };
-  const raw = useRemoteTranscriptReads()
+  const raw = remoteTranscriptReadsEnabled()
     ? await typedInvoke(
         "list_remote_agent_conversations_page",
         args,
@@ -1583,7 +1583,7 @@ export async function getConversation(conversationId: string): Promise<{
     conversation: ChatConversationResponseSchema,
     messages: z.array(AgentMessageSchema),
   });
-  const raw = useRemoteTranscriptReads()
+  const raw = remoteTranscriptReadsEnabled()
     ? await typedInvoke("get_remote_agent_conversation", args, schema)
     : await typedInvoke("get_agent_conversation", args, schema);
 
@@ -1606,7 +1606,7 @@ export async function getConversationMessagesPage(
   offset = 0,
 ): Promise<ConversationMessagesPageResponse> {
   const args = { conversationId, limit: wirePageLimit(limit), offset };
-  const raw = useRemoteTranscriptReads()
+  const raw = remoteTranscriptReadsEnabled()
     ? await typedInvoke(
         "get_remote_agent_conversation_messages_page",
         args,
@@ -1631,7 +1631,7 @@ export async function getConversationTimelinePage(
   beforeSequence: number | null = null,
 ): Promise<ConversationTimelinePageResponse> {
   const args = { conversationId, limit: wirePageLimit(limit), beforeSequence };
-  const raw = useRemoteTranscriptReads()
+  const raw = remoteTranscriptReadsEnabled()
     ? await typedInvoke(
         "get_remote_agent_conversation_timeline_page",
         args,
