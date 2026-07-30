@@ -500,6 +500,8 @@ export function AgentPublishPanel({
       !blocksGitInspection &&
       canInspectBaseFreshness &&
       !terminalPublicationStatus,
+    isOperationActive:
+      isPublishingWorkspace || isMaintenanceActive || isUpdatingFromBase,
   });
   const freshness = freshnessQuery.data;
   const shouldAutoRefreshFromBase = shouldAutoRefreshCleanAgentWorkspaceFromBase(

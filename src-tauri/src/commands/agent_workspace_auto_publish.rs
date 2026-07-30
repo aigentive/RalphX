@@ -15,6 +15,7 @@ use crate::application::agent_workspace_pr_supervision_recovery::{
     build_agent_workspace_pr_supervision_recovery_deps,
     schedule_agent_workspace_pr_supervision_recovery, AgentWorkspacePrSupervisionRecoveryTrigger,
 };
+use crate::application::agent_workspace_publish_recovery::is_blocked_and_not_auto_retryable;
 use crate::application::chat_service::events::{AGENT_RUN_COMPLETED, AGENT_TURN_COMPLETED};
 use crate::application::git_service::git_cmd;
 use crate::application::publish_resilience::{
@@ -89,6 +90,7 @@ pub(crate) enum AutoPublishSkipReason {
     BaseCurrent,
     NewPrUnavailable,
     AlreadyInFlight,
+    DurableRepairBlockedExhausted,
 }
 
 impl AutoPublishSkipReason {
@@ -108,6 +110,7 @@ impl AutoPublishSkipReason {
             Self::BaseCurrent => "base_current",
             Self::NewPrUnavailable => "new_pr_unavailable",
             Self::AlreadyInFlight => "already_in_flight",
+            Self::DurableRepairBlockedExhausted => "durable_repair_blocked_exhausted",
         }
     }
 }
@@ -438,6 +441,29 @@ where
 
     for workspace in workspaces {
         let conversation_id = workspace.conversation_id.clone();
+        let attempt = state
+            .agent_workspace_repair_repo
+            .get_current_repair_attempt(&conversation_id)
+            .await;
+        let blocked_exhausted = match attempt {
+            Ok(Some(attempt)) => is_blocked_and_not_auto_retryable(&attempt),
+            Ok(None) => false,
+            Err(error) => {
+                tracing::warn!(
+                    conversation_id = conversation_id.as_str(),
+                    error = %error,
+                    "Skipping stale-base agent workspace auto-publish: durable repair gate failed closed"
+                );
+                continue;
+            }
+        };
+        if blocked_exhausted {
+            tracing::debug!(
+                conversation_id = conversation_id.as_str(),
+                "Skipping stale-base agent workspace auto-publish: durable repair is blocked and exhausted"
+            );
+            continue;
+        }
         let Some(_guard) = begin_auto_publish(&conversation_id) else {
             continue;
         };
@@ -523,6 +549,20 @@ where
 
     if let Some(reason) = static_auto_publish_skip_reason(&workspace) {
         return Ok(AutoPublishDecision::Skip(reason));
+    }
+
+    let repair_attempt = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .map_err(|error| format!("durable repair gate failed closed: {error}"))?;
+    if repair_attempt
+        .as_ref()
+        .is_some_and(is_blocked_and_not_auto_retryable)
+    {
+        return Ok(AutoPublishDecision::Skip(
+            AutoPublishSkipReason::DurableRepairBlockedExhausted,
+        ));
     }
 
     let project = state

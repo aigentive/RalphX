@@ -2087,6 +2087,7 @@ describe("chat api", () => {
         updated_at: "2026-01-24T10:01:00Z",
       },
       updated: true,
+      repair_started: true,
       target_ref: "origin/feature/agent-screen",
       base_commit: "new-base",
     });
@@ -2100,6 +2101,7 @@ describe("chat api", () => {
     );
     expect(result).toMatchObject({
       updated: true,
+      repairStarted: true,
       targetRef: "origin/feature/agent-screen",
       baseCommit: "new-base",
       workspace: {

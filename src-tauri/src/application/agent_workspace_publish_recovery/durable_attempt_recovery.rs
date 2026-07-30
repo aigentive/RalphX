@@ -40,11 +40,11 @@ const LEGACY_REPAIR_IMPORT_BLOCKED_CLASSIFICATION: &str = "legacy_repair_import_
 const LEGACY_REPAIR_IMPORTED_STEP: &str = "legacy_repair_imported";
 const LEGACY_REPAIR_IMPORTED_CLASSIFICATION: &str = "legacy_repair_import_exact";
 const LEGACY_REPAIR_RUN_CLASSIFICATION_PREFIX: &str = "agent_fixable:run:";
-const AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX: &str = "auto_retry_blocked_repair:";
+pub(crate) const AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX: &str = "auto_retry_blocked_repair:";
 const AUTO_RETRY_BLOCKED_REPAIR_BASE_DELAY_SECS: i64 = 60;
 const AUTO_RETRY_BLOCKED_REPAIR_MAX_DELAY_SECS: i64 = 15 * 60;
-const MAX_AUTO_RETRY_BLOCKED_REPAIR_STREAK: u32 = 3;
-const AUTO_RETRY_READY_REPAIR_REASON_PREFIX: &str = "auto_retry_ready_repair:";
+pub(crate) const MAX_AUTO_RETRY_BLOCKED_REPAIR_STREAK: u32 = 3;
+pub(crate) const AUTO_RETRY_READY_REPAIR_REASON_PREFIX: &str = "auto_retry_ready_repair:";
 const AUTO_RETRY_READY_REPAIR_BASE_DELAY_SECS: i64 = 60;
 const AUTO_RETRY_READY_REPAIR_MAX_DELAY_SECS: i64 = 15 * 60;
 const MAX_AUTO_RETRY_READY_REPAIR_STREAK: u32 = 3;
@@ -497,6 +497,19 @@ fn automatic_blocked_repair_streak(attempt: &AgentWorkspaceRepairAttempt) -> u32
         .unwrap_or_default()
 }
 
+/// Only the current durable generation may suspend unrelated publish work. A blocked repair is
+/// terminal for automatic recovery when its delivery budget has been spent, or its automatic
+/// blocked-repair successor budget has been spent; queued deliveries retain a next dispatch and
+/// therefore deliberately do not match.
+pub(crate) fn is_blocked_and_not_auto_retryable(attempt: &AgentWorkspaceRepairAttempt) -> bool {
+    attempt.phase == AgentWorkspaceRepairPhase::Blocked
+        && attempt.next_dispatch_at.is_none()
+        && (attempt.pending_reasons.iter().any(|reason| reason == crate::application::agent_workspace_publish_repair_state::NEEDS_HUMAN_REPAIR_REASON)
+            || attempt.dispatch_count >= crate::application::agent_workspace_publish_repair_state::MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES
+            || (attempt.continuation.is_automatic()
+                && automatic_blocked_repair_streak(attempt) >= MAX_AUTO_RETRY_BLOCKED_REPAIR_STREAK))
+}
+
 fn automatic_blocked_repair_retry_delay(streak: u32) -> Duration {
     let multiplier = 1_i64 << streak.min(4);
     Duration::seconds(
@@ -510,6 +523,13 @@ async fn retry_safe_blocked_agent_workspace_repair(
     state: &AppState,
     current: AgentWorkspaceRepairAttempt,
 ) -> AppResult<DurableRepairRecoveryOutcome> {
+    if current
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == crate::application::agent_workspace_publish_repair_state::NEEDS_HUMAN_REPAIR_REASON)
+    {
+        return Ok(DurableRepairRecoveryOutcome::Noop);
+    }
     if !current.continuation.is_automatic() {
         return Ok(DurableRepairRecoveryOutcome::Noop);
     }

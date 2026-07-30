@@ -5060,7 +5060,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         // the in-memory queue is not replayed after an app restart.
         if claude_launches_paused(context_type, self.execution_state.as_ref()) {
             if options.queue_policy == SendQueuePolicy::RequireImmediateStart {
-                return Err(ChatServiceError::SpawnFailed(
+                return Err(ChatServiceError::ImmediateStartRejected(
                     "immediate start required, but agent launches are paused".to_string(),
                 ));
             }
@@ -5254,7 +5254,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 );
             } else if ipr_ref.has_process(&interactive_key).await {
                 if options.queue_policy == SendQueuePolicy::RequireImmediateStart {
-                    return Err(ChatServiceError::SpawnFailed(
+                    return Err(ChatServiceError::ImmediateStartRejected(
                         "immediate start required, but an interactive process is active"
                             .to_string(),
                     ));
@@ -5424,7 +5424,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 .await?
             {
                 if options.queue_policy == SendQueuePolicy::RequireImmediateStart {
-                    return Err(ChatServiceError::SpawnFailed(
+                    return Err(ChatServiceError::ImmediateStartRejected(
                         "immediate start required, but another provider run is active".to_string(),
                     ));
                 }
@@ -5471,7 +5471,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 .await?
             {
                 if options.queue_policy == SendQueuePolicy::RequireImmediateStart {
-                    return Err(ChatServiceError::SpawnFailed(
+                    return Err(ChatServiceError::ImmediateStartRejected(
                         "immediate start required, but another persona run is active".to_string(),
                     ));
                 }
@@ -5552,7 +5552,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             && !persona_switch_requires_process_invalidation
         {
             if options.queue_policy == SendQueuePolicy::RequireImmediateStart {
-                return Err(ChatServiceError::SpawnFailed(
+                return Err(ChatServiceError::ImmediateStartRejected(
                     "immediate start required, but an interactive process is active".to_string(),
                 ));
             }
@@ -6182,7 +6182,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                         "[GATE_TRACE] Gate 2 blocked — agent already running, queuing message"
                     );
                     if options.queue_policy == SendQueuePolicy::RequireImmediateStart {
-                        return Err(ChatServiceError::SpawnFailed(
+                        return Err(ChatServiceError::ImmediateStartRejected(
                             "immediate start required, but another agent run is active".to_string(),
                         ));
                     }
@@ -6401,7 +6401,9 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                         };
 
                         if options.queue_policy == SendQueuePolicy::RequireImmediateStart {
-                            cleanup_and_err!(ChatServiceError::SpawnFailed(capacity_err_msg));
+                            cleanup_and_err!(ChatServiceError::ImmediateStartRejected(
+                                capacity_err_msg
+                            ));
                         }
 
                         if options.caller_context == SendCallerContext::UserInitiated {
@@ -6574,7 +6576,9 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     };
 
                     if options.queue_policy == SendQueuePolicy::RequireImmediateStart {
-                        cleanup_and_err!(ChatServiceError::SpawnFailed(capacity_err_msg));
+                        cleanup_and_err!(ChatServiceError::ImmediateStartRejected(
+                            capacity_err_msg
+                        ));
                     }
 
                     if options.caller_context == SendCallerContext::DrainService {

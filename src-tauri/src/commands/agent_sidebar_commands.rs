@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+use crate::application::agent_workspace_publish_recovery::is_blocked_and_not_auto_retryable;
 use crate::application::AppState;
 use crate::commands::unified_chat_commands::{
     agent_conversation_response_for_state, agent_workspace_response_for_state,
@@ -349,6 +350,13 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
                 .await
                 .map_err(|e| e.to_string())?;
             let latest_run_status = latest_run.as_ref().map(|run| run.status);
+            let blocked_exhausted_repair = state
+                .agent_workspace_repair_repo
+                .get_current_repair_attempt(&conversation.id)
+                .await
+                .map_err(|e| e.to_string())?
+                .as_ref()
+                .is_some_and(is_blocked_and_not_auto_retryable);
             let publication_state =
                 publication_state_for_workspace(workspace.as_ref(), latest_run_status);
             if !selected_state_set.contains(&publication_state) {
@@ -362,6 +370,7 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
                 publication_state,
                 latest_run_status,
                 workspace.as_ref(),
+                blocked_exhausted_repair,
                 conversation
                     .last_message_at
                     .unwrap_or(conversation.updated_at),
@@ -468,6 +477,7 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
             publication_state,
             latest_run_status,
             None,
+            false,
             conversation
                 .last_message_at
                 .unwrap_or(conversation.updated_at),
@@ -770,6 +780,7 @@ fn attention_lane_for_row(
     publication_state: SidebarPublicationState,
     latest_run_status: Option<AgentRunStatus>,
     workspace: Option<&AgentConversationWorkspaceResponse>,
+    blocked_exhausted_repair: bool,
     last_activity_at: DateTime<Utc>,
     managed_team_activity: Option<&ManagedTeamActivity>,
 ) -> SidebarAttentionLane {
@@ -780,6 +791,10 @@ fn attention_lane_for_row(
         )
     {
         return SidebarAttentionLane::Done;
+    }
+
+    if blocked_exhausted_repair {
+        return SidebarAttentionLane::Needs;
     }
 
     let supervision_status = normalized_supervision_status(workspace);
@@ -1424,6 +1439,39 @@ mod tests {
             .unwrap()
     }
 
+    #[test]
+    fn blocked_exhausted_repair_escalates_row_to_needs_lane() {
+        let now = Utc::now();
+        assert_eq!(
+            attention_lane_for_row(
+                false,
+                SidebarPublicationState::Active,
+                Some(AgentRunStatus::Running),
+                None,
+                true,
+                now,
+                None,
+            ),
+            SidebarAttentionLane::Needs
+        );
+        assert_eq!(
+            attention_lane_for_row(
+                false,
+                SidebarPublicationState::Active,
+                Some(AgentRunStatus::Running),
+                None,
+                false,
+                now,
+                None,
+            ),
+            SidebarAttentionLane::Working
+        );
+        assert_eq!(
+            attention_lane_for_row(true, SidebarPublicationState::Merged, None, None, true, now, None),
+            SidebarAttentionLane::Done
+        );
+    }
+
     #[tokio::test]
     async fn latest_sort_uses_last_message_or_updated_activity_not_creation_time() {
         let state = AppState::new_test();
@@ -1687,6 +1735,7 @@ mod tests {
                 SidebarPublicationState::Active,
                 None,
                 None,
+                false,
                 Utc::now(),
                 Some(&team_activity),
             ),
@@ -1698,6 +1747,7 @@ mod tests {
                 SidebarPublicationState::Active,
                 None,
                 None,
+                false,
                 Utc::now(),
                 None,
             ),
@@ -1713,6 +1763,7 @@ mod tests {
                 SidebarPublicationState::Active,
                 None,
                 None,
+                false,
                 Utc::now(),
                 Some(&idle_team),
             ),

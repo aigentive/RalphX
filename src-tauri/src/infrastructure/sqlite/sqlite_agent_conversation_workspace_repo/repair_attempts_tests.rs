@@ -437,7 +437,7 @@ async fn repair_attempt_cas_effect_and_successor_share_one_sqlite_transaction_bo
         .await
         .expect("record failed repair effect")
     {
-        CompleteAgentWorkspaceRepairEffectOutcome::Applied(effect) => effect,
+        CompleteAgentWorkspaceRepairEffectOutcome::Applied(effect) => *effect,
         outcome => panic!("expected failed effect completion, got {outcome:?}"),
     };
     assert_eq!(failed.status, AgentWorkspaceRepairEffectStatus::Failed);

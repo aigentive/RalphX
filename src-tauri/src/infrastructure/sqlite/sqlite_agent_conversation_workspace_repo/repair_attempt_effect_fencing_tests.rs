@@ -103,7 +103,7 @@ async fn effect_fencing_rejects_stale_create_and_completion_but_replays_exact_co
         .await
         .expect("complete observed effect")
     {
-        CompleteAgentWorkspaceRepairEffectOutcome::Applied(effect) => effect,
+        CompleteAgentWorkspaceRepairEffectOutcome::Applied(effect) => *effect,
         outcome => panic!("expected observed completion, got {outcome:?}"),
     };
 
@@ -244,7 +244,7 @@ async fn effect_fencing_rejects_stale_create_and_completion_but_replays_exact_co
     assert!(matches!(
         replay,
         CompleteAgentWorkspaceRepairEffectOutcome::Applied(ref effect)
-            if effect == &completed
+            if **effect == completed
     ));
     assert_eq!(
         repo.get_by_conversation_id(&conversation_id)

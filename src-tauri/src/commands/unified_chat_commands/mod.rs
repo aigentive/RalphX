@@ -1702,6 +1702,7 @@ impl Drop for AgentWorkspacePrDescriptionInvalidationGuard {
 pub struct UpdateAgentConversationWorkspaceFromBaseResponse {
     pub workspace: AgentConversationWorkspaceResponse,
     pub updated: bool,
+    pub repair_started: bool,
     pub target_ref: String,
     pub base_commit: String,
     pub base_status: String,
@@ -6062,7 +6063,21 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
         )
         .await
     {
-        return Err("A new workspace repair attempt has started.".to_string());
+        let refreshed = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .unwrap_or(workspace);
+        return Ok(UpdateAgentConversationWorkspaceFromBaseResponse {
+            target_ref: refreshed.base_ref.clone(),
+            base_commit: refreshed.base_commit.clone().unwrap_or_default(),
+            workspace: agent_workspace_response_for_state(state, refreshed).await?,
+            updated: false,
+            repair_started: true,
+            base_status: BaseStatus::Valid.as_str().to_string(),
+            effective_base_display_name: None,
+        });
     }
 
     let explicit_base = normalize_explicit_publish_base_selection(selection)?;
@@ -6397,6 +6412,7 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
     Ok(UpdateAgentConversationWorkspaceFromBaseResponse {
         workspace: agent_workspace_response_for_state(state, refreshed).await?,
         updated,
+        repair_started: false,
         target_ref,
         base_commit,
         base_status: base_resolution
@@ -9109,13 +9125,11 @@ where
         worktree_path: Some(resolved.path),
     };
 
+    let error = last_meaningful_agent_workspace_repair_reason(&attempt);
     mark_agent_workspace_failure_with_routing_and_action_classified(
         state,
         workspace,
-        attempt
-            .summary
-            .as_deref()
-            .unwrap_or("Retrying blocked workspace repair."),
+        error,
         None,
         repair_service,
         true,
@@ -9126,6 +9140,35 @@ where
     )
     .await;
     true
+}
+
+/// Delivery retries append `auto_retry_*` streak markers to the durable reason history. Those
+/// markers describe recovery bookkeeping rather than the publish failure the repair agent needs.
+fn last_meaningful_agent_workspace_repair_reason(
+    attempt: &AgentWorkspaceRepairAttempt,
+) -> &str {
+    attempt
+        .pending_reasons
+        .iter()
+        .rev()
+        .map(String::as_str)
+        .find(|reason| {
+            let trimmed = reason.trim();
+            !trimmed.is_empty()
+                && !trimmed.starts_with(
+                    crate::application::agent_workspace_publish_recovery::AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX,
+                )
+                && !trimmed.starts_with(
+                    crate::application::agent_workspace_publish_recovery::AUTO_RETRY_READY_REPAIR_REASON_PREFIX,
+                )
+        })
+        .or_else(|| {
+            attempt
+                .summary
+                .as_deref()
+                .filter(|summary| !summary.trim().is_empty())
+        })
+        .unwrap_or("Retrying blocked workspace repair.")
 }
 
 async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(

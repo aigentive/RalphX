@@ -27,6 +27,7 @@ use super::{
     publication_event_status_for_push_status, publication_event_summary_for_push_status,
     publish_agent_conversation_workspace_for_app_state, resolve_agent_workspace_pr_metadata_target,
     restore_agent_conversation, retarget_existing_workspace_pr_base_if_needed,
+    retry_blocked_agent_workspace_repair_for_explicit_user_action,
     schedule_external_pr_reconciliation_for_conversation_id,
     schedule_external_pr_reconciliation_for_workspace,
     schedule_pr_supervision_recovery_for_conversation_id,
@@ -3550,6 +3551,136 @@ async fn seed_ready_command_repair_attempt(
         AgentWorkspaceRepairAttemptTransitionOutcome::Applied(ready) => ready,
         outcome => panic!("expected Ready repair attempt, got {outcome:?}"),
     }
+}
+
+async fn seed_blocked_command_repair_attempt(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+) -> AgentWorkspaceRepairAttempt {
+    let started = state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                workspace.conversation_id.clone(),
+                AgentWorkspaceRepairSource::BaseUpdate,
+                AgentWorkspaceRepairContinuation::UpdateOnly,
+                workspace.base_ref.clone(),
+                false,
+                true,
+                false,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: "publish rejected: protected branch requires approval".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("seed durable repair attempt");
+    let StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(started) = started else {
+        panic!("first durable repair generation should start");
+    };
+    let mut blocked = started.clone();
+    blocked.phase = AgentWorkspaceRepairPhase::Blocked;
+    blocked
+        .pending_reasons
+        .push("auto_retry_blocked_repair:3".to_string());
+    blocked.summary = Some(
+        "Durable workspace repair delivery retry completed. Automatic repair delivery retries are exhausted."
+            .to_string(),
+    );
+    blocked.updated_at += chrono::Duration::microseconds(1);
+    match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: blocked,
+            expected_phase: started.phase,
+            expected_updated_at: started.updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Blocked,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("block durable repair attempt")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(blocked) => blocked,
+        outcome => panic!("expected blocked repair attempt, got {outcome:?}"),
+    }
+}
+
+#[tokio::test]
+async fn explicit_workspace_repair_retry_prompt_uses_root_pending_reason_not_delivery_summary() {
+    let (_temp, state, conversation_id, _github) = setup_publish_command_state(
+        "retry-root-cause",
+        true,
+        None,
+        Arc::new(MockGithubService::new()),
+    )
+    .await;
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    seed_blocked_command_repair_attempt(&state, &workspace).await;
+    let service = MockChatService::new();
+
+    assert!(
+        retry_blocked_agent_workspace_repair_for_explicit_user_action(
+            &state,
+            &workspace,
+            &service,
+            AgentWorkspacePostRepairAction::UpdateOnly,
+        )
+        .await
+    );
+
+    let messages = service.get_sent_messages().await;
+    assert_eq!(messages.len(), 1);
+    assert!(messages[0].contains("Error: publish rejected: protected branch requires approval"));
+    assert!(!messages[0].contains("Automatic repair delivery retries are exhausted"));
+}
+
+#[tokio::test]
+async fn base_update_retry_returns_successful_repair_started_response() {
+    let (_temp, state, conversation_id, _github) = setup_publish_command_state(
+        "retry-success-response",
+        true,
+        None,
+        Arc::new(MockGithubService::new()),
+    )
+    .await;
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    seed_blocked_command_repair_attempt(&state, &workspace).await;
+
+    let response = update_agent_conversation_workspace_from_base_for_app_state(
+        &state,
+        &Arc::new(ExecutionState::new()),
+        conversation_id,
+        AgentConversationWorkspaceBaseSelection {
+            kind: None,
+            branch_mode: None,
+            base_ref: None,
+            display_name: None,
+            source_pull_request: None,
+        },
+    )
+    .await
+    .expect("explicit retry should return a successful repair-started response");
+
+    assert!(response.repair_started);
+    assert_eq!(response.target_ref, workspace.base_ref);
+    assert_eq!(
+        response.base_commit,
+        workspace.base_commit.unwrap_or_default()
+    );
 }
 
 #[tokio::test]
