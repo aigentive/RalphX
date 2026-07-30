@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use axum::{extract::State, http::HeaderMap, Json};
 use chrono::{DateTime, Utc};
 use ralphx_lib::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
-use ralphx_lib::application::native_delegation_launcher::{
+use ralphx_lib::http_server::native_delegation_launcher::{
     NativeDelegationLaunchParent, NativeDelegationLaunchRequest, NativeDelegationLauncher,
 };
 use ralphx_lib::application::AppState;

@@ -29,6 +29,7 @@ pub mod delegation;
 mod delegation_tests;
 pub mod handlers;
 pub mod helpers;
+pub mod native_delegation_launcher;
 pub mod project_scope;
 pub mod types;
 

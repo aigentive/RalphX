@@ -19,7 +19,7 @@ use crate::application::managed_team::{
     ManagedTeamAssignmentRequest, ManagedTeamMemberSpec, ManagedTeamWorkspaceRequest,
     TeamExitAction,
 };
-use crate::application::native_delegation_launcher::{
+use crate::http_server::native_delegation_launcher::{
     NativeDelegationLaunchParent, NativeDelegationLaunchRequest, NativeDelegationLauncher,
 };
 use crate::application::AgentTaskService;

@@ -30,7 +30,6 @@ impl std::fmt::Display for TeamMemberId {
 
 pub fn normalize_team_member_name(name: &str) -> Result<String, String> {
     let normalized = name
-        .trim()
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")

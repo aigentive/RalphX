@@ -16,7 +16,7 @@ use crate::application::chat_service::{
     AgentTaskStartedPayload, CachedStreamingTask, ChatService, StreamingStateCache,
 };
 use crate::application::ideation_workspace::resolve_ideation_workspace_path;
-use crate::application::native_delegation_launcher::{
+use crate::http_server::native_delegation_launcher::{
     NativeDelegationLaunchParent, NativeDelegationLaunchRequest, NativeDelegationLauncher,
 };
 use crate::application::AgentTaskService;

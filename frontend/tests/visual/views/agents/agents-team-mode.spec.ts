@@ -34,6 +34,11 @@ async function installTeamRoutes(page: Page) {
             generation: 1,
           },
         ],
+        usage: {
+          tokens: 0,
+          costMicros: 0,
+          members: [],
+        },
       }),
     });
   });
