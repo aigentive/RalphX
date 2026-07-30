@@ -23,6 +23,7 @@ describe("ErrorBoundary", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
   });
 
   it("renders the error message and collapsible details in the production fallback", () => {
@@ -36,8 +37,6 @@ describe("ErrorBoundary", () => {
 
     expect(screen.getByText("Production failure details")).toBeInTheDocument();
     expect(screen.getByText("Error details")).toBeInTheDocument();
-
-    vi.unstubAllEnvs();
   });
 
   it("persists the caught error and component stack through Tauri", async () => {
@@ -58,6 +57,7 @@ describe("ErrorBoundary", () => {
   });
 
   it("keeps rendering the fallback when Tauri logging is unavailable", async () => {
+    vi.stubEnv("DEV", false);
     vi.mocked(invoke).mockRejectedValueOnce(new Error("Tauri is unavailable"));
 
     render(

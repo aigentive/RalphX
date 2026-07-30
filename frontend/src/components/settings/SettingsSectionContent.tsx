@@ -100,7 +100,7 @@ const LazyCapabilitiesSection = lazyWithRetry(() =>
     default: module.CapabilitiesSection,
   })),
 );
-const LazyIntegrationsHubSection = lazy(() =>
+const LazyIntegrationsHubSection = lazyWithRetry(() =>
   import("./IntegrationsHubSection").then((module) => ({
     default: module.IntegrationsHubSection,
   })),
