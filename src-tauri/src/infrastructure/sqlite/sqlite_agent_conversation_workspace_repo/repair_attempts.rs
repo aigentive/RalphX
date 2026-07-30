@@ -925,7 +925,7 @@ impl AgentWorkspaceRepairRepository for SqliteAgentConversationWorkspaceReposito
                     || current.updated_at != request.expected_attempt_updated_at
                     || current.settled_at.is_some()
                 {
-                    return Ok(CreateAgentWorkspaceRepairEffectOutcome::Stale(current));
+                    return Ok(CreateAgentWorkspaceRepairEffectOutcome::Stale(Box::new(current)));
                 }
                 if request.effect.attempt_id != current.id {
                     return Err(AppError::Validation(
@@ -1043,7 +1043,7 @@ impl AgentWorkspaceRepairRepository for SqliteAgentConversationWorkspaceReposito
                     ));
                 }
                 if existing.completed_at.is_some() && existing == request.effect {
-                    return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Applied(existing));
+                    return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Applied(Box::new(existing)));
                 }
                 if current.generation != request.generation
                     || current.phase != request.expected_phase
@@ -1052,7 +1052,7 @@ impl AgentWorkspaceRepairRepository for SqliteAgentConversationWorkspaceReposito
                     || existing.updated_at != request.expected_effect_updated_at
                     || existing.status != request.expected_effect_status
                 {
-                    return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Stale(current));
+                    return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Stale(Box::new(current)));
                 }
                 if !update_repair_effect(
                     conn,
@@ -1071,9 +1071,9 @@ impl AgentWorkspaceRepairRepository for SqliteAgentConversationWorkspaceReposito
                             AppError::NotFound(format!("repair effect {}", request.effect.id))
                         })?;
                     if latest.completed_at.is_some() && latest == request.effect {
-                        return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Applied(latest));
+                        return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Applied(Box::new(latest)));
                     }
-                    return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Stale(current));
+                    return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Stale(Box::new(current)));
                 }
                 apply_compatibility_projection(
                     conn,
@@ -1083,7 +1083,7 @@ impl AgentWorkspaceRepairRepository for SqliteAgentConversationWorkspaceReposito
                 )?;
                 append_repair_events(conn, &request.events)?;
                 Ok(CompleteAgentWorkspaceRepairEffectOutcome::Applied(
-                    request.effect,
+                    Box::new(request.effect),
                 ))
             })
             .await
