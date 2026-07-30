@@ -10,13 +10,13 @@
     {
       "name": "agent:chunk",
       "file": "src-tauri/src/application/chat_service/chat_service_streaming.rs",
-      "line": 1721,
+      "line": 1748,
       "kind": "method"
     },
     {
       "name": "agent:chunk",
       "file": "src-tauri/src/application/chat_service/chat_service_streaming.rs",
-      "line": 3519,
+      "line": 3543,
       "kind": "method"
     },
     {
@@ -28,19 +28,19 @@
     {
       "name": "agent:conversation_created",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 7737,
+      "line": 7749,
       "kind": "wrapper_method"
     },
     {
       "name": "agent:conversation_created",
       "file": "src-tauri/src/commands/unified_chat_commands/mod.rs",
-      "line": 2141,
+      "line": 2210,
       "kind": "method"
     },
     {
       "name": "agent:conversation_forked",
       "file": "src-tauri/src/commands/unified_chat_commands/mod.rs",
-      "line": 2149,
+      "line": 2218,
       "kind": "method"
     },
     {
@@ -58,79 +58,91 @@
     {
       "name": "agent:error",
       "file": "src-tauri/src/application/chat_service/chat_service_handlers.rs",
-      "line": 3894,
+      "line": 3895,
       "kind": "method"
     },
     {
       "name": "agent:error",
       "file": "src-tauri/src/application/chat_service/chat_service_queue.rs",
-      "line": 643,
+      "line": 644,
       "kind": "method"
     },
     {
       "name": "agent:error",
       "file": "src-tauri/src/application/chat_service/chat_service_queue.rs",
-      "line": 1221,
+      "line": 1222,
       "kind": "method"
     },
     {
       "name": "agent:error",
       "file": "src-tauri/src/application/chat_service/chat_service_queue.rs",
-      "line": 1256,
+      "line": 1257,
       "kind": "method"
     },
     {
       "name": "agent:error",
       "file": "src-tauri/src/application/chat_service/chat_service_queue.rs",
-      "line": 1286,
+      "line": 1287,
       "kind": "method"
     },
     {
       "name": "agent:error",
       "file": "src-tauri/src/application/chat_service/chat_service_queue.rs",
-      "line": 1310,
+      "line": 1311,
       "kind": "method"
     },
     {
       "name": "agent:error",
       "file": "src-tauri/src/application/chat_service/chat_service_queue.rs",
-      "line": 1419,
+      "line": 1420,
       "kind": "method"
     },
     {
       "name": "agent:error",
       "file": "src-tauri/src/application/chat_service/chat_service_queue.rs",
-      "line": 1720,
+      "line": 1721,
       "kind": "method"
     },
     {
       "name": "agent:error",
       "file": "src-tauri/src/application/chat_service/chat_service_queue.rs",
-      "line": 1765,
+      "line": 1766,
       "kind": "method"
     },
     {
       "name": "agent:error",
       "file": "src-tauri/src/application/chat_service/chat_service_queue.rs",
-      "line": 2561,
+      "line": 2591,
       "kind": "method"
     },
     {
       "name": "agent:error",
       "file": "src-tauri/src/application/chat_service/chat_service_queue.rs",
-      "line": 2745,
+      "line": 2767,
       "kind": "method"
     },
     {
       "name": "agent:error",
       "file": "src-tauri/src/application/chat_service/chat_service_queue.rs",
-      "line": 2790,
+      "line": 2812,
+      "kind": "method"
+    },
+    {
+      "name": "agent:error",
+      "file": "src-tauri/src/application/chat_service/chat_service_send_background.rs",
+      "line": 1858,
+      "kind": "method"
+    },
+    {
+      "name": "agent:error",
+      "file": "src-tauri/src/application/chat_service/chat_service_send_background.rs",
+      "line": 2004,
       "kind": "method"
     },
     {
       "name": "agent:error",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 3406,
+      "line": 3395,
       "kind": "wrapper_method"
     },
     {
@@ -142,103 +154,103 @@
     {
       "name": "agent:heartbeat",
       "file": "src-tauri/src/application/chat_service/chat_service_streaming.rs",
-      "line": 4068,
+      "line": 4093,
       "kind": "method"
     },
     {
       "name": "agent:hook",
       "file": "src-tauri/src/application/chat_service/chat_service_streaming.rs",
-      "line": 2556,
+      "line": 2579,
       "kind": "method"
     },
     {
       "name": "agent:hook",
       "file": "src-tauri/src/application/chat_service/chat_service_streaming.rs",
-      "line": 2584,
+      "line": 2607,
       "kind": "method"
     },
     {
       "name": "agent:hook",
       "file": "src-tauri/src/application/chat_service/chat_service_streaming.rs",
-      "line": 2605,
+      "line": 2628,
       "kind": "method"
     },
     {
       "name": "agent:message",
       "file": "src-tauri/src/application/chat_service/chat_service_streaming.rs",
-      "line": 1740,
+      "line": 1768,
       "kind": "method"
     },
     {
       "name": "agent:message",
       "file": "src-tauri/src/application/chat_service/chat_service_streaming.rs",
-      "line": 1781,
+      "line": 1809,
       "kind": "method"
     },
     {
       "name": "agent:message",
       "file": "src-tauri/src/application/chat_service/chat_service_streaming.rs",
-      "line": 1971,
+      "line": 1999,
       "kind": "method"
     },
     {
       "name": "agent:message",
       "file": "src-tauri/src/application/chat_service/chat_service_streaming.rs",
-      "line": 2712,
+      "line": 2735,
       "kind": "method"
     },
     {
       "name": "agent:message_created",
       "file": "src-tauri/src/application/chat_service/chat_service_queue.rs",
-      "line": 1912,
+      "line": 1913,
       "kind": "method"
     },
     {
       "name": "agent:message_created",
       "file": "src-tauri/src/application/chat_service/chat_service_send_background.rs",
-      "line": 656,
+      "line": 662,
       "kind": "method"
     },
     {
       "name": "agent:message_created",
       "file": "src-tauri/src/application/chat_service/chat_service_send_background.rs",
-      "line": 752,
+      "line": 758,
       "kind": "method"
     },
     {
       "name": "agent:message_created",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 3381,
+      "line": 3370,
       "kind": "wrapper_method"
     },
     {
       "name": "agent:message_created",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 4089,
+      "line": 4078,
       "kind": "wrapper_method"
     },
     {
       "name": "agent:message_created",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 5702,
+      "line": 5713,
       "kind": "wrapper_method"
     },
     {
       "name": "agent:message_created",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 6625,
+      "line": 6637,
       "kind": "wrapper_method"
     },
     {
       "name": "agent:message_created",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 7590,
+      "line": 7602,
       "kind": "wrapper_method"
     },
     {
       "name": "agent:message_queued",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 2310,
+      "line": 2299,
       "kind": "wrapper_method"
     },
     {
@@ -256,19 +268,19 @@
     {
       "name": "agent:queue_sent",
       "file": "src-tauri/src/application/chat_service/chat_service_queue.rs",
-      "line": 1329,
+      "line": 1330,
       "kind": "method"
     },
     {
       "name": "agent:queue_sent",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 2112,
+      "line": 2093,
       "kind": "wrapper_method"
     },
     {
       "name": "agent:queue_sent",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 7613,
+      "line": 7625,
       "kind": "wrapper_method"
     },
     {
@@ -286,37 +298,37 @@
     {
       "name": "agent:run_completed",
       "file": "src-tauri/src/application/chat_service/chat_service_handlers.rs",
-      "line": 2970,
+      "line": 2971,
       "kind": "method"
     },
     {
       "name": "agent:run_completed",
       "file": "src-tauri/src/application/chat_service/chat_service_send_background.rs",
-      "line": 1829,
+      "line": 1836,
       "kind": "method"
     },
     {
       "name": "agent:run_completed",
       "file": "src-tauri/src/application/chat_service/chat_service_send_background.rs",
-      "line": 1943,
+      "line": 1977,
       "kind": "method"
     },
     {
       "name": "agent:run_completed",
       "file": "src-tauri/src/application/chat_service/chat_service_send_background.rs",
-      "line": 2160,
+      "line": 2222,
       "kind": "method"
     },
     {
       "name": "agent:run_completed",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 7828,
+      "line": 7840,
       "kind": "wrapper_method"
     },
     {
       "name": "agent:run_completed",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 7857,
+      "line": 7869,
       "kind": "wrapper_method"
     },
     {
@@ -340,19 +352,19 @@
     {
       "name": "agent:run_started",
       "file": "src-tauri/src/application/chat_service/chat_service_queue.rs",
-      "line": 1683,
+      "line": 1684,
       "kind": "method"
     },
     {
       "name": "agent:run_started",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 5759,
+      "line": 5754,
       "kind": "wrapper_method"
     },
     {
       "name": "agent:run_started",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 7071,
+      "line": 7083,
       "kind": "wrapper_method"
     },
     {
@@ -364,7 +376,7 @@
     {
       "name": "agent:session_recovered",
       "file": "src-tauri/src/application/chat_service/chat_service_send_background.rs",
-      "line": 1239,
+      "line": 1245,
       "kind": "method"
     },
     {
@@ -394,13 +406,13 @@
     {
       "name": "agent:stopped",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 7802,
+      "line": 7814,
       "kind": "wrapper_method"
     },
     {
       "name": "agent:stopped",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 7848,
+      "line": 7860,
       "kind": "wrapper_method"
     },
     {
@@ -418,7 +430,7 @@
     {
       "name": "agent:task_completed",
       "file": "src-tauri/src/application/chat_service/chat_service_streaming.rs",
-      "line": 2506,
+      "line": 2529,
       "kind": "method"
     },
     {
@@ -430,7 +442,7 @@
     {
       "name": "agent:task_started",
       "file": "src-tauri/src/application/chat_service/chat_service_streaming.rs",
-      "line": 2445,
+      "line": 2468,
       "kind": "method"
     },
     {
@@ -442,37 +454,37 @@
     {
       "name": "agent:tool_call",
       "file": "src-tauri/src/application/chat_service/chat_service_streaming.rs",
-      "line": 1834,
+      "line": 1862,
       "kind": "method"
     },
     {
       "name": "agent:tool_call",
       "file": "src-tauri/src/application/chat_service/chat_service_streaming.rs",
-      "line": 1939,
+      "line": 1967,
       "kind": "method"
     },
     {
       "name": "agent:tool_call",
       "file": "src-tauri/src/application/chat_service/chat_service_streaming.rs",
-      "line": 2685,
+      "line": 2708,
       "kind": "method"
     },
     {
       "name": "agent:tool_call",
       "file": "src-tauri/src/application/chat_service/chat_service_streaming.rs",
-      "line": 3629,
+      "line": 3654,
       "kind": "method"
     },
     {
       "name": "agent:turn_completed",
       "file": "src-tauri/src/application/chat_service/chat_service_streaming.rs",
-      "line": 2336,
+      "line": 2359,
       "kind": "method"
     },
     {
       "name": "agent:usage_updated",
       "file": "src-tauri/src/application/chat_service/chat_service_streaming.rs",
-      "line": 369,
+      "line": 376,
       "kind": "method"
     },
     {
@@ -484,25 +496,25 @@
     {
       "name": "agent:workspace_changed",
       "file": "src-tauri/src/application/agent_workspace_external_pr_reconciliation.rs",
-      "line": 640,
+      "line": 678,
       "kind": "method"
     },
     {
       "name": "agent:workspace_changed",
       "file": "src-tauri/src/application/agent_workspace_pr_supervision_recovery.rs",
-      "line": 1016,
+      "line": 1090,
       "kind": "method"
     },
     {
       "name": "agent:workspace_changed",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 3978,
+      "line": 3967,
       "kind": "wrapper_method"
     },
     {
       "name": "agent:workspace_changed",
       "file": "src-tauri/src/commands/agent_workspace_auto_publish.rs",
-      "line": 550,
+      "line": 579,
       "kind": "method"
     },
     {
@@ -526,19 +538,19 @@
     {
       "name": "agent:workspace_changed",
       "file": "src-tauri/src/commands/unified_chat_commands/mod.rs",
-      "line": 4157,
+      "line": 4239,
       "kind": "method"
     },
     {
       "name": "agent:workspace_changed",
       "file": "src-tauri/src/commands/unified_chat_commands/mod.rs",
-      "line": 6177,
+      "line": 6403,
       "kind": "method"
     },
     {
       "name": "agent:workspace_changed",
       "file": "src-tauri/src/commands/unified_chat_commands/mod.rs",
-      "line": 6255,
+      "line": 6482,
       "kind": "method"
     },
     {
@@ -958,7 +970,7 @@
     {
       "name": "persona:applied",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 771,
+      "line": 763,
       "kind": "method"
     },
     {
@@ -982,7 +994,7 @@
     {
       "name": "persona:injection_skipped",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 771,
+      "line": 763,
       "kind": "method"
     },
     {
@@ -1133,6 +1145,30 @@
       "name": "recovery:prompt",
       "file": "src-tauri/src/application/reconciliation/events.rs",
       "line": 399,
+      "kind": "method"
+    },
+    {
+      "name": "remote:session_closed",
+      "file": "src-tauri/src/remote_server/ws.rs",
+      "line": 927,
+      "kind": "method"
+    },
+    {
+      "name": "remote:session_connected",
+      "file": "src-tauri/src/remote_server/ws.rs",
+      "line": 901,
+      "kind": "method"
+    },
+    {
+      "name": "remote:stream_closed",
+      "file": "src-tauri/src/application/remote_event_relay.rs",
+      "line": 333,
+      "kind": "method"
+    },
+    {
+      "name": "remote:stream_frame",
+      "file": "src-tauri/src/application/remote_event_relay.rs",
+      "line": 313,
       "kind": "method"
     },
     {
@@ -1468,7 +1504,7 @@
     {
       "name": "task:provider_error_paused",
       "file": "src-tauri/src/application/chat_service/chat_service_handlers.rs",
-      "line": 3396,
+      "line": 3397,
       "kind": "method"
     },
     {
@@ -1480,7 +1516,7 @@
     {
       "name": "task:recovery_failed",
       "file": "src-tauri/src/application/chat_service/chat_service_handlers.rs",
-      "line": 3516,
+      "line": 3517,
       "kind": "method"
     },
     {
@@ -1654,7 +1690,7 @@
     {
       "name": "ticketing:cache_invalidated",
       "file": "src-tauri/src/application/agent_workspace_external_pr_reconciliation.rs",
-      "line": 482,
+      "line": 520,
       "kind": "method"
     },
     {
@@ -1678,19 +1714,19 @@
     {
       "name": "workspace_review_artifact:created",
       "file": "src-tauri/src/http_server/handlers/agent_workspaces/mod.rs",
-      "line": 1931,
+      "line": 1957,
       "kind": "wrapper"
     },
     {
       "name": "workspace_review_artifact:updated",
       "file": "src-tauri/src/http_server/handlers/agent_workspaces/mod.rs",
-      "line": 1931,
+      "line": 1957,
       "kind": "wrapper"
     },
     {
       "name": "workspace_review_artifact:updated",
       "file": "src-tauri/src/http_server/handlers/agent_workspaces/mod.rs",
-      "line": 2147,
+      "line": 2173,
       "kind": "wrapper"
     }
   ],
@@ -1767,6 +1803,8 @@
     "ralphx://check-for-updates",
     "ralphx://show-release-notes",
     "recovery:prompt",
+    "remote:session_closed",
+    "remote:session_connected",
     "review:update",
     "session:priorities_assessed",
     "step:created",
@@ -1883,7 +1921,11 @@
     "task:updated",
     "ralphx://check-for-updates",
     "ralphx://show-release-notes",
-    "gh-auth:login_prompt"
+    "gh-auth:login_prompt",
+    "remote:session_connected",
+    "remote:session_closed",
+    "remote:stream_frame",
+    "remote:stream_closed"
   ],
   "false_positive_allowlist": [
     {

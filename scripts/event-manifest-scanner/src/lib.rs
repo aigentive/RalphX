@@ -22,6 +22,11 @@ const WRAPPERS: &[Wrapper] = &[
     Wrapper::function("emit_task_lifecycle_event", Some(1)),
     Wrapper::function("emit_ticketing_operation_event", None),
     Wrapper::method("TauriEventSink::emit", Some(1)),
+    Wrapper::method("TauriFrameSink::emit", Some(1)),
+    Wrapper::method("TauriLifecycleSink::emit", Some(1)),
+    // `test-utils`-gated remote host fixture; same forwarding shape as `TauriEventSink::emit`,
+    // and it lives outside a `_tests.rs` file only because the harness is a shared fixture.
+    Wrapper::method("RemoteHostHarness::emit", Some(1)),
     Wrapper::method("ThrottledEmitter::new", None),
     Wrapper::method("ThrottledEmitter::emit", Some(0)),
     Wrapper::method("AppChatService::emit_event", Some(0)),
@@ -1650,10 +1655,20 @@ fn callback_parameter(callback: Node<'_>, source: &str) -> Option<String> {
 /// Reviewed entries only. A genuine non-event-bus `subscribe` (a store, an observable) belongs
 /// here with a reason; anything else hard-fails so a renamed or destructured bus cannot silently
 /// escape the consumed-name census.
-const FOREIGN_SUBSCRIBE_ALLOWLIST: &[(&str, &str)] = &[(
-    "queryClient.getQueryCache()",
-    "TanStack Query cache subscription (useSyncExternalStore), carries no event name",
-)];
+const FOREIGN_SUBSCRIBE_ALLOWLIST: &[(&str, &str)] = &[
+    (
+        "queryClient.getQueryCache()",
+        "TanStack Query cache subscription (useSyncExternalStore), carries no event name",
+    ),
+    (
+        "useUiStore",
+        "Zustand store selector subscription; the listener receives (state, previous), never an event name",
+    ),
+    (
+        "useEnvironmentStore",
+        "Zustand store selector subscription; the listener receives (state, previous), never an event name",
+    ),
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SubscribeReceiver {
