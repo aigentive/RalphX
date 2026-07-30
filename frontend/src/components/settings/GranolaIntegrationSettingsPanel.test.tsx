@@ -101,7 +101,6 @@ describe("GranolaIntegrationSettingsPanel", () => {
   it("shows Granola note reference configuration status", () => {
     renderPanel();
 
-    expect(screen.getByText("Granola")).toBeInTheDocument();
     expect(screen.getByText("Note references not ready")).toBeInTheDocument();
     expect(screen.getByText("Get a Granola API key")).toBeInTheDocument();
     expect(screen.getByText(/Settings -> Connectors -> API keys/)).toBeInTheDocument();

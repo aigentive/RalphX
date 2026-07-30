@@ -37,11 +37,14 @@ export function SettingsNavPage({
   // that entry is a drill-in page reached from a hub card.
   const isDrillIn = hubLeaf !== undefined && hubLeaf !== activeSection;
   const showTabs = hubLeaf === undefined && nav.leaves.length > 1;
+  const leaf = sectionMeta(activeSection);
+  // Drill-in pages are titled by the leaf they opened; every other page is
+  // titled by its nav entry, with the leaf named by the tab bar below.
+  const title = isDrillIn ? (leaf?.label ?? nav.label) : nav.label;
+  const subtitle = isDrillIn ? (leaf?.description ?? "") : nav.description;
 
   return (
     <div className="settings-page">
-      {/* Drill-in pages let the panel's own card header act as the page title,
-          so they get the back affordance instead of a second heading. */}
       {isDrillIn && hubLeaf ? (
         <button
           type="button"
@@ -52,14 +55,14 @@ export function SettingsNavPage({
           <ChevronLeft aria-hidden="true" />
           <span>{nav.label}</span>
         </button>
-      ) : (
-        <div className="settings-page__head">
-          <h1 className="settings-page__title" data-testid="settings-page-title">
-            {nav.label}
-          </h1>
-          <p className="settings-page__sub">{nav.description}</p>
-        </div>
-      )}
+      ) : null}
+
+      <div className="settings-page__head">
+        <h1 className="settings-page__title" data-testid="settings-page-title">
+          {title}
+        </h1>
+        {subtitle ? <p className="settings-page__sub">{subtitle}</p> : null}
+      </div>
 
       {showTabs ? (
         <div

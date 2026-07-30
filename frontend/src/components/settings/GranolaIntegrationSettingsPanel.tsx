@@ -10,7 +10,7 @@ import {
   ErrorBanner,
   IntegrationDisconnectButton,
   IntegrationStatusBanner,
-  SectionCard,
+  SettingsSection,
 } from "./SettingsView.shared";
 
 function errorMessage(error: unknown, fallback: string): string {
@@ -118,24 +118,16 @@ export function GranolaIntegrationSettingsPanel() {
 
   if (isLoading) {
     return (
-      <SectionCard
-        icon={<KeyRound className="h-[18px] w-[18px]" />}
-        title="Granola"
-        description="Granola note references"
-      >
+      <SettingsSection>
         <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-2 text-sm text-[var(--text-muted)]">
           Loading Granola settings...
         </div>
-      </SectionCard>
+      </SettingsSection>
     );
   }
 
   return (
-    <SectionCard
-      icon={<KeyRound className="h-[18px] w-[18px]" />}
-      title="Granola"
-      description="Granola note references"
-    >
+    <SettingsSection>
       {displayedError ? (
         <ErrorBanner
           error={displayedError}
@@ -230,6 +222,6 @@ export function GranolaIntegrationSettingsPanel() {
           ) : null}
         </div>
       </div>
-    </SectionCard>
+    </SettingsSection>
   );
 }

@@ -1,8 +1,7 @@
-import { Zap } from "lucide-react";
 import type { ExecutionSettings } from "@/types/settings";
 import {
   NumberSettingRow,
-  SectionCard,
+  SettingsSection,
   ToggleSettingRow,
 } from "../SettingsView.shared";
 
@@ -78,12 +77,8 @@ export default function ExecutionSection({
     </>
   );
   return embedded ? rows : (
-    <SectionCard
-      icon={<Zap className="w-[18px] h-[18px] text-[var(--card-icon-color)]" />}
-      title="Execution"
-      description="Control task execution behavior and concurrency"
-    >
+    <SettingsSection>
       {rows}
-    </SectionCard>
+    </SettingsSection>
   );
 }

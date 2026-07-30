@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, LockKeyhole, Network, Plus, RefreshCw, ServerCog } from "lucide-react";
+import { ChevronDown, LockKeyhole, Plus, RefreshCw, ServerCog } from "lucide-react";
 import { toast } from "sonner";
 
 import type {
@@ -27,7 +27,7 @@ import { useMcpPolicy } from "@/hooks/useMcpPolicy";
 import { selectActiveProject, useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
 
-import { ErrorBanner, SectionCard } from "./SettingsView.shared";
+import { ErrorBanner, SettingsSection } from "./SettingsView.shared";
 import { cancelScheduledJob, scheduleAfterPaint } from "./SettingsDialog.performance";
 
 type Scope = "global" | "project";
@@ -298,11 +298,7 @@ export function McpSettingsSection() {
 
   return (
     <div className="space-y-8">
-      <SectionCard
-        icon={<Network className="h-5 w-5" />}
-        title="MCP"
-        description="Inherit provider-native MCP servers and apply RalphX server or tool restrictions. Definitions, authentication, approvals, and trust remain provider-owned."
-      >
+      <SettingsSection>
         <div className="space-y-5">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <Tabs value={scope} onValueChange={(value) => setScope(value as Scope)}>
@@ -469,7 +465,7 @@ export function McpSettingsSection() {
             </div>
           )}
         </div>
-      </SectionCard>
+      </SettingsSection>
 
     </div>
   );

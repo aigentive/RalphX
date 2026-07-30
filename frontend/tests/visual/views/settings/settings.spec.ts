@@ -2,19 +2,20 @@ import { test, expect } from "@playwright/test";
 import { SettingsPage } from "../../../pages/settings.page";
 import { setupSettings } from "../../../fixtures/setup.fixtures";
 
+// `label` only names the snapshot test; sections carry no heading of their own.
 const SETTINGS_SECTION_VISUALS = [
-  { id: "providers", heading: "Providers" },
-  { id: "models", heading: "Models" },
-  { id: "repository", heading: "Repository" },
-  { id: "project-analysis", heading: "Setup & Validation" },
-  { id: "agents", heading: "Default new-run mode" },
-  { id: "tasks", heading: "Task policies" },
-  { id: "planning", heading: "Plan verification" },
-  { id: "github", heading: "GitHub" },
-  { id: "api-keys", heading: "API Keys" },
-  { id: "mcp", heading: "MCP" },
-  { id: "updates", heading: "Updates" },
-  { id: "accessibility", heading: "Accessibility" },
+  { id: "providers", label: "Providers" },
+  { id: "models", label: "Models" },
+  { id: "repository", label: "Repository" },
+  { id: "project-analysis", label: "Setup & Validation" },
+  { id: "agents", label: "Default new-run mode" },
+  { id: "tasks", label: "Task policies" },
+  { id: "planning", label: "Plan verification" },
+  { id: "github", label: "GitHub" },
+  { id: "api-keys", label: "API Keys" },
+  { id: "mcp", label: "MCP" },
+  { id: "updates", label: "Updates" },
+  { id: "accessibility", label: "Accessibility" },
 ] as const;
 
 test.describe("Settings Dialog", () => {
@@ -28,7 +29,7 @@ test.describe("Settings Dialog", () => {
   test("renders settings dialog layout", async () => {
     await expect(settingsPage.settingsDialog).toBeVisible();
     await expect(settingsPage.settingsTitle).toBeVisible();
-    await settingsPage.waitForSection("providers", "Providers");
+    await settingsPage.waitForSection("providers");
   });
 
   test("renders above the underlying view (modal overlay)", async ({ page }) => {
@@ -46,7 +47,7 @@ test.describe("Settings Dialog", () => {
   test("External MCP section contains bridge controls", async ({ page }) => {
     settingsPage = new SettingsPage(page);
     await settingsPage.openViaStore("external-mcp");
-    await settingsPage.waitForSection("external-mcp", "External MCP");
+    await settingsPage.waitForSection("external-mcp");
     await expect(settingsPage.externalMcpEnabledToggle).toBeVisible();
     await expect(settingsPage.externalMcpHostInput).toBeVisible();
     await expect(settingsPage.externalMcpPortInput).toBeVisible();
@@ -83,7 +84,7 @@ test.describe("Settings Dialog", () => {
     await setupSettings(page);
     settingsPage = new SettingsPage(page);
     await settingsPage.openViaStore("repository");
-    await settingsPage.waitForSection("repository", "Repository");
+    await settingsPage.waitForSection("repository");
 
     const repairPanel = page.getByTestId("git-auth-repair-panel");
     await repairPanel.scrollIntoViewIfNeeded();
@@ -98,10 +99,10 @@ test.describe("Settings Dialog", () => {
   });
 
   for (const section of SETTINGS_SECTION_VISUALS) {
-    test(`matches snapshot - ${section.heading} section`, async ({ page }) => {
+    test(`matches snapshot - ${section.label} section`, async ({ page }) => {
       settingsPage = new SettingsPage(page);
       await settingsPage.openViaStore(section.id);
-      await settingsPage.waitForSection(section.id, section.heading);
+      await settingsPage.waitForSection(section.id);
       if (section.id === "agents") {
         await expect(
           settingsPage.settingsDialog.getByTestId("agent-family-row").first(),
@@ -121,7 +122,7 @@ test.describe("Settings Dialog", () => {
   test("matches the consolidated nav rail and page header", async ({ page }) => {
     settingsPage = new SettingsPage(page);
     await settingsPage.openViaStore("providers");
-    await settingsPage.waitForSection("providers", "Providers");
+    await settingsPage.waitForSection("providers");
     await expect(
       settingsPage.settingsDialog.getByTestId("settings-page-title"),
     ).toHaveText("Models & Providers");
@@ -152,7 +153,7 @@ test.describe("Settings Dialog", () => {
     settingsPage = new SettingsPage(page);
     await settingsPage.openViaStore("integrations-hub");
     await settingsPage.selectSection("github");
-    await settingsPage.waitForSection("github", "GitHub");
+    await settingsPage.waitForSection("github");
 
     const back = settingsPage.settingsDialog.getByTestId(
       "settings-drill-in-back",
@@ -173,7 +174,7 @@ test.describe("Settings Dialog", () => {
   test("matches the settings search results dropdown", async ({ page }) => {
     settingsPage = new SettingsPage(page);
     await settingsPage.openViaStore("providers");
-    await settingsPage.waitForSection("providers", "Providers");
+    await settingsPage.waitForSection("providers");
 
     // The focused input's blinking caret and the racy post-fill text
     // selection make the element screenshot unstable — hide both.
@@ -216,7 +217,7 @@ test.describe("Settings Dialog", () => {
   test("matches the settings search empty state", async ({ page }) => {
     settingsPage = new SettingsPage(page);
     await settingsPage.openViaStore("providers");
-    await settingsPage.waitForSection("providers", "Providers");
+    await settingsPage.waitForSection("providers");
 
     await page.addStyleTag({ content: ".settings-search__input { caret-color: transparent; }" });
     await settingsPage.settingsDialog
@@ -234,7 +235,7 @@ test.describe("Settings Dialog", () => {
 
   test("Updates defaults to Stable and persists the Nightly radio selection", async () => {
     await settingsPage.openViaStore("updates");
-    await settingsPage.waitForSection("updates", "Updates");
+    await settingsPage.waitForSection("updates");
 
     await expect(settingsPage.updateChannelGroup).toBeVisible();
     await expect(settingsPage.stableUpdateChannel).toHaveAttribute("aria-checked", "true");
@@ -262,7 +263,7 @@ test.describe("Settings Dialog", () => {
     await setupSettings(page);
     settingsPage = new SettingsPage(page);
     await settingsPage.openViaStore("updates");
-    await settingsPage.waitForSection("updates", "Updates");
+    await settingsPage.waitForSection("updates");
 
     await settingsPage.selectUpdateChannel("nightly");
     await expect(settingsPage.updateChannelSaveError).toBeVisible();
@@ -277,7 +278,7 @@ test.describe("Settings Dialog", () => {
   test("matches populated Agents expanded editor", async ({ page }) => {
     settingsPage = new SettingsPage(page);
     await settingsPage.openViaStore("agents");
-    await settingsPage.waitForSection("agents", "Default new-run mode");
+    await settingsPage.waitForSection("agents");
     await settingsPage.settingsDialog
       .getByTestId("agent-family-row")
       .first()
@@ -300,7 +301,7 @@ test.describe("Settings Dialog", () => {
     await page.setViewportSize({ width: 760, height: 900 });
     settingsPage = new SettingsPage(page);
     await settingsPage.openViaStore("agents");
-    await settingsPage.waitForSection("agents", "Default new-run mode");
+    await settingsPage.waitForSection("agents");
     await expect(
       settingsPage.settingsDialog.getByTestId("agent-family-row").first(),
     ).toBeVisible({ timeout: 10000 });

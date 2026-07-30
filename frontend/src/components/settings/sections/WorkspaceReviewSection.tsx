@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronRight, ShieldCheck, TriangleAlert } from "lucide-react";
+import { ChevronRight, TriangleAlert } from "lucide-react";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAgentModels } from "@/hooks/useAgentModels";
@@ -11,7 +11,7 @@ import {
 import { useWorkspaceReviewRuntimeSettings } from "@/hooks/useWorkspaceReviewSettings";
 import { selectActiveProject, useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
-import { SectionCard, ToggleSettingRow } from "../SettingsView.shared";
+import { SettingsSection, ToggleSettingRow } from "../SettingsView.shared";
 import { WorkspaceReviewScopeRows } from "./WorkspaceReviewRuntimeRows";
 import { isKnownHarness } from "./workspaceReviewHarness";
 
@@ -143,14 +143,8 @@ export default function WorkspaceReviewSection({ embedded = false }: { embedded?
     </>
   );
   return embedded ? content : (
-    <SectionCard
-      icon={
-        <ShieldCheck className="h-[18px] w-[18px] text-[var(--card-icon-color)]" />
-      }
-      title="Workspace Review"
-      description="Configure publish gating and legacy runtime fallbacks. The Reviewer role in Agents is authoritative."
-    >
+    <SettingsSection>
       {content}
-    </SectionCard>
+    </SettingsSection>
   );
 }
