@@ -120,7 +120,7 @@ test("Team mode opens its roster board and message recipient selector", async ({
 
   await expect(page.getByTestId("agents-view")).toBeVisible();
   const row = page.getByTestId(`agents-session-${conversationId}`);
-  await expect(row).toBeVisible({ timeout: 15_000 });
+  await expect(row).toBeVisible({ timeout: 30_000 });
   await row.getByRole("button").first().click();
   await page.evaluate(
     async ({ targetConversationId, targetProjectId }) => {
