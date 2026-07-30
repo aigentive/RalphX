@@ -58,6 +58,9 @@
 ## Continuity
 - RalphX continuity key is the delegated session id.
 - Provider continuity is additive through `provider_session_id`, not by reusing ideation session ids.
+- `NativeDelegationLauncher` launches/reuses this durable session and returns the delegated
+  session/conversation/run outcome; HTTP `DelegationJobSnapshot` state is a separate one-shot
+  wrapper concern.
 
 ## Phase 0 Implementation Cut
 - add delegated-session entity + repository
@@ -73,13 +76,16 @@
   - delegated-session repository trait
   - memory + SQLite delegated-session repositories
   - SQLite migration creating `delegated_sessions`
-- Still required:
   - `ChatContextType::Delegation`
   - delegated-session AppState wiring
   - conversation/runtime helpers for delegation context
-  - native bridge migration off ideation child sessions
+  - native bridge migration off ideation child-session storage
+  - delegated conversation/provider-session continuation and explicit session reuse
+  - exact caller-task assignment settlement and startup orphan recovery
+- Separate concern:
+  - standing roster/member/message lifecycle belongs to `rx-native-team-mode.md`
 
 ## Non-Negotiables
-- Do not widen cross-context delegation on top of `IdeationSession`.
+- Do not reintroduce `IdeationSession` as generic cross-context delegation storage.
 - Do not couple delegated specialist history to ideation proposal/verification state.
 - Canonical `agents/` remains the source of truth for delegated specialist identity and prompt content.

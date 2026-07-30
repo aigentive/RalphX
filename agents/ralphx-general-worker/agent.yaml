@@ -34,6 +34,8 @@ capabilities:
     - pause_agent_workflow_run
     - resume_agent_workflow_run
     - cancel_agent_workflow_run
+    - team_send_message
+    - team_roster
   internal_skills:
     allowed:
       - ralphx-agent-workflow-orchestrator
@@ -55,3 +57,52 @@ delegation:
   allowed_targets:
     - ralphx-general-explorer
     - ralphx-general-worker
+profiles:
+  team_coordinator:
+    role: team_coordinator
+    description: "Read-only coordinator for an RX-native Team; delegates writable work to members."
+    capabilities:
+      mcp_tools:
+        - fs_read_file
+        - fs_list_dir
+        - fs_grep
+        - fs_glob
+        - get_artifact
+        - delegate_start
+        - delegate_wait
+        - delegate_cancel
+        - create_agent_task
+        - get_agent_task
+        - list_agent_tasks
+        - update_agent_task
+        - claim_agent_task
+        - complete_agent_task
+        - get_delegate_assignment
+        - complete_delegate_assignment
+        - release_delegate_assignment
+        - search_memories
+        - get_memory
+        - get_memories_for_paths
+        - team_add_member
+        - team_assign
+        - team_list
+        - team_stop_member
+        - team_send_message
+    harnesses:
+      claude:
+        model: sonnet
+        tools:
+          extends: readonly_tools
+        disallowed_tools:
+          - Write
+          - Edit
+          - NotebookEdit
+          - Bash
+        preapproved_cli_tools: []
+      codex:
+        runtime_features:
+          shell_tool: false
+    delegation:
+      allowed_targets:
+        - ralphx-general-explorer
+        - ralphx-general-worker

@@ -326,6 +326,7 @@ pub(crate) struct ChatRuntimeFactoryDeps {
     pub granola_integration_service: Option<Arc<GranolaIntegrationService>>,
     pub clickup_integration_service: Option<Arc<ClickUpIntegrationService>>,
     pub mcp_policy_service: Option<crate::application::mcp_policy_service::McpPolicyService>,
+    pub managed_team: Option<Arc<crate::application::managed_team::ManagedTeamService>>,
 }
 
 impl ChatRuntimeFactoryDeps {
@@ -393,6 +394,7 @@ impl ChatRuntimeFactoryDeps {
             granola_integration_service: None,
             clickup_integration_service: None,
             mcp_policy_service: None,
+            managed_team: None,
         }
     }
 
@@ -613,6 +615,14 @@ impl ChatRuntimeFactoryDeps {
         self
     }
 
+    pub(crate) fn with_managed_team(
+        mut self,
+        managed_team: Arc<crate::application::managed_team::ManagedTeamService>,
+    ) -> Self {
+        self.managed_team = Some(managed_team);
+        self
+    }
+
     pub(crate) fn with_runtime_support(
         mut self,
         execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
@@ -753,6 +763,7 @@ impl ChatRuntimeFactoryDeps {
         )
         .with_integration_reference_services_from_app_state(state)
         .with_mcp_policy_service(state.mcp_policy_service())
+        .with_managed_team(Arc::clone(&state.managed_team))
     }
 }
 
@@ -878,6 +889,9 @@ pub(crate) fn build_chat_service_from_deps<R: Runtime>(
     }
     if let Some(policy_service) = deps.mcp_policy_service.as_ref() {
         service = service.with_mcp_policy_service(policy_service.clone());
+    }
+    if let Some(managed_team) = deps.managed_team.as_ref() {
+        service = service.with_managed_team(Arc::clone(managed_team));
     }
 
     service

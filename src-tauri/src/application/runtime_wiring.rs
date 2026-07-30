@@ -231,6 +231,9 @@ pub fn build_http_app_state(
     http_app_state_inner.notification_service_cache = shared_notification_service_cache;
     // INVARIANT: Tauri commands and HTTP/MCP handlers enforce the same live capability state.
     http_app_state_inner.agent_capability_gate = shared_agent_capability_gate;
+    // INVARIANT: both graphs share one managed-Team authority (sessions, roster,
+    // run bindings, startup barrier); separate instances would split barrier state.
+    http_app_state_inner.managed_team = Arc::clone(&app_state.managed_team);
     // INVARIANT: command-composed repair continuations and review resumers must remain available
     // to both Tauri and HTTP entry paths without an application-to-command import.
     share_agent_workspace_repair_publish_continuation(app_state, &mut http_app_state_inner);

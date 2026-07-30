@@ -2021,9 +2021,7 @@ export type TeamMessageTargetKind = "coordinator" | "member" | "broadcast";
 
 export interface TeamMessageTarget {
   kind: TeamMessageTargetKind;
-  teamId?: string | null;
-  teamMemberId?: string | null;
-  conversationId?: string | null;
+  memberName?: string | null;
 }
 
 export interface SendAgentMessageOptions {

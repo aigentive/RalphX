@@ -12,6 +12,7 @@ use super::services::PrPollerRegistry;
 use crate::application::agent_capability_gate::AgentCapabilityGate;
 use crate::application::app_paths::AppPaths;
 use crate::application::chat_service::AppChatService;
+use crate::application::managed_team::ManagedTeamService;
 use crate::application::notification_service::{
     NoopDesktopNotifier, NoopNotificationEventEmitter, NotificationEventEmitter,
     NotificationService, TauriDesktopNotifier, TauriNotificationEventEmitter, WindowFocusState,
@@ -220,6 +221,9 @@ pub struct AppState {
     pub review_settings_repo: Arc<dyn ReviewSettingsRepository>,
     /// Persisted UI feature flag overrides.
     pub ui_feature_flag_overrides_repo: Arc<dyn UiFeatureFlagOverridesRepository>,
+    /// Shared managed-Team authority (sessions, roster, run bindings, startup barrier).
+    /// INVARIANT: both AppState graphs must hold the same instance (runtime_wiring).
+    pub managed_team: Arc<ManagedTeamService>,
     /// Live authoritative gates for Agent conversation orchestration capabilities.
     pub agent_capability_gate: Arc<AgentCapabilityGate>,
     /// Durable task validation run/result repository
@@ -657,6 +661,80 @@ impl AppState {
 
     fn null_event_runtime() -> (Arc<dyn EventSink>, InternalEventBus) {
         (Arc::new(NullEventSink), InternalEventBus::new())
+    }
+
+    fn build_managed_team_sqlite(
+        shared_conn: &Arc<tokio::sync::Mutex<rusqlite::Connection>>,
+        feature_overrides_repo: Arc<dyn UiFeatureFlagOverridesRepository>,
+        event_sink: Arc<dyn EventSink>,
+    ) -> Arc<crate::application::managed_team::ManagedTeamService> {
+        use crate::infrastructure::sqlite::{
+            SqliteAgentRunRepository, SqliteChatConversationRepository,
+            SqliteQueuedMessageRepository, SqliteTeamCoordinationTransitionRepository,
+            SqliteTeamMessageRepository, SqliteTeamRepository, SqliteTeamRunBindingRepository,
+            SqliteTeamWakeBatchRepository, SqliteTeamWorkspaceReservationRepository,
+        };
+        Arc::new(
+            crate::application::managed_team::ManagedTeamService::new_with_event_sink(
+                Arc::new(SqliteTeamRepository::from_shared(Arc::clone(shared_conn))),
+                Arc::new(SqliteTeamCoordinationTransitionRepository::from_shared(
+                    Arc::clone(shared_conn),
+                )),
+                Arc::new(SqliteTeamRunBindingRepository::from_shared(Arc::clone(
+                    shared_conn,
+                ))),
+                Arc::new(SqliteTeamMessageRepository::from_shared(Arc::clone(
+                    shared_conn,
+                ))),
+                Arc::new(SqliteTeamWakeBatchRepository::from_shared(Arc::clone(
+                    shared_conn,
+                ))),
+                Arc::new(SqliteQueuedMessageRepository::from_shared(Arc::clone(
+                    shared_conn,
+                ))),
+                Arc::new(SqliteChatConversationRepository::from_shared(Arc::clone(
+                    shared_conn,
+                ))),
+                Arc::new(SqliteAgentRunRepository::from_shared(Arc::clone(
+                    shared_conn,
+                ))),
+                Arc::new(SqliteTeamWorkspaceReservationRepository::from_shared(
+                    Arc::clone(shared_conn),
+                )),
+                feature_overrides_repo,
+                event_sink,
+            ),
+        )
+    }
+
+    fn build_managed_team_memory(
+        feature_overrides_repo: Arc<dyn UiFeatureFlagOverridesRepository>,
+        event_sink: Arc<dyn EventSink>,
+    ) -> Arc<crate::application::managed_team::ManagedTeamService> {
+        use crate::infrastructure::memory::{
+            MemoryAgentRunRepository, MemoryChatConversationRepository,
+            MemoryQueuedMessageRepository, MemoryTeamCoordinationTransitionRepository,
+            MemoryTeamMessageRepository, MemoryTeamRepository, MemoryTeamRunBindingRepository,
+            MemoryTeamWakeBatchRepository, MemoryTeamWorkspaceReservationRepository,
+        };
+        let sessions = MemoryTeamRepository::new_shared_sessions();
+        Arc::new(
+            crate::application::managed_team::ManagedTeamService::new_with_event_sink(
+                Arc::new(MemoryTeamRepository::with_sessions(Arc::clone(&sessions))),
+                Arc::new(MemoryTeamCoordinationTransitionRepository::with_sessions(
+                    sessions,
+                )),
+                Arc::new(MemoryTeamRunBindingRepository::new()),
+                Arc::new(MemoryTeamMessageRepository::new()),
+                Arc::new(MemoryTeamWakeBatchRepository::new()),
+                Arc::new(MemoryQueuedMessageRepository::new()),
+                Arc::new(MemoryChatConversationRepository::new()),
+                Arc::new(MemoryAgentRunRepository::new()),
+                Arc::new(MemoryTeamWorkspaceReservationRepository::new()),
+                feature_overrides_repo,
+                event_sink,
+            ),
+        )
     }
 
     fn production_agent_clients(
@@ -1415,6 +1493,14 @@ impl AppState {
         let (agent_conversation_workspace_repo, agent_workspace_repair_repo) =
             Self::sqlite_agent_workspace_repositories(&shared_conn);
 
+        let ui_feature_flag_overrides_repo: Arc<dyn UiFeatureFlagOverridesRepository> = Arc::new(
+            SqliteUiFeatureFlagOverridesRepository::from_shared(Arc::clone(&shared_conn)),
+        );
+        let managed_team = Self::build_managed_team_sqlite(
+            &shared_conn,
+            Arc::clone(&ui_feature_flag_overrides_repo),
+            Arc::clone(&events),
+        );
         let state = Self {
             task_repo: Arc::clone(&task_repo),
             branch_update_repo: Arc::new(
@@ -1451,9 +1537,8 @@ impl AppState {
             review_settings_repo: Arc::new(SqliteReviewSettingsRepository::from_shared(
                 Arc::clone(&shared_conn),
             )),
-            ui_feature_flag_overrides_repo: Arc::new(
-                SqliteUiFeatureFlagOverridesRepository::from_shared(Arc::clone(&shared_conn)),
-            ),
+            ui_feature_flag_overrides_repo: Arc::clone(&ui_feature_flag_overrides_repo),
+            managed_team: Arc::clone(&managed_team),
             agent_capability_gate: Arc::new(AgentCapabilityGate::default()),
             notification_settings_repo: Arc::new(
                 SqliteNotificationSettingsRepository::from_shared(Arc::clone(&shared_conn)),
@@ -1742,6 +1827,13 @@ impl AppState {
         let (agent_conversation_workspace_repo, agent_workspace_repair_repo) =
             Self::memory_agent_workspace_repositories();
 
+        let ui_feature_flag_overrides_repo: Arc<dyn UiFeatureFlagOverridesRepository> =
+            Arc::new(MemoryUiFeatureFlagOverridesRepository::new());
+        let managed_team = Self::build_managed_team_sqlite(
+            &shared_conn,
+            Arc::clone(&ui_feature_flag_overrides_repo),
+            Arc::clone(&events),
+        );
         Self {
             task_repo: Arc::new(MemoryTaskRepository::new()),
             branch_update_repo: Arc::new(SqliteBranchUpdateRepository::from_shared(Arc::clone(
@@ -1762,7 +1854,8 @@ impl AppState {
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
-            ui_feature_flag_overrides_repo: Arc::new(MemoryUiFeatureFlagOverridesRepository::new()),
+            ui_feature_flag_overrides_repo: Arc::clone(&ui_feature_flag_overrides_repo),
+            managed_team: Arc::clone(&managed_team),
             agent_capability_gate: Arc::new(AgentCapabilityGate::default()),
             notification_settings_repo: Arc::new(MemoryNotificationSettingsRepository::new()),
             window_focus_state: Arc::new(WindowFocusState::default()),
@@ -1939,6 +2032,13 @@ impl AppState {
         let (agent_conversation_workspace_repo, agent_workspace_repair_repo) =
             Self::memory_agent_workspace_repositories();
 
+        let ui_feature_flag_overrides_repo: Arc<dyn UiFeatureFlagOverridesRepository> =
+            Arc::new(MemoryUiFeatureFlagOverridesRepository::new());
+        let managed_team = Self::build_managed_team_sqlite(
+            &shared_conn,
+            Arc::clone(&ui_feature_flag_overrides_repo),
+            Arc::clone(&events),
+        );
         Self {
             task_repo: Arc::new(MemoryTaskRepository::new()),
             branch_update_repo: Arc::new(SqliteBranchUpdateRepository::from_shared(Arc::clone(
@@ -1959,7 +2059,8 @@ impl AppState {
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
-            ui_feature_flag_overrides_repo: Arc::new(MemoryUiFeatureFlagOverridesRepository::new()),
+            ui_feature_flag_overrides_repo: Arc::clone(&ui_feature_flag_overrides_repo),
+            managed_team: Arc::clone(&managed_team),
             agent_capability_gate: Arc::new(AgentCapabilityGate::default()),
             notification_settings_repo: Arc::new(MemoryNotificationSettingsRepository::new()),
             window_focus_state: Arc::new(WindowFocusState::default()),
@@ -2141,6 +2242,13 @@ impl AppState {
         let (agent_conversation_workspace_repo, agent_workspace_repair_repo) =
             Self::sqlite_agent_workspace_repositories(&shared_conn);
 
+        let ui_feature_flag_overrides_repo: Arc<dyn UiFeatureFlagOverridesRepository> =
+            Arc::new(MemoryUiFeatureFlagOverridesRepository::new());
+        let managed_team = Self::build_managed_team_sqlite(
+            &shared_conn,
+            Arc::clone(&ui_feature_flag_overrides_repo),
+            Arc::clone(&events),
+        );
         Self {
             task_repo: Arc::new(SqliteTaskRepository::from_shared(Arc::clone(&shared_conn))),
             branch_update_repo: Arc::new(SqliteBranchUpdateRepository::from_shared(Arc::clone(
@@ -2166,7 +2274,8 @@ impl AppState {
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
-            ui_feature_flag_overrides_repo: Arc::new(MemoryUiFeatureFlagOverridesRepository::new()),
+            ui_feature_flag_overrides_repo: Arc::clone(&ui_feature_flag_overrides_repo),
+            managed_team: Arc::clone(&managed_team),
             agent_capability_gate: Arc::new(AgentCapabilityGate::default()),
             notification_settings_repo: Arc::new(MemoryNotificationSettingsRepository::new()),
             window_focus_state: Arc::new(WindowFocusState::default()),
@@ -2350,6 +2459,12 @@ impl AppState {
         let (agent_conversation_workspace_repo, agent_workspace_repair_repo) =
             Self::memory_agent_workspace_repositories();
 
+        let ui_feature_flag_overrides_repo: Arc<dyn UiFeatureFlagOverridesRepository> =
+            Arc::new(MemoryUiFeatureFlagOverridesRepository::new());
+        let managed_team = Self::build_managed_team_memory(
+            Arc::clone(&ui_feature_flag_overrides_repo),
+            Arc::clone(&events),
+        );
         Self {
             task_repo: Arc::clone(&task_repo),
             branch_update_repo: Arc::new(MemoryBranchUpdateRepository::new()),
@@ -2366,7 +2481,8 @@ impl AppState {
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
-            ui_feature_flag_overrides_repo: Arc::new(MemoryUiFeatureFlagOverridesRepository::new()),
+            ui_feature_flag_overrides_repo: Arc::clone(&ui_feature_flag_overrides_repo),
+            managed_team: Arc::clone(&managed_team),
             agent_capability_gate: Arc::new(AgentCapabilityGate::default()),
             notification_settings_repo: Arc::new(MemoryNotificationSettingsRepository::new()),
             window_focus_state: Arc::new(WindowFocusState::default()),

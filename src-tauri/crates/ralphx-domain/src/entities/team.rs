@@ -89,9 +89,5 @@ pub enum TeamMessageTargetKind {
 pub struct TeamMessageTarget {
     pub kind: TeamMessageTargetKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub team_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub team_member_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub conversation_id: Option<String>,
+    pub member_name: Option<String>,
 }

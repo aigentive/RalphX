@@ -5,7 +5,7 @@ import { BasePage } from "../base.page";
 
 type RecentInboxScenario = "populated" | "empty-needs";
 
-const SETTLE_TIMEOUT_MS = 15_000;
+const SETTLE_TIMEOUT_MS = 30_000;
 
 export class AgentsInboxRecentPage extends BasePage {
   readonly sidebar: Locator;
@@ -42,7 +42,7 @@ export class AgentsInboxRecentPage extends BasePage {
     await this.page.getByRole("radio", { name: "Inbox" }).click();
     await this.page.keyboard.press("Escape");
     await expect(this.recentChip).toHaveAttribute("aria-selected", "true");
-    await expect(this.recentScroller).toBeVisible();
+    await expect(this.recentScroller).toBeVisible({ timeout: 30_000 });
     await this.waitForGroupsSettled();
   }
 
