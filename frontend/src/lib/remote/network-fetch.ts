@@ -15,6 +15,7 @@
 
 import { invoke as primitiveInvoke } from "#tauri-core-primitive";
 
+import { paceRemoteCall } from "./request-pacing";
 import {
   RemoteTransportError,
   toRemoteTransportError,
@@ -191,15 +192,18 @@ export async function networkFetch(
   let envelope: unknown;
   try {
     // Rule 14 + struct-param wrapping: `remote_fetch(input: RemoteFetchInput)`.
-    envelope = await primitiveInvoke<unknown>("remote_fetch", {
-      input: {
-        id: environmentId,
-        path,
-        method,
-        headers,
-        ...(body === null ? {} : { body }),
-      },
-    });
+    // Paced with the invoke traffic: both spend the same per-device host budget.
+    envelope = await paceRemoteCall(environmentId, () =>
+      primitiveInvoke<unknown>("remote_fetch", {
+        input: {
+          id: environmentId,
+          path,
+          method,
+          headers,
+          ...(body === null ? {} : { body }),
+        },
+      })
+    );
   } catch (reason: unknown) {
     throw toFetchTransportError(reason, environmentId, path);
   }

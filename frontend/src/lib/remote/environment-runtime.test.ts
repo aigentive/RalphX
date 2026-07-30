@@ -379,10 +379,62 @@ describe("environment runtime composition", () => {
     await expect(
       supervisors[supervisors.length - 1]?.deps.beginStream(OUTCOME)
     ).rejects.toThrow(/500/);
-    expect(invalidate).toHaveBeenCalledWith(
-      { refetchType: "all" },
-      { throwOnError: true }
-    );
+    expect(invalidate).toHaveBeenCalledWith({ refetchType: "all" });
+  });
+
+  it("fails the hydration barrier when a refetched query settles in a host error", async () => {
+    const { initializeEnvironmentRuntime } = await import("./environment-runtime");
+    useEnvironmentStore.getState().setEnvironments([summary("env-b")]);
+    setFlag(true);
+    teardown = initializeEnvironmentRuntime();
+    useEnvironmentStore.setState({ activeEnvironmentId: "env-b" });
+
+    const client = getQueryClient("env-b");
+    await client.prefetchQuery({
+      queryKey: ["projects", "list"],
+      queryFn: () => Promise.reject(new Error("host answered 500")),
+      retry: false,
+    });
+    vi.spyOn(client, "invalidateQueries").mockResolvedValue(undefined);
+
+    // `invalidateQueries` without `throwOnError` swallows refetch rejections, so
+    // the barrier must read the settled cache — a genuine host failure still
+    // fails it (fail closed, §3.4).
+    await expect(
+      supervisors[supervisors.length - 1]?.deps.beginStream(OUTCOME)
+    ).rejects.toThrow(/500/);
+  });
+
+  it("tolerates queries the remote facade refuses as unavailable", async () => {
+    const { initializeEnvironmentRuntime } = await import("./environment-runtime");
+    useEnvironmentStore.getState().setEnvironments([summary("env-b")]);
+    setFlag(true);
+    teardown = initializeEnvironmentRuntime();
+    useEnvironmentStore.setState({ activeEnvironmentId: "env-b" });
+
+    const client = getQueryClient("env-b");
+    // The regression that shipped: ticketing/GitHub/provider queries use commands
+    // the remote facade deliberately refuses. Those rejections are a capability
+    // boundary, not a health signal — treating them as fatal makes connecting
+    // structurally impossible while any such query is mounted.
+    await client.prefetchQuery({
+      queryKey: ["ticketing", "providers"],
+      queryFn: () =>
+        Promise.reject(
+          new RemoteTransportError({
+            code: "REMOTE_COMMAND_UNAVAILABLE",
+            message: "Command `list_ticketing_providers` is not available remotely.",
+            environmentId: "env-b",
+            cmd: "list_ticketing_providers",
+          })
+        ),
+      retry: false,
+    });
+    vi.spyOn(client, "invalidateQueries").mockResolvedValue(undefined);
+
+    await expect(
+      supervisors[supervisors.length - 1]?.deps.beginStream(OUTCOME)
+    ).resolves.toBeUndefined();
   });
 
   it("keeps one bus identity per environment across reactivation", async () => {

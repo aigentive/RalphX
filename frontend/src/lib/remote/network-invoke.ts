@@ -20,6 +20,7 @@
 import { invoke as primitiveInvoke } from "#tauri-core-primitive";
 import type { InvokeArgs } from "#tauri-core-primitive";
 
+import { paceRemoteCall } from "./request-pacing";
 import {
   RemoteTransportError,
   parseRemoteTransportErrorCode,
@@ -125,6 +126,19 @@ export async function networkInvoke<T>(
   const requestId = mintRequestId();
   const jsonArgs = assertJsonArgs(cmd, environmentId, args);
 
+  // Paced below the host's per-device budget (8 slots, 10/s bucket) so a
+  // hydration sweep drains instead of bouncing off `REMOTE_FORBIDDEN`.
+  return paceRemoteCall(environmentId, () =>
+    dispatchInvoke(environmentId, cmd, requestId, jsonArgs)
+  );
+}
+
+async function dispatchInvoke<T>(
+  environmentId: string,
+  cmd: string,
+  requestId: string,
+  jsonArgs: Record<string, unknown> | undefined
+): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {

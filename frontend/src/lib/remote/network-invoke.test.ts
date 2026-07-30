@@ -29,6 +29,8 @@ import {
   type RemoteTransportErrorCode,
 } from "./transport-errors";
 
+import { resetRequestPacingForTest } from "./request-pacing";
+
 const ENV = "env-uuid-1";
 
 function invokeInput(callIndex = 0): Record<string, unknown> {
@@ -44,6 +46,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // Never-settling dispatch mocks hold pacer slots past their test; drop them.
+  resetRequestPacingForTest();
   vi.useRealTimers();
 });
 

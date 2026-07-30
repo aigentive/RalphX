@@ -40,7 +40,7 @@ import {
   type EnvironmentDescriptorView,
 } from "./supervisor";
 import type { SupervisorState } from "./supervisor-transition-table";
-import { toRemoteTransportError } from "./transport-errors";
+import { RemoteTransportError, toRemoteTransportError } from "./transport-errors";
 
 const CLIENT_PROTOCOL_VERSION = 1;
 const CLIENT_MIN_PROTOCOL = 1;
@@ -293,15 +293,37 @@ export function initializeEnvironmentRuntime(): () => void {
       localBus,
       sendFrame: (frame) => sendFrame(environmentId, frame),
       hydrate: async () => {
-        // The §3.4 hydration barrier must FAIL CLOSED: TanStack swallows every refetch
-        // rejection unless `throwOnError`, so a 500ing host would resolve the barrier,
-        // validate the cursor, and let the badge read Connected over an empty board.
-        // `refetchType: "all"` because a snapshot is not "taken" if the inactive
-        // queries the next render will read were left stale.
-        await getQueryClient(environmentId).invalidateQueries(
-          { refetchType: "all" },
-          { throwOnError: true }
-        );
+        // The §3.4 hydration barrier must FAIL CLOSED on host unhealth: a 500ing
+        // host must not resolve the barrier, validate the cursor, and let the badge
+        // read Connected over an empty board. `refetchType: "all"` because a
+        // snapshot is not "taken" if the inactive queries the next render will read
+        // were left stale.
+        //
+        // But not every rejection is unhealth. Queries whose commands the remote
+        // facade deliberately refuses reject with `REMOTE_COMMAND_UNAVAILABLE` on
+        // EVERY attempt — a capability boundary, not a health signal — and a
+        // `throwOnError` sweep made those fail the barrier, which made connecting
+        // structurally impossible while any such query was mounted (the supervisor
+        // redialed forever over a perfectly healthy socket). So: sweep without
+        // `throwOnError`, then read the settled cache and fail the barrier on any
+        // error EXCEPT that one code.
+        const client = getQueryClient(environmentId);
+        await client.invalidateQueries({ refetchType: "all" });
+        const fatal = client
+          .getQueryCache()
+          .getAll()
+          .map((query) => query.state.error)
+          .filter((error) => error !== null)
+          .filter(
+            (error) =>
+              !(
+                error instanceof RemoteTransportError &&
+                error.code === "REMOTE_COMMAND_UNAVAILABLE"
+              )
+          );
+        if (fatal.length > 0) {
+          throw fatal[0];
+        }
       },
       sweep: () => {
         void getQueryClient(environmentId).invalidateQueries();
