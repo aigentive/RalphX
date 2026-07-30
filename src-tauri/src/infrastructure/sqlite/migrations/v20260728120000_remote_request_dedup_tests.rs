@@ -116,16 +116,22 @@ fn stamp_sorts_after_every_previously_registered_migration() {
         .position(|migration| migration.name == "remote_request_dedup")
         .expect("the dedup migration must be registered");
 
-    assert_eq!(
-        position,
-        MIGRATIONS.len() - 1,
-        "forward-only: the new migration must be registered last"
-    );
+    // Deliberately NOT `position == MIGRATIONS.len() - 1`: forward-only means this stamp may
+    // never be renumbered or reordered, not that nothing may ever be appended after it. Later
+    // migrations landing on main are exactly the expected case.
     let stamp = MIGRATIONS[position].version;
     for migration in &MIGRATIONS[..position] {
         assert!(
             migration.version < stamp,
             "{} ({}) must sort before the new stamp {stamp}",
+            migration.name,
+            migration.version
+        );
+    }
+    for migration in &MIGRATIONS[position + 1..] {
+        assert!(
+            migration.version > stamp,
+            "{} ({}) is registered after the new stamp {stamp} but does not sort after it",
             migration.name,
             migration.version
         );
