@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 
 use crate::domain::entities::{
-    ChatConversationId, ChatMessageId, ChatTimelineItem, ChatTimelineItemId,
+    ChatConversationId, ChatMessageId, ChatTimelineItem, ChatTimelineItemId, ChatTimelineItemKind,
     ChatTimelineItemStatus, ChatTimelinePage,
 };
 use crate::domain::repositories::ChatTimelineRepository;
@@ -13,6 +13,36 @@ use crate::error::AppResult;
 
 pub struct MemoryChatTimelineRepository {
     items: RwLock<HashMap<String, ChatTimelineItem>>,
+}
+
+const RALPHX_TOOL_NAME_PREFIXES: [&str; 6] = [
+    "mcp__ralphx__",
+    "mcp__ralphx_internal__",
+    "ralphx::",
+    "ralphx_internal::",
+    "ralphx:",
+    "ralphx_internal:",
+];
+const DIFF_TOOL_NAMES: [&str; 2] = ["edit", "write"];
+const ASK_USER_QUESTION_TOOL_NAME: &str = "ask_user_question";
+const DELEGATION_TOOL_NAMES: [&str; 4] = [
+    "delegate_start",
+    "delegate_wait",
+    "delegate_cancel",
+    "delegate_terminal",
+];
+
+#[doc(hidden)]
+pub(crate) fn retains_full_raw_tool_payload(tool_name: &str) -> bool {
+    let normalized = tool_name.trim().to_ascii_lowercase();
+    let normalized = RALPHX_TOOL_NAME_PREFIXES
+        .iter()
+        .find_map(|prefix| normalized.strip_prefix(prefix).map(str::to_string))
+        .unwrap_or(normalized);
+    let leaf_name = normalized.rsplit("::").next().unwrap_or(&normalized);
+    DIFF_TOOL_NAMES.contains(&leaf_name)
+        || normalized == ASK_USER_QUESTION_TOOL_NAME
+        || DELEGATION_TOOL_NAMES.contains(&normalized.as_str())
 }
 
 impl MemoryChatTimelineRepository {
@@ -32,6 +62,14 @@ impl Default for MemoryChatTimelineRepository {
 #[async_trait]
 impl ChatTimelineRepository for MemoryChatTimelineRepository {
     async fn upsert_item(&self, mut item: ChatTimelineItem) -> AppResult<ChatTimelineItem> {
+        if item.kind != ChatTimelineItemKind::ToolUse
+            || !item
+                .tool_name
+                .as_deref()
+                .is_some_and(retains_full_raw_tool_payload)
+        {
+            item.raw_block_json = None;
+        }
         let mut items = self.items.write().unwrap();
         if let Some(existing) = items.get(item.id.as_str()) {
             item.sequence = existing.sequence;

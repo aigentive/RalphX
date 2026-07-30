@@ -3,6 +3,9 @@
 
 pub mod connection;
 pub mod db_connection;
+pub mod database_maintenance;
+#[cfg(test)]
+mod database_maintenance_tests;
 pub mod migrations;
 pub mod sqlite_active_plan_repo;
 pub mod sqlite_activity_event_repo;
@@ -58,6 +61,9 @@ mod sqlite_persona_repo_tests;
 pub mod sqlite_chat_message_repo;
 #[cfg(test)]
 mod sqlite_chat_message_repo_tests;
+pub mod sqlite_chat_payload_retention_repo;
+#[cfg(test)]
+mod sqlite_chat_payload_retention_repo_tests;
 pub mod sqlite_chat_timeline_repo;
 #[cfg(test)]
 mod sqlite_chat_timeline_repo_tests;

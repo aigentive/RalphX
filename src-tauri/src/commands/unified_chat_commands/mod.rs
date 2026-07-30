@@ -53,19 +53,20 @@ use crate::application::agent_conversation_workspace_base::{
     apply_workspace_base_resolution, resolve_workspace_base,
     resolve_workspace_base_from_local_snapshot, BaseResolutionResult, BaseStatus,
 };
+use crate::application::agent_plan_context::{
+    admit_linked_edit_plan_references, linked_workspace_planning_session_is_reusable,
+};
 use crate::application::agent_planning_session_titles::{
     hydrate_agent_conversation_planning_session_title,
     sync_linked_planning_session_title_from_conversation,
-};
-use crate::application::agent_plan_context::{
-    admit_linked_edit_plan_references, linked_workspace_planning_session_is_reusable,
 };
 use crate::application::agent_workspace_bridge::{
     wake_agent_workspace_for_bridge_events,
     wake_agent_workspace_for_bridge_events_with_service_factory,
 };
 use crate::application::agent_workspace_external_pr_reconciliation::{
-    external_pr_reconciliation_skip_reason, schedule_agent_workspace_external_pr_reconciliation,
+    external_pr_reconciliation_skip_reason,
+    schedule_agent_workspace_external_pr_reconciliation_with_lazy_deps,
     AgentWorkspaceExternalPrReconciliationDeps, AgentWorkspaceExternalPrReconciliationTrigger,
 };
 use crate::application::agent_workspace_local_commit::{
@@ -81,8 +82,8 @@ use crate::application::agent_workspace_pr_description::{
 };
 use crate::application::agent_workspace_pr_supervision_recovery::{
     build_agent_workspace_pr_supervision_recovery_deps,
-    schedule_agent_workspace_pr_supervision_recovery, AgentWorkspacePrFixReviewPublishResumer,
-    AgentWorkspacePrSupervisionRecoveryTrigger,
+    schedule_agent_workspace_pr_supervision_recovery_with_lazy_deps,
+    AgentWorkspacePrFixReviewPublishResumer, AgentWorkspacePrSupervisionRecoveryTrigger,
 };
 use crate::application::agent_workspace_publish_recovery::recover_stale_publish_repair_for_workspace_in_state;
 use crate::application::agent_workspace_publish_repair_state::{
@@ -1118,20 +1119,29 @@ fn schedule_external_pr_reconciliation_for_workspace(
     let Some(github) = state.github_service.as_ref().map(Arc::clone) else {
         return;
     };
-    let chat_service: Arc<dyn ChatService> = Arc::new(state.build_chat_service());
-    schedule_agent_workspace_external_pr_reconciliation(
-        AgentWorkspaceExternalPrReconciliationDeps {
-            workspace_repo: Arc::clone(&state.agent_conversation_workspace_repo),
-            project_repo: Arc::clone(&state.project_repo),
-            github,
-            clickup_integration_service: Some(Arc::clone(&state.clickup_integration_service)),
-            external_issue_link_service: Some(Arc::clone(&state.external_issue_link_service)),
-            pr_poller_registry: Some(Arc::clone(&state.pr_poller_registry)),
-            chat_service: Some(chat_service),
-            agent_run_repo: Arc::clone(&state.agent_run_repo),
-            agent_workspace_repair_repo: Some(Arc::clone(&state.agent_workspace_repair_repo)),
-            plan_branch_repo: Arc::clone(&state.plan_branch_repo),
-            app_handle: state.app_handle.clone(),
+    let recovery_state = state.clone();
+    schedule_agent_workspace_external_pr_reconciliation_with_lazy_deps(
+        move || {
+            let chat_service: Arc<dyn ChatService> = Arc::new(recovery_state.build_chat_service());
+            AgentWorkspaceExternalPrReconciliationDeps {
+                workspace_repo: Arc::clone(&recovery_state.agent_conversation_workspace_repo),
+                project_repo: Arc::clone(&recovery_state.project_repo),
+                github,
+                clickup_integration_service: Some(Arc::clone(
+                    &recovery_state.clickup_integration_service,
+                )),
+                external_issue_link_service: Some(Arc::clone(
+                    &recovery_state.external_issue_link_service,
+                )),
+                pr_poller_registry: Some(Arc::clone(&recovery_state.pr_poller_registry)),
+                chat_service: Some(chat_service),
+                agent_run_repo: Arc::clone(&recovery_state.agent_run_repo),
+                agent_workspace_repair_repo: Some(Arc::clone(
+                    &recovery_state.agent_workspace_repair_repo,
+                )),
+                plan_branch_repo: Arc::clone(&recovery_state.plan_branch_repo),
+                app_handle: recovery_state.app_handle.clone(),
+            }
         },
         workspace.conversation_id.clone(),
         trigger,
@@ -1145,31 +1155,36 @@ fn schedule_pr_supervision_recovery_for_workspace(
     trigger: AgentWorkspacePrSupervisionRecoveryTrigger,
     force: bool,
 ) {
-    let execution_state = state
-        .app_handle
-        .as_ref()
-        .and_then(|handle| handle.try_state::<Arc<ExecutionState>>())
-        .map(|state| state.inner().clone());
-    let runtime_app_handle = state.app_handle.clone();
-    let transition_service = execution_state.as_ref().map(|execution_state| {
-        Arc::new(state.build_transition_service_for_runtime(
-            Arc::clone(execution_state),
-            runtime_app_handle.clone(),
-        ))
-    });
-    let chat_service: Arc<dyn ChatService> =
-        Arc::new(state.build_chat_service_for_runtime(execution_state, runtime_app_handle.clone()));
-    let Some(deps) = build_agent_workspace_pr_supervision_recovery_deps(
-        state,
-        runtime_app_handle,
-        transition_service,
-        Some(chat_service),
-        None,
-    ) else {
+    if state.github_service.is_none() {
         return;
-    };
-    schedule_agent_workspace_pr_supervision_recovery(
-        deps,
+    }
+    let recovery_state = state.clone();
+    schedule_agent_workspace_pr_supervision_recovery_with_lazy_deps(
+        move || {
+            let runtime_app_handle = recovery_state.app_handle.clone();
+            let execution_state = runtime_app_handle
+                .as_ref()
+                .and_then(|handle| handle.try_state::<Arc<ExecutionState>>())
+                .map(|state| state.inner().clone());
+            let transition_service = execution_state.as_ref().map(|execution_state| {
+                Arc::new(recovery_state.build_transition_service_for_runtime(
+                    Arc::clone(execution_state),
+                    runtime_app_handle.clone(),
+                ))
+            });
+            let chat_service: Arc<dyn ChatService> = Arc::new(
+                recovery_state
+                    .build_chat_service_for_runtime(execution_state, runtime_app_handle.clone()),
+            );
+            build_agent_workspace_pr_supervision_recovery_deps(
+                &recovery_state,
+                runtime_app_handle,
+                transition_service,
+                Some(chat_service),
+                None,
+            )
+            .expect("github service was checked before scheduling PR supervision recovery")
+        },
         workspace.conversation_id.clone(),
         trigger,
         force,
@@ -4222,8 +4237,7 @@ pub async fn send_agent_message_for_state<R: Runtime + 'static>(
     if let Some(conversation_id) = conversation_id_override.as_ref() {
         invalidate_agent_workspace_pr_description_cache(conversation_id);
         if context_type == ChatContextType::Project
-            && ensure_plan_workspace_planning_session_link_for_send(state, conversation_id)
-                .await?
+            && ensure_plan_workspace_planning_session_link_for_send(state, conversation_id).await?
         {
             let _ = app.emit(
                 "agent:workspace_changed",
@@ -4231,23 +4245,22 @@ pub async fn send_agent_message_for_state<R: Runtime + 'static>(
             );
         }
     }
-    let composer_artifact_references =
-        if context_type == ChatContextType::Project {
-            if let Some(conversation_id) = conversation_id_override.as_ref() {
-                admit_linked_edit_plan_references(
-                    state,
-                    conversation_id,
-                    input.composer_artifact_references,
-                    input.require_approved_linked_plan,
-                    input.expected_linked_plan_fingerprint.as_deref(),
-                )
-                .await?
-            } else {
-                input.composer_artifact_references
-            }
+    let composer_artifact_references = if context_type == ChatContextType::Project {
+        if let Some(conversation_id) = conversation_id_override.as_ref() {
+            admit_linked_edit_plan_references(
+                state,
+                conversation_id,
+                input.composer_artifact_references,
+                input.require_approved_linked_plan,
+                input.expected_linked_plan_fingerprint.as_deref(),
+            )
+            .await?
         } else {
             input.composer_artifact_references
-        };
+        }
+    } else {
+        input.composer_artifact_references
+    };
     let attachment_ids = parse_chat_attachment_ids(&input.attachment_ids)?;
 
     let mut response = service

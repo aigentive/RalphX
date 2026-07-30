@@ -42,6 +42,25 @@ const STARTUP_EXTERNAL_PR_RECONCILIATION_CONCURRENCY: usize = 4;
 static IN_FLIGHT_RECONCILIATIONS: OnceLock<DashMap<String, ()>> = OnceLock::new();
 static RECENT_RECONCILIATIONS: OnceLock<DashMap<String, Instant>> = OnceLock::new();
 
+/// Releases the in-flight claim and stamps the recent map even if the
+/// reconciliation task panics (for example inside a lazy deps factory);
+/// otherwise a single panic would permanently suppress reconciliation for
+/// this workspace until restart.
+struct InFlightReconciliationClaim {
+    conversation_id: ChatConversationId,
+}
+
+impl Drop for InFlightReconciliationClaim {
+    fn drop(&mut self) {
+        RECENT_RECONCILIATIONS
+            .get_or_init(DashMap::new)
+            .insert(self.conversation_id.as_str(), Instant::now());
+        IN_FLIGHT_RECONCILIATIONS
+            .get_or_init(DashMap::new)
+            .remove(&self.conversation_id.as_str());
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AgentWorkspaceExternalPrReconciliationTrigger {
     WorkspaceLoad,
@@ -89,6 +108,20 @@ pub(crate) fn schedule_agent_workspace_external_pr_reconciliation(
     trigger: AgentWorkspaceExternalPrReconciliationTrigger,
     force: bool,
 ) {
+    schedule_agent_workspace_external_pr_reconciliation_with_lazy_deps(
+        move || deps,
+        conversation_id,
+        trigger,
+        force,
+    );
+}
+
+pub(crate) fn schedule_agent_workspace_external_pr_reconciliation_with_lazy_deps(
+    deps_factory: impl FnOnce() -> AgentWorkspaceExternalPrReconciliationDeps + Send + 'static,
+    conversation_id: ChatConversationId,
+    trigger: AgentWorkspaceExternalPrReconciliationTrigger,
+    force: bool,
+) {
     if !claim_reconciliation(&conversation_id, force) {
         tracing::debug!(
             conversation_id = conversation_id.as_str(),
@@ -99,15 +132,13 @@ pub(crate) fn schedule_agent_workspace_external_pr_reconciliation(
     }
 
     tokio::spawn(async move {
+        let _claim = InFlightReconciliationClaim {
+            conversation_id: conversation_id.clone(),
+        };
         let started = Instant::now();
         let result =
-            reconcile_agent_workspace_external_pr(deps, conversation_id.clone(), trigger).await;
-        RECENT_RECONCILIATIONS
-            .get_or_init(DashMap::new)
-            .insert(conversation_id.as_str(), Instant::now());
-        IN_FLIGHT_RECONCILIATIONS
-            .get_or_init(DashMap::new)
-            .remove(&conversation_id.as_str());
+            reconcile_agent_workspace_external_pr(deps_factory(), conversation_id.clone(), trigger)
+                .await;
 
         match result {
             Ok(outcome) => tracing::info!(

@@ -83,6 +83,35 @@ impl AppPaths {
         self.app_data_dir.join("workflow-runtime")
     }
 
+    /// Process-owned paths used by database maintenance before the SQLite pool opens.
+    pub fn database_maintenance_dir(&self) -> PathBuf {
+        self.app_data_dir.join("database-maintenance")
+    }
+
+    pub fn database_compaction_marker_path(&self) -> PathBuf {
+        self.database_maintenance_dir()
+            .join("compact-on-next-launch")
+    }
+
+    pub fn database_backup_dir(&self) -> PathBuf {
+        self.database_maintenance_dir().join("backups")
+    }
+
+    /// Resolves the process-owned path set consumed by startup database
+    /// maintenance (`database_maintenance` module). Kept here so the
+    /// infrastructure module never depends on application-layer types.
+    pub fn database_maintenance_paths(
+        &self,
+    ) -> AppResult<crate::infrastructure::sqlite::database_maintenance::MaintenancePaths> {
+        Ok(
+            crate::infrastructure::sqlite::database_maintenance::MaintenancePaths {
+                database_path: self.database_path()?,
+                marker_path: self.database_compaction_marker_path(),
+                backup_dir: self.database_backup_dir(),
+            },
+        )
+    }
+
     pub fn global_router_path(&self) -> PathBuf {
         self.ralphx_config_dir.join("router.yaml")
     }

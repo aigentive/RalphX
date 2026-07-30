@@ -3609,6 +3609,7 @@ dependencies = [
  "hyper-rustls",
  "hyper-util",
  "lazy_static",
+ "libc",
  "mac-notification-sys",
  "nix 0.29.0",
  "objc2",

@@ -1,4 +1,4 @@
-use super::startup_bootstrap::create_file_log;
+use super::startup_bootstrap::{cleanup_previous_launch_logs_when_enabled, create_file_log};
 
 #[test]
 fn file_log_setup_returns_an_error_instead_of_aborting_startup() {
@@ -20,4 +20,39 @@ fn file_log_setup_creates_the_process_owned_directory_and_file() {
 
     assert_eq!(path, log_dir.join("ralphx.log"));
     assert!(path.is_file());
+}
+
+#[test]
+fn file_log_setup_never_truncates_an_existing_launch_log() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let log_dir = temp_dir.path().join("logs");
+    std::fs::create_dir_all(&log_dir).unwrap();
+    let existing = log_dir.join("ralphx_2026-07-30_10-00-00.log");
+    std::fs::write(&existing, "previous launch output").unwrap();
+
+    let (path, _file) = create_file_log(&log_dir, "ralphx_2026-07-30_10-00-00.log").unwrap();
+
+    assert_eq!(path, log_dir.join("ralphx_2026-07-30_10-00-00_1.log"));
+    assert_eq!(
+        std::fs::read_to_string(&existing).unwrap(),
+        "previous launch output",
+        "same-second relaunch must not truncate the earlier launch log"
+    );
+}
+
+#[test]
+fn disabled_file_logging_skips_previous_log_cleanup() {
+    let log_dir = tempfile::tempdir().unwrap();
+    let old_log = log_dir.path().join("ralphx_2026-07-30_10-00-00.log");
+    std::fs::write(&old_log, "previous output").unwrap();
+
+    let warnings = cleanup_previous_launch_logs_when_enabled(
+        false,
+        log_dir.path(),
+        "ralphx_2026-07-30_11-00-00.log",
+        0,
+    );
+
+    assert!(warnings.is_empty());
+    assert!(old_log.exists());
 }

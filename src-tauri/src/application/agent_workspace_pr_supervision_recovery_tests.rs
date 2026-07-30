@@ -11,9 +11,9 @@ use crate::application::agent_conversation_workspace::{
 use crate::application::agent_workspace_pr_supervision_recovery::{
     pr_supervision_recovery_schedule_skip_reason, recover_agent_workspace_pr_supervision,
     recover_recent_agent_workspace_pr_supervision_on_startup,
-    schedule_agent_workspace_pr_supervision_recovery, AgentWorkspacePrFixReviewPublishResumer,
-    AgentWorkspacePrSupervisionRecoveryDeps, AgentWorkspacePrSupervisionRecoveryOutcome,
-    AgentWorkspacePrSupervisionRecoveryTrigger,
+    schedule_agent_workspace_pr_supervision_recovery_with_lazy_deps,
+    AgentWorkspacePrFixReviewPublishResumer, AgentWorkspacePrSupervisionRecoveryDeps,
+    AgentWorkspacePrSupervisionRecoveryOutcome, AgentWorkspacePrSupervisionRecoveryTrigger,
 };
 use crate::application::agent_workspace_review::resolve_review_target;
 use crate::application::chat_service::MockChatService;
@@ -421,14 +421,24 @@ async fn scheduled_recovery_claims_conversation_once_until_background_task_finis
         Arc::new(MemoryAgentRunRepository::new()),
     );
 
-    schedule_agent_workspace_pr_supervision_recovery(
-        deps.clone(),
+    let factory_calls = Arc::new(AtomicUsize::new(0));
+    let first_factory_calls = Arc::clone(&factory_calls);
+    let first_deps = deps.clone();
+    schedule_agent_workspace_pr_supervision_recovery_with_lazy_deps(
+        move || {
+            first_factory_calls.fetch_add(1, Ordering::SeqCst);
+            first_deps
+        },
         conversation_id.clone(),
         AgentWorkspacePrSupervisionRecoveryTrigger::WorkspaceLoad,
         true,
     );
-    schedule_agent_workspace_pr_supervision_recovery(
-        deps,
+    let duplicate_factory_calls = Arc::clone(&factory_calls);
+    schedule_agent_workspace_pr_supervision_recovery_with_lazy_deps(
+        move || {
+            duplicate_factory_calls.fetch_add(1, Ordering::SeqCst);
+            deps
+        },
         conversation_id,
         AgentWorkspacePrSupervisionRecoveryTrigger::WorkspaceLoad,
         false,
@@ -437,6 +447,7 @@ async fn scheduled_recovery_claims_conversation_once_until_background_task_finis
     wait_for_sync_state_calls(&github, 1).await;
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     assert_eq!(github.state().check_pr_sync_state_calls, 1);
+    assert_eq!(factory_calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

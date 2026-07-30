@@ -984,7 +984,7 @@ impl TaskTransitionService {
     }
 
     fn log_build_step(step: &'static str, started_at: Instant) {
-        tracing::info!(
+        tracing::debug!(
             step,
             elapsed_ms = started_at.elapsed().as_millis(),
             "Task transition service build step completed"
