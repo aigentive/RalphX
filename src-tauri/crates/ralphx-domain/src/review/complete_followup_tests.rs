@@ -135,8 +135,8 @@ fn should_spawn_unrelated_drift_followup_requires_exhausted_escalation() {
 #[test]
 fn build_unrelated_drift_followup_draft_carries_prompt_and_fingerprint() {
     let task_context = sample_task_context();
-    // `TaskContext::task` is a `WorkerTaskView` projection; the draft builder takes the
-    // underlying `Task`, so pass the same entity the context was projected from.
+    // The draft builder takes the `Task` alongside the context, so pass the same entity the
+    // context carries.
     let task = sample_task();
     let draft = build_unrelated_drift_followup_draft(
         &task,

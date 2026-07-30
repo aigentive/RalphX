@@ -20,8 +20,16 @@ pub enum ScopeDriftStatus {
     ScopeExpansion,
 }
 
-/// Rich context returned by get_task_context MCP tool
-/// Contains the task being executed along with linked artifacts and proposals
+/// The worker-safe task projection served by the REMOTE facade only.
+///
+/// This is a deliberate 6-field allowlist that bounds what a paired remote device can read
+/// from `get_task_context`. It is applied at the remote facade seam
+/// (`remote_server::task_projection`), NOT on the local path: local harness agents and the
+/// local Tauri/frontend consumers keep receiving the full `Task`.
+///
+/// `remote_server::capability_ledger_tests::worker_task_view_allowlist` derives the published
+/// allowlist from this struct, so adding a field here widens the remote surface and stales the
+/// generated manifest.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerTaskView {
     pub id: TaskId,
@@ -47,11 +55,11 @@ impl From<Task> for WorkerTaskView {
 }
 
 /// Rich context returned by get_task_context MCP tool
-/// Contains the worker-safe task projection and linked execution context.
+/// Contains the task being executed along with linked artifacts and proposals
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskContext {
     /// The task being executed
-    pub task: WorkerTaskView,
+    pub task: Task,
 
     /// Source proposal if task was created from ideation
     pub source_proposal: Option<TaskProposalSummary>,

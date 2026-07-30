@@ -64,6 +64,7 @@ mod invoke_tests;
 pub mod registry;
 #[cfg(test)]
 mod registry_tests;
+pub mod task_projection;
 // --- end PR 1.3 block ---
 
 // --- PR 1.5: mutating surface — generated scope suite (one contiguous block) ---

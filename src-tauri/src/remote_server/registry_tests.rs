@@ -7,33 +7,100 @@ use crate::domain::entities::{ProjectId, Task, TaskCategory, TaskStep};
 use crate::http_server::project_scope::ProjectScope;
 use crate::http_server::types::HttpServerState;
 
-#[tokio::test]
-async fn worker_task_context_http_serializes_only_the_task_allowlist() {
-    const BLOCKED_SENTINEL: &str = "P17H_BLOCKED_REASON_POISON";
-    const METADATA_SENTINEL: &str = "P17H_RAW_METADATA_POISON";
-    const RESTART_NOTE: &str = "P17H_RESTART_NOTE_VISIBLE";
+const BLOCKED_SENTINEL: &str = "P17H_BLOCKED_REASON_POISON";
+const METADATA_SENTINEL: &str = "P17H_RAW_METADATA_POISON";
+const RESTART_NOTE: &str = "P17H_RESTART_NOTE_VISIBLE";
 
+/// Builds the shared `get_task_context` fixture and returns the context the LOCAL path produces.
+async fn local_worker_task_context() -> crate::domain::entities::TaskContext {
     let app_state = Arc::new(AppState::new_test());
     let mut task = Task::new(ProjectId::new(), "Worker projection".to_string());
     task.description = Some("Allowed description".to_string());
     task.priority = 1_337_017;
     task.blocked_reason = Some(BLOCKED_SENTINEL.to_string());
+    // Every optional field asserted below must be populated, or `skip_serializing_if` hides it
+    // and the assertion would pass for the wrong reason.
+    task.plan_artifact_id = Some(crate::domain::entities::ArtifactId::new());
+    task.ideation_session_id = Some(crate::domain::entities::IdeationSessionId::new());
+    task.merge_pipeline_active = Some("2026-07-30T00:00:00Z".to_string());
     task.metadata = Some(format!(
         r#"{{"restart_note":"{RESTART_NOTE}","poison":"{METADATA_SENTINEL}"}}"#
     ));
     let task = app_state.task_repo.create(task).await.unwrap();
 
-    let response = crate::http_server::handlers::get_task_context(
+    crate::http_server::handlers::get_task_context(
         State(HttpServerState::new_test(Arc::clone(&app_state))),
         ProjectScope(None),
         Path(task.id.as_str().to_string()),
     )
     .await
-    .unwrap();
-    let payload = serde_json::to_value(response.0).unwrap();
+    .unwrap()
+    .0
+}
+
+/// Direction 1 — the LOCAL producer is NOT narrowed.
+///
+/// `:3847` (internal MCP, local harness agents) and the local Tauri command share this payload
+/// with the desktop frontend. `WorkerTaskView` bounds the REMOTE wire only; applying it here
+/// silently dropped ~11 load-bearing fields for every user, including users who never enable
+/// `remote_host`. The named fields are load-bearing: `priority`/`category` render the
+/// `ContextWidget` badges, `plan_artifact_id` is a `TaskDetailContext` fallback, and
+/// `blocked_reason`/`merge_pipeline_active` drive agent decisions.
+#[tokio::test]
+async fn local_task_context_http_serves_the_full_task() {
+    let payload = serde_json::to_value(local_worker_task_context().await).unwrap();
     let serialized = serde_json::to_string(&payload).unwrap();
     let task_payload = payload.get("task").unwrap().as_object().unwrap();
 
+    for required in [
+        "priority",
+        "category",
+        "blocked_reason",
+        "metadata",
+        "needs_review_point",
+        "merge_pipeline_active",
+        "plan_artifact_id",
+        "created_at",
+        "updated_at",
+    ] {
+        assert!(
+            task_payload.contains_key(required),
+            "local task context lost load-bearing field {required}"
+        );
+    }
+    assert_eq!(task_payload["priority"], serde_json::json!(1_337_017));
+    assert_eq!(
+        task_payload["blocked_reason"],
+        serde_json::json!(BLOCKED_SENTINEL)
+    );
+    assert!(serialized.contains(METADATA_SENTINEL));
+    assert!(serialized.contains(RESTART_NOTE));
+}
+
+/// Direction 2 — the REMOTE facade still serves ONLY the 6-field allowlist.
+///
+/// `remote_server::task_projection` is the sole remote entry point for `get_task_context`
+/// (pinned by `get_task_context_is_registered_through_the_remote_projection`), so this is the
+/// exact payload a paired device receives.
+#[tokio::test]
+async fn remote_facade_task_context_serializes_only_the_task_allowlist() {
+    let context = local_worker_task_context().await;
+    let payload = crate::remote_server::task_projection::project_task_context(context).unwrap();
+    let serialized = serde_json::to_string(&payload).unwrap();
+    let task_payload = payload.get("task").unwrap().as_object().unwrap();
+
+    assert_eq!(
+        task_payload.keys().cloned().collect::<Vec<_>>(),
+        vec![
+            "description".to_string(),
+            "id".to_string(),
+            "ideation_session_id".to_string(),
+            "internal_status".to_string(),
+            "project_id".to_string(),
+            "title".to_string(),
+        ],
+        "the remote worker task view is a closed 6-field allowlist"
+    );
     for banned in ["category", "priority", "blocked_reason", "metadata"] {
         assert!(
             !task_payload.contains_key(banned),
@@ -43,6 +110,17 @@ async fn worker_task_context_http_serializes_only_the_task_allowlist() {
     assert!(!serialized.contains(BLOCKED_SENTINEL));
     assert!(!serialized.contains(METADATA_SENTINEL));
     assert!(serialized.contains(RESTART_NOTE));
+}
+
+/// The wiring half: registering the raw command would restore the full `Task` on the wire.
+#[test]
+fn get_task_context_is_registered_through_the_remote_projection() {
+    let spec = crate::remote_server::registry::find_spec("get_task_context")
+        .expect("get_task_context is registered");
+    assert_eq!(
+        spec.target, "crate::remote_server::task_projection::get_task_context",
+        "the facade must dispatch through the narrowing shim, not the raw command"
+    );
 }
 
 #[tokio::test]

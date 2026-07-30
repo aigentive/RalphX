@@ -569,8 +569,9 @@ pub fn find_spec(name: &str) -> Option<&'static RemoteCommandSpec> {
 /// authority, so those requests demand `ui:agent`.
 ///
 /// `category`/`priority` stay `ui:operate`, but NOT because no worker payload carries them —
-/// that claim was false. The `WorkerTaskView` projection behind `get_task_context` and
-/// `get_step_context` does exclude them, yet `/api/get_task_details` serialises both through
+/// that claim was false. The remote-facade `WorkerTaskView` projection behind `get_task_context`
+/// and the `get_step_context` task summary do exclude them, yet `/api/get_task_details`
+/// serialises both through
 /// `task_to_response`. They are inert for a different and stronger reason: `category` is a
 /// closed `TaskCategory` enum and `priority` is an `i32`, so neither can carry attacker-chosen
 /// text into a prompt regardless of which projection renders it. `remote_server::registry_tests`
@@ -2615,7 +2616,10 @@ crate::remote_commands! {
         call: async,
         result: fallible,
     },
-    "get_task_context" => crate::commands::task_context_commands::get_task_context {
+    // Registered through the facade shim, not the raw command: the remote wire must carry only
+    // the `WorkerTaskView` allowlist, while the same command serves the FULL `Task` locally.
+    // See `remote_server::task_projection`.
+    "get_task_context" => crate::remote_server::task_projection::get_task_context {
         class: Read,
         caps: [],
         params: [(arg task_id: String), (app_state)],

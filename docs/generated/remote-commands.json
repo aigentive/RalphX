@@ -3825,7 +3825,7 @@
       "command": "get_task_context",
       "pins": [],
       "scopeConfined": false,
-      "target": "crate::commands::task_context_commands::get_task_context"
+      "target": "crate::remote_server::task_projection::get_task_context"
     },
     {
       "argumentSensitive": false,

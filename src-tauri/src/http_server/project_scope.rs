@@ -116,12 +116,6 @@ impl ProjectScopeGuard for Task {
     }
 }
 
-impl ProjectScopeGuard for crate::domain::entities::WorkerTaskView {
-    fn project_id(&self) -> &ProjectId {
-        &self.project_id
-    }
-}
-
 impl ProjectScopeGuard for IdeationSession {
     fn project_id(&self) -> &ProjectId {
         &self.project_id
