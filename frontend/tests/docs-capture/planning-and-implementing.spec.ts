@@ -10,6 +10,7 @@ import {
 } from "./fixtures/guide-scenario.fixtures";
 import {
   openArtifacts,
+  openArtifactTab,
   openGuideConversation,
   openPublish,
 } from "./fixtures/guide-navigation.fixtures";
@@ -20,7 +21,7 @@ test("plan-bundle", async ({ page }) => {
   await openGuideConversation(page, "guide_planning");
   await openArtifacts(page);
   await hydrateGuidePlanningArtifactCache(page, "conversation-guide_planning");
-  await page.getByTestId("agents-artifact-tab-plan").click();
+  await openArtifactTab(page, "plan");
   await expect(page.getByRole("tab", { name: "Overview" })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Blueprint" })).toBeVisible();
   // The guide tells readers to read the outcome, scope, and acceptance

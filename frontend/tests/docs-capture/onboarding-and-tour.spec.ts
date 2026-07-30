@@ -6,7 +6,11 @@ import {
   applyGuideScenario,
   hydrateGuidePlanningArtifactCache,
 } from "./fixtures/guide-scenario.fixtures";
-import { openGuideConversation } from "./fixtures/guide-navigation.fixtures";
+import {
+  openArtifacts,
+  openArtifactTab,
+  openGuideConversation,
+} from "./fixtures/guide-navigation.fixtures";
 import { WelcomeScreenPage } from "../pages/modals/welcome-screen.page";
 import { ProjectCreationWizardPage } from "../pages/modals/project-creation-wizard.page";
 import { SettingsPage } from "../pages/settings.page";
@@ -35,10 +39,9 @@ test("project-creation-wizard", async ({ page }) => {
 test("agents-workspace-overview", async ({ page }) => {
   await setupCapture(page); await applyGuideScenario(page, "guide_tour");
   await openGuideConversation(page, "guide_tour");
-  await page.getByRole("button", { name: "Open artifacts" }).click();
-  await expect(page.getByTestId("agents-artifact-pane")).toBeVisible();
+  await openArtifacts(page);
   await hydrateGuidePlanningArtifactCache(page, "conversation-guide_tour");
-  await page.getByTestId("agents-artifact-tab-plan").click();
+  await openArtifactTab(page, "plan");
   // The guide describes this pane as where you inspect what RalphX produced, so
   // the capture must show real artifact content, not the empty plan picker.
   await expect(page.getByRole("tab", { name: "Overview" })).toBeVisible();

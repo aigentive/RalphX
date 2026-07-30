@@ -7,7 +7,7 @@ import {
 } from "./fixtures/capture.fixtures";
 import { applyGuideScenario } from "./fixtures/guide-scenario.fixtures";
 import {
-  openArtifacts,
+  openArtifactTab,
   openGuideConversation,
 } from "./fixtures/guide-navigation.fixtures";
 
@@ -47,9 +47,7 @@ test("jira-issue-tab", async ({ page }) => {
   await setupCapture(page);
   await applyGuideScenario(page, "guide_tour");
   await openGuideConversation(page, "guide_tour");
-  await openArtifacts(page);
-
-  await page.getByTestId("agents-artifact-tab-jira").click();
+  await openArtifactTab(page, "jira");
   // The guide tells the reader to plan against the ticket's own wording, so the
   // capture must show resolved issue content, not the "Loading Jira..." shell.
   await expect(page.getByText("Acceptance Criteria")).toBeVisible();
