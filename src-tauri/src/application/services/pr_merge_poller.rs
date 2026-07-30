@@ -49,13 +49,14 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRunId,
     AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrReviewMonitorStatus,
-    AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation, AgentWorkspaceRepairSource,
-    ChatContextType, ChatConversationId, IdeationSessionId, ProjectId,
+    AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation, AgentWorkspaceRepairPhase,
+    AgentWorkspaceRepairSource, ChatContextType, ChatConversationId, IdeationSessionId, ProjectId,
 };
 use crate::domain::entities::{InternalStatus, PlanBranch, PlanBranchId, Project, TaskId};
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, AgentWorkspaceRepairRepository,
-    BranchUpdateRepository, PlanBranchRepository,
+    BranchUpdateRepository, PlanBranchRepository, SettleAgentWorkspaceRepairAttempt,
+    SettleAgentWorkspaceRepairAttemptOutcome,
 };
 use crate::domain::services::github_service::{
     PrHealth, PrHealthCheck, PrMergeStateStatus, PrMergeableState, PrReviewCommentFeedback,
@@ -2875,6 +2876,41 @@ async fn route_agent_workspace_pr_autofix_for_target(
     let health = github
         .fetch_pr_health(working_dir, target.pr_number)
         .await?;
+    // A durable completion may have already reserved a rerun for this exact failed CI state.
+    // Do not launch a new fixer generation until GitHub reports a different conclusion.
+    if let Some(repair_repo) = repair_repo.as_ref() {
+        if let Some(attempt) = repair_repo
+            .get_current_repair_attempt(conversation_id)
+            .await?
+        {
+            if attempt.phase == AgentWorkspaceRepairPhase::Ready {
+                if attempt.ci_rerun_fingerprint.as_deref()
+                    == transient_ci_health_fingerprint(&health).as_deref()
+                {
+                    return Ok(false);
+                }
+                // A changed conclusion ends the rerun-pending generation. The next normal
+                // dispatch below creates a fresh, independently fenced repair attempt.
+                match repair_repo
+                    .settle_repair_attempt(SettleAgentWorkspaceRepairAttempt {
+                        attempt_id: attempt.id.clone(),
+                        generation: attempt.generation,
+                        expected_phase: AgentWorkspaceRepairPhase::Ready,
+                        expected_updated_at: attempt.updated_at,
+                        outcome: crate::domain::entities::AgentWorkspaceRepairOutcome::Succeeded,
+                        settled_at: chrono::Utc::now(),
+                        compatibility_projection: None,
+                        events: Vec::new(),
+                    })
+                    .await?
+                {
+                    SettleAgentWorkspaceRepairAttemptOutcome::Applied(_) => {}
+                    SettleAgentWorkspaceRepairAttemptOutcome::Stale(_)
+                    | SettleAgentWorkspaceRepairAttemptOutcome::Missing => return Ok(false),
+                }
+            }
+        }
+    }
     import_agent_workspace_pr_comment_evidence(
         Arc::clone(&workspace_repo),
         conversation_id,
@@ -3085,6 +3121,29 @@ async fn route_agent_workspace_pr_autofix_for_target(
         },
     )
     .await
+}
+
+fn transient_ci_health_fingerprint(health: &PrHealth) -> Option<String> {
+    let failed = health.checks.iter().find(|check| {
+        check.conclusion.as_deref().is_some_and(|value| {
+            matches!(
+                value.to_ascii_uppercase().as_str(),
+                "FAILURE" | "CANCELLED" | "TIMED_OUT"
+            )
+        })
+    })?;
+    let url = failed.details_url.as_deref()?;
+    Some(format!(
+        "{}:{}:{}:{}",
+        health
+            .sync_state
+            .head_ref_oid
+            .as_deref()
+            .unwrap_or("missing-head"),
+        failed.name,
+        failed.conclusion.as_deref().unwrap_or("unknown"),
+        url
+    ))
 }
 
 async fn record_agent_workspace_pr_autofix_pre_start_failure(

@@ -15,15 +15,17 @@ use crate::application::agent_workspace_publish_repair_state::{
     continue_agent_workspace_repair_at_boundary, inspect_agent_workspace_repair_completion,
     reacquire_agent_workspace_repair_target_lease_for_continuation,
     record_agent_workspace_repair_validation,
-    reopen_agent_workspace_repair_after_validation_failure,
+    reopen_agent_workspace_repair_after_validation_failure, reserve_agent_workspace_ci_rerun,
     reserve_agent_workspace_repair_completion_validation,
     validate_agent_workspace_repair_target_lease, AgentWorkspaceRepairTransitionOutcome,
+    MAX_AGENT_WORKSPACE_CI_RERUN_RETRIES,
 };
 use crate::application::publish_resilience::continue_agent_workspace_repair_publish;
 use crate::domain::entities::{
     AgentRunId, AgentRunStatus, AgentWorkspaceRepairAttempt,
     AgentWorkspaceRepairCompletionAuthority, AgentWorkspaceRepairPhase,
 };
+use crate::domain::services::github_service::PrHealth;
 
 #[cfg(feature = "test-utils")]
 mod reservation_test_hook {
@@ -433,6 +435,13 @@ pub(crate) async fn complete_agent_workspace_repair_for_trusted_run(
             None,
         ));
     }
+    if req.transient_ci_failure && req.blocker.is_some() {
+        return Err(json_error(
+            StatusCode::BAD_REQUEST,
+            "A transient CI rerun request cannot also include a blocker.",
+            None,
+        ));
+    }
 
     let authority = current_authorized_repair_attempt(state, &conversation_id, &run_id).await?;
     let (attempt, resurrecting) = match authority {
@@ -469,6 +478,18 @@ pub(crate) async fn complete_agent_workspace_repair_for_trusted_run(
         }
     };
     let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
+
+    if req.transient_ci_failure {
+        return request_transient_ci_rerun(
+            state,
+            &conversation_id,
+            &run_id,
+            attempt,
+            &workspace,
+            req.summary.trim(),
+        )
+        .await;
+    }
 
     if let Some(blocker) = req.blocker.as_deref() {
         #[cfg(feature = "test-utils")]
@@ -559,6 +580,157 @@ pub(crate) async fn complete_agent_workspace_repair_for_trusted_run(
         resurrecting,
     ))
     .await
+}
+
+fn failed_workflow_run_from_health(health: &PrHealth) -> Option<(i64, String)> {
+    let failed = health.checks.iter().find(|check| {
+        check.conclusion.as_deref().is_some_and(|value| {
+            matches!(
+                value.to_ascii_uppercase().as_str(),
+                "FAILURE" | "CANCELLED" | "TIMED_OUT"
+            )
+        })
+    })?;
+    let url = failed.details_url.as_deref()?;
+    let run_id = url
+        .split('/')
+        .collect::<Vec<_>>()
+        .windows(2)
+        .find_map(|parts| {
+            (parts[0] == "runs")
+                .then(|| parts[1].parse::<i64>().ok())
+                .flatten()
+        })?;
+    let fingerprint = format!(
+        "{}:{}:{}:{}",
+        health
+            .sync_state
+            .head_ref_oid
+            .as_deref()
+            .unwrap_or("missing-head"),
+        failed.name,
+        failed.conclusion.as_deref().unwrap_or("unknown"),
+        url
+    );
+    Some((run_id, fingerprint))
+}
+
+async fn request_transient_ci_rerun(
+    state: &HttpServerState,
+    conversation_id: &ChatConversationId,
+    run_id: &AgentRunId,
+    attempt: AgentWorkspaceRepairAttempt,
+    workspace: &AgentConversationWorkspace,
+    summary: &str,
+) -> Result<Json<CompleteAgentWorkspaceRepairResponse>, JsonError> {
+    let target = resolve_agent_workspace_pr_fix_target(state.app_state.as_ref(), workspace)
+        .await?
+        .ok_or_else(|| {
+            json_error(
+                StatusCode::BAD_REQUEST,
+                "No linked pull request is available for CI rerun.",
+                None,
+            )
+        })?;
+    let github = state.app_state.github_service.as_ref().ok_or_else(|| {
+        json_error(
+            StatusCode::BAD_GATEWAY,
+            "GitHub service is unavailable for CI rerun.",
+            None,
+        )
+    })?;
+    let health = github
+        .fetch_pr_health(&target.working_dir, target.pr_number)
+        .await
+        .map_err(|error| {
+            json_error(
+                StatusCode::BAD_GATEWAY,
+                format!("Failed to reload PR health before CI rerun: {error}"),
+                None,
+            )
+        })?;
+    let Some((workflow_run_id, fingerprint)) = failed_workflow_run_from_health(&health) else {
+        return block_transient_ci_rerun(
+            state,
+            attempt,
+            workspace,
+            summary,
+            "RalphX could not identify a failed GitHub Actions run from fresh PR health.",
+        )
+        .await;
+    };
+    if attempt.ci_rerun_count >= MAX_AGENT_WORKSPACE_CI_RERUN_RETRIES {
+        return block_transient_ci_rerun(
+            state,
+            attempt,
+            workspace,
+            summary,
+            "The transient CI rerun budget is exhausted.",
+        )
+        .await;
+    }
+    let reserved = match reserve_agent_workspace_ci_rerun(
+        Arc::clone(&state.app_state.agent_workspace_repair_repo),
+        attempt,
+        &fingerprint,
+        "Transient CI failure accepted; RalphX is rerunning failed GitHub Actions jobs.",
+        workspace.pr_auto_merge_current,
+    )
+    .await
+    .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
+    {
+        AgentWorkspaceRepairTransitionOutcome::Applied(attempt) => attempt,
+        AgentWorkspaceRepairTransitionOutcome::Stale(_)
+        | AgentWorkspaceRepairTransitionOutcome::Missing => {
+            return stale_completion_transition_response(state, conversation_id, run_id).await
+        }
+    };
+    if let Err(error) = github
+        .rerun_failed_workflow(&target.working_dir, workflow_run_id)
+        .await
+    {
+        return block_transient_ci_rerun(
+            state,
+            reserved,
+            workspace,
+            summary,
+            &format!("GitHub Actions rerun failed: {error}"),
+        )
+        .await;
+    }
+    Ok(completion_response(
+        "rerun_pending",
+        "RalphX accepted the transient CI classification and reran the failed GitHub Actions jobs.",
+    ))
+}
+
+async fn block_transient_ci_rerun(
+    state: &HttpServerState,
+    attempt: AgentWorkspaceRepairAttempt,
+    workspace: &AgentConversationWorkspace,
+    summary: &str,
+    blocker: &str,
+) -> Result<Json<CompleteAgentWorkspaceRepairResponse>, JsonError> {
+    match block_agent_workspace_repair_completion(
+        Arc::clone(&state.app_state.agent_workspace_repair_repo),
+        Arc::clone(&state.app_state.branch_update_repo),
+        attempt,
+        summary,
+        blocker,
+        workspace.pr_auto_merge_current,
+    )
+    .await
+    .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
+    {
+        AgentWorkspaceRepairTransitionOutcome::Applied(_) => {
+            Ok(completion_response("blocked", blocker))
+        }
+        AgentWorkspaceRepairTransitionOutcome::Stale(_)
+        | AgentWorkspaceRepairTransitionOutcome::Missing => Ok(completion_response(
+            "blocked",
+            "The CI rerun request became stale before it could be settled.",
+        )),
+    }
 }
 
 async fn complete_reserved_agent_workspace_repair(

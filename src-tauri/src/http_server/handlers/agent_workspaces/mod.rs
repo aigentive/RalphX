@@ -130,6 +130,8 @@ use crate::error::AppError;
 pub struct CompleteAgentWorkspaceRepairRequest {
     pub summary: String,
     pub blocker: Option<String>,
+    #[serde(default)]
+    pub transient_ci_failure: bool,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -327,6 +329,9 @@ pub struct CompleteAgentWorkspacePrFixRequest {
     pub summary: String,
     pub blocker: Option<String>,
     pub fix_commit_sha: Option<String>,
+    /// Typed, model-facing classification. Backend re-derives failed-run authority from PR health.
+    #[serde(default)]
+    pub transient_ci_failure: bool,
     /// Transport-owned runtime identity; intentionally absent from the model-facing tool schema.
     pub created_by_run_id: Option<String>,
 }
@@ -2425,6 +2430,7 @@ pub async fn complete_agent_workspace_pr_fix(
         CompleteAgentWorkspaceRepairRequest {
             summary: req.summary,
             blocker: req.blocker,
+            transient_ci_failure: req.transient_ci_failure,
         },
     )
     .await?;

@@ -535,11 +535,16 @@ export const AGENT_WORKSPACE_TOOLS: Tool[] = [
           type: "string",
           description: "Optional blocker explanation when the PR fix cannot be completed safely",
         },
+        transient_ci_failure: {
+          type: "boolean",
+          description:
+            "Set true only for a genuinely transient GitHub Actions infrastructure failure (for example runner cancellation or infrastructure timeout). Never use it for a real test, lint, coverage, or code failure; RalphX rechecks PR health and derives the failed workflow run itself.",
+        },
         fix_commit_sha: {
           type: "string",
           pattern: "^[0-9a-f]{40}$",
           description:
-            "Full 40-character SHA of the current committed workspace HEAD. Required when blocker is absent; omit it when reporting a blocker.",
+            "Full 40-character SHA of the current committed workspace HEAD. Required when blocker and transient_ci_failure are both absent; omit it when reporting either outcome.",
         },
       },
       required: ["conversation_id", "summary"],
@@ -1050,16 +1055,18 @@ export async function callCompleteAgentWorkspacePrFixTool(
   args: unknown,
   runtimeContext?: AgentWorkspaceToolRuntimeContext
 ): Promise<unknown> {
-  const { conversation_id, summary, blocker, fix_commit_sha } = args as {
+  const { conversation_id, summary, blocker, transient_ci_failure, fix_commit_sha } = args as {
     conversation_id: string;
     summary: string;
     blocker?: string;
+    transient_ci_failure?: boolean;
     fix_commit_sha?: string;
   };
 
   return callTauri(`agent-workspaces/${conversation_id}/complete-pr-fix`, {
     summary,
     blocker,
+    transient_ci_failure,
     fix_commit_sha,
     created_by_run_id: resolveWorkspaceReviewCallerRunId(runtimeContext),
   });

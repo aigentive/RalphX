@@ -38,6 +38,7 @@ pub struct MockGithubState {
     pub fetch_pr_review_thread_result: Option<AppResult<PrReviewThread>>,
     pub fetch_github_connection_status_result: Option<AppResult<GithubConnectionStatus>>,
     pub fetch_pr_health_result: Option<AppResult<PrHealth>>,
+    pub rerun_failed_workflow_result: Option<AppResult<()>>,
     pub enable_pr_auto_merge_result: Option<AppResult<()>>,
     pub enable_pr_auto_merge_delay_ms: u64,
     pub disable_pr_auto_merge_result: Option<AppResult<()>>,
@@ -77,6 +78,7 @@ pub struct MockGithubState {
     pub fetch_pr_review_thread_calls: u32,
     pub fetch_github_connection_status_calls: u32,
     pub fetch_pr_health_calls: u32,
+    pub rerun_failed_workflow_calls: u32,
     pub enable_pr_auto_merge_calls: u32,
     pub disable_pr_auto_merge_calls: u32,
     pub push_branch_calls: u32,
@@ -109,6 +111,7 @@ pub struct MockGithubState {
     pub last_fetch_pr_detail_number: Option<i64>,
     pub last_fetch_pr_review_thread_number: Option<i64>,
     pub last_fetch_pr_health_number: Option<i64>,
+    pub last_rerun_failed_workflow_id: Option<i64>,
     pub last_mark_pr_ready_working_dir: Option<String>,
     pub last_enable_pr_auto_merge_args: Option<(i64, String)>,
     pub last_enable_pr_auto_merge_working_dir: Option<String>,
@@ -548,6 +551,15 @@ impl GithubServiceTrait for MockGithubService {
             issue_comments: Vec::new(),
             auto_merge_request: None,
         })
+    }
+
+    async fn rerun_failed_workflow(&self, _working_dir: &Path, run_id: i64) -> AppResult<()> {
+        let mut s = self.state.lock().expect("lock poisoned");
+        s.rerun_failed_workflow_calls += 1;
+        s.last_rerun_failed_workflow_id = Some(run_id);
+        s.rerun_failed_workflow_result
+            .take()
+            .unwrap_or_else(|| Ok(()))
     }
 
     async fn enable_pr_auto_merge(

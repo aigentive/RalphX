@@ -568,6 +568,14 @@ pub trait GithubServiceTrait: Send + Sync {
         })
     }
 
+    /// Re-run only failed jobs for an authoritative GitHub Actions workflow run.
+    /// The run id must be derived from fresh PR health by the caller, never model input.
+    async fn rerun_failed_workflow(&self, _working_dir: &Path, _run_id: i64) -> AppResult<()> {
+        Err(AppError::Infrastructure(
+            "GitHub Actions rerun is unavailable for this runtime".to_string(),
+        ))
+    }
+
     /// Enable GitHub auto-merge for a PR with the selected merge method.
     async fn enable_pr_auto_merge(
         &self,

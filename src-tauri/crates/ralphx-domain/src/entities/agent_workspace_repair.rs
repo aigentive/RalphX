@@ -171,6 +171,10 @@ pub struct AgentWorkspaceRepairAttempt {
     pub auto_merge_desired: bool,
     pub auto_merge_method: Option<String>,
     pub dispatch_count: u32,
+    /// Backend-owned retry budget for transient GitHub Actions reruns.
+    pub ci_rerun_count: u32,
+    /// PR-health fingerprint for the currently requested rerun; never model supplied.
+    pub ci_rerun_fingerprint: Option<String>,
     pub next_dispatch_at: Option<DateTime<Utc>>,
     pub repair_head_commit: Option<String>,
     pub summary: Option<String>,
@@ -214,6 +218,8 @@ impl AgentWorkspaceRepairAttempt {
             auto_merge_desired,
             auto_merge_method,
             dispatch_count: 0,
+            ci_rerun_count: 0,
+            ci_rerun_fingerprint: None,
             next_dispatch_at: None,
             repair_head_commit: None,
             summary: None,
