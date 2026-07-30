@@ -1450,6 +1450,7 @@ mod tests {
                 None,
                 true,
                 now,
+                None,
             ),
             SidebarAttentionLane::Needs
         );
@@ -1461,11 +1462,12 @@ mod tests {
                 None,
                 false,
                 now,
+                None,
             ),
             SidebarAttentionLane::Working
         );
         assert_eq!(
-            attention_lane_for_row(true, SidebarPublicationState::Merged, None, None, true, now),
+            attention_lane_for_row(true, SidebarPublicationState::Merged, None, None, true, now, None),
             SidebarAttentionLane::Done
         );
     }
