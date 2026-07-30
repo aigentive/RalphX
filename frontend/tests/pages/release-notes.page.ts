@@ -53,14 +53,21 @@ export class ReleaseNotesPage extends BasePage {
   }
 
   async openFromNativeMenu() {
-    await this.page.evaluate(async () => {
-      const emit = (
+    // Emits through the app's event bus, not `__mockTauriEmit`: the native-menu handler
+    // in `UpdateChecker.events.ts` subscribes via `useEventBus()`, so in web mode it
+    // registers on MockEventBus and never sees the mock Tauri `listen` registry.
+    // `window.__eventBus` is the seam EventProvider publishes for exactly this
+    // (see tests/helpers/permission.helpers.ts).
+    await this.page.evaluate(() => {
+      const eventBus = (
         window as Window & {
-          __mockTauriEmit?: (event: string, payload?: unknown) => Promise<void>;
+          __eventBus?: { emit: (event: string, payload?: unknown) => void };
         }
-      ).__mockTauriEmit;
-      if (!emit) throw new Error("Mock Tauri event emitter is unavailable");
-      await emit("ralphx://show-release-notes");
+      ).__eventBus;
+      if (!eventBus) {
+        throw new Error("EventBus not available. Make sure app is running in web mode.");
+      }
+      eventBus.emit("ralphx://show-release-notes", undefined);
     });
     await this.dialog.waitFor({ state: "visible" });
   }
