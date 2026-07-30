@@ -1993,6 +1993,15 @@
     },
     {
       "authorityBearing": false,
+      "enclosingFunction": "remote_server/invoke.rs:::::invoke_handler",
+      "file": "remote_server/invoke.rs",
+      "id": "remote_server/invoke.rs::remote_server/invoke.rs:::::invoke_handler@14f7bca1671b7209",
+      "kind": "tokio::spawn",
+      "readSurface": [],
+      "sinksReached": []
+    },
+    {
+      "authorityBearing": false,
       "enclosingFunction": "remote_server/mod.rs:::::start_listener_with_runtime",
       "file": "remote_server/mod.rs",
       "id": "remote_server/mod.rs::remote_server/mod.rs:::::start_listener_with_runtime@be5782b8beb913b0",
