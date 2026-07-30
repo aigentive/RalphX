@@ -27,8 +27,10 @@ use crate::domain::entities::{
     ChatContextType, GitTargetLeaseOwner,
 };
 use crate::domain::repositories::{
-    AgentRunRepository, AgentWorkspaceRepairCompatibilityProjection,
+    AgentRunRepository, AgentWorkspaceRepairAttemptTransition,
+    AgentWorkspaceRepairAttemptTransitionOutcome, AgentWorkspaceRepairCompatibilityProjection,
     ImportLegacyAgentWorkspaceRepairAttempt, ImportLegacyAgentWorkspaceRepairAttemptOutcome,
+    SettleAgentWorkspaceRepairAttempt, SettleAgentWorkspaceRepairAttemptOutcome,
 };
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_REPAIR;
@@ -42,6 +44,10 @@ const AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX: &str = "auto_retry_blocked_repair
 const AUTO_RETRY_BLOCKED_REPAIR_BASE_DELAY_SECS: i64 = 60;
 const AUTO_RETRY_BLOCKED_REPAIR_MAX_DELAY_SECS: i64 = 15 * 60;
 const MAX_AUTO_RETRY_BLOCKED_REPAIR_STREAK: u32 = 3;
+const AUTO_RETRY_READY_REPAIR_REASON_PREFIX: &str = "auto_retry_ready_repair:";
+const AUTO_RETRY_READY_REPAIR_BASE_DELAY_SECS: i64 = 60;
+const AUTO_RETRY_READY_REPAIR_MAX_DELAY_SECS: i64 = 15 * 60;
+const MAX_AUTO_RETRY_READY_REPAIR_STREAK: u32 = 3;
 
 pub(crate) async fn recover_stale_publish_repair_for_workspace_in_state_result(
     state: &AppState,
@@ -341,11 +347,142 @@ async fn reconcile_agent_workspace_repair_attempt(
         }
         AgentWorkspaceRepairPhase::Ready => {
             release_repair_lease_if_settled_boundary(state, &current).await?;
-            Ok(DurableRepairRecoveryOutcome::Noop)
+            retry_safe_ready_agent_workspace_repair_publish(state, current).await
         }
         AgentWorkspaceRepairPhase::Blocked => {
             release_repair_lease_if_settled_boundary(state, &current).await?;
             retry_safe_blocked_agent_workspace_repair(state, current).await
+        }
+    }
+}
+
+fn automatic_ready_repair_streak(attempt: &AgentWorkspaceRepairAttempt) -> u32 {
+    attempt
+        .pending_reasons
+        .iter()
+        .filter_map(|reason| reason.strip_prefix(AUTO_RETRY_READY_REPAIR_REASON_PREFIX))
+        .filter_map(|streak| streak.parse::<u32>().ok())
+        .max()
+        .unwrap_or_default()
+}
+
+fn automatic_ready_repair_retry_delay(streak: u32) -> Duration {
+    let multiplier = 1_i64 << streak.min(4);
+    Duration::seconds(
+        AUTO_RETRY_READY_REPAIR_BASE_DELAY_SECS
+            .saturating_mul(multiplier)
+            .min(AUTO_RETRY_READY_REPAIR_MAX_DELAY_SECS),
+    )
+}
+
+async fn retry_safe_ready_agent_workspace_repair_publish(
+    state: &AppState,
+    current: AgentWorkspaceRepairAttempt,
+) -> AppResult<DurableRepairRecoveryOutcome> {
+    if !current.continuation.is_automatic()
+        || state
+            .agent_workspace_repair_repo
+            .get_open_repair_effect(&current.id)
+            .await?
+            .is_some()
+    {
+        return Ok(DurableRepairRecoveryOutcome::Noop);
+    }
+
+    let streak = automatic_ready_repair_streak(&current);
+    if streak >= MAX_AUTO_RETRY_READY_REPAIR_STREAK {
+        return settle_exhausted_ready_agent_workspace_repair(state, current).await;
+    }
+    if Utc::now() - current.updated_at < automatic_ready_repair_retry_delay(streak) {
+        return Ok(DurableRepairRecoveryOutcome::Noop);
+    }
+
+    let expected_updated_at = current.updated_at;
+    let mut marked = current;
+    marked.pending_reasons.push(format!(
+        "{AUTO_RETRY_READY_REPAIR_REASON_PREFIX}{}",
+        streak + 1
+    ));
+    marked.updated_at = std::cmp::max(Utc::now(), expected_updated_at + Duration::microseconds(1));
+    let marked = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: marked,
+            expected_phase: AgentWorkspaceRepairPhase::Ready,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Ready,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await?
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        AgentWorkspaceRepairAttemptTransitionOutcome::Stale(_)
+        | AgentWorkspaceRepairAttemptTransitionOutcome::Missing => {
+            return Ok(DurableRepairRecoveryOutcome::Stale);
+        }
+    };
+
+    // A failed re-drive must not abort the whole recovery sweep for other workspaces; the
+    // persisted streak marker keeps this attempt on backoff until it re-drives or settles.
+    let resumed = match resume_current_agent_workspace_repair_publish(
+        state,
+        &marked.conversation_id,
+        "Resuming a parked durable workspace repair publish continuation.",
+        true,
+    )
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = marked.conversation_id.as_str(),
+                attempt_id = marked.id.as_str(),
+                %error,
+                "Re-driving a parked ready workspace repair continuation failed; retrying after backoff"
+            );
+            return Ok(DurableRepairRecoveryOutcome::Noop);
+        }
+    };
+    match resumed {
+        AgentWorkspaceRepairPublishResumeOutcome::Continue(next) => {
+            Box::pin(reconcile_agent_workspace_repair_attempt(state, *next)).await
+        }
+        AgentWorkspaceRepairPublishResumeOutcome::AwaitingReview
+        | AgentWorkspaceRepairPublishResumeOutcome::Ready
+        | AgentWorkspaceRepairPublishResumeOutcome::Blocked
+        | AgentWorkspaceRepairPublishResumeOutcome::Busy => Ok(DurableRepairRecoveryOutcome::Noop),
+        AgentWorkspaceRepairPublishResumeOutcome::NoAttempt
+        | AgentWorkspaceRepairPublishResumeOutcome::Stale => {
+            Ok(DurableRepairRecoveryOutcome::Stale)
+        }
+    }
+}
+
+async fn settle_exhausted_ready_agent_workspace_repair(
+    state: &AppState,
+    current: AgentWorkspaceRepairAttempt,
+) -> AppResult<DurableRepairRecoveryOutcome> {
+    match state
+        .agent_workspace_repair_repo
+        .settle_repair_attempt(SettleAgentWorkspaceRepairAttempt {
+            attempt_id: current.id,
+            generation: current.generation,
+            expected_phase: AgentWorkspaceRepairPhase::Ready,
+            expected_updated_at: current.updated_at,
+            outcome: crate::domain::entities::AgentWorkspaceRepairOutcome::Failed,
+            settled_at: Utc::now(),
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await?
+    {
+        SettleAgentWorkspaceRepairAttemptOutcome::Applied(_) => {
+            Ok(DurableRepairRecoveryOutcome::Continued)
+        }
+        SettleAgentWorkspaceRepairAttemptOutcome::Stale(_)
+        | SettleAgentWorkspaceRepairAttemptOutcome::Missing => {
+            Ok(DurableRepairRecoveryOutcome::Stale)
         }
     }
 }

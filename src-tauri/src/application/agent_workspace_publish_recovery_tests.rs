@@ -30,6 +30,7 @@ use crate::application::agent_workspace_publish_repair_state::{
 use crate::application::agent_workspace_review::{
     AgentWorkspaceReviewPacket, AgentWorkspaceReviewTarget,
 };
+use crate::application::publish_resilience::try_acquire_agent_workspace_repair_publish_continuation_guard;
 use crate::application::{AppState, GitService};
 use crate::domain::agents::{AgentHarnessKind, AgentProviderSettings};
 use crate::domain::entities::{
@@ -198,6 +199,7 @@ async fn seed_orphaned_repair_dispatch(
         .expect("seed orphaned repair conversation");
     let mut workspace = needs_agent_workspace(conversation_id.clone());
     workspace.worktree_path = workspace_path.display().to_string();
+    workspace.base_commit = Some(recovery_git(project_dir.path(), &["rev-parse", "HEAD"]));
     state
         .agent_conversation_workspace_repo
         .create_or_update(workspace)
@@ -292,6 +294,39 @@ async fn block_repair_attempt_after(
     {
         AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
         outcome => panic!("blocking repair attempt must apply, got {outcome:?}"),
+    }
+}
+
+async fn park_repair_attempt_ready_after(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    expected_phase: AgentWorkspaceRepairPhase,
+    elapsed_secs: i64,
+) -> AgentWorkspaceRepairAttempt {
+    let mut attempt = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(conversation_id)
+        .await
+        .expect("load repair attempt to park")
+        .expect("repair attempt exists to park");
+    let expected_updated_at = attempt.updated_at;
+    attempt.phase = AgentWorkspaceRepairPhase::Ready;
+    attempt.updated_at = chrono::Utc::now() - chrono::Duration::seconds(elapsed_secs);
+    match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Ready,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("park repair attempt at ready")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("parking repair attempt must apply, got {outcome:?}"),
     }
 }
 
@@ -1451,6 +1486,382 @@ wait "$stdin_drain_pid" 2>/dev/null || true
         .iter()
         .any(|reason| reason == "auto_retry_blocked_repair:1"));
     assert!(successor.reserved_agent_run_id.is_some());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn ready_automatic_repair_past_grace_re_drives_its_publish_continuation() {
+    let _environment_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("lock test environment");
+    let _spawn_permission = TestEnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let (state, conversation_id, _worktree_parent, _project_dir) = seed_orphaned_repair_dispatch(
+        114,
+        r#"#!/bin/sh
+cat >/dev/null
+"#,
+    )
+    .await;
+    let ready = park_repair_attempt_ready_after(
+        &state,
+        &conversation_id,
+        AgentWorkspaceRepairPhase::Requested,
+        61,
+    )
+    .await;
+
+    recover_agent_workspace_repair_attempts_for_state(&state)
+        .await
+        .expect("re-drive parked ready continuation");
+
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload re-driven ready repair")
+        .expect("re-driven repair remains current");
+    assert_ne!(current.phase, AgentWorkspaceRepairPhase::Ready);
+    assert!(current
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == "auto_retry_ready_repair:1"));
+    assert_eq!(
+        current.id, ready.id,
+        "the continuation owns the same generation"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn ready_automatic_repair_busy_publish_guard_remains_re_drivable() {
+    let _environment_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("lock test environment");
+    let _spawn_permission = TestEnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let (state, conversation_id, _worktree_parent, _project_dir) = seed_orphaned_repair_dispatch(
+        119,
+        r#"#!/bin/sh
+cat >/dev/null
+"#,
+    )
+    .await;
+    let ready = park_repair_attempt_ready_after(
+        &state,
+        &conversation_id,
+        AgentWorkspaceRepairPhase::Requested,
+        61,
+    )
+    .await;
+    let _busy_guard =
+        try_acquire_agent_workspace_repair_publish_continuation_guard(&conversation_id)
+            .expect("reserve publish continuation guard");
+
+    recover_agent_workspace_repair_attempts_for_state(&state)
+        .await
+        .expect("busy publish continuation is retryable");
+
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload busy continuation")
+        .expect("busy continuation remains current");
+    assert_eq!(current.id, ready.id);
+    assert!(matches!(
+        current.phase,
+        AgentWorkspaceRepairPhase::ContinuationPending | AgentWorkspaceRepairPhase::Continuing
+    ));
+    assert!(current.settled_at.is_none());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn concurrent_ready_recovery_sweeps_re_drive_one_current_generation() {
+    let _environment_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("lock test environment");
+    let _spawn_permission = TestEnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let (state, conversation_id, _worktree_parent, _project_dir) = seed_orphaned_repair_dispatch(
+        120,
+        r#"#!/bin/sh
+cat >/dev/null
+"#,
+    )
+    .await;
+    let ready = park_repair_attempt_ready_after(
+        &state,
+        &conversation_id,
+        AgentWorkspaceRepairPhase::Requested,
+        61,
+    )
+    .await;
+
+    let (first, second) = tokio::join!(
+        recover_agent_workspace_repair_attempts_for_state(&state),
+        recover_agent_workspace_repair_attempts_for_state(&state)
+    );
+    first.expect("first ready recovery sweep");
+    second.expect("second ready recovery sweep");
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload concurrently re-driven ready repair")
+        .expect("ready repair remains current");
+    assert_eq!(current.id, ready.id);
+    assert_eq!(
+        current
+            .pending_reasons
+            .iter()
+            .filter(|reason| reason.as_str() == "auto_retry_ready_repair:1")
+            .count(),
+        1,
+        "the Ready timestamp CAS rejects the stale recovery snapshot"
+    );
+}
+
+#[tokio::test]
+async fn ready_automatic_repair_within_grace_remains_untouched() {
+    let state = AppState::new_test();
+    let conversation_id = conversation_id(115);
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(needs_agent_workspace(conversation_id.clone()))
+        .await
+        .expect("seed ready repair workspace");
+    state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                conversation_id.clone(),
+                AgentWorkspaceRepairSource::Publish,
+                AgentWorkspaceRepairContinuation::Publish,
+                "main",
+                false,
+                true,
+                false,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: "ready grace repair".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("start ready repair");
+    let ready = park_repair_attempt_ready_after(
+        &state,
+        &conversation_id,
+        AgentWorkspaceRepairPhase::Requested,
+        59,
+    )
+    .await;
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("respect ready repair grace"),
+        0
+    );
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload ready repair")
+        .expect("ready repair remains current");
+    assert_eq!(current.id, ready.id);
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Ready);
+    assert!(!current
+        .pending_reasons
+        .iter()
+        .any(|reason| reason.starts_with("auto_retry_ready_repair:")));
+}
+
+#[tokio::test]
+async fn ready_manual_repair_remains_untouched_by_automatic_recovery() {
+    let state = AppState::new_test();
+    let conversation_id = conversation_id(116);
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(needs_agent_workspace(conversation_id.clone()))
+        .await
+        .expect("seed manual ready workspace");
+    state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                conversation_id.clone(),
+                AgentWorkspaceRepairSource::Publish,
+                AgentWorkspaceRepairContinuation::Manual,
+                "main",
+                false,
+                true,
+                false,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: "manual ready repair".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("start manual ready repair");
+    let ready = park_repair_attempt_ready_after(
+        &state,
+        &conversation_id,
+        AgentWorkspaceRepairPhase::Requested,
+        61,
+    )
+    .await;
+
+    recover_agent_workspace_repair_attempts_for_state(&state)
+        .await
+        .expect("skip manual ready recovery");
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload manual ready repair")
+        .expect("manual ready repair remains current");
+    assert_eq!(current.id, ready.id);
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Ready);
+}
+
+#[tokio::test]
+async fn ready_automatic_repair_with_open_effect_remains_untouched() {
+    let state = AppState::new_test();
+    let conversation_id = conversation_id(117);
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(needs_agent_workspace(conversation_id.clone()))
+        .await
+        .expect("seed effect-owned ready workspace");
+    state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                conversation_id.clone(),
+                AgentWorkspaceRepairSource::Publish,
+                AgentWorkspaceRepairContinuation::Publish,
+                "main",
+                false,
+                true,
+                false,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: "effect-owned ready repair".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("start effect-owned ready repair");
+    let ready = park_repair_attempt_ready_after(
+        &state,
+        &conversation_id,
+        AgentWorkspaceRepairPhase::Requested,
+        61,
+    )
+    .await;
+    assert!(matches!(
+        state
+            .agent_workspace_repair_repo
+            .create_repair_effect(CreateAgentWorkspaceRepairEffect {
+                attempt_id: ready.id.clone(),
+                generation: ready.generation,
+                expected_phase: AgentWorkspaceRepairPhase::Ready,
+                expected_attempt_updated_at: ready.updated_at,
+                effect: AgentWorkspaceRepairEffect::new(
+                    ready.id.clone(),
+                    AgentWorkspaceRepairEffectKind::PushBranch,
+                    "ready-repair-open-effect",
+                    chrono::Utc::now(),
+                ),
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("record ready repair effect"),
+        CreateAgentWorkspaceRepairEffectOutcome::Created(_)
+    ));
+
+    recover_agent_workspace_repair_attempts_for_state(&state)
+        .await
+        .expect("respect ready repair effect owner");
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload effect-owned ready repair")
+        .expect("effect-owned ready repair remains current");
+    assert_eq!(current.id, ready.id);
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Ready);
+}
+
+#[tokio::test]
+async fn ready_automatic_repair_at_streak_cap_is_settled() {
+    let state = AppState::new_test();
+    let conversation_id = conversation_id(118);
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(needs_agent_workspace(conversation_id.clone()))
+        .await
+        .expect("seed capped ready workspace");
+    state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                conversation_id.clone(),
+                AgentWorkspaceRepairSource::Publish,
+                AgentWorkspaceRepairContinuation::Publish,
+                "main",
+                false,
+                true,
+                false,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: "auto_retry_ready_repair:3".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("start capped ready repair");
+    let ready = park_repair_attempt_ready_after(
+        &state,
+        &conversation_id,
+        AgentWorkspaceRepairPhase::Requested,
+        61,
+    )
+    .await;
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("settle capped ready repair"),
+        1
+    );
+    assert!(state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load current capped ready repair")
+        .is_none());
+    let settled = state
+        .agent_workspace_repair_repo
+        .get_repair_attempt(&ready.id)
+        .await
+        .expect("load settled ready repair")
+        .expect("capped ready repair persists");
+    assert_eq!(settled.outcome, Some(AgentWorkspaceRepairOutcome::Failed));
+    assert!(settled.settled_at.is_some());
 }
 
 #[tokio::test]

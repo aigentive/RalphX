@@ -36,7 +36,8 @@ use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus as PlanPrStatu
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
-    ChatConversationId, PlanBranch, PlanBranchStatus, Project, ProjectId,
+    AgentWorkspaceRepairPhase, ChatConversationId, PlanBranch, PlanBranchStatus, Project,
+    ProjectId,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, PlanBranchRepository,
@@ -54,6 +55,19 @@ const PR_SUPERVISION_RECOVERED_SUMMARY: &str =
 
 static IN_FLIGHT_RECOVERIES: OnceLock<DashMap<String, ()>> = OnceLock::new();
 static RECENT_RECOVERIES: OnceLock<DashMap<String, Instant>> = OnceLock::new();
+
+fn is_in_flight_durable_repair_phase(phase: AgentWorkspaceRepairPhase) -> bool {
+    matches!(
+        phase,
+        AgentWorkspaceRepairPhase::Requested
+            | AgentWorkspaceRepairPhase::Dispatching
+            | AgentWorkspaceRepairPhase::Repairing
+            | AgentWorkspaceRepairPhase::Validating
+            | AgentWorkspaceRepairPhase::ContinuationPending
+            | AgentWorkspaceRepairPhase::Continuing
+            | AgentWorkspaceRepairPhase::AwaitingReview
+    )
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AgentWorkspacePrSupervisionRecoveryTrigger {
@@ -215,7 +229,7 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
             .agent_workspace_repair_repo
             .get_current_repair_attempt(&conversation_id)
             .await?
-            .is_some()
+            .is_some_and(|attempt| is_in_flight_durable_repair_phase(attempt.phase))
         {
             return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
                 "durable_repair_active",

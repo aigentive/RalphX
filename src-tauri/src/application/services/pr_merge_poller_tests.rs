@@ -5610,14 +5610,20 @@ async fn live_pr_conflict_repair_repo_route_preserves_durable_authority_on_stale
         "stale PR-conflict observations must not overwrite base authority"
     );
     assert_eq!(chat.get_sent_messages().await, messages_before_join);
-    assert_eq!(
-        workspace_repo
-            .list_publication_events(&conversation_id)
-            .await
-            .expect("events should list after stale join"),
-        events_before_join,
-        "a stale PR-conflict join must not append duplicate events"
-    );
+    let events_after_join = workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("events should list after stale join");
+    assert_eq!(events_after_join.len(), events_before_join.len() + 1);
+    assert!(events_after_join.iter().any(|event| {
+        event.step == "repair_routed"
+            && event.status == "waiting"
+            && event.classification.as_deref() == Some("agent_workspace_repair_routed:101:joined")
+            && event.summary.contains("merge-conflict signal")
+            && event
+                .summary
+                .contains("routed to an existing workspace repair attempt")
+    }));
     assert!(repair_repo
         .get_open_repair_effect(&first.id)
         .await
@@ -5770,6 +5776,130 @@ async fn live_pr_autofix_repair_repo_route_deduplicates_concurrent_dispatches() 
         .iter()
         .filter(|event| event.step == "repair_sent")
         .all(|event| event.classification.as_deref() == Some(&reserved_run_classification)));
+}
+
+#[tokio::test]
+async fn live_pr_autofix_repair_routed_signal_records_once_for_existing_attempt() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let mut workspace = supervised_workspace(
+        "durable-pr-autofix-routed",
+        "project-durable-pr-autofix-routed",
+        worktree.path(),
+    );
+    init_repair_dispatch_repo(worktree.path(), &workspace.branch_name);
+    workspace.base_commit = Some("base-oid-autofix-routed".to_string());
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
+    let branch_update_repo: Arc<dyn BranchUpdateRepository> =
+        Arc::new(MemoryBranchUpdateRepository::new());
+    let agent_run_repo = seeded_latest_pr_fixer_run_repo(&conversation_id).await;
+    let github = Arc::new(MockGithubService::new());
+    let failing_health = || {
+        let mut health = open_pr_health("autofix-head");
+        health.checks.push(PrHealthCheck {
+            name: "Rust tests".to_string(),
+            status: Some("completed".to_string()),
+            conclusion: Some("failure".to_string()),
+            details_url: Some("https://github.com/owner/repo/actions/runs/1".to_string()),
+        });
+        health
+    };
+    let chat = Arc::new(MockChatService::with_agent_run_repo(Arc::clone(
+        &agent_run_repo,
+    )));
+
+    github.state().fetch_pr_health_result = Some(Ok(failing_health()));
+    assert!(
+        super::route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
+            Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+            worktree.path(),
+            101,
+            &conversation_id,
+            workspace_repo.clone(),
+            Some(agent_run_repo.clone()),
+            Some(Arc::clone(&repair_repo)),
+            Some(Arc::clone(&branch_update_repo)),
+            chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        )
+        .await
+        .expect("first live autofix route should dispatch")
+    );
+    let attempt = repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("repair attempt should load")
+        .expect("PR autofix must create a durable repair attempt");
+    let messages_after_dispatch = chat.get_sent_messages().await.len();
+
+    // The live poller keeps observing the same failing checks while the repair attempt is
+    // still current; restore its pollable projection so each cycle reaches the join seam.
+    let dispatched = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace should load after dispatch")
+        .expect("workspace remains present");
+    let mut pollable = dispatched;
+    pollable.publication_push_status = Some("pushed".to_string());
+    workspace_repo
+        .create_or_update(pollable)
+        .await
+        .expect("pollable projection should persist");
+
+    for cycle in 0..2 {
+        github.state().fetch_pr_health_result = Some(Ok(failing_health()));
+        let routed = super::route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
+            Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+            worktree.path(),
+            101,
+            &conversation_id,
+            workspace_repo.clone(),
+            Some(agent_run_repo.clone()),
+            Some(Arc::clone(&repair_repo)),
+            Some(Arc::clone(&branch_update_repo)),
+            chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        )
+        .await
+        .expect("joined poll cycles must settle harmlessly");
+        assert!(!routed, "cycle {cycle} must not dispatch a second repair");
+    }
+
+    let current = repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("repair attempt should load after joined cycles")
+        .expect("original autofix repair should remain current");
+    assert_eq!(current.id, attempt.id);
+    assert_eq!(
+        chat.get_sent_messages().await.len(),
+        messages_after_dispatch,
+        "joined poll cycles must not send another repair dispatch"
+    );
+    let events = workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("events should list after joined cycles");
+    let routed_events: Vec<_> = events
+        .iter()
+        .filter(|event| event.step == "repair_routed")
+        .collect();
+    assert_eq!(
+        routed_events.len(),
+        1,
+        "repeated joined cycles must record exactly one routed event"
+    );
+    let routed = routed_events[0];
+    assert_eq!(routed.status, "waiting");
+    assert_eq!(
+        routed.classification.as_deref(),
+        Some("agent_workspace_repair_routed:101:joined")
+    );
+    assert!(routed.summary.contains("CI-failure signal"));
+    assert!(routed.summary.contains("1 failing check"));
 }
 
 #[tokio::test]
