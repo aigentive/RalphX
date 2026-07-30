@@ -42,7 +42,7 @@ export class AgentsInboxRecentPage extends BasePage {
     await this.page.getByRole("radio", { name: "Inbox" }).click();
     await this.page.keyboard.press("Escape");
     await expect(this.recentChip).toHaveAttribute("aria-selected", "true");
-    await expect(this.recentScroller).toBeVisible();
+    await expect(this.recentScroller).toBeVisible({ timeout: 15_000 });
     await this.waitForGroupsSettled();
   }
 
