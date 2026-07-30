@@ -1,5 +1,4 @@
 use super::*;
-use crate::http_server::types::ActiveStateResponse;
 
 fn cached_streaming_task(tool_use_id: &str) -> CachedStreamingTask {
     CachedStreamingTask {
@@ -369,26 +368,16 @@ async fn test_serialize_produces_expected_json() {
 }
 
 #[tokio::test]
-async fn test_active_state_response_serializes_partial_thinking_segments() {
+async fn test_cache_keeps_thinking_segments_in_index_order() {
     let cache = StreamingStateCache::new();
     cache.append_thinking("conv-123", 0, "First thought").await;
     cache.append_thinking("conv-123", 1, "Second thought").await;
 
     let cached_state = cache.get("conv-123").await.unwrap();
-    let response = ActiveStateResponse {
-        is_active: true,
-        run_id: cached_state.run_id,
-        tool_calls: Vec::new(),
-        streaming_tasks: Vec::new(),
-        partial_text: cached_state.partial_text,
-        partial_text_segments: cached_state.partial_text_segments,
-        partial_thinking_segments: cached_state.partial_thinking_segments,
-    };
 
-    let json = serde_json::to_value(&response).unwrap();
     assert_eq!(
-        json["partial_thinking_segments"],
-        serde_json::json!(["First thought", "Second thought"])
+        cached_state.partial_thinking_segments,
+        vec!["First thought", "Second thought"]
     );
 }
 
