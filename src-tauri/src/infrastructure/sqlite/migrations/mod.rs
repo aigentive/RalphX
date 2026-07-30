@@ -569,6 +569,9 @@ mod v20260728162405_rx_native_team_runtime_tests;
 mod v20260728183000_workspace_review_plan_context;
 #[cfg(test)]
 mod v20260728183000_workspace_review_plan_context_tests;
+mod v20260730000304_chat_message_blocks_created_at_index;
+#[cfg(test)]
+mod v20260730000304_chat_message_blocks_created_at_index_tests;
 #[cfg(test)]
 pub(super) fn migrate_scripted_agent_workflows_for_test(conn: &Connection) -> AppResult<()> {
     v20260715194617_scripted_agent_workflows::migrate(conn)
@@ -1818,6 +1821,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260728183000,
         name: "workspace_review_plan_context",
         migrate: v20260728183000_workspace_review_plan_context::migrate,
+    },
+    Migration {
+        version: 20260730000304,
+        name: "chat_message_blocks_created_at_index",
+        migrate: v20260730000304_chat_message_blocks_created_at_index::migrate,
     },
     Migration {
         version: 20260730025727,

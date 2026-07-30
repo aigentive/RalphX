@@ -11,6 +11,7 @@ use tracing::warn;
 /// All runtime configuration collected from config/ralphx.yaml + env overrides.
 #[derive(Debug, Clone)]
 pub struct AllRuntimeConfig {
+    pub database_maintenance: DatabaseMaintenanceConfig,
     pub stream: StreamTimeoutsConfig,
     pub reconciliation: ReconciliationConfig,
     pub git: GitRuntimeConfig,
@@ -24,6 +25,25 @@ pub struct AllRuntimeConfig {
     pub child_session_activity_threshold_secs: Option<u64>,
     /// UI feature flags (page visibility). Defaults to all enabled.
     pub ui_feature_flags: super::ui_config::UiFeatureFlagsConfig,
+}
+
+/// Startup-only database compaction settings. The percent avoids floating-point config drift.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct DatabaseMaintenanceConfig {
+    pub db_auto_compact_enabled: bool,
+    pub db_auto_compact_max_db_bytes: u64,
+    pub db_auto_compact_min_freelist_percent: u64,
+}
+
+impl Default for DatabaseMaintenanceConfig {
+    fn default() -> Self {
+        Self {
+            db_auto_compact_enabled: true,
+            db_auto_compact_max_db_bytes: 2_147_483_648,
+            db_auto_compact_min_freelist_percent: 20,
+        }
+    }
 }
 
 pub const DEFAULT_DESKTOP_NOTIFICATION_COALESCE_WINDOW_SECS: u64 = 5;
@@ -241,6 +261,14 @@ pub struct StreamTimeoutsConfig {
     pub notification_retention_read_days: u64,
     #[serde(default = "default_notification_retention_max_rows")]
     pub notification_retention_max_rows: u64,
+    #[serde(default = "default_chat_payload_retention_enabled")]
+    pub chat_payload_retention_enabled: bool,
+    #[serde(default = "default_chat_payload_retention_days")]
+    pub chat_payload_retention_days: u64,
+    #[serde(default = "default_chat_payload_retention_archived_days")]
+    pub chat_payload_retention_archived_days: u64,
+    #[serde(default = "default_chat_payload_retention_batch_rows")]
+    pub chat_payload_retention_batch_rows: u64,
     #[serde(default = "default_db_lock_wait_warn_ms")]
     pub db_lock_wait_warn_ms: u64,
     #[serde(default = "default_db_lock_hold_warn_ms")]
@@ -279,6 +307,22 @@ fn default_notification_retention_max_rows() -> u64 {
     DEFAULT_NOTIFICATION_RETENTION_MAX_ROWS
 }
 
+fn default_chat_payload_retention_enabled() -> bool {
+    true
+}
+
+fn default_chat_payload_retention_days() -> u64 {
+    90
+}
+
+fn default_chat_payload_retention_archived_days() -> u64 {
+    7
+}
+
+fn default_chat_payload_retention_batch_rows() -> u64 {
+    2000
+}
+
 fn default_db_lock_wait_warn_ms() -> u64 {
     100
 }
@@ -305,6 +349,10 @@ impl Default for StreamTimeoutsConfig {
                 DEFAULT_DESKTOP_NOTIFICATION_COALESCE_WINDOW_SECS,
             notification_retention_read_days: DEFAULT_NOTIFICATION_RETENTION_READ_DAYS,
             notification_retention_max_rows: DEFAULT_NOTIFICATION_RETENTION_MAX_ROWS,
+            chat_payload_retention_enabled: default_chat_payload_retention_enabled(),
+            chat_payload_retention_days: default_chat_payload_retention_days(),
+            chat_payload_retention_archived_days: default_chat_payload_retention_archived_days(),
+            chat_payload_retention_batch_rows: default_chat_payload_retention_batch_rows(),
             db_lock_wait_warn_ms: default_db_lock_wait_warn_ms(),
             db_lock_hold_warn_ms: default_db_lock_hold_warn_ms(),
         }
@@ -766,6 +814,20 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
             }
         };
     }
+    if let Some(value) = lookup("RALPHX_DB_AUTO_COMPACT_ENABLED") {
+        if let Ok(enabled) = value.parse::<bool>() {
+            cfg.database_maintenance.db_auto_compact_enabled = enabled;
+        }
+    }
+    env_u64!(
+        cfg.database_maintenance.db_auto_compact_max_db_bytes,
+        "RALPHX_DB_AUTO_COMPACT_MAX_DB_BYTES"
+    );
+    env_u64!(
+        cfg.database_maintenance
+            .db_auto_compact_min_freelist_percent,
+        "RALPHX_DB_AUTO_COMPACT_MIN_FREELIST_PERCENT"
+    );
 
     // Stream timeouts
     env_u64!(
@@ -823,6 +885,23 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
     env_u64!(
         cfg.stream.notification_retention_max_rows,
         "RALPHX_STREAM_NOTIFICATION_RETENTION_MAX_ROWS"
+    );
+    if let Some(value) = lookup("RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_ENABLED") {
+        if let Ok(enabled) = value.parse::<bool>() {
+            cfg.stream.chat_payload_retention_enabled = enabled;
+        }
+    }
+    env_u64!(
+        cfg.stream.chat_payload_retention_days,
+        "RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_DAYS"
+    );
+    env_u64!(
+        cfg.stream.chat_payload_retention_archived_days,
+        "RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_ARCHIVED_DAYS"
+    );
+    env_u64!(
+        cfg.stream.chat_payload_retention_batch_rows,
+        "RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_BATCH_ROWS"
     );
     env_u64!(
         cfg.stream.db_lock_wait_warn_ms,

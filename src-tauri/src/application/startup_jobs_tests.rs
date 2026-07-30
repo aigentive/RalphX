@@ -18,6 +18,8 @@ use crate::domain::entities::{
 };
 use crate::domain::services::{QueueKey, QueuedMessage, RunningAgentKey};
 use crate::infrastructure::agents::claude::StreamTimeoutsConfig;
+use crate::infrastructure::sqlite::sqlite_chat_payload_retention_repo::SqliteChatPayloadRetentionRepository;
+use crate::testing::SqliteTestDb;
 use tokio::process::ChildStdin;
 
 async fn create_test_stdin() -> (ChildStdin, tokio::process::Child) {
@@ -47,6 +49,85 @@ fn notification_retention_prune_uses_runtime_config_values() {
 
     assert_eq!(read_before, now - chrono::Duration::days(7));
     assert_eq!(max_rows, 42);
+}
+
+#[test]
+fn chat_payload_retention_prune_uses_runtime_config_values() {
+    let config = StreamTimeoutsConfig {
+        chat_payload_retention_days: 90,
+        chat_payload_retention_archived_days: 7,
+        chat_payload_retention_batch_rows: 42,
+        ..StreamTimeoutsConfig::default()
+    };
+    let now = chrono::DateTime::parse_from_rfc3339("2026-07-11T12:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+
+    let (before, archived_before, batch_rows) = chat_payload_retention_prune_args(&config, now);
+
+    assert_eq!(before, now - chrono::Duration::days(90));
+    assert_eq!(archived_before, now - chrono::Duration::days(7));
+    assert_eq!(batch_rows, 42);
+}
+
+#[test]
+fn chat_payload_retention_zero_batch_rows_clamps_to_one() {
+    let config = StreamTimeoutsConfig {
+        chat_payload_retention_batch_rows: 0,
+        ..StreamTimeoutsConfig::default()
+    };
+    let now = chrono::Utc::now();
+
+    let (_, _, batch_rows) = chat_payload_retention_prune_args(&config, now);
+
+    // LIMIT 0 would delete nothing while the job still reports success.
+    assert_eq!(batch_rows, 1);
+}
+
+#[tokio::test]
+async fn disabled_chat_payload_retention_prunes_nothing() {
+    let db = SqliteTestDb::new("disabled-chat-payload-retention");
+    let repo = SqliteChatPayloadRetentionRepository::from_shared(db.shared_conn());
+    let now = chrono::Utc::now() - chrono::Duration::days(100);
+    db.with_connection(|conn| {
+        conn.execute(
+            "INSERT INTO chat_conversations (id, context_type, context_id, created_at, updated_at) VALUES ('conversation-1', 'project', 'project-1', ?1, ?1)",
+            [now.to_rfc3339()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO chat_message_blocks (id, conversation_id, sequence, block_index, role, kind, status, created_at, updated_at) VALUES ('block-1', 'conversation-1', 1, 0, 'assistant', 'tool_use', 'finalized', ?1, ?1)",
+            [now.to_rfc3339()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO chat_message_block_payloads (block_id, input_json, updated_at) VALUES ('block-1', '{\"retained\":true}', ?1)",
+            [now.to_rfc3339()],
+        )
+        .unwrap();
+    });
+    let config = StreamTimeoutsConfig {
+        chat_payload_retention_enabled: false,
+        ..StreamTimeoutsConfig::default()
+    };
+
+    assert_eq!(
+        prune_chat_payload_retention(&repo, &config, chrono::Utc::now())
+            .await
+            .unwrap(),
+        0
+    );
+    db.with_connection(|conn| {
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM chat_message_block_payloads",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+    });
 }
 
 #[test]

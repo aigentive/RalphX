@@ -8,6 +8,75 @@ use crate::domain::entities::{
     ChatTimelineItemStatus, MessageRole, ProjectId,
 };
 
+use super::retains_full_raw_tool_payload;
+
+#[test]
+fn full_raw_payload_allowlist_matches_renderer_hydration_tools() {
+    for name in [
+        "edit",
+        "mcp__ralphx__write",
+        "ralphx::ask_user_question",
+        "mcp__ralphx_internal__delegate_start",
+        "delegate_wait",
+        "delegate_cancel",
+        "delegate_terminal",
+    ] {
+        assert!(retains_full_raw_tool_payload(name), "{name}");
+    }
+
+    for name in ["bash", "Read", "mcp__ralphx__get_artifact"] {
+        assert!(!retains_full_raw_tool_payload(name), "{name}");
+    }
+}
+
+/// The allowlist is intentionally triplicated (application helper plus both
+/// repository write guards) because infrastructure must not import
+/// application-layer code. This parity matrix keeps the three copies from
+/// drifting: an edit to one that is not mirrored fails here.
+#[test]
+fn full_raw_payload_allowlist_copies_agree_across_all_implementations() {
+    let matrix = [
+        "edit",
+        "Edit",
+        "write",
+        "WRITE",
+        "tools::edit",
+        "ask_user_question",
+        "mcp__ralphx__ask_user_question",
+        "ralphx::ask_user_question",
+        "ralphx_internal:ask_user_question",
+        "delegate_start",
+        "delegate_wait",
+        "delegate_cancel",
+        "delegate_terminal",
+        "mcp__ralphx_internal__delegate_start",
+        "bash",
+        "Read",
+        "grep",
+        "apply_patch",
+        "MultiEdit",
+        "str_replace_editor",
+        "mcp__ralphx__get_artifact",
+        "editors",
+        "rewrite",
+        "",
+        "  edit  ",
+    ];
+    for name in matrix {
+        let application = retains_full_raw_tool_payload(name);
+        let sqlite =
+            crate::infrastructure::sqlite::sqlite_chat_timeline_repo::retains_full_raw_tool_payload(
+                name,
+            );
+        let memory =
+            crate::infrastructure::memory::memory_chat_timeline_repo::retains_full_raw_tool_payload(
+                name,
+            );
+        assert_eq!(application, sqlite, "sqlite copy drifted for {name:?}");
+        assert_eq!(application, memory, "memory copy drifted for {name:?}");
+    }
+}
+
 #[test]
 fn agent_run_started_payload_serde_snake_case() {
     let payload = AgentRunStartedPayload {

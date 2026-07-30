@@ -252,6 +252,31 @@ fn launch_startup_attempt(
                 return;
             }
         };
+        // Structural exclusivity: this is the sole point before AppState opens its pooled SQLite
+        // connection. Never move VACUUM behind AppState construction or through DbConnection.
+        let runtime = crate::infrastructure::agents::claude::database_maintenance_config();
+        let compaction_config =
+            crate::infrastructure::sqlite::database_maintenance::CompactionConfig {
+                auto_enabled: runtime.db_auto_compact_enabled,
+                auto_max_db_bytes: runtime.db_auto_compact_max_db_bytes,
+                auto_min_freelist_percent: runtime.db_auto_compact_min_freelist_percent,
+            };
+        match app_paths.database_maintenance_paths().map(|paths| {
+            crate::infrastructure::sqlite::database_maintenance::compact_before_pool_opens_at(
+                &paths,
+                compaction_config,
+            )
+        }) {
+            Ok(Ok(crate::infrastructure::sqlite::database_maintenance::CompactionOutcome::Compacted { reclaimed_bytes })) => {
+                tracing::info!(reclaimed_bytes, "Startup database compaction completed before pool open");
+            }
+            Ok(Ok(crate::infrastructure::sqlite::database_maintenance::CompactionOutcome::Skipped(reason))) => {
+                tracing::info!(reason, "Startup database compaction skipped");
+            }
+            Ok(Ok(crate::infrastructure::sqlite::database_maintenance::CompactionOutcome::NotRequested)) => {}
+            Ok(Err(error)) => tracing::error!(%error, "Startup database compaction failed before pool open"),
+            Err(error) => tracing::error!(%error, "Startup database compaction could not resolve maintenance paths"),
+        }
         if startup_coordinator
             .advance(attempt_id, StartupStage::Migrating)
             .is_err()

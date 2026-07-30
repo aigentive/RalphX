@@ -12,6 +12,40 @@ use crate::infrastructure::agents::claude::ToolCall;
 
 use super::tool_result_preview::{LiveToolResultPreview, ToolArgumentPreviewPayload};
 
+const RALPHX_TOOL_NAME_PREFIXES: [&str; 6] = [
+    "mcp__ralphx__",
+    "mcp__ralphx_internal__",
+    "ralphx::",
+    "ralphx_internal::",
+    "ralphx:",
+    "ralphx_internal:",
+];
+const DIFF_TOOL_NAMES: [&str; 2] = ["edit", "write"];
+const ASK_USER_QUESTION_TOOL_NAME: &str = "ask_user_question";
+const DELEGATION_TOOL_NAMES: [&str; 4] = [
+    "delegate_start",
+    "delegate_wait",
+    "delegate_cancel",
+    "delegate_terminal",
+];
+
+/// Whether a timeline block must retain its original raw JSON for renderer-specific hydration.
+pub(crate) fn retains_full_raw_tool_payload(tool_name: &str) -> bool {
+    let normalized = normalize_ralphx_tool_name(tool_name);
+    let leaf_name = normalized.rsplit("::").next().unwrap_or(&normalized);
+    DIFF_TOOL_NAMES.contains(&leaf_name)
+        || normalized == ASK_USER_QUESTION_TOOL_NAME
+        || DELEGATION_TOOL_NAMES.contains(&normalized.as_str())
+}
+
+fn normalize_ralphx_tool_name(tool_name: &str) -> String {
+    let normalized = tool_name.trim().to_ascii_lowercase();
+    RALPHX_TOOL_NAME_PREFIXES
+        .iter()
+        .find_map(|prefix| normalized.strip_prefix(prefix).map(str::to_string))
+        .unwrap_or(normalized)
+}
+
 // ============================================================================
 // Event Name Constants
 // ============================================================================

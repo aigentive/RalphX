@@ -1770,6 +1770,64 @@ async fn persist_timeline_snapshot_writes_ordered_blocks_and_finalizes_them() {
 }
 
 #[tokio::test]
+async fn persist_timeline_snapshot_keeps_raw_payloads_only_for_full_fidelity_tools() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let message_id = Some("assistant-message-raw-payload-policy".to_string());
+    let blocks = vec![
+        ContentBlockItem::ToolUse {
+            id: Some("tool-bash".to_string()),
+            name: "bash".to_string(),
+            arguments: serde_json::json!({ "command": "cargo test" }),
+            result: Some(serde_json::json!("ok")),
+            parent_tool_use_id: None,
+            diff_context: None,
+        },
+        ContentBlockItem::ToolUse {
+            id: Some("tool-edit".to_string()),
+            name: "mcp__ralphx__edit".to_string(),
+            arguments: serde_json::json!({ "file_path": "src/lib.rs" }),
+            result: Some(serde_json::json!("ok")),
+            parent_tool_use_id: None,
+            diff_context: Some(serde_json::json!({ "file_path": "src/lib.rs" })),
+        },
+    ];
+
+    persist_timeline_snapshot(
+        &Some(state.chat_timeline_repo.clone()),
+        &conversation_id.as_str(),
+        &message_id,
+        &blocks,
+        ChatTimelineItemStatus::Finalized,
+    )
+    .await;
+
+    let page = state
+        .chat_timeline_repo
+        .get_page(&conversation_id, 10, None)
+        .await
+        .expect("load timeline page");
+    let bash = page
+        .items
+        .iter()
+        .find(|item| item.tool_name.as_deref() == Some("bash"))
+        .expect("bash item");
+    assert!(bash.raw_block_json.is_none());
+    assert_eq!(
+        bash.input_json.as_deref(),
+        Some(r#"{"command":"cargo test"}"#)
+    );
+    assert_eq!(bash.result_json.as_deref(), Some(r#""ok""#));
+
+    let edit = page
+        .items
+        .iter()
+        .find(|item| item.tool_name.as_deref() == Some("mcp__ralphx__edit"))
+        .expect("edit item");
+    assert!(edit.raw_block_json.is_some());
+}
+
+#[tokio::test]
 async fn persist_timeline_snapshot_preserves_streaming_block_order_and_kind_when_finalized() {
     let state = AppState::new_test();
     let conversation_id = ChatConversationId::new();

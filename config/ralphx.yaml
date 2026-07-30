@@ -23,6 +23,21 @@ defer_merge_enabled: false
 # Env override: RALPHX_FILE_LOGGING=true|false
 file_logging: true
 
+# Maximum bytes retained in each per-launch log (including the cap marker).
+# Env override: RALPHX_FILE_LOGGING_MAX_BYTES (default: 1073741824 / 1 GiB)
+file_logging_max_bytes: 1073741824
+
+# Number of prior per-launch ralphx_*.log files to retain on startup.
+# Env override: RALPHX_FILE_LOGGING_KEEP_FILES (default: 5)
+file_logging_keep_files: 5
+
+# Startup-only SQLite compaction. Manual requests bypass the auto thresholds but not backup/headroom guards.
+# Env: RALPHX_DB_AUTO_COMPACT_ENABLED, RALPHX_DB_AUTO_COMPACT_MAX_DB_BYTES, RALPHX_DB_AUTO_COMPACT_MIN_FREELIST_PERCENT
+database_maintenance:
+  db_auto_compact_enabled: true
+  db_auto_compact_max_db_bytes: 2147483648
+  db_auto_compact_min_freelist_percent: 20
+
 # Optional GitHub repository for user-submitted support issue reports.
 # When omitted, RalphX uses the public product repository and shows the
 # resolved destination before the user confirms submission.
@@ -114,6 +129,11 @@ timeouts:
     # startup_jobs.rs — durable notification history retention (read rows only)
     notification_retention_read_days: 30 # Env: RALPHX_STREAM_NOTIFICATION_RETENTION_READ_DAYS
     notification_retention_max_rows: 1000 # Env: RALPHX_STREAM_NOTIFICATION_RETENTION_MAX_ROWS
+    # startup_jobs.rs — background full chat tool-payload retention (block previews/metadata stay)
+    chat_payload_retention_enabled: true # Env: RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_ENABLED
+    chat_payload_retention_days: 90 # Env: RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_DAYS
+    chat_payload_retention_archived_days: 7 # Env: RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_ARCHIVED_DAYS
+    chat_payload_retention_batch_rows: 2000 # Env: RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_BATCH_ROWS
     # db_connection.rs — production warning thresholds for mutex wait and operation hold time
     db_lock_wait_warn_ms: 100 # Env: RALPHX_STREAM_DB_LOCK_WAIT_WARN_MS
     db_lock_hold_warn_ms: 250 # Env: RALPHX_STREAM_DB_LOCK_HOLD_WARN_MS

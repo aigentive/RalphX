@@ -7,17 +7,17 @@ pub use live_flags::{agent_personas_enabled, standalone_conversations_enabled};
 pub use ui_config::{UiConfig, UiFeatureFlagsConfig};
 
 use crate::domain::agents::{
-    standard_agent_lane_defaults, AgentHarnessKind, AgentLane, AgentLaneSettings,
-    LogicalEffort, CLAUDE_DEFAULT_ALLOW_DANGEROUSLY_SKIP_PERMISSIONS,
-    CLAUDE_DEFAULT_DANGEROUSLY_SKIP_PERMISSIONS, CLAUDE_DEFAULT_PERMISSION_MODE,
+    standard_agent_lane_defaults, AgentHarnessKind, AgentLane, AgentLaneSettings, LogicalEffort,
+    CLAUDE_DEFAULT_ALLOW_DANGEROUSLY_SKIP_PERMISSIONS, CLAUDE_DEFAULT_DANGEROUSLY_SKIP_PERMISSIONS,
+    CLAUDE_DEFAULT_PERMISSION_MODE,
 };
 use crate::domain::execution::{ExecutionSettings, GlobalExecutionSettings};
 use crate::infrastructure::agents::harness_agent_catalog::{
     internal_mcp_server_name, list_canonical_prompt_backed_agents, load_canonical_agent_definition,
-    load_canonical_agent_definition_for_profile,
-    resolve_harness_agent_prompt_path, resolve_project_root_from_catalog_path,
-    resolve_project_root_from_plugin_dir, try_load_canonical_claude_metadata,
-    try_load_canonical_claude_metadata_for_profile, AgentPromptHarness, CanonicalClaudeToolSpec,
+    load_canonical_agent_definition_for_profile, resolve_harness_agent_prompt_path,
+    resolve_project_root_from_catalog_path, resolve_project_root_from_plugin_dir,
+    try_load_canonical_claude_metadata, try_load_canonical_claude_metadata_for_profile,
+    AgentPromptHarness, CanonicalClaudeToolSpec,
 };
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -29,9 +29,10 @@ use tool_sets::canonical_claude_tool_sets;
 use process_config::{resolve_canonical_process_mapping, ProcessMapping};
 
 pub use runtime_config::{
-    validate_external_mcp_config, AllRuntimeConfig, AutomationsRuntimeConfig, ExternalMcpConfig,
-    GitRuntimeConfig, LimitsConfig, ReconciliationConfig, SchedulerConfig, SpecialistEntry,
-    StreamTimeoutsConfig, SupervisorRuntimeConfig, VerificationConfig,
+    validate_external_mcp_config, AllRuntimeConfig, AutomationsRuntimeConfig,
+    DatabaseMaintenanceConfig, ExternalMcpConfig, GitRuntimeConfig, LimitsConfig,
+    ReconciliationConfig, SchedulerConfig, SpecialistEntry, StreamTimeoutsConfig,
+    SupervisorRuntimeConfig, VerificationConfig,
 };
 
 const VALID_EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
@@ -246,6 +247,8 @@ struct RalphxConfig {
     #[serde(default)]
     timeouts: runtime_config::TimeoutsWrapper,
     #[serde(default)]
+    database_maintenance: runtime_config::DatabaseMaintenanceConfig,
+    #[serde(default)]
     reconciliation: ReconciliationConfig,
     #[serde(default)]
     git: GitRuntimeConfig,
@@ -329,8 +332,10 @@ struct ExternalMcpConfigOverlay {
     external_mcp: Option<ExternalMcpConfigRawOverlay>,
 }
 
-const EMBEDDED_CONFIG: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../config/ralphx.yaml"));
+const EMBEDDED_CONFIG: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../config/ralphx.yaml"
+));
 const EMBEDDED_EXTERNAL_MCP_CONFIG: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../config/external-mcp.yaml"
@@ -342,6 +347,14 @@ fn default_defer_merge_enabled() -> bool {
 
 fn default_file_logging() -> bool {
     true
+}
+
+fn default_file_logging_max_bytes() -> u64 {
+    1024 * 1024 * 1024
+}
+
+fn default_file_logging_keep_files() -> usize {
+    5
 }
 
 struct LoadedConfig {
@@ -506,7 +519,8 @@ fn load_claude_config_overlay() -> Option<(PathBuf, ClaudeConfigOverlay)> {
 }
 
 fn apply_codex_config_overlay(cfg: &mut RalphxConfig, overlay: CodexConfigOverlay) {
-    cfg.agent_harness_defaults.extend(overlay.agent_harness_defaults);
+    cfg.agent_harness_defaults
+        .extend(overlay.agent_harness_defaults);
 }
 
 fn parse_codex_config_overlay(yaml: &str) -> Option<CodexConfigOverlay> {
@@ -528,10 +542,12 @@ fn load_codex_config_overlay() -> Option<(PathBuf, CodexConfigOverlay)> {
 }
 
 fn parse_process_config_overlay(yaml: &str) -> Option<ProcessConfigOverlay> {
-    serde_yaml::from_str::<ProcessConfigOverlay>(yaml).map_err(|e| {
-        tracing::warn!(error = %e, "Failed to parse process config overlay");
-        e
-    }).ok()
+    serde_yaml::from_str::<ProcessConfigOverlay>(yaml)
+        .map_err(|e| {
+            tracing::warn!(error = %e, "Failed to parse process config overlay");
+            e
+        })
+        .ok()
 }
 
 fn apply_process_config_overlay(cfg: &mut LoadedConfig, overlay: ProcessConfigOverlay) {
@@ -549,10 +565,7 @@ fn load_process_config_overlay() -> Option<(PathBuf, ProcessConfigOverlay)> {
     Some((path, overlay))
 }
 
-fn apply_external_mcp_config_overlay(
-    cfg: &mut RalphxConfig,
-    overlay: ExternalMcpConfigOverlay,
-) {
+fn apply_external_mcp_config_overlay(cfg: &mut RalphxConfig, overlay: ExternalMcpConfigOverlay) {
     let Some(overlay) = overlay.external_mcp else {
         return;
     };
@@ -593,7 +606,9 @@ fn apply_external_mcp_config_overlay(
     if let Some(external_message_queue_cap) = overlay.external_message_queue_cap {
         cfg.external_mcp.external_message_queue_cap = external_message_queue_cap;
     }
-    if let Some(external_session_similarity_threshold) = overlay.external_session_similarity_threshold {
+    if let Some(external_session_similarity_threshold) =
+        overlay.external_session_similarity_threshold
+    {
         cfg.external_mcp.external_session_similarity_threshold =
             external_session_similarity_threshold;
     }
@@ -604,10 +619,12 @@ fn apply_external_mcp_config_overlay(
 }
 
 fn parse_external_mcp_config_overlay(yaml: &str) -> Option<ExternalMcpConfigOverlay> {
-    serde_yaml::from_str::<ExternalMcpConfigOverlay>(yaml).map_err(|e| {
-        tracing::warn!(error = %e, "Failed to parse external MCP config overlay");
-        e
-    }).ok()
+    serde_yaml::from_str::<ExternalMcpConfigOverlay>(yaml)
+        .map_err(|e| {
+            tracing::warn!(error = %e, "Failed to parse external MCP config overlay");
+            e
+        })
+        .ok()
 }
 
 fn load_external_mcp_config_overlay_from_path(
@@ -648,12 +665,66 @@ fn apply_external_mcp_overlay_or_embedded_from_path(
 struct MinimalEarlyConfig {
     #[serde(default = "default_file_logging")]
     file_logging: bool,
+    #[serde(default = "default_file_logging_max_bytes")]
+    file_logging_max_bytes: u64,
+    #[serde(default = "default_file_logging_keep_files")]
+    file_logging_keep_files: usize,
 }
 
 fn parse_early_file_logging(yaml: &str) -> Option<bool> {
     serde_yaml::from_str::<MinimalEarlyConfig>(yaml)
         .ok()
         .map(|config| config.file_logging)
+}
+
+fn parse_early_file_logging_limits(yaml: &str) -> Option<(u64, usize)> {
+    serde_yaml::from_str::<MinimalEarlyConfig>(yaml)
+        .ok()
+        .map(|config| {
+            (
+                config.file_logging_max_bytes,
+                config.file_logging_keep_files,
+            )
+        })
+}
+
+fn resolve_file_logging_limits_from_sources(
+    max_bytes_environment_value: Option<&str>,
+    keep_files_environment_value: Option<&str>,
+    runtime_config_path: Option<&Path>,
+    embedded_config: &str,
+) -> (u64, usize) {
+    let embedded = parse_early_file_logging_limits(embedded_config).unwrap_or_else(|| {
+        (
+            default_file_logging_max_bytes(),
+            default_file_logging_keep_files(),
+        )
+    });
+    let configured = runtime_config_path
+        .and_then(|path| {
+            // Runtime config paths are established from RalphX-owned bundled resources.
+            // codeql[rust/path-injection]
+            std::fs::read_to_string(path)
+                .ok()
+                .and_then(|contents| parse_early_file_logging_limits(&contents))
+        })
+        .unwrap_or(embedded);
+
+    let max_bytes = max_bytes_environment_value
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(configured.0);
+    // A zero cap (from any source, including YAML) would create a writer that
+    // silently records nothing; fall back to the default instead.
+    let max_bytes = if max_bytes == 0 {
+        default_file_logging_max_bytes()
+    } else {
+        max_bytes
+    };
+    let keep_files = keep_files_environment_value
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(configured.1);
+    (max_bytes, keep_files)
 }
 
 fn resolve_file_logging_from_sources(
@@ -687,6 +758,19 @@ pub fn resolve_file_logging_early() -> bool {
     let runtime_config_path = configured_runtime_config_dir().map(|dir| dir.join("ralphx.yaml"));
     resolve_file_logging_from_sources(
         environment_value.as_deref(),
+        runtime_config_path.as_deref(),
+        EMBEDDED_CONFIG,
+    )
+}
+
+/// Resolves the file logging cap and retained previous-run file count before tracing starts.
+pub fn resolve_file_logging_limits_early() -> (u64, usize) {
+    let max_bytes_environment_value = std::env::var("RALPHX_FILE_LOGGING_MAX_BYTES").ok();
+    let keep_files_environment_value = std::env::var("RALPHX_FILE_LOGGING_KEEP_FILES").ok();
+    let runtime_config_path = configured_runtime_config_dir().map(|dir| dir.join("ralphx.yaml"));
+    resolve_file_logging_limits_from_sources(
+        max_bytes_environment_value.as_deref(),
+        keep_files_environment_value.as_deref(),
         runtime_config_path.as_deref(),
         EMBEDDED_CONFIG,
     )
@@ -786,16 +870,13 @@ fn canonical_agent_project_root_from_config_path(
 }
 
 fn resolve_system_prompt_file(project_root: &Path, raw: &AgentConfigRaw) -> String {
-    let canonical_prompt = resolve_harness_agent_prompt_path(
-        project_root,
-        &raw.name,
-        AgentPromptHarness::Claude,
-    )
-    .and_then(|path| {
-        path.strip_prefix(project_root)
-            .ok()
-            .map(|relative| relative.to_string_lossy().to_string())
-    });
+    let canonical_prompt =
+        resolve_harness_agent_prompt_path(project_root, &raw.name, AgentPromptHarness::Claude)
+            .and_then(|path| {
+                path.strip_prefix(project_root)
+                    .ok()
+                    .map(|relative| relative.to_string_lossy().to_string())
+            });
 
     if let Some(canonical_prompt) = canonical_prompt {
         if raw.system_prompt_file.as_deref().is_some()
@@ -1158,6 +1239,7 @@ fn resolve_loaded_config_with_lookup(
         .and_then(|u| u.feature_flags.clone())
         .unwrap_or_default();
     let mut runtime = AllRuntimeConfig {
+        database_maintenance: parsed.database_maintenance,
         stream: parsed.timeouts.stream,
         reconciliation: parsed.reconciliation,
         git: parsed.git,
@@ -1615,6 +1697,7 @@ fn load_config() -> LoadedConfig {
         })
         .unwrap_or_else(|| {
             let mut runtime = AllRuntimeConfig {
+                database_maintenance: runtime_config::DatabaseMaintenanceConfig::default(),
                 stream: StreamTimeoutsConfig::default(),
                 reconciliation: ReconciliationConfig::default(),
                 git: GitRuntimeConfig::default(),
@@ -1699,11 +1782,17 @@ pub fn get_agent_config_for_profile(
         return Some(config);
     };
     let project_root = canonical_agent_project_root();
-    let definition =
-        load_canonical_agent_definition_for_profile(&project_root, lookup_name, Some(profile_name))?;
-    let metadata =
-        try_load_canonical_claude_metadata_for_profile(&project_root, lookup_name, Some(profile_name))
-            .ok()?;
+    let definition = load_canonical_agent_definition_for_profile(
+        &project_root,
+        lookup_name,
+        Some(profile_name),
+    )?;
+    let metadata = try_load_canonical_claude_metadata_for_profile(
+        &project_root,
+        lookup_name,
+        Some(profile_name),
+    )
+    .ok()?;
 
     if !definition.capabilities.mcp_tools.is_empty() {
         config.allowed_mcp_tools = definition.capabilities.mcp_tools;
@@ -1711,8 +1800,7 @@ pub fn get_agent_config_for_profile(
     if let Some(spec) = metadata.tools.as_ref() {
         let tools = runtime_tools_spec_from_canonical(spec);
         config.mcp_only = tools.mcp_only;
-        config.resolved_cli_tools =
-            resolve_tools_from_spec(lookup_name, &tools, &loaded.tool_sets);
+        config.resolved_cli_tools = resolve_tools_from_spec(lookup_name, &tools, &loaded.tool_sets);
     }
     config.preapproved_cli_tools = metadata.preapproved_cli_tools;
     if metadata.model.is_some() {
@@ -1794,6 +1882,13 @@ pub fn agent_harness_defaults_config() -> &'static AgentHarnessDefaultsConfig {
 
 pub fn stream_timeouts() -> &'static StreamTimeoutsConfig {
     &LOADED_CONFIG_CELL.get_or_init(load_config).runtime.stream
+}
+
+pub fn database_maintenance_config() -> &'static runtime_config::DatabaseMaintenanceConfig {
+    &LOADED_CONFIG_CELL
+        .get_or_init(load_config)
+        .runtime
+        .database_maintenance
 }
 
 pub fn reconciliation_config() -> &'static ReconciliationConfig {

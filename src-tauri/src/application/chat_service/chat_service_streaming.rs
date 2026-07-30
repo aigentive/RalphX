@@ -45,7 +45,7 @@ use crate::infrastructure::agents::{
 use tokio_util::sync::CancellationToken;
 
 use super::chat_service_errors::StreamError;
-use super::chat_service_types::AgentUsageUpdatedPayload;
+use super::chat_service_types::{retains_full_raw_tool_payload, AgentUsageUpdatedPayload};
 use super::streaming_state_cache::{CachedStreamingTask, CachedToolCall, StreamingStateCache};
 use super::tool_result_preview::{
     build_live_tool_argument_preview, build_live_tool_result_preview_for_tool_call,
@@ -447,8 +447,6 @@ pub(super) async fn persist_timeline_snapshot(
         if status == ChatTimelineItemStatus::Finalized {
             item.finalized_at = Some(item.updated_at);
         }
-        item.raw_block_json = serde_json::to_string(block).ok();
-
         match block {
             ContentBlockItem::Text { text } => {
                 item.text = Some(text.clone());
@@ -468,6 +466,9 @@ pub(super) async fn persist_timeline_snapshot(
             } => {
                 item.tool_call_id = id.clone();
                 item.tool_name = Some(name.clone());
+                if retains_full_raw_tool_payload(name) {
+                    item.raw_block_json = serde_json::to_string(block).ok();
+                }
                 item.tool_status = Some(
                     if result.is_some() {
                         "completed"
