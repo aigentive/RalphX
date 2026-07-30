@@ -70,6 +70,9 @@ fn page_stats(conn: &Connection) -> Result<(u64, u64, u64), DatabaseMaintenanceE
     Ok((page_size, page_count, freelist_count))
 }
 
+// statvfs field widths differ per platform (u32 on macOS, u64 on Linux), so
+// the casts below are required even where clippy sees them as no-ops.
+#[allow(clippy::unnecessary_cast)]
 fn available_bytes(path: &Path) -> Option<u64> {
     #[cfg(unix)]
     {
@@ -82,7 +85,7 @@ fn available_bytes(path: &Path) -> Option<u64> {
         if unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) } != 0 {
             return None;
         }
-        return (stat.f_bavail as u64).checked_mul(stat.f_frsize as u64);
+        (stat.f_bavail as u64).checked_mul(stat.f_frsize as u64)
     }
     #[cfg(not(unix))]
     {
@@ -212,7 +215,7 @@ pub fn compact_before_pool_opens_at(
         // failed; fail closed but report it distinctly so a consumed manual
         // request is explainable from the logs.
         Some("disk_headroom_unavailable")
-    } else if !available.is_some_and(|available| available >= required_headroom) {
+    } else if available.is_none_or(|available| available < required_headroom) {
         Some("insufficient_disk_headroom")
     } else if !manual && database_bytes > config.auto_max_db_bytes {
         Some("database_above_auto_limit")

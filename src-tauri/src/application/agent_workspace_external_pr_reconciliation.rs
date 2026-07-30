@@ -102,20 +102,6 @@ pub(crate) enum AgentWorkspaceExternalPrReconciliationOutcome {
     Linked { pr_number: i64, pr_status: String },
 }
 
-pub(crate) fn schedule_agent_workspace_external_pr_reconciliation(
-    deps: AgentWorkspaceExternalPrReconciliationDeps,
-    conversation_id: ChatConversationId,
-    trigger: AgentWorkspaceExternalPrReconciliationTrigger,
-    force: bool,
-) {
-    schedule_agent_workspace_external_pr_reconciliation_with_lazy_deps(
-        move || deps,
-        conversation_id,
-        trigger,
-        force,
-    );
-}
-
 pub(crate) fn schedule_agent_workspace_external_pr_reconciliation_with_lazy_deps(
     deps_factory: impl FnOnce() -> AgentWorkspaceExternalPrReconciliationDeps + Send + 'static,
     conversation_id: ChatConversationId,
