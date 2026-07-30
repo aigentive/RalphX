@@ -1071,4 +1071,39 @@ describe("useAgentWorkspacePublisher", () => {
       }
     },
   );
+
+  it("settles a blocked maintenance operation when the baseline is unmatchable", async () => {
+    const queryClient = createTestQueryClient();
+    const attempt = createAgentWorkspacePublishAttempt({
+      conversationId: "conversation-1",
+      conversationTitle: null,
+      projectId: "project-1",
+      startedAtMs: Date.now(),
+      token: 1,
+    });
+    attempt.baseline = { state: "available", lastEventId: "missing-baseline" };
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspaceFixture({
+        maintenanceOperation: {
+          operationId: "operation-blocked-fallback",
+          generation: 1,
+          source: "base_update",
+          stage: "blocked",
+          status: "blocked",
+          summary: "Repair needs help",
+          blocker: "Resolve the protected branch",
+          automaticContinuation: false,
+          startedAt: "2026-07-25T10:00:00Z",
+          updatedAt: "2026-07-25T10:01:00Z",
+        },
+      }),
+    );
+
+    await expect(
+      readAgentWorkspaceDurablePublishResult(queryClient, attempt, [publicationEvent()]),
+    ).resolves.toEqual({
+      kind: "blocked",
+      detail: "Resolve the protected branch",
+    });
+  });
 });

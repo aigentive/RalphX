@@ -1837,6 +1837,44 @@ async fn settle_pr_conflict_repair_dispatch_failure(
     Ok(())
 }
 
+async fn record_agent_workspace_repair_routed_to_existing_attempt(
+    workspace_repo: &dyn AgentConversationWorkspaceRepository,
+    conversation_id: &ChatConversationId,
+    pr_number: i64,
+    outcome: &str,
+    signal_kind: &str,
+    signal_summary: &str,
+) -> crate::AppResult<()> {
+    let summary = format!(
+        "PR #{pr_number} {signal_kind} signal was routed to an existing workspace repair attempt ({outcome}): {signal_summary}"
+    );
+    let classification = format!("agent_workspace_repair_routed:{pr_number}:{outcome}");
+    // The poller re-detects the same parked signal every cycle; only the latest routed record
+    // changing (outcome or summary) justifies another durable event row.
+    let already_recorded = workspace_repo
+        .list_publication_events(conversation_id)
+        .await?
+        .iter()
+        .rev()
+        .find(|event| event.step == "repair_routed")
+        .is_some_and(|event| {
+            event.classification.as_deref() == Some(classification.as_str())
+                && event.summary == summary
+        });
+    if already_recorded {
+        return Ok(());
+    }
+    workspace_repo
+        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+            conversation_id.clone(),
+            "repair_routed",
+            "waiting",
+            summary,
+            Some(classification),
+        ))
+        .await
+}
+
 #[cfg(test)]
 async fn route_agent_workspace_pr_conflict_repair_if_needed(
     github: Arc<dyn GithubServiceTrait>,
@@ -1911,6 +1949,7 @@ async fn route_agent_workspace_pr_conflict_repair_if_needed_with_repair_repo(
 
     let repair_summary =
         format!("Auto Publish routed PR #{pr_number} merge conflicts to workspace repair.");
+    let conflict_summary = agent_workspace_pr_conflict_summary(pr_number, &details);
     let start = start_or_join_agent_workspace_repair_without_projection(
         Arc::clone(&repair_repo),
         Arc::clone(&workspace_repo),
@@ -1930,9 +1969,60 @@ async fn route_agent_workspace_pr_conflict_repair_if_needed_with_repair_repo(
     .await?;
     let attempt = match start {
         AgentWorkspaceRepairStartOutcome::Started(attempt) => attempt,
-        AgentWorkspaceRepairStartOutcome::Joined(_)
-        | AgentWorkspaceRepairStartOutcome::SuccessorStarted(_)
-        | AgentWorkspaceRepairStartOutcome::BlockedByCurrent(_) => return Ok(false),
+        AgentWorkspaceRepairStartOutcome::Joined(_) => {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                pr_number,
+                outcome = "joined",
+                "PR merge-conflict signal was routed to an existing workspace repair attempt"
+            );
+            record_agent_workspace_repair_routed_to_existing_attempt(
+                workspace_repo.as_ref(),
+                conversation_id,
+                pr_number,
+                "joined",
+                "merge-conflict",
+                &conflict_summary,
+            )
+            .await?;
+            return Ok(false);
+        }
+        AgentWorkspaceRepairStartOutcome::SuccessorStarted(_) => {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                pr_number,
+                outcome = "successor_started",
+                "PR merge-conflict signal was routed to an existing workspace repair attempt"
+            );
+            record_agent_workspace_repair_routed_to_existing_attempt(
+                workspace_repo.as_ref(),
+                conversation_id,
+                pr_number,
+                "successor_started",
+                "merge-conflict",
+                &conflict_summary,
+            )
+            .await?;
+            return Ok(false);
+        }
+        AgentWorkspaceRepairStartOutcome::BlockedByCurrent(_) => {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                pr_number,
+                outcome = "blocked_by_current",
+                "PR merge-conflict signal was routed to an existing workspace repair attempt"
+            );
+            record_agent_workspace_repair_routed_to_existing_attempt(
+                workspace_repo.as_ref(),
+                conversation_id,
+                pr_number,
+                "blocked_by_current",
+                "merge-conflict",
+                &conflict_summary,
+            )
+            .await?;
+            return Ok(false);
+        }
     };
 
     let message = build_agent_workspace_pr_conflict_repair_message(pr_number, &workspace, &details);
@@ -3131,9 +3221,60 @@ async fn dispatch_agent_workspace_pr_autofix(
     .await?;
     let attempt = match start {
         AgentWorkspaceRepairStartOutcome::Started(attempt) => attempt,
-        AgentWorkspaceRepairStartOutcome::Joined(_)
-        | AgentWorkspaceRepairStartOutcome::SuccessorStarted(_)
-        | AgentWorkspaceRepairStartOutcome::BlockedByCurrent(_) => return Ok(false),
+        AgentWorkspaceRepairStartOutcome::Joined(_) => {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                pr_number,
+                outcome = "joined",
+                "PR CI-failure signal was routed to an existing workspace repair attempt"
+            );
+            record_agent_workspace_repair_routed_to_existing_attempt(
+                workspace_repo.as_ref(),
+                conversation_id,
+                pr_number,
+                "joined",
+                "CI-failure",
+                dispatch.repair_summary,
+            )
+            .await?;
+            return Ok(false);
+        }
+        AgentWorkspaceRepairStartOutcome::SuccessorStarted(_) => {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                pr_number,
+                outcome = "successor_started",
+                "PR CI-failure signal was routed to an existing workspace repair attempt"
+            );
+            record_agent_workspace_repair_routed_to_existing_attempt(
+                workspace_repo.as_ref(),
+                conversation_id,
+                pr_number,
+                "successor_started",
+                "CI-failure",
+                dispatch.repair_summary,
+            )
+            .await?;
+            return Ok(false);
+        }
+        AgentWorkspaceRepairStartOutcome::BlockedByCurrent(_) => {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                pr_number,
+                outcome = "blocked_by_current",
+                "PR CI-failure signal was routed to an existing workspace repair attempt"
+            );
+            record_agent_workspace_repair_routed_to_existing_attempt(
+                workspace_repo.as_ref(),
+                conversation_id,
+                pr_number,
+                "blocked_by_current",
+                "CI-failure",
+                dispatch.repair_summary,
+            )
+            .await?;
+            return Ok(false);
+        }
     };
     let target_identity =
         GitService::canonical_target_identity(working_dir, &workspace.branch_name).await?;

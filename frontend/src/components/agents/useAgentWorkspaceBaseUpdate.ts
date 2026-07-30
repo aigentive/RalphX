@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 
 import {
   chatApi,
@@ -49,6 +49,16 @@ export function useAgentWorkspaceBaseUpdate({
   } | null>(null);
   const settledMaintenanceOperationIdsRef = useRef(new Set<string>());
   const toastConversationTitle = conversationTitle?.trim() || null;
+  useEffect(
+    () => () => {
+      // The update-from-base progress toast stays connected across unmount:
+      // the pending mutation closure settles it. Only the poll-driven
+      // maintenance toast has no settlement path after unmount.
+      maintenanceToastRef.current?.toast.dismiss();
+      maintenanceToastRef.current = null;
+    },
+    [],
+  );
   const { isPending, mutateAsync } = useMutation({
     mutationFn: ({
       baseSelection,

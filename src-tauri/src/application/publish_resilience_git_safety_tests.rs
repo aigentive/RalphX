@@ -11,7 +11,9 @@ use super::publish_resilience::{
     observe_agent_workspace_repair_pr_handoff_effect, observe_agent_workspace_repair_push_effect,
     observed_workspace_repair_push_outcome, prepare_agent_workspace_repair_pr_handoff_effect,
     prepare_agent_workspace_repair_push_attempt, push_agent_workspace_repair_branch,
+    reconcile_agent_workspace_repair_pr_handoff,
     reconcile_linked_plan_agent_workspace_repair_pr_handoff, repair_pr_handoff_from_observed_push,
+    try_acquire_agent_workspace_repair_publish_continuation_guard,
     verify_agent_workspace_repair_pr_handoff, verify_workspace_repair_push_remote_precondition,
     AgentWorkspaceRepairPrHandoff, AgentWorkspaceRepairPushOutcome,
     AgentWorkspaceRepairPushRequest,
@@ -127,7 +129,9 @@ async fn setup_workspace_push(remote_history: RepairPushRemoteHistory) -> Repair
         repository.to_string_lossy().to_string(),
     );
     project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
-    let conversation_id = ChatConversationId::from_string("repair-push-conversation");
+    // A unique id per fixture: non-UUID strings collapse to `Uuid::nil()`, which would make
+    // every fixture share one process-global continuation-guard key across parallel tests.
+    let conversation_id = ChatConversationId::new();
     let branch = "ralphx/repair/publish-safety".to_string();
     let worktree_path = resolve_agent_conversation_workspace_path(&project, &conversation_id)
         .expect("canonical workspace path");
@@ -763,7 +767,7 @@ async fn pr_handoff_verification_rejects_ref_remote_and_head_drift() {
 #[tokio::test]
 async fn repair_publish_continuation_fails_closed_before_git_for_missing_runtime_owners() {
     let mut invalid_phase = AgentWorkspaceRepairAttempt::new(
-        ChatConversationId::from_string("invalid-repair-publish-phase"),
+        ChatConversationId::new(),
         AgentWorkspaceRepairSource::Publish,
         AgentWorkspaceRepairContinuation::Publish,
         "main",
@@ -1145,6 +1149,87 @@ async fn pr_handoff_effect_is_created_and_observed_once_for_the_current_generati
         .expect("load the settled repair lease")
         .expect("repair lease remains auditable");
     assert!(lease.is_released());
+}
+
+#[tokio::test]
+async fn direct_edit_workspace_reconciles_current_pushed_pr_projection_only_for_its_effect() {
+    let fixture = setup_workspace_push(RepairPushRemoteHistory::FastForward).await;
+    let mut state = AppState::new_test();
+    state.agent_conversation_workspace_repo = fixture.memory_repair_repo.clone();
+
+    let mut effect = AgentWorkspaceRepairEffect::new(
+        fixture.attempt.id.clone(),
+        AgentWorkspaceRepairEffectKind::CreatePr,
+        "direct-edit-recovery-effect",
+        Utc::now(),
+    );
+    effect.status = AgentWorkspaceRepairEffectStatus::InFlight;
+
+    let mut workspace = fixture.workspace.clone();
+    workspace.publication_pr_number = Some(88);
+    workspace.publication_pr_url = Some("https://github.com/example/repo/pull/88".to_string());
+    workspace.publication_push_status = Some("pushed".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("persist direct workspace publication evidence");
+
+    assert_eq!(
+        reconcile_agent_workspace_repair_pr_handoff(&state, &workspace, &effect)
+            .await
+            .expect("current pushed workspace evidence is readable"),
+        Some((
+            88,
+            Some("https://github.com/example/repo/pull/88".to_string())
+        ))
+    );
+
+    effect.expected_pr_number = Some(89);
+    assert!(
+        reconcile_agent_workspace_repair_pr_handoff(&state, &workspace, &effect)
+            .await
+            .expect("mismatched effect must not accept unrelated PR evidence")
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn concurrent_continuation_entrant_returns_busy_without_touching_durable_state() {
+    let state = AppState::new_test();
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        ChatConversationId::new(),
+        AgentWorkspaceRepairSource::Publish,
+        AgentWorkspaceRepairContinuation::Publish,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        Utc::now(),
+    );
+    attempt.phase = AgentWorkspaceRepairPhase::ContinuationPending;
+
+    let held_by_first_entrant =
+        try_acquire_agent_workspace_repair_publish_continuation_guard(&attempt.conversation_id)
+            .expect("first entrant acquires the continuation guard");
+
+    // The second entrant must yield Busy before reading or mutating any durable state.
+    assert_eq!(
+        continue_agent_workspace_repair_publish(&state, attempt.clone())
+            .await
+            .expect("a guarded continuation is a retryable non-failure"),
+        Some(AgentWorkspaceRepairPushOutcome::Busy)
+    );
+
+    drop(held_by_first_entrant);
+
+    // With the guard released the same attempt proceeds past the guard to workspace
+    // resolution, proving Busy came from the guard and not from attempt classification.
+    let unblocked = continue_agent_workspace_repair_publish(&state, attempt)
+        .await
+        .expect_err("an unguarded continuation reaches durable workspace resolution");
+    assert!(unblocked.to_string().contains("workspace"));
 }
 
 async fn state_with_in_flight_repair_push(
