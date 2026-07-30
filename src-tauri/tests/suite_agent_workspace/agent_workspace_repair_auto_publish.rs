@@ -1361,6 +1361,8 @@ async fn complete_repair_hands_off_auto_publish_to_durable_continuation() {
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "Resolved the stale base repair".to_string(),
             blocker: None,
+            resolution: None,
+            reported_fix_commit_sha: None,
         }),
     )
     .await
@@ -1402,6 +1404,8 @@ async fn complete_repair_hands_off_auto_publish_to_durable_continuation() {
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "Duplicate stale completion".to_string(),
             blocker: None,
+            resolution: None,
+            reported_fix_commit_sha: None,
         }),
     )
     .await
@@ -1465,6 +1469,8 @@ async fn ready_repair_publish_uses_durable_continuation_not_normal_publisher() {
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "Resolved the manual publish repair".to_string(),
             blocker: None,
+            resolution: None,
+            reported_fix_commit_sha: None,
         }),
     )
     .await
@@ -1889,6 +1895,8 @@ async fn passed_workspace_review_resumes_the_current_durable_repair_generation_b
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "Resolved the repair awaiting Workspace Review".to_string(),
             blocker: None,
+            resolution: None,
+            reported_fix_commit_sha: None,
         }),
     )
     .await
@@ -1963,6 +1971,8 @@ async fn passed_workspace_review_resumes_the_current_durable_repair_generation_b
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "Duplicate repair completion must not start another reviewer".to_string(),
             blocker: None,
+            resolution: None,
+            reported_fix_commit_sha: None,
         }),
     )
     .await
@@ -2028,6 +2038,8 @@ async fn passed_workspace_review_resumes_the_current_durable_repair_generation_b
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "Stale repair completion must not restart Workspace Review".to_string(),
             blocker: None,
+            resolution: None,
+            reported_fix_commit_sha: None,
         }),
     )
     .await
@@ -2226,6 +2238,8 @@ async fn failed_workspace_review_blocks_durable_repair_without_starting_or_publi
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "Repair is complete but its required review already failed".to_string(),
             blocker: None,
+            resolution: None,
+            reported_fix_commit_sha: None,
         }),
     )
     .await
@@ -2311,6 +2325,8 @@ async fn unavailable_workspace_reviewer_blocks_durable_repair_without_publishing
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "Repair requires an unavailable Workspace Reviewer".to_string(),
             blocker: None,
+            resolution: None,
+            reported_fix_commit_sha: None,
         }),
     )
     .await
@@ -2434,6 +2450,8 @@ async fn repaired_auto_publish_continuation_uses_one_exact_lease_effect_and_push
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "Resolved the rebased workspace repair".to_string(),
             blocker: None,
+            resolution: None,
+            reported_fix_commit_sha: None,
         }),
     ));
     continuation_gate.wait().await;
@@ -2445,6 +2463,8 @@ async fn repaired_auto_publish_continuation_uses_one_exact_lease_effect_and_push
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "Duplicate completion must not republish".to_string(),
             blocker: None,
+            resolution: None,
+            reported_fix_commit_sha: None,
         }),
     )
     .await
@@ -2524,6 +2544,8 @@ async fn repaired_auto_publish_continuation_uses_one_exact_lease_effect_and_push
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "Terminal duplicate completion must not re-enter publish".to_string(),
             blocker: None,
+            resolution: None,
+            reported_fix_commit_sha: None,
         }),
     )
     .await
@@ -2698,6 +2720,8 @@ async fn repaired_auto_publish_blocks_when_base_advances_before_pr_handoff() {
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "Resolved the rebased workspace repair".to_string(),
             blocker: None,
+            resolution: None,
+            reported_fix_commit_sha: None,
         }),
     )
     .await
@@ -2806,6 +2830,8 @@ async fn repaired_auto_publish_blocks_when_base_advances_before_pr_handoff() {
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "Replay must not republish the stale branch".to_string(),
             blocker: None,
+            resolution: None,
+            reported_fix_commit_sha: None,
         }),
     )
     .await
@@ -2937,6 +2963,8 @@ async fn complete_update_only_repair_auto_publishes_when_enabled() {
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "Resolved the stale base repair".to_string(),
             blocker: None,
+            resolution: None,
+            reported_fix_commit_sha: None,
         }),
     )
     .await
@@ -3118,6 +3146,8 @@ async fn complete_repair_uses_linked_plan_branch_for_ideation_workspace() {
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "Resolved the linked plan branch repair".to_string(),
             blocker: None,
+            resolution: None,
+            reported_fix_commit_sha: None,
         }),
     ));
     tokio::select! {
@@ -3286,6 +3316,8 @@ async fn complete_repair_uses_linked_plan_branch_for_ideation_workspace() {
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "Replay must not publish the linked plan twice".to_string(),
             blocker: None,
+            resolution: None,
+            reported_fix_commit_sha: None,
         }),
     )
     .await
