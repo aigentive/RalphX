@@ -2,6 +2,7 @@ use chrono::{Duration, Utc};
 use rusqlite::params;
 
 use super::sqlite_chat_payload_retention_repo::SqliteChatPayloadRetentionRepository;
+use super::DbConnection;
 use crate::testing::SqliteTestDb;
 
 fn seed_payload(
@@ -149,5 +150,28 @@ async fn prune_batch_honors_limit_and_is_idempotent() {
             .await
             .unwrap(),
         0
+    );
+}
+
+#[tokio::test]
+async fn from_db_constructor_prunes_same_as_from_shared() {
+    let db = SqliteTestDb::new("chat-payload-retention-from-db");
+    let repo = SqliteChatPayloadRetentionRepository::from_db(DbConnection::from_shared(
+        db.shared_conn(),
+    ));
+    let now = Utc::now();
+    seed_payload(
+        &db,
+        "from-db-old",
+        "from-db-conversation",
+        now - Duration::days(91),
+        false,
+    );
+
+    assert_eq!(
+        repo.prune_batch(now - Duration::days(90), now - Duration::days(7), 10)
+            .await
+            .unwrap(),
+        1
     );
 }

@@ -188,6 +188,11 @@ coverage:
           - "!src-tauri/src/commands/manual_role_default_commands.rs"
           - "!src-tauri/src/commands/release_notes_commands.rs"
           - "!src-tauri/src/infrastructure/sqlite/sqlite_atlassian_integration_settings_repo.rs"
+          # Database maintenance Tauri command wrappers follow the same thin
+          # State/AppState adapter pattern as release_notes_commands and
+          # automation_commands. Deterministic maintenance logic is covered in
+          # database_maintenance_tests.rs sidecar tests.
+          - "!src-tauri/src/commands/database_maintenance_commands.rs"
 
 parsers:
   lcov:
@@ -265,6 +270,9 @@ ignore:
   # is covered in service/repo/client sidecar tests.
   - "src-tauri/src/commands/mcp_policy_commands.rs"
   - "src-tauri/src/infrastructure/external_mcp_supervisor.rs"
+  # Database maintenance Tauri command wrappers; deterministic maintenance logic
+  # is covered in database_maintenance_tests.rs sidecar tests.
+  - "src-tauri/src/commands/database_maintenance_commands.rs"
   # Frontend test sources, snapshots, fixtures, and mocks.
   - "frontend/tests/**"
   - "frontend/src/**/__tests__/**"

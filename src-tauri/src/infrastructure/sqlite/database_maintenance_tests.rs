@@ -4,6 +4,8 @@
 //! they must never resolve paths through `AppPaths::database_path()`, which in
 //! debug profiles points at the shared dev database.
 
+use std::path::PathBuf;
+
 use rusqlite::Connection;
 use tempfile::TempDir;
 
@@ -38,6 +40,12 @@ fn seed_bloated_db(paths: &MaintenancePaths) {
     }
     conn.execute_batch("DELETE FROM payloads;").unwrap();
     drop(conn);
+}
+
+fn seed_wal_db(paths: &MaintenancePaths) {
+    seed_bloated_db(paths);
+    let wal_path = PathBuf::from(format!("{}-wal", paths.database_path.display()));
+    std::fs::write(&wal_path, b"simulated WAL frames for backup test").unwrap();
 }
 
 fn config(auto_enabled: bool) -> CompactionConfig {
@@ -282,4 +290,64 @@ fn read_stats_pending_reflects_missing_database_marker() {
     let stats = read_stats_at(&paths).unwrap();
     assert!(stats.pending_compaction);
     assert_eq!(stats.database_bytes, 0);
+}
+
+#[test]
+fn backup_copies_wal_when_present_and_produces_backup() {
+    let dir = TempDir::new().unwrap();
+    let paths = temp_paths(&dir);
+    seed_wal_db(&paths);
+    set_pending_compaction_at(&paths.marker_path, true).unwrap();
+
+    let outcome = compact_before_pool_opens_at(&paths, config(false)).unwrap();
+
+    assert!(matches!(outcome, CompactionOutcome::Compacted { .. }));
+    let backup_db = paths.backup_dir.join("ralphx.db.pre-vacuum");
+    assert!(backup_db.exists(), "DB backup must exist");
+    assert!(
+        std::fs::metadata(&backup_db).unwrap().len() > 0,
+        "DB backup must be non-empty"
+    );
+}
+
+#[test]
+fn auto_compaction_with_wal_present_backs_up_wal() {
+    let dir = TempDir::new().unwrap();
+    let paths = temp_paths(&dir);
+    seed_wal_db(&paths);
+
+    let outcome = compact_before_pool_opens_at(&paths, config(true)).unwrap();
+
+    assert!(matches!(outcome, CompactionOutcome::Compacted { .. }));
+    assert!(
+        paths.backup_dir.join("ralphx.db.pre-vacuum").exists(),
+        "DB backup must exist after auto compaction with WAL"
+    );
+}
+
+#[test]
+fn freelist_share_is_zero_when_no_free_pages() {
+    let dir = TempDir::new().unwrap();
+    let paths = temp_paths(&dir);
+    let conn = Connection::open(&paths.database_path).unwrap();
+    conn.execute_batch("CREATE TABLE small (id INTEGER PRIMARY KEY);")
+        .unwrap();
+    conn.execute_batch("INSERT INTO small (id) VALUES (1);")
+        .unwrap();
+    drop(conn);
+
+    let outcome = compact_before_pool_opens_at(
+        &paths,
+        CompactionConfig {
+            auto_enabled: true,
+            auto_max_db_bytes: u64::MAX,
+            auto_min_freelist_percent: 1,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        outcome,
+        CompactionOutcome::Skipped("freelist_below_auto_limit"),
+        "no deleted rows means freelist share is 0, below any positive threshold"
+    );
 }
