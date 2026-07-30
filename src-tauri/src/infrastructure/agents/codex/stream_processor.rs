@@ -76,6 +76,10 @@ pub struct CodexFileChange {
     pub kind: String,
 }
 
+/// Summary part of a rollout `response_item` reasoning payload.
+///
+/// Not part of the `codex exec --json` item schema — see `fixtures/README.md`. Retained because
+/// that shape is what the persisted session rollout carries, so it stays a tolerated fallback.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CodexReasoningSummary {
     #[serde(rename = "type")]
@@ -203,6 +207,14 @@ pub fn parse_codex_event_line(line: &str) -> Option<CodexStreamEvent> {
     Some(event)
 }
 
+/// Normalizes the `event_msg` envelope into the `item.*` shape the rest of this module speaks.
+///
+/// `codex exec --json` 0.146.0 does not emit `event_msg` at all (verified capture:
+/// `fixtures/exec_json_reasoning_0_146_0.jsonl`); it is the persisted-rollout serialization, where
+/// the envelope key is `payload`. `msg` is kept for older CLIs that used that key on stdout.
+/// `agent_reasoning_delta` is deliberately absent: that tag does not exist in 0.146.0 — the real
+/// internal delta tags are `reasoning_content_delta` / `reasoning_raw_content_delta`, and neither
+/// reaches this transport.
 fn normalize_codex_event_msg(value: &serde_json::Value) -> Option<CodexStreamEvent> {
     if value.get("type")?.as_str()? != "event_msg" {
         return None;
@@ -210,10 +222,7 @@ fn normalize_codex_event_msg(value: &serde_json::Value) -> Option<CodexStreamEve
 
     let envelope = value.get("msg").or_else(|| value.get("payload"))?;
     let item_type = envelope.get("type")?.as_str()?;
-    if !matches!(
-        item_type,
-        "agent_message" | "agent_reasoning" | "agent_reasoning_delta"
-    ) {
+    if !matches!(item_type, "agent_message" | "agent_reasoning") {
         return None;
     }
 
@@ -277,12 +286,17 @@ pub fn extract_codex_agent_message(event: &CodexStreamEvent) -> Option<String> {
     item.text.clone()
 }
 
+/// Extracts Codex reasoning text.
+///
+/// The live production shape is `item.completed` + `item.type == "reasoning"` + flat `text`, where
+/// `text` holds the summary parts joined by `\n` (verified capture:
+/// `fixtures/exec_json_reasoning_0_146_0.jsonl`). `item.started` / `item.updated` are accepted for
+/// the same item type because the 0.146.0 exec schema declares them, even though reasoning was only
+/// observed as `item.completed`. `agent_reasoning` covers the rollout envelope, and the `summary`
+/// array is the rollout `response_item` fallback — see `fixtures/README.md`.
 pub fn extract_codex_reasoning(event: &CodexStreamEvent) -> Option<String> {
     let item = event.item.as_ref()?;
-    let is_reasoning = matches!(
-        item.item_type.as_str(),
-        "agent_reasoning" | "agent_reasoning_delta"
-    ) && event.event_type == "item.completed"
+    let is_reasoning = item.item_type == "agent_reasoning" && event.event_type == "item.completed"
         || item.item_type == "reasoning" && event.event_type.starts_with("item.");
     if !is_reasoning {
         return None;
@@ -494,6 +508,11 @@ pub fn extract_codex_usage(event: &CodexStreamEvent) -> Option<CodexUsageSnapsho
 mod tests {
     use super::*;
 
+    /// Verbatim `codex exec --json` stdout from codex-cli 0.146.0. Provenance and recapture command:
+    /// `fixtures/README.md`.
+    const LIVE_EXEC_JSON_REASONING_FIXTURE: &str =
+        include_str!("fixtures/exec_json_reasoning_0_146_0.jsonl");
+
     fn codex_item(item_type: &str) -> CodexItem {
         CodexItem {
             id: None,
@@ -591,6 +610,85 @@ mod tests {
         assert_eq!(
             extract_codex_reasoning(&event).as_deref(),
             Some("**Inspecting files**")
+        );
+    }
+
+    #[test]
+    fn live_exec_json_fixture_yields_reasoning_from_item_completed_only() {
+        let events: Vec<CodexStreamEvent> = LIVE_EXEC_JSON_REASONING_FIXTURE
+            .lines()
+            .filter_map(parse_codex_event_line)
+            .collect();
+
+        assert_eq!(
+            events.len(),
+            12,
+            "every captured line must parse; unparsed lines are silently dropped reasoning"
+        );
+
+        let reasoning: Vec<String> = events.iter().filter_map(extract_codex_reasoning).collect();
+        assert_eq!(
+            reasoning,
+            vec![
+                "**Verifying line counting commands**".to_string(),
+                "**Confirming command verification**".to_string(),
+            ]
+        );
+
+        for event in &events {
+            if extract_codex_reasoning(event).is_some() {
+                assert_eq!(event.event_type, "item.completed");
+                let item = event
+                    .item
+                    .as_ref()
+                    .expect("reasoning event carries an item");
+                assert_eq!(item.item_type, "reasoning");
+            }
+        }
+    }
+
+    #[test]
+    fn live_exec_json_fixture_reasoning_item_carries_flat_text_without_summary() {
+        let item = LIVE_EXEC_JSON_REASONING_FIXTURE
+            .lines()
+            .filter_map(parse_codex_event_line)
+            .filter_map(|event| event.item)
+            .find(|item| item.item_type == "reasoning")
+            .expect("fixture contains a reasoning item");
+
+        assert_eq!(item.id.as_deref(), Some("item_2"));
+        assert_eq!(
+            item.text.as_deref(),
+            Some("**Verifying line counting commands**")
+        );
+        assert!(
+            item.summary.is_none(),
+            "exec --json reasoning items have no summary array; that shape is rollout-only"
+        );
+    }
+
+    #[test]
+    fn live_exec_json_fixture_contains_no_event_msg_envelope() {
+        assert!(
+            !LIVE_EXEC_JSON_REASONING_FIXTURE.contains("event_msg"),
+            "codex exec --json does not use the event_msg envelope; the msg/payload readers exist \
+             for the rollout format and older CLIs only"
+        );
+    }
+
+    #[test]
+    fn agent_reasoning_delta_is_not_normalized_as_reasoning() {
+        let event = parse_codex_event_line(
+            r#"{"type":"event_msg","payload":{"type":"agent_reasoning_delta","text":"partial"}}"#,
+        )
+        .expect("unrecognized envelopes still parse as an ignored event");
+
+        assert_eq!(event.event_type, "event_msg");
+        assert!(event.item.is_none());
+        assert_eq!(
+            extract_codex_reasoning(&event),
+            None,
+            "agent_reasoning_delta does not exist in codex-cli 0.146.0"
         );
     }
 

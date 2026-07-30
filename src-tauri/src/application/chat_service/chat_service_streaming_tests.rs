@@ -1295,6 +1295,85 @@ async fn codex_reasoning_persists_as_thinking_without_entering_response_text() {
     ));
 }
 
+/// Same guarantee as above, but driven by verbatim `codex exec --json` stdout captured from
+/// codex-cli 0.146.0 (`infrastructure/agents/codex/fixtures/exec_json_reasoning_0_146_0.jsonl`).
+/// The live transport uses `item.completed` + `item.type == "reasoning"`, not the `event_msg`
+/// envelope, so the rollout-shaped test alone would not prove production behavior.
+#[tokio::test]
+async fn live_codex_exec_json_reasoning_persists_as_thinking_blocks() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let context_id = IdeationSessionId::new();
+    let pre_assistant = create_assistant_message(
+        ChatContextType::Ideation,
+        context_id.as_str(),
+        "",
+        conversation_id.clone(),
+        &[],
+        &[],
+    );
+    let pre_assistant_id = pre_assistant.id.as_str().to_string();
+    state
+        .chat_message_repo
+        .create(pre_assistant)
+        .await
+        .expect("seed assistant message");
+
+    let child = spawn_jsonl_process(&[
+        r#"{"type":"thread.started","thread_id":"019fb273-ea3a-7b02-b139-aa5bd7df9a1c"}"#,
+        r#"{"type":"turn.started"}"#,
+        r#"{"type":"item.completed","item":{"id":"item_2","type":"reasoning","text":"**Verifying line counting commands**"}}"#,
+        r#"{"type":"item.completed","item":{"id":"item_5","type":"reasoning","text":"**Confirming command verification**"}}"#,
+        r#"{"type":"item.completed","item":{"id":"item_6","type":"agent_message","text":"Total lines: 5"}}"#,
+        r#"{"type":"turn.completed","usage":{"input_tokens":53565,"cached_input_tokens":30208,"output_tokens":558}}"#,
+    ])
+    .await;
+
+    let outcome = process_codex_stream_background::<MockRuntime>(
+        child,
+        ChatContextType::Ideation,
+        context_id.as_str(),
+        &conversation_id,
+        None::<tauri::AppHandle<MockRuntime>>,
+        None,
+        None,
+        Some(state.chat_message_repo.clone()),
+        Some(state.chat_timeline_repo.clone()),
+        Some(pre_assistant_id),
+        None,
+        CancellationToken::new(),
+        StreamingStateCache::new(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        false,
+        false,
+    )
+    .await
+    .expect("Codex stream should complete");
+
+    assert_eq!(outcome.response_text, "Total lines: 5");
+
+    let thinking: Vec<&String> = outcome
+        .content_blocks
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlockItem::Thinking { text, .. } => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        thinking,
+        vec![
+            "**Verifying line counting commands**",
+            "**Confirming command verification**"
+        ],
+        "both live reasoning items become ordered Thinking blocks"
+    );
+}
+
 #[tokio::test]
 async fn claude_stream_turn_complete_persists_assistant_blocks_to_timeline() {
     // Regression: when a project/task chat Claude turn ends via TurnComplete (result event),
