@@ -981,7 +981,9 @@ fn detector_b_is_calibrated_and_floor_enforced() {
         // by construction and `remote_transcript_reads_never_reach_the_wake` proves it.
         // 544 -> 546: batch 5's two spawn-free conversation-list reads, same reasoning, with
         // `remote_conversation_list_reads_carry_no_spawn_authority` as the proof.
-        546,
+        // 546 -> 548: the two merged frontend commands dispositioned here. This is a census
+        // count change; their mechanisms are pinned independently below.
+        548,
         "review the detector against the full command census"
     );
     let flagged = spawn_triggering_writers(

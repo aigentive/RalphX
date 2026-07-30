@@ -577,13 +577,6 @@
   ],
   "authority_reducing_exemptions": [
     {
-      "command": "pause_tasks_in_group",
-      "direction": "authority-reducing",
-      "kind": "command",
-      "rationale": "transitions only to Paused",
-      "scope": "ui:operate"
-    },
-    {
       "command": "pause_execution",
       "direction": "authority-reducing",
       "kind": "command",
@@ -2387,8 +2380,10 @@
     },
     {
       "argumentSensitive": false,
-      "capabilities": [],
-      "class": "operate",
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
       "command": "pause_tasks_in_group",
       "pins": [],
       "scopeConfined": false,
@@ -5516,11 +5511,13 @@
       "v1Resolution": "registerable"
     },
     {
-      "capabilities": [],
-      "class": "operate",
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
       "command": "pause_tasks_in_group",
       "module": "task_commands",
-      "reason": "authority-reducing: transitions only to Paused",
+      "reason": "bulk-pauses an attacker-chosen group; leaving Executing/ReExecuting reaches the normal exit auto-commit path and can invoke Git",
       "registered": true,
       "v1Resolution": "registerable"
     },

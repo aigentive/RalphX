@@ -905,9 +905,9 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
     CommandOverride {
         command: "pause_tasks_in_group",
         policy: policy(
-            RiskClass::Operate,
-            NONE,
-            "authority-reducing: transitions only to Paused",
+            RiskClass::AgentControl,
+            AGENT,
+            "bulk-pauses an attacker-chosen group; leaving Executing/ReExecuting reaches the normal exit auto-commit path and can invoke Git",
         ),
     },
     CommandOverride {
@@ -3502,13 +3502,6 @@ pub fn audit_refusal_for(command: &str) -> Option<AuditRefusal> {
 }
 
 pub const AUTHORITY_REDUCING_EXEMPTIONS: &[AuthorityReducingExemption] = &[
-    AuthorityReducingExemption {
-        subject: "pause_tasks_in_group",
-        kind: "command",
-        direction: "authority-reducing",
-        scope: "ui:operate",
-        rationale: "transitions only to Paused",
-    },
     // PR 3.1-b batch 3 — the Operate brakes.
     AuthorityReducingExemption {
         subject: "pause_execution",

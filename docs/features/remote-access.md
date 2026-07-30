@@ -80,18 +80,18 @@ That is a **viewer with brakes**. It can see your work and it can halt your work
 The split is intentional. Stopping something is safe: the worst case is that an agent idles.
 Starting something is not. So the brakes are handed out by default and the accelerator is not.
 
-Per-task block, pause, and stop controls are part of the agent-control grant, as is bulk group
-cancel. They are not pure brakes in the execution engine: leaving an agent-active task can run
-execution-exit Git work, and `block_task` frees capacity and asks the scheduler to start queued
-work. The safe default-tier brakes are the **global** pause and stop controls, which set the
-process-wide pause gate before transitioning any task, so no replacement agent can launch.
+Per-task block, pause, and stop controls are part of the agent-control grant, as are bulk group
+pause and cancel. They are not pure brakes in the execution engine: leaving an agent-active task
+can run execution-exit Git work, and `block_task` frees capacity and asks the scheduler to start
+queued work. The safe default-tier brakes are the **global** pause and stop controls, which set
+the process-wide pause gate before transitioning any task, so no replacement agent can launch.
 
 ### The upgrade: "Allow remote agent control"
 
 `ui:agent` is a separate, **off-by-default, per-device** toggle on the host. Turning it on lets
 that device start agent runs, send chat messages that steer an agent, resume runs, and write the
 kinds of records a background loop turns into a spawn. It also enables per-task block/pause/stop
-and bulk group cancellation because those operations can trigger agent-active exit behavior.
+and bulk group pause/cancel because those operations can trigger agent-active exit behavior.
 
 **Anyone who steals a `ui:agent` token can run arbitrary code on your Mac.**
 

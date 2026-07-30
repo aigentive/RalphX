@@ -323,9 +323,10 @@ async fn create_task_is_backlog_only_even_when_a_status_is_smuggled() {
 /// Default-tier devices retain only the global brakes.
 ///
 /// Per-task brakes can run execution-exit side effects, and `block_task` can free capacity and
-/// launch queued work through its attached scheduler. Bulk cancel also reaches the normal
-/// execution-exit auto-commit path. All four therefore require the agent-control grant, while the
-/// global brakes remain available because they set the process-wide pause gate before transitions.
+/// launch queued work through its attached scheduler. Bulk pause and bulk cancel also reach the
+/// normal execution-exit auto-commit path. All five therefore require the agent-control grant,
+/// while the global brakes remain available because they set the process-wide pause gate before
+/// transitions.
 #[tokio::test]
 async fn default_pairing_is_refused_per_task_and_bulk_brakes_but_permitted_global_brakes() {
     let app = crate::testing::create_mock_app();
@@ -353,14 +354,12 @@ async fn default_pairing_is_refused_per_task_and_bulk_brakes_but_permitted_globa
     app.manage(Arc::new(
         crate::commands::execution_commands::ExecutionState::default(),
     ));
-    app.manage(Arc::new(
-        crate::commands::execution_commands::ActiveProjectState::new(),
-    ));
 
     for brake in [
         "block_task",
         "pause_task",
         "stop_task",
+        "pause_tasks_in_group",
         "cancel_tasks_in_group",
     ] {
         let spec = find_spec(brake).unwrap_or_else(|| panic!("{brake} is registered"));

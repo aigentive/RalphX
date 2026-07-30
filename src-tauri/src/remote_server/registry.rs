@@ -980,8 +980,8 @@ crate::remote_commands! {
         result: fallible,
     },
     "pause_tasks_in_group" => crate::commands::task_commands::mutation::pause_tasks_in_group {
-        class: Operate,
-        caps: [],
+        class: AgentControl,
+        caps: [AgentControl],
         params: [
             (arg group_kind: String),
             (arg group_id: String),

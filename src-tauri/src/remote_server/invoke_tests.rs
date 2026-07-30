@@ -1145,7 +1145,7 @@ async fn the_b1_step_and_execution_reads_are_refused_below_ui_read() {
 // `capability_ledger_tests` for the reason.
 // ---------------------------------------------------------------------------------------
 
-const BATCH3_BRAKES: [&str; 3] = ["pause_execution", "stop_execution", "cancel_tasks_in_group"];
+const BATCH3_BRAKES: [&str; 2] = ["pause_execution", "stop_execution"];
 
 /// A mock app carrying every state the brakes are injected with.
 fn app_with_brake_state() -> tauri::App<tauri::test::MockRuntime> {
@@ -1396,7 +1396,7 @@ async fn the_batch3_brakes_are_refused_below_ui_operate() {
     }
 }
 
-/// The bulk cancel needs the Wry handle, so under a mock runtime it must fail CLOSED.
+/// With an agent-control grant, bulk cancel needs the Wry handle and fails closed without it.
 ///
 /// This is the `(host_app_handle)` contract: a missing handle is a host fault, never a reason
 /// to take a degraded path that cancels without emitting lifecycle events.
@@ -1406,7 +1406,7 @@ async fn the_bulk_cancel_brake_fails_closed_without_a_host_handle() {
 
     let error = registry::dispatch(
         &app.handle().clone(),
-        &[Scope::UiOperate],
+        &[Scope::UiAgent],
         "cancel_tasks_in_group",
         &json!({"groupKind": "status", "groupId": "ready", "projectId": "p"}),
     )

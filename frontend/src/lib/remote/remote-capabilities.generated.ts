@@ -999,9 +999,9 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     pins: [],
   },
   "pause_tasks_in_group": {
-    opClass: "operate",
+    opClass: "agentControl",
     argumentSensitive: false,
-    capabilities: [],
+    capabilities: ["agentControl"],
     pins: [],
   },
   "preview_persona_overlay": {

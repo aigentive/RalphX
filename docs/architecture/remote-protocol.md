@@ -110,8 +110,9 @@ Two audit rules matter to a client author:
   `ui:operate` because they set the process-wide pause gate before any task transition.
   `deny_permission_request` also stays `ui:operate` and server-pins `decision = "deny"`, so a
   client that sends `"allow"` still denies. Per-task `block_task`, `pause_task`, and `stop_task`,
-  plus `cancel_tasks_in_group`, require `ui:agent`: agent-active exits can run Git side effects,
-  and `block_task` can free capacity and ask the scheduler to launch queued work.
+  plus bulk `pause_tasks_in_group` and `cancel_tasks_in_group`, require `ui:agent`: agent-active
+  exits can run Git side effects, and `block_task` can free capacity and ask the scheduler to
+  launch queued work.
 
 ### 2.4 The manifest
 
