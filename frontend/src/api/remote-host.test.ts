@@ -29,6 +29,9 @@ const listenerStatus = {
   bindAddress: "127.0.0.1:3849",
   serveActive: true,
   serveDegradedReason: null,
+  // Always present on the wire: `RemoteListenerStatusResponse::serve_degraded_kind` is a plain
+  // `Option`, so serde emits an explicit null rather than omitting the key.
+  serveDegradedKind: null,
 };
 
 const mintedCode = {

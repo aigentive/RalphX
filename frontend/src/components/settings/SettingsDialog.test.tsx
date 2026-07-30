@@ -19,6 +19,7 @@ import { DEFAULT_PROJECT_SETTINGS } from "@/types/settings";
 import {
   SETTINGS_NAV,
   SETTINGS_SECTIONS,
+  isSettingsSectionVisible,
   navForSection,
   sectionMeta,
 } from "./settings-registry";
@@ -548,9 +549,16 @@ describe("SettingsDialog", () => {
   // --------------------------------------------------------------------------
 
   describe("Leaf reachability after nav consolidation", () => {
-    /** Every leaf id that existed before the seven-entry nav landed. */
+    /**
+     * Every leaf id that existed before the seven-entry nav landed.
+     *
+     * Feature-flag-gated sections are excluded: with their flag off they are deliberately
+     * absent from the nav and the hub, so "reachable" is not a claim that applies to them.
+     * `isSettingsSectionVisible({})` is the same gate the dialog itself consults, so a
+     * section that later loses its flag re-enters this list automatically.
+     */
     const LEGACY_LEAF_IDS = SETTINGS_SECTIONS.map((s) => s.id).filter(
-      (id) => id !== "integrations-hub",
+      (id) => id !== "integrations-hub" && isSettingsSectionVisible(id, {}),
     );
 
     it.each(LEGACY_LEAF_IDS)(

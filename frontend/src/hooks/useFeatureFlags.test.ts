@@ -154,6 +154,7 @@ describe("featureFlagsSchema", () => {
       agentConversationWorkflows: false,
       standaloneConversations: false,
       agentConversationAutopilot: false,
+      remoteEnvironments: false,
     });
     expect("ideationPage" in flags).toBe(false);
     expect("battleMode" in flags).toBe(false);

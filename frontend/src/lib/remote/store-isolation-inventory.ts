@@ -32,7 +32,7 @@ export const STORE_ISOLATION_INVENTORY: readonly StoreInventoryEntry[] = [
     persisted: {
       storageName: "ralphx-agent-session-store",
       envFields: ["focusedProjectId", "selectedProjectId", "selectedConversationId", "lastSelectedConversationByProjectId", "expandedProjectIds", "sidebarProjectFilterIds", "pinnedConversationIds", "artifactByConversationId", "runtimeByConversationId", "serviceTierByConversationId", "roleRuntimeOverridesByConversationId", "lastRuntimeByProjectId", "branchBaseCacheByProjectId", "lastBranchBaseSelectionByProjectId"],
-      globalFields: ["defaultStartMode", "showAllProjects", "showEmptyProjectGroups", "projectSort", "sidebarGroupBy", "sidebarPublicationStateFilters", "lastModelEffortByProvider"],
+      globalFields: ["defaultStartMode", "showAllProjects", "showEmptyProjectGroups", "projectSort", "sidebarGroupBy", "sidebarInboxActiveLane", "sidebarPublicationStateFilters", "lastModelEffortByProvider"],
     },
     reset: full,
     rationale: "Combines host-keyed sessions with global agent sidebar and runtime preferences.",

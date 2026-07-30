@@ -11,6 +11,9 @@ const hooks = vi.hoisted(() => ({
   clickup: { connected: false, isLoading: false },
   granola: { connected: false, isLoading: false },
   apiKeys: { data: undefined as unknown, isLoading: false },
+  // The hub reads the flag to decide whether the remote-access/connections cards exist.
+  // Mocked like every other hook here so the component needs no QueryClientProvider.
+  featureFlags: { data: undefined as unknown },
 }));
 
 vi.mock("@/hooks/useAtlassianIntegration", async () => {
@@ -37,6 +40,13 @@ vi.mock("@/hooks/useGranolaIntegration", () => ({
 vi.mock("@/hooks/useApiKeys", () => ({
   useApiKeys: () => hooks.apiKeys,
 }));
+vi.mock("@/hooks/useFeatureFlags", async () => {
+  const actual =
+    await vi.importActual<typeof import("@/hooks/useFeatureFlags")>(
+      "@/hooks/useFeatureFlags",
+    );
+  return { ...actual, useFeatureFlags: () => hooks.featureFlags };
+});
 
 function renderHub() {
   const onNavigate = vi.fn();
@@ -62,6 +72,7 @@ describe("IntegrationsHubSection", () => {
     hooks.clickup = { connected: false, isLoading: false };
     hooks.granola = { connected: false, isLoading: false };
     hooks.apiKeys = { data: undefined, isLoading: false };
+    hooks.featureFlags = { data: undefined };
   });
 
   it("renders a card for every integration and external-access target", () => {
