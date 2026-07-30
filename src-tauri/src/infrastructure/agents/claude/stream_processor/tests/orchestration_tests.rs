@@ -411,6 +411,34 @@ fn test_processor_thinking_block_verbose() {
 /// When Claude CLI emits both streaming delta events AND a verbose `assistant` summary,
 /// the `TextChunk` must not be emitted twice and `response_text` must contain the text once.
 #[test]
+fn wrapped_deltas_then_verbose_summary_emits_text_once() {
+    let mut processor = StreamProcessor::new();
+    let first = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello "}}}"#;
+    let second = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"world"}}}"#;
+    let summary = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Hello world"}]},"session_id":"sess-1"}"#;
+
+    let first_events = processor.process_parsed_line(
+        StreamProcessor::parse_line(first).expect("first wrapped delta should parse"),
+    );
+    let second_events = processor.process_parsed_line(
+        StreamProcessor::parse_line(second).expect("second wrapped delta should parse"),
+    );
+    let summary_events = processor.process_parsed_line(
+        StreamProcessor::parse_line(summary).expect("verbose summary should parse"),
+    );
+
+    assert!(matches!(&first_events[..], [StreamEvent::TextChunk(text)] if text == "Hello "));
+    assert!(matches!(&second_events[..], [StreamEvent::TextChunk(text)] if text == "world"));
+    assert!(
+        !summary_events
+            .iter()
+            .any(|event| matches!(event, StreamEvent::TextChunk(_))),
+        "verbose summary must not duplicate text emitted by wrapped deltas"
+    );
+    assert_eq!(processor.finish().response_text, "Hello world");
+}
+
+#[test]
 fn test_verbose_mode_no_double_emission() {
     let mut processor = StreamProcessor::new();
 

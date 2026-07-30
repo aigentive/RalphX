@@ -1,6 +1,7 @@
 use super::*;
 use crate::domain::agents::AgentRole;
 use crate::infrastructure::agents::claude::build_mcp_config_with_runtime_context;
+use crate::infrastructure::agents::claude::clear_claude_cli_capability_cache;
 
 fn make_temp_project_plugin_dir() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
     let dir = tempfile::TempDir::new().unwrap();
@@ -62,6 +63,33 @@ else
   exit 64
 fi
 "#,
+    )
+    .expect("write fake claude");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(path)
+            .expect("fake claude metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).expect("chmod fake claude");
+    }
+}
+
+fn write_fake_claude_cli_with_partial_messages_support(
+    path: &std::path::Path,
+    supports_partial_messages: bool,
+) {
+    let partial_messages_flag = if supports_partial_messages {
+        "  --include-partial-messages"
+    } else {
+        ""
+    };
+    std::fs::write(
+        path,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  printf 'claude-code 2.1.219\\n'\nelif [ \"$1\" = \"--help\" ]; then\n  printf '%s\\n' 'Claude Code' 'Options:' '{partial_messages_flag}'\nelse\n  printf 'unexpected args: %s\\n' \"$*\" >&2\n  exit 64\nfi\n"
+        ),
     )
     .expect("write fake claude");
     #[cfg(unix)]
@@ -227,6 +255,63 @@ async fn test_wait_for_completion_nonexistent_handle() {
 }
 
 // ==================== Streaming Spawn Tests ====================
+
+#[test]
+fn build_cli_args_includes_partial_messages_for_non_interactive() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
+    clear_claude_cli_capability_cache();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cli_path = temp.path().join("claude");
+    write_fake_claude_cli_with_partial_messages_support(&cli_path, true);
+    let client = ClaudeCodeClient::new().with_cli_path(&cli_path);
+
+    let args = client
+        .build_cli_args(&AgentConfig::worker("Test prompt"), None, false)
+        .expect("build CLI args");
+
+    assert!(args.contains(&"--include-partial-messages".to_string()));
+    clear_claude_cli_capability_cache();
+}
+
+#[test]
+fn build_cli_args_omits_partial_messages_for_interactive() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
+    clear_claude_cli_capability_cache();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cli_path = temp.path().join("claude");
+    write_fake_claude_cli_with_partial_messages_support(&cli_path, true);
+    let client = ClaudeCodeClient::new().with_cli_path(&cli_path);
+
+    let args = client
+        .build_cli_args(&AgentConfig::worker("Test prompt"), None, true)
+        .expect("build CLI args");
+
+    assert!(!args.contains(&"--include-partial-messages".to_string()));
+    clear_claude_cli_capability_cache();
+}
+
+#[test]
+fn build_cli_args_omits_partial_messages_when_cli_capability_is_unsupported() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
+    clear_claude_cli_capability_cache();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cli_path = temp.path().join("claude");
+    write_fake_claude_cli_with_partial_messages_support(&cli_path, false);
+    let client = ClaudeCodeClient::new().with_cli_path(&cli_path);
+
+    let args = client
+        .build_cli_args(&AgentConfig::worker("Test prompt"), None, false)
+        .expect("build CLI args");
+
+    assert!(!args.contains(&"--include-partial-messages".to_string()));
+    clear_claude_cli_capability_cache();
+}
 
 #[test]
 fn test_build_cli_args_basic() {

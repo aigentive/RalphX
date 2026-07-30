@@ -227,6 +227,7 @@ fn normalize_effort_keeps_supported_xhigh_and_max() {
             LogicalEffort::XHigh,
             LogicalEffort::Max,
         ],
+        supports_include_partial_messages: false,
     };
 
     assert_eq!(
@@ -250,6 +251,7 @@ fn normalize_effort_downgrades_xhigh_to_high_for_legacy_cli() {
             LogicalEffort::High,
             LogicalEffort::Max,
         ],
+        supports_include_partial_messages: false,
     };
 
     assert_eq!(
@@ -268,6 +270,7 @@ fn normalize_effort_falls_back_for_invalid_or_over_requested_effort() {
         version: Some("2.1.142".to_string()),
         supported_model_aliases: vec!["sonnet".to_string()],
         supported_efforts: vec![LogicalEffort::High],
+        supports_include_partial_messages: false,
     };
 
     assert_eq!(
