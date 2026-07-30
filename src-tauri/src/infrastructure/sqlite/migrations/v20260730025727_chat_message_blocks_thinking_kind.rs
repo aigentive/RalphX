@@ -176,9 +176,8 @@ fn ensure_sufficient_free_space(conn: &Connection) -> AppResult<()> {
         }
     };
     let available_bytes =
-        match filesystem
-            .blocks_available()
-            .checked_mul(filesystem.fragment_size())
+        match (filesystem.blocks_available() as u64)
+            .checked_mul(filesystem.fragment_size() as u64)
         {
             Some(bytes) => bytes,
             None => {
