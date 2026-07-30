@@ -176,6 +176,7 @@ pub struct ContentBlock {
 pub struct ContentDelta {
     #[serde(rename = "type")]
     pub delta_type: String,
+    #[serde(alias = "thinking")]
     pub text: Option<String>,
     pub partial_json: Option<String>,
 }
