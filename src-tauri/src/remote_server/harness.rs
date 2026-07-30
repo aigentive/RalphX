@@ -295,6 +295,9 @@ impl RemoteHostHarness {
         self.db.clone()
     }
 
+    /// Read by the load and harness test legs; the harness itself reaches the field directly, so
+    /// a `--all-features` lib build with no test targets sees the accessor as dead.
+    #[allow(dead_code)]
     pub(crate) fn stream(&self) -> &RemoteStreamHandle {
         &self.stream
     }
