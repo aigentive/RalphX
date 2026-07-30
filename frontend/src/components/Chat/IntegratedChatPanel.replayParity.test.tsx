@@ -298,8 +298,8 @@ describe("IntegratedChatPanel live replay/recovery parity", () => {
       expect(transport.getConversationActiveState).toHaveBeenCalledWith("conversation-replay");
       expect(within(p2.container).getAllByTestId("tool-call-group-toggle").length).toBeGreaterThan(0);
     });
-    expandVisibleToolGroups(p2.container);
     await waitFor(() => {
+      expandVisibleToolGroups(p2.container);
       expect(within(p2.container).getByTestId("diff-tool-call-view")).toBeInTheDocument();
       expect(captureTranscriptSnapshot(p2.container).filter(
         (row) => row.key === "text:Live turn two begins before remount.",
