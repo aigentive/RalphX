@@ -161,6 +161,25 @@ async fn test_upsert_tool_call_updates_existing() {
 }
 
 #[tokio::test]
+async fn append_thinking_keeps_partial_text_isolated() {
+    let cache = StreamingStateCache::new();
+
+    cache.append_text("conv-123", 1, "answer").await;
+    cache.append_thinking("conv-123", 0, "reasoning").await;
+
+    let state = cache.get("conv-123").await.unwrap();
+    assert_eq!(state.partial_text, "answer");
+    assert_eq!(
+        state.partial_text_segments,
+        vec!["".to_string(), "answer".to_string()]
+    );
+    assert_eq!(
+        state.partial_thinking_segments,
+        vec!["reasoning".to_string()]
+    );
+}
+
+#[tokio::test]
 async fn test_add_task() {
     let cache = StreamingStateCache::new();
     let task = CachedStreamingTask {
@@ -330,6 +349,7 @@ async fn test_serialize_produces_expected_json() {
         }],
         partial_text: "Hello".to_string(),
         partial_text_segments: vec!["Hello".to_string()],
+        partial_thinking_segments: vec![],
         updated_at: Utc::now(),
     };
 

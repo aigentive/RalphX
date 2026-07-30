@@ -150,6 +150,8 @@ pub struct ConversationStreamingState {
     pub partial_text: String,
     /// Partial text content accumulated per text block in stream order.
     pub partial_text_segments: Vec<String>,
+    /// Partial reasoning content accumulated per thinking block in stream order.
+    pub partial_thinking_segments: Vec<String>,
     /// When this state was last updated
     pub updated_at: DateTime<Utc>,
 }
@@ -163,6 +165,7 @@ impl ConversationStreamingState {
             streaming_tasks: Vec::new(),
             partial_text: String::new(),
             partial_text_segments: Vec::new(),
+            partial_thinking_segments: Vec::new(),
             updated_at: Utc::now(),
         }
     }
@@ -471,6 +474,22 @@ impl StreamingStateCache {
             total_len = state.partial_text.len(),
             "StreamingStateCache: appended text"
         );
+    }
+
+    /// Append reasoning without leaking it into the assistant's copyable text.
+    pub async fn append_thinking(&self, conversation_id: &str, segment_index: usize, text: &str) {
+        let mut states = self.states.lock().await;
+        let state = states
+            .entry(conversation_id.to_string())
+            .or_insert_with(ConversationStreamingState::new);
+
+        if state.partial_thinking_segments.len() <= segment_index {
+            state
+                .partial_thinking_segments
+                .resize(segment_index + 1, String::new());
+        }
+        state.partial_thinking_segments[segment_index].push_str(text);
+        state.updated_at = Utc::now();
     }
 
     /// Clear all streaming state for a conversation.

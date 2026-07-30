@@ -375,6 +375,14 @@ fn test_processor_thinking_block_streaming() {
 
     let events4 = processor.process_message(stop);
     assert!(events4.is_empty()); // stop doesn't emit event for thinking
+    assert!(processor.response_text.is_empty());
+    assert!(matches!(
+        processor.content_blocks.as_slice(),
+        [ContentBlockItem::Thinking {
+            text,
+            duration_ms: Some(_)
+        }] if text == "Let me analyze this problem."
+    ));
 }
 
 #[test]
@@ -406,6 +414,13 @@ fn test_processor_thinking_block_verbose() {
     );
     assert!(matches!(&events[1], StreamEvent::TextChunk(t) if t == "Here's my answer."));
     assert!(matches!(&events[2], StreamEvent::SessionId(id) if id == "sess-456"));
+    assert!(matches!(
+        processor.content_blocks.first(),
+        Some(ContentBlockItem::Thinking {
+            text,
+            duration_ms: None
+        }) if text == "Deep analysis of the problem..."
+    ));
 }
 
 /// When Claude CLI emits both streaming delta events AND a verbose `assistant` summary,

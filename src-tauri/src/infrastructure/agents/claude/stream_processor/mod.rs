@@ -55,6 +55,8 @@ pub struct StreamProcessor {
     in_thinking_block: bool,
     // Accumulated thinking text during streaming
     current_thinking_block: String,
+    // Start time for the current streamed thinking block.
+    thinking_block_started_at: Option<std::time::Instant>,
     // Track if any ContentBlockDelta text events were received (for dedup guard)
     had_streaming_text_deltas: bool,
 }
@@ -130,9 +132,14 @@ impl StreamProcessor {
                         parent_tool_use_id: parent_tool_use_id.clone(),
                     });
                 } else if content_block.block_type == "thinking" {
-                    // Start of a thinking block - mark state for thinking delta handling
+                    if !self.current_text_block.is_empty() {
+                        self.content_blocks.push(ContentBlockItem::Text {
+                            text: std::mem::take(&mut self.current_text_block),
+                        });
+                    }
                     self.in_thinking_block = true;
                     self.current_thinking_block.clear();
+                    self.thinking_block_started_at = Some(std::time::Instant::now());
                 }
             }
             StreamMessage::ContentBlockDelta { delta, .. } => {
@@ -215,10 +222,22 @@ impl StreamProcessor {
                     self.current_tool_id = None;
                     self.current_tool_input.clear();
                 } else if self.in_thinking_block {
-                    // End of thinking block - reset state
-                    // (thinking content was already emitted as chunks)
+                    if !self.current_text_block.is_empty() {
+                        self.content_blocks.push(ContentBlockItem::Text {
+                            text: std::mem::take(&mut self.current_text_block),
+                        });
+                    }
+                    if !self.current_thinking_block.is_empty() {
+                        self.content_blocks.push(ContentBlockItem::Thinking {
+                            text: std::mem::take(&mut self.current_thinking_block),
+                            duration_ms: self
+                                .thinking_block_started_at
+                                .take()
+                                .map(|started_at| started_at.elapsed().as_millis() as u64),
+                        });
+                    }
                     self.in_thinking_block = false;
-                    self.current_thinking_block.clear();
+                    self.thinking_block_started_at = None;
                 } else if !self.current_text_block.is_empty() {
                     // Seal the delta-streamed text block here rather than waiting
                     // for finish(). With --include-partial-messages the verbose
@@ -362,7 +381,10 @@ impl StreamProcessor {
                             });
                         }
                         AssistantContent::Thinking { thinking } => {
-                            // Emit complete thinking block from verbose mode
+                            self.content_blocks.push(ContentBlockItem::Thinking {
+                                text: thinking.clone(),
+                                duration_ms: None,
+                            });
                             events.push(StreamEvent::Thinking(thinking));
                         }
                         AssistantContent::Other => {}
@@ -564,6 +586,7 @@ impl StreamProcessor {
         self.current_tool_input.clear();
         self.in_thinking_block = false;
         self.current_thinking_block.clear();
+        self.thinking_block_started_at = None;
         self.had_streaming_text_deltas = false;
         self.result_is_error = false;
         self.result_errors.clear();

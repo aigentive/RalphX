@@ -55,7 +55,7 @@ use super::tool_result_preview::{
 use super::{
     event_context, events, has_meaningful_output, message_metadata_hidden_from_ui,
     AgentChunkPayload, AgentHookPayload, AgentTaskCompletedPayload, AgentTaskStartedPayload,
-    AgentToolCallPayload, AgentToolCallPreviewFields,
+    AgentThinkingPayload, AgentToolCallPayload, AgentToolCallPreviewFields,
 };
 use crate::utils::truncate_str;
 use crate::AppState;
@@ -430,6 +430,7 @@ pub(super) async fn persist_timeline_snapshot(
         let kind = match block {
             ContentBlockItem::Text { text } if text.is_empty() => continue,
             ContentBlockItem::Text { .. } => ChatTimelineItemKind::Text,
+            ContentBlockItem::Thinking { .. } => ChatTimelineItemKind::Thinking,
             ContentBlockItem::ToolUse { .. } => ChatTimelineItemKind::ToolUse,
         };
         retained_block_indices.push(index as i64);
@@ -451,6 +452,12 @@ pub(super) async fn persist_timeline_snapshot(
         match block {
             ContentBlockItem::Text { text } => {
                 item.text = Some(text.clone());
+            }
+            ContentBlockItem::Thinking { text, duration_ms } => {
+                item.text = Some(text.clone());
+                item.metadata = duration_ms.map(|duration_ms| {
+                    serde_json::json!({ "duration_ms": duration_ms }).to_string()
+                });
             }
             ContentBlockItem::ToolUse {
                 id,
@@ -1861,6 +1868,26 @@ pub async fn process_stream_background<R: Runtime>(
                         }
                     }
                     StreamEvent::Thinking(text) => {
+                        let block_position = current_text_block_position(&processor.content_blocks);
+                        streaming_state_cache
+                            .append_thinking(&conversation_id_str, block_position as usize, &text)
+                            .await;
+                        if let Some(ref handle) = app_handle {
+                            let _ = handle.emit(
+                                events::AGENT_THINKING,
+                                AgentThinkingPayload {
+                                    text: text.clone(),
+                                    run_id: agent_run_id.clone(),
+                                    block_index: Some(block_position),
+                                    conversation_id: conversation_id_str.clone(),
+                                    context_type: context_type_str.clone(),
+                                    context_id: context_id_str.clone(),
+                                    seq: stream_seq,
+                                    append_to_previous: true,
+                                },
+                            );
+                            stream_seq += 1;
+                        }
                         flush_streaming_persistence_if_dirty(
                             &mut streaming_persistence_dirty,
                             &mut last_streaming_persisted_at,

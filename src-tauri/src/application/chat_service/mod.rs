@@ -203,9 +203,9 @@ pub use chat_service_types::{
     AgentHookPayload, AgentMessageCreatedPayload, AgentMessageQueuedPayload,
     AgentMessageRenderReadyPayload, AgentQueueSentPayload, AgentRunCompletedPayload,
     AgentRunStartedPayload, AgentTaskCompletedPayload, AgentTaskStartedPayload,
-    AgentToolCallPayload, AgentToolCallPreviewFields, ChatConversationWithMessages,
-    ChatServiceError, SendCallerContext, SendResult, TeamArtifactCreatedPayload,
-    MESSAGE_DELIVERED_NOT_PERSISTED_PREFIX,
+    AgentThinkingPayload, AgentToolCallPayload, AgentToolCallPreviewFields,
+    ChatConversationWithMessages, ChatServiceError, SendCallerContext, SendResult,
+    TeamArtifactCreatedPayload, MESSAGE_DELIVERED_NOT_PERSISTED_PREFIX,
 };
 pub use streaming_state_cache::{
     CachedStreamingTask, CachedToolCall, ConversationStreamingState, StreamingStateCache,
@@ -5656,7 +5656,9 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                             self.chat_message_repo
                                 .create(user_msg.clone())
                                 .await
-                                .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?;
+                                .map_err(|error| {
+                                    ChatServiceError::RepositoryError(error.to_string())
+                                })?;
                             if !hide_user_message {
                                 chat_service_streaming::persist_message_text_timeline_item(
                                     &self.chat_timeline_repo,

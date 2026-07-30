@@ -1,15 +1,14 @@
 use super::{
     agent_run_usage_from_codex_usage, capture_file_diff_baseline, codex_tool_call_content_block,
     completion_tool_result_accepted, current_text_block_position, flush_content_before_error,
-    flush_streaming_persistence_if_dirty,
-    format_agent_exit_stderr, is_completion_tool_name, is_user_attended_turn_completion,
-    normalize_codex_cumulative_usage_for_persistence, normalize_codex_stream_usage_for_persistence,
-    persist_assistant_message_snapshot, persist_message_text_timeline_item,
-    persist_timeline_snapshot, persist_usage_capture_run_first, process_codex_stream_background,
-    process_exit_details, process_stream_background, provider_session_ref_for_harness,
-    record_agent_waiting_if_user_attended, resolve_codex_file_change_tool_call_snapshots,
-    stream_mode_for_harness, upsert_codex_tool_call_snapshot, ProcessExitDetails, StreamOutcome,
-    StreamingStateCache,
+    flush_streaming_persistence_if_dirty, format_agent_exit_stderr, is_completion_tool_name,
+    is_user_attended_turn_completion, normalize_codex_cumulative_usage_for_persistence,
+    normalize_codex_stream_usage_for_persistence, persist_assistant_message_snapshot,
+    persist_message_text_timeline_item, persist_timeline_snapshot, persist_usage_capture_run_first,
+    process_codex_stream_background, process_exit_details, process_stream_background,
+    provider_session_ref_for_harness, record_agent_waiting_if_user_attended,
+    resolve_codex_file_change_tool_call_snapshots, stream_mode_for_harness,
+    upsert_codex_tool_call_snapshot, ProcessExitDetails, StreamOutcome, StreamingStateCache,
 };
 use crate::application::chat_service::chat_service_context::create_assistant_message;
 use crate::application::chat_service::chat_service_errors::{ProviderErrorCategory, StreamError};
@@ -21,8 +20,8 @@ use crate::domain::agents::{AgentHarnessKind, HarnessStreamMode};
 use crate::domain::entities::{
     AgentRun, AgentRunActionKind, AgentRunId, AgentRunUsage, ChatContextType, ChatConversation,
     ChatConversationId, ChatMessage, ChatMessageId, ChatTimelineItem, ChatTimelineItemId,
-    ChatTimelineItemStatus, ChatTimelinePage, IdeationSessionId, MessageRole, ProjectId,
-    ProviderUsageSnapshot, TaskId, UsageCapture, UsageProvenance,
+    ChatTimelineItemKind, ChatTimelineItemStatus, ChatTimelinePage, IdeationSessionId, MessageRole,
+    ProjectId, ProviderUsageSnapshot, TaskId, UsageCapture, UsageProvenance,
 };
 use crate::domain::repositories::{
     AgentRunRepository, ChatMessageRepository, ChatTimelineRepository,
@@ -93,6 +92,10 @@ async fn chunk_block_index_matches_persisted_block_index_across_interleaved_bloc
     let conversation_id = ChatConversationId::new();
     let message_id = Some("assistant-message-interleaved-block-index".to_string());
     let blocks = vec![
+        ContentBlockItem::Thinking {
+            text: "reasoning".to_string(),
+            duration_ms: Some(12),
+        },
         ContentBlockItem::Text {
             text: "A".to_string(),
         },
@@ -109,7 +112,7 @@ async fn chunk_block_index_matches_persisted_block_index_across_interleaved_bloc
         },
     ];
 
-    let chunk_block_index = current_text_block_position(&blocks[..2]);
+    let chunk_block_index = current_text_block_position(&blocks[..3]);
     let persisted = persist_timeline_snapshot(
         &Some(state.chat_timeline_repo.clone()),
         &conversation_id.as_str(),
@@ -124,8 +127,15 @@ async fn chunk_block_index_matches_persisted_block_index_across_interleaved_bloc
         .expect("B must persist as a text timeline item")
         .block_index;
 
+    let thinking = persisted
+        .iter()
+        .find(|item| item.kind == ChatTimelineItemKind::Thinking)
+        .expect("thinking must persist as a timeline item");
+    assert_eq!(thinking.text.as_deref(), Some("reasoning"));
+    assert_eq!(thinking.metadata.as_deref(), Some(r#"{"duration_ms":12}"#));
+
     assert_eq!(chunk_block_index, persisted_block_index as u64);
-    assert_eq!(chunk_block_index, 2);
+    assert_eq!(chunk_block_index, 3);
 }
 
 #[tokio::test]
@@ -3240,7 +3250,9 @@ async fn many_text_chunks_within_window_persist_once() {
     // so a long answer produced thousands of writes instead of a handful.
     const CHUNKS: usize = 60;
 
-    let mut lines: Vec<String> = (0..CHUNKS).map(|_| partial_text_delta_line("tok ")).collect();
+    let mut lines: Vec<String> = (0..CHUNKS)
+        .map(|_| partial_text_delta_line("tok "))
+        .collect();
     lines.push(content_block_stop_line());
     lines.push(
         r#"{"type":"result","session_id":"sess-debounce","is_error":false,"result":"done","cost_usd":0.0}"#
@@ -3323,9 +3335,10 @@ async fn tool_call_start_flushes_pending_text() {
     let (counting, _state, _conversation_id, _message_id) = run_debounce_stream(lines).await;
 
     let upserts = counting.upserts.lock().expect("upsert log").clone();
-    let first_text_write = upserts
-        .iter()
-        .position(|(_, text)| text.as_deref().is_some_and(|t| t.contains("before the tool")));
+    let first_text_write = upserts.iter().position(|(_, text)| {
+        text.as_deref()
+            .is_some_and(|t| t.contains("before the tool"))
+    });
     assert!(
         first_text_write.is_some(),
         "the text preceding a tool call must be persisted, saw {upserts:?}"
