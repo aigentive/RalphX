@@ -58,6 +58,14 @@ export default defineConfig({
         deviceScaleFactor: 2,
         scale: "device",
       },
+      expect: {
+        toHaveScreenshot: {
+          // Docs-capture screenshots illustrate documentation; they tolerate
+          // cross-environment rendering variance (font hinting, subpixel AA)
+          // that the stricter visual-regression suite does not.
+          maxDiffPixelRatio: 0.03,
+        },
+      },
     },
   ],
 
