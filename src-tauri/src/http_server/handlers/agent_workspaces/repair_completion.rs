@@ -857,12 +857,12 @@ async fn complete_reserved_agent_workspace_repair(
     }
     #[cfg(feature = "test-utils")]
     completion_phase_test_hook::wait_validation().await;
-    let validation = match inspect_agent_workspace_repair_completion(
+    let validation = match Box::pin(inspect_agent_workspace_repair_completion(
         state.app_state.as_ref(),
         workspace,
         &reserved.target_base_ref,
         reserved.target_base_commit.as_deref(),
-    )
+    ))
     .await
     {
         Ok(validation) => validation,
@@ -960,13 +960,13 @@ async fn complete_reserved_agent_workspace_repair(
     };
     #[cfg(feature = "test-utils")]
     completion_phase_test_hook::wait_continuation().await;
-    let continuation = match continue_agent_workspace_repair_at_boundary(
+    let continuation = match Box::pin(continue_agent_workspace_repair_at_boundary(
         state.app_state.as_ref(),
         validated,
         AgentWorkspaceRepairPhase::Validating,
         summary,
         false,
-    )
+    ))
     .await
     .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
     {
@@ -983,7 +983,7 @@ async fn complete_reserved_agent_workspace_repair(
         ));
     }
     if let Err(error) =
-        continue_agent_workspace_repair_publish(state.app_state.as_ref(), continuation).await
+        Box::pin(continue_agent_workspace_repair_publish(state.app_state.as_ref(), continuation)).await
     {
         tracing::warn!(
             target: "ralphx_lib::http::agent_workspace_repair",
