@@ -778,6 +778,19 @@ fn test_automations_config_env_overrides() {
 }
 
 #[test]
+fn resolve_file_logging_limits_early_returns_positive_defaults() {
+    let (max_bytes, keep_files) = resolve_file_logging_limits_early();
+    assert!(
+        max_bytes > 0,
+        "default max_bytes must be positive, got {max_bytes}"
+    );
+    assert!(
+        keep_files > 0,
+        "default keep_files must be positive, got {keep_files}"
+    );
+}
+
+#[test]
 fn test_openrouter_settings_profile_supports_blank_api_key_and_timeout() {
     let yaml = r#"
 claude:

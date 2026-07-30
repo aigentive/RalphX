@@ -11,6 +11,7 @@ use crate::application::agent_conversation_workspace::{
 use crate::application::agent_workspace_pr_supervision_recovery::{
     pr_supervision_recovery_schedule_skip_reason, recover_agent_workspace_pr_supervision,
     recover_recent_agent_workspace_pr_supervision_on_startup,
+    schedule_agent_workspace_pr_supervision_recovery,
     schedule_agent_workspace_pr_supervision_recovery_with_lazy_deps,
     AgentWorkspacePrFixReviewPublishResumer, AgentWorkspacePrSupervisionRecoveryDeps,
     AgentWorkspacePrSupervisionRecoveryOutcome, AgentWorkspacePrSupervisionRecoveryTrigger,
@@ -2695,4 +2696,35 @@ async fn pending_review_handoff_without_monitor_aborts_fail_closed_without_publi
             "published" | "pr_autofix_workspace_review_passed" | "pr_supervision_recovered"
         )
     }));
+}
+
+#[tokio::test]
+async fn schedule_wrapper_delegates_to_lazy_deps_variant() {
+    let (_temp_dir, project, workspace, head_sha) =
+        setup_recovery_workspace("pr-supervision-schedule-wrapper").await;
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("seed workspace");
+    let project_repo = Arc::new(MemoryProjectRepository::with_projects(vec![project]));
+    let github = Arc::new(MockGithubService::new());
+    github.will_return_sync_state(open_sync_state(&workspace.branch_name, &head_sha));
+    github.state().fetch_pr_health_result =
+        Some(Ok(healthy_pr_health(&workspace.branch_name, &head_sha)));
+
+    schedule_agent_workspace_pr_supervision_recovery(
+        recovery_deps(
+            workspace_repo,
+            project_repo,
+            Arc::clone(&github),
+            Arc::new(MemoryAgentRunRepository::new()),
+        ),
+        conversation_id,
+        AgentWorkspacePrSupervisionRecoveryTrigger::WorkspaceLoad,
+        true,
+    );
+
+    wait_for_sync_state_calls(&github, 1).await;
 }

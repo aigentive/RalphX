@@ -11,7 +11,8 @@ use tempfile::TempDir;
 
 use super::database_maintenance::{
     compact_before_pool_opens_at, read_stats_at, set_pending_compaction_at, CompactionConfig,
-    CompactionOutcome, MaintenancePaths,
+    CompactionOutcome, DatabaseMaintenanceStats, MaintenancePaths,
+    DEFAULT_AUTO_COMPACT_MAX_DB_BYTES, DEFAULT_AUTO_COMPACT_MIN_FREELIST_PERCENT,
 };
 
 fn temp_paths(dir: &TempDir) -> MaintenancePaths {
@@ -54,6 +55,32 @@ fn config(auto_enabled: bool) -> CompactionConfig {
         auto_max_db_bytes: u64::MAX,
         auto_min_freelist_percent: 0,
     }
+}
+
+#[test]
+fn compaction_config_default_uses_published_constants() {
+    let default = CompactionConfig::default();
+    assert!(default.auto_enabled);
+    assert_eq!(default.auto_max_db_bytes, DEFAULT_AUTO_COMPACT_MAX_DB_BYTES);
+    assert_eq!(
+        default.auto_min_freelist_percent,
+        DEFAULT_AUTO_COMPACT_MIN_FREELIST_PERCENT
+    );
+}
+
+#[test]
+fn database_maintenance_stats_serializes_to_json() {
+    let stats = DatabaseMaintenanceStats {
+        database_bytes: 1024,
+        reclaimable_bytes: 256,
+        headroom_ok: true,
+        pending_compaction: false,
+    };
+    let json = serde_json::to_value(&stats).unwrap();
+    assert_eq!(json["database_bytes"], 1024);
+    assert_eq!(json["reclaimable_bytes"], 256);
+    assert_eq!(json["headroom_ok"], true);
+    assert_eq!(json["pending_compaction"], false);
 }
 
 #[test]
