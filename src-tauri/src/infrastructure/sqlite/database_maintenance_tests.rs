@@ -165,13 +165,11 @@ fn manual_marker_bypasses_auto_thresholds_and_compacts() {
     .unwrap();
 
     let after = std::fs::metadata(&paths.database_path).unwrap().len();
-    match outcome {
-        CompactionOutcome::Compacted { reclaimed_bytes } => {
-            assert!(after < before, "vacuum must shrink the bloated database");
-            assert_eq!(reclaimed_bytes, before - after);
-        }
-        other => panic!("expected compaction, got {other:?}"),
-    }
+    let CompactionOutcome::Compacted { reclaimed_bytes } = outcome else {
+        panic!("expected CompactionOutcome::Compacted variant");
+    };
+    assert!(after < before, "vacuum must shrink the bloated database");
+    assert_eq!(reclaimed_bytes, before - after);
     assert!(
         !paths.marker_path.exists(),
         "marker must be consumed on success"
@@ -194,13 +192,12 @@ fn auto_path_compacts_bloated_database_within_limits() {
     seed_bloated_db(&paths);
     let before = std::fs::metadata(&paths.database_path).unwrap().len();
     let outcome = compact_before_pool_opens_at(&paths, config(true)).unwrap();
-    match outcome {
-        CompactionOutcome::Compacted { .. } => {
-            let after = std::fs::metadata(&paths.database_path).unwrap().len();
-            assert!(after < before);
-        }
-        other => panic!("expected compaction, got {other:?}"),
-    }
+    assert!(
+        matches!(outcome, CompactionOutcome::Compacted { .. }),
+        "expected CompactionOutcome::Compacted variant"
+    );
+    let after = std::fs::metadata(&paths.database_path).unwrap().len();
+    assert!(after < before);
 }
 
 #[test]
