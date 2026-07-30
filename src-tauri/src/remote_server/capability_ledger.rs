@@ -229,6 +229,10 @@ pub const MODULE_DEFAULTS: &[ModuleDefault] = &[
     // module cannot spawn (no AppHandle, no ExecutionState, no ChatService), but a future
     // member must still earn its own row rather than inherit a narrow one.
     agent_default("remote_transcript_commands"),
+    // Same construction and the same conservative default again: the module cannot spawn (no
+    // AppHandle, no ExecutionState, no chat service), but a future member must still earn its
+    // own row rather than inherit the shell reads' narrow one.
+    agent_default("remote_workspace_commands"),
     elevated_default(
         "remote_device_commands",
         HOST,
@@ -1085,6 +1089,33 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
     // checked by hand rather than assumed, because a `Vec`-returning read is exactly the
     // fail-open shape batch 4 refused four times.
     // -----------------------------------------------------------------------------------
+    // -----------------------------------------------------------------------------------
+    // The workspace shell reads (`remote_workspace_commands`).
+    //
+    // Both are splits, not reclassifications. `list_projects` is Elevated because
+    // `project_response` runs `inspect_repository_capability` over the project's working
+    // directory; `get_agent_provider_settings` is Denied because its refresh path probes
+    // provider CLIs and its response carries per-provider CLI/model detail. The rows below
+    // cover the projections that reach neither sink — checked against the source, not assumed,
+    // because a Vec-returning read is exactly the fail-open shape this ledger has refused
+    // before. Both propagate their repository errors with `?`.
+    // -----------------------------------------------------------------------------------
+    CommandOverride {
+        command: "list_remote_projects",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "pure repository read of project rows; the repository-capability inspection that classes `list_projects` Elevated is absent by construction",
+        ),
+    },
+    CommandOverride {
+        command: "get_remote_provider_readiness",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "pure repository read reduced to two scalars; no CLI probe, no provider identity, model, path, or credential surface",
+        ),
+    },
     CommandOverride {
         command: "list_remote_agent_conversations",
         policy: policy(

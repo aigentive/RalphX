@@ -1505,6 +1505,30 @@ crate::remote_commands! {
     // extraction forks no logic (A-7) and drops two spawn-authority carriers from a read
     // command rather than merely routing around them.
     // -----------------------------------------------------------------------------------
+    // The workspace shell's two boot reads. Without them a connected client has no project
+    // list and no provider answer, so it renders first-run onboarding over a populated host.
+    "list_remote_projects"
+        => crate::commands::remote_workspace_commands::list_remote_projects {
+        class: Read,
+        caps: [],
+        params: [
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+
+    "get_remote_provider_readiness"
+        => crate::commands::remote_workspace_commands::get_remote_provider_readiness {
+        class: Read,
+        caps: [],
+        params: [
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+
     "list_remote_agent_conversations"
         => crate::commands::remote_transcript_commands::list_remote_agent_conversations {
         class: Read,
