@@ -213,10 +213,10 @@ function ListenerCard({
                   className="rounded-md px-3 py-2 text-left transition-colors disabled:opacity-50"
                   style={{
                     backgroundColor: selected
-                      ? "var(--accent-muted, rgba(255, 107, 53, 0.12))"
+                      ? "var(--accent-muted)"
                       : "var(--bg-surface, #1e1e23)",
                     borderColor: selected
-                      ? "var(--accent-border, #ff6b35)"
+                      ? "var(--accent-border)"
                       : "var(--border-default, #393940)",
                     borderStyle: "solid",
                     borderWidth: "1px",

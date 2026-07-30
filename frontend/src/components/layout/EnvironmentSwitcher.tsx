@@ -89,7 +89,7 @@ function NotificationBadge({
     <span
       className="grid h-4 min-w-4 shrink-0 place-items-center rounded-full px-1 text-[0.625rem] font-bold leading-none"
       style={{
-        backgroundColor: "var(--accent-primary, #ff6b35)",
+        backgroundColor: "var(--accent-primary)",
         color: "var(--text-on-accent, #ffffff)",
       }}
       data-testid={testId}
