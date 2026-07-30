@@ -96,6 +96,9 @@ pub(super) fn reserve(
         caller_agent_run_id: caller_agent_run_id.clone(),
         planned_delegated_agent_run_id: None,
         delegated_agent_run_id: None,
+        team_id: None,
+        team_member_id: None,
+        team_member_generation: None,
         task_list_id: list.id.clone(),
         task_id: task.task_id.clone(),
         delegate_agent_name: delegate_agent_name.to_string(),
@@ -222,6 +225,56 @@ pub(super) fn plan_run(
         &mut state,
         &assignment.task_list_id,
         "agent_task.assignment_run_planned",
+        &assignment.task_id,
+    );
+    Ok(Some(view(&state, &assignment)?))
+}
+
+pub(super) fn set_team_identity(
+    repo: &MemoryAgentTaskRepository,
+    assignment_id: &AgentTaskAssignmentId,
+    delegated_session_id: &DelegatedSessionId,
+    team_id: &crate::domain::entities::TeamSessionId,
+    team_member_id: &crate::domain::entities::TeamMemberId,
+    team_member_generation: i64,
+) -> AppResult<Option<AgentTaskAssignmentView>> {
+    let mut state = repo.state.write().unwrap();
+    let Some(index) = state
+        .assignments
+        .iter()
+        .position(|assignment| assignment.id == *assignment_id)
+    else {
+        return Ok(None);
+    };
+    let assignment = &mut state.assignments[index];
+    if assignment.delegated_session_id != *delegated_session_id {
+        return Err(AppError::Conflict(
+            "delegate assignment does not belong to the requested session".to_string(),
+        ));
+    }
+    if assignment.state != crate::domain::entities::AgentTaskAssignmentState::Reserved {
+        return Err(AppError::Conflict(
+            "only a reserved delegate assignment can receive Team authority".to_string(),
+        ));
+    }
+    if assignment.team_id.is_some()
+        && (assignment.team_id.as_ref() != Some(team_id)
+            || assignment.team_member_id.as_ref() != Some(team_member_id)
+            || assignment.team_member_generation != Some(team_member_generation))
+    {
+        return Err(AppError::Conflict(
+            "delegate assignment already belongs to a different Team member generation".to_string(),
+        ));
+    }
+    assignment.team_id = Some(team_id.clone());
+    assignment.team_member_id = Some(team_member_id.clone());
+    assignment.team_member_generation = Some(team_member_generation);
+    assignment.updated_at = Utc::now();
+    let assignment = state.assignments[index].clone();
+    append_event(
+        &mut state,
+        &assignment.task_list_id,
+        "agent_task.assignment_team_identity_bound",
         &assignment.task_id,
     );
     Ok(Some(view(&state, &assignment)?))

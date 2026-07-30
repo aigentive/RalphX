@@ -30,6 +30,7 @@ import type {
   CapabilityIntent,
   ComposerIntegrationReference,
   ForkAgentConversationResult,
+  TeamMessageTarget,
 } from "@/api/chat";
 import { chatApi } from "@/api/chat";
 import { manualRoleDefaultsApi } from "@/api/manual-role-defaults";
@@ -72,6 +73,7 @@ import { useAgentModels } from "@/hooks/useAgentModels";
 import { useConfirmation } from "@/hooks/useConfirmation";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
+import { useManagedTeamStatus } from "@/hooks/useManagedTeam";
 import { useConversationRoleDefault } from "@/hooks/useManualRoleDefaults";
 import {
   agentModelSupportsCodexUltra,
@@ -146,7 +148,6 @@ import {
   getAgentQueueHaltState,
   type AgentQueueHaltState,
 } from "./agentExecutionPause";
-import type { IdeationArtifactTab } from "./agentArtifactTabs";
 import {
   getFocusedAutomationRunConversationId,
   getFocusedChatSessionId,
@@ -711,7 +712,7 @@ interface AgentsActiveConversationPanelProps {
   activeWorkspace: AgentConversationWorkspace | null;
   activeWorkspaceFreshness: AgentConversationWorkspaceFreshness | undefined;
   attachedIdeationSessionId: string | null;
-  availableArtifactTabs: readonly IdeationArtifactTab[];
+  availableArtifactTabs: readonly AgentArtifactTab[];
   chatFocus: AgentsChatFocus;
   chatFocusOptions: readonly AgentsChatFocusSwitchOption[];
   hasAttachedPlanArtifact: boolean;
@@ -868,6 +869,12 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     focusedWorkspaceReviewConversationId ?? selectedConversationId;
   const { registry: modelRegistry } = useAgentModels();
   const { data: featureFlags } = useFeatureFlags();
+  const teamMode =
+    activeConversation.coordinationMode === "rx_native_team" &&
+    featureFlags.agentConversationTeam === true;
+  const managedTeamStatus = useManagedTeamStatus(selectedConversationId, {
+    enabled: teamMode,
+  });
   const roleDefaultQuery = useConversationRoleDefault(selectedConversationId);
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const openModal = useUiStore((s) => s.openModal);
@@ -896,6 +903,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const [isApprovingAutomation, setIsApprovingAutomation] = useState(false);
   const [isRunningAutomation, setIsRunningAutomation] = useState(false);
   const [isResettingRoleDefault, setIsResettingRoleDefault] = useState(false);
+  const [teamMessageTarget, setTeamMessageTarget] =
+    useState<TeamMessageTarget | null>(null);
   const [
     shouldLoadWorkspaceBaseOptions,
     setShouldLoadWorkspaceBaseOptions,
@@ -935,6 +944,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     setIsLoadingWorkspaceBasePullRequests(false);
     workspaceBasePullRequestRequestRef.current += 1;
   }, [selectedConversationId]);
+  useEffect(() => {
+    setTeamMessageTarget(null);
+  }, [selectedConversationId, teamMode]);
   const {
     isUpdatingFromBase: isUpdatingComposerWorkspaceBase,
     runUpdateFromBase: runComposerWorkspaceBaseUpdate,
@@ -2808,6 +2820,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                         ...(options?.teamIntent
                           ? { teamIntent: options.teamIntent }
                           : {}),
+                        ...(options?.teamMessageTarget
+                          ? { teamMessageTarget: options.teamMessageTarget }
+                          : {}),
                         ...(options?.projectReferences?.length
                           ? { composerProjectReferences: options.projectReferences }
                           : {}),
@@ -3016,6 +3031,19 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                               updatingCapabilityConversationId ===
                               selectedConversationId,
                             testId: "agents-conversation-capability",
+                          },
+                        }
+                      : {})}
+                    {...(teamMode
+                      ? {
+                          teamTarget: {
+                            value: teamMessageTarget,
+                            onValueChange: setTeamMessageTarget,
+                            members: managedTeamStatus.data?.members ?? [],
+                            disabled:
+                              composerProps.isReadOnly ||
+                              isForkingConversation ||
+                              Boolean(automationRunReadOnlyReason),
                           },
                         }
                       : {})}
