@@ -22,6 +22,10 @@ Then read [Finding your way around](02-tour-of-the-app.md), and follow the workf
 | Review a GitHub pull request | [Reviewing a pull request with RalphX](workflows/reviewing-a-pull-request.md) |
 | Ask questions about a codebase without changing it | [Asking questions about a codebase](workflows/asking-about-a-codebase.md) |
 | Connect RalphX to GitHub | [Connecting RalphX to GitHub](integrations/connect-github.md) |
+| Choose and configure my agent runtime | [Using Claude Code with RalphX](configure/using-claude-code-with-ralphx.md) · [Using Codex with RalphX](configure/using-codex-with-ralphx.md) |
+| Teach RalphX how to build and check my project | [Teaching RalphX about your project](configure/project-setup-and-validation.md) |
+| Work from Jira, Linear, or ClickUp tickets | [Working with tickets](integrations/ticketing-dashboard.md) |
+| Fix something that went wrong | [When something goes wrong](troubleshooting.md) |
 
 ## The main path
 
@@ -35,24 +39,26 @@ The five workflow guides follow one another. Each states its prerequisite and li
 
 ## Connecting your other tools
 
+Each connect guide stands alone. Read only the one for the tool you are connecting.
+
 | Tool | Guide |
 |---|---|
 | GitHub | [Connecting RalphX to GitHub](integrations/connect-github.md) |
-| Jira and Confluence | *coming soon* |
-| Using Jira and Confluence in RalphX | *coming soon* |
-| Linear | *coming soon* |
-| ClickUp | *coming soon* |
-| Granola | *coming soon* |
-| Working with tickets | *coming soon* |
+| Jira and Confluence | [Connecting RalphX to Jira and Confluence](integrations/connect-jira-and-confluence.md) |
+| Jira and Confluence, once connected | [Using Jira and Confluence in RalphX](integrations/using-jira-and-confluence.md) |
+| Linear | [Connecting RalphX to Linear](integrations/connect-linear.md) |
+| ClickUp | [Connecting RalphX to ClickUp](integrations/connect-clickup.md) |
+| Granola | [Connecting RalphX to Granola](integrations/connect-granola.md) |
+| Tickets from any connected tracker | [Working with tickets](integrations/ticketing-dashboard.md) |
 
 ## Configuring RalphX
 
 | Topic | Guide |
 |---|---|
-| Using Claude Code with RalphX | *coming soon* |
-| Using Codex with RalphX | *coming soon* |
-| Teaching RalphX about your project | *coming soon* |
-| Controlling how much runs at once | *coming soon* |
+| Using Claude Code with RalphX | [Using Claude Code with RalphX](configure/using-claude-code-with-ralphx.md) |
+| Using Codex with RalphX | [Using Codex with RalphX](configure/using-codex-with-ralphx.md) |
+| Teaching RalphX about your project | [Teaching RalphX about your project](configure/project-setup-and-validation.md) |
+| Controlling how much runs at once | [Controlling how much runs at once](configure/capacity-and-concurrency.md) |
 
 ## Going further
 
@@ -60,11 +66,11 @@ Some RalphX features are **off by default** and stay off until you turn them on 
 
 | Topic | Guide |
 |---|---|
-| Tracked delivery with Tasks — includes the Kanban board and dependency graph, off by default | *coming soon* |
-| Delivering large projects with automated, supervised goals | *coming soon* |
-| Customizing your agents' voice with Personas — off by default | *coming soon* |
-| Connecting other tools to RalphX | *coming soon* |
-| When something goes wrong | *coming soon* |
+| Tracked delivery with Tasks — includes the Kanban board and dependency graph, off by default | [Tracked delivery with Tasks](advanced/task-managed-delivery.md) |
+| Delivering large projects with automated, supervised goals | [Delivering large projects with automated, supervised goals](advanced/delivering-large-projects.md) |
+| Customizing your agents' voice with Personas — off by default | [Customizing your agents' voice with Personas](advanced/personas.md) |
+| Connecting other tools to RalphX | [Connecting other tools to RalphX](advanced/external-access.md) |
+| When something goes wrong | [When something goes wrong](troubleshooting.md) |
 
 ## Looking for something else?
 

@@ -98,7 +98,7 @@ Learn where RalphX keeps conversations, artifacts, navigation, start modes, and 
 
 4. Open **Tasks** only when the Tasks feature is enabled.
 
-5. Tasks is off by default; turn on **Enable Tasks** in Settings → **Planning** when you need it.
+5. Tasks is off by default; turn on **Enable Tasks** in Settings → **Automation** → **Tasks** when you need it.
 
 6. Use **Tasks** for tracked delivery; this is covered in a later guide.
 
@@ -126,27 +126,29 @@ Learn where RalphX keeps conversations, artifacts, navigation, start modes, and 
 
 ![The RalphX Settings Providers section](../../assets/public/guides/settings-overview.png)
 
-3. Use the Harness group for **Providers**, **Models**, **Agents**, and **MCP**.
+3. Open **Models & Providers** for **Providers**, **Models**, and **MCP**.
 
-4. Use the Workspace group for **Repository** and **Setup & Validation**.
+4. Open **Agents** for **Roles**, **Personas**, and **Capabilities**.
 
-5. Use the General group for **Tasks**, **Planning**, **Workspace**, **Capacity**, **Personas**, and **Capabilities**.
+5. Open **Automation** for **Tasks**, **Planning**, **Workspace**, and **Capacity**.
 
-6. Use the Integrations group for **Atlassian**, **GitHub**, **Linear**, **ClickUp**, and **Granola**.
+6. Open **Repository** for **Repository** and **Setup & Validation**.
 
-7. Use the External Access group for **API Keys** and **External MCP**.
+7. Open **Integrations** for **Atlassian**, **GitHub**, **Linear**, **ClickUp**, **Granola**, **API Keys**, and **External MCP**.
 
-8. Use the Preferences group for **Updates**, **Accessibility**, and **Notifications**.
+8. Open **Notifications** to choose how RalphX gets your attention.
 
-9. Open Settings → **Integrations** → **GitHub** when you need the GitHub connection settings.
+9. Open **Application** for **Updates** and **Accessibility**.
 
-10. Change only the setting that supports your current workflow, then return to **Agents**.
+10. Open Settings → **Integrations** → **GitHub** when you need the GitHub connection settings.
 
-11. Revisit **Providers** if a configured agent runtime is no longer available.
+11. Change only the setting that supports your current workflow, then return to **Agents**.
 
-12. Use **Planning** only when you want to adjust planning-related behavior, including the off-by-default Tasks feature.
+12. Revisit **Providers** if a configured agent runtime is no longer available.
 
-13. Close Settings after confirming the change you intended to make.
+13. Open Settings → **Automation** → **Tasks** when you want to adjust the off-by-default Tasks feature.
+
+14. Close Settings after confirming the change you intended to make.
 
 ## What you have now
 
