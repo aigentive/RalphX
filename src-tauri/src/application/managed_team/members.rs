@@ -437,13 +437,17 @@ impl ManagedTeamService {
         plan: &ManagedTeamAssignmentPlan,
         reason: &str,
     ) {
+        let Some(delegated_session_id) = plan.member.delegated_session_id.as_ref() else {
+            tracing::error!(
+                member_id = plan.member.id.as_str(),
+                "planned Team member has no delegated session during launch failure compensation"
+            );
+            return;
+        };
         self.compensate_member_assignment(
             task_service,
             &plan.member,
-            plan.member
-                .delegated_session_id
-                .as_ref()
-                .expect("planned member has session"),
+            delegated_session_id,
             Some(&plan.binding),
             &plan.reservation,
             reason,

@@ -238,4 +238,21 @@ impl TeamRunBindingRepository for SqliteTeamRunBindingRepository {
             })
             .await
     }
+
+    async fn count_active_dispatches(&self, team_id: &TeamSessionId) -> AppResult<u32> {
+        let team_id = team_id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let count: u32 = conn.query_row(
+                    "SELECT COUNT(*) FROM managed_team_run_bindings
+                     WHERE team_id = ?1
+                       AND team_member_id IS NOT NULL
+                       AND status IN ('launching', 'running')",
+                    [team_id],
+                    |row| row.get(0),
+                )?;
+                Ok(count)
+            })
+            .await
+    }
 }

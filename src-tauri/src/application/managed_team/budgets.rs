@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crate::domain::entities::{
-    processed_tokens, AgentRunUsage, TeamRunBindingStatus, TeamSession, TeamSessionId,
+    processed_tokens, AgentRunUsage, TeamSession, TeamSessionId,
 };
 use crate::error::{AppError, AppResult};
 
@@ -133,21 +133,9 @@ impl ManagedTeamService {
         &self,
         team_id: &TeamSessionId,
     ) -> AppResult<u32> {
-        let count = self
-            .run_binding_repo
-            .list_for_team(team_id)
-            .await?
-            .into_iter()
-            .filter(|binding| {
-                binding.team_member_id.is_some()
-                    && matches!(
-                        binding.status,
-                        TeamRunBindingStatus::Launching | TeamRunBindingStatus::Running
-                    )
-            })
-            .count();
-        u32::try_from(count)
-            .map_err(|_| AppError::Conflict("managed Team dispatch count overflowed".to_string()))
+        self.run_binding_repo
+            .count_active_dispatches(team_id)
+            .await
     }
 }
 

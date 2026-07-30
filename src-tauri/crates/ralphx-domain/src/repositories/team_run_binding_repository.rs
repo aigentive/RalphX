@@ -1,5 +1,8 @@
 use crate::{
-    entities::{AgentRunId, TeamMemberId, TeamRunBinding, TeamRunBindingId, TeamSessionId},
+    entities::{
+        AgentRunId, TeamMemberId, TeamRunBinding, TeamRunBindingId, TeamRunBindingStatus,
+        TeamSessionId,
+    },
     error::AppResult,
 };
 use async_trait::async_trait;
@@ -23,4 +26,24 @@ pub trait TeamRunBindingRepository: Send + Sync {
         expected_version: i64,
         binding: TeamRunBinding,
     ) -> AppResult<bool>;
+
+    async fn count_active_dispatches(&self, team_id: &TeamSessionId) -> AppResult<u32> {
+        let count = self
+            .list_for_team(team_id)
+            .await?
+            .into_iter()
+            .filter(|b| {
+                b.team_member_id.is_some()
+                    && matches!(
+                        b.status,
+                        TeamRunBindingStatus::Launching | TeamRunBindingStatus::Running
+                    )
+            })
+            .count();
+        u32::try_from(count).map_err(|_| {
+            crate::error::AppError::Conflict(
+                "managed Team dispatch count overflowed".to_string(),
+            )
+        })
+    }
 }

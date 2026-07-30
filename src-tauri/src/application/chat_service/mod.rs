@@ -1285,6 +1285,14 @@ pub struct SendMessageOptions {
     pub caller_context: SendCallerContext,
 }
 
+impl SendMessageOptions {
+    /// Team-targeted sends reuse the existing coordinator provider session
+    /// and must skip provider/persona/force-new invalidation gates.
+    pub fn skips_provider_session_invalidation(&self) -> bool {
+        self.team_message_target.is_some()
+    }
+}
+
 /// Unified chat service for all context types
 ///
 /// Key features:
@@ -5403,7 +5411,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             ipr_ref.log_registered_keys("GATE_1_MISS").await;
         }
         if has_ipr_entry
-            && options.team_message_target.is_none()
+            && !options.skips_provider_session_invalidation()
             && provider_switch_requires_fresh_session
         {
             if let Some(existing) = self
@@ -5450,7 +5458,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             }
         }
         if has_ipr_entry
-            && options.team_message_target.is_none()
+            && !options.skips_provider_session_invalidation()
             && persona_switch_requires_process_invalidation
         {
             if let Some(existing) = self
@@ -5502,7 +5510,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 "chat_service.send_message: removed stale interactive process after persona mismatch"
             );
         }
-        if has_ipr_entry && options.team_message_target.is_none() && force_new_provider_session {
+        if has_ipr_entry && !options.skips_provider_session_invalidation() && force_new_provider_session {
             ipr_ref.remove(&interactive_key).await;
             tracing::info!(
                 %context_type,
@@ -5539,7 +5547,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             }
         }
         if has_ipr_entry
-            && options.team_message_target.is_none()
+            && !options.skips_provider_session_invalidation()
             && !force_new_provider_session
             && !persona_switch_requires_process_invalidation
         {
