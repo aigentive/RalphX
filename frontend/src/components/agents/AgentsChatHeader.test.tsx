@@ -1100,18 +1100,25 @@ describe("AgentsChatHeader", () => {
     const builtInTerminal = screen.getByRole("menuitem", {
       name: "Built-in Terminal unavailable: Terminal is unavailable for this workspace",
     });
-    expect(builtInTerminal).toHaveAttribute("data-disabled");
-    expect(builtInTerminal).toHaveAttribute(
-      "title",
-      "Terminal is unavailable for this workspace",
-    );
+    // Soft-disabled, not Radix-`disabled`: `data-disabled` would apply
+    // `pointer-events: none` and drop the item out of the roving-focus order, which is
+    // exactly what made the old `title` explanation unreachable.
+    expect(builtInTerminal).not.toHaveAttribute("data-disabled");
+    expect(builtInTerminal).toHaveAttribute("aria-disabled", "true");
+    expect(builtInTerminal).not.toHaveAttribute("title");
 
     fireEvent.pointerEnter(builtInTerminal);
     fireEvent.focus(builtInTerminal);
     fireEvent.click(builtInTerminal);
+    fireEvent.keyDown(builtInTerminal, { key: "Enter" });
 
     expect(preloadTerminal).not.toHaveBeenCalled();
     expect(toggleTerminal).not.toHaveBeenCalled();
+
+    // The reason is reachable through the app tooltip, on hover and on focus.
+    expect(
+      screen.getByTestId("agents-built-in-terminal-explanation"),
+    ).toHaveTextContent("Terminal is unavailable for this workspace");
   });
 
   it("shows an opening state while launching a workspace target", () => {

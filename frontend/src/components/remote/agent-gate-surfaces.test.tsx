@@ -9,7 +9,7 @@
  * component (the same hook, the same reason string) plus a wiring guard.
  */
 
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { LOCAL_ENVIRONMENT_ID, useEnvironmentStore } from "@/stores/environmentStore";
@@ -189,6 +189,171 @@ describe("task edit form field-level gate", () => {
     await renderForm(vi.fn());
     expect(screen.getByLabelText("Title")).toBeEnabled();
     expect(screen.getByLabelText("Description")).toBeEnabled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Context menus — the gated item must EXPLAIN itself
+//
+// A Radix `disabled` menu item gets `pointer-events: none` from the shared item
+// styles and leaves the roving-focus order, so the `title` these items used to carry
+// could never be shown by either mouse or keyboard. The items are now soft-disabled
+// (`aria-disabled` + intercepted activation) and wrapped in the app tooltip.
+// ---------------------------------------------------------------------------
+
+describe("task context menu gated action", () => {
+  async function renderMenu(onStartExecution: () => void) {
+    const {
+      ContextMenu,
+      ContextMenuContent,
+      ContextMenuTrigger,
+    } = await import("@/components/ui/context-menu");
+    const {
+      TaskContextMenuItems,
+      TaskContextMenuDialogs,
+      TaskContextMenuProvider,
+      useTaskContextMenu,
+    } = await import("@/components/tasks/TaskContextMenuItems");
+
+    const task = {
+      id: "task-1",
+      projectId: "project-1",
+      title: "Test Task",
+      description: "",
+      category: "feature",
+      priority: 3,
+      internalStatus: "ready",
+      archivedAt: null,
+    };
+    const handlers = { onViewDetails: vi.fn(), onStartExecution };
+
+    function Harness() {
+      const state = useTaskContextMenu();
+      return (
+        <TaskContextMenuProvider state={state}>
+          <ContextMenu>
+            <ContextMenuTrigger asChild>
+              <div data-testid="trigger">Trigger</div>
+            </ContextMenuTrigger>
+            <ContextMenuContent>
+              <TaskContextMenuItems
+                task={task as never}
+                handlers={handlers as never}
+                context="kanban"
+              />
+            </ContextMenuContent>
+            <TaskContextMenuDialogs task={task as never} handlers={handlers as never} />
+          </ContextMenu>
+        </TaskContextMenuProvider>
+      );
+    }
+
+    render(
+      <TooltipProvider delayDuration={0}>
+        <Harness />
+      </TooltipProvider>
+    );
+    const { fireEvent } = await import("@testing-library/react");
+    fireEvent.contextMenu(screen.getByTestId("trigger"));
+  }
+
+  it("local: Start Execution is a normal, activatable item", async () => {
+    await renderMenu(vi.fn());
+    const item = screen.getByTestId("start-action");
+    expect(item).not.toHaveAttribute("aria-disabled");
+    expect(item).not.toHaveAttribute("data-agent-gated");
+  });
+
+  it("remote/absent: the item is inert but its reason is reachable", async () => {
+    setColumn("absent");
+    const onStartExecution = vi.fn();
+    await renderMenu(onStartExecution);
+
+    const item = screen.getByTestId("start-action");
+    expect(item).toHaveAttribute("data-agent-gated", "true");
+    expect(item).toHaveAttribute("aria-disabled", "true");
+    // Absence assertion on the mechanism, not just on the outcome: `data-disabled` is
+    // what kills pointer events and keyboard focus.
+    expect(item).not.toHaveAttribute("data-disabled");
+
+    // Still refuses to steer, on the mouse path and the keyboard path.
+    const { fireEvent } = await import("@testing-library/react");
+    fireEvent.click(item);
+    item.focus();
+    fireEvent.keyDown(item, { key: "Enter" });
+    expect(onStartExecution).not.toHaveBeenCalled();
+
+    // ...and the explanation is now actually reachable — by focus, which is the
+    // keyboard path a `title` never had.
+    await waitFor(() => {
+      expect(screen.getByTestId("start-gate-explanation")).toHaveTextContent(
+        AGENT_CONTROL_DISABLED_HINT
+      );
+    });
+  });
+});
+
+describe("group context menu gated action", () => {
+  async function renderMenu(onResumeAll: () => void) {
+    const {
+      ContextMenu,
+      ContextMenuContent,
+      ContextMenuTrigger,
+    } = await import("@/components/ui/context-menu");
+    const { GroupContextMenuItems } = await import(
+      "@/components/tasks/GroupContextMenuItems"
+    );
+
+    render(
+      <TooltipProvider delayDuration={0}>
+        <ContextMenu>
+          <ContextMenuTrigger asChild>
+            <div data-testid="trigger">Trigger</div>
+          </ContextMenuTrigger>
+          <ContextMenuContent>
+            <GroupContextMenuItems
+              groupLabel="Paused"
+              groupKind="column"
+              taskCount={2}
+              projectId="project-1"
+              groupId="paused"
+              onResumeAll={onResumeAll}
+              confirm={vi.fn().mockResolvedValue(true)}
+            />
+          </ContextMenuContent>
+        </ContextMenu>
+      </TooltipProvider>
+    );
+    const { fireEvent } = await import("@testing-library/react");
+    fireEvent.contextMenu(screen.getByTestId("trigger"));
+  }
+
+  it("local: Resume All stays a normal item", async () => {
+    await renderMenu(vi.fn());
+    const item = screen.getByTestId("resume-all-action");
+    expect(item).not.toHaveAttribute("aria-disabled");
+  });
+
+  it("remote/absent: Resume All is inert with a reachable reason", async () => {
+    setColumn("absent");
+    const onResumeAll = vi.fn();
+    await renderMenu(onResumeAll);
+
+    const item = screen.getByTestId("resume-all-action");
+    expect(item).toHaveAttribute("aria-disabled", "true");
+    expect(item).not.toHaveAttribute("data-disabled");
+
+    const { fireEvent } = await import("@testing-library/react");
+    fireEvent.click(item);
+    item.focus();
+    fireEvent.keyDown(item, { key: "Enter" });
+    expect(onResumeAll).not.toHaveBeenCalled();
+
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("resume-all-gate-explanation")
+      ).toBeInTheDocument();
+    });
   });
 });
 

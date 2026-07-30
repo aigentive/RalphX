@@ -36,11 +36,17 @@ import {
   ContextMenuItem,
   ContextMenuSeparator,
 } from "@/components/ui/context-menu";
+import {
+  EXPLAINED_DISABLED_MENU_ITEM_CLASS,
+  MenuItemExplanation,
+  explainedDisabledMenuItemProps,
+} from "@/components/ui/menu-item-explanation";
 import { Eye, Pencil, Archive, RotateCcw, Lightbulb } from "lucide-react";
 import type { Task } from "@/types/task";
 import type { TaskAction, ActionSurface } from "@/lib/task-actions";
 import { getTaskActions, canEdit } from "@/lib/task-actions";
 import { useConfirmation } from "@/hooks/useConfirmation";
+import { cn } from "@/lib/utils";
 import { BlockReasonDialog } from "./BlockReasonDialog";
 
 // ============================================================================
@@ -339,19 +345,33 @@ export function TaskContextMenuItems({
             const gate = gateForAction(action);
             const gated = gate !== null;
             return (
-            <ContextMenuItem
+            // Soft-disabled rather than `disabled`: a Radix-disabled item has
+            // `pointer-events: none` and leaves the roving-focus order, so its reason
+            // would be unreachable by both mouse and keyboard.
+            <MenuItemExplanation
               key={action.id}
-              disabled={gated}
-              onClick={() => handleRegistryAction(action)}
-              className={action.variant === "destructive" ? "text-destructive" : ""}
-              data-testid={`${action.id}-action`}
-              {...(gate !== null
-                ? { "data-agent-gated": "true", title: gate.reason ?? undefined }
-                : {})}
+              reason={gate?.reason ?? null}
+              testId={`${action.id}-gate-explanation`}
             >
-              <action.icon className="w-4 h-4 mr-2" />
-              {action.label}
-            </ContextMenuItem>
+              <ContextMenuItem
+                onClick={gated ? undefined : () => handleRegistryAction(action)}
+                className={cn(
+                  action.variant === "destructive" && "text-destructive",
+                  gated && EXPLAINED_DISABLED_MENU_ITEM_CLASS
+                )}
+                data-testid={`${action.id}-action`}
+                {...(gate !== null
+                  ? {
+                      "data-agent-gated": "true",
+                      "aria-label": `${action.label} — ${gate.reason ?? ""}`.trim(),
+                      ...explainedDisabledMenuItemProps(),
+                    }
+                  : {})}
+              >
+                <action.icon className="w-4 h-4 mr-2" />
+                {action.label}
+              </ContextMenuItem>
+            </MenuItemExplanation>
             );
           })}
         </>

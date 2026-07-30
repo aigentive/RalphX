@@ -25,6 +25,11 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import {
+  EXPLAINED_DISABLED_MENU_ITEM_CLASS,
+  MenuItemExplanation,
+  explainedDisabledMenuItemProps,
+} from "@/components/ui/menu-item-explanation";
+import {
   readPreferredWorkspaceOpenTargetId,
   resolvePreferredWorkspaceOpenTarget,
   subscribePreferredWorkspaceOpenTargetId,
@@ -195,29 +200,50 @@ export const AgentsWorkspaceOpenControl = memo(function AgentsWorkspaceOpenContr
         <DropdownMenuContent align="end" className="min-w-[180px]">
           {builtInTerminal && !isRemoteEnvironment ? (
             <>
-              <DropdownMenuItem
-                disabled={builtInTerminalDisabled}
-                onClick={
-                  builtInTerminalDisabled ? undefined : builtInTerminal.onToggle
-                }
-                onPointerEnter={builtInTerminalPreload}
-                onFocus={builtInTerminalPreload}
-                aria-label={
-                  builtInTerminal.unavailableReason
-                    ? `Built-in Terminal unavailable: ${builtInTerminal.unavailableReason}`
-                    : "Built-in Terminal"
-                }
-                title={builtInTerminal.unavailableReason ?? undefined}
+              {/*
+                The reason is soft-disabled, not `disabled`: a Radix-disabled menu item
+                has `pointer-events: none` and leaves the roving-focus order, so a
+                native `title` could never be hovered and the explanation would be
+                unreachable by keyboard as well.
+              */}
+              <MenuItemExplanation
+                reason={builtInTerminal.unavailableReason}
+                testId="agents-built-in-terminal-explanation"
               >
-                <TerminalIcon className="h-4 w-4" />
-                <span>Built-in Terminal</span>
-                {builtInTerminal.open ? (
-                  <Check
-                    className="ml-auto h-3.5 w-3.5"
-                    data-testid="agents-built-in-terminal-open-indicator"
-                  />
-                ) : null}
-              </DropdownMenuItem>
+                <DropdownMenuItem
+                  disabled={
+                    builtInTerminalDisabled &&
+                    builtInTerminal.unavailableReason === null
+                  }
+                  onClick={
+                    builtInTerminalDisabled ? undefined : builtInTerminal.onToggle
+                  }
+                  onPointerEnter={builtInTerminalPreload}
+                  onFocus={builtInTerminalPreload}
+                  className={
+                    builtInTerminalDisabled
+                      ? EXPLAINED_DISABLED_MENU_ITEM_CLASS
+                      : undefined
+                  }
+                  aria-label={
+                    builtInTerminal.unavailableReason
+                      ? `Built-in Terminal unavailable: ${builtInTerminal.unavailableReason}`
+                      : "Built-in Terminal"
+                  }
+                  {...(builtInTerminal.unavailableReason
+                    ? explainedDisabledMenuItemProps()
+                    : {})}
+                >
+                  <TerminalIcon className="h-4 w-4" />
+                  <span>Built-in Terminal</span>
+                  {builtInTerminal.open ? (
+                    <Check
+                      className="ml-auto h-3.5 w-3.5"
+                      data-testid="agents-built-in-terminal-open-indicator"
+                    />
+                  ) : null}
+                </DropdownMenuItem>
+              </MenuItemExplanation>
               <DropdownMenuSeparator />
             </>
           ) : null}

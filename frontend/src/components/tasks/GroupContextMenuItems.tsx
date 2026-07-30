@@ -33,6 +33,11 @@ import { useAgentGate } from "@/hooks/useAgentGate";
 import { useCallback } from "react";
 import { ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu";
 import {
+  EXPLAINED_DISABLED_MENU_ITEM_CLASS,
+  MenuItemExplanation,
+  explainedDisabledMenuItemProps,
+} from "@/components/ui/menu-item-explanation";
+import {
   type GroupKind,
   GROUP_ACTIONS,
   getCancelAllLabel,
@@ -157,17 +162,31 @@ export function GroupContextMenuItems({
         </ContextMenuItem>
       )}
       {onResumeAll && (
-        <ContextMenuItem
-          onClick={handleResumeAll}
-          disabled={agentGate.gated}
-          data-testid="resume-all-action"
-          {...(agentGate.gated
-            ? { "data-agent-gated": "true", title: agentGate.reason ?? undefined }
-            : {})}
+        // Soft-disabled, not `disabled`: a Radix-disabled item has
+        // `pointer-events: none` and leaves the roving-focus order, so its reason
+        // would be unreachable by both mouse and keyboard.
+        <MenuItemExplanation
+          reason={agentGate.gated ? agentGate.reason : null}
+          testId="resume-all-gate-explanation"
         >
-          <ResumeIcon className="w-4 h-4 mr-2" />
-          {resumeLabel}
-        </ContextMenuItem>
+          <ContextMenuItem
+            onClick={agentGate.gated ? undefined : handleResumeAll}
+            className={
+              agentGate.gated ? EXPLAINED_DISABLED_MENU_ITEM_CLASS : undefined
+            }
+            data-testid="resume-all-action"
+            {...(agentGate.gated
+              ? {
+                  "data-agent-gated": "true",
+                  "aria-label": `${resumeLabel} — ${agentGate.reason ?? ""}`.trim(),
+                  ...explainedDisabledMenuItemProps(),
+                }
+              : {})}
+          >
+            <ResumeIcon className="w-4 h-4 mr-2" />
+            {resumeLabel}
+          </ContextMenuItem>
+        </MenuItemExplanation>
       )}
       {onArchiveAll && (
         <ContextMenuItem onClick={handleArchiveAll} data-testid="archive-all-action">
