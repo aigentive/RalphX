@@ -11,7 +11,6 @@ import {
 import type {
   AgentConversationBaseSelection,
   AgentConversationWorkspaceMode,
-  AgentSidebarAttentionLane,
   CapabilityIntent,
   ComposerArtifactReference,
   ComposerIntegrationReference,
@@ -24,6 +23,7 @@ import type {
   AutomationRunStatus,
 } from "@/api/automations";
 import type { BranchBaseOption } from "@/components/shared/branchBaseOptions";
+import type { AgentSidebarInboxFilter } from "@/components/agents/agentSidebarInboxLanes";
 import type {
   ManualRoleRuntimeSelection,
   ManualServiceTier,
@@ -205,7 +205,7 @@ interface AgentSessionState {
   sidebarGroupBy: AgentSidebarGroupBy;
   sidebarProjectFilterIds: string[];
   sidebarPublicationStateFilters: AgentSidebarPublicationState[];
-  sidebarInboxActiveLane: AgentSidebarAttentionLane;
+  sidebarInboxActiveLane: AgentSidebarInboxFilter;
   pinnedConversationIds: Record<string, true>;
   artifactByConversationId: Record<string, AgentArtifactState>;
   taskArtifactFocusRequestByConversationId: Record<
@@ -251,7 +251,7 @@ interface AgentSessionActions {
   toggleSidebarPublicationStateFilter: (
     state: AgentSidebarPublicationState
   ) => void;
-  setSidebarInboxActiveLane: (lane: AgentSidebarAttentionLane) => void;
+  setSidebarInboxActiveLane: (lane: AgentSidebarInboxFilter) => void;
   togglePinnedConversation: (conversationId: string) => void;
   setArtifactOpen: (conversationId: string, isOpen: boolean) => void;
   setArtifactTab: (conversationId: string, tab: AgentArtifactTab) => void;
@@ -318,19 +318,17 @@ const DEFAULT_SHOW_EMPTY_PROJECT_GROUPS = true;
 // The Agents sidebar opens on the triage inbox: attention lanes are the landing
 // view, and project grouping is one of the alternatives behind Group.
 const DEFAULT_SIDEBAR_GROUP_BY: AgentSidebarGroupBy = "inbox";
-// The inbox is a lane switcher: exactly one lane is visible at a time, and the
-// one that opens by default is the one that actually needs the user.
-const DEFAULT_SIDEBAR_INBOX_ACTIVE_LANE: AgentSidebarAttentionLane = "needs";
-const SIDEBAR_INBOX_LANES: readonly AgentSidebarAttentionLane[] = [
-  "needs",
-  "working",
+// The inbox is a filter switcher: Recent opens with its combined new activity.
+const DEFAULT_SIDEBAR_INBOX_ACTIVE_LANE: AgentSidebarInboxFilter = "recent";
+const SIDEBAR_INBOX_LANES: readonly AgentSidebarInboxFilter[] = [
+  "recent",
   "stale",
   "done",
 ];
 
-function normalizeSidebarInboxActiveLane(value: unknown): AgentSidebarAttentionLane {
-  return SIDEBAR_INBOX_LANES.includes(value as AgentSidebarAttentionLane)
-    ? (value as AgentSidebarAttentionLane)
+function normalizeSidebarInboxActiveLane(value: unknown): AgentSidebarInboxFilter {
+  return SIDEBAR_INBOX_LANES.includes(value as AgentSidebarInboxFilter)
+    ? (value as AgentSidebarInboxFilter)
     : DEFAULT_SIDEBAR_INBOX_ACTIVE_LANE;
 }
 export const DEFAULT_SIDEBAR_PUBLICATION_STATE_FILTERS: AgentSidebarPublicationState[] = [
@@ -341,7 +339,7 @@ export const DEFAULT_SIDEBAR_PUBLICATION_STATE_FILTERS: AgentSidebarPublicationS
   "uncommitted",
   "unpushed",
 ];
-const AGENT_SESSION_STORE_VERSION = 12;
+const AGENT_SESSION_STORE_VERSION = 13;
 
 type LegacyAgentArtifactTab = AgentArtifactTab | "proposal";
 
@@ -583,6 +581,16 @@ export function migrateAgentSessionStore(
     // selection, so drop it rather than guessing which lane the user wanted.
     delete nextState.sidebarInboxCollapsedLanes;
     nextState.sidebarInboxActiveLane = DEFAULT_SIDEBAR_INBOX_ACTIVE_LANE;
+  }
+
+  if (version < 13) {
+    // Recent now groups the former needs and working inbox lanes.
+    nextState.sidebarInboxActiveLane = normalizeSidebarInboxActiveLane(
+      nextState.sidebarInboxActiveLane === "needs" ||
+        nextState.sidebarInboxActiveLane === "working"
+        ? "recent"
+        : nextState.sidebarInboxActiveLane,
+    );
   }
 
   return nextState;

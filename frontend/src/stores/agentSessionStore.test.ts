@@ -147,7 +147,7 @@ describe("agentSessionStore", () => {
       showEmptyProjectGroups: false,
       sidebarProjectFilterIds: ["project-2"],
       sidebarGroupBy: "inbox",
-      sidebarInboxActiveLane: "needs",
+      sidebarInboxActiveLane: "recent",
     });
   });
 
@@ -175,7 +175,7 @@ describe("agentSessionStore", () => {
       10,
     ) as { sidebarInboxActiveLane?: unknown };
 
-    expect(migrated.sidebarInboxActiveLane).toBe("needs");
+    expect(migrated.sidebarInboxActiveLane).toBe("recent");
   });
 
   it("drops the retired collapsed-lane set instead of projecting it onto a selection", () => {
@@ -185,25 +185,37 @@ describe("agentSessionStore", () => {
     ) as Record<string, unknown>;
 
     expect("sidebarInboxCollapsedLanes" in migrated).toBe(false);
-    expect(migrated.sidebarInboxActiveLane).toBe("needs");
+    expect(migrated.sidebarInboxActiveLane).toBe("recent");
   });
 
-  it("preserves an inbox active lane persisted after the lane switcher shipped", () => {
+  it.each([
+    ["needs", "recent"],
+    ["working", "recent"],
+    ["stale", "stale"],
+    ["done", "done"],
+    ["archived-lane", "recent"],
+  ])("migrates v12 inbox lane %s to %s", (persistedLane, expectedLane) => {
     const migrated = migrateAgentSessionStore(
-      { sidebarInboxActiveLane: "done" },
+      { sidebarInboxActiveLane: persistedLane },
       12,
     ) as { sidebarInboxActiveLane?: unknown };
 
-    expect(migrated.sidebarInboxActiveLane).toBe("done");
+    expect(migrated.sidebarInboxActiveLane).toBe(expectedLane);
   });
 
-  it("falls back to the needs lane when the persisted active lane is unknown", () => {
+  it("passes a v13 inbox filter through untouched", () => {
+    expect(
+      migrateAgentSessionStore({ sidebarInboxActiveLane: "recent" }, 13),
+    ).toEqual({ sidebarInboxActiveLane: "recent" });
+  });
+
+  it("falls back to the Recent filter when the persisted active filter is unknown", () => {
     const merged = mergeAgentSessionStore(
       { sidebarInboxActiveLane: "archived-lane" },
       useAgentSessionStore.getState(),
     );
 
-    expect(merged.sidebarInboxActiveLane).toBe("needs");
+    expect(merged.sidebarInboxActiveLane).toBe("recent");
   });
 
   it("keeps a known persisted active lane through merge", () => {
@@ -458,8 +470,8 @@ describe("agentSessionStore", () => {
       useAgentSessionStore.setState(useAgentSessionStore.getInitialState(), true);
     });
 
-    it("defaults the inbox lane switcher to the needs lane", () => {
-      expect(useAgentSessionStore.getState().sidebarInboxActiveLane).toBe("needs");
+    it("defaults the inbox filter to Recent", () => {
+      expect(useAgentSessionStore.getState().sidebarInboxActiveLane).toBe("recent");
     });
 
     it("persists the selected inbox lane", () => {
