@@ -23,6 +23,16 @@ max-threads = 1
 [test-groups.capability-serial]
 max-threads = 1
 
+# The capability-ledger detectors build a whole-crate call graph and re-run the traversal once
+# per surface row, so they are the slowest tests in the lib shard by an order of magnitude.
+# Under `cargo llvm-cov` instrumentation `detector_b_proof_classes_are_flagged_and_in_the_floor`
+# measured 113.7s against the default 120s terminate budget, then timed out on the next run with
+# the same code. That is runner variance around a genuinely heavy test, not a regression, so the
+# budget is raised rather than the traversal weakened.
+[[profile.default.overrides]]
+filter = 'test(remote_server::capability_ledger_tests)'
+slow-timeout = { period = "180s", terminate-after = 2 }
+
 [[profile.default.overrides]]
 filter = 'binary(plan_selector_performance)'
 test-group = 'perf-serial'
