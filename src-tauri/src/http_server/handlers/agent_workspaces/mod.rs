@@ -2450,16 +2450,18 @@ pub async fn complete_agent_workspace_pr_fix(
                 )
             })
         })?;
-    let Json(response) = repair_completion::complete_agent_workspace_repair_for_trusted_run(
-        &state,
-        conversation_id,
-        run_id,
-        CompleteAgentWorkspaceRepairRequest {
-            summary: req.summary,
-            blocker: req.blocker,
-            resolution: req.resolution,
-            reported_fix_commit_sha: req.fix_commit_sha,
-        },
+    let Json(response) = Box::pin(
+        repair_completion::complete_agent_workspace_repair_for_trusted_run(
+            &state,
+            conversation_id,
+            run_id,
+            CompleteAgentWorkspaceRepairRequest {
+                summary: req.summary,
+                blocker: req.blocker,
+                resolution: req.resolution,
+                reported_fix_commit_sha: req.fix_commit_sha,
+            },
+        ),
     )
     .await?;
 

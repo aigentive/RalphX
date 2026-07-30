@@ -407,7 +407,13 @@ pub async fn complete_agent_workspace_repair(
 ) -> Result<Json<CompleteAgentWorkspaceRepairResponse>, JsonError> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let run_id = trusted_runtime_identity(&headers, &conversation_id)?;
-    complete_agent_workspace_repair_for_trusted_run(&state, conversation_id, run_id, req).await
+    Box::pin(complete_agent_workspace_repair_for_trusted_run(
+        &state,
+        conversation_id,
+        run_id,
+        req,
+    ))
+    .await
 }
 
 /// Completes a durable repair after the transport has authenticated and bound the exact agent run.

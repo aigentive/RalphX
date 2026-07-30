@@ -72,7 +72,7 @@ async fn paused_immediate_project_send_rejects_without_queueing() {
 
     assert!(matches!(
         result,
-        Err(ChatServiceError::SpawnFailed(ref message))
+        Err(ChatServiceError::ImmediateStartRejected(ref message))
             if message.contains("immediate start required")
     ));
     assert!(state
