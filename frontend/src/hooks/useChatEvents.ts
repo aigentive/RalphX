@@ -411,6 +411,14 @@ function buildFinalizedContentBlocks(
       if (block.type === "text") {
         return block.text.trim().length > 0 ? { type: "text", text: block.text } : null;
       }
+      if (block.type === "thinking") {
+        return {
+          type: "thinking",
+          text: block.text,
+          ...(block.durationMs != null ? { durationMs: block.durationMs } : {}),
+          ...(block.isSettled != null ? { isSettled: block.isSettled } : {}),
+        };
+      }
       return contentBlockFromToolCall(block.toolCall);
     })
     .filter((block): block is ContentBlockItem => block != null);
@@ -1426,6 +1434,32 @@ export function useChatEvents({
         )
       );
     }
+
+    unsubscribes.push(
+      bus.subscribe<{
+        text: string; conversation_id: string; block_index?: number; duration_ms?: number;
+        is_settled?: boolean; seq?: number; append_to_previous?: boolean; run_id?: string | null;
+      }>("agent:thinking", (payload) => {
+        if (!isRelevant(payload)) return;
+        if (activeAgentRunId && payload.run_id && payload.run_id !== activeAgentRunId) return;
+        const receivedAt = Date.now();
+        setStreamingContentBlocks((prev) => {
+          const at = prev.findIndex((block) => block.type === "thinking" && block.blockIndex === payload.block_index);
+          const existing = at >= 0 ? prev[at] : null;
+          const text = existing?.type === "thinking" && (payload.append_to_previous ?? true)
+            ? existing.text + payload.text : payload.text;
+          const block: StreamingContentBlock = {
+            type: "thinking", text, receivedAt,
+            ...(payload.block_index != null ? { blockIndex: payload.block_index } : {}),
+            ...(payload.duration_ms != null ? { durationMs: payload.duration_ms } : {}),
+            ...(payload.is_settled != null ? { isSettled: payload.is_settled } : {}),
+            ...(payload.seq != null ? { seq: payload.seq } : {}),
+          };
+          if (at < 0) return [...prev, block];
+          const next = [...prev]; next[at] = block; return next;
+        });
+      }),
+    );
 
     // ── agent:message_created ────────────────────────────────────────
     // Clear streaming state for assistant messages to prevent duplicate display.

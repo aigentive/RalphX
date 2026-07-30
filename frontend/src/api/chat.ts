@@ -369,6 +369,8 @@ export function parseContentBlocks(raw: unknown): ContentBlockItem[] {
     const item: ContentBlockItem = {
       type: block.type,
       text: block.text,
+      durationMs: typeof block.duration_ms === "number" ? block.duration_ms : block.durationMs,
+      isSettled: typeof block.is_settled === "boolean" ? block.is_settled : block.isSettled,
       id: block.id,
       name: block.name,
       arguments: block.arguments ?? block.input,

@@ -54,6 +54,17 @@ describe("ChatMessageList live transcript rows", () => {
     ]);
   });
 
+  it("keeps thinking as its own row between text and tool activity", () => {
+    const rows = buildLiveTranscriptRows([
+      textBlock(1, "Before"),
+      { type: "thinking", text: "Reasoning", blockIndex: 2, seq: 2 },
+      toolBlock(3),
+    ], new Map());
+
+    expect(rows.map((row) => row.kind)).toEqual(["text", "thinking", "tool_group"]);
+    expect(rows[1]).toMatchObject({ kind: "thinking", block: { text: "Reasoning", blockIndex: 2 } });
+  });
+
   it("carries live block receipt timestamps onto visible rows", () => {
     const blocks = [
       { type: "text", text: "Before user send", receivedAt: 1_000 },

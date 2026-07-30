@@ -13,8 +13,17 @@ export interface LiveTranscriptTaskEntry {
   index: number;
   receivedAt?: number;
 }
+export type StreamingThinkingBlock = Extract<StreamingContentBlock, { type: "thinking" }>;
 
 export type LiveTranscriptRow =
+  | {
+      kind: "thinking";
+      key: string;
+      block: StreamingThinkingBlock;
+      index: number;
+      sourceIndex: number;
+      receivedAt?: number;
+    }
   | {
       kind: "text";
       key: string;
@@ -65,6 +74,10 @@ function textRowKey(
   return `streaming-text:${keyPart}`;
 }
 
+export function liveThinkingGroupKey(block: StreamingThinkingBlock, index: number): string {
+  return `streaming-thinking:${block.blockIndex ?? blockKeyPart(block, index)}`;
+}
+
 export function liveToolGroupKey(
   entries: LiveTranscriptToolEntry[],
   taskEntries: LiveTranscriptTaskEntry[] = [],
@@ -112,6 +125,18 @@ export function buildLiveTranscriptRows(
           ...(block.receivedAt != null ? { receivedAt: block.receivedAt } : {}),
         });
       }
+      index += 1;
+      continue;
+    }
+    if (block.type === "thinking") {
+      rows.push({
+        kind: "thinking",
+        key: liveThinkingGroupKey(block, index),
+        block,
+        index,
+        sourceIndex: index,
+        ...(block.receivedAt != null ? { receivedAt: block.receivedAt } : {}),
+      });
       index += 1;
       continue;
     }

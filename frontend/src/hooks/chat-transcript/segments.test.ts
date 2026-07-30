@@ -44,6 +44,24 @@ describe("live transcript owner", () => {
     expect(texts).toHaveLength(0);
   });
 
+  it("rejects stale thinking and updates its indexed thinking slot in place", () => {
+    let state = createLiveTranscriptState(RUN);
+    state = applyTranscriptInput(state, {
+      kind: "thinking", runId: "run-stale", blockIndex: 4, text: "ignored", appendToPrevious: false,
+    });
+    expect(state.slots).toEqual([]);
+
+    state = applyTranscriptInput(state, {
+      kind: "thinking", runId: RUN, blockIndex: 4, text: "first", appendToPrevious: false,
+    });
+    state = applyTranscriptInput(state, {
+      kind: "thinking", runId: RUN, blockIndex: 4, text: " second", appendToPrevious: true,
+    });
+    expect(renderTranscriptBlocks(state)).toMatchObject([
+      { type: "thinking", text: "first second", blockIndex: 4 },
+    ]);
+  });
+
   it("emits only the tail a live chunk adds beyond the persisted segment", () => {
     const state = applyTranscriptInput(seeded(), {
       kind: "chunk",

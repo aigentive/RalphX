@@ -45,12 +45,15 @@ import {
 } from "./scroll/controller";
 import {
   buildLiveTranscriptRows,
+  liveThinkingGroupKey,
   liveToolGroupKey,
   type LiveTranscriptRow,
   type StreamingToolUseBlock,
 } from "./ChatMessageList.liveRows";
 import type { AgentRun } from "@/types/chat-conversation";
 import { ToolActivityGroupToggle } from "./ToolActivityGroupToggle";
+import { ThinkingGroupToggle } from "./ThinkingGroupToggle";
+import { ThinkingWidget } from "./tool-widgets/ThinkingWidget";
 import {
   summarizeToolActivity,
   type ToolActivitySummary,
@@ -583,6 +586,18 @@ function LiveTranscriptRowItem({
     if (row.kind === "tool_call") {
       return renderStreamingToolCallBlock(row.block, row.index);
     }
+    if (row.kind === "thinking") {
+      const groupKey = liveThinkingGroupKey(row.block, row.index);
+      const isExpanded = expandedToolGroupKeys.has(groupKey);
+      return (
+        <div className="space-y-1.5 overflow-hidden">
+          <ThinkingGroupToggle groupKey={groupKey} isExpanded={isExpanded}
+            isSettled={row.block.isSettled ?? false} {...(row.block.durationMs != null ? { durationMs: row.block.durationMs } : {})}
+            onToggle={(event) => onToggleToolCallGroup(groupKey, event.currentTarget)} />
+          {isExpanded ? <ThinkingWidget text={row.block.text} /> : null}
+        </div>
+      );
+    }
 
     const groupKey = liveToolGroupKey(row.entries, row.taskEntries);
     const isExpanded = expandedToolGroupKeys.has(groupKey);
@@ -979,6 +994,19 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         return next;
       });
     }, [scrollController]);
+
+    useEffect(() => {
+      const rows = buildLiveTranscriptRows(streamingContentBlocks ?? [], streamingTasks);
+      const latestRunningThinking = [...rows].reverse().find((row) => (
+        row.kind === "thinking" && !row.block.isSettled
+      ));
+      if (latestRunningThinking?.kind === "thinking") {
+        setExpandedToolGroupKeys((current) => {
+          const key = liveThinkingGroupKey(latestRunningThinking.block, latestRunningThinking.index);
+          return current.has(key) ? current : new Set(current).add(key);
+        });
+      }
+    }, [streamingContentBlocks, streamingTasks]);
 
     const cancelInitialPaintReadyJob = useCallback(() => {
       if (initialPaintReadyFrameRef.current !== null) {

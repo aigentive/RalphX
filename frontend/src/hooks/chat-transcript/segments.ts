@@ -20,6 +20,7 @@ export interface LiveTranscriptState {
 export type TranscriptInput =
   | { kind: "persisted"; runId: string | null; blocks: readonly StreamingContentBlock[] }
   | { kind: "chunk"; runId: string | null; blockIndex?: number; text: string; seq?: number; receivedAt?: number; appendToPrevious: boolean }
+  | { kind: "thinking"; runId: string | null; blockIndex?: number; text: string; durationMs?: number; isSettled?: boolean; seq?: number; receivedAt?: number; appendToPrevious: boolean }
   | { kind: "segments"; runId: string | null; segments: readonly string[] }
   /**
    * Legacy cumulative `partial_text` from the active-state cache. It carries no
@@ -102,6 +103,13 @@ export function applyTranscriptInput(state: LiveTranscriptState, input: Transcri
         if (!seen) next.slots.push({ kind: "block", block });
         continue;
       }
+      if (block.type === "thinking") {
+        const at = next.slots.findIndex((slot) => slot.kind === "block" && slot.block.type === "thinking"
+          && slot.block.blockIndex === block.blockIndex);
+        if (at >= 0) next.slots[at] = { kind: "block", block };
+        else next.slots.push({ kind: "block", block });
+        continue;
+      }
       const at = next.slots.findIndex((slot) =>
         slot.kind === "block" && slot.block.type === "tool_use" && slot.block.toolCall.id === block.toolCall.id
       );
@@ -174,6 +182,25 @@ export function applyTranscriptInput(state: LiveTranscriptState, input: Transcri
       const text = merged.slice(starts[position]!, starts[position + 1] ?? merged.length);
       if (text !== slot.text) next.slots[index] = { ...slot, text };
     });
+    return next;
+  }
+  if (input.kind === "thinking") {
+    const blockIndex = input.blockIndex;
+    const at = next.slots.findIndex((slot) => slot.kind === "block" && slot.block.type === "thinking"
+      && slot.block.blockIndex === blockIndex);
+    const existing = at >= 0 ? next.slots[at] : null;
+    const previous = existing?.kind === "block" && existing.block.type === "thinking" ? existing.block : null;
+    const block: StreamingContentBlock = {
+      type: "thinking",
+      text: previous && input.appendToPrevious ? previous.text + input.text : input.text,
+      ...(blockIndex != null ? { blockIndex } : {}),
+      ...(input.durationMs != null ? { durationMs: input.durationMs } : {}),
+      ...(input.isSettled != null ? { isSettled: input.isSettled } : {}),
+      ...(input.seq != null ? { seq: input.seq } : {}),
+      ...(input.receivedAt != null ? { receivedAt: input.receivedAt } : {}),
+    };
+    if (at >= 0) next.slots[at] = { kind: "block", block };
+    else next.slots.push({ kind: "block", block });
     return next;
   }
   const blockIndex = input.blockIndex ?? null;
