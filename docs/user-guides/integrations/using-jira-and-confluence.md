@@ -1,116 +1,68 @@
 # Using Jira and Confluence in RalphX
 
-Bring Jira issues and Confluence pages into a conversation so the agent can plan and implement from the same ticket and knowledge-base context you use. At the end, you can reference content without copying its details into the composer by hand.
+Bring Jira issues and Confluence pages into a conversation so the agent plans and implements from the same ticket you do. You will finish with a conversation anchored to one Jira issue whose description, acceptance criteria, comments, and attachments stay visible beside the chat.
 
 **Before you start:** [Connecting RalphX to Jira and Confluence](connect-jira-and-confluence.md)
 
-## Reference a Jira issue in the composer
+## Attach a ticket from the composer
 
-1. Type a Jira reference in the composer with `@jira:KEY`.
+You do not need to know the issue key. Type `@jira:` followed by any word from the ticket and pick from the results.
 
-   Replace `KEY` with the issue key, such as `@jira:PROJ-123`.
+1. Type `@jira:` in the composer, then a word from the issue title, such as `@jira:release`.
+2. Pick the issue from the list that appears. It becomes a reference chip above the composer.
 
-   RalphX normalizes Jira keys, so you can use the issue key you see in Jira.
+![The RalphX composer showing Jira search results for a typed reference](../../../assets/public/guides/composer-jira-reference.png)
 
-2. Add the reference to the message that starts or continues the work.
+3. Type `@confluence:` — or the shorter `@conf:` — the same way for a Confluence page.
+4. Use `@linear:`, `@clickup:`, or `@granola:` for those tools; only connected ones appear.
+5. Click **+** beside the composer and choose a tool under **Integrations** to insert the same trigger without typing it.
 
-   Use the issue reference when the agent needs the ticket's context while it plans or implements.
+If you already know the key, type it directly — `@jira:PROJ-123`. Case does not matter; RalphX uppercases the key for you.
 
-   Keep your request focused on the outcome you want; the referenced issue supplies the supporting ticket context.
+## Paste a Jira or Confluence link
 
-3. Send the message after checking that the key names the intended issue.
+1. Paste the issue or page URL from your browser into the composer.
+2. Wait for the URL to turn into a reference chip before sending.
 
-   A Jira reference can establish the conversation's primary Jira issue when one has not already been assigned.
+RalphX resolves `https://` links from your connected Atlassian site that point at an issue (`/browse/…`, `/issues/…`) or a Confluence page (`/wiki/…`). Anything else stays as plain text, which is also what you see when the integration is disconnected or the content is not visible to your Atlassian account.
 
-   The primary issue keeps the conversation tied to the ticket that anchors the work.
+## Write the request beside the reference
 
-## Reference a Confluence page in the composer
+1. Keep your message about the outcome you want; the reference carries the ticket detail.
+2. Reference a Confluence page alongside the issue when a decision or spec lives there.
+3. Send the message.
 
-1. Type `@confluence:query` to find or reference Confluence content.
-
-   Replace `query` with terms that identify the page or content you want the agent to use.
-
-   Use a specific title, project name, or distinctive phrase when several pages may match.
-
-2. Use `@conf:query` as the shorter form when you prefer it.
-
-   `@conf:` and `@confluence:` both identify Confluence references.
-
-   Include the query after the colon; a prefix by itself has no page context to resolve.
-
-3. Add a short instruction beside the reference.
-
-   For example, ask the agent to apply a documented decision, compare a proposed change with a page, or turn an approved specification into an implementation plan.
-
-   This keeps the purpose of the reference clear without pasting the page's full text into the conversation.
-
-## Paste a Jira or Confluence URL
-
-1. Paste a Jira issue URL or Confluence-page URL into the composer.
-
-   RalphX recognizes supported URLs from your connected Atlassian site and tries to resolve them into a reference.
-
-   Use this when you have already opened the issue or page in your browser and do not want to type a reference prefix.
-
-2. Wait for RalphX to resolve the pasted URL before sending the message.
-
-   A resolved URL becomes selected Atlassian context instead of remaining as pasted text in the composer.
-
-   If the integration is disconnected, invalid, or the content is inaccessible, RalphX leaves the pasted URL unchanged.
-
-3. Add your request and send it when the selected context is correct.
-
-   Paste one or more supported URLs when the agent needs related tickets or documentation together.
-
-   Use only content that the connected Atlassian account is permitted to access.
+For example: `@jira:REL-214 implement this using the rollout rules in @conf:release checklist`.
 
 ## Work from the conversation's primary Jira issue
 
-1. Start the conversation with the Jira issue that should anchor the work.
+The first Jira issue a conversation references becomes its **primary issue** and stays that way — later Jira references add context without replacing it. RalphX then keeps a **Jira** tab beside the chat.
 
-   When the conversation has no primary Jira issue yet, RalphX assigns the first Jira reference as its primary issue.
+1. Click **Open artifacts**, then open the **Jira** tab. It appears once Jira is connected and the conversation has an issue attached.
 
-   Later Jira references can supply more context without replacing that primary issue.
+![The RalphX Jira tab showing the primary issue's status, description, acceptance criteria, comments, and attachments](../../../assets/public/guides/jira-issue-tab.png)
 
-2. Review the primary issue's details in the conversation workspace.
+2. Read the issue key, status, description, and acceptance criteria to keep the work aligned with the ticket.
+3. Read the comments for decisions that never made it into the description, and open attachments for supporting material.
+4. Check **Updated** and **Refreshed** to see how current the copy is, and click **Refresh Jira issue** to pull the latest from Jira.
+5. Click **Open in Jira** to open the ticket in your browser.
 
-   RalphX refreshes the issue's title, status, assignee, reporter, description, and acceptance criteria when the connected Jira resource is available.
+## Change or clear the primary issue
 
-   Use these details to keep planning and implementation aligned with the ticket.
+1. Click **Reassign Jira issue** in the Jira tab to search for a different ticket.
+2. Type at least two characters, then click a result to make it the primary issue.
+3. Click **Unlink Jira issue** to detach the ticket; the Jira tab disappears until another issue is attached.
+4. Click **Assign to me** next to **Assignee** when the ticket is unassigned and you are taking it.
 
-3. Read the issue's comments and attachments when they are present.
+## Browse tickets before starting work
 
-   Comments can explain recent decisions or clarifications that are not in the description.
-
-   Attachments can provide supporting material without requiring you to copy it into the message.
-
-4. Keep the issue as the source of truth while you discuss the change.
-
-   The agent receives the ticket context with your request, which reduces repeated copy-paste between Jira, Confluence, and RalphX.
-
-## Browse connected Jira tickets
-
-1. Open **Ticketing** from the navigation rail.
-
-   The Ticketing view is available when a ticketing provider is connected and ready.
-
-   Choose Jira there to browse tickets from the connected Atlassian site.
-
-2. Open the ticket you want to understand before starting a conversation.
-
-   Use the ticket key from the view in an `@jira:KEY` reference, or paste its Jira URL into the composer.
-
-   This gives you two ways to bring the same Jira context into planning or implementation.
-
-3. Return to the conversation when you are ready to ask for work.
-
-   Reference the relevant Jira issue and any Confluence page that explains the expected outcome.
+1. Open **Ticketing** from the navigation rail. It appears when a ticketing provider is connected and ready.
+2. Choose Jira and open the ticket you want to understand.
+3. Start or return to a conversation, then attach that ticket with `@jira:` or its URL.
 
 ## What you have now
 
-You can bring Jira issues and Confluence pages into a RalphX conversation with reference prefixes or pasted URLs. A primary Jira issue can carry its details, comments, and attachments with the conversation while you plan and implement.
-
-You can also browse connected Jira tickets from the Ticketing view, then attach the right ticket context to the work without copying it by hand.
+Your conversation is anchored to one Jira issue, with its details, comments, and attachments readable beside the chat and refreshable on demand. You can attach tickets by searching from the composer, pasting a link, or picking one in the Jira tab — and you can reassign or unlink the primary issue at any time.
 
 ## Next
 

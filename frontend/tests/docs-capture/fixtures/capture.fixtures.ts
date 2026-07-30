@@ -55,3 +55,15 @@ export async function captureGuideScreenshot(page: Page, name: string): Promise<
   await expect(page.getByRole("tooltip")).toHaveCount(0);
   await expect(page).toHaveScreenshot(name, { scale: "device" });
 }
+
+/**
+ * Capture without dropping focus, for surfaces whose subject only exists while
+ * a control is focused — the composer reference typeahead closes on blur, so
+ * `captureGuideScreenshot` would photograph an empty composer.
+ */
+export async function captureFocusedGuideScreenshot(
+  page: Page,
+  name: string,
+): Promise<void> {
+  await expect(page).toHaveScreenshot(name, { scale: "device" });
+}

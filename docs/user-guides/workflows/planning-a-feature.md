@@ -41,7 +41,7 @@ Use a planning conversation to turn an idea into an implementation-ready plan bu
 1. Read the recommendation shown after approval.
 2. Choose **Implement Directly** for the default path: a small, linear change implemented and reviewed as one coherent branch.
 3. Choose **Create Proposals** when you need tracked tasks or separate review checkpoints.
-4. If **Create Proposals** is unavailable, open **Settings** → **General** → **Tasks** and select **Enable Tasks**; Tasks is off by default.
+4. If **Create Proposals** is unavailable, open Settings → **Automation** → **Tasks** and turn on **Enable Tasks**; Tasks is off by default.
 5. Return to the approved plan and select the path you want. The recommendation is guidance, not an automatic choice.
 
 ## What you have now

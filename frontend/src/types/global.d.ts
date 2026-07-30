@@ -20,6 +20,12 @@ declare global {
     __mockGhAuthStatus?: boolean;
     /** Forces the first-run welcome state (no configured agent harness). */
     __mockProviderRequiresOnboarding?: boolean;
+    /**
+     * Serves the connected-Atlassian guide fixtures (rich Jira issue + search
+     * results) instead of the placeholder Jira mocks. Read on every mock call so
+     * it survives query refetches, unlike seeding the query cache directly.
+     */
+    __mockGuideAtlassianConnected?: boolean;
     __mockUiFeatureFlags?: FeatureFlags;
     __queryClient?: QueryClient;
     __eventBus?: EventBus;

@@ -209,6 +209,109 @@ export const GUIDE_SCENARIO_FIXTURES: Record<GuideScenarioName, GuideScenario> =
     guide_github_settings: scenario("guide_github_settings", "approved"),
   };
 
+/**
+ * Atlassian fixtures for the Jira/Confluence guide captures.
+ *
+ * The default `tauri-api-core` Jira mocks return placeholder text ("Mock issue
+ * for ..."), which reads as broken UI in a published screenshot. These give the
+ * Jira guide a realistic ticket whose fields match what the guide tells the
+ * reader to look for.
+ */
+export const GUIDE_JIRA_SEARCH_RESULTS = [
+  {
+    kind: "jira",
+    id: "10412",
+    key: "REL-214",
+    title: "Block publishing until the release checklist is complete",
+    url: "https://acme.atlassian.net/browse/REL-214",
+    excerpt:
+      "Releases are going out without a named rollback owner. Gate publication on the checklist.",
+  },
+  {
+    kind: "jira",
+    id: "10408",
+    key: "REL-209",
+    title: "Record the rollback owner next to the migration command",
+    url: "https://acme.atlassian.net/browse/REL-209",
+    excerpt:
+      "On-call has to guess who owns a rollback when a migration fails after hours.",
+  },
+  {
+    kind: "jira",
+    id: "10395",
+    key: "REL-198",
+    title: "Surface the release handoff note outside CI",
+    url: "https://acme.atlassian.net/browse/REL-198",
+    excerpt:
+      "The handoff summary is only reachable from a CI log, so nobody reads it.",
+  },
+] as const;
+
+export const GUIDE_JIRA_ISSUE = {
+  projectId: "guide-project",
+  provider: "atlassian",
+  issueKey: "REL-214",
+  issueId: "10412",
+  issueUrl: "https://acme.atlassian.net/browse/REL-214",
+  title: "Block publishing until the release checklist is complete",
+  status: "In Progress",
+  assignee: null,
+  reporter: "Dana Whitfield",
+  updatedAtRemote: "2026-06-15T08:42:00.000Z",
+  descriptionMarkdown: [
+    "Releases are reaching production without a named rollback owner, so the on-call",
+    "engineer has to page the author to find out who can revert a migration.",
+    "",
+    "Publication should stay blocked until the release checklist names an owner, a",
+    "validation command, and a rollback owner.",
+  ].join("\n"),
+  descriptionText: null,
+  acceptanceCriteriaMarkdown: [
+    "- Publishing is blocked while the rollback owner is empty.",
+    "- A release missing its validation command is reported as blocking, not passing.",
+    "- The handoff note is readable from the workspace without opening CI.",
+  ].join("\n"),
+  acceptanceCriteriaText: null,
+  comments: [
+    {
+      id: "c-1",
+      author: "Priya Raman",
+      createdAt: "2026-06-14T16:20:00.000Z",
+      updatedAt: "2026-06-14T16:20:00.000Z",
+      bodyMarkdown:
+        "We agreed in the release sync to treat a missing rollback owner as blocking rather than a warning.",
+      bodyText:
+        "We agreed in the release sync to treat a missing rollback owner as blocking rather than a warning.",
+    },
+    {
+      id: "c-2",
+      author: "Dana Whitfield",
+      createdAt: "2026-06-15T08:42:00.000Z",
+      updatedAt: "2026-06-15T08:42:00.000Z",
+      bodyMarkdown:
+        "Checklist wording is in the attached doc — please keep the field names identical.",
+      bodyText:
+        "Checklist wording is in the attached doc — please keep the field names identical.",
+    },
+  ],
+  attachments: [
+    {
+      id: "a-1",
+      filename: "release-checklist-wording.pdf",
+      size: 184_320,
+      contentUrl: "https://acme.atlassian.net/secure/attachment/a-1",
+    },
+  ],
+  lastRefreshedAt: "2026-06-15T10:00:00.000Z",
+  refreshStatus: "loaded",
+  refreshError: null,
+  assignedAt: "2026-06-15T09:58:00.000Z",
+  assignedFromMessageId: null,
+  manuallyAssigned: false,
+  createdAt: "2026-06-15T09:58:00.000Z",
+  updatedAt: "2026-06-15T10:00:00.000Z",
+} as const;
+
 /** Replaces durable project/task state without changing the regression mock fixtures. */
 export function seedGuideStore(name: GuideScenarioName): void {
   const fixture = GUIDE_SCENARIO_FIXTURES[name];

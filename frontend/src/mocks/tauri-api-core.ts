@@ -41,6 +41,10 @@ import {
 } from "@/api-mock/plan-branch";
 import { mockPlanApi } from "@/api-mock/plan";
 import { mockArtifactApi } from "@/api-mock/artifact";
+import {
+  GUIDE_JIRA_ISSUE,
+  GUIDE_JIRA_SEARCH_RESULTS,
+} from "@/api-mock/guide-scenarios";
 import type { IdeationSessionResponse } from "@/api/ideation.types";
 import type { ContextType } from "@/types/chat-conversation";
 import type { ChatConversation } from "@/types/chat-conversation";
@@ -1450,7 +1454,20 @@ const commandHandlers: Record<
     };
   },
   get_atlassian_integration_settings: async () =>
-    mockAtlassianIntegrationSettings,
+    window.__mockGuideAtlassianConnected
+      ? {
+          ...mockAtlassianIntegrationSettings,
+          enabled: true,
+          authMethod: "api_token" as const,
+          siteUrl: "https://acme.atlassian.net",
+          email: "you@acme.com",
+          hasApiToken: true,
+          validationStatus: "valid",
+          jiraAvailable: true,
+          confluenceAvailable: true,
+          lastValidatedAt: "2026-06-15T09:55:00.000Z",
+        }
+      : mockAtlassianIntegrationSettings,
   save_atlassian_integration_settings: async (args) => {
     const input = args.input as {
       authMethod?: "api_token" | "oauth";
@@ -1568,6 +1585,17 @@ const commandHandlers: Record<
     const query = input.query?.trim() ?? "";
     if (input.kind !== "jira" || query.length === 0) {
       return { resources: [] };
+    }
+    if (window.__mockGuideAtlassianConnected) {
+      const needle = query.toLowerCase();
+      const matches = GUIDE_JIRA_SEARCH_RESULTS.filter((resource) =>
+        `${resource.key} ${resource.title} ${resource.excerpt}`
+          .toLowerCase()
+          .includes(needle),
+      );
+      return {
+        resources: matches.length > 0 ? matches : GUIDE_JIRA_SEARCH_RESULTS,
+      };
     }
     const key = /^[a-z]+-\d+$/i.test(query) ? query.toUpperCase() : "RX-42";
     return {
@@ -2001,9 +2029,13 @@ const commandHandlers: Record<
   },
   get_agent_conversation_jira_issue: async (args) => {
     const input = args.input as { conversationId: string };
-    return {
-      issue: mockAgentConversationJiraIssues.get(input.conversationId) ?? null,
-    };
+    const stored = mockAgentConversationJiraIssues.get(input.conversationId);
+    if (!stored && window.__mockGuideAtlassianConnected) {
+      return {
+        issue: { ...GUIDE_JIRA_ISSUE, conversationId: input.conversationId },
+      };
+    }
+    return { issue: stored ?? null };
   },
   assign_agent_conversation_jira_issue: async (args) => {
     const input = args.input as {
