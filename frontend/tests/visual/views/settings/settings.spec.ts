@@ -7,9 +7,9 @@ const SETTINGS_SECTION_VISUALS = [
   { id: "models", heading: "Models" },
   { id: "repository", heading: "Repository" },
   { id: "project-analysis", heading: "Setup & Validation" },
-  { id: "agents", heading: "Agents" },
-  { id: "tasks", heading: "Tasks" },
-  { id: "planning", heading: "Planning" },
+  { id: "agents", heading: "Default new-run mode" },
+  { id: "tasks", heading: "Task policies" },
+  { id: "planning", heading: "Plan verification" },
   { id: "github", heading: "GitHub" },
   { id: "api-keys", heading: "API Keys" },
   { id: "mcp", heading: "MCP" },
@@ -175,12 +175,20 @@ test.describe("Settings Dialog", () => {
     await settingsPage.openViaStore("providers");
     await settingsPage.waitForSection("providers", "Providers");
 
-    // The focused input's blinking caret makes the element screenshot unstable.
-    await page.addStyleTag({ content: ".settings-search__input { caret-color: transparent; }" });
+    // The focused input's blinking caret and the racy post-fill text
+    // selection make the element screenshot unstable — hide both.
+    await page.addStyleTag({
+      content:
+        ".settings-search__input { caret-color: transparent; } " +
+        ".settings-search__input::selection { background-color: transparent; color: inherit; }",
+    });
     const search = settingsPage.settingsDialog.getByRole("searchbox", {
       name: "Search settings",
     });
     await search.fill("review");
+    // fill() can leave the inserted text selected, which paints an unstable
+    // highlight in the screenshot — collapse the selection deterministically.
+    await search.press("End");
     await expect(
       settingsPage.settingsDialog.getByRole("listbox", {
         name: "Settings search results",
@@ -269,7 +277,7 @@ test.describe("Settings Dialog", () => {
   test("matches populated Agents expanded editor", async ({ page }) => {
     settingsPage = new SettingsPage(page);
     await settingsPage.openViaStore("agents");
-    await settingsPage.waitForSection("agents", "Agents");
+    await settingsPage.waitForSection("agents", "Default new-run mode");
     await settingsPage.settingsDialog
       .getByTestId("agent-family-row")
       .first()
@@ -292,7 +300,7 @@ test.describe("Settings Dialog", () => {
     await page.setViewportSize({ width: 760, height: 900 });
     settingsPage = new SettingsPage(page);
     await settingsPage.openViaStore("agents");
-    await settingsPage.waitForSection("agents", "Agents");
+    await settingsPage.waitForSection("agents", "Default new-run mode");
     await expect(
       settingsPage.settingsDialog.getByTestId("agent-family-row").first(),
     ).toBeVisible({ timeout: 10000 });

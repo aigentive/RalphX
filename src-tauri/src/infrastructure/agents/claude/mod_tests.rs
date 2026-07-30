@@ -46,11 +46,6 @@ fn make_temp_project_plugin_dir() -> (tempfile::TempDir, std::path::PathBuf, std
         "// fake",
     )
     .unwrap();
-    std::fs::write(
-        plugin_dir.join(".mcp.json"),
-        r#"{"mcpServers":{"ralphx":{"type":"stdio","command":"node","args":["${CLAUDE_PLUGIN_ROOT}/ralphx-mcp-server/build/index.js"]}}}"#,
-    )
-    .unwrap();
     (dir, root, plugin_dir)
 }
 
@@ -1909,11 +1904,6 @@ fn test_materialize_generated_plugin_dir_uses_fallback_runtime_entries_when_loca
     )
     .expect("write local canonical prompt");
     std::fs::write(
-        plugin_dir.join(".mcp.json"),
-        r#"{"mcpServers":{"ralphx":{"type":"stdio","command":"node","args":["local-config"]}}}"#,
-    )
-    .expect("write local mcp config");
-    std::fs::write(
         plugin_dir.join("ralphx-mcp-server/build/index.js"),
         "// incomplete local runtime",
     )
@@ -1922,11 +1912,6 @@ fn test_materialize_generated_plugin_dir_uses_fallback_runtime_entries_when_loca
     let fallback_dir = tempfile::TempDir::new().expect("create fallback runtime dir");
     let fallback_plugin_dir = fallback_dir.path().join("plugins/app");
     std::fs::create_dir_all(&fallback_plugin_dir).expect("create fallback plugin dir");
-    std::fs::write(
-        fallback_plugin_dir.join(".mcp.json"),
-        r#"{"mcpServers":{"ralphx":{"type":"stdio","command":"node","args":["fallback-config"]}}}"#,
-    )
-    .expect("write fallback mcp config");
     seed_runnable_mcp_runtime(&fallback_plugin_dir, "// fallback runtime");
 
     let generated_dir = materialize_generated_plugin_dir_with_runtime_source(
@@ -1935,10 +1920,9 @@ fn test_materialize_generated_plugin_dir_uses_fallback_runtime_entries_when_loca
     )
     .expect("materialize generated plugin dir");
 
-    assert_eq!(
-        read_test_file(generated_dir.join(".mcp.json")),
-        r#"{"mcpServers":{"ralphx":{"type":"stdio","command":"node","args":["local-config"]}}}"#,
-        "generated plugin should preserve the local config surface"
+    assert!(
+        !test_path_exists(generated_dir.join(".mcp.json")),
+        "generated plugin must not materialize an ambient ralphx MCP registration"
     );
     assert_eq!(
         read_test_file(generated_dir.join("ralphx-mcp-server/build/index.js")),

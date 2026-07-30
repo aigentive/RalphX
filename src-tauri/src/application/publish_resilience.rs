@@ -1,7 +1,8 @@
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use chrono::{DateTime, Duration, Utc};
+use dashmap::DashMap;
 
 use crate::application::agent_conversation_workspace::resolve_effective_agent_conversation_workspace_path;
 use crate::application::agent_workspace_publish_repair_state::validate_agent_workspace_repair_target_lease;
@@ -85,7 +86,31 @@ pub(crate) trait AgentWorkspaceRepairPublishContinuation: Send + Sync {
         state: &AppState,
         conversation_id: ChatConversationId,
         repair_handoff: AgentWorkspaceRepairPrHandoff,
-    ) -> Result<AgentWorkspaceRepairPrHandoffResult, String>;
+    ) -> Result<AgentWorkspaceRepairPrHandoffResult, PublishAfterRepairPushError>;
+}
+
+/// The normal publisher may already own the process-local publish guard. That is a retryable
+/// collision for the repair coordinator, not a durable failure of its attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PublishAfterRepairPushError {
+    Busy,
+    Failed(String),
+}
+
+fn agent_workspace_repair_publish_continuation_locks(
+) -> &'static DashMap<String, Arc<tokio::sync::Mutex<()>>> {
+    static LOCKS: OnceLock<DashMap<String, Arc<tokio::sync::Mutex<()>>>> = OnceLock::new();
+    LOCKS.get_or_init(DashMap::new)
+}
+
+pub(crate) fn try_acquire_agent_workspace_repair_publish_continuation_guard(
+    conversation_id: &ChatConversationId,
+) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+    let lock = agent_workspace_repair_publish_continuation_locks()
+        .entry(conversation_id.as_str())
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone();
+    lock.try_lock_owned().ok()
 }
 
 /// The normal publisher's durable PR handoff receipt. Keep it application-local so the repair
@@ -217,6 +242,11 @@ pub(crate) async fn continue_agent_workspace_repair_publish(
     ) {
         return Ok(None);
     }
+    let Some(_continuation_guard) =
+        try_acquire_agent_workspace_repair_publish_continuation_guard(&attempt.conversation_id)
+    else {
+        return Ok(Some(AgentWorkspaceRepairPushOutcome::Busy));
+    };
     let workspace = state
         .agent_conversation_workspace_repo
         .get_by_conversation_id(&attempt.conversation_id)
@@ -355,8 +385,7 @@ pub(crate) async fn continue_agent_workspace_repair_publish(
     .await?;
     if pr_effect.status != AgentWorkspaceRepairEffectStatus::Observed {
         if let Some((pr_number, pr_url)) =
-            reconcile_linked_plan_agent_workspace_repair_pr_handoff(state, &workspace, &pr_effect)
-                .await?
+            reconcile_agent_workspace_repair_pr_handoff(state, &workspace, &pr_effect).await?
         {
             pr_effect = observe_agent_workspace_repair_pr_handoff_effect(
                 state.agent_workspace_repair_repo.as_ref(),
@@ -391,7 +420,10 @@ pub(crate) async fn continue_agent_workspace_repair_publish(
                 )
                 .await?;
             }
-            Err(error) => {
+            Err(PublishAfterRepairPushError::Busy) => {
+                return Ok(Some(AgentWorkspaceRepairPushOutcome::Busy));
+            }
+            Err(PublishAfterRepairPushError::Failed(error)) => {
                 block_agent_workspace_repair_pr_handoff(state, current, &error).await?;
                 return Err(AppError::Conflict(error));
             }
@@ -404,6 +436,41 @@ pub(crate) async fn continue_agent_workspace_repair_publish(
     release_agent_workspace_repair_lease_after_pr_handoff(state, &current).await?;
     settle_agent_workspace_repair_after_pr_handoff(state, current).await?;
     Ok(Some(push_outcome))
+}
+
+pub(crate) async fn reconcile_agent_workspace_repair_pr_handoff(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    effect: &AgentWorkspaceRepairEffect,
+) -> AppResult<Option<(i64, Option<String>)>> {
+    if workspace.linked_plan_branch_id.is_some() {
+        return reconcile_linked_plan_agent_workspace_repair_pr_handoff(state, workspace, effect)
+            .await;
+    }
+    if workspace.mode != crate::domain::entities::AgentConversationWorkspaceMode::Edit {
+        return Ok(None);
+    }
+    let current_workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&workspace.conversation_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!(
+                "workspace {} for repair handoff reconciliation",
+                workspace.conversation_id
+            ))
+        })?;
+    let Some(pr_number) = current_workspace.publication_pr_number else {
+        return Ok(None);
+    };
+    if current_workspace.publication_push_status.as_deref() != Some("pushed")
+        || effect
+            .expected_pr_number
+            .is_some_and(|expected| expected != pr_number)
+    {
+        return Ok(None);
+    }
+    Ok(Some((pr_number, current_workspace.publication_pr_url)))
 }
 
 pub(crate) fn repair_pr_handoff_from_observed_push(

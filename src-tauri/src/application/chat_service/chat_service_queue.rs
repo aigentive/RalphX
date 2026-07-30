@@ -2218,6 +2218,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     conversation_coordination_mode.unwrap_or(CoordinationMode::Solo),
                     &conversation_id.as_str(),
                     queued_agent_context.effective_mode,
+                    Some(queued_run_id.as_str()),
                     &runtime_content,
                     resolved_persona,
                     spawn_context.folder_refs_block.as_deref(),

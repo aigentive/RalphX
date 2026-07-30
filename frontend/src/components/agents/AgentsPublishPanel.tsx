@@ -14,7 +14,6 @@ import {
 } from "lucide-react";
 import {
   type ReactNode,
-  lazy,
   Suspense,
   useEffect,
   useMemo,
@@ -25,6 +24,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { diffApi } from "@/api/diff";
+import { lazyWithRetry } from "@/lib/lazy-with-retry";
 import {
   chatApi,
   type AgentConversationWorkspace,
@@ -134,7 +134,7 @@ import {
   startAgentWorkspaceOperationToast,
 } from "./agentWorkspaceOperationToast";
 
-const LazyDiffViewer = lazy(() =>
+const LazyDiffViewer = lazyWithRetry(() =>
   import("@/components/diff").then((module) => ({ default: module.DiffViewer })),
 );
 

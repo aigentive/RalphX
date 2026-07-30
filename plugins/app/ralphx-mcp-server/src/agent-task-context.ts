@@ -3,7 +3,9 @@ export interface AgentTaskRuntimeContext {
   contextId?: string;
   projectId?: string;
   actorAgent?: string;
+  conversationId?: string;
   parentConversationId?: string;
+  agentRunId?: string;
 }
 
 function nonEmpty(value: string | undefined): string | undefined {
@@ -17,8 +19,10 @@ export function resolveAgentTaskContext(
   const parentConversationId = nonEmpty(runtimeContext.parentConversationId);
   const projectId = nonEmpty(runtimeContext.projectId);
   const actorAgent = nonEmpty(runtimeContext.actorAgent);
+  const conversationId = nonEmpty(runtimeContext.conversationId);
   const contextType = nonEmpty(runtimeContext.contextType);
   const contextId = nonEmpty(runtimeContext.contextId);
+  const agentRunId = nonEmpty(runtimeContext.agentRunId);
 
   if (contextType === "delegation" && contextId) {
     return {
@@ -29,16 +33,17 @@ export function resolveAgentTaskContext(
     };
   }
 
-  if (parentConversationId) {
+  const ledgerConversationId = parentConversationId ?? conversationId;
+  if (ledgerConversationId) {
     return {
       context_type: "conversation",
-      context_id: parentConversationId,
+      context_id: ledgerConversationId,
       ...(projectId ? { project_id: projectId } : {}),
       ...(actorAgent ? { actor_agent: actorAgent } : {}),
     };
   }
 
-  if (contextType && contextId) {
+  if (contextType && contextId && contextType !== "project") {
     return {
       context_type: contextType,
       context_id: contextId,
@@ -47,8 +52,22 @@ export function resolveAgentTaskContext(
     };
   }
 
+  if (agentRunId) {
+    return {
+      context_type: "agent_run",
+      context_id: agentRunId,
+      ...(projectId ? { project_id: projectId } : {}),
+      ...(actorAgent ? { actor_agent: actorAgent } : {}),
+    };
+  }
+
+  if (contextType === "project" || projectId) {
+    throw new Error(
+      "Agent task ledger requires conversation identity; refusing shared project scope."
+    );
+  }
+
   return {
-    ...(projectId ? { project_id: projectId } : {}),
     ...(actorAgent ? { actor_agent: actorAgent } : {}),
   };
 }

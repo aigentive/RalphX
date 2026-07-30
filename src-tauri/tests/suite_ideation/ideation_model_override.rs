@@ -427,6 +427,7 @@ async fn test_verification_turn_uses_active_ideation_subagent() {
         CoordinationMode::Solo,
         "ideation-model-override-conversation",
         None,
+        None,
         "verify plan",
         None,
         None,

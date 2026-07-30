@@ -9,7 +9,6 @@ import {
   Wrench,
 } from "lucide-react";
 import {
-  lazy,
   Suspense,
   useEffect,
   useMemo,
@@ -22,6 +21,7 @@ import type {
   AgentWorkspaceReviewContext,
   StartAgentWorkspaceReviewResult,
 } from "@/api/chat";
+import { lazyWithRetry } from "@/lib/lazy-with-retry";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -59,7 +59,7 @@ import {
   type ReviewArtifactBodyMode,
 } from "./ReviewArtifactTabs";
 
-const LazyPlanDisplay = lazy(() =>
+const LazyPlanDisplay = lazyWithRetry(() =>
   import("@/components/Ideation/PlanDisplay").then((module) => ({
     default: module.PlanDisplay,
   })),

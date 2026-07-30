@@ -3,10 +3,11 @@
  * Root component with QueryClientProvider and EventProvider
  */
 
-import { lazy, Suspense, useMemo, useState, useEffect, useCallback, useRef } from "react";
+import { Suspense, useMemo, useState, useEffect, useCallback, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useShallow } from "zustand/react/shallow";
 import { toast } from "sonner";
+import { lazyWithRetry } from "@/lib/lazy-with-retry";
 import { EnvironmentScopedProviders } from "@/providers/EnvironmentScopedProviders";
 import { RemoteConnectionBanner } from "@/components/remote/RemoteConnectionBanner";
 import { NotificationCenterPanel } from "@/components/notifications/NotificationCenterPanel";
@@ -82,8 +83,8 @@ import { ChatActivityVisualTestPage } from "@/test-pages/ChatActivityVisualTest"
 import { preloadAutomationsView } from "@/components/automations/preloadAutomationsView";
 
 const ATLASSIAN_AWARENESS_TOAST_KEY = "ralphx.atlassianIntegrationAwareness.v1";
-const LazyAutomationsView = lazy(() => preloadAutomationsView());
-const LazyAgentsView = lazy(async () => {
+const LazyAutomationsView = lazyWithRetry(() => preloadAutomationsView());
+const LazyAgentsView = lazyWithRetry(async () => {
   const { AgentsView } = await import("@/components/agents/AgentsView");
   return { default: AgentsView };
 });

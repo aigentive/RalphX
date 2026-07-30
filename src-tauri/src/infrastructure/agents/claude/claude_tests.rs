@@ -431,12 +431,6 @@ fn test_materialize_generated_plugin_dir_generates_canonical_agents_and_preserve
         "// fake",
     )
     .unwrap();
-    std::fs::write(
-            plugin_dir.join(".mcp.json"),
-            r#"{"mcpServers":{"ralphx":{"type":"stdio","command":"node","args":["${CLAUDE_PLUGIN_ROOT}/ralphx-mcp-server/build/index.js"]}}}"#,
-        )
-        .unwrap();
-
     std::fs::create_dir_all(repo_root.join("agents/ralphx-utility-session-namer/shared")).unwrap();
     std::fs::write(
         repo_root.join("agents/ralphx-utility-session-namer/agent.yaml"),
@@ -468,5 +462,9 @@ fn test_materialize_generated_plugin_dir_generates_canonical_agents_and_preserve
     assert!(
         test_path_exists(generated_dir.join("ralphx-mcp-server/build/index.js")),
         "generated plugin dir should keep MCP runtime assets available"
+    );
+    assert!(
+        !test_path_exists(generated_dir.join(".mcp.json")),
+        "generated plugin must not materialize an ambient ralphx MCP registration; Claude spawns receive ralphx only through dynamic --mcp-config"
     );
 }

@@ -214,6 +214,7 @@ async fn build_standalone_claude_noninteractive_resume_command(
         CoordinationMode::Solo,
         &context_id,
         Some(AgentConversationWorkspaceMode::Chat),
+        None,
         "Continue the queued standalone chat safely.",
         None,
         None,

@@ -1,4 +1,3 @@
-import { Separator } from "@/components/ui/separator";
 import { useFeatureFlags, useUpdateFeatureFlags } from "@/hooks/useFeatureFlags";
 
 import { PersonasEnableToggle } from "./PersonasEnableToggle";
@@ -10,19 +9,16 @@ export function PersonasSection() {
   const agentPersonasEnabled = featureFlags.agentPersonas ?? false;
 
   return (
-    <section aria-label="Personas" className="space-y-4">
+    <section aria-label="Personas" className="space-y-6">
       <PersonasEnableToggle
         enabled={agentPersonasEnabled}
         pending={updateFeatureFlags.isPending}
         onEnabledChange={(agentPersonas) => updateFeatureFlags.mutate({ agentPersonas })}
       />
       {agentPersonasEnabled && (
-        <>
-          <Separator />
-          <PersonasManagementSection
-            standaloneConversations={featureFlags.standaloneConversations ?? false}
-          />
-        </>
+        <PersonasManagementSection
+          standaloneConversations={featureFlags.standaloneConversations ?? false}
+        />
       )}
     </section>
   );

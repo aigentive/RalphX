@@ -324,6 +324,7 @@ struct BuildHarnessResumeCommandRequest<'a> {
     coordination_mode: CoordinationMode,
     conversation_id: &'a str,
     effective_mode: Option<AgentConversationWorkspaceMode>,
+    agent_run_id: Option<&'a str>,
     message: &'a str,
     pub persona: Option<ResolvedPersona>,
     folder_refs_block: Option<&'a str>,
@@ -622,6 +623,7 @@ impl ResolvedChatHarnessCli {
                         request.coordination_mode,
                         request.conversation_id,
                         request.effective_mode,
+                        request.agent_run_id,
                         request.message,
                         request.agent_name_override,
                         request.agent_profile,
@@ -712,7 +714,7 @@ impl ResolvedChatHarnessCli {
                         request.coordination_mode,
                         request.conversation_id,
                         request.effective_mode,
-                        None,
+                        request.agent_run_id,
                         request.message,
                         request.agent_name_override,
                         request.agent_profile,
@@ -2426,6 +2428,9 @@ pub(super) fn apply_ralphx_env_vars(
     agent_name: &str,
     context_type: ChatContextType,
     context_id: &str,
+    conversation_id: Option<&str>,
+    parent_conversation_id: Option<&str>,
+    agent_run_id: Option<&str>,
     working_directory: &Path,
     entity_status: Option<&str>,
     project_id: Option<&str>,
@@ -2439,6 +2444,15 @@ pub(super) fn apply_ralphx_env_vars(
     cmd.env("RALPHX_AGENT_TYPE", mcp_agent_type(agent_name));
     cmd.env("RALPHX_CONTEXT_TYPE", &context_type.to_string());
     cmd.env("RALPHX_CONTEXT_ID", context_id);
+    if let Some(conversation_id) = conversation_id {
+        cmd.env("RALPHX_CONVERSATION_ID", conversation_id);
+    }
+    if let Some(parent_conversation_id) = parent_conversation_id {
+        cmd.env("RALPHX_PARENT_CONVERSATION_ID", parent_conversation_id);
+    }
+    if let Some(agent_run_id) = agent_run_id {
+        cmd.env("RALPHX_AGENT_RUN_ID", agent_run_id);
+    }
     match context_type {
         ChatContextType::Task
         | ChatContextType::TaskExecution
@@ -2948,6 +2962,9 @@ async fn build_command_from_resolved_settings(
         agent_name,
         conversation.context_type,
         &conversation.context_id,
+        Some(&conversation.id.as_str()),
+        mcp_lineage_parent_conversation_id(conversation).as_deref(),
+        None,
         working_directory,
         entity_status,
         project_id,
@@ -2969,6 +2986,7 @@ async fn build_recovery_command_from_resolved_settings(
     coordination_mode: CoordinationMode,
     conversation_id: &str,
     effective_mode: Option<AgentConversationWorkspaceMode>,
+    agent_run_id: Option<&str>,
     message: &str,
     working_directory: &Path,
     entity_status: Option<&str>,
@@ -3019,7 +3037,7 @@ async fn build_recovery_command_from_resolved_settings(
         context_id,
         Some(coordination_mode),
         conversation_id,
-        None,
+        agent_run_id,
         working_directory,
         entity_status,
         project_id,
@@ -3050,6 +3068,9 @@ async fn build_recovery_command_from_resolved_settings(
         agent_name,
         context_type,
         context_id,
+        Some(conversation_id),
+        parent_conversation_id.as_deref(),
+        None,
         working_directory,
         entity_status,
         project_id,
@@ -3268,6 +3289,9 @@ pub async fn build_codex_command(
         agent_name,
         conversation.context_type,
         &conversation.context_id,
+        Some(&conversation.id.as_str()),
+        mcp_lineage_parent_conversation_id(conversation).as_deref(),
+        agent_run_id,
         working_directory,
         entity_status,
         project_id,
@@ -3917,6 +3941,9 @@ pub async fn build_interactive_command(
         agent_name,
         conversation.context_type,
         &conversation.context_id,
+        Some(&conversation.id.as_str()),
+        mcp_lineage_parent_conversation_id(conversation).as_deref(),
+        agent_run_id,
         working_directory,
         entity_status,
         project_id,
@@ -4008,6 +4035,7 @@ pub async fn build_resume_command(
     coordination_mode: CoordinationMode,
     conversation_id: &str,
     effective_mode: Option<AgentConversationWorkspaceMode>,
+    agent_run_id: Option<&str>,
     message: &str,
     agent_name_override: Option<&str>,
     agent_profile: Option<&str>,
@@ -4066,13 +4094,14 @@ pub async fn build_resume_command(
         coordination_mode,
         conversation_id,
         effective_mode,
+        agent_run_id,
         message,
         working_directory,
         session_id,
         project_id,
         filesystem_read_roots,
         entity_status.as_deref(),
-        parent_conversation_id,
+        parent_conversation_id.clone(),
         artifact_repo,
         session_messages,
         total_available,
@@ -4094,6 +4123,7 @@ async fn build_resume_command_from_resolved_settings(
     coordination_mode: CoordinationMode,
     conversation_id: &str,
     effective_mode: Option<AgentConversationWorkspaceMode>,
+    agent_run_id: Option<&str>,
     message: &str,
     working_directory: &Path,
     session_id: &str,
@@ -4133,7 +4163,7 @@ async fn build_resume_command_from_resolved_settings(
                 context_id,
                 Some(coordination_mode),
                 conversation_id,
-                None,
+                agent_run_id,
                 working_directory,
                 entity_status,
                 project_id,
@@ -4164,6 +4194,9 @@ async fn build_resume_command_from_resolved_settings(
                 agent_name,
                 context_type,
                 context_id,
+                Some(conversation_id),
+                parent_conversation_id.as_deref(),
+                None,
                 working_directory,
                 entity_status,
                 project_id,
@@ -4185,6 +4218,7 @@ async fn build_resume_command_from_resolved_settings(
                 coordination_mode,
                 conversation_id,
                 effective_mode,
+                agent_run_id,
                 message,
                 working_directory,
                 entity_status,
@@ -4256,7 +4290,7 @@ pub async fn build_codex_resume_command(
         project_id,
         filesystem_read_roots,
         None,
-        parent_conversation_id,
+        parent_conversation_id.clone(),
         effective_mode,
     );
     let config_overrides = build_codex_mcp_overrides_for_profile(
@@ -4324,14 +4358,15 @@ pub async fn build_codex_resume_command(
                 agent_name,
                 context_type,
                 context_id,
+                Some(conversation_id),
+                parent_conversation_id.as_deref(),
+                agent_run_id,
                 working_directory,
                 entity_status.as_deref(),
                 project_id,
                 Some(session_id),
                 ideation_subagent_model_cap,
             );
-            spawnable.env("RALPHX_CONVERSATION_ID", conversation_id);
-
             Ok(spawnable)
         }
         ProviderResumeMode::Recovery => {
@@ -4394,14 +4429,15 @@ pub async fn build_codex_resume_command(
                 agent_name,
                 context_type,
                 context_id,
+                Some(conversation_id),
+                parent_conversation_id.as_deref(),
+                agent_run_id,
                 working_directory,
                 entity_status.as_deref(),
                 project_id,
                 None,
                 ideation_subagent_model_cap,
             );
-            spawnable.env("RALPHX_CONVERSATION_ID", conversation_id);
-
             Ok(spawnable)
         }
     }
@@ -4417,6 +4453,7 @@ pub async fn build_resume_command_for_harness(
     coordination_mode: CoordinationMode,
     conversation_id: &str,
     effective_mode: Option<AgentConversationWorkspaceMode>,
+    agent_run_id: Option<&str>,
     message: &str,
     persona: Option<ResolvedPersona>,
     agent_name_override: Option<&str>,
@@ -4450,6 +4487,7 @@ pub async fn build_resume_command_for_harness(
         coordination_mode,
         conversation_id,
         effective_mode,
+        agent_run_id,
         message,
         persona,
         None,
@@ -4490,6 +4528,7 @@ pub async fn build_resume_command_for_harness_with_folder_refs(
     coordination_mode: CoordinationMode,
     conversation_id: &str,
     effective_mode: Option<AgentConversationWorkspaceMode>,
+    agent_run_id: Option<&str>,
     message: &str,
     persona: Option<ResolvedPersona>,
     folder_refs_block: Option<&str>,
@@ -4524,6 +4563,7 @@ pub async fn build_resume_command_for_harness_with_folder_refs(
         coordination_mode,
         conversation_id,
         effective_mode,
+        agent_run_id,
         message,
         persona,
         folder_refs_block,
@@ -4564,6 +4604,7 @@ pub(super) async fn build_resume_command_for_harness_with_continuation(
     coordination_mode: CoordinationMode,
     conversation_id: &str,
     effective_mode: Option<AgentConversationWorkspaceMode>,
+    agent_run_id: Option<&str>,
     message: &str,
     persona: Option<ResolvedPersona>,
     folder_refs_block: Option<&str>,
@@ -4601,6 +4642,7 @@ pub(super) async fn build_resume_command_for_harness_with_continuation(
             coordination_mode,
             conversation_id,
             effective_mode,
+            agent_run_id,
             message,
             persona,
             folder_refs_block,

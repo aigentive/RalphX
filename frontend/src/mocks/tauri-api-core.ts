@@ -396,6 +396,72 @@ const mockManagedProviderCliStatuses = {
   ],
 };
 
+// Matches RawMcpCatalogSchema (snake_case serialization from the backend).
+const mockMcpCatalog = {
+  eligible_providers: ["codex"],
+  eligible_default_provider: "codex",
+  probed_at: "2026-05-08T00:00:00Z",
+  probe_stale: false,
+  provider_diagnostics: {},
+  policy_diagnostics: [],
+  servers: [
+    {
+      provider: "codex",
+      server_id: "ralphx",
+      native_scope: "user",
+      native_state: "enabled",
+      effective_enabled: true,
+      configured_state: "follow",
+      effective_state: "follow",
+      effective_source: "required_internal",
+      known_tools: [
+        {
+          tool_name: "list_agent_tasks",
+          configured_state: "follow",
+          effective_state: "follow",
+          effective_source: "required_internal",
+        },
+        {
+          tool_name: "create_agent_task",
+          configured_state: "follow",
+          effective_state: "follow",
+          effective_source: "required_internal",
+        },
+      ],
+      disabled_tools: [],
+      locked: true,
+      locked_reason: "Required internal RalphX server.",
+      diagnostic: null,
+      conflict_kind: null,
+      repair_status: null,
+    },
+    {
+      provider: "codex",
+      server_id: "github",
+      native_scope: "user",
+      native_state: "enabled",
+      effective_enabled: true,
+      configured_state: "follow",
+      effective_state: "follow",
+      effective_source: "provider_native",
+      known_tools: [
+        {
+          tool_name: "search_issues",
+          configured_state: "follow",
+          effective_state: "follow",
+          effective_source: "provider_native",
+        },
+      ],
+      disabled_tools: [],
+      locked: false,
+      locked_reason: null,
+      diagnostic: null,
+      conflict_kind: null,
+      repair_status: null,
+    },
+  ],
+};
+
 const mockAgentModels = [
   {
     provider: "codex",
@@ -1363,6 +1429,8 @@ const commandHandlers: Record<
   }),
   get_agent_provider_settings: async () => mockAgentProviderSettings,
   get_managed_provider_cli_status: async () => mockManagedProviderCliStatuses,
+  get_mcp_catalog: async () => mockMcpCatalog,
+  refresh_mcp_catalog: async () => mockMcpCatalog,
   install_or_update_managed_provider_cli: async (args) => {
     const input = args.input as { provider?: string };
     const status = mockManagedProviderCliStatuses.providers.find(

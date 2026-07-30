@@ -390,6 +390,23 @@ export function McpSettingsSection() {
           {eligibleProviders.length > 0 && policy.isLoading && (
             <div data-testid="mcp-catalog-loading" className="h-28 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)]" />
           )}
+          {ready &&
+            !policy.isLoading &&
+            !policy.error &&
+            eligibleProviders.length > 0 &&
+            servers.length === 0 && (
+              <div className="rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-5 text-center">
+                <ServerCog className="mx-auto h-6 w-6 text-[var(--text-muted)]" />
+                <h4 className="mt-2 text-sm font-semibold text-[var(--text-primary)]">
+                  No MCP servers found
+                </h4>
+                <p className="mx-auto mt-1 max-w-md text-xs text-[var(--text-muted)]">
+                  {provider
+                    ? `${providerLabel(provider)} has no MCP servers configured. Servers added to the provider's native configuration will appear here after a refresh.`
+                    : "Servers added to the provider's native configuration will appear here after a refresh."}
+                </p>
+              </div>
+            )}
           {!policy.isLoading && servers.map((server) => (
             <ServerPolicyCard
               key={`${server.provider}:${server.serverId}`}

@@ -26,7 +26,7 @@ export default function TasksSettingsSection({
   return (
     <SectionCard
       icon={<ListTodo className="h-5 w-5" />}
-      title="Tasks"
+      title="Task policies"
       description="Configure task enablement, review policy, and autonomous follow-up behavior."
     >
       <Tabs value={tab} onValueChange={(value) => setTab(value as TasksSettingsTab)}>

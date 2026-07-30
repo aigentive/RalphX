@@ -55,7 +55,7 @@ describe("CapabilitiesSection", () => {
     expect(
       screen.getByTestId("agent-conversation-workflows"),
     ).not.toBeChecked();
-    expect(screen.getAllByText(/Experimental/)).toHaveLength(2);
+    expect(screen.getAllByText(/Experimental/)).toHaveLength(3);
     expect(
       screen.getByText(/Codex Ultra is availability-driven/i),
     ).toBeInTheDocument();
