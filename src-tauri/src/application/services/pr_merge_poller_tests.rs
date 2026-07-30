@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use chrono::Utc;
 
 use super::{AgentWorkspacePrPollerStart, PrPollerRegistry, RateLimitState};
 use crate::application::agent_conversation_workspace::{
@@ -37,12 +38,13 @@ use crate::domain::entities::{
     AgentRunActionKind, AgentRunStatus, AgentWorkspacePrDescription, AgentWorkspacePrReviewAction,
     AgentWorkspacePrReviewActionKind, AgentWorkspacePrReviewActionStatus,
     AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewMonitorStatus,
-    AgentWorkspaceRepairContinuation, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
-    AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewAutoMergeGuardStatus,
-    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest,
-    ArtifactId, ChatContextType, ChatConversationId, GitTargetLeaseOwner,
-    IdeationAnalysisBaseRefKind, IdeationSessionId, NewNotification, NotificationCategory,
-    NotificationSeverity, NotificationTarget, PlanBranch, PlanBranchId, Project, TaskId,
+    AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation, AgentWorkspaceRepairPhase,
+    AgentWorkspaceRepairSource, AgentWorkspaceReviewAutoMergeGuard,
+    AgentWorkspaceReviewAutoMergeGuardStatus, AgentWorkspaceReviewMonitor,
+    AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest, ArtifactId, ChatContextType,
+    ChatConversationId, GitTargetLeaseOwner, IdeationAnalysisBaseRefKind, IdeationSessionId,
+    NewNotification, NotificationCategory, NotificationSeverity, NotificationTarget, PlanBranch,
+    PlanBranchId, Project, TaskId,
 };
 use crate::domain::repositories::{
     AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, AgentConversationWorkspaceRepository,
@@ -5618,7 +5620,14 @@ async fn live_pr_conflict_repair_repo_route_preserves_durable_authority_on_stale
     assert!(events_after_join.iter().any(|event| {
         event.step == "repair_routed"
             && event.status == "waiting"
-            && event.classification.as_deref() == Some("agent_workspace_repair_routed:101:joined")
+            && event.classification.as_deref()
+                == Some(
+                    format!(
+                        "agent_workspace_repair_routed:101:joined:merge-conflict:{}:{}",
+                        first.id, first.generation
+                    )
+                    .as_str(),
+                )
             && event.summary.contains("merge-conflict signal")
             && event
                 .summary
@@ -5896,10 +5905,110 @@ async fn live_pr_autofix_repair_routed_signal_records_once_for_existing_attempt(
     assert_eq!(routed.status, "waiting");
     assert_eq!(
         routed.classification.as_deref(),
-        Some("agent_workspace_repair_routed:101:joined")
+        Some(
+            format!(
+                "agent_workspace_repair_routed:101:joined:CI-failure:{}:{}",
+                attempt.id, attempt.generation
+            )
+            .as_str()
+        )
     );
     assert!(routed.summary.contains("CI-failure signal"));
     assert!(routed.summary.contains("1 failing check"));
+}
+
+#[tokio::test]
+async fn routed_repair_audit_deduplicates_per_attempt_generation_and_outcome() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let conversation_id = ChatConversationId::new();
+    let first_attempt = AgentWorkspaceRepairAttempt::new(
+        conversation_id.clone(),
+        AgentWorkspaceRepairSource::PrAutofix,
+        AgentWorkspaceRepairContinuation::ResumePrSupervision,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        Utc::now(),
+    );
+
+    super::record_agent_workspace_repair_routed_to_existing_attempt(
+        workspace_repo.as_ref(),
+        &conversation_id,
+        101,
+        "joined",
+        "CI-failure",
+        &first_attempt,
+        "first observation",
+    )
+    .await
+    .expect("first routed audit should persist");
+    super::record_agent_workspace_repair_routed_to_existing_attempt(
+        workspace_repo.as_ref(),
+        &conversation_id,
+        101,
+        "joined",
+        "CI-failure",
+        &first_attempt,
+        "a changed summary must not create another audit row",
+    )
+    .await
+    .expect("identical fingerprint should deduplicate");
+
+    let mut next_generation = first_attempt.clone();
+    next_generation.generation = first_attempt.generation + 1;
+    super::record_agent_workspace_repair_routed_to_existing_attempt(
+        workspace_repo.as_ref(),
+        &conversation_id,
+        101,
+        "joined",
+        "CI-failure",
+        &next_generation,
+        "next generation",
+    )
+    .await
+    .expect("next generation should be audited");
+    super::record_agent_workspace_repair_routed_to_existing_attempt(
+        workspace_repo.as_ref(),
+        &conversation_id,
+        101,
+        "blocked_by_current",
+        "CI-failure",
+        &next_generation,
+        "different outcome",
+    )
+    .await
+    .expect("different outcome should be audited");
+
+    let routed_events: Vec<_> = workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("routed events should list")
+        .into_iter()
+        .filter(|event| event.step == "repair_routed")
+        .collect();
+    assert_eq!(routed_events.len(), 3);
+    assert!(routed_events.iter().any(|event| {
+        event.classification.as_deref()
+            == Some(
+                format!(
+                    "agent_workspace_repair_routed:101:joined:CI-failure:{}:{}",
+                    first_attempt.id, first_attempt.generation
+                )
+                .as_str(),
+            )
+    }));
+    assert!(routed_events.iter().any(|event| {
+        event.classification.as_deref()
+            == Some(
+                format!(
+                    "agent_workspace_repair_routed:101:blocked_by_current:CI-failure:{}:{}",
+                    next_generation.id, next_generation.generation
+                )
+                .as_str(),
+            )
+    }));
 }
 
 #[tokio::test]

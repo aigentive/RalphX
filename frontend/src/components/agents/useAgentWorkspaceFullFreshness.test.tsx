@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, renderHook, waitFor } from "@testing-library/react";
+import { act, render, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -43,6 +43,7 @@ function wrapper(client: QueryClient) {
 describe("useAgentWorkspaceFullFreshness", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
   it("uses the canonical full-scope key and API arguments only when enabled", async () => {
@@ -121,5 +122,43 @@ describe("useAgentWorkspaceFullFreshness", () => {
     );
 
     await waitFor(() => expect(getFreshness).toHaveBeenCalledTimes(1));
+  });
+
+  it("polls quickly for an active operation and backs off while idle", async () => {
+    vi.useFakeTimers();
+    const getFreshness = vi
+      .spyOn(chatApi, "getAgentConversationWorkspaceFreshness")
+      .mockResolvedValue(freshness("conversation-1"));
+    const queryClient = createTestQueryClient();
+    const { rerender } = renderHook(
+      ({ isOperationActive }) =>
+        useAgentWorkspaceFullFreshness("conversation-1", {
+          enabled: true,
+          isOperationActive,
+        }),
+      {
+        initialProps: { isOperationActive: true },
+        wrapper: wrapper(queryClient),
+      },
+    );
+
+    await act(async () => {});
+    expect(getFreshness).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(getFreshness).toHaveBeenCalledTimes(2);
+
+    rerender({ isOperationActive: false });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(getFreshness).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(55_000);
+    });
+    expect(getFreshness).toHaveBeenCalledTimes(3);
   });
 });
