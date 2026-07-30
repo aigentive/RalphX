@@ -40,6 +40,15 @@ type ActiveAgentWorkspaceOperationToastOptions =
   AgentWorkspaceOperationToastOptions & {
     startedAtMs: number;
   };
+
+interface ActiveAgentWorkspaceOperationToastController {
+  supersede: () => void;
+}
+
+const activeToastControllers = new Map<
+  string,
+  ActiveAgentWorkspaceOperationToastController
+>();
 export function agentWorkspaceOperationToastId(
   conversationId: string,
   kind: AgentWorkspaceOperationToastKind,
@@ -223,6 +232,17 @@ export function startAgentWorkspaceOperationToast(
   let dismissed = false;
   let settled = false;
 
+  const controller: ActiveAgentWorkspaceOperationToastController = {
+    supersede: () => {
+      if (settled || dismissed) {
+        return;
+      }
+      settled = true;
+      clearTimer();
+      releaseActiveToast();
+    },
+  };
+
   const clearTimer = () => {
     if (intervalId !== null) {
       clearInterval(intervalId);
@@ -230,11 +250,23 @@ export function startAgentWorkspaceOperationToast(
     }
   };
 
+  const releaseActiveToast = () => {
+    if (activeToastId && activeToastControllers.get(activeToastId) === controller) {
+      activeToastControllers.delete(activeToastId);
+    }
+  };
+
   const registerActiveToast = (id: string) => {
     if (activeToastId && activeToastId !== id) {
       toast.dismiss(activeToastId);
+      releaseActiveToast();
+    }
+    const existing = activeToastControllers.get(id);
+    if (existing && existing !== controller) {
+      existing.supersede();
     }
     activeToastId = id;
+    activeToastControllers.set(id, controller);
   };
 
   const settle = () => {
@@ -243,6 +275,7 @@ export function startAgentWorkspaceOperationToast(
     }
     settled = true;
     clearTimer();
+    releaseActiveToast();
   };
 
   const dismiss = () => {
@@ -251,6 +284,7 @@ export function startAgentWorkspaceOperationToast(
     }
     dismissed = true;
     clearTimer();
+    releaseActiveToast();
     if (activeToastId) {
       toast.dismiss(activeToastId);
     }
@@ -274,6 +308,7 @@ export function startAgentWorkspaceOperationToast(
         }
         dismissed = true;
         clearTimer();
+        releaseActiveToast();
       },
     });
   };
