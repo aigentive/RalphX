@@ -78,6 +78,11 @@ pub fn migrate(conn: &Connection) -> AppResult<()> {
             ON chat_message_blocks(message_id, block_index);
         CREATE INDEX idx_chat_message_blocks_tool_call
             ON chat_message_blocks(conversation_id, tool_call_id);
+        -- v20260730000304 runs first, so DROP TABLE above takes its index with
+        -- it. The payload retention prune batches on ORDER BY created_at +
+        -- LIMIT and silently degrades to a full scan per batch without it.
+        CREATE INDEX idx_chat_message_blocks_created_at
+            ON chat_message_blocks(created_at);
         "#,
     )
             .map_err(|error| AppError::Database(error.to_string()))?;

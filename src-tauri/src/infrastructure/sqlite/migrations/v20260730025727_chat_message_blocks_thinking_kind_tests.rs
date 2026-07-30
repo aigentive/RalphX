@@ -3,7 +3,9 @@
 use rusqlite::{Connection, OptionalExtension};
 
 use super::{
-    v20260510185257_chat_message_blocks_timeline, v20260730025727_chat_message_blocks_thinking_kind,
+    v20260510185257_chat_message_blocks_timeline,
+    v20260730000304_chat_message_blocks_created_at_index,
+    v20260730025727_chat_message_blocks_thinking_kind,
 };
 
 fn setup_test_db() -> Connection {
@@ -27,6 +29,9 @@ fn migrated_connection() -> Connection {
     )
     .unwrap();
     v20260510185257_chat_message_blocks_timeline::migrate(&conn).unwrap();
+    // Runs ahead of this migration in MIGRATIONS, so the rebuild must find and
+    // preserve the index it creates.
+    v20260730000304_chat_message_blocks_created_at_index::migrate(&conn).unwrap();
     conn.execute(
         "INSERT INTO chat_conversations (id) VALUES ('conversation')",
         [],
@@ -140,6 +145,10 @@ fn rebuild_recreates_every_chat_message_block_index() {
         indices,
         vec![
             "idx_chat_message_blocks_conversation_sequence".to_string(),
+            // Created by v20260730000304 for the payload retention prune's
+            // ORDER BY created_at + LIMIT batches; losing it here silently
+            // returns that prune to a full scan per batch.
+            "idx_chat_message_blocks_created_at".to_string(),
             "idx_chat_message_blocks_message".to_string(),
             "idx_chat_message_blocks_tool_call".to_string(),
         ]
