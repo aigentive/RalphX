@@ -4,13 +4,73 @@ import type { ActiveStreamingTaskResponse, ChatMessageResponse } from "@/api/cha
 import type { ToolCall } from "@/components/Chat/ToolCallIndicator";
 import type { StreamingContentBlock, StreamingTask } from "@/types/streaming-task";
 import {
-  mergeActiveStreamingContentBlocks,
-  mergePersistedStreamingAnchors,
+  applyTranscriptInput,
+  createLiveTranscriptState,
+  mergeActiveStreamingContentBlocks as mergeActiveStreamingTaskAndToolBlocks,
   mergeActiveStreamingTasks,
   mergeActiveStreamingToolCalls,
-  removePersistedStreamingPrefix,
+  preserveBlocksIfUnchanged,
   projectPersistedStreamingContentBlocks,
+  renderTranscriptBlocks,
+  renderTranscriptSlots,
 } from "./chat-active-state";
+
+/**
+ * The three text writers these tests used to exercise separately are now one
+ * identity-keyed owner. These shims express the old entry points as the exact
+ * owner compositions the production seams use, so the original assertions keep
+ * their meaning.
+ */
+
+/** Was `removePersistedStreamingPrefix(live, persisted)` — the render seam. */
+function releaseLiveTail(
+  liveBlocks: readonly StreamingContentBlock[],
+  persistedBlocks: readonly StreamingContentBlock[],
+): StreamingContentBlock[] {
+  const seeded = applyTranscriptInput(createLiveTranscriptState(), {
+    kind: "persisted", runId: null, blocks: persistedBlocks,
+  });
+  return renderTranscriptBlocks(
+    applyTranscriptInput(seeded, { kind: "live", runId: null, blocks: liveBlocks }),
+  );
+}
+
+/** Was `mergePersistedStreamingAnchors(persisted, live)` — the recovery seam. */
+function seedPersistedAnchors(
+  persistedBlocks: readonly StreamingContentBlock[],
+  liveBlocks: readonly StreamingContentBlock[],
+): StreamingContentBlock[] {
+  let state = applyTranscriptInput(createLiveTranscriptState(), {
+    kind: "persisted", runId: null, blocks: persistedBlocks,
+  });
+  state = applyTranscriptInput(state, { kind: "live", runId: null, blocks: persistedBlocks });
+  state = applyTranscriptInput(state, { kind: "live", runId: null, blocks: liveBlocks });
+  return renderTranscriptSlots(state);
+}
+
+/** Was `mergeActiveStreamingContentBlocks` when the active state carried text. */
+function mergeActiveStreamingContentBlocks(
+  previous: StreamingContentBlock[],
+  activeState: {
+    partial_text: string;
+    partial_text_segments?: string[];
+    tool_calls: unknown[];
+    streaming_tasks: ActiveStreamingTaskResponse[];
+  },
+): StreamingContentBlock[] {
+  let state = applyTranscriptInput(createLiveTranscriptState(), {
+    kind: "live", runId: null, blocks: previous,
+  });
+  state = activeState.partial_text_segments?.length
+    ? applyTranscriptInput(state, {
+        kind: "segments", runId: null, segments: activeState.partial_text_segments,
+      })
+    : applyTranscriptInput(state, { kind: "partialText", runId: null, text: activeState.partial_text });
+  return preserveBlocksIfUnchanged(previous, mergeActiveStreamingTaskAndToolBlocks(
+    renderTranscriptSlots(state),
+    { ...activeState, partial_text: "", partial_text_segments: [] },
+  ));
+}
 
 describe("chat-active-state helpers", () => {
   function taskFixture(overrides: Partial<StreamingTask> = {}): StreamingTask {
@@ -561,13 +621,13 @@ describe("chat-active-state helpers", () => {
       },
     ];
 
-    expect(removePersistedStreamingPrefix(recovered, persisted)).toEqual([
+    expect(releaseLiveTail(recovered, persisted)).toEqual([
       {
         type: "tool_use",
         toolCall: { id: "toolu_edit", name: "Edit", arguments: {} },
       },
     ]);
-    expect(removePersistedStreamingPrefix(
+    expect(releaseLiveTail(
       [
         { type: "text", text: "Opening. " },
         { type: "text", text: "After grep. Done." },
@@ -589,7 +649,7 @@ describe("chat-active-state helpers", () => {
       { type: "text", text: "After grep. " },
     ];
 
-    expect(mergePersistedStreamingAnchors(
+    expect(seedPersistedAnchors(
       persisted,
       [
         { type: "text", text: "Late tail." },
@@ -609,12 +669,12 @@ describe("chat-active-state helpers", () => {
   });
 
   it("releases live text when persisted streaming text is at or ahead of it", () => {
-    expect(removePersistedStreamingPrefix(
+    expect(releaseLiveTail(
       [{ type: "text", text: "Hello wor", blockIndex: 0 }],
       [{ type: "text", text: "Hello world!", blockIndex: 0 }],
     )).toEqual([]);
 
-    expect(removePersistedStreamingPrefix(
+    expect(releaseLiveTail(
       [
         { type: "text", text: "Hello wor", blockIndex: 0 },
         {
@@ -632,15 +692,15 @@ describe("chat-active-state helpers", () => {
   });
 
   it("releases unindexed live text against persisted text by ordinal position", () => {
-    expect(removePersistedStreamingPrefix(
+    expect(releaseLiveTail(
       [{ type: "text", text: "Opening. More" }],
       [{ type: "text", text: "Opening. ", blockIndex: 0 }],
     )).toEqual([{ type: "text", text: "More" }]);
-    expect(removePersistedStreamingPrefix(
+    expect(releaseLiveTail(
       [{ type: "text", text: "Opening. " }],
       [{ type: "text", text: "Opening. More", blockIndex: 0 }],
     )).toEqual([]);
-    expect(removePersistedStreamingPrefix(
+    expect(releaseLiveTail(
       [
         { type: "text", text: "First tail" },
         {
@@ -672,7 +732,7 @@ describe("chat-active-state helpers", () => {
       { type: "text", text: "completely different", blockIndex: 0 },
     ];
 
-    expect(removePersistedStreamingPrefix(
+    expect(releaseLiveTail(
       live,
       [{ type: "text", text: "Opening. ", blockIndex: 0 }],
     )).toEqual(live);
@@ -748,11 +808,11 @@ describe("chat-active-state helpers", () => {
   });
 
   it("merges indexed persisted text anchors but preserves unindexed append behavior", () => {
-    expect(mergePersistedStreamingAnchors(
+    expect(seedPersistedAnchors(
       [{ type: "text", text: "Hello wor", blockIndex: 0 }],
       [{ type: "text", text: "Hello world", blockIndex: 0 }],
     )).toEqual([{ type: "text", text: "Hello world", blockIndex: 0 }]);
-    expect(mergePersistedStreamingAnchors(
+    expect(seedPersistedAnchors(
       [{ type: "text", text: "Hello wor" }],
       [
         { type: "text", text: "Hello wor" },
@@ -765,7 +825,7 @@ describe("chat-active-state helpers", () => {
   });
 
   it("lets the persisted anchor lead when a same-index live text is disjoint", () => {
-    const merged = mergePersistedStreamingAnchors(
+    const merged = seedPersistedAnchors(
       [{ type: "text", text: "Persisted", blockIndex: 0 }],
       [{ type: "text", text: "Live", blockIndex: 0 }],
     );
@@ -773,7 +833,7 @@ describe("chat-active-state helpers", () => {
     expect(merged).toEqual([{ type: "text", text: "PersistedLive", blockIndex: 0 }]);
     // The merged anchor must stay trimmable against the durable row, otherwise
     // the persisted copy renders again as a live supplement.
-    expect(removePersistedStreamingPrefix(
+    expect(releaseLiveTail(
       merged,
       [{ type: "text", text: "Persisted", blockIndex: 0 }],
     )).toEqual([{ type: "text", text: "Live", blockIndex: 0 }]);

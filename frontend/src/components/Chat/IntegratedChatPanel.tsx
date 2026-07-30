@@ -92,7 +92,9 @@ import { useChatEvents } from "@/hooks/useChatEvents";
 import { useChatRecovery } from "@/hooks/useChatRecovery";
 import {
   projectPersistedStreamingContentBlocks,
-  removePersistedStreamingPrefix,
+  applyTranscriptInput,
+  createLiveTranscriptState,
+  renderTranscriptBlocks,
 } from "@/hooks/chat-active-state";
 import { useQueuedMessagesHydration } from "@/hooks/useQueuedMessagesHydration";
 // useAgentEvents is already called inside useChat — no direct import needed
@@ -1368,10 +1370,12 @@ export function IntegratedChatPanel({
     (streamingContentBlocks?.length ?? 0) > 0 ||
     streamingTasks.size > 0;
   const supplementalStreamingContentBlocks = useMemo(
-    () => removePersistedStreamingPrefix(
-      streamingContentBlocks ?? [],
-      persistedStreamingContentBlocks,
-    ),
+    () => renderTranscriptBlocks(applyTranscriptInput(
+      applyTranscriptInput(createLiveTranscriptState(), {
+        kind: "persisted", runId: null, blocks: persistedStreamingContentBlocks,
+      }),
+      { kind: "live", runId: null, blocks: streamingContentBlocks ?? [] },
+    )),
     [persistedStreamingContentBlocks, streamingContentBlocks],
   );
   const persistedStreamingToolIds = useMemo(

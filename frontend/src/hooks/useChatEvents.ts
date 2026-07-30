@@ -1373,10 +1373,12 @@ export function useChatEvents({
           seq?: number;
           append_to_previous?: boolean;
           block_index?: number;
+          run_id?: string | null;
         }>(
           "agent:chunk", (payload) => {
             const receivedAt = Date.now();
             if (!isRelevant(payload)) return;
+            if (activeAgentRunId && payload.run_id && payload.run_id !== activeAgentRunId) return;
             if (
               payload.seq != null
               && lastChunkSeqRef.current != null
@@ -1386,7 +1388,6 @@ export function useChatEvents({
               lastChunkSeqRef.current = payload.seq;
             }
             setStreamingContentBlocks((prev) => {
-              const lastBlock = prev[prev.length - 1];
               const shouldAppend = payload.append_to_previous ?? true;
               // Staleness is guarded by lastChunkSeqRef above; block seq values
               // are not comparable to chunk seq — recovered anchors carry
@@ -1395,12 +1396,12 @@ export function useChatEvents({
               // If last block is text and the backend says this chunk extends it, append.
               // Codex agent_message events are already logical text blocks, so they set
               // append_to_previous=false to preserve live block boundaries.
-              const shouldAppendToIndexedBlock = hasBlockIndex
-                && lastBlock?.type === "text"
-                && lastBlock.blockIndex === payload.block_index;
-              const shouldAppendToLegacyBlock = !hasBlockIndex && lastBlock?.type === "text";
-              if (shouldAppend && (shouldAppendToIndexedBlock || shouldAppendToLegacyBlock)) {
+              const appendIndex = hasBlockIndex
+                ? prev.findIndex((block) => block.type === "text" && block.blockIndex === payload.block_index)
+                : prev[prev.length - 1]?.type === "text" ? prev.length - 1 : -1;
+              if (shouldAppend && appendIndex >= 0) {
                 const updated = [...prev];
+                const lastBlock = updated[appendIndex]! as Extract<StreamingContentBlock, { type: "text" }>;
                 const appendBlock = {
                   ...lastBlock,
                   text: lastBlock.text + payload.text,
@@ -1408,7 +1409,7 @@ export function useChatEvents({
                     seq: Math.max(lastBlock.seq ?? payload.seq, payload.seq),
                   }),
                 };
-                updated[updated.length - 1] = appendBlock;
+                updated[appendIndex] = appendBlock;
                 return updated;
               }
               // New text block: use seq from payload
