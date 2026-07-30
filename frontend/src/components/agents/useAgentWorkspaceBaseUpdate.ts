@@ -51,8 +51,9 @@ export function useAgentWorkspaceBaseUpdate({
   const toastConversationTitle = conversationTitle?.trim() || null;
   useEffect(
     () => () => {
-      progressToastRef.current?.dismiss();
-      progressToastRef.current = null;
+      // The update-from-base progress toast stays connected across unmount:
+      // the pending mutation closure settles it. Only the poll-driven
+      // maintenance toast has no settlement path after unmount.
       maintenanceToastRef.current?.toast.dismiss();
       maintenanceToastRef.current = null;
     },
