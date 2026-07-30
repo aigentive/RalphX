@@ -777,7 +777,7 @@ async fn leg6_a_fake_cli_chat_turn_streams_to_a_remote_client_and_persists_only_
             project.id.as_str(),
             "say hello to the remote client",
             ralphx_lib::application::chat_service::SendMessageOptions {
-                conversation_id_override: Some(conversation.id.clone()),
+                conversation_id_override: Some(conversation.id),
                 ..Default::default()
             },
         )
