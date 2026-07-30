@@ -1466,9 +1466,16 @@ function transformConversationTimelinePage(
  * argument names, identical response payloads, no forked logic. Switching transports is
  * therefore a command-name choice and nothing else: the zod schemas and transforms below
  * are shared verbatim, and no extra await enters the transcript-hydration path.
+ *
+ * Each call site branches into TWO `typedInvoke` calls with literal command names rather
+ * than computing one name. P-11 requires every production command name to be statically
+ * enumerable — `scripts/check-remote-transport-drift.mjs` reads the invoke ARGUMENT, so a
+ * helper returning the name is a hole in the proof that no command reaches the facade
+ * unclassified, and the scanner fails the build on it. The duplication is the gate's price
+ * and is deliberate; this mirrors the `sendAgentMessage`/`sendRemoteChatMessage` split.
  */
-function transcriptReadCommand(localCmd: string, remoteCmd: string): string {
-  return isRemoteEnvironmentId(getTransportEnvironmentId()) ? remoteCmd : localCmd;
+function useRemoteTranscriptReads(): boolean {
+  return isRemoteEnvironmentId(getTransportEnvironmentId());
 }
 
 /**
@@ -1485,7 +1492,7 @@ const REMOTE_MIN_PAGE_LIMIT = 1;
 const REMOTE_MAX_PAGE_LIMIT = 200;
 
 function wirePageLimit(limit: number): number {
-  if (!isRemoteEnvironmentId(getTransportEnvironmentId())) return limit;
+  if (!useRemoteTranscriptReads()) return limit;
   if (!Number.isFinite(limit)) return REMOTE_MAX_PAGE_LIMIT;
   return Math.min(
     Math.max(Math.trunc(limit), REMOTE_MIN_PAGE_LIMIT),
@@ -1504,14 +1511,11 @@ export async function listConversations(
   contextId: string,
   includeArchived = false,
 ): Promise<ChatConversation[]> {
-  const raw = await typedInvoke(
-    transcriptReadCommand(
-      "list_agent_conversations",
-      "list_remote_agent_conversations",
-    ),
-    { contextType, contextId, includeArchived },
-    z.array(ChatConversationResponseSchema),
-  );
+  const args = { contextType, contextId, includeArchived };
+  const schema = z.array(ChatConversationResponseSchema);
+  const raw = useRemoteTranscriptReads()
+    ? await typedInvoke("list_remote_agent_conversations", args, schema)
+    : await typedInvoke("list_agent_conversations", args, schema);
   return raw.map(transformConversation);
 }
 
@@ -1528,22 +1532,26 @@ export async function listConversationsPage(
   archivedOnly = false,
 ): Promise<ConversationListPageResponse> {
   const normalizedSearch = search?.trim();
-  const raw = await typedInvoke(
-    transcriptReadCommand(
-      "list_agent_conversations_page",
-      "list_remote_agent_conversations_page",
-    ),
-    {
-      contextType,
-      contextId,
-      includeArchived,
-      ...(archivedOnly ? { archivedOnly } : {}),
-      limit: wirePageLimit(limit),
-      offset,
-      ...(normalizedSearch ? { search: normalizedSearch } : {}),
-    },
-    ConversationListPageResponseSchema,
-  );
+  const args = {
+    contextType,
+    contextId,
+    includeArchived,
+    ...(archivedOnly ? { archivedOnly } : {}),
+    limit: wirePageLimit(limit),
+    offset,
+    ...(normalizedSearch ? { search: normalizedSearch } : {}),
+  };
+  const raw = useRemoteTranscriptReads()
+    ? await typedInvoke(
+        "list_remote_agent_conversations_page",
+        args,
+        ConversationListPageResponseSchema,
+      )
+    : await typedInvoke(
+        "list_agent_conversations_page",
+        args,
+        ConversationListPageResponseSchema,
+      );
   return transformConversationListPage(raw);
 }
 
@@ -1570,14 +1578,14 @@ export async function getConversation(conversationId: string): Promise<{
   conversation: ChatConversation;
   messages: ChatMessageResponse[];
 }> {
-  const raw = await typedInvoke(
-    transcriptReadCommand("get_agent_conversation", "get_remote_agent_conversation"),
-    { conversationId },
-    z.object({
-      conversation: ChatConversationResponseSchema,
-      messages: z.array(AgentMessageSchema),
-    }),
-  );
+  const args = { conversationId };
+  const schema = z.object({
+    conversation: ChatConversationResponseSchema,
+    messages: z.array(AgentMessageSchema),
+  });
+  const raw = useRemoteTranscriptReads()
+    ? await typedInvoke("get_remote_agent_conversation", args, schema)
+    : await typedInvoke("get_agent_conversation", args, schema);
 
   return {
     conversation: transformConversation(raw.conversation),
@@ -1597,14 +1605,18 @@ export async function getConversationMessagesPage(
   limit: number,
   offset = 0,
 ): Promise<ConversationMessagesPageResponse> {
-  const raw = await typedInvoke(
-    transcriptReadCommand(
-      "get_agent_conversation_messages_page",
-      "get_remote_agent_conversation_messages_page",
-    ),
-    { conversationId, limit: wirePageLimit(limit), offset },
-    ConversationMessagesPageResponseSchema,
-  );
+  const args = { conversationId, limit: wirePageLimit(limit), offset };
+  const raw = useRemoteTranscriptReads()
+    ? await typedInvoke(
+        "get_remote_agent_conversation_messages_page",
+        args,
+        ConversationMessagesPageResponseSchema,
+      )
+    : await typedInvoke(
+        "get_agent_conversation_messages_page",
+        args,
+        ConversationMessagesPageResponseSchema,
+      );
 
   return transformConversationMessagesPage(raw);
 }
@@ -1618,14 +1630,18 @@ export async function getConversationTimelinePage(
   limit: number,
   beforeSequence: number | null = null,
 ): Promise<ConversationTimelinePageResponse> {
-  const raw = await typedInvoke(
-    transcriptReadCommand(
-      "get_agent_conversation_timeline_page",
-      "get_remote_agent_conversation_timeline_page",
-    ),
-    { conversationId, limit: wirePageLimit(limit), beforeSequence },
-    ConversationTimelinePageResponseSchema,
-  );
+  const args = { conversationId, limit: wirePageLimit(limit), beforeSequence };
+  const raw = useRemoteTranscriptReads()
+    ? await typedInvoke(
+        "get_remote_agent_conversation_timeline_page",
+        args,
+        ConversationTimelinePageResponseSchema,
+      )
+    : await typedInvoke(
+        "get_agent_conversation_timeline_page",
+        args,
+        ConversationTimelinePageResponseSchema,
+      );
 
   return transformConversationTimelinePage(raw);
 }
