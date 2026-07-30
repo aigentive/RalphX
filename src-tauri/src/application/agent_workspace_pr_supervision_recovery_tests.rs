@@ -1030,6 +1030,225 @@ async fn durable_base_update_authority_runs_before_legacy_pr_supervision_gates()
 }
 
 #[tokio::test]
+async fn settled_durable_repair_boundaries_recover_pr_supervision() {
+    for (name, phase) in [
+        (
+            "pr-supervision-durable-ready",
+            AgentWorkspaceRepairPhase::Ready,
+        ),
+        (
+            "pr-supervision-durable-blocked",
+            AgentWorkspaceRepairPhase::Blocked,
+        ),
+    ] {
+        let (_temp_dir, project, workspace, head_sha) = setup_recovery_workspace(name).await;
+        let conversation_id = workspace.conversation_id.clone();
+        let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+        workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("seed workspace");
+        let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
+        let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
+        let mut attempt = AgentWorkspaceRepairAttempt::new(
+            conversation_id.clone(),
+            AgentWorkspaceRepairSource::BaseUpdate,
+            AgentWorkspaceRepairContinuation::UpdateOnly,
+            "main",
+            false,
+            true,
+            false,
+            None,
+            chrono::Utc::now(),
+        );
+        attempt.phase = phase;
+        let durable_attempt = match repair_repo
+            .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+                attempt,
+                reason: "settled durable repair boundary".to_string(),
+                verified_newer_base: false,
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("seed durable repair")
+        {
+            StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(attempt) => attempt,
+            outcome => panic!("expected a new durable repair, got {outcome:?}"),
+        };
+
+        let mut durable_state = AppState::new_test();
+        durable_state.agent_conversation_workspace_repo = workspace_repo.clone();
+        durable_state.agent_workspace_repair_repo = repair_repo.clone();
+        durable_state.agent_run_repo = agent_run_repo.clone();
+        let github = Arc::new(MockGithubService::new());
+        github.will_return_sync_state(open_sync_state(&workspace.branch_name, &head_sha));
+        github.state().fetch_pr_health_result =
+            Some(Ok(healthy_pr_health(&workspace.branch_name, &head_sha)));
+        let mut deps = recovery_deps(
+            Arc::clone(&workspace_repo),
+            Arc::new(MemoryProjectRepository::with_projects(vec![project])),
+            Arc::clone(&github),
+            Arc::clone(&agent_run_repo),
+        );
+        deps.durable_recovery_state = Some(Arc::new(durable_state));
+
+        let outcome = recover_agent_workspace_pr_supervision(
+            deps,
+            conversation_id.clone(),
+            AgentWorkspacePrSupervisionRecoveryTrigger::Startup,
+        )
+        .await
+        .expect("settled durable repair should allow PR supervision recovery");
+
+        assert_eq!(
+            outcome,
+            AgentWorkspacePrSupervisionRecoveryOutcome::Recovered {
+                pr_number: 257,
+                head_sha: head_sha.clone(),
+            }
+        );
+        let current = repair_repo
+            .get_current_repair_attempt(&conversation_id)
+            .await
+            .expect("read durable attempt")
+            .expect("durable attempt remains current");
+        assert_eq!(current.id, durable_attempt.id);
+        assert_eq!(current.phase, phase);
+        assert_eq!(current.reserved_agent_run_id, None);
+        assert_eq!(current.dispatch_count, 0);
+        assert_eq!(github.state().check_pr_sync_state_calls, 1);
+        assert_eq!(github.state().fetch_pr_health_calls, 1);
+    }
+}
+
+#[tokio::test]
+async fn dispatching_durable_repair_authority_vetoes_pr_supervision_recovery() {
+    let (_temp_dir, project, workspace, _head_sha) =
+        setup_recovery_workspace("pr-supervision-durable-dispatching").await;
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("seed workspace");
+    let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
+    let active_run = agent_run_repo
+        .create(AgentRun::new(conversation_id.clone()))
+        .await
+        .expect("seed active dispatch run");
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        conversation_id.clone(),
+        AgentWorkspaceRepairSource::BaseUpdate,
+        AgentWorkspaceRepairContinuation::UpdateOnly,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    attempt.phase = AgentWorkspaceRepairPhase::Dispatching;
+    attempt.reserved_agent_run_id = Some(active_run.id.clone());
+    let durable_attempt = match repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt,
+            reason: "in-flight durable repair".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("seed durable repair")
+    {
+        StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(attempt) => attempt,
+        outcome => panic!("expected a new durable repair, got {outcome:?}"),
+    };
+
+    let mut durable_state = AppState::new_test();
+    durable_state.agent_conversation_workspace_repo = workspace_repo.clone();
+    durable_state.agent_workspace_repair_repo = repair_repo.clone();
+    durable_state.agent_run_repo = agent_run_repo.clone();
+    let github = Arc::new(MockGithubService::new());
+    let mut deps = recovery_deps(
+        Arc::clone(&workspace_repo),
+        Arc::new(MemoryProjectRepository::with_projects(vec![project])),
+        Arc::clone(&github),
+        Arc::clone(&agent_run_repo),
+    );
+    deps.durable_recovery_state = Some(Arc::new(durable_state));
+
+    let outcome = recover_agent_workspace_pr_supervision(
+        deps,
+        conversation_id.clone(),
+        AgentWorkspacePrSupervisionRecoveryTrigger::Startup,
+    )
+    .await
+    .expect("in-flight durable repair should veto PR supervision recovery");
+
+    assert_eq!(
+        outcome,
+        AgentWorkspacePrSupervisionRecoveryOutcome::Skipped("durable_repair_active")
+    );
+    let current = repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("read durable attempt")
+        .expect("durable attempt remains current");
+    assert_eq!(current.id, durable_attempt.id);
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Dispatching);
+    assert_eq!(github.state().check_pr_sync_state_calls, 0);
+    assert_eq!(github.state().fetch_pr_health_calls, 0);
+}
+
+#[tokio::test]
+async fn durable_recovery_without_repair_attempt_recovers_pr_supervision() {
+    let (_temp_dir, project, workspace, head_sha) =
+        setup_recovery_workspace("pr-supervision-durable-no-attempt").await;
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("seed workspace");
+    let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
+    let mut durable_state = AppState::new_test();
+    durable_state.agent_conversation_workspace_repo = workspace_repo.clone();
+    durable_state.agent_workspace_repair_repo = workspace_repo.clone();
+    durable_state.agent_run_repo = agent_run_repo.clone();
+    let github = Arc::new(MockGithubService::new());
+    github.will_return_sync_state(open_sync_state(&workspace.branch_name, &head_sha));
+    github.state().fetch_pr_health_result =
+        Some(Ok(healthy_pr_health(&workspace.branch_name, &head_sha)));
+    let mut deps = recovery_deps(
+        Arc::clone(&workspace_repo),
+        Arc::new(MemoryProjectRepository::with_projects(vec![project])),
+        Arc::clone(&github),
+        agent_run_repo,
+    );
+    deps.durable_recovery_state = Some(Arc::new(durable_state));
+
+    let outcome = recover_agent_workspace_pr_supervision(
+        deps,
+        conversation_id,
+        AgentWorkspacePrSupervisionRecoveryTrigger::Startup,
+    )
+    .await
+    .expect("missing durable repair should allow PR supervision recovery");
+
+    assert_eq!(
+        outcome,
+        AgentWorkspacePrSupervisionRecoveryOutcome::Recovered {
+            pr_number: 257,
+            head_sha,
+        }
+    );
+    assert_eq!(github.state().check_pr_sync_state_calls, 1);
+    assert_eq!(github.state().fetch_pr_health_calls, 1);
+}
+
+#[tokio::test]
 async fn retry_eligible_stale_pr_autofix_settlement_restarts_pr_polling() {
     let (_temp_dir, project, mut workspace, head_sha) =
         setup_recovery_workspace("pr-supervision-retry-eligible").await;
