@@ -175,19 +175,17 @@ fn ensure_sufficient_free_space(conn: &Connection) -> AppResult<()> {
             return Ok(());
         }
     };
-    let available_bytes = match u64::try_from(filesystem.blocks_available()).ok().and_then(
-        |blocks| {
-            u64::try_from(filesystem.fragment_size())
-                .ok()
-                .and_then(|fragment_size| blocks.checked_mul(fragment_size))
-        },
-    ) {
-        Some(bytes) => bytes,
-        None => {
-            tracing::warn!("chat message block rebuild: skipping free-space preflight because statvfs values overflowed");
-            return Ok(());
-        }
-    };
+    let available_bytes =
+        match filesystem
+            .blocks_available()
+            .checked_mul(filesystem.fragment_size())
+        {
+            Some(bytes) => bytes,
+            None => {
+                tracing::warn!("chat message block rebuild: skipping free-space preflight because statvfs values overflowed");
+                return Ok(());
+            }
+        };
 
     check_free_space(required_bytes, available_bytes)
 }
