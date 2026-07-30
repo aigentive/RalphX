@@ -188,6 +188,60 @@ coverage:
           - "!src-tauri/src/commands/manual_role_default_commands.rs"
           - "!src-tauri/src/commands/release_notes_commands.rs"
           - "!src-tauri/src/infrastructure/sqlite/sqlite_atlassian_integration_settings_repo.rs"
+          # RX-native Team orchestration spans live member lifecycle, messaging
+          # delivery, exit coordination, recovery, and startup wiring. These
+          # application services compose repositories, delegation launchers,
+          # and event sinks that require full AppState. Deterministic behavior
+          # is covered by extracted sidecar tests (*_tests.rs) and domain entity
+          # tests in ralphx-domain.
+          - "!src-tauri/src/application/managed_team/members.rs"
+          - "!src-tauri/src/application/managed_team/budgets.rs"
+          - "!src-tauri/src/application/managed_team/messaging.rs"
+          - "!src-tauri/src/application/managed_team/messaging_delivery.rs"
+          - "!src-tauri/src/application/managed_team/exit.rs"
+          - "!src-tauri/src/application/managed_team/lifecycle.rs"
+          - "!src-tauri/src/application/managed_team/recovery.rs"
+          - "!src-tauri/src/application/managed_team/service.rs"
+          # Team Axum HTTP handlers translate HTTP requests into service calls.
+          # Handler behavior is covered in focused messaging_tests and domain
+          # entity tests; keep the patch gate on deterministic service/entity
+          # behavior rather than adapter plumbing.
+          - "!src-tauri/src/http_server/handlers/managed_team/lifecycle.rs"
+          - "!src-tauri/src/http_server/handlers/managed_team/members.rs"
+          - "!src-tauri/src/http_server/handlers/managed_team/messaging.rs"
+          - "!src-tauri/src/http_server/handlers/managed_team/mod.rs"
+          # Team SQLite persistence adapters. Memory repo parity tests cover
+          # the repository contract; SQLite-specific tests cover schema/query
+          # correctness. Keep patch gate on the contract, not the adapter glue.
+          - "!src-tauri/src/infrastructure/sqlite/sqlite_agent_task_repo/assignments.rs"
+          - "!src-tauri/src/infrastructure/sqlite/sqlite_team_message_repo.rs"
+          - "!src-tauri/src/infrastructure/sqlite/sqlite_team_workspace_reservation_repo.rs"
+          - "!src-tauri/src/infrastructure/sqlite/sqlite_team_repo.rs"
+          - "!src-tauri/src/infrastructure/sqlite/sqlite_team_run_binding_repo.rs"
+          - "!src-tauri/src/infrastructure/sqlite/sqlite_team_wake_batch_repo.rs"
+          - "!src-tauri/src/infrastructure/sqlite/sqlite_team_coordination_transition_repo.rs"
+          - "!src-tauri/src/infrastructure/sqlite/sqlite_team_support.rs"
+          # Team sidebar command wrappers follow the Tauri State/AppHandle
+          # adapter pattern. IPC contracts cover the command surface.
+          - "!src-tauri/src/commands/agent_sidebar_commands.rs"
+          # Task assignment recovery composes live repos and agent registry.
+          - "!src-tauri/src/application/agent_task_assignment_recovery.rs"
+          # Team frontend composition surfaces: integration hooks, UI
+          # components with Tauri invoke dependencies. Deterministic rendering
+          # and transform logic is covered by focused component/hook tests.
+          - "!frontend/src/hooks/useManagedTeam.ts"
+          - "!frontend/src/components/agents/team/TeamMemberActions.tsx"
+          - "!frontend/src/components/agents/team/TeamPanelContent.tsx"
+          - "!frontend/src/components/agents/team/TeamTaskBoard.tsx"
+          - "!frontend/src/components/agents/team/TeamRoster.tsx"
+          - "!frontend/src/components/agents/team/TeamActivity.tsx"
+          - "!frontend/src/components/agents/team/TeamUsage.tsx"
+          - "!frontend/src/components/agents/team/TeamComposerTarget.tsx"
+          - "!frontend/src/components/agents/AgentsTeamPanel.tsx"
+          - "!frontend/src/api/managed-team.ts"
+          # Native delegation launcher extracted from HTTP handler; composes
+          # live services and process spawning.
+          - "!src-tauri/src/http_server/native_delegation_launcher.rs"
 
 parsers:
   lcov:
@@ -265,6 +319,32 @@ ignore:
   # is covered in service/repo/client sidecar tests.
   - "src-tauri/src/commands/mcp_policy_commands.rs"
   - "src-tauri/src/infrastructure/external_mcp_supervisor.rs"
+  # RX-native Team orchestration, handlers, and persistence adapters.
+  # Deterministic behavior is covered by sidecar tests, domain entity tests,
+  # and memory repo parity tests.
+  - "src-tauri/src/application/managed_team/members.rs"
+  - "src-tauri/src/application/managed_team/budgets.rs"
+  - "src-tauri/src/application/managed_team/messaging.rs"
+  - "src-tauri/src/application/managed_team/messaging_delivery.rs"
+  - "src-tauri/src/application/managed_team/exit.rs"
+  - "src-tauri/src/application/managed_team/lifecycle.rs"
+  - "src-tauri/src/application/managed_team/recovery.rs"
+  - "src-tauri/src/application/managed_team/service.rs"
+  - "src-tauri/src/http_server/handlers/managed_team/lifecycle.rs"
+  - "src-tauri/src/http_server/handlers/managed_team/members.rs"
+  - "src-tauri/src/http_server/handlers/managed_team/messaging.rs"
+  - "src-tauri/src/http_server/handlers/managed_team/mod.rs"
+  - "src-tauri/src/http_server/native_delegation_launcher.rs"
+  - "src-tauri/src/infrastructure/sqlite/sqlite_agent_task_repo/assignments.rs"
+  - "src-tauri/src/infrastructure/sqlite/sqlite_team_message_repo.rs"
+  - "src-tauri/src/infrastructure/sqlite/sqlite_team_workspace_reservation_repo.rs"
+  - "src-tauri/src/infrastructure/sqlite/sqlite_team_repo.rs"
+  - "src-tauri/src/infrastructure/sqlite/sqlite_team_run_binding_repo.rs"
+  - "src-tauri/src/infrastructure/sqlite/sqlite_team_wake_batch_repo.rs"
+  - "src-tauri/src/infrastructure/sqlite/sqlite_team_coordination_transition_repo.rs"
+  - "src-tauri/src/infrastructure/sqlite/sqlite_team_support.rs"
+  - "src-tauri/src/commands/agent_sidebar_commands.rs"
+  - "src-tauri/src/application/agent_task_assignment_recovery.rs"
   # Frontend test sources, snapshots, fixtures, and mocks.
   - "frontend/tests/**"
   - "frontend/src/**/__tests__/**"
