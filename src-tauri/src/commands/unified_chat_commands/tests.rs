@@ -10162,6 +10162,32 @@ fn timeline_item_response_builds_tool_block_with_detail_ref_and_diff_context() {
 }
 
 #[test]
+fn timeline_item_response_reconstructs_tool_block_without_raw_payload() {
+    let conversation_id = ChatConversationId::new();
+    let message_id = ChatMessageId::from_string("assistant-message-no-raw-payload");
+    let mut item = ChatTimelineItem::for_message_block(
+        message_id,
+        conversation_id,
+        0,
+        MessageRole::Orchestrator,
+        ChatTimelineItemKind::ToolUse,
+    );
+    item.tool_call_id = Some("tool-bash".to_string());
+    item.tool_name = Some("bash".to_string());
+    item.input_json = Some(r#"{"command":"cargo test"}"#.to_string());
+    item.result_json = Some(r#""ok""#.to_string());
+
+    let response = AgentTimelineItemResponse::from(item);
+    let tool = response.tool_call.expect("tool response");
+
+    assert_eq!(tool["id"], "tool-bash");
+    assert_eq!(tool["name"], "bash");
+    assert_eq!(tool["arguments"]["command"], "cargo test");
+    assert_eq!(tool["result"], "ok");
+    assert!(tool.get("diff_context").is_none());
+}
+
+#[test]
 fn preview_tool_payloads_preserves_parseable_mcp_artifact_preview() {
     let artifact_content = "Detailed artifact line.\n".repeat(600);
     let artifact = json!({

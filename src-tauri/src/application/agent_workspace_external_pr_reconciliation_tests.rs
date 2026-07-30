@@ -1,13 +1,16 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
 
 use async_trait::async_trait;
 
 use crate::application::agent_workspace_external_pr_reconciliation::{
     external_pr_reconciliation_skip_reason, reconcile_agent_workspace_external_pr,
     reconcile_recent_agent_workspace_external_prs_on_startup,
-    schedule_agent_workspace_external_pr_reconciliation,
+    schedule_agent_workspace_external_pr_reconciliation_with_lazy_deps,
     AgentWorkspaceExternalPrReconciliationDeps, AgentWorkspaceExternalPrReconciliationOutcome,
     AgentWorkspaceExternalPrReconciliationTrigger,
 };
@@ -1204,22 +1207,34 @@ async fn scheduled_reconciliation_deduplicates_recent_workspace_loads_until_forc
     let (deps, _workspace_repo) =
         deps_with_workspace(project, workspace.clone(), github.clone()).await;
 
-    schedule_agent_workspace_external_pr_reconciliation(
-        deps.clone(),
+    let factory_calls = Arc::new(AtomicUsize::new(0));
+    let first_factory_calls = Arc::clone(&factory_calls);
+    let first_deps = deps.clone();
+    schedule_agent_workspace_external_pr_reconciliation_with_lazy_deps(
+        move || {
+            first_factory_calls.fetch_add(1, Ordering::SeqCst);
+            first_deps
+        },
         conversation_id.clone(),
         AgentWorkspaceExternalPrReconciliationTrigger::WorkspaceLoad,
         false,
     );
     wait_for_latest_pr_lookup_calls(&github, 1).await;
 
-    schedule_agent_workspace_external_pr_reconciliation(
-        deps.clone(),
+    let duplicate_factory_calls = Arc::clone(&factory_calls);
+    let duplicate_deps = deps.clone();
+    schedule_agent_workspace_external_pr_reconciliation_with_lazy_deps(
+        move || {
+            duplicate_factory_calls.fetch_add(1, Ordering::SeqCst);
+            duplicate_deps
+        },
         conversation_id.clone(),
         AgentWorkspaceExternalPrReconciliationTrigger::WorkspaceLoad,
         false,
     );
     tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     assert_eq!(github.state().find_latest_pr_by_head_branch_calls, 1);
+    assert_eq!(factory_calls.load(Ordering::SeqCst), 1);
 
     github.set_find_latest_pr_by_head_branch(Ok(Some(PrBranchMatch {
         number: 47,
@@ -1230,11 +1245,16 @@ async fn scheduled_reconciliation_deduplicates_recent_workspace_loads_until_forc
         updated_at: Some("2026-05-11T22:25:00Z".to_string()),
         author_login: None,
     })));
-    schedule_agent_workspace_external_pr_reconciliation(
-        deps,
+    let forced_factory_calls = Arc::clone(&factory_calls);
+    schedule_agent_workspace_external_pr_reconciliation_with_lazy_deps(
+        move || {
+            forced_factory_calls.fetch_add(1, Ordering::SeqCst);
+            deps
+        },
         conversation_id,
         AgentWorkspaceExternalPrReconciliationTrigger::AgentRunCompleted,
         true,
     );
     wait_for_latest_pr_lookup_calls(&github, 2).await;
+    assert_eq!(factory_calls.load(Ordering::SeqCst), 2);
 }

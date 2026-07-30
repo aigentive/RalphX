@@ -75,3 +75,43 @@ fn global_mcp_policy_path_uses_explicit_ralphx_config_root() {
         PathBuf::from("/tmp/user-config/.ralphx/mcp.yaml")
     );
 }
+
+#[test]
+fn database_maintenance_dir_is_under_app_data_dir() {
+    let paths = AppPaths::new("/tmp/ralphx-app-data", None);
+
+    assert_eq!(
+        paths.database_maintenance_dir(),
+        PathBuf::from("/tmp/ralphx-app-data/database-maintenance")
+    );
+}
+
+#[test]
+fn database_compaction_marker_path_is_under_maintenance_dir() {
+    let paths = AppPaths::new("/tmp/ralphx-app-data", None);
+
+    assert_eq!(
+        paths.database_compaction_marker_path(),
+        PathBuf::from("/tmp/ralphx-app-data/database-maintenance/compact-on-next-launch")
+    );
+}
+
+#[test]
+fn database_backup_dir_is_under_maintenance_dir() {
+    let paths = AppPaths::new("/tmp/ralphx-app-data", None);
+
+    assert_eq!(
+        paths.database_backup_dir(),
+        PathBuf::from("/tmp/ralphx-app-data/database-maintenance/backups")
+    );
+}
+
+#[test]
+fn database_maintenance_paths_resolves_all_members() {
+    let paths = AppPaths::new("/tmp/ralphx-app-data", None);
+    let maint = paths.database_maintenance_paths().unwrap();
+
+    assert_eq!(maint.marker_path, paths.database_compaction_marker_path());
+    assert_eq!(maint.backup_dir, paths.database_backup_dir());
+    assert_eq!(maint.database_path, paths.database_path().unwrap());
+}

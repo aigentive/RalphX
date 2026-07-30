@@ -2867,7 +2867,11 @@ describe("AgentsPublishInlineDiffs", () => {
       const changes = [makeFileChange("src/Foo.tsx"), makeFileChange("src/Bar.tsx")];
       const originalResizeObserver = globalThis.ResizeObserver;
       const originalWindowResizeObserver = window.ResizeObserver;
+      const originalRequestAnimationFrame = window.requestAnimationFrame;
+      const originalCancelAnimationFrame = window.cancelAnimationFrame;
       const resizeCallbacks: ResizeObserverCallback[] = [];
+      const frameCallbacks: Array<{ callback: FrameRequestCallback; id: number }> = [];
+      let nextFrameId = 1;
 
       class TestResizeObserver {
         constructor(callback: ResizeObserverCallback) {
@@ -2884,6 +2888,20 @@ describe("AgentsPublishInlineDiffs", () => {
         configurable: true,
         writable: true,
         value: TestResizeObserver,
+      });
+      Object.defineProperty(window, "requestAnimationFrame", {
+        configurable: true,
+        writable: true,
+        value: (callback: FrameRequestCallback) => {
+          const id = nextFrameId++;
+          frameCallbacks.push({ callback, id });
+          return id;
+        },
+      });
+      Object.defineProperty(window, "cancelAnimationFrame", {
+        configurable: true,
+        writable: true,
+        value: () => {},
       });
       try {
         render(
@@ -2925,6 +2943,16 @@ describe("AgentsPublishInlineDiffs", () => {
           configurable: true,
           writable: true,
           value: originalWindowResizeObserver,
+        });
+        Object.defineProperty(window, "requestAnimationFrame", {
+          configurable: true,
+          writable: true,
+          value: originalRequestAnimationFrame,
+        });
+        Object.defineProperty(window, "cancelAnimationFrame", {
+          configurable: true,
+          writable: true,
+          value: originalCancelAnimationFrame,
         });
       }
     });
