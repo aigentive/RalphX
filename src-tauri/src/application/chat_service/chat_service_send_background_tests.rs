@@ -3552,10 +3552,14 @@ async fn finalize_structured_writes_chat_message_and_finalized_timeline_rows() {
         assistant_blocks[1].tool_status.as_deref(),
         Some("completed")
     );
+    assert!(
+        assistant_blocks[1].raw_block_json.is_none(),
+        "Read is not in the full-fidelity allowlist"
+    );
     assert!(assistant_blocks[1]
-        .raw_block_json
+        .input_json
         .as_deref()
-        .is_some_and(|raw| raw.contains("diff_context")));
+        .is_some_and(|raw| raw.contains("file_path")));
 }
 
 #[tokio::test]

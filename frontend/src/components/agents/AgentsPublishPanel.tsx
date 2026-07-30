@@ -81,11 +81,11 @@ import {
   statusActionButtonStyle,
 } from "./AgentsPublishActionBar";
 import { AgentsPublishChecksTab } from "./AgentsPublishChecksTab";
+import { AgentsPublishAutomationTab } from "./AgentsPublishAutomationTab";
 import {
-  AgentsPublishAutomationTab,
   deriveAgentsPublishAutomationSnapshot,
   type AgentsPublishAutomationSnapshot,
-} from "./AgentsPublishAutomationTab";
+} from "./agentsPublishAutomationSnapshot";
 import { PublishEventLog, selectPublishHistory } from "./AgentsPublishEventLog";
 import { PublishPipelineSteps } from "./AgentsPublishPipelineSteps";
 import {

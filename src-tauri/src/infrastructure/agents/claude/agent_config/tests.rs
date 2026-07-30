@@ -485,6 +485,127 @@ fn early_file_logging_falls_back_from_missing_or_malformed_runtime_config() {
 }
 
 #[test]
+fn early_file_logging_limits_prefer_environment_then_runtime_config() {
+    assert_eq!(
+        resolve_file_logging_limits_from_sources(
+            Some("42"),
+            Some("7"),
+            None,
+            "file_logging_max_bytes: 9\nfile_logging_keep_files: 3"
+        ),
+        (42, 7)
+    );
+
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let config_path = temp_dir.path().join("ralphx.yaml");
+    std::fs::write(
+        &config_path,
+        "file_logging_max_bytes: 12\nfile_logging_keep_files: 4\n",
+    )
+    .expect("write runtime config");
+
+    assert_eq!(
+        resolve_file_logging_limits_from_sources(
+            None,
+            None,
+            Some(&config_path),
+            "file_logging_max_bytes: 9\nfile_logging_keep_files: 3"
+        ),
+        (12, 4)
+    );
+}
+
+#[test]
+fn early_file_logging_zero_max_bytes_falls_back_to_default_from_any_source() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let config_path = temp_dir.path().join("ralphx.yaml");
+    std::fs::write(
+        &config_path,
+        "file_logging_max_bytes: 0\nfile_logging_keep_files: 4\n",
+    )
+    .expect("write runtime config");
+
+    // YAML zero must not produce a writer that records nothing.
+    let (max_bytes, keep_files) = resolve_file_logging_limits_from_sources(
+        None,
+        None,
+        Some(&config_path),
+        "file_logging_max_bytes: 9\nfile_logging_keep_files: 3",
+    );
+    assert_eq!(max_bytes, 1024 * 1024 * 1024);
+    assert_eq!(keep_files, 4);
+
+    // Environment zero was already rejected; it must fall through to config.
+    assert_eq!(
+        resolve_file_logging_limits_from_sources(
+            Some("0"),
+            None,
+            None,
+            "file_logging_max_bytes: 9\nfile_logging_keep_files: 3"
+        ),
+        (9, 3)
+    );
+}
+
+#[test]
+fn early_file_logging_limits_default_on_malformed_yaml() {
+    let defaults = (default_file_logging_max_bytes(), default_file_logging_keep_files());
+    assert_eq!(
+        resolve_file_logging_limits_from_sources(None, None, None, "totally: [broken"),
+        defaults,
+    );
+}
+
+#[test]
+fn early_file_logging_limits_missing_runtime_config_uses_embedded() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let missing = temp_dir.path().join("does-not-exist.yaml");
+    assert_eq!(
+        resolve_file_logging_limits_from_sources(
+            None,
+            None,
+            Some(&missing),
+            "file_logging_max_bytes: 42\nfile_logging_keep_files: 2"
+        ),
+        (42, 2)
+    );
+}
+
+#[test]
+fn early_file_logging_limits_keep_files_env_overrides_config() {
+    assert_eq!(
+        resolve_file_logging_limits_from_sources(
+            None,
+            Some("11"),
+            None,
+            "file_logging_max_bytes: 42\nfile_logging_keep_files: 2"
+        ),
+        (42, 11)
+    );
+}
+
+#[test]
+fn early_file_logging_limits_non_numeric_env_falls_through() {
+    assert_eq!(
+        resolve_file_logging_limits_from_sources(
+            Some("abc"),
+            Some("xyz"),
+            None,
+            "file_logging_max_bytes: 42\nfile_logging_keep_files: 2"
+        ),
+        (42, 2)
+    );
+}
+
+#[test]
+fn database_maintenance_config_yaml_deserializes_with_defaults() {
+    let yaml = "database_maintenance:\n  db_auto_compact_enabled: false\n";
+    let cfg: RalphxConfig = serde_yaml::from_str(yaml).unwrap();
+    assert!(!cfg.database_maintenance.db_auto_compact_enabled);
+    assert_eq!(cfg.database_maintenance.db_auto_compact_max_db_bytes, 2_147_483_648);
+}
+
+#[test]
 fn test_live_runtime_agents_no_longer_reference_deprecated_plugin_prompt_paths() {
     for agent in agent_configs() {
         assert!(
@@ -653,6 +774,19 @@ fn test_automations_config_env_overrides() {
             .get(&AgentHarnessKind::Codex)
             .map(String::as_str),
         Some("gpt-5.4")
+    );
+}
+
+#[test]
+fn resolve_file_logging_limits_early_returns_positive_defaults() {
+    let (max_bytes, keep_files) = resolve_file_logging_limits_early();
+    assert!(
+        max_bytes > 0,
+        "default max_bytes must be positive, got {max_bytes}"
+    );
+    assert!(
+        keep_files > 0,
+        "default keep_files must be positive, got {keep_files}"
     );
 }
 
@@ -3017,6 +3151,7 @@ fn test_env_override_activity_page_false() {
         external_mcp: runtime_config::ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: runtime_config::DatabaseMaintenanceConfig::default(),
     };
     // Start with activity_page enabled (default), apply "false" override
     runtime_config::apply_env_overrides_with_lookup(&mut cfg, &|name| match name {
@@ -3045,6 +3180,7 @@ fn test_env_override_true_value_enables_flag() {
         verification: runtime_config::VerificationConfig::default(),
         external_mcp: runtime_config::ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
+        database_maintenance: runtime_config::DatabaseMaintenanceConfig::default(),
         ui_feature_flags: UiFeatureFlagsConfig {
             activity_page: false,
             extensibility_page: false,
@@ -3105,6 +3241,7 @@ fn test_env_override_atlassian_oauth() {
         external_mcp: runtime_config::ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: runtime_config::DatabaseMaintenanceConfig::default(),
     };
 
     runtime_config::apply_env_overrides_with_lookup(&mut cfg, &|name| match name {
@@ -3139,6 +3276,7 @@ fn test_env_override_ticketing_dashboard() {
         external_mcp: runtime_config::ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: runtime_config::DatabaseMaintenanceConfig::default(),
     };
 
     runtime_config::apply_env_overrides_with_lookup(&mut cfg, &|name| match name {

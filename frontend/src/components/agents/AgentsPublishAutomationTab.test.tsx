@@ -6,10 +6,8 @@ import { chatApi } from "@/api/chat";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { createTestQueryClient } from "@/test/store-utils";
 import { conversationWorkspaceFixture } from "./agentsTestFixtures";
-import {
-  AgentsPublishAutomationTab,
-  deriveAgentsPublishAutomationSnapshot,
-} from "./AgentsPublishAutomationTab";
+import { AgentsPublishAutomationTab } from "./AgentsPublishAutomationTab";
+import { deriveAgentsPublishAutomationSnapshot } from "./agentsPublishAutomationSnapshot";
 
 afterEach(() => {
   vi.restoreAllMocks();
