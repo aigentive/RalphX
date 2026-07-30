@@ -55,6 +55,33 @@ async fn start_listener(
     start_listener_with_runtime(test_listener_runtime(), handle, store, provider, tailscale).await
 }
 
+/// Starts the listener while recording — and standing in for — the address exposure policy
+/// resolved.
+///
+/// Direct-tailnet exposure resolves a CGNAT address off the host's tailnet interface. A CI
+/// runner has no such address assigned, so binding it verbatim fails with `AddrNotAvailable`
+/// before the start sequence reaches the behaviour under test. The redirect binds an ephemeral
+/// loopback socket instead and hands back what policy chose, so the assertion on the resolved
+/// address stays exactly as strong while the socket becomes machine-independent.
+async fn start_listener_recording_resolved_address(
+    handle: &RemoteListenerHandle,
+    store: &RemoteHostSettingsStore,
+    provider: &dyn super::settings::TailnetSelfAddressProvider,
+    tailscale: &dyn TailscaleCommandRunner,
+) -> (
+    Result<SocketAddr, RemoteListenerError>,
+    Arc<Mutex<Vec<SocketAddr>>>,
+) {
+    let resolved: Arc<Mutex<Vec<SocketAddr>>> = Arc::new(Mutex::new(Vec::new()));
+    let recorder = Arc::clone(&resolved);
+    let runtime = test_listener_runtime().with_bind_redirect(Arc::new(move |address| {
+        recorder.lock().expect("resolved address log").push(address);
+        SocketAddr::from(([127, 0, 0, 1], 0))
+    }));
+    let result = start_listener_with_runtime(runtime, handle, store, provider, tailscale).await;
+    (result, resolved)
+}
+
 async fn auto_start_if_enabled(
     handle: &RemoteListenerHandle,
     store: &RemoteHostSettingsStore,
@@ -675,11 +702,26 @@ async fn successful_tailnet_direct_start_never_changes_serve_configuration() {
     let handle = RemoteListenerHandle::new();
     let runner = RecordingTailscaleCommandRunner::default();
 
-    let address = start_listener(&handle, &store, &ConfiguredTailnetProvider, &runner)
-        .await
-        .expect("direct exposure should bind a validated tailnet address");
+    let (started, resolved) = start_listener_recording_resolved_address(
+        &handle,
+        &store,
+        &ConfiguredTailnetProvider,
+        &runner,
+    )
+    .await;
+    started.expect("direct exposure should bind a validated tailnet address");
 
-    assert_eq!(address.ip(), IpAddr::V4(Ipv4Addr::new(100, 101, 102, 103)));
+    assert_eq!(
+        resolved
+            .lock()
+            .expect("resolved address log")
+            .iter()
+            .map(SocketAddr::ip)
+            .collect::<Vec<_>>(),
+        vec![IpAddr::V4(Ipv4Addr::new(100, 101, 102, 103))],
+        "direct exposure must resolve the validated tailnet address, not loopback"
+    );
+    assert!(handle.is_running().await);
     assert!(runner.calls().is_empty());
 
     stop_listener(&handle, &store, &runner)

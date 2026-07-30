@@ -528,6 +528,16 @@ pub(crate) struct RemoteListenerRuntime {
     attachment_root: Result<PathBuf, String>,
     /// `None` when `server_boot` never managed the shared state; the core keeps `/api` unmounted.
     remount: Option<Arc<fetch_remount::SharedHttpAppState>>,
+    /// Redirects the *socket* the core binds, leaving the resolved bind address — the thing
+    /// exposure policy actually decides — untouched. Always `None` in production, where the
+    /// resolved address is bound verbatim.
+    ///
+    /// Direct-tailnet exposure resolves a CGNAT address off the host's tailnet interface. A
+    /// test that stubs the address provider gets an address no CI runner has assigned, so the
+    /// bind fails with `AddrNotAvailable` and the start path stops before the behaviour under
+    /// test. Redirecting only the socket lets those tests exercise the real start/persist/serve
+    /// sequence and still assert the address policy resolved.
+    bind_redirect: Option<Arc<dyn Fn(SocketAddr) -> SocketAddr + Send + Sync>>,
 }
 
 impl RemoteListenerRuntime {
@@ -541,6 +551,7 @@ impl RemoteListenerRuntime {
             remount: app_handle
                 .try_state::<Arc<fetch_remount::SharedHttpAppState>>()
                 .map(|shared| Arc::clone(shared.inner())),
+            bind_redirect: None,
         }
     }
 
@@ -555,7 +566,25 @@ impl RemoteListenerRuntime {
             invoke_dispatcher,
             attachment_root: Err("no app data dir in tests".to_string()),
             remount: None,
+            bind_redirect: None,
         }
+    }
+
+    /// Test resolution that binds somewhere other than the address exposure policy resolved.
+    ///
+    /// The redirect is handed the resolved address and returns the socket to bind; callers use
+    /// it to record what policy chose and hand back a bindable stand-in.
+    ///
+    /// Read by the listener test leg; a `--all-features` lib build compiles no test targets, so
+    /// its only caller is absent there.
+    #[cfg(any(test, feature = "test-utils"))]
+    #[allow(dead_code)]
+    pub(crate) fn with_bind_redirect(
+        mut self,
+        redirect: Arc<dyn Fn(SocketAddr) -> SocketAddr + Send + Sync>,
+    ) -> Self {
+        self.bind_redirect = Some(redirect);
+        self
     }
 }
 
@@ -610,7 +639,13 @@ pub(crate) async fn start_listener_with_runtime(
         }
     };
 
-    let listener = match TcpListener::bind(bind_address).await {
+    // Identity in production (`bind_redirect` is always `None` there): the resolved address is
+    // the socket. Only a test harness substitutes a bindable stand-in.
+    let socket_address = runtime
+        .bind_redirect
+        .as_ref()
+        .map_or(bind_address, |redirect| redirect(bind_address));
+    let listener = match TcpListener::bind(socket_address).await {
         Ok(listener) => listener,
         Err(source) => {
             tracing::error!(address = %bind_address, %source, "Remote listener failed to bind");
