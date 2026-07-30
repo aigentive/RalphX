@@ -384,7 +384,9 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
                 workspace.as_ref(),
                 ref_kind,
             );
-            let sort_at = conversation.created_at;
+            let sort_at = conversation
+                .last_message_at
+                .unwrap_or(conversation.updated_at);
             let is_pinned = pinned_conversation_ids.contains(&conversation.id.as_str());
             let is_priority = priority_conversation_ids.contains(&conversation.id.as_str());
             // Captured before the response shadows `conversation`: the response
@@ -483,7 +485,9 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
                 .map(|activity| activity.fingerprint.as_str()),
         );
         let action_verb = action_verb_for_row(publication_state, latest_run_status, None, ref_kind);
-        let sort_at = conversation.created_at;
+        let sort_at = conversation
+            .last_message_at
+            .unwrap_or(conversation.updated_at);
         let is_pinned = pinned_conversation_ids.contains(&conversation.id.as_str());
         let is_priority = priority_conversation_ids.contains(&conversation.id.as_str());
         let conversation_id = conversation.id;
@@ -1418,6 +1422,65 @@ mod tests {
             .create(conversation)
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn latest_sort_uses_last_message_or_updated_activity_not_creation_time() {
+        let state = AppState::new_test();
+        let project = create_project(&state, "latest-activity-sort").await;
+        let now = Utc::now();
+
+        let mut created_most_recently = ChatConversation::new_project(project.id.clone());
+        created_most_recently.title = Some("Stale activity".to_string());
+        created_most_recently.created_at = now;
+        created_most_recently.updated_at = now - chrono::Duration::minutes(30);
+        created_most_recently.last_message_at = Some(now - chrono::Duration::minutes(30));
+        let created_most_recently = state
+            .chat_conversation_repo
+            .create(created_most_recently)
+            .await
+            .unwrap();
+
+        let mut fallback_to_updated = ChatConversation::new_project(project.id.clone());
+        fallback_to_updated.title = Some("Updated activity".to_string());
+        fallback_to_updated.created_at = now - chrono::Duration::minutes(1);
+        fallback_to_updated.updated_at = now - chrono::Duration::minutes(10);
+        let fallback_to_updated = state
+            .chat_conversation_repo
+            .create(fallback_to_updated)
+            .await
+            .unwrap();
+
+        let mut latest_message = ChatConversation::new_project(project.id.clone());
+        latest_message.title = Some("Latest message".to_string());
+        latest_message.created_at = now - chrono::Duration::minutes(2);
+        latest_message.updated_at = now - chrono::Duration::minutes(20);
+        latest_message.last_message_at = Some(now);
+        let latest_message = state
+            .chat_conversation_repo
+            .create(latest_message)
+            .await
+            .unwrap();
+
+        let response =
+            list_agent_sidebar_conversations_for_app_state(sidebar_input(&project.id), &state)
+                .await
+                .expect("sidebar conversations should load");
+        let conversation_ids = response
+            .groups
+            .iter()
+            .flat_map(|group| group.rows.iter())
+            .map(|row| row.conversation.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            conversation_ids,
+            vec![
+                latest_message.id.as_str(),
+                fallback_to_updated.id.as_str(),
+                created_most_recently.id.as_str(),
+            ]
+        );
     }
 
     async fn create_automation_conversation(
