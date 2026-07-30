@@ -59,6 +59,9 @@ const uiState = vi.hoisted(() => ({
   activeModal: null as string | null,
   modalContext: undefined as Record<string, unknown> | undefined,
   closeModal: vi.fn(),
+  // Client-owned flags live here, not in the env-scoped `useFeatureFlags()` query
+  // (which strips them). The nav leaf gate reads this copy.
+  featureFlags: {} as Record<string, boolean>,
 }));
 
 vi.mock("@/stores/uiStore", () => ({
@@ -190,6 +193,7 @@ describe("SettingsDialog", () => {
     uiState.modalContext = undefined;
     uiState.closeModal = mockCloseModal;
     featureFlags.agentPersonas = false;
+    uiState.featureFlags = {};
     settingsTasksEnabledRef.current = true;
     vi.mocked(invoke).mockResolvedValue(undefined);
   });
@@ -681,6 +685,39 @@ describe("SettingsDialog", () => {
           "granola",
         ),
       );
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // Client-owned flag gate
+  // --------------------------------------------------------------------------
+
+  describe("remoteEnvironments leaf gate", () => {
+    /**
+     * The gate reads `uiStore`, NOT `useFeatureFlags()` — that query strips
+     * client-owned flags, so wiring the gate to it left both leaves permanently
+     * hidden with `remote_environments: true` in config. Driving the store copy is
+     * what makes this test able to fail.
+     */
+    function leafOptionNames(): string[] {
+      return Array.from(
+        screen.getByRole("combobox", { name: "Settings section" }).querySelectorAll("option"),
+      ).map((option) => option.textContent ?? "");
+    }
+
+    it("hides both leaves while the flag is off", () => {
+      uiState.activeModal = "settings";
+      render(<SettingsDialog {...defaultProps} />);
+      expect(leafOptionNames()).not.toContain("Remote Access");
+      expect(leafOptionNames()).not.toContain("Connections");
+    });
+
+    it("offers both leaves once the client-owned flag is on", () => {
+      uiState.featureFlags = { remoteEnvironments: true };
+      uiState.activeModal = "settings";
+      render(<SettingsDialog {...defaultProps} />);
+      expect(leafOptionNames()).toContain("Remote Access");
+      expect(leafOptionNames()).toContain("Connections");
     });
   });
 

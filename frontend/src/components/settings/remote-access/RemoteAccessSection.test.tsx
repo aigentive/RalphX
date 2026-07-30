@@ -20,19 +20,24 @@ import {
 } from "@/api/remote-host";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
+import { useUiStore } from "@/stores/uiStore";
+
 import { RemoteAccessSection } from "./RemoteAccessSection";
 
 // ---------------------------------------------------------------------------
 // Mocks
 // ---------------------------------------------------------------------------
 
-const flagsState = vi.hoisted(() => ({ remoteEnvironments: true }));
-
-vi.mock("@/hooks/useFeatureFlags", () => ({
-  useFeatureFlags: () => ({
-    data: { remoteEnvironments: flagsState.remoteEnvironments },
-  }),
-}));
+// `remoteEnvironments` is client-owned, so the gate must read the real uiStore
+// copy. Mocking `useFeatureFlags` here would hide the authority regression this
+// pane already shipped once: that hook strips client-owned flags, so reading the
+// gate from it leaves the pane permanently dark.
+function setRemoteFlag(enabled: boolean) {
+  useUiStore.getState().setFeatureFlags({
+    ...useUiStore.getState().featureFlags,
+    remoteEnvironments: enabled,
+  });
+}
 
 const busState = vi.hoisted(() => {
   const handlers = new Map<string, Set<(payload: unknown) => void>>();
@@ -166,7 +171,7 @@ async function hydrate() {
 beforeEach(() => {
   vi.clearAllMocks();
   busState.handlers.clear();
-  flagsState.remoteEnvironments = true;
+  setRemoteFlag(true);
   api.getListenerStatus.mockResolvedValue(baseStatus);
   api.startListener.mockResolvedValue({ ...baseStatus, enabled: true, running: true });
   api.stopListener.mockResolvedValue({ ...baseStatus, enabled: false, running: false });
@@ -213,7 +218,7 @@ afterEach(() => {
 
 describe("feature gating", () => {
   it("renders nothing and never invokes while remoteEnvironments is off", async () => {
-    flagsState.remoteEnvironments = false;
+    setRemoteFlag(false);
     renderSection();
     expect(screen.queryByTestId("remote-access-section")).not.toBeInTheDocument();
     // Give any wrongly scheduled hydration time to fire.

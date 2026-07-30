@@ -33,7 +33,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { useFeatureFlags } from "@/hooks/useFeatureFlags";
+import { useClientOwnedFeatureFlag } from "@/lib/remote/feature-flag-authority";
 import { clearEnvScopedStorage } from "@/lib/remote/env-scoped-storage";
 import { useEnvironmentStore } from "@/stores/environmentStore";
 
@@ -83,9 +83,11 @@ function presentRow(environment: RemoteEnvironmentSummary): RowPresentation {
 }
 
 export function ConnectionsSection() {
-  const { data: flags } = useFeatureFlags();
+  // Client-owned flag: whether THIS client runs remote environments is never a
+  // host's answer, so read the local uiStore copy, not the env-scoped query.
+  const enabled = useClientOwnedFeatureFlag("remoteEnvironments");
   // Inert while the flag is off (§8 flags note): no shell, no invokes, no listeners.
-  if (!flags.remoteEnvironments) {
+  if (!enabled) {
     return null;
   }
   return <ConnectionsPanel />;

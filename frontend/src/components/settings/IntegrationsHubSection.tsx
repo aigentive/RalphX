@@ -23,7 +23,7 @@ import {
   isLinearConnected,
   useLinearIntegration,
 } from "@/hooks/useLinearIntegration";
-import { useFeatureFlags } from "@/hooks/useFeatureFlags";
+import { useClientOwnedFeatureFlag } from "@/lib/remote/feature-flag-authority";
 
 import { sectionMeta, type SettingsSectionId } from "./settings-registry";
 
@@ -130,7 +130,8 @@ export function IntegrationsHubSection({
   const clickup = useClickUpIntegration();
   const granola = useGranolaIntegration();
   const apiKeys = useApiKeys();
-  const { data: featureFlags } = useFeatureFlags();
+  // Client-owned flag — the env-scoped query strips it, so it must come from uiStore.
+  const remoteEnvironments = useClientOwnedFeatureFlag("remoteEnvironments");
 
   const atlassianConnected = isAtlassianConnected(atlassian.settings);
   const githubConnected = github.data?.state === "authenticated";
@@ -189,7 +190,7 @@ export function IntegrationsHubSection({
 
   // Remote host/client panes ship dark behind `remoteEnvironments`; the hub is a
   // navigation surface, so a hidden leaf must not have a card pointing at it.
-  if (featureFlags?.remoteEnvironments === true) {
+  if (remoteEnvironments) {
     externalAccess.push(
       {
         section: "remote-access",

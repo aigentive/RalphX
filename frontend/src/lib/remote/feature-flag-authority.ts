@@ -75,6 +75,22 @@ export function getClientOwnedFeatureFlag(flag: ClientOwnedFeatureFlag): boolean
 }
 
 /**
+ * Reactive counterpart of `getClientOwnedFeatureFlag` for render-time gates.
+ *
+ * `uiStore.featureFlags` is filled by an async boot-time invoke, so a component
+ * that mounts before that resolves reads `undefined` and — with a non-reactive
+ * read — would stay dark forever. Gates that decide whether a surface renders
+ * (settings panes, hub cards, nav leaves) must subscribe; everything else should
+ * prefer the non-reactive `getClientOwnedFeatureFlag`.
+ *
+ * Reading these gates off `useFeatureFlags()` is the bug this exists to prevent:
+ * that hook strips client-owned keys, so the flag is permanently `undefined` there.
+ */
+export function useClientOwnedFeatureFlag(flag: ClientOwnedFeatureFlag): boolean {
+  return useUiStore((state) => state.featureFlags[flag] === true);
+}
+
+/**
  * Narrows an env-scoped flag payload to the host-behaviour flags, dropping any
  * client-owned key a host may have answered.
  *

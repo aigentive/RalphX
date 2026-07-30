@@ -30,7 +30,7 @@ import { CopyableRef } from "@/components/ui/copyable-ref";
 import { NoticeBanner } from "@/components/ui/notice-banner";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
-import { useFeatureFlags } from "@/hooks/useFeatureFlags";
+import { useClientOwnedFeatureFlag } from "@/lib/remote/feature-flag-authority";
 import { useEventBus } from "@/providers/EventProvider";
 
 import { usePaintBoundaryHydration } from "../usePaintBoundaryHydration";
@@ -625,9 +625,11 @@ function RemoteAccessPanel() {
 }
 
 export function RemoteAccessSection() {
-  const { data: flags } = useFeatureFlags();
+  // Client-owned flag: this pane exposes THIS host, so the answer must come from
+  // the local uiStore copy, never from the env-scoped (host-served) query.
+  const enabled = useClientOwnedFeatureFlag("remoteEnvironments");
   // Inert while the flag is off (§8 flags note): no shell, no invokes, no listeners.
-  if (!flags.remoteEnvironments) {
+  if (!enabled) {
     return null;
   }
   return <RemoteAccessPanel />;

@@ -19,7 +19,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { useFeatureFlags } from "@/hooks/useFeatureFlags";
+import { useClientOwnedFeatureFlag } from "@/lib/remote/feature-flag-authority";
 import { useUiStore } from "@/stores/uiStore";
 import type { ProjectSettings } from "@/types/settings";
 
@@ -165,11 +165,13 @@ export default function SettingsDialog({
     }
   }, [isOpen, modalContext, persistActiveSection]);
 
-  const { data: featureFlags } = useFeatureFlags();
+  // `remoteEnvironments` is client-owned: `useFeatureFlags()` strips it, so the
+  // gate reads the local uiStore copy instead.
+  const remoteEnvironments = useClientOwnedFeatureFlag("remoteEnvironments");
   // Nav entries with `remoteEnvironments`-gated leaves stripped. The rail itself
   // renders the full seven entries (no gated entry is leaf-only), so only the
   // mobile leaf picker consumes the filtered list.
-  const navEntries = visibleSettingsNav(featureFlags ?? {});
+  const navEntries = visibleSettingsNav({ remoteEnvironments });
 
   const activeNav = navForSection(activeSection);
   const activeSectionMeta = sectionMeta(activeSection);

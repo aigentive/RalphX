@@ -2,6 +2,8 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { useUiStore } from "@/stores/uiStore";
+
 import { IntegrationsHubSection } from "./IntegrationsHubSection";
 
 const hooks = vi.hoisted(() => ({
@@ -11,10 +13,17 @@ const hooks = vi.hoisted(() => ({
   clickup: { connected: false, isLoading: false },
   granola: { connected: false, isLoading: false },
   apiKeys: { data: undefined as unknown, isLoading: false },
-  // The hub reads the flag to decide whether the remote-access/connections cards exist.
-  // Mocked like every other hook here so the component needs no QueryClientProvider.
-  featureFlags: { data: undefined as unknown },
 }));
+
+// `remoteEnvironments` is client-owned: the hub reads it from uiStore, never from
+// `useFeatureFlags()` (which strips client-owned keys to `undefined`). Driving the
+// real store here is what keeps that authority honest.
+function setRemoteFlag(enabled: boolean) {
+  useUiStore.getState().setFeatureFlags({
+    ...useUiStore.getState().featureFlags,
+    remoteEnvironments: enabled,
+  });
+}
 
 vi.mock("@/hooks/useAtlassianIntegration", async () => {
   const actual = await vi.importActual<
@@ -40,14 +49,6 @@ vi.mock("@/hooks/useGranolaIntegration", () => ({
 vi.mock("@/hooks/useApiKeys", () => ({
   useApiKeys: () => hooks.apiKeys,
 }));
-vi.mock("@/hooks/useFeatureFlags", async () => {
-  const actual =
-    await vi.importActual<typeof import("@/hooks/useFeatureFlags")>(
-      "@/hooks/useFeatureFlags",
-    );
-  return { ...actual, useFeatureFlags: () => hooks.featureFlags };
-});
-
 function renderHub() {
   const onNavigate = vi.fn();
   const onWarmSection = vi.fn();
@@ -72,7 +73,24 @@ describe("IntegrationsHubSection", () => {
     hooks.clickup = { connected: false, isLoading: false };
     hooks.granola = { connected: false, isLoading: false };
     hooks.apiKeys = { data: undefined, isLoading: false };
-    hooks.featureFlags = { data: undefined };
+    setRemoteFlag(false);
+  });
+
+  it("hides the remote cards while remoteEnvironments is off", () => {
+    renderHub();
+    expect(
+      screen.queryByTestId("integration-card-remote-access"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("integration-card-connections"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("adds the remote cards when the client-owned flag is on", () => {
+    setRemoteFlag(true);
+    renderHub();
+    expect(card("remote-access")).toBeInTheDocument();
+    expect(card("connections")).toBeInTheDocument();
   });
 
   it("renders a card for every integration and external-access target", () => {

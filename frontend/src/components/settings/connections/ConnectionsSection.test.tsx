@@ -15,18 +15,16 @@ import {
   LOCAL_ENVIRONMENT_ID,
   useEnvironmentStore,
 } from "@/stores/environmentStore";
+import { useUiStore } from "@/stores/uiStore";
 
 import { ConnectionsSection } from "./ConnectionsSection";
 
-const { listMock, removeMock, pairMock, previewMock, flagsMock } = vi.hoisted(
-  () => ({
-    listMock: vi.fn(),
-    removeMock: vi.fn(),
-    pairMock: vi.fn(),
-    previewMock: vi.fn(),
-    flagsMock: vi.fn(),
-  }),
-);
+const { listMock, removeMock, pairMock, previewMock } = vi.hoisted(() => ({
+  listMock: vi.fn(),
+  removeMock: vi.fn(),
+  pairMock: vi.fn(),
+  previewMock: vi.fn(),
+}));
 
 vi.mock("@/api/remote-environments", () => ({
   remoteEnvironmentsApi: {
@@ -39,9 +37,15 @@ vi.mock("@/api/remote-environments", () => ({
   },
 }));
 
-vi.mock("@/hooks/useFeatureFlags", () => ({
-  useFeatureFlags: () => flagsMock(),
-}));
+// `remoteEnvironments` is client-owned, so this pane reads the local uiStore copy.
+// Mocking `useFeatureFlags` instead would hide the authority regression the pane
+// already shipped once: that hook strips client-owned flags to `undefined`.
+function setRemoteFlag(enabled: boolean) {
+  useUiStore.getState().setFeatureFlags({
+    ...useUiStore.getState().featureFlags,
+    remoteEnvironments: enabled,
+  });
+}
 
 function summary(
   overrides: Partial<RemoteEnvironmentSummary> = {},
@@ -84,7 +88,7 @@ function resetStore(): void {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  flagsMock.mockReturnValue({ data: { remoteEnvironments: true } });
+  setRemoteFlag(true);
   listMock.mockResolvedValue([summary()]);
   removeMock.mockResolvedValue(null);
   localStorage.clear();
@@ -98,7 +102,7 @@ afterEach(() => {
 
 describe("ConnectionsSection — dark ship", () => {
   it("renders nothing and fires no invoke while the flag is off", async () => {
-    flagsMock.mockReturnValue({ data: { remoteEnvironments: false } });
+    setRemoteFlag(false);
     const { container } = render(<ConnectionsSection />);
 
     expect(container).toBeEmptyDOMElement();

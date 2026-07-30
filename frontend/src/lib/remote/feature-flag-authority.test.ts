@@ -7,6 +7,7 @@
  * one is invisible until someone pairs a host that is configured differently.
  */
 
+import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
@@ -14,6 +15,7 @@ import {
   getClientOwnedFeatureFlag,
   isClientOwnedFeatureFlag,
   stripClientOwnedFlags,
+  useClientOwnedFeatureFlag,
 } from "./feature-flag-authority";
 import { useUiStore } from "@/stores/uiStore";
 import type { FeatureFlags } from "@/types/feature-flags";
@@ -75,6 +77,24 @@ describe("client-owned feature flags", () => {
     expect(stripped.activityPage).toBe(true);
   });
 
+  it("re-renders a gate when the boot-time fetch resolves", () => {
+    // uiStore's flag arrives from an async module-load invoke. A non-reactive read
+    // in a render gate would latch `false` and never recover, which is why render
+    // gates use the hook rather than `getClientOwnedFeatureFlag`.
+    const { result } = renderHook(() =>
+      useClientOwnedFeatureFlag("remoteEnvironments")
+    );
+    expect(result.current).toBe(false);
+
+    act(() => {
+      useUiStore.getState().setFeatureFlags({
+        ...BASE_FLAGS,
+        remoteEnvironments: true,
+      });
+    });
+    expect(result.current).toBe(true);
+  });
+
   it("does not mutate the payload it strips", () => {
     const hostPayload = { ...BASE_FLAGS, remoteEnvironments: true } as FeatureFlags;
     stripClientOwnedFlags(hostPayload);
@@ -95,6 +115,24 @@ describe("authority wiring", () => {
     // env-scoped query — reading the host's answer here would be circular.
     expect(source).toContain('getClientOwnedFeatureFlag("remoteEnvironments")');
     // Match an IMPORT of the query hook, not the prose that explains why it is absent.
+    expect(source).not.toMatch(/import[^;]*useFeatureFlags/);
+  });
+
+  // The regression this guards actually shipped: all four settings gates read
+  // `useFeatureFlags()`, whose data has `remoteEnvironments` stripped, so the panes
+  // stayed dark with `remote_environments: true` in config. Their own suites mocked
+  // the hook and so proved nothing about the real authority.
+  it.each([
+    "../../components/settings/SettingsDialog.tsx",
+    "../../components/settings/IntegrationsHubSection.tsx",
+    "../../components/settings/remote-access/RemoteAccessSection.tsx",
+    "../../components/settings/connections/ConnectionsSection.tsx",
+  ])("keeps %s off the env-scoped query for remoteEnvironments", async (file) => {
+    const { readFileSync } = await import("node:fs");
+    const { resolve } = await import("node:path");
+    const source = readFileSync(resolve(__dirname, file), "utf8");
+
+    expect(source).toContain('useClientOwnedFeatureFlag("remoteEnvironments")');
     expect(source).not.toMatch(/import[^;]*useFeatureFlags/);
   });
 
