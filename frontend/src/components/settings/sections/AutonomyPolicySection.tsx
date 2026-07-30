@@ -1,9 +1,8 @@
-import { Workflow } from "lucide-react";
 
 import { useReviewSettings, useUpdateReviewSettings } from "@/hooks/useReviewSettings";
 
 import {
-  SectionCard,
+  SettingsSection,
   ToggleSettingRow,
 } from "../SettingsView.shared";
 
@@ -58,14 +57,8 @@ export default function AutonomyPolicySection({ embedded = false }: { embedded?:
     </>
   );
   return embedded ? rows : (
-    <SectionCard
-      icon={
-        <Workflow className="w-[18px] h-[18px] text-[var(--card-icon-color)]" />
-      }
-      title="Autonomy Policy"
-      description="Configure when agents can turn registered issues into follow-up work"
-    >
+    <SettingsSection>
       {rows}
-    </SectionCard>
+    </SettingsSection>
   );
 }

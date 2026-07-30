@@ -218,7 +218,6 @@ describe("WorkspaceReviewSection", () => {
     const user = userEvent.setup();
     render(<WorkspaceReviewSection />);
 
-    expect(screen.getByText("Workspace Review")).toBeInTheDocument();
     expect(screen.getByText("Effective: haiku · Medium")).toBeInTheDocument();
     expect(
       screen.getByText("Effective: gpt-5.4-mini · Medium"),

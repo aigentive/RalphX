@@ -1,8 +1,7 @@
-import { ShieldCheck } from "lucide-react";
 import { useReviewSettings, useUpdateReviewSettings } from "@/hooks/useReviewSettings";
 import {
   NumberSettingRow,
-  SectionCard,
+  SettingsSection,
   ToggleSettingRow,
 } from "../SettingsView.shared";
 
@@ -65,14 +64,8 @@ export default function ReviewPolicySection({ embedded = false }: { embedded?: b
     </>
   );
   return embedded ? rows : (
-    <SectionCard
-      icon={
-        <ShieldCheck className="w-[18px] h-[18px] text-[var(--card-icon-color)]" />
-      }
-      title="Review Policy"
-      description="Configure global review policy for all projects"
-    >
+    <SettingsSection>
       {rows}
-    </SectionCard>
+    </SettingsSection>
   );
 }

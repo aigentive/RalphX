@@ -109,7 +109,6 @@ describe("LinearIntegrationSettingsPanel", () => {
   it("shows Linear issue reference configuration status", () => {
     renderPanel();
 
-    expect(screen.getByText("Linear")).toBeInTheDocument();
     expect(screen.getByText("Issue references not ready")).toBeInTheDocument();
     expect(screen.queryByText("Webhook path")).not.toBeInTheDocument();
   });

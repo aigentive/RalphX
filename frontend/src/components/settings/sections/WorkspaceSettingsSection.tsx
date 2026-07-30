@@ -1,10 +1,9 @@
 import { useEffect, useState } from "react";
-import { BriefcaseBusiness } from "lucide-react";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { ProjectSettings } from "@/types/settings";
 
-import { SectionCard } from "../SettingsView.shared";
+import { SettingsSection } from "../SettingsView.shared";
 import ExecutionSection from "./ExecutionSection";
 import WorkspaceReviewSection from "./WorkspaceReviewSection";
 
@@ -24,11 +23,7 @@ export default function WorkspaceSettingsSection({
   const [tab, setTab] = useState<WorkspaceSettingsTab>(initialTab);
   useEffect(() => setTab(initialTab), [initialTab]);
   return (
-    <SectionCard
-      icon={<BriefcaseBusiness className="h-5 w-5" />}
-      title="Workspace"
-      description="Configure workspace publishing defaults and review behavior."
-    >
+    <SettingsSection>
       <Tabs value={tab} onValueChange={(value) => setTab(value as WorkspaceSettingsTab)}>
         <TabsList aria-label="Workspace settings">
           <TabsTrigger value="general">General</TabsTrigger>
@@ -52,6 +47,6 @@ export default function WorkspaceSettingsSection({
           <WorkspaceReviewSection embedded />
         </TabsContent>
       </Tabs>
-    </SectionCard>
+    </SettingsSection>
   );
 }
