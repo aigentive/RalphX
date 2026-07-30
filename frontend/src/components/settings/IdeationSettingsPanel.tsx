@@ -10,7 +10,7 @@
  */
 
 import { useState } from "react";
-import { ShieldCheck, ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -23,7 +23,7 @@ import { useIdeationSettings } from "@/hooks/useIdeationSettings";
 import { useConfirmation } from "@/hooks/useConfirmation";
 import { useUiStore } from "@/stores/uiStore";
 import type { ExternalIdeationOverrides } from "@/types/ideation-config";
-import { SectionCard, SettingRow, ToggleSettingRow } from "./SettingsView.shared";
+import { SettingsSection, SettingRow, ToggleSettingRow } from "./SettingsView.shared";
 
 // ============================================================================
 // 3-State Override Select
@@ -318,13 +318,9 @@ export function IdeationSettingsContent({
   );
   if (embedded) return body;
   return (
-    <SectionCard
-      icon={<ShieldCheck className="w-[18px] h-[18px] text-[var(--accent-primary)]" />}
-      title={surface === "planning" ? "Planning" : "Tasks"}
-      description={surface === "planning" ? "Configure automatic plan verification" : "Configure task and acceptance gates"}
-    >
+    <SettingsSection>
       {body}
-    </SectionCard>
+    </SettingsSection>
   );
 }
 

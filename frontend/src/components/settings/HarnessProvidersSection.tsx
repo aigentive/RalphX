@@ -10,7 +10,6 @@ import {
   FolderOpen,
   RefreshCw,
   RotateCcw,
-  ShieldCheck,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -51,7 +50,7 @@ import {
   providerCliUpdateToastMatchesInstalledStatus,
 } from "@/lib/provider-cli-update-toast";
 
-import { ErrorBanner, SectionCard } from "./SettingsView.shared";
+import { ErrorBanner, SettingsSection } from "./SettingsView.shared";
 
 const PROVIDER_LABELS: Record<string, string> = {
   claude: "Claude",
@@ -660,11 +659,7 @@ export function HarnessProvidersSection() {
   };
 
   return (
-    <SectionCard
-      icon={<ShieldCheck className="h-5 w-5" />}
-      title="Providers"
-      description="Validate CLI harnesses, enable agent providers, and choose the default used by new agent lanes."
-    >
+    <SettingsSection>
       {displayedError && (
         <ErrorBanner error={displayedError} onDismiss={() => undefined} />
       )}
@@ -1433,7 +1428,7 @@ export function HarnessProvidersSection() {
         </>
       )}
       <ConfirmationDialog {...confirmationDialogProps} />
-    </SectionCard>
+    </SettingsSection>
   );
 }
 

@@ -474,7 +474,6 @@ html[data-theme="light"] body {
 }
 
 [data-theme="light"] [data-testid="settings-dialog"] .settings-modal__crumbs .cur,
-[data-theme="light"] [data-testid="settings-dialog"] .settings-pane-head__title,
 [data-theme="light"] [data-testid="settings-dialog"] .settings-row__label,
 [data-theme="light"] [data-testid="settings-dialog"] .settings-diag-card__title,
 [data-theme="light"] [data-testid="settings-dialog"] .settings-nav__item[aria-current="page"],
@@ -490,7 +489,6 @@ html[data-theme="light"] body {
 }
 
 [data-theme="light"] [data-testid="settings-dialog"] .settings-modal__crumbs .lbl,
-[data-theme="light"] [data-testid="settings-dialog"] .settings-pane-head__sub,
 [data-theme="light"] [data-testid="settings-dialog"] .settings-section__label,
 [data-theme="light"] [data-testid="settings-dialog"] .settings-row__help,
 [data-theme="light"] [data-testid="settings-dialog"] .settings-diag-card__sub {

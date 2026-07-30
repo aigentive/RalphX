@@ -77,12 +77,9 @@ describe("SettingsView", () => {
 
     it("renders core sections", () => {
       render(<SettingsView />);
-      expect(screen.getByText("Capacity")).toBeInTheDocument();
-    });
-
-    it("renders section icons", () => {
-      render(<SettingsView />);
-      expect(screen.getByText("Configure project and global execution and ideation concurrency.")).toBeInTheDocument();
+      // Sections carry no headers of their own; identify them by their rows.
+      expect(screen.getByText("Max Concurrent Tasks")).toBeInTheDocument();
+      expect(screen.getByText("Project Ideation Cap")).toBeInTheDocument();
     });
   });
 
@@ -251,13 +248,6 @@ describe("SettingsView", () => {
       await user.click(dismissButton);
 
       expect(screen.queryByText(errorMessage)).not.toBeInTheDocument();
-    });
-  });
-
-  describe("Premium Design Elements", () => {
-    it("renders capacity section card", () => {
-      render(<SettingsView />);
-      expect(screen.getByText("Capacity")).toBeInTheDocument();
     });
   });
 

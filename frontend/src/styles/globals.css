@@ -891,6 +891,11 @@ input[data-agent-sidebar-search="true"]:focus-visible {
   height: 15px;
 }
 
+/* Drill-in pages stack the back affordance directly above their leaf title. */
+.settings-page__back + .settings-page__head {
+  margin-top: -8px;
+}
+
 .settings-page__body {
   display: flex;
   flex-direction: column;
@@ -1208,62 +1213,20 @@ input[data-agent-sidebar-search="true"]:focus-visible {
   height: 13px;
 }
 
+/* Chrome-free container for one section's rows. The page header and leaf tab
+   bar already identify the section, so it carries no surface of its own. */
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
 .settings-section + .settings-section {
   margin-top: 12px;
 }
 
-/* Card group header. Sits inside the settings card, under the page-level
-   heading supplied by SettingsNavPage. */
-.settings-pane-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 0 0 12px;
-  background-color: transparent;
-  border-width: 0;
-  border-bottom-width: 1px;
-  border-bottom-style: solid;
-  border-bottom-color: var(--dialog-divider-color);
-}
-
-.settings-pane-head__icon {
-  width: 28px;
-  height: 28px;
-  display: grid;
-  place-items: center;
-  background-color: var(--dialog-pane-head-icon-bg);
-  border-color: var(--dialog-border-color);
-  border-width: 1px;
-  border-style: solid;
-  border-radius: 8px;
-  color: var(--text-secondary);
-  flex-shrink: 0;
-  padding: 0 !important;
-}
-
-.settings-pane-head__icon svg {
-  width: 15px;
-  height: 15px;
-  color: var(--text-secondary) !important;
-}
-
-.settings-pane-head__title {
-  font-size: 0.875rem;
-  font-weight: 600;
-  color: var(--text-primary);
-  letter-spacing: -.005em;
-}
-
-.settings-pane-head__sub {
-  font-size: 0.75rem;
-  line-height: 1.45;
-  color: var(--dialog-text-muted);
-  margin-top: 1px;
-}
-
-/* Card surface wrapping one section's rows. Explicit paint/border longhands
+/* Card surface used by standalone blocks. Explicit paint/border longhands
    per .claude/rules/wkwebview-css-vars.md rule 6. */
-.settings-section,
 .settings-card {
   display: flex;
   flex-direction: column;
@@ -1332,14 +1295,9 @@ input[data-agent-sidebar-search="true"]:focus-visible {
 }
 
 .settings-section__head + .settings-row,
-.settings-pane-head + .settings-section__content > .settings-row:first-child,
+.settings-section__content > .settings-row:first-child,
 .settings-card > .settings-row:first-child {
   border-top: 0;
-}
-
-/* The card header already draws the divider above the first row. */
-.settings-pane-head + .settings-section__content {
-  padding-top: 4px;
 }
 
 .settings-row__label {
@@ -1813,7 +1771,6 @@ input[data-agent-sidebar-search="true"]:focus-visible {
 
 [data-theme="high-contrast"] .settings-diag-card,
 [data-theme="high-contrast"] .settings-status-badge,
-[data-theme="high-contrast"] .settings-section,
 [data-theme="high-contrast"] .settings-card,
 [data-theme="high-contrast"] .settings-hub__card,
 [data-theme="high-contrast"] .settings-tabs,

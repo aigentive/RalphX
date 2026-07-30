@@ -8,7 +8,7 @@
 import { useState } from "react";
 import { KeyRound, Plus, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { SectionCard } from "./SettingsView.shared";
+import { SettingsSection } from "./SettingsView.shared";
 import { ApiKeyEntry } from "./ApiKeyEntry";
 import { CreateKeyDialog } from "./CreateKeyDialog";
 import { useApiKeys } from "@/hooks/useApiKeys";
@@ -24,13 +24,7 @@ export function ApiKeysSection() {
 
   return (
     <>
-      <SectionCard
-        icon={
-          <KeyRound className="w-[18px] h-[18px] text-[var(--card-icon-color)]" />
-        }
-        title="API Keys"
-        description="Manage external API keys for accessing RalphX programmatically"
-      >
+      <SettingsSection>
         {/* Error state */}
         {error && (
           <div className="mb-3 px-3 py-2 rounded-md flex items-center gap-2 bg-status-error/10 border border-status-error/20">
@@ -91,7 +85,7 @@ export function ApiKeysSection() {
             </Button>
           </div>
         )}
-      </SectionCard>
+      </SettingsSection>
 
       <CreateKeyDialog
         open={dialogOpen}

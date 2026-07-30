@@ -221,12 +221,6 @@ describe("RepositorySettingsSection", () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it("renders Repository section title", () => {
-    render(<RepositorySettingsSection />, { wrapper: createWrapper() });
-
-    expect(screen.getByText("Repository")).toBeInTheDocument();
-  });
-
   it("renders Branching, Merge Behavior, and Diagnostics subsections", () => {
     render(<RepositorySettingsSection />, { wrapper: createWrapper() });
 

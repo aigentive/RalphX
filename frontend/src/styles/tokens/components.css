@@ -15,7 +15,7 @@
 
 :root {
   /* ============================================================================
-   * Card — SectionCard and most content blocks
+   * Card — settings cards and most content blocks
    * ============================================================================ */
   --card-bg:           var(--bg-elevated);
   --card-border:       var(--border-subtle);

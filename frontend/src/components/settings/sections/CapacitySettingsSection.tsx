@@ -1,8 +1,7 @@
-import { Gauge } from "lucide-react";
 
 import type { ProjectSettings } from "@/types/settings";
 
-import { SectionCard } from "../SettingsView.shared";
+import { SettingsSection } from "../SettingsView.shared";
 import ExecutionSection from "./ExecutionSection";
 import GlobalExecutionSection from "./GlobalExecutionSection";
 
@@ -16,11 +15,7 @@ export default function CapacitySettingsSection({
   onSettingsChange: (settings: ProjectSettings) => void;
 }) {
   return (
-    <SectionCard
-      icon={<Gauge className="h-5 w-5" />}
-      title="Capacity"
-      description="Configure project and global execution and ideation concurrency."
-    >
+    <SettingsSection>
       <ExecutionSection
         settings={settings.execution}
         onChange={(changes) =>
@@ -39,6 +34,6 @@ export default function CapacitySettingsSection({
         </h3>
         <GlobalExecutionSection embedded />
       </div>
-    </SectionCard>
+    </SettingsSection>
   );
 }

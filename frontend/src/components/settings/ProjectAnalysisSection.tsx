@@ -18,7 +18,7 @@ import { Button } from "@/components/ui/button";
 import { api } from "@/lib/tauri";
 import { useProjectStore, selectActiveProject } from "@/stores/projectStore";
 import { useEventBus } from "@/providers/EventProvider";
-import { SectionCard } from "./SettingsView.shared";
+import { SettingsSection } from "./SettingsView.shared";
 import { useAnalysisEditor } from "./useAnalysisEditor";
 import { EditableAnalysisEntry } from "./EditableAnalysisEntry";
 
@@ -142,11 +142,7 @@ export function ProjectAnalysisSection() {
   if (!project) return null;
 
   return (
-    <SectionCard
-      icon={<Search className="w-[18px] h-[18px] text-[var(--card-icon-color)]" />}
-      title="Setup & Validation"
-      description="Build system detection and validation commands"
-    >
+    <SettingsSection>
       {/* Header: Last Analyzed + Refresh Detected Commands */}
       <div className="flex items-center justify-between py-2">
         <span className="text-xs text-[var(--text-muted)]">
@@ -248,6 +244,6 @@ export function ProjectAnalysisSection() {
 
       {/* Template Variables Reference */}
       <TemplateVariablesInfo />
-    </SectionCard>
+    </SettingsSection>
   );
 }

@@ -124,7 +124,6 @@ function SettingsSectionLoading() {
       className="space-y-4"
       aria-label="Loading settings section"
     >
-      <div className="h-5 w-40 rounded bg-[var(--bg-hover)]" />
       <div className="h-24 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)]" />
       <div className="h-24 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)]" />
     </div>
