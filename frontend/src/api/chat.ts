@@ -1451,6 +1451,49 @@ function transformConversationTimelinePage(
 }
 
 /**
+ * The remote half of the transcript reads (the client side of PR 3.2's read surface).
+ *
+ * The local `get_agent_conversation*` / `list_agent_conversations*` commands are
+ * DELIBERATELY unregistered on the facade — each opens by waking the conversation's
+ * agent workspace, which reaches a live-agent steer sink, and their absence is asserted
+ * rather than merely omitted (`remote_server/registry.rs`,
+ * `the_local_transcript_reads_stay_unregistered`). Calling them from a paired device
+ * answers `REMOTE_COMMAND_UNAVAILABLE`, i.e. the Agents surface cannot load a
+ * conversation at all.
+ *
+ * The host exposes spawn-free twins in `commands/remote_transcript_commands.rs` which
+ * delegate to the SAME `*_for_app_state` seams the local commands use — identical
+ * argument names, identical response payloads, no forked logic. Switching transports is
+ * therefore a command-name choice and nothing else: the zod schemas and transforms below
+ * are shared verbatim, and no extra await enters the transcript-hydration path.
+ */
+function transcriptReadCommand(localCmd: string, remoteCmd: string): string {
+  return isRemoteEnvironmentId(getTransportEnvironmentId()) ? remoteCmd : localCmd;
+}
+
+/**
+ * Page bounds the host enforces on the remote reads (`remote_transcript_commands.rs`
+ * `DEFAULT_PAGE_LIMIT`/`MAX_PAGE_LIMIT`). The host CLAMPS rather than rejects, so an
+ * over-wide request would come back narrower than asked without saying so, and the
+ * infinite-query cursors would be computed against a page the client never requested.
+ * Clamping here keeps the request we send the request the host actually runs.
+ *
+ * Local reads are untouched: the local commands apply their own bounds, and narrowing
+ * them from the client would be a behaviour change nobody asked for.
+ */
+const REMOTE_MIN_PAGE_LIMIT = 1;
+const REMOTE_MAX_PAGE_LIMIT = 200;
+
+function wirePageLimit(limit: number): number {
+  if (!isRemoteEnvironmentId(getTransportEnvironmentId())) return limit;
+  if (!Number.isFinite(limit)) return REMOTE_MAX_PAGE_LIMIT;
+  return Math.min(
+    Math.max(Math.trunc(limit), REMOTE_MIN_PAGE_LIMIT),
+    REMOTE_MAX_PAGE_LIMIT,
+  );
+}
+
+/**
  * List all conversations for a given context
  * @param contextType The context type
  * @param contextId The context ID
@@ -1462,7 +1505,10 @@ export async function listConversations(
   includeArchived = false,
 ): Promise<ChatConversation[]> {
   const raw = await typedInvoke(
-    "list_agent_conversations",
+    transcriptReadCommand(
+      "list_agent_conversations",
+      "list_remote_agent_conversations",
+    ),
     { contextType, contextId, includeArchived },
     z.array(ChatConversationResponseSchema),
   );
@@ -1483,13 +1529,16 @@ export async function listConversationsPage(
 ): Promise<ConversationListPageResponse> {
   const normalizedSearch = search?.trim();
   const raw = await typedInvoke(
-    "list_agent_conversations_page",
+    transcriptReadCommand(
+      "list_agent_conversations_page",
+      "list_remote_agent_conversations_page",
+    ),
     {
       contextType,
       contextId,
       includeArchived,
       ...(archivedOnly ? { archivedOnly } : {}),
-      limit,
+      limit: wirePageLimit(limit),
       offset,
       ...(normalizedSearch ? { search: normalizedSearch } : {}),
     },
@@ -1522,7 +1571,7 @@ export async function getConversation(conversationId: string): Promise<{
   messages: ChatMessageResponse[];
 }> {
   const raw = await typedInvoke(
-    "get_agent_conversation",
+    transcriptReadCommand("get_agent_conversation", "get_remote_agent_conversation"),
     { conversationId },
     z.object({
       conversation: ChatConversationResponseSchema,
@@ -1549,8 +1598,11 @@ export async function getConversationMessagesPage(
   offset = 0,
 ): Promise<ConversationMessagesPageResponse> {
   const raw = await typedInvoke(
-    "get_agent_conversation_messages_page",
-    { conversationId, limit, offset },
+    transcriptReadCommand(
+      "get_agent_conversation_messages_page",
+      "get_remote_agent_conversation_messages_page",
+    ),
+    { conversationId, limit: wirePageLimit(limit), offset },
     ConversationMessagesPageResponseSchema,
   );
 
@@ -1567,8 +1619,11 @@ export async function getConversationTimelinePage(
   beforeSequence: number | null = null,
 ): Promise<ConversationTimelinePageResponse> {
   const raw = await typedInvoke(
-    "get_agent_conversation_timeline_page",
-    { conversationId, limit, beforeSequence },
+    transcriptReadCommand(
+      "get_agent_conversation_timeline_page",
+      "get_remote_agent_conversation_timeline_page",
+    ),
+    { conversationId, limit: wirePageLimit(limit), beforeSequence },
     ConversationTimelinePageResponseSchema,
   );
 
