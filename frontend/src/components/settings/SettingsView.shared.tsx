@@ -283,30 +283,23 @@ export function SelectSettingRow<T extends string>({
 }
 
 // ============================================================================
-// Section Card Component
+// Section Container
 // ============================================================================
 
-export interface SectionCardProps {
-  icon: React.ReactNode;
-  title: string;
-  description: string;
+export interface SettingsSectionProps {
   children: React.ReactNode;
 }
 
-export function SectionCard({ icon, title, description, children }: SectionCardProps) {
+/**
+ * Row container for one settings section. Deliberately chrome-free: the page
+ * title and subtitle come from `SettingsNavPage` (nav/leaf registry) and the
+ * leaf tab bar names the section, so a per-section card header would repeat
+ * both. Kept as a component so section panels share the row spacing and
+ * first-row divider reset.
+ */
+export function SettingsSection({ children }: SettingsSectionProps) {
   return (
     <div className="settings-section">
-      <div className="settings-pane-head">
-        <div className="settings-pane-head__icon p-2 rounded-lg shrink-0 [&>svg]:text-[var(--card-icon-color)]">
-          {icon}
-        </div>
-        <div>
-          <h3 className="settings-pane-head__title">
-            {title}
-          </h3>
-          <p className="settings-pane-head__sub">{description}</p>
-        </div>
-      </div>
       <div className="settings-section__content">{children}</div>
     </div>
   );

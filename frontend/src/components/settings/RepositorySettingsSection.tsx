@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from "react";
-import { GitBranch, Loader2, RefreshCw, CheckCircle2, XCircle } from "lucide-react";
+import { Loader2, RefreshCw, CheckCircle2, XCircle } from "lucide-react";
 import { toast } from "sonner";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -13,7 +13,7 @@ import {
 } from "@/types/project";
 import { RepositoryEnvironmentSettings } from "./RepositoryEnvironmentSettings";
 import {
-  SectionCard,
+  SettingsSection,
   SelectSettingRow,
   SettingRow,
   ToggleSettingRow,
@@ -278,11 +278,7 @@ export function RepositorySettingsSection() {
   const isSaving = isUpdating || updatePrEnabled.isPending;
 
   return (
-    <SectionCard
-      icon={<GitBranch className="w-[18px] h-[18px] text-[var(--card-icon-color)]" />}
-      title="Repository"
-      description="Version control and GitHub integration"
-    >
+    <SettingsSection>
       <SubsectionLabel>Branching</SubsectionLabel>
       <TextSettingRow
         id="base-branch"
@@ -416,6 +412,6 @@ export function RepositorySettingsSection() {
           <span>Saving...</span>
         </div>
       )}
-    </SectionCard>
+    </SettingsSection>
   );
 }

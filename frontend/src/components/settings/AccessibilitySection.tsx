@@ -8,7 +8,6 @@
  *   - Font scale (default / lg / xl)
  */
 
-import { Accessibility } from "lucide-react";
 import {
   useThemeStore,
   type FontScale,
@@ -16,7 +15,7 @@ import {
   type ThemeName,
 } from "@/stores/themeStore";
 import {
-  SectionCard,
+  SettingsSection,
   SelectSettingRow,
   type SelectOption,
 } from "./SettingsView.shared";
@@ -67,11 +66,7 @@ export function AccessibilitySection() {
   const setFontScale = useThemeStore((s) => s.setFontScale);
 
   return (
-    <SectionCard
-      icon={<Accessibility className="w-[18px] h-[18px] text-[var(--card-icon-color)]" />}
-      title="Accessibility"
-      description="Theme, motion, and typography preferences that apply across the entire app"
-    >
+    <SettingsSection>
       <SelectSettingRow
         id="theme-selector"
         label="Theme"
@@ -106,6 +101,6 @@ export function AccessibilitySection() {
         disabled={false}
         onChange={setFontScale}
       />
-    </SectionCard>
+    </SettingsSection>
   );
 }
