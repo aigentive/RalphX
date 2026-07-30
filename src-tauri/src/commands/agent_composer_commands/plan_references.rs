@@ -94,7 +94,7 @@ pub async fn search_agent_composer_plan_references_for_app_state(
                 } else {
                     None
                 };
-                lookup_plan_approval(&state, &session.id, &artifact, blueprint.as_ref()).await?
+                lookup_plan_approval(state, &session.id, &artifact, blueprint.as_ref()).await?
             } else {
                 None
             }

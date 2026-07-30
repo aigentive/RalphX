@@ -53,12 +53,12 @@ use crate::application::agent_conversation_workspace_base::{
     apply_workspace_base_resolution, resolve_workspace_base,
     resolve_workspace_base_from_local_snapshot, BaseResolutionResult, BaseStatus,
 };
+use crate::application::agent_plan_context::{
+    admit_linked_edit_plan_references, linked_workspace_planning_session_is_reusable,
+};
 use crate::application::agent_planning_session_titles::{
     hydrate_agent_conversation_planning_session_title,
     sync_linked_planning_session_title_from_conversation,
-};
-use crate::application::agent_plan_context::{
-    admit_linked_edit_plan_references, linked_workspace_planning_session_is_reusable,
 };
 use crate::application::agent_workspace_bridge::{
     wake_agent_workspace_for_bridge_events,
@@ -1040,13 +1040,11 @@ impl AgentWorkspaceRepairPublishContinuation for AgentWorkspaceRepairPublishComm
                 PublishAfterRepairPushError::Failed(error)
             }
         })?;
-        let pr_number = result
-            .pr_number
-            .ok_or_else(|| {
-                PublishAfterRepairPushError::Failed(
-                    "normal publish completed without a pull-request number".to_string(),
-                )
-            })?;
+        let pr_number = result.pr_number.ok_or_else(|| {
+            PublishAfterRepairPushError::Failed(
+                "normal publish completed without a pull-request number".to_string(),
+            )
+        })?;
         Ok(AgentWorkspaceRepairPrHandoffResult {
             pr_number,
             pr_url: result.pr_url,
@@ -4233,8 +4231,7 @@ pub async fn send_agent_message_for_state<R: Runtime + 'static>(
     if let Some(conversation_id) = conversation_id_override.as_ref() {
         invalidate_agent_workspace_pr_description_cache(conversation_id);
         if context_type == ChatContextType::Project
-            && ensure_plan_workspace_planning_session_link_for_send(state, conversation_id)
-                .await?
+            && ensure_plan_workspace_planning_session_link_for_send(state, conversation_id).await?
         {
             let _ = app.emit(
                 "agent:workspace_changed",
@@ -4242,23 +4239,22 @@ pub async fn send_agent_message_for_state<R: Runtime + 'static>(
             );
         }
     }
-    let composer_artifact_references =
-        if context_type == ChatContextType::Project {
-            if let Some(conversation_id) = conversation_id_override.as_ref() {
-                admit_linked_edit_plan_references(
-                    state,
-                    conversation_id,
-                    input.composer_artifact_references,
-                    input.require_approved_linked_plan,
-                    input.expected_linked_plan_fingerprint.as_deref(),
-                )
-                .await?
-            } else {
-                input.composer_artifact_references
-            }
+    let composer_artifact_references = if context_type == ChatContextType::Project {
+        if let Some(conversation_id) = conversation_id_override.as_ref() {
+            admit_linked_edit_plan_references(
+                state,
+                conversation_id,
+                input.composer_artifact_references,
+                input.require_approved_linked_plan,
+                input.expected_linked_plan_fingerprint.as_deref(),
+            )
+            .await?
         } else {
             input.composer_artifact_references
-        };
+        }
+    } else {
+        input.composer_artifact_references
+    };
     let attachment_ids = parse_chat_attachment_ids(&input.attachment_ids)?;
 
     let mut response = service
@@ -9754,7 +9750,7 @@ pub async fn get_agent_conversation_for_app_state(
     let mut messages = Vec::with_capacity(cwm.messages.len());
     for message in cwm.messages {
         let (tool_calls, content_blocks) = reconcile_delegated_result_payloads(
-            &state,
+            state,
             message.tool_calls.clone(),
             message.content_blocks.clone(),
         )
@@ -10113,8 +10109,6 @@ pub async fn get_agent_run_status_unified(
     app: tauri::AppHandle,
 ) -> Result<Option<AgentRunStatusResponse>, String> {
     use crate::domain::entities::ChatConversationId;
-    use crate::domain::services::RunningAgentKey;
-    use crate::infrastructure::agents::claude::model_labels::model_id_to_label;
 
     let conv_id = ChatConversationId::from_string(&conversation_id);
 

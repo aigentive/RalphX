@@ -123,8 +123,8 @@ pub(crate) async fn invoke_handler(
         .begin(&identity.device_id, &request_id, &cmd, &args)
         .await
     {
-        Err(error) => return invoke_error_response(error),
-        Ok(DedupDecision::Replay(record)) => return replay_response(record),
+        Err(error) => invoke_error_response(error),
+        Ok(DedupDecision::Replay(record)) => replay_response(record),
         Ok(DedupDecision::Proceed(reservation)) => {
             let dispatcher = state.invoke_dispatcher();
             let scopes = identity.scopes.as_slice().to_vec();

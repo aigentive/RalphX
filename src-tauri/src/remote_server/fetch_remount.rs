@@ -81,6 +81,10 @@ pub(crate) struct RemountRoute {
     /// Drives the scope gate through [`scope_for_class`], exactly as `/invoke` does.
     pub class: RiskClass,
     /// Why this classification — the audit finding, not a restatement of the class.
+    ///
+    /// Checked-in documentation the allowlist tests assert on; the router never reads it, so a
+    /// non-test build sees it as dead.
+    #[allow(dead_code)]
     pub reason: &'static str,
 }
 
@@ -144,6 +148,7 @@ pub(crate) const REMOUNT_ALLOWLIST: &[RemountRoute] = &[
 /// Both are unvalidated dual-decision resolve sinks: the decision arrives raw in the client's
 /// JSON body, so mounting either would let a paired device approve *or* deny on the user's
 /// behalf through a surface with no per-decision authorization.
+#[allow(dead_code)] // A checked-in denial claim asserted by tests; no production reader by design.
 pub(crate) const REMOUNT_DENIED_SINKS: &[(&str, &str)] = &[
     (
         "POST /api/permission/resolve",
@@ -199,10 +204,14 @@ impl SharedHttpAppState {
         }
     }
 
+    /// Arc-identity accessors used by the R-8 identity tests; production reaches the same Arcs
+    /// through [`Self::http_server_state`].
+    #[allow(dead_code)]
     pub(crate) fn app_state(&self) -> &Arc<AppState> {
         &self.app_state
     }
 
+    #[allow(dead_code)]
     pub(crate) fn execution_state(&self) -> &Arc<ExecutionState> {
         &self.execution_state
     }
@@ -239,6 +248,9 @@ impl std::fmt::Display for RemountBuildError {
 pub(crate) struct RemountBuild {
     pub router: Router,
     /// Recorded inside the mount loop, so it is a record of mounts, not a parallel list.
+    ///
+    /// Read by the allowlist-parity test; the listener only consumes `router`.
+    #[allow(dead_code)]
     pub mounted: Vec<(&'static str, RemountMethod)>,
 }
 
