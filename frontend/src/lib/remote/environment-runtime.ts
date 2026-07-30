@@ -358,6 +358,10 @@ export function initializeEnvironmentRuntime(): () => void {
   };
 
   const createRuntime = (entry: EnvironmentEntry): RuntimeEntry => {
+    // Forward declaration: the supervisor callbacks below close over `runtime`, and `runtime`
+    // needs the supervisor, so the binding must exist before it can be initialised. Assigned
+    // exactly once, after the supervisor is constructed and before any callback can run.
+    // eslint-disable-next-line prefer-const
     let runtime: RuntimeEntry;
     const environmentId = entry.id;
     const supervisor = new ConnectionSupervisor({
