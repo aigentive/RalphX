@@ -5,6 +5,8 @@ import { BasePage } from "../base.page";
 
 type RecentInboxScenario = "populated" | "empty-needs";
 
+const SETTLE_TIMEOUT_MS = 15_000;
+
 export class AgentsInboxRecentPage extends BasePage {
   readonly sidebar: Locator;
   readonly recentScroller: Locator;
@@ -41,6 +43,18 @@ export class AgentsInboxRecentPage extends BasePage {
     await this.page.keyboard.press("Escape");
     await expect(this.recentChip).toHaveAttribute("aria-selected", "true");
     await expect(this.recentScroller).toBeVisible();
+    await this.waitForGroupsSettled();
+  }
+
+  // A group renders neither rows nor its empty line until its lane query
+  // settles, so every assertion and screenshot has to wait for both groups to
+  // reach one of those two states or it races the first paint.
+  private async waitForGroupsSettled(): Promise<void> {
+    for (const group of [this.needsGroup, this.workingGroup]) {
+      await expect(
+        group.getByTestId(/^agents-(session|inbox-lane-empty)-/),
+      ).not.toHaveCount(0, { timeout: SETTLE_TIMEOUT_MS });
+    }
   }
 
   async scrollNeedsHeaderToTop(): Promise<void> {
@@ -49,6 +63,21 @@ export class AgentsInboxRecentPage extends BasePage {
       scroller.dispatchEvent(new Event("scroll"));
     });
     await expect(this.needsHeader).toBeVisible();
+  }
+
+  // The screenshot is the record, but sticky has to be falsifiable without a
+  // human: the header sits at the scroller's top edge while its own first row
+  // has scrolled out from under it.
+  async expectNeedsHeaderPinned(): Promise<void> {
+    const scroller = await this.recentScroller.boundingBox();
+    const header = await this.needsHeader.boundingBox();
+    expect(scroller).not.toBeNull();
+    expect(header).not.toBeNull();
+    expect(Math.abs(header!.y - scroller!.y)).toBeLessThanOrEqual(1);
+    expect(scroller!.y).toBeGreaterThan(0);
+    await expect(
+      this.needsGroup.getByText("Needs you: review 1"),
+    ).not.toBeInViewport();
   }
 
   private async seedScenario(scenario: RecentInboxScenario): Promise<void> {

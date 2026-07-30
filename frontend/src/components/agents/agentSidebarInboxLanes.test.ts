@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  AGENT_SIDEBAR_INBOX_LANES,
+  AGENT_SIDEBAR_INBOX_FILTERS,
+  AGENT_SIDEBAR_RECENT_GROUPS,
   describeInboxLaneCount,
   formatInboxLaneCount,
   getAgeEscalation,
+  laneForInboxFilter,
   shouldEscalateAge,
   summarizeInboxLaneCounts,
 } from "./agentSidebarInboxLanes";
@@ -13,14 +15,30 @@ const NOW = new Date("2026-07-28T12:00:00.000Z");
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 
-describe("AGENT_SIDEBAR_INBOX_LANES", () => {
-  it("keeps the inbox lanes in attention order with their labels", () => {
-    expect(AGENT_SIDEBAR_INBOX_LANES).toEqual([
+describe("AGENT_SIDEBAR_INBOX_FILTERS", () => {
+  it("uses Recent, Stale, and Done as the top-level inbox filters", () => {
+    expect(AGENT_SIDEBAR_INBOX_FILTERS).toEqual([
+      { filter: "recent", label: "Recent", emptyLabel: "Nothing recent" },
+      { filter: "stale", label: "Stale", emptyLabel: "Nothing stale" },
+      { filter: "done", label: "Done", emptyLabel: "Nothing done" },
+    ]);
+  });
+});
+
+describe("AGENT_SIDEBAR_RECENT_GROUPS", () => {
+  it("keeps Needs you and Working together in recency order", () => {
+    expect(AGENT_SIDEBAR_RECENT_GROUPS).toEqual([
       { lane: "needs", label: "Needs you", emptyLabel: "Nothing needs you" },
       { lane: "working", label: "Working", emptyLabel: "Nothing working" },
-      { lane: "stale", label: "Stale", emptyLabel: "Nothing stale" },
-      { lane: "done", label: "Done", emptyLabel: "Nothing done" },
     ]);
+  });
+});
+
+describe("laneForInboxFilter", () => {
+  it("uses a single backing lane only for stale and done filters", () => {
+    expect(laneForInboxFilter("recent")).toBeNull();
+    expect(laneForInboxFilter("stale")).toBe("stale");
+    expect(laneForInboxFilter("done")).toBe("done");
   });
 });
 

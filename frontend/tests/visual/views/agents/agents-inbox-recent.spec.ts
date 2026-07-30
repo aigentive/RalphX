@@ -27,6 +27,7 @@ test.describe("Agents Recent inbox", () => {
     const recent = new AgentsInboxRecentPage(page);
     await recent.open("populated");
     await recent.scrollNeedsHeaderToTop();
+    await recent.expectNeedsHeaderPinned();
 
     await expect(recent.sidebar).toHaveScreenshot("agents-inbox-recent-sticky-needs.png");
   });
