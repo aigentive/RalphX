@@ -1066,6 +1066,101 @@ describe("useChatEvents", () => {
   });
 
   // --------------------------------------------------------------------------
+  // 3b. Streaming thinking (via agent:thinking events)
+  // --------------------------------------------------------------------------
+  describe("streaming thinking", () => {
+    it("creates a new thinking block from an agent:thinking event", () => {
+      const props = makeProps();
+      renderAndClear(props);
+
+      act(() => {
+        fireEvent("agent:thinking", {
+          text: "Let me consider",
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+          block_index: 0,
+          append_to_previous: false,
+        });
+      });
+
+      expect(props.setStreamingContentBlocks).toHaveBeenCalledTimes(1);
+      const result = executeUpdater<StreamingContentBlock[]>(
+        props.setStreamingContentBlocks,
+        [],
+      );
+      expect(result).toHaveLength(1);
+      expect(result[0]).toMatchObject({ type: "thinking", text: "Let me consider", blockIndex: 0 });
+    });
+
+    it("appends text to an existing thinking block with the same block_index", () => {
+      const props = makeProps();
+      renderAndClear(props);
+
+      act(() => {
+        fireEvent("agent:thinking", {
+          text: " more",
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+          block_index: 0,
+          append_to_previous: true,
+        });
+      });
+
+      const result = executeUpdater<StreamingContentBlock[]>(
+        props.setStreamingContentBlocks,
+        [{ type: "thinking", text: "Initial", blockIndex: 0 } as StreamingContentBlock],
+      );
+      expect(result).toHaveLength(1);
+      expect(result[0]).toMatchObject({ type: "thinking", text: "Initial more" });
+    });
+
+    it("carries duration_ms and is_settled from the payload", () => {
+      const props = makeProps();
+      renderAndClear(props);
+
+      act(() => {
+        fireEvent("agent:thinking", {
+          text: "Done thinking",
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+          block_index: 0,
+          duration_ms: 1500,
+          is_settled: true,
+          append_to_previous: false,
+        });
+      });
+
+      const result = executeUpdater<StreamingContentBlock[]>(
+        props.setStreamingContentBlocks,
+        [],
+      );
+      expect(result[0]).toMatchObject({
+        type: "thinking",
+        text: "Done thinking",
+        durationMs: 1500,
+        isSettled: true,
+      });
+    });
+
+    it("rejects a thinking event from a stale run", () => {
+      const props = makeProps({ activeAgentRunId: "current-run" });
+      renderAndClear(props);
+
+      act(() => {
+        fireEvent("agent:thinking", {
+          text: "Stale thought",
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+          block_index: 0,
+          run_id: "old-run",
+        });
+      });
+
+      expect(props.setStreamingContentBlocks).not.toHaveBeenCalled();
+    });
+  });
+
+  // --------------------------------------------------------------------------
   // 4. Message created clears streaming state and sets isFinalizing
   // --------------------------------------------------------------------------
   describe("agent:message_created", () => {
