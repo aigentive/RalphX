@@ -94,19 +94,17 @@ describe("capability model derivation", () => {
       "approve_permission_request",
       "answer_user_question",
       "resume_automation",
-    ]) {
-      expect(REMOTE_FACADE_OPS[command]?.opClass, command).toBe("agentControl");
-    }
-    // Brakes and inert work the default pairing keeps.
-    for (const command of [
+      // The per-task brakes were escalated to agent control on the host; the mirror is the
+      // authority for that, so pin it here rather than in the inert list.
       "pause_task",
       "block_task",
       "stop_task",
       "pause_tasks_in_group",
-      "deny_permission_request",
-      "create_task",
-      "update_task",
     ]) {
+      expect(REMOTE_FACADE_OPS[command]?.opClass, command).toBe("agentControl");
+    }
+    // Inert work the default pairing keeps.
+    for (const command of ["deny_permission_request", "create_task", "update_task"]) {
       expect(REMOTE_FACADE_OPS[command]?.opClass, command).toBe("operate");
     }
   });
@@ -256,12 +254,11 @@ describe("affordance mapping", () => {
 // ---------------------------------------------------------------------------
 
 describe("inert exemption list", () => {
-  it("is exactly the closed six-surface set", () => {
+  it("is exactly the closed three-surface set", () => {
+    // `stop` / `pause` / `block` left the list when the host escalated the per-task brakes
+    // to agent control — see the `INERT_AFFORDANCES` doc comment.
     expect([...INERT_AFFORDANCES]).toEqual([
       "permissionDeny",
-      "stop",
-      "pause",
-      "block",
       "taskEditCategoryPriority",
       "backlogCreate",
     ]);

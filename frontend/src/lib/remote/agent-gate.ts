@@ -114,12 +114,15 @@ export type AgentGatedAffordance = keyof typeof AGENT_GATED_AFFORDANCES;
  * The closed inert exemption list (A6) — surfaces that stay fully operable under a
  * default-paired remote environment because they only ever REDUCE authority or create
  * un-armed work. Closed means closed: adding a row is a boundary change.
+ *
+ * The per-task brakes (`stop`, `pause`, `block`) were exempt until the host escalated
+ * `stop_task` / `pause_task` / `pause_tasks_in_group` / `block_task` to `AgentControl`.
+ * An affordance the host refuses without the agent-control grant is not inert, whatever
+ * direction it moves authority in, so they left this list rather than presenting an
+ * enabled control that answers `REMOTE_FORBIDDEN`.
  */
 export const INERT_AFFORDANCES = [
   "permissionDeny",
-  "stop",
-  "pause",
-  "block",
   "taskEditCategoryPriority",
   "backlogCreate",
 ] as const;
@@ -135,9 +138,6 @@ export type InertAffordance = (typeof INERT_AFFORDANCES)[number];
  */
 export const INERT_AFFORDANCE_OPS = {
   permissionDeny: ["deny_permission_request"],
-  stop: ["stop_task"],
-  pause: ["pause_task", "pause_tasks_in_group"],
-  block: ["block_task"],
   taskEditCategoryPriority: ["update_task"],
   backlogCreate: ["create_task"],
 } as const satisfies Record<InertAffordance, readonly string[]>;
