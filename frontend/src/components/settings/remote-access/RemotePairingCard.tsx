@@ -150,18 +150,37 @@ export interface RemotePairingCardProps {
   onExpired: () => void;
 }
 
-/** Ticks once a second while a code is displayed; freezes when there is none. */
-function useCountdown(pairing: MintedRemotePairingCode | null): number {
+/**
+ * Ticks once a second while some code is on screen; freezes when there is none.
+ *
+ * Keyed on the identity of whatever is being counted down rather than on a boolean, so
+ * swapping one code for another restarts the clock while a steady code keeps its interval.
+ * Every countdown is derived from the backend's `expiresAt`, never from an elapsed-time
+ * counter, so remounting the pane resumes the real remaining time instead of restarting.
+ */
+function useTickingNow(tickKey: string | null): number {
   const [nowMs, setNowMs] = useState(() => Date.now());
   useEffect(() => {
-    if (!pairing) {
+    if (tickKey === null) {
       return;
     }
     setNowMs(Date.now());
     const interval = window.setInterval(() => setNowMs(Date.now()), 1000);
     return () => window.clearInterval(interval);
-  }, [pairing]);
-  return pairing ? remainingSeconds(pairing.expiresAt, nowMs) : 0;
+  }, [tickKey]);
+  return nowMs;
+}
+
+/** The outstanding code that lapses first — the one worth counting down. */
+function soonestOutstanding(
+  codes: RemotePairingCodeView[] | null,
+): RemotePairingCodeView | null {
+  if (!codes || codes.length === 0) {
+    return null;
+  }
+  return codes.reduce((earliest, code) =>
+    Date.parse(code.expiresAt) < Date.parse(earliest.expiresAt) ? code : earliest,
+  );
 }
 
 export function RemotePairingCard({
@@ -174,8 +193,29 @@ export function RemotePairingCard({
   onCancel,
   onExpired,
 }: RemotePairingCardProps) {
-  const remaining = useCountdown(pairing);
+  // The soonest-lapsing outstanding code is picked WITHOUT consulting the clock, so it can key
+  // the ticker without the ticker feeding back into its own selection.
+  const soonest = soonestOutstanding(outstandingCodes);
+  const tickKey = pairing
+    ? `minted:${pairing.id}`
+    : soonest
+      ? `outstanding:${soonest.id}`
+      : null;
+  const nowMs = useTickingNow(tickKey);
+
+  const remaining = pairing ? remainingSeconds(pairing.expiresAt, nowMs) : 0;
   const expired = pairing !== null && remaining <= 0;
+
+  /**
+   * A code minted before this pane last unmounted is still live and still redeemable, so the
+   * card has to say so. It deliberately does NOT try to redisplay the code: the backend stores
+   * only `code_hash` (`entities/remote_access.rs`) and `list_remote_pairing_codes` returns
+   * metadata with no `code` field, exactly like the device token. Weakening that to make the
+   * card prettier would turn a write-once secret into a readable one, so the honest state is
+   * "one is active, here is how long it has left, cancel it or mint another".
+   */
+  const activeRemaining = soonest ? remainingSeconds(soonest.expiresAt, nowMs) : 0;
+  const restored = !pairing && soonest !== null && activeRemaining > 0 ? soonest : null;
 
   // Fire onExpired exactly once per code as its countdown crosses zero.
   const notifiedExpiryFor = useRef<string | null>(null);
@@ -185,6 +225,21 @@ export function RemotePairingCard({
       onExpired();
     }
   }, [expired, pairing, onExpired]);
+
+  // Same, for a restored code lapsing on screen: re-read the backend rather than assume the
+  // local clock's verdict is the durable one.
+  const notifiedOutstandingExpiryFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (
+      soonest &&
+      !pairing &&
+      activeRemaining <= 0 &&
+      notifiedOutstandingExpiryFor.current !== soonest.id
+    ) {
+      notifiedOutstandingExpiryFor.current = soonest.id;
+      onExpired();
+    }
+  }, [soonest, pairing, activeRemaining, onExpired]);
 
   const grouped = pairing ? groupPairingCode(pairing.code) : null;
   const pairingUrl =
@@ -204,7 +259,9 @@ export function RemotePairingCard({
             <p className="text-xs text-[var(--text-muted)]">
               {expired
                 ? "That code expired before it was used. Generate a new one."
-                : "Generate a code, then scan or paste it on the device you are pairing."}
+                : restored
+                  ? "Generating another code leaves the active one valid — cancel it above if you no longer want it."
+                  : "Generate a code, then scan or paste it on the device you are pairing."}
             </p>
             <Button
               data-testid="remote-pair-device"
@@ -213,10 +270,62 @@ export function RemotePairingCard({
               disabled={pairingBusy || !listenerEnabled}
               className="bg-[var(--accent-primary)] hover:bg-[var(--accent-hover)] text-[var(--text-on-accent)] shrink-0"
             >
-              {pairingBusy ? "Generating…" : "Generate pairing code"}
+              {pairingBusy
+                ? "Generating…"
+                : restored
+                  ? "Generate a new code"
+                  : "Generate pairing code"}
             </Button>
           </div>
         ) : null}
+
+        {/* A code that outlived the pane's last unmount. Honest by construction: the raw code
+            is unrecoverable, so this states that one is outstanding and how long it has left
+            rather than implying it can be read back. */}
+        {restored && (
+          <div
+            data-testid="remote-pairing-active"
+            className="rounded-md p-4 space-y-2"
+            style={{
+              backgroundColor: "var(--bg-surface, #1e1e23)",
+              borderColor: "var(--border-default, #393940)",
+              borderStyle: "solid",
+              borderWidth: "1px",
+            }}
+          >
+            <div className="flex items-center justify-between gap-3">
+              <StatusPill
+                tone="accent"
+                size="sm"
+                testId="remote-pairing-active-countdown"
+                label={`Expires in ${formatCountdown(activeRemaining)}`}
+              />
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    data-testid="remote-pairing-active-cancel"
+                    aria-label="Cancel the active pairing code"
+                    onClick={() => onCancel(restored.id)}
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Cancel the active pairing code</TooltipContent>
+              </Tooltip>
+            </div>
+            <p className="text-sm font-medium text-[var(--text-primary)]">
+              A pairing code is still active
+            </p>
+            <p className="text-xs text-[var(--text-muted)]">
+              It was created {formatDateTime(restored.createdAt)} and can still be
+              redeemed. Codes are shown only once, when they are generated, so this one
+              cannot be displayed again — cancel it, or generate a new code to pair with.
+            </p>
+          </div>
+        )}
         {!listenerEnabled && !pairing && (
           <p className="text-xs text-[var(--text-muted)]">
             Enable remote access first — a device cannot redeem a code while the

@@ -513,6 +513,126 @@ describe("pairing flow", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Outstanding code survives a remount (bug: a live code vanished on navigation)
+// ---------------------------------------------------------------------------
+
+describe("active pairing code across remounts", () => {
+  it("restores an active-code state from the backend, without pretending it can reshow the code", async () => {
+    vi.useFakeTimers({
+      toFake: [
+        "setTimeout",
+        "clearTimeout",
+        "setInterval",
+        "clearInterval",
+        "requestAnimationFrame",
+        "cancelAnimationFrame",
+        "Date",
+      ],
+    });
+    vi.setSystemTime(new Date("2026-07-27T10:00:00Z"));
+    // The backend keeps only a hash of the code, so `list_remote_pairing_codes` returns
+    // metadata and no `code` field. Restoring the code-showing card is therefore impossible
+    // by design, and must not be faked.
+    api.listPairingCodes.mockResolvedValue([
+      {
+        id: "pc-live",
+        scopes: ["ui:read", "ui:operate"],
+        createdAt: "2026-07-27T09:56:00Z",
+        expiresAt: "2026-07-27T10:06:00Z",
+      },
+    ]);
+
+    renderSection();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
+
+    const active = screen.getByTestId("remote-pairing-active");
+    // The countdown continues from the backend's expiry (6 minutes left), it does not
+    // restart at the full 10-minute TTL.
+    expect(
+      within(active).getByTestId("remote-pairing-active-countdown"),
+    ).toHaveTextContent("Expires in 5:5");
+    // The secret is not reshowable and the UI says so rather than inventing a value.
+    expect(screen.queryByTestId("remote-pairing-code")).not.toBeInTheDocument();
+    expect(active).toHaveTextContent(/shown only once/i);
+
+    // Both escapes are offered: cancel the outstanding code, or mint a fresh one.
+    expect(
+      within(active).getByTestId("remote-pairing-active-cancel"),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("remote-pair-device"));
+    expect(api.generatePairingCode).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to the generate state when only an expired code is outstanding", async () => {
+    vi.useFakeTimers({
+      toFake: [
+        "setTimeout",
+        "clearTimeout",
+        "setInterval",
+        "clearInterval",
+        "requestAnimationFrame",
+        "cancelAnimationFrame",
+        "Date",
+      ],
+    });
+    vi.setSystemTime(new Date("2026-07-27T10:00:00Z"));
+    api.listPairingCodes.mockResolvedValue([
+      {
+        id: "pc-dead",
+        scopes: ["ui:read"],
+        createdAt: "2026-07-27T09:45:00Z",
+        expiresAt: "2026-07-27T09:55:00Z",
+      },
+    ]);
+
+    renderSection();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
+
+    expect(screen.queryByTestId("remote-pairing-active")).not.toBeInTheDocument();
+    expect(screen.getByTestId("remote-pair-device")).toBeInTheDocument();
+  });
+
+  it("cancels the restored code through revoke_remote_pairing_code", async () => {
+    api.listPairingCodes.mockResolvedValue([
+      {
+        id: "pc-live",
+        scopes: ["ui:read"],
+        createdAt: new Date(Date.now() - 60_000).toISOString(),
+        expiresAt: new Date(Date.now() + 540_000).toISOString(),
+      },
+    ]);
+    renderSection();
+    await hydrate();
+
+    fireEvent.click(await screen.findByTestId("remote-pairing-active-cancel"));
+    expect(api.revokePairingCode).toHaveBeenCalledWith("pc-live");
+    expect(screen.queryByTestId("remote-pairing-active")).not.toBeInTheDocument();
+  });
+
+  it("prefers the freshly minted code over the restored summary", async () => {
+    api.listPairingCodes.mockResolvedValue([
+      {
+        id: "pc-1",
+        scopes: ["ui:read"],
+        createdAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 600_000).toISOString(),
+      },
+    ]);
+    renderSection();
+    await hydrate();
+    await screen.findByTestId("remote-pairing-active");
+
+    fireEvent.click(screen.getByTestId("remote-pair-device"));
+    expect(await screen.findByTestId("remote-pairing-card")).toBeInTheDocument();
+    expect(screen.queryByTestId("remote-pairing-active")).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Agent control (the one deliberate consent)
 // ---------------------------------------------------------------------------
 
