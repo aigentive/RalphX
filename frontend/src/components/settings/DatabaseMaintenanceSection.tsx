@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
-import { Database, Loader2 } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { databaseMaintenanceApi, type DatabaseMaintenanceStats } from "@/api/database-maintenance";
-import { SectionCard, SettingRow } from "./SettingsView.shared";
+import { SettingsSection, SettingRow } from "./SettingsView.shared";
 
 function formatBytes(value: number) {
   if (value < 1024) return `${value} B`;
@@ -34,7 +34,7 @@ export function DatabaseMaintenanceSection() {
     finally { setSaving(false); setConfirming(false); }
   };
   return <>
-    <SectionCard icon={<Database className="h-5 w-5" />} title="Database maintenance" description="Reclaim unused database space safely at the next app launch.">
+    <SettingsSection>
       {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
       <SettingRow id="database-size" label="Database size" description="Current local RalphX database footprint.">
         <span data-testid="database-size">{stats ? formatBytes(stats.databaseBytes) : "Loading…"}</span>
@@ -45,7 +45,7 @@ export function DatabaseMaintenanceSection() {
       <SettingRow id="database-compact" label="Compact database" description={stats?.pendingCompaction ? "Compaction is scheduled for the next launch." : "Creates a verified backup, then compacts before the database opens on the next launch."}>
         {stats?.pendingCompaction ? <Button variant="outline" disabled={saving} onClick={() => void setPending(false)}>Cancel scheduled compaction</Button> : <Button disabled={saving || !stats} onClick={() => setConfirming(true)}>{saving ? <Loader2 className="h-4 w-4 animate-spin" /> : "Compact on next launch"}</Button>}
       </SettingRow>
-    </SectionCard>
+    </SettingsSection>
     <AlertDialog open={confirming} onOpenChange={setConfirming}>
       <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Compact the database on next launch?</AlertDialogTitle><AlertDialogDescription>RalphX will wait until the next launch, before opening its database, verify a backup, and compact only when sufficient disk space is available.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={(event) => { event.preventDefault(); void setPending(true); }}>Schedule compaction</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
     </AlertDialog>
