@@ -3,19 +3,19 @@
 > GENERATED — do not edit by hand. Regenerate: `node scripts/generate-remote-coverage-census.mjs`. Staleness gate: `--check`.
 > This is the PR 3.1-a planning artifact. It registers nothing. Every class here is the ledger's CURRENT value; the per-command hand audit (§3.3) and the P-17 detector run own the final one.
 
-> **P-11 is COMPLETE.** All 501 production invoke command names across `frontend/src` carry a reviewed disposition: remote-registered, reason-coded local-only, or manifest-classified (host-denied / v1-deferred / v1-audit-refused). **0 unclassified, 0 dynamic expressions, 0 suppressions.**
+> **P-11 is COMPLETE.** All 506 production invoke command names across `frontend/src` carry a reviewed disposition: remote-registered, reason-coded local-only, or manifest-classified (host-denied / v1-deferred / v1-audit-refused). **0 unclassified, 0 dynamic expressions, 0 suppressions.**
 > The ratchet baseline `scripts/remote-transport-drift-baseline.json` is now a PERMANENT ZERO — `check-remote-transport-drift.mjs` fails if it is non-empty and refuses `--update-baseline` when unclassified names exist, so the list cannot quietly regrow. The work-batch sections below are kept as the audit record of how the 499 were resolved.
 
 ## 1. Scan state
 
 ```
-PASS: remote transport drift — 501 invoke command name(s), 0 dynamic, 0 seam bypasses; 287 manifest-classified; 0 unclassified (P-11 COMPLETE — permanent zero).
-      P-11 census: all 501 names have a reviewed disposition — 213 remote-registered, 29 reason-coded local-only, 259 manifest-classified only, 0 unclassified, 0 suppressions.
+PASS: remote transport drift — 506 invoke command name(s), 0 dynamic, 0 seam bypasses; 287 manifest-classified; 0 unclassified (P-11 COMPLETE — permanent zero).
+      P-11 census: all 506 names have a reviewed disposition — 218 remote-registered, 29 reason-coded local-only, 259 manifest-classified only, 0 unclassified, 0 suppressions.
 ```
 
 | Measure | Count | Source |
 |---|---|---|
-| Invoke command names in `frontend/src` | 501 | drift scan (AST) |
+| Invoke command names in `frontend/src` | 506 | drift scan (AST) |
 | Dynamic / unresolvable expressions | 0 | drift scan — must stay 0 |
 | Transport seam bypasses | 0 | drift scan — must stay 0 |
 | Remote-registered (`remote_commands!`) | 219 | `docs/generated/remote-commands.json` |
