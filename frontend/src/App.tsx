@@ -3,11 +3,12 @@
  * Root component with QueryClientProvider and EventProvider
  */
 
-import { lazy, Suspense, useMemo, useState, useEffect, useCallback, useRef } from "react";
+import { Suspense, useMemo, useState, useEffect, useCallback, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { getQueryClient } from "@/lib/queryClient";
+import { lazyWithRetry } from "@/lib/lazy-with-retry";
 import { EventProvider } from "@/providers/EventProvider";
 import { NotificationCenterPanel } from "@/components/notifications/NotificationCenterPanel";
 import { ExecutionControlBar } from "@/components/execution/ExecutionControlBar";
@@ -81,8 +82,8 @@ import { preloadAutomationsView } from "@/components/automations/preloadAutomati
 
 const queryClient = getQueryClient();
 const ATLASSIAN_AWARENESS_TOAST_KEY = "ralphx.atlassianIntegrationAwareness.v1";
-const LazyAutomationsView = lazy(() => preloadAutomationsView());
-const LazyAgentsView = lazy(async () => {
+const LazyAutomationsView = lazyWithRetry(() => preloadAutomationsView());
+const LazyAgentsView = lazyWithRetry(async () => {
   const { AgentsView } = await import("@/components/agents/AgentsView");
   return { default: AgentsView };
 });

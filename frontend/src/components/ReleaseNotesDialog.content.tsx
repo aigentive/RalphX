@@ -1,10 +1,11 @@
-import { lazy, memo, Suspense } from "react";
+import { memo, Suspense } from "react";
 import { Loader2 } from "lucide-react";
 
 import { markdownComponents } from "@/components/Chat/MessageItem.markdown";
+import { lazyWithRetry } from "@/lib/lazy-with-retry";
 import { formatDay } from "./ReleaseNotesDialog.sidebar-items";
 
-const LazyMarkdown = lazy(async () => {
+const LazyMarkdown = lazyWithRetry(async () => {
   const [{ default: ReactMarkdown }, { default: remarkGfm }] =
     await Promise.all([import("react-markdown"), import("remark-gfm")]);
 

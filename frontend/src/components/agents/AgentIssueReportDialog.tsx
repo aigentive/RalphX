@@ -1,5 +1,4 @@
 import {
-  lazy,
   memo,
   Suspense,
   useCallback,
@@ -23,6 +22,7 @@ import { writeTextFile } from "@tauri-apps/plugin-fs";
 import { toast } from "sonner";
 
 import { agentIssueReportApi } from "@/api/agent-issue-report";
+import { lazyWithRetry } from "@/lib/lazy-with-retry";
 import type { AgentIssueReportDraft } from "@/api/agent-issue-report";
 import { markdownComponents } from "@/components/Chat/MessageItem.markdown";
 import { Button } from "@/components/ui/button";
@@ -48,7 +48,7 @@ interface AgentIssueReportDialogProps {
   context: AgentIssueReportContext | null;
 }
 
-const LazyMarkdown = lazy(async () => {
+const LazyMarkdown = lazyWithRetry(async () => {
   const [{ default: ReactMarkdown }, { default: remarkGfm }] =
     await Promise.all([import("react-markdown"), import("remark-gfm")]);
 

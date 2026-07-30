@@ -1,9 +1,10 @@
-import { lazy, Suspense, useMemo, useState } from "react";
+import { Suspense, useMemo, useState } from "react";
 import { ChevronDown, ChevronUp, FileText } from "lucide-react";
 
 import { useAfterPaintMounted } from "@/components/agents/agentDeferredFrame";
 import { ArtifactSelectableRegion } from "@/components/agents/artifact-selection/ArtifactSelectableRegion";
 import { useArtifact } from "@/hooks/useArtifacts";
+import { lazyWithRetry } from "@/lib/lazy-with-retry";
 
 /**
  * Shared automation "Spec" body used by both the Agents automation panel and
@@ -17,7 +18,7 @@ import { useArtifact } from "@/hooks/useArtifacts";
 // react-markdown + remark-gfm + the chat markdown component overrides are all
 // pulled into a single lazy chunk so none of them are evaluated until the spec
 // is expanded.
-const LazySpecMarkdown = lazy(async () => {
+const LazySpecMarkdown = lazyWithRetry(async () => {
   const [{ default: ReactMarkdown }, { default: remarkGfm }, { markdownComponents }] =
     await Promise.all([
       import("react-markdown"),
