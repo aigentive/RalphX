@@ -46,8 +46,10 @@ jobs:
               - 'scripts/tests/test-coverage-rust-shards.sh'
               - 'scripts/check-raw-tauri-event-listen.mjs'
               - 'scripts/tests/test-raw-tauri-event-listen-guard.sh'
-              - 'scripts/check-remote-transport-drift.mjs'
-              - 'scripts/remote-transport-drift-baseline.json'
+              # NOTE: the remote-facade guard scripts are deliberately NOT listed here.
+              # They run unconditionally in the `remote-facade-guards` job below, because
+              # a backend-only or docs-only PR can violate P-11 without touching any
+              # filtered path. Do not re-add them behind a filter.
               - 'scripts/event-manifest-scanner/**'
               - 'scripts/event-manifest.json'
               - 'scripts/build-prod-release.sh'
@@ -199,6 +201,57 @@ jobs:
 
       - name: Check JavaScript and Rust Tauri package alignment
         run: node scripts/check-tauri-package-alignment.mjs .
+
+  # UNCONDITIONAL BY DESIGN — no `needs: changes`, no path filter.
+  #
+  # These guards enforce the remote command facade's P-11 invariant (zero
+  # unclassified commands) and the currency of the generated manifest/mirrors.
+  # A backend-only PR that registers or reclassifies a Tauri command, and a
+  # docs-only PR that hand-edits docs/generated/remote-commands.json, both
+  # violate these invariants without touching `frontend/**` or `src-tauri/**`.
+  # Gating this job would restore the "merge first, discover red on main"
+  # behaviour it exists to prevent.
+  remote-facade-guards:
+    name: Remote Facade Guards
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      # check-remote-transport-drift.mjs parses frontend TypeScript with the
+      # compiler resolved from frontend/package.json, so the frontend dev
+      # dependencies must be present.
+      - name: Install frontend dependencies
+        run: npm ci --no-audit --no-fund
+        working-directory: frontend
+
+      - name: Guard self-test (drift detector)
+        run: node scripts/check-remote-transport-drift.mjs --self-test
+
+      - name: Raw Tauri event listen guard
+        run: node scripts/check-raw-tauri-event-listen.mjs .
+
+      - name: Remote transport drift (P-11 — zero unclassified)
+        run: node scripts/check-remote-transport-drift.mjs .
+
+      - name: Local-only backend event mirror is current
+        run: node scripts/check-local-only-event-mirror.mjs .
+
+      - name: Remote protocol vocabulary mirror is current
+        run: node scripts/check-remote-vocabulary-mirror.mjs .
+
+      - name: Agent-control capability mirror is current
+        run: node scripts/check-agent-control-command-mirror.mjs .
+
+      - name: Remote coverage census is current
+        run: node scripts/generate-remote-coverage-census.mjs --check
 
   event-manifest:
     name: Event Manifest

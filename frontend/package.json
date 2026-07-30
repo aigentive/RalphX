@@ -16,7 +16,7 @@
     "test:check-warnings": "./scripts/check-vitest-warnings.sh",
     "test:visual": "playwright test tests/visual --workers=1",
     "test:coverage": "vitest run --coverage --testTimeout=15000 --retry=1",
-    "pretypecheck": "node ../scripts/check-raw-tauri-event-listen.mjs .. && node ../scripts/check-remote-transport-drift.mjs --self-test && node ../scripts/check-remote-transport-drift.mjs .. && node ../scripts/check-local-only-event-mirror.mjs .. && node ../scripts/check-remote-vocabulary-mirror.mjs .. && node ../scripts/check-agent-control-command-mirror.mjs ..",
+    "pretypecheck": "node ../scripts/check-raw-tauri-event-listen.mjs .. && node ../scripts/check-remote-transport-drift.mjs --self-test && node ../scripts/check-remote-transport-drift.mjs .. && node ../scripts/check-local-only-event-mirror.mjs .. && node ../scripts/check-remote-vocabulary-mirror.mjs .. && node ../scripts/check-agent-control-command-mirror.mjs .. && node ../scripts/generate-remote-coverage-census.mjs --check ..",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
     "lint:fix": "eslint src --fix",
