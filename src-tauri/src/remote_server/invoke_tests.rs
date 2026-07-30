@@ -806,7 +806,7 @@ async fn p4_parity_for_the_b1_task_reads_over_seeded_tasks() {
         (
             "get_archived_count",
             json!({"projectId": B1_FIXTURE_PROJECT, "ideationSessionId": null}),
-            registry::serialize_ok(&direct_archived).unwrap(),
+            registry::serialize_ok(direct_archived).unwrap(),
         ),
         (
             "get_tasks_awaiting_review",
@@ -2219,7 +2219,7 @@ async fn p4_parity_for_the_spawn_free_transcript_reads() {
     for (command, direct, args) in [
         (
             "get_remote_agent_conversation",
-            registry::serialize_ok(&Some(direct_full)).unwrap(),
+            registry::serialize_ok(Some(direct_full)).unwrap(),
             json!({"conversationId": conversation_id.as_str()}),
         ),
         (
@@ -2412,7 +2412,7 @@ async fn a_remote_conversation_list_of_an_unknown_context_is_empty_not_an_error(
     assert_eq!(
         dispatched,
         DispatchOutcome::Ok(
-            registry::serialize_ok(&Vec::<
+            registry::serialize_ok(Vec::<
                 crate::commands::unified_chat_commands::AgentConversationResponse,
             >::new())
             .unwrap()

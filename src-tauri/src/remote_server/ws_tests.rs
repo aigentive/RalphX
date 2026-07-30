@@ -435,7 +435,7 @@ fn a_durable_frame_from_another_epoch_tears_the_session_down() {
         .find("close_with_teardown(socket, counters, ResetReason::EpochChanged)")
         .expect("the epoch guard must tear the session down");
     assert!(
-        arm[..teardown].find("continue").is_none(),
+        !arm[..teardown].contains("continue"),
         "the mismatch arm must not silently skip the frame"
     );
 }

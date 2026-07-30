@@ -245,6 +245,7 @@ fn cgnat_validation_covers_both_boundaries_and_nearby_non_tailnet_ranges() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn real_runner_reads_status_stdout_from_the_cli() {
     let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
     let (_temp, _path) = install_fake_tailscale(STATUS_RUNNING_SCRIPT);
@@ -264,6 +265,7 @@ async fn real_runner_reads_status_stdout_from_the_cli() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn real_runner_reports_status_exit_and_stderr() {
     let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
     let (_temp, _path) = install_fake_tailscale(STATUS_DAEMON_DOWN_SCRIPT);
@@ -281,6 +283,7 @@ async fn real_runner_reports_status_exit_and_stderr() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn concrete_self_address_provider_reads_and_parses_the_cli() {
     let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
     let (_temp, _path) = install_fake_tailscale(STATUS_RUNNING_SCRIPT);
@@ -297,6 +300,7 @@ async fn concrete_self_address_provider_reads_and_parses_the_cli() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn concrete_self_address_provider_propagates_daemon_failure() {
     let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
     let (_temp, _path) = install_fake_tailscale(STATUS_DAEMON_DOWN_SCRIPT);
@@ -309,6 +313,7 @@ async fn concrete_self_address_provider_propagates_daemon_failure() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn real_runner_executes_both_serve_success_paths() {
     let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
     let (_temp, _path) = install_fake_tailscale(SERVE_OK_SCRIPT);
@@ -319,6 +324,7 @@ async fn real_runner_executes_both_serve_success_paths() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn real_runner_preserves_serve_failure_stderr() {
     let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
     let (_temp, _path) = install_fake_tailscale(SERVE_FAIL_SCRIPT);
@@ -341,6 +347,7 @@ async fn real_runner_preserves_serve_failure_stderr() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn serve_failure_stderr_is_bounded_to_four_hundred_characters() {
     let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
     let (_temp, _path) = install_fake_tailscale(SERVE_FAIL_LONG_STDERR_SCRIPT);
@@ -361,6 +368,7 @@ async fn serve_failure_stderr_is_bounded_to_four_hundred_characters() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn bad_interpreter_maps_launch_failures_for_status_and_serve() {
     let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
     let (_temp, _path) = install_fake_tailscale(LAUNCH_FAIL_SCRIPT);

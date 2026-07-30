@@ -1239,8 +1239,7 @@ fn detector_b_surface_rows_cannot_evaporate() {
         .expect("published state surface is an array");
     let mut uniquely_load_bearing = 0usize;
 
-    for index in 0..SPAWN_TRIGGERING_STATE_SURFACE.len() {
-        let entry = &SPAWN_TRIGGERING_STATE_SURFACE[index];
+    for (index, entry) in SPAWN_TRIGGERING_STATE_SURFACE.iter().enumerate() {
         let own = spawn_triggering_writers(&graph, commands.clone(), std::slice::from_ref(entry));
         // A surface whose markers stopped matching anything has silently evaporated even though
         // the row is still present.
@@ -2145,9 +2144,9 @@ fn probe_remote_chat_send_sink_paths() {
             row.capabilities,
         );
         for sinks in [
-            ("STEER", &super::authority_audit::STEER_SINKS[..]),
-            ("SCHEDULER", &super::authority_audit::SCHEDULER_SINKS[..]),
-            ("TRANSITION", &super::authority_audit::TRANSITION_SINKS[..]),
+            ("STEER", super::authority_audit::STEER_SINKS),
+            ("SCHEDULER", super::authority_audit::SCHEDULER_SINKS),
+            ("TRANSITION", super::authority_audit::TRANSITION_SINKS),
             ("LAUNCH", PROCESS_LAUNCH_SINKS),
         ] {
             let hits = closure
@@ -2199,9 +2198,9 @@ fn probe_chat_send_trio_sink_paths() {
             row.capabilities,
         );
         for sinks in [
-            ("STEER", &super::authority_audit::STEER_SINKS[..]),
-            ("SCHEDULER", &super::authority_audit::SCHEDULER_SINKS[..]),
-            ("TRANSITION", &super::authority_audit::TRANSITION_SINKS[..]),
+            ("STEER", super::authority_audit::STEER_SINKS),
+            ("SCHEDULER", super::authority_audit::SCHEDULER_SINKS),
+            ("TRANSITION", super::authority_audit::TRANSITION_SINKS),
             ("LAUNCH", PROCESS_LAUNCH_SINKS),
         ] {
             let hits = closure
@@ -2337,9 +2336,9 @@ fn probe_b3_module_batch_audit() {
             find_spec(command).is_some(),
         );
         for sinks in [
-            ("STEER", &super::authority_audit::STEER_SINKS[..]),
-            ("SCHEDULER", &super::authority_audit::SCHEDULER_SINKS[..]),
-            ("TRANSITION", &super::authority_audit::TRANSITION_SINKS[..]),
+            ("STEER", super::authority_audit::STEER_SINKS),
+            ("SCHEDULER", super::authority_audit::SCHEDULER_SINKS),
+            ("TRANSITION", super::authority_audit::TRANSITION_SINKS),
             ("LAUNCH", PROCESS_LAUNCH_SINKS),
         ] {
             let hits = closure
@@ -2654,11 +2653,8 @@ fn probe_operate_brakes_audit() {
     let commands = rows.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>();
     let detector_b =
         spawn_triggering_writers(&graph, commands.clone(), SPAWN_TRIGGERING_STATE_SURFACE);
-    let detector_d = agent_consumed_content_writers(
-        &graph,
-        commands.into_iter(),
-        AGENT_CONSUMED_CONTENT_WRITE_SURFACE,
-    );
+    let detector_d =
+        agent_consumed_content_writers(&graph, commands, AGENT_CONSUMED_CONTENT_WRITE_SURFACE);
 
     for (command, module) in &rows {
         if !CANDIDATES.contains(&command.as_str()) {
@@ -2873,11 +2869,8 @@ fn probe_b2_module_batch_audit() {
     let commands = rows.iter().map(|(c, _)| c.clone()).collect::<Vec<_>>();
     let detector_b =
         spawn_triggering_writers(&graph, commands.clone(), SPAWN_TRIGGERING_STATE_SURFACE);
-    let detector_d = agent_consumed_content_writers(
-        &graph,
-        commands.into_iter(),
-        AGENT_CONSUMED_CONTENT_WRITE_SURFACE,
-    );
+    let detector_d =
+        agent_consumed_content_writers(&graph, commands, AGENT_CONSUMED_CONTENT_WRITE_SURFACE);
 
     for (command, module) in &rows {
         if !B2_MODULES.contains(&module.as_str()) {
@@ -5216,9 +5209,8 @@ fn batch10_closes_the_batch9_arming_and_write_block() {
                 "`{command}` is registered AND carries an audit refusal; the ledger and the \
                  registry contradict each other"
             );
-            assert_eq!(
-                row.reason.contains("conservative-module-default"),
-                false,
+            assert!(
+                !row.reason.contains("conservative-module-default"),
                 "`{command}` is registered on the module-default placeholder, which records that \
                  no judgement was made. A registered command needs a reviewed reason."
             );

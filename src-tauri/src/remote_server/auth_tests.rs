@@ -1420,9 +1420,7 @@ async fn ws_ticket_guessing_is_rate_limited_and_stops_writing_audit_rows() {
     let limited = statuses
         .iter()
         .position(|status| *status == StatusCode::TOO_MANY_REQUESTS)
-        .expect(&format!(
-            "the ws upgrade must spend the pre-auth bucket: {statuses:?}"
-        ));
+        .unwrap_or_else(|| panic!("the ws upgrade must spend the pre-auth bucket: {statuses:?}"));
     assert!(
         limited > 0,
         "the first guesses are ordinary refusals: {statuses:?}"
