@@ -189,6 +189,38 @@ export const LOCAL_ONLY_COMMANDS: readonly LocalOnlyCommand[] = [
       "Opens THIS client's own launch log; the user asking for it is sitting at this Mac.",
   },
 
+  // --- This client's own boot lifecycle. The mount gate cannot be answered by a host. ---
+  //
+  // `StartupRoot` scopes its QueryClient to LOCAL_ENVIRONMENT_ID, but cache scoping and
+  // transport routing are different axes: `invoke` routes on the GLOBAL active
+  // environment, so after a reload with a remote environment active these went to the
+  // host, where they are unregistered. The shell-paint handoff then rejected and the
+  // client never mounted the app at all.
+  {
+    command: "get_startup_status",
+    disposition: "run-locally",
+    reason:
+      "The mount gate's own snapshot: bootId, attemptId, and readiness of THIS process. A host's boot state cannot authorize this client to mount.",
+  },
+  {
+    command: "get_startup_diagnostics",
+    disposition: "run-locally",
+    reason:
+      "Diagnostics for THIS client's launch, read from the local startup coordinator.",
+  },
+  {
+    command: "retry_startup",
+    disposition: "run-locally",
+    reason:
+      "Retries THIS client's own failed startup attempt; a host has no authority over this process's boot.",
+  },
+  {
+    command: "report_startup_frontend_milestone",
+    disposition: "run-locally",
+    reason:
+      "Reports this client's shell-paint milestone against a local bootId/attemptId pair the host has never heard of; the handoff that mounts the app depends on it succeeding.",
+  },
+
   // --- Host-path shell launches: wrong machine if run locally. ---
   {
     command: "open_agent_conversation_workspace",

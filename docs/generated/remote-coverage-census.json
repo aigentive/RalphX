@@ -8,12 +8,12 @@
     "seamBypasses": 0,
     "manifestClassified": 287,
     "unclassified": 0,
-    "line": "PASS: remote transport drift — 506 invoke command name(s), 0 dynamic, 0 seam bypasses; 287 manifest-classified; 0 unclassified (P-11 COMPLETE — permanent zero).\n      P-11 census: all 506 names have a reviewed disposition — 218 remote-registered, 29 reason-coded local-only, 259 manifest-classified only, 0 unclassified, 0 suppressions."
+    "line": "PASS: remote transport drift — 506 invoke command name(s), 0 dynamic, 0 seam bypasses; 287 manifest-classified; 0 unclassified (P-11 COMPLETE — permanent zero).\n      P-11 census: all 506 names have a reviewed disposition — 218 remote-registered, 33 reason-coded local-only, 255 manifest-classified only, 0 unclassified, 0 suppressions."
   },
   "totals": {
     "invokedCommandNames": 506,
     "remoteRegistered": 219,
-    "localOnlyRows": 29,
+    "localOnlyRows": 33,
     "ledgerRows": 548,
     "unclassified": 0,
     "assignedToBatches": 0,
