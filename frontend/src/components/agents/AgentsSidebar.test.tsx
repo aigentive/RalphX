@@ -97,6 +97,15 @@ const { inboxLaneByConversationId } = vi.hoisted(() => ({
     { lane: "needs" | "working" | "stale" | "done"; actionVerb: string }
   >(),
 }));
+const { inboxGroupCalls } = vi.hoisted(() => ({
+  inboxGroupCalls: [] as Array<{
+    lane: "needs" | "working" | "stale" | "done";
+    priorityConversationIds?: string[];
+  }>,
+}));
+const { inboxGroupTotalsByLane } = vi.hoisted(() => ({
+  inboxGroupTotalsByLane: new Map<string, number>(),
+}));
 const { mutedConversationIds } = vi.hoisted(() => ({
   mutedConversationIds: new Set<string>(),
 }));
@@ -631,6 +640,10 @@ vi.mock("./useAgentSidebarPublicationGroup", () => {
       priorityConversationIds?: string[];
       sort: string;
     }) => {
+      const firstProjectResult = projectIds
+        .map((projectId) => conversationsByProject.get(projectId))
+        .find(Boolean);
+      inboxGroupCalls.push({ lane, priorityConversationIds });
       const result = buildGroupResult({
         projectIds,
         groupKey: lane,
@@ -641,6 +654,7 @@ vi.mock("./useAgentSidebarPublicationGroup", () => {
         pinnedConversationIds,
         priorityConversationIds,
         sort,
+        isLoading: firstProjectResult?.isLoading,
       });
       const rows = result.group.rows
         .filter((row) => inboxLaneByConversationId.get(row.conversation.id)?.lane === lane)
@@ -651,7 +665,14 @@ vi.mock("./useAgentSidebarPublicationGroup", () => {
         }));
       return {
         ...result,
-        group: { ...result.group, rows, total: rows.length },
+        group: {
+          ...result.group,
+          rows,
+          total: inboxGroupTotalsByLane.get(lane) ?? rows.length,
+        },
+        hasNextPage: firstProjectResult?.hasNextPage ?? false,
+        isFetchingNextPage: firstProjectResult?.isFetchingNextPage ?? false,
+        fetchNextPage: firstProjectResult?.fetchNextPage ?? vi.fn(),
       };
     },
     useAgentSidebarProjectGroup: ({
@@ -989,6 +1010,8 @@ describe("AgentsSidebar", () => {
     workspaceCalls.length = 0;
     publicationGroupCalls.length = 0;
     inboxLaneByConversationId.clear();
+    inboxGroupCalls.length = 0;
+    inboxGroupTotalsByLane.clear();
     mutedConversationIds.clear();
     automationGroupIndexCalls.length = 0;
     automationGroupCalls.length = 0;
@@ -1011,7 +1034,7 @@ describe("AgentsSidebar", () => {
       showEmptyProjectGroups: true,
       projectSort: "latest",
       sidebarGroupBy: "project",
-      sidebarInboxActiveLane: "needs",
+      sidebarInboxActiveLane: "recent",
       sidebarProjectFilterIds: [],
       sidebarPublicationStateFilters: [
         "active",
@@ -4919,7 +4942,7 @@ describe("AgentsSidebar", () => {
         expect.objectContaining({
           publicationState: "draft",
           pinnedConversationIds: [],
-          priorityConversationIds: [selected.id],
+          priorityConversationIds: [],
         }),
       ])
     );
@@ -5058,7 +5081,7 @@ describe("AgentsSidebar", () => {
     expect(onRenameConversation).not.toHaveBeenCalled();
   });
 
-  it("selects Inbox and renders its four lane chips in fixed order", async () => {
+  it("selects Inbox and renders Recent, Stale, and Done chips in fixed order", async () => {
     const user = userEvent.setup();
     const lanes = ["needs", "working", "stale", "done"] as const;
     const conversations = lanes.map((lane) => {
@@ -5079,11 +5102,15 @@ describe("AgentsSidebar", () => {
       screen
         .getAllByRole("tab")
         .map((element) => element.dataset.testid)
-    ).toEqual(lanes.map((lane) => `agents-inbox-lane-chip-${lane}`));
-    expect(screen.getByTestId("agents-inbox-footer")).toHaveTextContent("1 waiting on you");
+    ).toEqual([
+      "agents-inbox-lane-chip-recent",
+      "agents-inbox-lane-chip-stale",
+      "agents-inbox-lane-chip-done",
+    ]);
+    expect(screen.getByTestId("agents-inbox-lane-chip-recent")).toHaveTextContent("2");
   });
 
-  it("renders only the selected lane's rows behind a single sidebar scroller", async () => {
+  it("renders Recent groups inside one sidebar scroller", async () => {
     const user = userEvent.setup();
     const needs = conversation({ id: "conversation-needs", title: "Needs review" });
     const working = conversation({ id: "conversation-working", title: "Working review" });
@@ -5094,55 +5121,190 @@ describe("AgentsSidebar", () => {
 
     renderSidebar();
 
-    expect(
-      screen.getByTestId("agents-sidebar-session-list-inbox-needs")
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByTestId("agents-sidebar-session-list-inbox-working")
-    ).not.toBeInTheDocument();
-    expect(screen.getByTestId("agents-inbox-lane-panel-needs")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-sidebar-session-list-inbox-needs")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-sidebar-session-list-inbox-working")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-inbox-lane-panel-recent")).toBeInTheDocument();
+    expect(screen.getByText("Needs you")).toBeInTheDocument();
+    expect(screen.getByText("Working")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-sidebar-session-list-inbox-recent").querySelectorAll(".overflow-y-auto")).toHaveLength(0);
     // The lane list owns the pane's only scroller, so the body must not scroll too.
     expect(screen.getByTestId("agents-sidebar-body")).not.toHaveClass("overflow-y-auto");
     expect(screen.getByTestId("agents-sidebar-body")).toHaveClass("overflow-hidden");
 
-    await user.click(screen.getByTestId("agents-inbox-lane-chip-working"));
+    await user.click(screen.getByTestId("agents-inbox-lane-chip-stale"));
 
     await waitFor(() => {
-      expect(
-        screen.getByTestId("agents-sidebar-session-list-inbox-working")
-      ).toBeInTheDocument();
+      expect(screen.getByTestId("agents-inbox-lane-empty-stale")).toBeInTheDocument();
     });
     expect(
-      screen.queryByTestId("agents-sidebar-session-list-inbox-needs")
+      screen.queryByTestId("agents-sidebar-session-list-inbox-recent")
     ).not.toBeInTheDocument();
     await waitFor(() => {
-      expect(useAgentSessionStore.getState().sidebarInboxActiveLane).toBe("working");
+      expect(useAgentSessionStore.getState().sidebarInboxActiveLane).toBe("stale");
     });
   });
 
-  it("keeps zero-count lane chips selectable and shows the lane's own empty copy", async () => {
+  it("keeps Recent group headers and their exhausted pager affordances stable", () => {
+    const needs = conversation({ id: "conversation-recent-needs", title: "Needs review" });
+    inboxLaneByConversationId.set(needs.id, { lane: "needs", actionVerb: "Review" });
+    inboxGroupTotalsByLane.set("needs", 1);
+    inboxGroupTotalsByLane.set("working", 0);
+    conversationsByProject.set("project-1", { data: [needs], isLoading: false });
+    useAgentSessionStore.setState({ sidebarGroupBy: "inbox" });
+
+    renderSidebar();
+
+    expect(screen.getByTestId("agents-inbox-recent-group-needs")).toHaveTextContent("Needs you");
+    expect(screen.getByTestId("agents-inbox-recent-group-working")).toHaveTextContent("Working");
+    expect(screen.getByTestId("agents-inbox-lane-empty-working")).toHaveTextContent("Nothing working");
+    expect(screen.getByTestId("agents-inbox-recent-pager-needs")).toHaveTextContent("All 1 shown");
+  });
+
+  it("pages Needs you explicitly without changing Working rows", async () => {
+    const user = userEvent.setup();
+    const needs = conversation({ id: "conversation-page-needs", title: "First needs" });
+    const olderNeeds = conversation({ id: "conversation-page-needs-older", title: "Older needs" });
+    const working = conversation({ id: "conversation-page-working", title: "Working stays put" });
+    inboxLaneByConversationId.set(needs.id, { lane: "needs", actionVerb: "Review" });
+    inboxLaneByConversationId.set(olderNeeds.id, { lane: "needs", actionVerb: "Review" });
+    inboxLaneByConversationId.set(working.id, { lane: "working", actionVerb: "Publish" });
+    inboxGroupTotalsByLane.set("needs", 2);
+    let addOlderNeeds = false;
+    const fetchNextPage = vi.fn().mockImplementation(async () => { addOlderNeeds = true; });
+    conversationsByProject.set("project-1", { data: [needs, working], isLoading: false, hasNextPage: true, fetchNextPage });
+    useAgentSessionStore.setState({ sidebarGroupBy: "inbox" });
+    const view = renderSidebar();
+
+    expect(screen.getByTestId("agents-inbox-recent-pager-needs")).toHaveTextContent("Load 1 older");
+    await user.click(screen.getByTestId("agents-inbox-recent-pager-needs"));
+    expect(fetchNextPage).toHaveBeenCalledTimes(1);
+    conversationsByProject.set("project-1", { data: addOlderNeeds ? [needs, olderNeeds, working] : [needs, working], isLoading: false, hasNextPage: false, fetchNextPage });
+    view.rerender(<TooltipProvider delayDuration={0}><AgentsSidebar {...buildSidebarProps()} /></TooltipProvider>);
+
+    expect(screen.getByTestId("agents-inbox-recent-group-working")).toHaveTextContent("Working stays put");
+    expect(screen.getByTestId("agents-inbox-recent-pager-needs")).toHaveTextContent("All 2 shown");
+    expect(screen.getByTestId("agents-inbox-recent-group-needs")).toHaveTextContent("Older needs");
+  });
+
+  it("keeps inbox row order stable when selecting a non-first conversation", async () => {
+    const user = userEvent.setup();
+    const newer = conversation({
+      id: "conversation-inbox-newer",
+      title: "Newer inbox row",
+      createdAt: "2026-04-22T12:00:00Z",
+    });
+    const middle = conversation({
+      id: "conversation-inbox-middle",
+      title: "Middle inbox row",
+      createdAt: "2026-04-22T11:00:00Z",
+    });
+    const older = conversation({
+      id: "conversation-inbox-older",
+      title: "Older inbox row",
+      createdAt: "2026-04-22T10:00:00Z",
+    });
+    for (const value of [newer, middle, older]) {
+      inboxLaneByConversationId.set(value.id, { lane: "needs", actionVerb: "Review" });
+    }
+    conversationsByProject.set("project-1", {
+      data: [newer, middle, older],
+      isLoading: false,
+    });
+    useAgentSessionStore.setState({ sidebarGroupBy: "inbox" });
+
+    function StatefulInboxSidebar() {
+      const [selectedConversation, setSelectedConversation] =
+        useState<AgentConversation | null>(null);
+      return (
+        <TooltipProvider delayDuration={0}>
+          <AgentsSidebar
+            {...buildSidebarProps([project()])}
+            selectedConversationId={selectedConversation?.id ?? null}
+            pinnedConversation={selectedConversation}
+            onSelectConversation={(_projectId, value) => setSelectedConversation(value)}
+          />
+        </TooltipProvider>
+      );
+    }
+
+    render(<StatefulInboxSidebar />);
+    const beforeSelection = getSessionRowOrder();
+    inboxGroupCalls.length = 0;
+
+    await user.click(
+      within(screen.getByTestId("agents-session-conversation-inbox-middle")).getAllByRole(
+        "button"
+      )[0]!
+    );
+
+    await waitFor(() =>
+      expect(inboxGroupCalls.filter((call) => call.lane === "needs").at(-1)).toEqual(
+        expect.objectContaining({ priorityConversationIds: [] })
+      )
+    );
+    expect(getSessionRowOrder()).toEqual(beforeSelection);
+  });
+
+  it("keeps a deep-linked inbox conversation in the priority request", () => {
+    const deepLinked = conversation({
+      id: "conversation-inbox-deep-link",
+      title: "Deep-linked inbox row",
+    });
+    useAgentSessionStore.setState({ sidebarGroupBy: "inbox" });
+
+    renderSidebar([project()], {
+      selectedConversationId: deepLinked.id,
+      pinnedConversation: deepLinked,
+    });
+
+    expect(inboxGroupCalls).toContainEqual(
+      expect.objectContaining({
+        priorityConversationIds: [deepLinked.id],
+      })
+    );
+  });
+
+  it("does not flash inbox empty copy before a zero-row lane query settles", () => {
+    conversationsByProject.set("project-1", { data: [], isLoading: true });
+    useAgentSessionStore.setState({ sidebarGroupBy: "inbox" });
+
+    const view = renderSidebar();
+
+    expect(screen.queryByTestId("agents-inbox-lane-empty-recent")).not.toBeInTheDocument();
+
+    conversationsByProject.set("project-1", { data: [], isLoading: false });
+    view.rerender(
+      <TooltipProvider delayDuration={0}>
+        <AgentsSidebar {...buildSidebarProps()} />
+      </TooltipProvider>
+    );
+
+    expect(screen.getByTestId("agents-inbox-lane-empty-recent")).toBeInTheDocument();
+  });
+
+  it("keeps zero-count inbox chips selectable and shows Recent's empty copy", async () => {
     const user = userEvent.setup();
     useAgentSessionStore.setState({ sidebarGroupBy: "inbox" });
 
     renderSidebar();
 
-    expect(screen.getByTestId("agents-inbox-lane-chip-needs")).toHaveAttribute(
+    expect(screen.getByTestId("agents-inbox-lane-chip-recent")).toHaveAttribute(
       "aria-selected",
       "true"
     );
-    expect(screen.getByTestId("agents-inbox-lane-empty-needs")).toHaveTextContent(
+    expect(screen.getByTestId("agents-inbox-lane-empty-recent")).toHaveTextContent(
       "Nothing waiting on you"
     );
 
-    await user.click(screen.getByTestId("agents-inbox-lane-chip-working"));
+    await user.click(screen.getByTestId("agents-inbox-lane-chip-stale"));
 
     await waitFor(() => {
-      expect(screen.getByTestId("agents-inbox-lane-empty-working")).toHaveTextContent(
-        "Nothing working"
+      expect(screen.getByTestId("agents-inbox-lane-empty-stale")).toHaveTextContent(
+        "Nothing stale"
       );
     });
     expect(
-      screen.queryByTestId("agents-inbox-lane-empty-needs")
+      screen.queryByTestId("agents-inbox-lane-empty-recent")
     ).not.toBeInTheDocument();
   });
 
@@ -5161,7 +5323,7 @@ describe("AgentsSidebar", () => {
       "aria-selected",
       "true"
     );
-    expect(useAgentSessionStore.getState().sidebarInboxActiveLane).toBe("needs");
+    expect(useAgentSessionStore.getState().sidebarInboxActiveLane).toBe("recent");
 
     await waitFor(() => {
       expect(useAgentSessionStore.getState().sidebarInboxActiveLane).toBe("done");
@@ -5182,12 +5344,12 @@ describe("AgentsSidebar", () => {
 
     renderSidebar();
 
-    const needsChip = await screen.findByTestId("agents-inbox-lane-chip-needs");
+    const needsChip = await screen.findByTestId("agents-inbox-lane-chip-recent");
     await waitFor(() => {
       expect(needsChip).toHaveTextContent("99+");
     });
-    expect(needsChip).toHaveAccessibleName("Needs you, 120 conversations");
-    expect(needsChip).toHaveAttribute("title", "Needs you, 120 conversations");
+    expect(needsChip).toHaveAccessibleName("Recent, 120 conversations");
+    expect(needsChip).toHaveAttribute("title", "Recent, 120 conversations");
   });
 
   it("moves lane selection with arrow keys and restores the selection after remount", async () => {
@@ -5196,7 +5358,7 @@ describe("AgentsSidebar", () => {
 
     const { unmount } = renderSidebar();
 
-    const needsChip = screen.getByTestId("agents-inbox-lane-chip-needs");
+    const needsChip = screen.getByTestId("agents-inbox-lane-chip-recent");
     expect(needsChip).toHaveAttribute("tabindex", "0");
     expect(screen.getByTestId("agents-inbox-lane-chip-done")).toHaveAttribute(
       "tabindex",
@@ -5207,7 +5369,7 @@ describe("AgentsSidebar", () => {
     await user.keyboard("{ArrowRight}");
 
     await waitFor(() => {
-      expect(screen.getByTestId("agents-inbox-lane-chip-working")).toHaveAttribute(
+      expect(screen.getByTestId("agents-inbox-lane-chip-stale")).toHaveAttribute(
         "aria-selected",
         "true"
       );
@@ -5232,6 +5394,13 @@ describe("AgentsSidebar", () => {
       "true"
     );
     expect(screen.getByTestId("agents-inbox-lane-panel-done")).toBeInTheDocument();
+  });
+
+  it("honors a persisted Stale inbox filter", () => {
+    useAgentSessionStore.setState({ sidebarGroupBy: "inbox", sidebarInboxActiveLane: "stale" });
+    renderSidebar();
+    expect(screen.getByTestId("agents-inbox-lane-chip-stale")).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByTestId("agents-inbox-lane-panel-stale")).toBeInTheDocument();
   });
 
   it("preserves inbox verb and publication metadata and drops it when leaving the inbox", async () => {

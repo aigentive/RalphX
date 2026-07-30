@@ -1,4 +1,4 @@
-import { useInfiniteQuery } from "@tanstack/react-query";
+import { keepPreviousData, useInfiniteQuery } from "@tanstack/react-query";
 
 import {
   chatApi,
@@ -58,6 +58,7 @@ export function useAgentSidebarGroup({
     Math.ceil(minimumRowCount)
   );
   const query = useInfiniteQuery({
+    // Keep request inputs in the key; placeholder data bridges re-keys without stale ordering.
     queryKey: [
       ...queryKey,
       "page-size",
@@ -87,6 +88,7 @@ export function useAgentSidebarGroup({
     getNextPageParam: (lastPage) =>
       lastPage.hasMore ? lastPage.offset + lastPage.rows.length : undefined,
     initialPageParam: 0,
+    placeholderData: keepPreviousData,
     enabled:
       enabled &&
       (allowEmptyProjectIds || projectIds.length > 0) &&
