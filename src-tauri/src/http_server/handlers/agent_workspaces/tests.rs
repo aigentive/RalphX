@@ -929,7 +929,8 @@ async fn stale_repair_target_lease_rejects_completion_before_git_validation_or_p
         axum::Json(CompleteAgentWorkspaceRepairRequest {
             summary: "repair is complete".to_string(),
             blocker: None,
-            transient_ci_failure: false,
+            resolution: None,
+            reported_fix_commit_sha: None,
         }),
     )
     .await
@@ -1009,7 +1010,7 @@ async fn review_pr_rejects_fixer_context_and_completion_before_github_reads() {
             blocker: None,
             fix_commit_sha: None,
             created_by_run_id: None,
-            transient_ci_failure: false,
+            resolution: None,
         }),
     )
     .await
@@ -1400,11 +1401,12 @@ async fn setup_pr_fix_workspace_with_review_gate(
 async fn setup_transient_ci_rerun_fixture(suffix: &str) -> PrFixReviewGateFixture {
     use crate::domain::entities::{
         AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation, AgentWorkspaceRepairPhase,
-        AgentWorkspaceRepairSource,
+        AgentWorkspaceRepairSource, GitTargetIdentity, GitTargetLeaseOwner,
     };
     use crate::domain::repositories::{
-        AgentWorkspaceRepairAttemptTransition, AgentWorkspaceRepairAttemptTransitionOutcome,
-        StartOrJoinAgentWorkspaceRepairAttempt, StartOrJoinAgentWorkspaceRepairAttemptOutcome,
+        AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, AgentWorkspaceRepairAttemptTransition,
+        AgentWorkspaceRepairAttemptTransitionOutcome, StartOrJoinAgentWorkspaceRepairAttempt,
+        StartOrJoinAgentWorkspaceRepairAttemptOutcome,
     };
 
     let fixture =
@@ -1435,9 +1437,45 @@ async fn setup_transient_ci_rerun_fixture(suffix: &str) -> PrFixReviewGateFixtur
         StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(attempt) => attempt,
         outcome => panic!("expected new repair attempt, got {outcome:?}"),
     };
+    let workspace = fixture
+        .app_state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&fixture.conversation_id)
+        .await
+        .expect("load fixture workspace")
+        .expect("fixture workspace exists");
+    let target_identity = GitTargetIdentity::new(
+        std::path::PathBuf::from(&workspace.worktree_path),
+        format!("refs/heads/{}", workspace.branch_name),
+    )
+    .expect("test workspace branch should form a canonical target identity");
+    let repair_owner = GitTargetLeaseOwner::agent_workspace_repair(started.id.as_str());
+    let AcquireGitTargetLeaseOutcome::Acquired { fencing_epoch } = fixture
+        .app_state
+        .branch_update_repo
+        .acquire_target_lease(AcquireGitTargetLease {
+            identity: target_identity.clone(),
+            owner: repair_owner.clone(),
+        })
+        .await
+        .expect("repair lease should acquire")
+    else {
+        panic!("repair attempt should own its initial canonical target lease");
+    };
     let mut repairing = started.clone();
     repairing.phase = AgentWorkspaceRepairPhase::Repairing;
     repairing.reserved_agent_run_id = Some(fixture.pr_fix_run_id.clone());
+    repairing.git_common_dir = Some(
+        target_identity
+            .git_common_dir()
+            .to_string_lossy()
+            .to_string(),
+    );
+    repairing.target_ref = Some(target_identity.full_ref().to_string());
+    repairing.target_identity_version = Some(1);
+    repairing.target_lease_epoch = Some(fencing_epoch);
+    repairing.pr_autofix_dispatch_head_commit = Some(fixture.fix_commit_sha.clone());
+    repairing.pr_autofix_health_fingerprint = Some("github_pr_autofix:267:test".to_string());
     repairing.updated_at += chrono::Duration::microseconds(1);
     match repair_repo
         .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
@@ -1455,6 +1493,191 @@ async fn setup_transient_ci_rerun_fixture(suffix: &str) -> PrFixReviewGateFixtur
         outcome => panic!("expected repairing attempt, got {outcome:?}"),
     }
     fixture
+}
+
+#[tokio::test]
+async fn pr_autofix_plain_success_without_new_commit_is_rejected_without_settlement() {
+    let fixture = setup_transient_ci_rerun_fixture("plain-success-gated").await;
+    let error = super::complete_agent_workspace_pr_fix(
+        State(test_http_state(Arc::clone(&fixture.app_state))),
+        Path(fixture.conversation_id.to_string()),
+        Json(CompleteAgentWorkspacePrFixRequest {
+            summary: "Branch is already valid.".to_string(),
+            blocker: None,
+            fix_commit_sha: Some(fixture.fix_commit_sha.clone()),
+            resolution: None,
+            created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
+        }),
+    )
+    .await
+    .expect_err("same dispatch head must not settle a PR autofix attempt");
+    assert_eq!(error.0, StatusCode::CONFLICT);
+    assert!(error.1["error"]
+        .as_str()
+        .is_some_and(|message| message.contains("requires a new committed branch head")));
+    let attempt = fixture
+        .app_state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("load attempt")
+        .expect("rejected completion must leave attempt current");
+    assert_eq!(
+        attempt.phase,
+        crate::domain::entities::AgentWorkspaceRepairPhase::Repairing
+    );
+    assert!(attempt.settled_at.is_none());
+}
+
+#[tokio::test]
+async fn pr_autofix_plain_success_with_new_committed_head_is_accepted() {
+    let fixture = setup_transient_ci_rerun_fixture("plain-success-new-head").await;
+    let workspace = fixture
+        .app_state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&fixture.conversation_id)
+        .await
+        .expect("load fixture workspace")
+        .expect("fixture workspace exists");
+    let workspace_path = std::path::Path::new(&workspace.worktree_path);
+    std::fs::write(
+        workspace_path.join("new-ci-fix.txt"),
+        "fixed after dispatch\n",
+    )
+    .expect("write committed PR autofix change");
+    git(workspace_path, &["add", "new-ci-fix.txt"]);
+    git(workspace_path, &["commit", "-m", "fix CI after dispatch"]);
+    let new_head = git(workspace_path, &["rev-parse", "HEAD"]);
+    assert_ne!(new_head, fixture.fix_commit_sha);
+
+    let Json(response) = super::complete_agent_workspace_pr_fix(
+        State(test_http_state(Arc::clone(&fixture.app_state))),
+        Path(fixture.conversation_id.to_string()),
+        Json(CompleteAgentWorkspacePrFixRequest {
+            summary: "Committed the PR autofix after the dispatch head.".to_string(),
+            blocker: None,
+            fix_commit_sha: Some(new_head.clone()),
+            resolution: None,
+            created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
+        }),
+    )
+    .await
+    .expect("a newly committed PR autofix head should pass completion validation");
+
+    assert_eq!(
+        response.status, "blocked",
+        "the fixture's blocking Workspace Review runs only after completion validates the new head"
+    );
+    let attempt = fixture
+        .app_state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("load current attempt")
+        .expect("completion should keep the repair attempt durable");
+    assert_eq!(
+        attempt.repair_head_commit.as_deref(),
+        Some(new_head.as_str())
+    );
+    assert_ne!(
+        attempt.phase,
+        crate::domain::entities::AgentWorkspaceRepairPhase::Repairing
+    );
+}
+
+#[tokio::test]
+async fn base_update_completion_allows_existing_branch_head_without_resolution() {
+    use crate::domain::entities::AgentWorkspaceRepairSource;
+    use crate::domain::repositories::{
+        AgentWorkspaceRepairAttemptTransition, AgentWorkspaceRepairAttemptTransitionOutcome,
+    };
+
+    let fixture = setup_transient_ci_rerun_fixture("base-update-no-new-head").await;
+    let repair_repo = Arc::clone(&fixture.app_state.agent_workspace_repair_repo);
+    let current = repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("load current repair attempt")
+        .expect("fixture repair attempt exists");
+    let mut base_update = current.clone();
+    base_update.source = AgentWorkspaceRepairSource::BaseUpdate;
+    base_update.updated_at += chrono::Duration::microseconds(1);
+    assert!(matches!(
+        repair_repo
+            .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+                attempt: base_update,
+                expected_phase: current.phase,
+                expected_updated_at: current.updated_at,
+                next_phase: current.phase,
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("persist base update source"),
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_)
+    ));
+
+    let Json(response) = super::complete_agent_workspace_pr_fix(
+        State(test_http_state(Arc::clone(&fixture.app_state))),
+        Path(fixture.conversation_id.to_string()),
+        Json(CompleteAgentWorkspacePrFixRequest {
+            summary: "The branch is already valid after the base update.".to_string(),
+            blocker: None,
+            fix_commit_sha: Some(fixture.fix_commit_sha.clone()),
+            resolution: None,
+            created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
+        }),
+    )
+    .await
+    .expect("base-update completion must not require a newer branch head");
+
+    assert_eq!(
+        response.status, "blocked",
+        "the fixture's blocking Workspace Review runs only after the base-update completion bypasses the PR-autofix gate"
+    );
+    let attempt = repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("load completed base-update attempt")
+        .expect("base-update repair stays durable while it continues");
+    assert_eq!(attempt.source, AgentWorkspaceRepairSource::BaseUpdate);
+    assert_eq!(
+        attempt.repair_head_commit.as_deref(),
+        Some(fixture.fix_commit_sha.as_str())
+    );
+}
+
+#[tokio::test]
+async fn pr_autofix_needs_human_blocks_without_automatic_retry() {
+    let fixture = setup_transient_ci_rerun_fixture("needs-human").await;
+    let Json(response) = super::complete_agent_workspace_pr_fix(
+        State(test_http_state(Arc::clone(&fixture.app_state))),
+        Path(fixture.conversation_id.to_string()),
+        Json(CompleteAgentWorkspacePrFixRequest {
+            summary: "A maintainer must approve the external credential change.".to_string(),
+            blocker: None,
+            fix_commit_sha: None,
+            resolution: Some(AgentWorkspacePrFixResolution::NeedsHuman),
+            created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
+        }),
+    )
+    .await
+    .expect("needs_human should block the current attempt");
+    assert_eq!(response.status, "blocked");
+    let attempt = fixture
+        .app_state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("load attempt")
+        .expect("blocked attempt stays current");
+    assert!(
+        crate::application::agent_workspace_publish_recovery::is_blocked_and_not_auto_retryable(
+            &attempt
+        )
+    );
+    assert!(attempt.pending_reasons.iter().any(|reason| reason
+        == crate::application::agent_workspace_publish_repair_state::NEEDS_HUMAN_REPAIR_REASON));
 }
 
 fn failed_ci_pr_health(head_sha: &str, run_id: i64) -> PrHealth {
@@ -1484,7 +1707,7 @@ async fn complete_transient_ci_failure(
             blocker: None,
             fix_commit_sha: None,
             created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
-            transient_ci_failure: true,
+            resolution: Some(AgentWorkspacePrFixResolution::TransientCi),
         }),
     )
     .await
@@ -1724,7 +1947,7 @@ async fn current_pr_fixer_refreshes_base_then_completes_and_publishes_refreshed_
             blocker: None,
             fix_commit_sha: Some(refreshed_head.clone()),
             created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
-            transient_ci_failure: false,
+            resolution: None,
         }),
     )
     .await
@@ -2486,7 +2709,7 @@ async fn complete_pr_fix_skips_publish_when_pr_is_already_merged() {
             blocker: None,
             fix_commit_sha: None,
             created_by_run_id: Some(pr_fix_run_id.to_string()),
-            transient_ci_failure: false,
+            resolution: None,
         }),
     )
     .await
@@ -2548,7 +2771,7 @@ async fn complete_pr_fix_stale_attempt_is_a_side_effect_free_superseded_noop() {
             blocker: None,
             fix_commit_sha: None,
             created_by_run_id: Some(stale_run_id.to_string()),
-            transient_ci_failure: false,
+            resolution: None,
         }),
     )
     .await
@@ -2652,7 +2875,7 @@ async fn complete_pr_fix_old_fingerprint_cannot_settle_new_issue_claim() {
             blocker: None,
             fix_commit_sha: None,
             created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
-            transient_ci_failure: false,
+            resolution: None,
         }),
     )
     .await
@@ -2724,7 +2947,7 @@ async fn complete_pr_fix_already_completed_is_a_side_effect_free_noop() {
             blocker: Some("must not persist".to_string()),
             fix_commit_sha: Some(fixture.fix_commit_sha.clone()),
             created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
-            transient_ci_failure: false,
+            resolution: None,
         }),
     )
     .await
@@ -2795,7 +3018,7 @@ async fn complete_pr_fix_current_authority_with_stale_claim_is_side_effect_free(
             blocker: Some("must not persist".to_string()),
             fix_commit_sha: Some(fixture.fix_commit_sha.clone()),
             created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
-            transient_ci_failure: false,
+            resolution: None,
         }),
     )
     .await
@@ -2935,7 +3158,7 @@ async fn complete_pr_fix_invalid_or_missing_caller_fails_closed_without_completi
                 blocker: Some("must not persist".to_string()),
                 fix_commit_sha: Some(fixture.fix_commit_sha.clone()),
                 created_by_run_id,
-                transient_ci_failure: false,
+                resolution: None,
             }),
         )
         .await
@@ -3016,7 +3239,7 @@ async fn complete_pr_fix_skips_publish_when_auto_publish_is_paused() {
             blocker: None,
             fix_commit_sha: Some(fixture.fix_commit_sha.clone()),
             created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
-            transient_ci_failure: false,
+            resolution: None,
         }),
     )
     .await
@@ -3062,7 +3285,7 @@ async fn complete_pr_fix_requires_exact_head_without_settling_current_attempt() 
             blocker: None,
             fix_commit_sha: None,
             created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
-            transient_ci_failure: false,
+            resolution: None,
         }),
     )
     .await
@@ -3118,7 +3341,7 @@ async fn complete_pr_fix_rejects_configured_branch_tip_when_worktree_head_is_det
             blocker: None,
             fix_commit_sha: Some(fixture.fix_commit_sha.clone()),
             created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
-            transient_ci_failure: false,
+            resolution: None,
         }),
     )
     .await
@@ -3168,7 +3391,7 @@ async fn complete_pr_fix_rejects_configured_branch_tip_when_worktree_switches_br
             blocker: None,
             fix_commit_sha: Some(fixture.fix_commit_sha.clone()),
             created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
-            transient_ci_failure: false,
+            resolution: None,
         }),
     )
     .await
@@ -3207,7 +3430,7 @@ async fn complete_pr_fix_blocker_needs_no_sha_or_github_preflight() {
             blocker: Some("Required dependency is unavailable".to_string()),
             fix_commit_sha: None,
             created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
-            transient_ci_failure: false,
+            resolution: None,
         }),
     )
     .await
@@ -3267,7 +3490,7 @@ async fn complete_pr_fix_rejects_dirty_workspace_without_settling_current_attemp
             blocker: None,
             fix_commit_sha: Some(fixture.fix_commit_sha.clone()),
             created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
-            transient_ci_failure: false,
+            resolution: None,
         }),
     )
     .await
@@ -3387,7 +3610,7 @@ async fn complete_pr_fix_waits_for_running_workspace_review_when_required() {
             blocker: None,
             fix_commit_sha: Some(fix_commit_sha),
             created_by_run_id: Some(pr_fix_run_id.to_string()),
-            transient_ci_failure: false,
+            resolution: None,
         }),
     )
     .await
@@ -3645,7 +3868,7 @@ async fn complete_pr_fix_blocks_when_workspace_review_has_blocking_findings() {
             blocker: None,
             fix_commit_sha: Some(fixture.fix_commit_sha.clone()),
             created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
-            transient_ci_failure: false,
+            resolution: None,
         }),
     )
     .await
@@ -3748,7 +3971,7 @@ async fn complete_pr_fix_blocks_when_workspace_review_failed() {
             blocker: None,
             fix_commit_sha: Some(fixture.fix_commit_sha.clone()),
             created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
-            transient_ci_failure: false,
+            resolution: None,
         }),
     )
     .await

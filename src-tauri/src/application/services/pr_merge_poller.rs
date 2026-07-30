@@ -2043,7 +2043,6 @@ async fn route_agent_workspace_pr_conflict_repair_if_needed_with_repair_repo(
             return Ok(false);
         }
     };
-
     let message = build_agent_workspace_pr_conflict_repair_message(pr_number, &workspace, &details);
     let target_identity =
         GitService::canonical_target_identity(working_dir, &workspace.branch_name).await?;
@@ -2876,7 +2875,9 @@ async fn route_agent_workspace_pr_autofix_for_target(
     let health = github
         .fetch_pr_health(working_dir, target.pr_number)
         .await?;
-    // A durable completion may have already reserved a rerun for this exact failed CI state.
+    let current_issue = classify_agent_workspace_pr_autofix_issue(target.pr_number, &health);
+    // A durable completion may have already reserved a rerun or classified this exact state as
+    // pre-existing on base. Neither outcome authorizes a new fixer until GitHub changes health.
     // Do not launch a new fixer generation until GitHub reports a different conclusion.
     if let Some(repair_repo) = repair_repo.as_ref() {
         if let Some(attempt) = repair_repo
@@ -2884,29 +2885,44 @@ async fn route_agent_workspace_pr_autofix_for_target(
             .await?
         {
             if attempt.phase == AgentWorkspaceRepairPhase::Ready {
-                if attempt.ci_rerun_fingerprint.as_deref()
-                    == transient_ci_health_fingerprint(&health).as_deref()
+                let pre_existing_suppressed = attempt
+                    .pending_reasons
+                    .iter()
+                    .any(|reason| reason == crate::application::agent_workspace_publish_repair_state::PRE_EXISTING_ON_BASE_REPAIR_REASON);
+                if pre_existing_suppressed
+                    && current_issue.as_ref().is_some_and(|issue| {
+                        attempt.pr_autofix_health_fingerprint.as_deref()
+                            == Some(issue.classification.as_str())
+                    })
                 {
                     return Ok(false);
                 }
-                // A changed conclusion ends the rerun-pending generation. The next normal
-                // dispatch below creates a fresh, independently fenced repair attempt.
-                match repair_repo
-                    .settle_repair_attempt(SettleAgentWorkspaceRepairAttempt {
-                        attempt_id: attempt.id.clone(),
-                        generation: attempt.generation,
-                        expected_phase: AgentWorkspaceRepairPhase::Ready,
-                        expected_updated_at: attempt.updated_at,
-                        outcome: crate::domain::entities::AgentWorkspaceRepairOutcome::Succeeded,
-                        settled_at: chrono::Utc::now(),
-                        compatibility_projection: None,
-                        events: Vec::new(),
-                    })
-                    .await?
-                {
-                    SettleAgentWorkspaceRepairAttemptOutcome::Applied(_) => {}
-                    SettleAgentWorkspaceRepairAttemptOutcome::Stale(_)
-                    | SettleAgentWorkspaceRepairAttemptOutcome::Missing => return Ok(false),
+                if pre_existing_suppressed || attempt.ci_rerun_count > 0 {
+                    if attempt.ci_rerun_fingerprint.as_deref()
+                        == transient_ci_health_fingerprint(&health).as_deref()
+                    {
+                        return Ok(false);
+                    }
+                    // A changed conclusion ends the rerun-pending generation. The next normal
+                    // dispatch below creates a fresh, independently fenced repair attempt.
+                    match repair_repo
+                        .settle_repair_attempt(SettleAgentWorkspaceRepairAttempt {
+                            attempt_id: attempt.id.clone(),
+                            generation: attempt.generation,
+                            expected_phase: AgentWorkspaceRepairPhase::Ready,
+                            expected_updated_at: attempt.updated_at,
+                            outcome:
+                                crate::domain::entities::AgentWorkspaceRepairOutcome::Succeeded,
+                            settled_at: chrono::Utc::now(),
+                            compatibility_projection: None,
+                            events: Vec::new(),
+                        })
+                        .await?
+                    {
+                        SettleAgentWorkspaceRepairAttemptOutcome::Applied(_) => {}
+                        SettleAgentWorkspaceRepairAttemptOutcome::Stale(_)
+                        | SettleAgentWorkspaceRepairAttemptOutcome::Missing => return Ok(false),
+                    }
                 }
             }
         }
@@ -2946,7 +2962,7 @@ async fn route_agent_workspace_pr_autofix_for_target(
             .await?;
         return Ok(false);
     }
-    let Some(issue) = classify_agent_workspace_pr_autofix_issue(target.pr_number, &health) else {
+    let Some(issue) = current_issue else {
         let auto_merge_current = sync_agent_workspace_auto_merge_preference(
             Arc::clone(&github),
             working_dir,
@@ -3296,7 +3312,7 @@ async fn dispatch_agent_workspace_pr_autofix(
         },
     )
     .await?;
-    let attempt = match start {
+    let mut attempt = match start {
         AgentWorkspaceRepairStartOutcome::Started(attempt) => attempt,
         AgentWorkspaceRepairStartOutcome::Joined(attempt) => {
             let recorded = record_agent_workspace_repair_routed_to_existing_attempt(
@@ -3383,6 +3399,9 @@ async fn dispatch_agent_workspace_pr_autofix(
             return Ok(false);
         }
     };
+    // Backend-derived dispatch evidence fences later success completion and suppression.
+    attempt.pr_autofix_dispatch_head_commit = health.sync_state.head_ref_oid.clone();
+    attempt.pr_autofix_health_fingerprint = Some(classification.to_string());
     let target_identity =
         GitService::canonical_target_identity(working_dir, &workspace.branch_name).await?;
     let dispatch_attempt = match reserve_agent_workspace_repair_dispatch(

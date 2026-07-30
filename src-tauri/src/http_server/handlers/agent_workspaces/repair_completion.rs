@@ -11,11 +11,13 @@ use axum::{
 
 use super::*;
 use crate::application::agent_workspace_publish_repair_state::{
-    block_agent_workspace_repair_completion, classify_agent_workspace_repair_completion_authority,
+    block_agent_workspace_repair_completion, block_agent_workspace_repair_needs_human,
+    classify_agent_workspace_repair_completion_authority,
     continue_agent_workspace_repair_at_boundary, inspect_agent_workspace_repair_completion,
     reacquire_agent_workspace_repair_target_lease_for_continuation,
     record_agent_workspace_repair_validation,
     reopen_agent_workspace_repair_after_validation_failure, reserve_agent_workspace_ci_rerun,
+    reserve_agent_workspace_pre_existing_on_base,
     reserve_agent_workspace_repair_completion_validation,
     validate_agent_workspace_repair_target_lease, AgentWorkspaceRepairTransitionOutcome,
     MAX_AGENT_WORKSPACE_CI_RERUN_RETRIES,
@@ -23,7 +25,7 @@ use crate::application::agent_workspace_publish_repair_state::{
 use crate::application::publish_resilience::continue_agent_workspace_repair_publish;
 use crate::domain::entities::{
     AgentRunId, AgentRunStatus, AgentWorkspaceRepairAttempt,
-    AgentWorkspaceRepairCompletionAuthority, AgentWorkspaceRepairPhase,
+    AgentWorkspaceRepairCompletionAuthority, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
 };
 use crate::domain::services::github_service::PrHealth;
 
@@ -435,7 +437,11 @@ pub(crate) async fn complete_agent_workspace_repair_for_trusted_run(
             None,
         ));
     }
-    if req.transient_ci_failure && req.blocker.is_some() {
+    if matches!(
+        req.resolution,
+        Some(AgentWorkspacePrFixResolution::TransientCi)
+    ) && req.blocker.is_some()
+    {
         return Err(json_error(
             StatusCode::BAD_REQUEST,
             "A transient CI rerun request cannot also include a blocker.",
@@ -479,7 +485,10 @@ pub(crate) async fn complete_agent_workspace_repair_for_trusted_run(
     };
     let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
 
-    if req.transient_ci_failure {
+    if matches!(
+        req.resolution,
+        Some(AgentWorkspacePrFixResolution::TransientCi)
+    ) {
         return request_transient_ci_rerun(
             state,
             &conversation_id,
@@ -489,6 +498,62 @@ pub(crate) async fn complete_agent_workspace_repair_for_trusted_run(
             req.summary.trim(),
         )
         .await;
+    }
+
+    if matches!(
+        req.resolution,
+        Some(AgentWorkspacePrFixResolution::NeedsHuman)
+    ) {
+        return match block_agent_workspace_repair_needs_human(
+            Arc::clone(&state.app_state.agent_workspace_repair_repo),
+            Arc::clone(&state.app_state.branch_update_repo),
+            attempt,
+            req.summary.trim(),
+            workspace.pr_auto_merge_current,
+        )
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
+        {
+            AgentWorkspaceRepairTransitionOutcome::Applied(_) => Ok(completion_response(
+                "blocked",
+                "RalphX recorded the PR fix as requiring human intervention.",
+            )),
+            AgentWorkspaceRepairTransitionOutcome::Stale(_)
+            | AgentWorkspaceRepairTransitionOutcome::Missing => {
+                stale_completion_transition_response(state, &conversation_id, &run_id).await
+            }
+        };
+    }
+
+    if matches!(
+        req.resolution,
+        Some(AgentWorkspacePrFixResolution::PreExistingOnBase)
+    ) {
+        if attempt.source != AgentWorkspaceRepairSource::PrAutofix {
+            return Err(json_error(
+                StatusCode::BAD_REQUEST,
+                "pre_existing_on_base is only valid for PR autofix repair attempts.",
+                None,
+            ));
+        }
+        return match reserve_agent_workspace_pre_existing_on_base(
+            Arc::clone(&state.app_state.agent_workspace_repair_repo),
+            attempt,
+            req.summary.trim(),
+            workspace.pr_auto_merge_current,
+        )
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
+        {
+            AgentWorkspaceRepairTransitionOutcome::Applied(_) => Ok(completion_response(
+                "accepted",
+                "RalphX recorded that the failure is pre-existing on the base and will wait for changed PR health.",
+            )),
+            AgentWorkspaceRepairTransitionOutcome::Stale(_)
+            | AgentWorkspaceRepairTransitionOutcome::Missing => {
+                stale_completion_transition_response(state, &conversation_id, &run_id).await
+            }
+        };
     }
 
     if let Some(blocker) = req.blocker.as_deref() {
@@ -577,6 +642,7 @@ pub(crate) async fn complete_agent_workspace_repair_for_trusted_run(
         &workspace,
         reserved,
         req.summary.trim(),
+        req.reported_fix_commit_sha.as_deref(),
         resurrecting,
     ))
     .await
@@ -740,6 +806,7 @@ async fn complete_reserved_agent_workspace_repair(
     workspace: &AgentConversationWorkspace,
     reserved: AgentWorkspaceRepairAttempt,
     summary: &str,
+    reported_fix_commit_sha: Option<&str>,
     reblock_validation_failure: bool,
 ) -> Result<Json<CompleteAgentWorkspaceRepairResponse>, JsonError> {
     if let Err(error) = validate_agent_workspace_repair_target_lease(
@@ -836,6 +903,36 @@ async fn complete_reserved_agent_workspace_repair(
             };
         }
     };
+
+    if reserved.source == AgentWorkspaceRepairSource::PrAutofix {
+        let has_new_commit = reported_fix_commit_sha
+            .is_some_and(|reported| reported == validation.repair_head_commit)
+            && reserved
+                .pr_autofix_dispatch_head_commit
+                .as_deref()
+                .is_some_and(|dispatch_head| validation.repair_head_commit != dispatch_head);
+        if !has_new_commit {
+            let error = "PR autofix completion requires a new committed branch head or resolution 'transient_ci', 'pre_existing_on_base', or 'needs_human'. Push a real fix or classify the outcome.";
+            let outcome = reopen_agent_workspace_repair_after_validation_failure(
+                Arc::clone(&state.app_state.agent_workspace_repair_repo),
+                reserved,
+                workspace.pr_auto_merge_current,
+            )
+            .await
+            .map_err(|error| {
+                json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+            })?;
+            return match outcome {
+                AgentWorkspaceRepairTransitionOutcome::Applied(_) => {
+                    Err(json_error(StatusCode::CONFLICT, error, None))
+                }
+                AgentWorkspaceRepairTransitionOutcome::Stale(_)
+                | AgentWorkspaceRepairTransitionOutcome::Missing => {
+                    stale_completion_transition_response(state, conversation_id, run_id).await
+                }
+            };
+        }
+    }
 
     let validated = match record_agent_workspace_repair_validation(
         Arc::clone(&state.app_state.agent_workspace_repair_repo),

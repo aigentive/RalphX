@@ -535,16 +535,17 @@ export const AGENT_WORKSPACE_TOOLS: Tool[] = [
           type: "string",
           description: "Optional blocker explanation when the PR fix cannot be completed safely",
         },
-        transient_ci_failure: {
-          type: "boolean",
+        resolution: {
+          type: "string",
+          enum: ["fixed", "transient_ci", "pre_existing_on_base", "needs_human"],
           description:
-            "Set true only for a genuinely transient GitHub Actions infrastructure failure (for example runner cancellation or infrastructure timeout). Never use it for a real test, lint, coverage, or code failure; RalphX rechecks PR health and derives the failed workflow run itself.",
+            "Use fixed only after pushing a real fix. transient_ci is only for GitHub Actions infrastructure failures; pre_existing_on_base requires evidence the failure reproduces on base; needs_human is for a blocker needing user action. Classify honestly rather than fabricating a commit.",
         },
         fix_commit_sha: {
           type: "string",
           pattern: "^[0-9a-f]{40}$",
           description:
-            "Full 40-character SHA of the current committed workspace HEAD. Required when blocker and transient_ci_failure are both absent; omit it when reporting either outcome.",
+            "Full 40-character SHA of the current committed workspace HEAD. Required for a fixed completion; RalphX verifies the actual branch head changed from dispatch.",
         },
       },
       required: ["conversation_id", "summary"],
@@ -1055,18 +1056,18 @@ export async function callCompleteAgentWorkspacePrFixTool(
   args: unknown,
   runtimeContext?: AgentWorkspaceToolRuntimeContext
 ): Promise<unknown> {
-  const { conversation_id, summary, blocker, transient_ci_failure, fix_commit_sha } = args as {
+  const { conversation_id, summary, blocker, resolution, fix_commit_sha } = args as {
     conversation_id: string;
     summary: string;
     blocker?: string;
-    transient_ci_failure?: boolean;
+    resolution?: string;
     fix_commit_sha?: string;
   };
 
   return callTauri(`agent-workspaces/${conversation_id}/complete-pr-fix`, {
     summary,
     blocker,
-    transient_ci_failure,
+    resolution,
     fix_commit_sha,
     created_by_run_id: resolveWorkspaceReviewCallerRunId(runtimeContext),
   });

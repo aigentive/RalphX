@@ -71,6 +71,8 @@ fn row_to_repair_attempt(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentWorks
         ci_rerun_count: u32::try_from(row.get::<_, i64>("ci_rerun_count")?)
             .map_err(|error| invalid_repair_row_value(16, rusqlite::types::Type::Integer, error))?,
         ci_rerun_fingerprint: row.get("ci_rerun_fingerprint")?,
+        pr_autofix_dispatch_head_commit: row.get("pr_autofix_dispatch_head_commit")?,
+        pr_autofix_health_fingerprint: row.get("pr_autofix_health_fingerprint")?,
         repair_head_commit: row.get("repair_head_commit")?,
         summary: row.get("summary")?,
         blocker: row.get("blocker")?,
@@ -193,12 +195,13 @@ fn write_repair_attempt(conn: &Connection, attempt: &AgentWorkspaceRepairAttempt
             reserved_agent_run_id, target_base_ref, target_base_commit, pending_reasons_json,
             review_required, auto_publish_enabled, auto_merge_desired, auto_merge_method,
             dispatch_count, next_dispatch_at, ci_rerun_count, ci_rerun_fingerprint,
+            pr_autofix_dispatch_head_commit, pr_autofix_health_fingerprint,
             repair_head_commit, summary, blocker,
             git_common_dir, target_ref, target_identity_version, target_lease_epoch, outcome,
             created_at, updated_at, settled_at
          ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-            ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29
+            ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31
          )",
         rusqlite::params![
             attempt.id.as_str(),
@@ -222,6 +225,8 @@ fn write_repair_attempt(conn: &Connection, attempt: &AgentWorkspaceRepairAttempt
             attempt.next_dispatch_at.map(|value| value.to_rfc3339()),
             i64::from(attempt.ci_rerun_count),
             attempt.ci_rerun_fingerprint,
+            attempt.pr_autofix_dispatch_head_commit,
+            attempt.pr_autofix_health_fingerprint,
             attempt.repair_head_commit,
             attempt.summary,
             attempt.blocker,
@@ -277,19 +282,21 @@ fn update_repair_attempt(
              next_dispatch_at = ?15,
              ci_rerun_count = ?16,
              ci_rerun_fingerprint = ?17,
-             repair_head_commit = ?18,
-             summary = ?19,
-             blocker = ?20,
-             git_common_dir = ?21,
-             target_ref = ?22,
-             target_identity_version = ?23,
-             target_lease_epoch = ?24,
-             outcome = ?25,
-             updated_at = ?26,
-             settled_at = ?27
+             pr_autofix_dispatch_head_commit = ?18,
+             pr_autofix_health_fingerprint = ?19,
+             repair_head_commit = ?20,
+             summary = ?21,
+             blocker = ?22,
+             git_common_dir = ?23,
+             target_ref = ?24,
+             target_identity_version = ?25,
+             target_lease_epoch = ?26,
+             outcome = ?27,
+             updated_at = ?28,
+             settled_at = ?29
          WHERE id = ?1 AND generation = ?2 AND phase = ?3
-           AND (?28 IS NULL OR updated_at = ?28)
-           AND (?29 = 0 OR settled_at IS NULL)",
+           AND (?30 IS NULL OR updated_at = ?30)
+           AND (?31 = 0 OR settled_at IS NULL)",
         rusqlite::params![
             attempt.id.as_str(),
             i64::try_from(attempt.generation).map_err(|_| {
@@ -311,6 +318,8 @@ fn update_repair_attempt(
             attempt.next_dispatch_at.map(|value| value.to_rfc3339()),
             i64::from(attempt.ci_rerun_count),
             attempt.ci_rerun_fingerprint,
+            attempt.pr_autofix_dispatch_head_commit,
+            attempt.pr_autofix_health_fingerprint,
             attempt.repair_head_commit,
             attempt.summary,
             attempt.blocker,

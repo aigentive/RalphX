@@ -62,6 +62,8 @@ pub(crate) const AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION: u64 = 1;
 pub(crate) const MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES: u32 = 3;
 /// A deliberately small cap: transient runner failures must not create an unbounded CI loop.
 pub(crate) const MAX_AGENT_WORKSPACE_CI_RERUN_RETRIES: u32 = 3;
+pub(crate) const NEEDS_HUMAN_REPAIR_REASON: &str = "pr_autofix_needs_human";
+pub(crate) const PRE_EXISTING_ON_BASE_REPAIR_REASON: &str = "pr_autofix_pre_existing_on_base";
 pub(crate) const ORPHANED_REPAIR_DISPATCH_RESCUE_GRACE_SECS: i64 = 60;
 const AGENT_WORKSPACE_REPAIR_DISPATCH_INITIAL_BACKOFF_SECS: i64 = 5;
 const AGENT_WORKSPACE_REPAIR_DISPATCH_MAX_BACKOFF_SECS: i64 = 60;
@@ -495,6 +497,75 @@ pub(crate) async fn block_agent_workspace_repair_completion(
         }
         outcome => Ok(outcome),
     }
+}
+
+/// A typed PR-fixer escalation is terminal for automatic recovery. The marker is persisted on
+/// the current generation rather than inferred from agent-authored summary text.
+pub(crate) async fn block_agent_workspace_repair_needs_human(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    branch_update_repo: Arc<dyn BranchUpdateRepository>,
+    mut attempt: AgentWorkspaceRepairAttempt,
+    summary: &str,
+    auto_merge_current: Option<bool>,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    if !attempt
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == NEEDS_HUMAN_REPAIR_REASON)
+    {
+        attempt
+            .pending_reasons
+            .push(NEEDS_HUMAN_REPAIR_REASON.to_string());
+    }
+    block_agent_workspace_repair_completion(
+        repair_repo,
+        branch_update_repo,
+        attempt,
+        summary,
+        summary,
+        auto_merge_current,
+    )
+    .await
+}
+
+/// Holds a PR autofix generation at a backend-derived health fingerprint without pretending the
+/// failing state was repaired. The poller settles it only after health changes.
+pub(crate) async fn reserve_agent_workspace_pre_existing_on_base(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    mut attempt: AgentWorkspaceRepairAttempt,
+    summary: &str,
+    auto_merge_current: Option<bool>,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    let Some(_) = attempt.pr_autofix_health_fingerprint.as_deref() else {
+        return Ok(AgentWorkspaceRepairTransitionOutcome::Stale(attempt));
+    };
+    let expected_phase = attempt.phase;
+    let expected_updated_at = attempt.updated_at;
+    if !attempt
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == PRE_EXISTING_ON_BASE_REPAIR_REASON)
+    {
+        attempt
+            .pending_reasons
+            .push(PRE_EXISTING_ON_BASE_REPAIR_REASON.to_string());
+    }
+    attempt.phase = AgentWorkspaceRepairPhase::Ready;
+    attempt.summary = Some(summary.to_string());
+    attempt.blocker = None;
+    attempt.updated_at = next_transition_at(Some(expected_updated_at));
+    let projection = repair_attempt_projection(&attempt, summary, auto_merge_current);
+    repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Ready,
+            compatibility_projection: Some(projection),
+            events: Vec::new(),
+        })
+        .await
+        .map(repair_attempt_transition_outcome)
 }
 
 /// CAS-reserve a GitHub Actions rerun after the completion boundary has authenticated the

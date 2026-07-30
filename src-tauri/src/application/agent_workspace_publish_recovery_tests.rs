@@ -95,6 +95,62 @@ fn blocked_repair_is_exhausted_only_for_spent_delivery_or_automatic_successor_bu
 }
 
 #[cfg(unix)]
+#[tokio::test]
+async fn needs_human_blocker_is_exempt_from_automatic_repair_reconciliation() {
+    let (state, conversation_id, _worktree_parent, _project_dir) =
+        seed_orphaned_repair_dispatch(119, "#!/bin/sh\nexit 1\n").await;
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load seeded repair")
+        .expect("seeded repair exists");
+    let mut needs_human = current.clone();
+    needs_human.source = AgentWorkspaceRepairSource::PrAutofix;
+    needs_human.phase = AgentWorkspaceRepairPhase::Blocked;
+    needs_human.blocker = Some("A maintainer must approve this change.".to_string());
+    needs_human.pending_reasons = vec![
+        crate::application::agent_workspace_publish_repair_state::NEEDS_HUMAN_REPAIR_REASON
+            .to_string(),
+    ];
+    needs_human.updated_at = chrono::Utc::now() - chrono::Duration::seconds(61);
+    let needs_human = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: needs_human,
+            expected_phase: current.phase,
+            expected_updated_at: current.updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Blocked,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("persist needs-human completion marker")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("needs-human marker must apply, got {outcome:?}"),
+    };
+
+    assert!(is_blocked_and_not_auto_retryable(&needs_human));
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("needs-human recovery sweep"),
+        0,
+        "needs-human repairs must never redispatch automatically"
+    );
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load post-recovery repair")
+        .expect("needs-human repair remains current");
+    assert_eq!(current.id, needs_human.id);
+    assert_eq!(current.generation, needs_human.generation);
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Blocked);
+}
+
+#[cfg(unix)]
 struct TestEnvVarGuard {
     key: &'static str,
     previous: Option<String>,

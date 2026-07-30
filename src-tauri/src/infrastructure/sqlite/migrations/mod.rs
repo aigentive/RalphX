@@ -575,6 +575,9 @@ mod v20260730000304_chat_message_blocks_created_at_index_tests;
 mod v20260730151837_agent_workspace_repair_ci_rerun_reservations;
 #[cfg(test)]
 mod v20260730151837_agent_workspace_repair_ci_rerun_reservations_tests;
+mod v20260730161032_agent_workspace_pr_autofix_completion_evidence;
+#[cfg(test)]
+mod v20260730161032_agent_workspace_pr_autofix_completion_evidence_tests;
 #[cfg(test)]
 pub(super) fn migrate_scripted_agent_workflows_for_test(conn: &Connection) -> AppResult<()> {
     v20260715194617_scripted_agent_workflows::migrate(conn)
@@ -669,7 +672,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260730151837;
+pub const SCHEMA_VERSION: i64 = 20260730161032;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1839,6 +1842,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260730151837,
         name: "agent_workspace_repair_ci_rerun_reservations",
         migrate: v20260730151837_agent_workspace_repair_ci_rerun_reservations::migrate,
+    },
+    Migration {
+        version: 20260730161032,
+        name: "agent_workspace_pr_autofix_completion_evidence",
+        migrate: v20260730161032_agent_workspace_pr_autofix_completion_evidence::migrate,
     },
 ];
 

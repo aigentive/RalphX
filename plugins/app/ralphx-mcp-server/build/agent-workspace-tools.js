@@ -476,14 +476,15 @@ export const AGENT_WORKSPACE_TOOLS = [
                     type: "string",
                     description: "Optional blocker explanation when the PR fix cannot be completed safely",
                 },
-                transient_ci_failure: {
-                    type: "boolean",
-                    description: "Set true only for a genuinely transient GitHub Actions infrastructure failure (for example runner cancellation or infrastructure timeout). Never use it for a real test, lint, coverage, or code failure; RalphX rechecks PR health and derives the failed workflow run itself.",
+                resolution: {
+                    type: "string",
+                    enum: ["fixed", "transient_ci", "pre_existing_on_base", "needs_human"],
+                    description: "Use fixed only after pushing a real fix. transient_ci is only for GitHub Actions infrastructure failures; pre_existing_on_base requires evidence the failure reproduces on base; needs_human is for a blocker needing user action. Classify honestly rather than fabricating a commit.",
                 },
                 fix_commit_sha: {
                     type: "string",
                     pattern: "^[0-9a-f]{40}$",
-                    description: "Full 40-character SHA of the current committed workspace HEAD. Required when blocker and transient_ci_failure are both absent; omit it when reporting either outcome.",
+                    description: "Full 40-character SHA of the current committed workspace HEAD. Required for a fixed completion; RalphX verifies the actual branch head changed from dispatch.",
                 },
             },
             required: ["conversation_id", "summary"],
@@ -767,11 +768,11 @@ export async function callReadAgentWorkspacePrCommentTool(callTauriGet, args) {
     return callTauriGet(`agent-workspaces/${conversation_id}/pr-comments/${encodeURIComponent(comment_id)}`);
 }
 export async function callCompleteAgentWorkspacePrFixTool(callTauri, args, runtimeContext) {
-    const { conversation_id, summary, blocker, transient_ci_failure, fix_commit_sha } = args;
+    const { conversation_id, summary, blocker, resolution, fix_commit_sha } = args;
     return callTauri(`agent-workspaces/${conversation_id}/complete-pr-fix`, {
         summary,
         blocker,
-        transient_ci_failure,
+        resolution,
         fix_commit_sha,
         created_by_run_id: resolveWorkspaceReviewCallerRunId(runtimeContext),
     });

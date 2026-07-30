@@ -504,7 +504,8 @@ fn automatic_blocked_repair_streak(attempt: &AgentWorkspaceRepairAttempt) -> u32
 pub(crate) fn is_blocked_and_not_auto_retryable(attempt: &AgentWorkspaceRepairAttempt) -> bool {
     attempt.phase == AgentWorkspaceRepairPhase::Blocked
         && attempt.next_dispatch_at.is_none()
-        && (attempt.dispatch_count >= crate::application::agent_workspace_publish_repair_state::MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES
+        && (attempt.pending_reasons.iter().any(|reason| reason == crate::application::agent_workspace_publish_repair_state::NEEDS_HUMAN_REPAIR_REASON)
+            || attempt.dispatch_count >= crate::application::agent_workspace_publish_repair_state::MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES
             || (attempt.continuation.is_automatic()
                 && automatic_blocked_repair_streak(attempt) >= MAX_AUTO_RETRY_BLOCKED_REPAIR_STREAK))
 }
@@ -522,6 +523,13 @@ async fn retry_safe_blocked_agent_workspace_repair(
     state: &AppState,
     current: AgentWorkspaceRepairAttempt,
 ) -> AppResult<DurableRepairRecoveryOutcome> {
+    if current
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == crate::application::agent_workspace_publish_repair_state::NEEDS_HUMAN_REPAIR_REASON)
+    {
+        return Ok(DurableRepairRecoveryOutcome::Noop);
+    }
     if !current.continuation.is_automatic() {
         return Ok(DurableRepairRecoveryOutcome::Noop);
     }
