@@ -34,13 +34,13 @@
     {
       "name": "agent:conversation_created",
       "file": "src-tauri/src/commands/unified_chat_commands/mod.rs",
-      "line": 2210,
+      "line": 2208,
       "kind": "method"
     },
     {
       "name": "agent:conversation_forked",
       "file": "src-tauri/src/commands/unified_chat_commands/mod.rs",
-      "line": 2218,
+      "line": 2216,
       "kind": "method"
     },
     {
@@ -538,19 +538,19 @@
     {
       "name": "agent:workspace_changed",
       "file": "src-tauri/src/commands/unified_chat_commands/mod.rs",
-      "line": 4239,
+      "line": 4236,
       "kind": "method"
     },
     {
       "name": "agent:workspace_changed",
       "file": "src-tauri/src/commands/unified_chat_commands/mod.rs",
-      "line": 6403,
+      "line": 6399,
       "kind": "method"
     },
     {
       "name": "agent:workspace_changed",
       "file": "src-tauri/src/commands/unified_chat_commands/mod.rs",
-      "line": 6482,
+      "line": 6478,
       "kind": "method"
     },
     {
