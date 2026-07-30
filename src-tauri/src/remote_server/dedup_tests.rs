@@ -153,6 +153,90 @@ impl RemoteRequestDedupRepository for FailingRecordStore {
     }
 }
 
+/// Suspends dispatch until the test releases it, while exposing start/completion barriers.
+struct BlockingDispatcher {
+    calls: Arc<AtomicUsize>,
+    started: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+    completed: Arc<tokio::sync::Notify>,
+}
+
+impl BlockingDispatcher {
+    fn new() -> (
+        Arc<Self>,
+        Arc<AtomicUsize>,
+        Arc<tokio::sync::Notify>,
+        Arc<tokio::sync::Notify>,
+        Arc<tokio::sync::Notify>,
+    ) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let completed = Arc::new(tokio::sync::Notify::new());
+        (
+            Arc::new(Self {
+                calls: calls.clone(),
+                started: started.clone(),
+                release: release.clone(),
+                completed: completed.clone(),
+            }),
+            calls,
+            started,
+            release,
+            completed,
+        )
+    }
+}
+
+#[async_trait]
+impl RemoteInvokeDispatcher for BlockingDispatcher {
+    async fn dispatch(
+        &self,
+        _scopes: &[Scope],
+        _command: &str,
+        _args: &Value,
+    ) -> Result<DispatchOutcome, RemoteInvokeError> {
+        self.started.notify_one();
+        self.release.notified().await;
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.completed.notify_one();
+        Ok(DispatchOutcome::Ok(json!({"taskId": "task-blocking"})))
+    }
+}
+
+/// Reproduces lookup → claim TOCTOU by landing a durable row immediately after returning the
+/// first `Absent` observation. A correct double-check sees the injected row before dispatch.
+struct RecordAfterFirstLookupStore {
+    inner: Arc<SqliteRemoteRequestDedupRepository>,
+    record: RemoteRequestDedupRecord,
+    lookups: AtomicUsize,
+}
+
+#[async_trait]
+impl RemoteRequestDedupRepository for RecordAfterFirstLookupStore {
+    async fn lookup(
+        &self,
+        device_id: &RemoteDeviceId,
+        request_id: &str,
+        now: &str,
+    ) -> AppResult<RemoteRequestDedupLookup> {
+        let lookup = self.inner.lookup(device_id, request_id, now).await?;
+        if self.lookups.fetch_add(1, Ordering::SeqCst) == 0 {
+            assert!(matches!(lookup, RemoteRequestDedupLookup::Absent));
+            self.inner.record(self.record.clone()).await?;
+        }
+        Ok(lookup)
+    }
+
+    async fn record(&self, record: RemoteRequestDedupRecord) -> AppResult<()> {
+        self.inner.record(record).await
+    }
+
+    async fn purge_expired(&self, now: &str) -> AppResult<usize> {
+        self.inner.purge_expired(now).await
+    }
+}
+
 // ---------------------------------------------------------------------------------------
 // Harness
 // ---------------------------------------------------------------------------------------
@@ -381,7 +465,7 @@ async fn a_duplicate_arriving_while_the_first_is_in_flight_is_refused_not_execut
         .begin(&device, "race-1", MUTATING_COMMAND, &json!({"title": "a"}))
         .await
         .expect("the first claim should succeed");
-    assert!(matches!(holder, DedupDecision::Proceed));
+    assert!(matches!(holder, DedupDecision::Proceed(_)));
 
     let response = app
         .oneshot(invoke(
@@ -405,6 +489,155 @@ async fn a_duplicate_arriving_while_the_first_is_in_flight_is_refused_not_execut
     );
 }
 
+#[tokio::test]
+async fn dropping_a_reservation_releases_the_dashmap_slot_for_retry() {
+    let (auth, store) = shared_context();
+    let (_, device) = operate_device(&auth).await;
+    let dedup = Arc::new(RemoteDedupState::new(store));
+    let args = json!({"title": "drop-me"});
+
+    let reservation = match dedup
+        .begin(&device, "drop-guard", MUTATING_COMMAND, &args)
+        .await
+        .expect("the first reservation should succeed")
+    {
+        DedupDecision::Proceed(reservation) => reservation,
+        DedupDecision::Replay(_) => panic!("the first request cannot replay"),
+    };
+    assert_eq!(dedup.in_flight_count(), 1);
+
+    drop(reservation);
+
+    assert_eq!(
+        dedup.in_flight_count(),
+        0,
+        "Drop must release the exact DashMap slot"
+    );
+    let retry = dedup
+        .begin(&device, "drop-guard", MUTATING_COMMAND, &args)
+        .await
+        .expect("a retry after cancellation must not remain stuck at 409");
+    assert!(matches!(retry, DedupDecision::Proceed(_)));
+}
+
+#[tokio::test]
+async fn a_disconnected_handler_leaves_dispatch_running_and_reconciles_without_reexecution() {
+    let (auth, store) = shared_context();
+    let (token, device) = operate_device(&auth).await;
+    let (dispatcher, calls, started, release, completed) = BlockingDispatcher::new();
+    let app = router(&auth, dispatcher, store.clone());
+    let first_app = app.clone();
+    let first_token = token.clone();
+
+    let handler = tokio::spawn(async move {
+        first_app
+            .oneshot(invoke(
+                &first_token,
+                "disconnect-1",
+                MUTATING_COMMAND,
+                json!({"title": "survive"}),
+            ))
+            .await
+    });
+    started.notified().await;
+    handler.abort();
+    let _ = handler.await;
+
+    let during = app
+        .clone()
+        .oneshot(invoke(
+            &token,
+            "disconnect-1",
+            MUTATING_COMMAND,
+            json!({"title": "survive"}),
+        ))
+        .await
+        .expect("the concurrent retry should receive a response");
+    assert_eq!(
+        during.status(),
+        StatusCode::CONFLICT,
+        "the continuation still owns the live reservation"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+    release.notify_one();
+    completed.notified().await;
+
+    // `completed` fires from inside dispatch; the continuation still has to write the durable
+    // record and drop the reservation AFTER that. Until it does, a retry truthfully 409s — so
+    // poll (bounded) until the replay lands rather than racing the continuation's tail.
+    let mut replay = None;
+    for _ in 0..100 {
+        let response = app
+            .clone()
+            .oneshot(invoke(
+                &token,
+                "disconnect-1",
+                MUTATING_COMMAND,
+                json!({"title": "survive"}),
+            ))
+            .await
+            .expect("the completed continuation should be replayable");
+        if response.status() == StatusCode::CONFLICT {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            continue;
+        }
+        replay = Some(response);
+        break;
+    }
+    let replay = replay.expect("the reservation must be released once the continuation finishes");
+    assert_eq!(replay.status(), StatusCode::OK);
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "ABSENCE: disconnect and reconcile must execute the command exactly once"
+    );
+    assert!(matches!(
+        store
+            .lookup(&device, "disconnect-1", &chrono::Utc::now().to_rfc3339())
+            .await,
+        Ok(RemoteRequestDedupLookup::Fresh(_))
+    ));
+}
+
+#[tokio::test]
+async fn a_record_landing_between_lookup_and_claim_replays_without_a_second_effect() {
+    let (auth, inner) = shared_context();
+    let (token, device) = operate_device(&auth).await;
+    let args = json!({"title": "toctou"});
+    let original_effects = Arc::new(AtomicUsize::new(1));
+    let dispatcher = Arc::new(CountingDispatcher {
+        calls: original_effects.clone(),
+        outcome: DispatchOutcome::Ok(json!({"taskId": "duplicate"})),
+        facade_error: None,
+    });
+    let store: Arc<dyn RemoteRequestDedupRepository> = Arc::new(RecordAfterFirstLookupStore {
+        inner,
+        record: RemoteRequestDedupRecord {
+            device_id: device,
+            request_id: "toctou-1".to_string(),
+            args_hash: args_hash(MUTATING_COMMAND, &args),
+            outcome: RemoteDedupOutcomeKind::Ok,
+            response: r#"{"ok":true,"result":{"taskId":"original"}}"#.to_string(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            expires_at: (chrono::Utc::now() + chrono::Duration::minutes(10)).to_rfc3339(),
+        },
+        lookups: AtomicUsize::new(0),
+    });
+
+    let response = router(&auth, dispatcher, store)
+        .oneshot(invoke(&token, "toctou-1", MUTATING_COMMAND, args))
+        .await
+        .expect("the raced request should resolve");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_json(response).await["result"]["taskId"], "original");
+    assert_eq!(
+        original_effects.load(Ordering::SeqCst),
+        1,
+        "ABSENCE: the command must not run twice after the stale Absent lookup"
+    );
+}
+
 /// A duplicate id already in flight for DIFFERENT args is a reuse, not a coalescible duplicate.
 #[tokio::test]
 async fn an_in_flight_id_reused_for_different_args_is_rejected_as_reuse() {
@@ -421,10 +654,12 @@ async fn an_in_flight_id_reused_for_different_args_is_rejected_as_reuse() {
         .with_dedup(dedup.clone()),
     );
 
-    dedup
+    // Hold the RAII reservation for the test's duration; dropping it would release the claim.
+    let holder = dedup
         .begin(&device, "race-2", MUTATING_COMMAND, &json!({"title": "a"}))
         .await
         .expect("the first claim should succeed");
+    assert!(matches!(holder, DedupDecision::Proceed(_)));
 
     let response = app
         .oneshot(invoke(
@@ -540,7 +775,7 @@ async fn d1_a_reservation_without_a_durable_row_does_not_survive_a_restart() {
     let (dispatcher, calls) = CountingDispatcher::ok();
 
     // "Before the restart": a state that claimed the slot and never completed.
-    let dead = RemoteDedupState::new(store.clone());
+    let dead = Arc::new(RemoteDedupState::new(store.clone()));
     dead.begin(&device, "req-d1", MUTATING_COMMAND, &json!({}))
         .await
         .expect("claim should succeed");
@@ -982,7 +1217,7 @@ async fn a_duplicate_permission_approval_in_flight_is_refused_not_approved() {
         )
         .await
         .expect("the first claim should succeed");
-    assert!(matches!(holder, DedupDecision::Proceed));
+    assert!(matches!(holder, DedupDecision::Proceed(_)));
 
     let response = app
         .oneshot(invoke(

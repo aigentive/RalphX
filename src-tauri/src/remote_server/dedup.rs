@@ -129,12 +129,37 @@ struct ReservationKey {
 }
 
 /// What consulting the durable table and the in-flight map decided.
-#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum DedupDecision {
     /// Nothing has this id; the caller holds the reservation and must dispatch.
-    Proceed,
+    Proceed(RemoteDedupReservation),
     /// A completed outcome exists — replay it, do not dispatch.
     Replay(RemoteRequestDedupRecord),
+}
+
+/// An owned in-flight reservation.
+///
+/// Dropping it releases the exact `(device_id, request_id)` slot, including when the owning
+/// dispatch task is cancelled or panics.
+pub(crate) struct RemoteDedupReservation {
+    state: Arc<RemoteDedupState>,
+    device_id: RemoteDeviceId,
+    request_id: String,
+}
+
+impl RemoteDedupReservation {
+    /// Records a completed command outcome. The reservation remains held through the durable
+    /// write and is released by `Drop` when this method returns.
+    pub(crate) async fn complete(self, command: &str, args: &Value, record: RecordedOutcome) {
+        self.state
+            .complete(&self.device_id, &self.request_id, command, args, record)
+            .await;
+    }
+}
+
+impl Drop for RemoteDedupReservation {
+    fn drop(&mut self) {
+        self.state.release(&self.device_id, &self.request_id);
+    }
 }
 
 /// The in-flight reservation map plus the durable store.
@@ -161,7 +186,7 @@ impl RemoteDedupState {
     /// Order matters: durable FIRST. A completed outcome outranks any live claim, so a replay
     /// arriving while a stale reservation is somehow still held still gets its answer.
     pub(crate) async fn begin(
-        &self,
+        self: &Arc<Self>,
         device_id: &RemoteDeviceId,
         request_id: &str,
         command: &str,
@@ -217,6 +242,11 @@ impl RemoteDedupState {
                     // connection on them would convert a duplicate tap into a held socket and a
                     // client-side timeout that looks like a host fault. 409 is retryable and the
                     // client already knows how to back off.
+                    tracing::warn!(
+                        device_id = %device_id.0,
+                        %request_id,
+                        "remote request retry arrived while the original dispatch is in progress"
+                    );
                     Err(RemoteInvokeError {
                         code: ErrorCode::RemoteRequestInProgress,
                         message: "This requestId is already executing on the host.".to_string(),
@@ -227,7 +257,41 @@ impl RemoteDedupState {
             }
             Entry::Vacant(vacant) => {
                 vacant.insert(hash);
-                Ok(DedupDecision::Proceed)
+                let reservation = RemoteDedupReservation {
+                    state: Arc::clone(self),
+                    device_id: device_id.clone(),
+                    request_id: request_id.to_string(),
+                };
+
+                // A completion can land after the first lookup returned `Absent` but before this
+                // request won the in-flight claim. Re-check while holding the claim so that stale
+                // observation cannot authorize a second dispatch.
+                let lookup = self
+                    .store
+                    .lookup(device_id, request_id, &now_rfc3339())
+                    .await
+                    .map_err(|error| {
+                        tracing::error!(
+                            device_id = %device_id.0,
+                            %request_id,
+                            %error,
+                            "remote dedup double-check failed; refusing to dispatch"
+                        );
+                        RemoteInvokeError::internal(
+                            "The idempotency store is unavailable; the request was not executed.",
+                        )
+                    })?;
+                match lookup {
+                    RemoteRequestDedupLookup::Fresh(record) => {
+                        if record.args_hash != args_hash(command, args) {
+                            return Err(reused_id_error());
+                        }
+                        Ok(DedupDecision::Replay(record))
+                    }
+                    RemoteRequestDedupLookup::Expired | RemoteRequestDedupLookup::Absent => {
+                        Ok(DedupDecision::Proceed(reservation))
+                    }
+                }
             }
         }
     }
@@ -269,7 +333,6 @@ impl RemoteDedupState {
                  this requestId will re-execute"
             );
         }
-        self.release(device_id, request_id);
         self.purge_if_due(&now).await;
     }
 
@@ -283,6 +346,10 @@ impl RemoteDedupState {
             device_id: device_id.0.clone(),
             request_id: request_id.to_string(),
         });
+    }
+
+    pub(crate) fn in_flight_count(&self) -> usize {
+        self.in_flight.len()
     }
 
     async fn purge_if_due(&self, now: &str) {

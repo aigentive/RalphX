@@ -219,6 +219,10 @@ struct ActiveRemoteListener {
     stopped: oneshot::Receiver<()>,
     bind_address: SocketAddr,
     serve: RemoteServeStatus,
+    /// The listener's dedup state, kept reachable so the status surface can report the live
+    /// in-flight reservation gauge (F-1 observability): a wedged slot must be visible BEFORE a
+    /// host restart silently clears it.
+    dedup: Arc<dedup::RemoteDedupState>,
 }
 
 /// Serve exposure as observed **at listener start**.
@@ -323,6 +327,18 @@ impl RemoteListenerHandle {
             .as_ref()
             .map(|listener| listener.serve.clone())
             .unwrap_or_default()
+    }
+
+    /// Live `/invoke` reservations currently held by the running listener's dedup state.
+    ///
+    /// `None` while no listener is running — distinct from a running listener with zero
+    /// in-flight dispatches.
+    pub(crate) async fn dedup_in_flight(&self) -> Option<usize> {
+        self.active
+            .lock()
+            .await
+            .as_ref()
+            .map(|listener| listener.dedup.in_flight_count())
     }
 }
 
@@ -665,12 +681,13 @@ pub(crate) async fn start_listener_with_runtime(
     // built from the SAME `DbConnection` as the auth context so a replay and the device row it
     // is scoped to can never come from different connections.
     let idempotency_store = Arc::new(SqliteRemoteRequestDedupRepository::from_db(store.db()));
+    let dedup = Arc::new(RemoteDedupState::new(idempotency_store.clone()));
     let mut state = RemoteRouterState::new_with_invoke_dispatcher(
         settings.environment_id.as_str(),
         auth,
         runtime.invoke_dispatcher,
     )
-    .with_dedup(Arc::new(RemoteDedupState::new(idempotency_store.clone())))
+    .with_dedup(dedup.clone())
     // Installed at app setup, not here: the listener toggle governs network exposure only, so
     // a restart of the listener must not restart the stream (P-15, P-23).
     .with_stream(handle.stream());
@@ -728,6 +745,7 @@ pub(crate) async fn start_listener_with_runtime(
         stopped,
         bind_address: bound_address,
         serve,
+        dedup,
     });
     tracing::info!(
         address = %bound_address,

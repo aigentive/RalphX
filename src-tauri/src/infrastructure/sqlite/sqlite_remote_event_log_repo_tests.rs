@@ -41,15 +41,28 @@ fn the_repository_never_locks_the_connection_directly() {
 /// against the sequencer's own commits and stalls live delivery for every client.
 #[test]
 fn the_catch_up_drain_uses_a_plain_read_not_a_write_intent_transaction() {
+    // Anchor into the IMPL block first: the trait DECLARES `async fn read_range` too (a bodiless
+    // signature), and splitting on the whole file lands the scan on that declaration, where no
+    // `.run(` call can ever appear — a scan that could never pass proves nothing.
     let source = include_str!("sqlite_remote_event_log_repo.rs");
-    let drain = source
+    let implementation = source
+        .split("impl RemoteEventLogStore for SqliteRemoteEventLogRepository")
+        .nth(1)
+        .expect("the store impl block should exist");
+    let drain: String = implementation
         .split("async fn read_range")
         .nth(1)
         .and_then(|rest| rest.split("async fn oldest_seq").next())
-        .expect("read_range body should be locatable");
+        .expect("read_range body should be locatable")
+        // Comment-stripped: the body legitimately documents that it is "deliberately NOT
+        // run_transaction", and prose about the forbidden call is not the call.
+        .lines()
+        .map(|line| line.split("//").next().unwrap_or(line))
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(
-        drain.contains("self.db\n            .run("),
-        "read_range must use DbConnection::run"
+        drain.contains(".run("),
+        "read_range must go through DbConnection::run"
     );
     assert!(
         !drain.contains("run_transaction"),

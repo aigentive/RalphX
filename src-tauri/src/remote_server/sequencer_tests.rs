@@ -597,9 +597,16 @@ fn the_epoch_roll_touches_no_database_or_filesystem() {
 
 /// §3.2 rule A: nothing may persist or restore the epoch. No marker file, no DB row, no
 /// dirty flag — that absence is the entire safety argument.
+///
+/// The scan runs on comment-stripped source: `sequencer.rs` legitimately DOCUMENTS that no
+/// `from_persisted` constructor exists, and prose about a forbidden seam is not the seam.
 #[test]
 fn the_epoch_is_never_persisted_or_restored() {
-    let source = include_str!("sequencer.rs");
+    let source: String = include_str!("sequencer.rs")
+        .lines()
+        .map(|line| line.split("//").next().unwrap_or(line))
+        .collect::<Vec<_>>()
+        .join("\n");
     for forbidden in [
         "epoch_marker",
         "dirty_flag",

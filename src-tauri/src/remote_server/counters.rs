@@ -51,6 +51,13 @@ pub struct RemoteStreamCounterSnapshot {
     pub kicked_sessions: u64,
     /// The deepest any single session's send queue has been observed.
     pub send_queue_high_water: u64,
+    /// Live `(device, requestId)` invoke reservations held right now (F-1 observability).
+    ///
+    /// A GAUGE, not a tally, and not owned by [`RemoteStreamCounters`]: `snapshot()` reports 0
+    /// and the listener status surface overwrites it from the running listener's dedup map. A
+    /// non-zero value with no dispatch in progress is the leaked-reservation wedge that
+    /// previously left zero diagnostic evidence.
+    pub dedup_in_flight: u64,
 }
 
 impl RemoteStreamCounterSnapshot {
@@ -159,6 +166,7 @@ impl RemoteStreamCounters {
             transient_drops: self.transient_drops.load(Ordering::Relaxed),
             kicked_sessions: self.kicked_sessions.load(Ordering::Relaxed),
             send_queue_high_water: self.send_queue_high_water.load(Ordering::Relaxed),
+            dedup_in_flight: 0,
         }
     }
 }

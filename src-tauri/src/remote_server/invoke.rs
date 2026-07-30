@@ -71,10 +71,13 @@ enum InvokeWireResponse {
 ///    id that the client will legitimately reuse once corrected.
 /// 2. `Read` class dispatches without dedup (exempt by spec — no side effect to make
 ///    at-most-once, and caching would serve stale reads).
-/// 3. Mutating: consult the DURABLE store, then claim the in-flight slot ([`RemoteDedupState::begin`]).
-/// 4. Dispatch.
-/// 5. Completed outcome (`Ok` **or** `Err`) → durable record + release. Facade error → release
-///    WITHOUT a record, because nothing executed.
+/// 3. Mutating: consult the DURABLE store, then claim the in-flight slot ([`RemoteDedupState::begin`]),
+///    which hands back an owned RAII reservation.
+/// 4. Dispatch runs in a SPAWNED continuation that owns the reservation, so a dropped HTTP
+///    connection (Axum cancels the handler future) neither aborts the command mid-effect nor
+///    leaks the slot: the continuation finishes, and the reservation is released by `Drop`.
+/// 5. Completed outcome (`Ok` **or** `Err`) → durable record, then release. Facade error →
+///    release WITHOUT a record, because nothing executed — a corrected retry may reuse the id.
 pub(crate) async fn invoke_handler(
     State(state): State<RemoteRouterState>,
     Extension(identity): Extension<RemoteIdentity>,
@@ -122,32 +125,35 @@ pub(crate) async fn invoke_handler(
     {
         Err(error) => return invoke_error_response(error),
         Ok(DedupDecision::Replay(record)) => return replay_response(record),
-        Ok(DedupDecision::Proceed) => {}
-    }
+        Ok(DedupDecision::Proceed(reservation)) => {
+            let dispatcher = state.invoke_dispatcher();
+            let scopes = identity.scopes.as_slice().to_vec();
+            let continuation = tokio::spawn(async move {
+                let result = dispatcher.dispatch(&scopes, &cmd, &args).await;
+                if let Ok(outcome) = &result {
+                    reservation
+                        .complete(&cmd, &args, recorded_outcome(outcome))
+                        .await;
+                }
+                // On facade rejection or panic, the owned reservation drops without writing a
+                // durable outcome. On handler cancellation this task remains alive and keeps the
+                // reservation until dispatch and persistence terminate.
+                result
+            });
 
-    match state
-        .invoke_dispatcher()
-        .dispatch(identity.scopes.as_slice(), &cmd, &args)
-        .await
-    {
-        Ok(outcome) => {
-            let response = dispatch_outcome_response(outcome.clone());
-            dedup
-                .complete(
-                    &identity.device_id,
-                    &request_id,
-                    &cmd,
-                    &args,
-                    recorded_outcome(&outcome),
-                )
-                .await;
-            response
-        }
-        Err(error) => {
-            // Facade rejection: the target command never ran, so no durable record is written
-            // and a corrected retry with the same id is allowed.
-            dedup.release(&identity.device_id, &request_id);
-            invoke_error_response(error)
+            match continuation.await {
+                Ok(Ok(outcome)) => dispatch_outcome_response(outcome),
+                Ok(Err(error)) => invoke_error_response(error),
+                Err(error) => {
+                    tracing::error!(
+                        %error,
+                        "remote invoke continuation failed before producing a response"
+                    );
+                    invoke_error_response(RemoteInvokeError::internal(
+                        "The remote command failed before producing a response.",
+                    ))
+                }
+            }
         }
     }
 }

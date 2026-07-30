@@ -67,6 +67,7 @@ async fn listener_status(
 ) -> RemoteListenerStatus {
     let bind_address = handle.bound_address().await;
     let serve = handle.serve_status().await;
+    let dedup_in_flight = handle.dedup_in_flight().await.unwrap_or(0) as u64;
     RemoteListenerStatus {
         enabled: settings.enabled,
         exposure_mode: settings.exposure_mode,
@@ -77,7 +78,13 @@ async fn listener_status(
         serve_active: serve.active,
         serve_degraded_reason: serve.degraded_reason,
         serve_degraded_kind: serve.degraded_kind,
-        stream_counters: handle.stream().map(|stream| stream.counters().snapshot()),
+        stream_counters: handle.stream().map(|stream| {
+            let mut counters = stream.counters().snapshot();
+            // The gauge lives on the listener's dedup map, not on the stream counters; stitch it
+            // in at the one surface that reports both (see `dedup_in_flight` field docs).
+            counters.dedup_in_flight = dedup_in_flight;
+            counters
+        }),
     }
 }
 
