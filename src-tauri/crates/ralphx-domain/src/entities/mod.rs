@@ -69,6 +69,24 @@ pub mod task_step;
 pub mod team;
 #[cfg(test)]
 mod team_tests;
+pub mod team_member;
+#[cfg(test)]
+mod team_member_tests;
+pub mod team_message;
+#[cfg(test)]
+mod team_message_tests;
+pub mod team_run_binding;
+#[cfg(test)]
+mod team_run_binding_tests;
+pub mod team_session;
+#[cfg(test)]
+mod team_session_tests;
+pub mod team_wake_batch;
+#[cfg(test)]
+mod team_wake_batch_tests;
+pub mod team_workspace_reservation;
+#[cfg(test)]
+mod team_workspace_reservation_tests;
 pub mod ticket_canonical_branch;
 pub mod types;
 pub mod usage;
@@ -142,6 +160,24 @@ pub use agent_task_assignment::{
     AgentTaskAssignment, AgentTaskAssignmentId, AgentTaskAssignmentReservation,
     AgentTaskAssignmentSettlement, AgentTaskAssignmentState, AgentTaskAssignmentTerminalStatus,
     AgentTaskAssignmentView,
+};
+pub use team_member::{normalize_team_member_name, TeamMember, TeamMemberId, TeamMemberStatus};
+pub use team_message::{
+    TeamMessage, TeamMessageActorKind, TeamMessageDelivery, TeamMessageDeliveryId,
+    TeamMessageDeliveryStatus, TeamMessageId, TeamMessageKind,
+    TeamMessageTarget as TeamMessageEnvelopeTarget,
+};
+pub use team_run_binding::{
+    TeamRunBinding, TeamRunBindingId, TeamRunBindingStatus, TeamRunTriggerKind,
+    TeamWorkClassification,
+};
+pub use team_session::{TeamBudgetPolicy, TeamSession, TeamSessionId, TeamSessionStatus};
+pub use team_wake_batch::{
+    TeamWakeBatch, TeamWakeBatchId, TeamWakeBatchStatus, TeamWakeRecipientKind,
+};
+pub use team_workspace_reservation::{
+    normalize_team_writable_path, team_paths_overlap, TeamWorkspaceReservation,
+    TeamWorkspaceReservationId,
 };
 pub use api_key::{
     ApiKey, AuditLogEntry, PERMISSION_ADMIN, PERMISSION_CREATE_PROJECT, PERMISSION_MAX,

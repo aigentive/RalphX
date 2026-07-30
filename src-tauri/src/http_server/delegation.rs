@@ -163,6 +163,11 @@ impl DelegationService {
             .map(|record| record.snapshot.clone())
     }
 
+    #[doc(hidden)]
+    pub async fn job_count_for_test(&self) -> usize {
+        self.jobs.read().await.len()
+    }
+
     pub async fn begin_cancellation(&self, job_id: &str) -> Option<DelegationJobSnapshot> {
         let mut jobs = self.jobs.write().await;
         let record = jobs.get_mut(job_id)?;

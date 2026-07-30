@@ -1,4 +1,5 @@
 import { applyDelegationToolPolicy } from "./delegation-policy.js";
+import { applyTeamToolPolicy } from "./team-tool-policy.js";
 import { loadCanonicalMcpTools } from "./canonical-agent-metadata.js";
 import { safeError } from "./redact.js";
 import { ORCHESTRATOR_IDEATION, ORCHESTRATOR_IDEATION_READONLY, CHAT_TASK, CHAT_PROJECT, REVIEWER, REVIEW_CHAT, REVIEW_HISTORY, WORKER, GENERAL_EXPLORER, GENERAL_WORKER, PR_REVIEWER, AGENT_WORKSPACE_REPAIR, CODER, SESSION_NAMER, PR_DESCRIBER, WORKSPACE_REVIEWER, AUTOMATION_SETUP, PLAN_COMPLEXITY_ASSESSOR, MERGER, PROJECT_ANALYZER, QA_PREP, QA_TESTER, ORCHESTRATOR, DEEP_RESEARCHER, MEMORY_MAINTAINER, MEMORY_CAPTURE, IDEATION_SPECIALIST_BACKEND, IDEATION_SPECIALIST_FRONTEND, IDEATION_SPECIALIST_INFRA, IDEATION_CRITIC, IDEATION_ADVOCATE, } from "./agentNames.js";
@@ -74,7 +75,7 @@ function applyWorkflowToolPolicy(tools) {
     return tools.filter((tool) => !WORKFLOW_TOOL_NAMES.has(tool));
 }
 function applyRuntimeToolPolicies(tools, agentType, agentProfile) {
-    return applyWorkflowToolPolicy(applyDelegationToolPolicy(tools, agentType, agentProfile));
+    return applyTeamToolPolicy(applyWorkflowToolPolicy(applyDelegationToolPolicy(tools, agentType, agentProfile)));
 }
 export function parseAllowedToolsFromArgs(knownToolNames) {
     for (const arg of process.argv) {

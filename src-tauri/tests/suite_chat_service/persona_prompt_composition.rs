@@ -3,12 +3,12 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use ralphx_lib::application::chat_service::{
-    agent_name_for_conversation_mode, agent_profile_for_conversation_mode,
+    agent_name_for_conversation_mode, resolve_agent_conversation_runtime_profile,
 };
 use ralphx_lib::application::persona_resolver::{resolve_persona_for_send, PersonaResolveFlags};
 use ralphx_lib::domain::entities::{
-    AgentConversationWorkspaceMode, ChatConversation, Persona, PersonaDirective, PersonaId,
-    PersonaStatus, ProjectId,
+    AgentConversationWorkspaceMode, ChatConversation, CoordinationMode, Persona, PersonaDirective,
+    PersonaId, PersonaStatus, ProjectId,
 };
 use ralphx_lib::domain::repositories::PersonaRepository;
 use ralphx_lib::infrastructure::agents::compose_codex_prompt_for_profile;
@@ -94,7 +94,7 @@ fn compose_for_mode(mode: AgentConversationWorkspaceMode, persona_block: Option<
         USER_PROMPT,
         Some(&repo_plugin_dir()),
         Some(agent_name_for_conversation_mode(mode)),
-        agent_profile_for_conversation_mode(mode),
+        resolve_agent_conversation_runtime_profile(mode, CoordinationMode::Solo),
         persona_block,
     )
 }
@@ -137,14 +137,14 @@ async fn persona_reaches_selected_agent_prompt_for_each_conversation_mode() {
             USER_PROMPT,
             Some(&plugin_dir),
             Some(agent_name_for_conversation_mode(mode)),
-            agent_profile_for_conversation_mode(mode),
+            resolve_agent_conversation_runtime_profile(mode, CoordinationMode::Solo),
             None,
         );
         let composed = compose_codex_prompt_for_profile(
             USER_PROMPT,
             Some(&plugin_dir),
             Some(agent_name_for_conversation_mode(mode)),
-            agent_profile_for_conversation_mode(mode),
+            resolve_agent_conversation_runtime_profile(mode, CoordinationMode::Solo),
             Some(persona.block.as_str()),
         );
         let envelope = persona_envelope(&composed);

@@ -31,6 +31,7 @@ import { callTicketAttachmentTool, isTicketAttachmentToolName, } from "./ticket-
 import { callPersonaTool, isPersonaToolName } from "./persona-tools.js";
 import { AGENT_TASK_TOOL_NAMES } from "./agent-task-tools.js";
 import { withAgentTaskRuntimeContext } from "./agent-task-context.js";
+import { callTeamTool, isTeamToolName } from "./team-tools.js";
 /**
  * Semantic keyword patterns for cross-project detection in plan text.
  * Exported for unit testing.
@@ -571,6 +572,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         else if (isPersonaToolName(name)) {
             result = await callPersonaTool(name, callTauri, callTauriGet, args, {
                 conversationId: RALPHX_CONVERSATION_ID,
+            });
+        }
+        else if (isTeamToolName(name)) {
+            result = await callTeamTool(name, callTauri, callTauriGet, args, {
+                conversationId: RALPHX_CONVERSATION_ID,
+                agentRunId: RALPHX_AGENT_RUN_ID,
             });
         }
         else if (name === "report_conflict") {

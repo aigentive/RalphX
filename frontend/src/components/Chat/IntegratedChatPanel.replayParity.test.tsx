@@ -271,8 +271,8 @@ describe("IntegratedChatPanel live replay/recovery parity", () => {
     await waitFor(() => {
       expect(within(p1.container).getAllByTestId("tool-call-group-toggle").length).toBeGreaterThan(0);
     });
-    expandVisibleToolGroups(p1.container);
     await waitFor(() => {
+      expandVisibleToolGroups(p1.container);
       expect(within(p1.container).getByTestId("diff-tool-call-view")).toBeInTheDocument();
       expect(within(p1.container).getByTestId("task-subagent-card")).toBeInTheDocument();
     });

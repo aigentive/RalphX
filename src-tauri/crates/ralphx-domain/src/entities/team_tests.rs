@@ -55,44 +55,32 @@ fn team_intent_defaults_to_solo_and_serializes_all_strategies() {
 }
 
 #[test]
-fn team_message_target_serializes_native_ids() {
+fn team_message_target_serializes_member_name() {
     let target = TeamMessageTarget {
         kind: TeamMessageTargetKind::Member,
-        team_id: Some("team-1".to_string()),
-        team_member_id: Some("member-1".to_string()),
-        conversation_id: Some("conversation-1".to_string()),
+        member_name: Some("worker one".to_string()),
     };
     let json = serde_json::to_value(&target).unwrap();
 
     assert_eq!(json["kind"], "member");
-    assert_eq!(json["teamId"], "team-1");
-    assert_eq!(json["teamMemberId"], "member-1");
-    assert_eq!(json["conversationId"], "conversation-1");
+    assert_eq!(json["memberName"], "worker one");
 }
 
 #[test]
 fn team_message_target_serializes_coordinator_and_broadcast_shapes() {
     let coordinator = TeamMessageTarget {
         kind: TeamMessageTargetKind::Coordinator,
-        team_id: Some("team-1".to_string()),
-        team_member_id: None,
-        conversation_id: None,
+        member_name: None,
     };
     let coordinator_json = serde_json::to_value(&coordinator).unwrap();
     assert_eq!(coordinator_json["kind"], "coordinator");
-    assert_eq!(coordinator_json["teamId"], "team-1");
-    assert!(coordinator_json.get("teamMemberId").is_none());
-    assert!(coordinator_json.get("conversationId").is_none());
+    assert!(coordinator_json.get("memberName").is_none());
 
     let broadcast = TeamMessageTarget {
         kind: TeamMessageTargetKind::Broadcast,
-        team_id: None,
-        team_member_id: None,
-        conversation_id: Some("conversation-1".to_string()),
+        member_name: None,
     };
     let broadcast_json = serde_json::to_value(&broadcast).unwrap();
     assert_eq!(broadcast_json["kind"], "broadcast");
-    assert_eq!(broadcast_json["conversationId"], "conversation-1");
-    assert!(broadcast_json.get("teamId").is_none());
-    assert!(broadcast_json.get("teamMemberId").is_none());
+    assert!(broadcast_json.get("memberName").is_none());
 }

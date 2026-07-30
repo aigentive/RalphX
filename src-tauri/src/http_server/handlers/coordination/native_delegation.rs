@@ -125,7 +125,7 @@ fn cached_streaming_task_from_completed_payload(
     }
 }
 
-async fn fail_started_delegated_launch(
+pub(crate) async fn fail_started_delegated_launch(
     state: &HttpServerState,
     chat_service: &dyn ChatService,
     delegated_session_id: &str,
@@ -427,6 +427,11 @@ async fn settle_delegation_from_run(
             .await?
     };
     if let Some(assignment) = assignment {
+        state
+            .app_state
+            .managed_team
+            .settle_member_assignment(&assignment, terminal_status, error.as_deref())
+            .await?;
         candidate.assignment = Some(delegation_assignment_summary(&assignment));
     }
     persist_terminal_projection(
@@ -543,7 +548,7 @@ pub(super) async fn resolve_parent_conversation_id(
         .map(|conversation| conversation.id.as_str()))
 }
 
-async fn ensure_delegated_conversation(
+pub(crate) async fn ensure_delegated_conversation(
     state: &HttpServerState,
     delegated_session_id: &str,
     parent_conversation_id: Option<&str>,
@@ -838,7 +843,7 @@ pub(crate) async fn start_delegate_impl_with_parent_run(
     trusted_caller_conversation_id: Option<&str>,
     trusted_parent_run_id: Option<&str>,
 ) -> Result<DelegationJobSnapshot, JsonError> {
-    let caller_agent_name = req.caller_agent_name.as_deref().ok_or_else(|| {
+    let caller_agent_name = req.caller_agent_name.clone().ok_or_else(|| {
         json_error(
             StatusCode::BAD_REQUEST,
             "delegate_start requires caller_agent_name from the MCP transport",
@@ -858,289 +863,50 @@ pub(crate) async fn start_delegate_impl_with_parent_run(
             "delegate_start task_ref requires a trusted active caller run",
         ));
     }
-    let requested_session = preflight_requested_delegated_session(state, &req, &parent).await?;
-    let requested_harness = requested_session
-        .as_ref()
-        .map(|session| session.harness)
-        .or(req.harness);
-    let project = state
-        .app_state
-        .project_repo
-        .get_by_id(&ProjectId::from_string(parent.project_id.clone()))
-        .await
-        .map_err(|error| {
-            json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to load delegated project: {error}"),
-            )
-        })?
-        .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Delegated project not found"))?;
-    let role = routing_role_for_delegated_launch(
-        &req.agent_name,
-        parent.context_type,
-        parent.ideation_verification,
-    );
-    let resolved_spawn = resolve_manual_role_spawn_settings(
-        &req.agent_name,
-        Some(parent.project_id.as_str()),
-        Some(std::path::Path::new(&project.working_directory)),
-        role,
-        None,
-        requested_harness,
-        req.model.as_deref(),
-        &state.app_state.manual_role_default_service(),
-    )
-    .await
-    .map_err(|error| {
-        json_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to resolve delegated agent defaults: {error}"),
-        )
-    })?;
-    let harness = resolved_spawn.effective_harness;
-    let delegated_model = req.model.clone();
-    let plugin_dir = resolve_harness_plugin_dir(harness, &parent.working_directory);
-    let project_root = resolve_project_root_from_plugin_dir(&plugin_dir);
-    let (_caller_definition, definition) = resolve_delegation_policy(
-        &project_root,
-        caller_agent_name,
-        req.caller_agent_profile.as_deref(),
-        &req.agent_name,
-    )?;
-    let delegated_session_id =
-        resolve_delegated_session_id(state, &req, &parent, requested_session.as_ref(), harness)
-            .await?;
-    let delegated_session_entity = DelegatedSessionId::from_string(delegated_session_id.clone());
-    let assignment_service = AgentTaskService::new(state.app_state.agent_task_repo.clone());
-    let planned_agent_run_id = req.task_ref.as_ref().map(|_| AgentRunId::new());
-    let reserved_assignment = if let Some(task_ref) = req.task_ref.as_deref() {
-        let Some(caller_run_id) = parent_agent_run_id.as_deref() else {
-            return Err(json_error(
-                StatusCode::BAD_REQUEST,
-                "delegate_start task_ref requires a trusted active caller run",
-            ));
-        };
-        let caller_scope = resolve_caller_agent_task_scope(&parent, caller_agent_name);
-        match assignment_service
-            .reserve_assignment(
-                &caller_scope,
-                task_ref,
-                &delegated_session_entity,
-                &AgentRunId::from_string(caller_run_id.to_string()),
-                &definition.name,
-            )
-            .await
-        {
-            Ok(Some(reservation)) => Some(reservation.assignment),
-            Ok(None) => {
-                let message =
-                    format!("Agent task '{task_ref}' was not found in the caller's current ledger");
-                mark_delegated_launch_failed(state, &delegated_session_id, &message).await?;
-                return Err(json_error(StatusCode::NOT_FOUND, message));
-            }
-            Err(error) => {
-                let message = format!("Failed to reserve delegated agent task: {error}");
-                mark_delegated_launch_failed(state, &delegated_session_id, &message).await?;
-                return Err(json_error(StatusCode::CONFLICT, message));
-            }
-        }
-    } else {
-        None
-    };
-    if let Some(reserved) = reserved_assignment.as_ref() {
-        let Some(planned_run_id) = planned_agent_run_id.as_ref() else {
-            let message = "Assigned delegated launch has no preallocated run identity".to_string();
-            mark_delegated_launch_failed(state, &delegated_session_id, &message).await?;
-            return Err(json_error(StatusCode::INTERNAL_SERVER_ERROR, message));
-        };
-        match assignment_service
-            .plan_assignment_run(
-                &reserved.assignment.id,
-                &delegated_session_entity,
-                planned_run_id,
-            )
-            .await
-        {
-            Ok(Some(_)) => {}
-            Ok(None) => {
-                let message =
-                    "Reserved delegate assignment disappeared before run planning".to_string();
-                mark_delegated_launch_failed(state, &delegated_session_id, &message).await?;
-                return Err(json_error(StatusCode::INTERNAL_SERVER_ERROR, message));
-            }
-            Err(error) => {
-                let message = format!("Failed to plan delegated assignment run: {error}");
-                mark_delegated_launch_failed(state, &delegated_session_id, &message).await?;
-                return Err(json_error(StatusCode::INTERNAL_SERVER_ERROR, message));
-            }
-        }
-    }
-    let logical_effort = req.logical_effort.or(resolved_spawn.logical_effort);
-    let approval_policy = req
-        .approval_policy
-        .clone()
-        .or(resolved_spawn.approval_policy.clone());
-    let sandbox_mode = req
-        .sandbox_mode
-        .clone()
-        .or(resolved_spawn.sandbox_mode.clone());
-    if let Err(error) = state
-        .app_state
-        .delegated_session_repo
-        .update_status(
-            &DelegatedSessionId::from_string(delegated_session_id.clone()),
-            "running",
-            None,
-            None,
-        )
-        .await
-    {
-        let message = format!("Failed to update delegated session status: {error}");
-        mark_delegated_launch_failed(state, &delegated_session_id, &message).await?;
-        return Err(json_error(StatusCode::INTERNAL_SERVER_ERROR, message));
-    }
-
-    let delegated_conversation = match ensure_delegated_conversation(
-        state,
-        &delegated_session_id,
-        parent.parent_conversation_id.as_deref(),
-        req.title.as_deref(),
-    )
-    .await
-    {
-        Ok(conversation) => conversation,
-        Err(error) => {
-            mark_delegated_launch_failed(state, &delegated_session_id, &json_error_detail(&error))
-                .await?;
-            return Err(error);
-        }
-    };
-
-    let chat_service = state
-        .app_state
-        .build_chat_service_with_execution_state(Arc::clone(&state.execution_state));
-    let send_result = chat_service
-        .send_message(
-            ChatContextType::Delegation,
-            &delegated_session_id,
-            &build_delegated_prompt(
-                &definition.name,
-                parent.context_type,
-                &parent.context_id,
-                req.parent_turn_id.as_deref(),
-                req.parent_message_id.as_deref(),
-                parent.parent_conversation_id.as_deref(),
-                req.parent_tool_use_id.as_deref(),
-                &delegated_session_id,
-                reserved_assignment.as_ref(),
-                &req.prompt,
-            ),
-            SendMessageOptions {
-                preallocated_agent_run_id: planned_agent_run_id,
-                queue_policy: if reserved_assignment.is_some() {
-                    SendQueuePolicy::RequireImmediateStart
-                } else {
-                    SendQueuePolicy::AllowQueue
-                },
-                routing_role_override: Some(role),
-                harness_override: Some(harness),
-                agent_name_override: Some(definition.name.clone()),
-                model_override: delegated_model.clone(),
-                working_directory_override: Some(parent.working_directory.clone()),
-                logical_effort_override: logical_effort.clone(),
-                approval_policy_override: approval_policy.clone(),
-                sandbox_mode_override: sandbox_mode.clone(),
-                is_external_mcp: true,
-                ..Default::default()
+    let reusable_delegated_session =
+        preflight_requested_delegated_session(state, &req, &parent).await?;
+    let launch = NativeDelegationLauncher::new(state)
+        .launch(NativeDelegationLaunchRequest {
+            caller_agent_name,
+            caller_agent_profile: req.caller_agent_profile.clone(),
+            parent: NativeDelegationLaunchParent {
+                context_type: parent.context_type,
+                context_id: parent.context_id,
+                project_id: parent.project_id,
+                working_directory: parent.working_directory,
+                caller_conversation_id: parent.caller_conversation_id,
+                parent_conversation_id: parent.parent_conversation_id,
+                ideation_verification: parent.ideation_verification,
             },
-        )
-        .await;
-    let send_result = match send_result {
-        Ok(result) => result,
-        Err(error) => {
-            let error_message = format!("Failed to start delegated chat run: {error}");
-            mark_delegated_launch_failed(state, &delegated_session_id, &error_message).await?;
-            return Err(json_error(StatusCode::INTERNAL_SERVER_ERROR, error_message));
-        }
-    };
-    if let Some(planned_run_id) = planned_agent_run_id {
-        if send_result.agent_run_id != planned_run_id.as_str() {
-            let error_message =
-                "Delegated run did not use its preallocated assignment identity".to_string();
-            fail_started_delegated_launch(
-                state,
-                &chat_service,
-                &delegated_session_id,
-                &send_result.agent_run_id,
-                &error_message,
-            )
-            .await?;
-            return Err(json_error(StatusCode::INTERNAL_SERVER_ERROR, error_message));
-        }
-    }
-    let bound_assignment = if let Some(reserved) = reserved_assignment.as_ref() {
-        let planned_run_id = planned_agent_run_id.ok_or_else(|| {
-            json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Assigned delegated launch lost its preallocated run identity",
-            )
-        })?;
-        match assignment_service
-            .bind_assignment_run(
-                &reserved.assignment.id,
-                &delegated_session_entity,
-                &planned_run_id,
-            )
-            .await
-        {
-            Ok(assignment) => assignment,
-            Err(error) => {
-                let error_message =
-                    format!("Delegated run started but task assignment binding failed: {error}");
-                fail_started_delegated_launch(
-                    state,
-                    &chat_service,
-                    &delegated_session_id,
-                    &send_result.agent_run_id,
-                    &error_message,
-                )
-                .await?;
-                return Err(json_error(StatusCode::INTERNAL_SERVER_ERROR, error_message));
-            }
-        }
-    } else {
-        None
-    };
-    if reserved_assignment.is_some() && bound_assignment.is_none() {
-        let error_message =
-            "Delegated run started but its reserved task assignment disappeared".to_string();
-        fail_started_delegated_launch(
-            state,
-            &chat_service,
-            &delegated_session_id,
-            &send_result.agent_run_id,
-            &error_message,
-        )
+            caller_agent_run_id: parent_agent_run_id,
+            target_agent_name: req.agent_name.clone(),
+            reusable_delegated_session,
+            task_ref: req.task_ref.clone(),
+            preallocated_agent_run_id: None,
+            prompt: req.prompt.clone(),
+            title: req.title.clone(),
+            parent_turn_id: req.parent_turn_id.clone(),
+            parent_message_id: req.parent_message_id.clone(),
+            parent_tool_use_id: req.parent_tool_use_id.clone(),
+            harness: req.harness,
+            model: req.model.clone(),
+            logical_effort: req.logical_effort,
+            approval_policy: req.approval_policy.clone(),
+            sandbox_mode: req.sandbox_mode.clone(),
+        })
         .await?;
-        return Err(json_error(StatusCode::INTERNAL_SERVER_ERROR, error_message));
-    }
-
-    let launched_run = match state
-        .app_state
-        .agent_run_repo
-        .get_by_id(&AgentRunId::from_string(send_result.agent_run_id.clone()))
-        .await
-    {
-        Ok(run) => run,
-        Err(error) => {
-            warn!(
-                agent_run_id = send_result.agent_run_id,
-                %error,
-                "Delegated run started but effective runtime attribution could not be loaded"
-            );
-            None
-        }
-    };
+    let parent = launch.parent.clone();
+    let parent_agent_run_id = launch.caller_agent_run_id.clone();
+    let delegated_session_id = launch.delegated_session_id.clone();
+    let delegated_conversation_id = launch.delegated_conversation_id.clone();
+    let delegated_agent_run_id = launch.delegated_agent_run_id.clone();
+    let bound_assignment = launch.assignment.clone();
+    let harness = launch.harness;
+    let launched_run = launch.launched_run.clone();
+    let delegated_model = launch.logical_model.clone();
+    let logical_effort = launch.logical_effort;
+    let approval_policy = launch.approval_policy.clone();
+    let sandbox_mode = launch.sandbox_mode.clone();
 
     let job_id = uuid::Uuid::new_v4().to_string();
     let snapshot = state
@@ -1155,9 +921,9 @@ pub(crate) async fn start_delegate_impl_with_parent_run(
             parent_agent_run_id,
             req.parent_tool_use_id.clone(),
             delegated_session_id.clone(),
-            Some(delegated_conversation.id.as_str()),
-            Some(send_result.agent_run_id.clone()),
-            definition.name.clone(),
+            Some(delegated_conversation_id.clone()),
+            Some(delegated_agent_run_id.clone()),
+            launch.agent_name.clone(),
             bound_assignment.as_ref().map(delegation_assignment_summary),
             harness.to_string(),
             launched_run
@@ -1222,8 +988,8 @@ pub(crate) async fn start_delegate_impl_with_parent_run(
     }
 
     let monitor_state = state.clone();
-    let agent_run_id = send_result.agent_run_id.clone();
-    let conversation_id = delegated_conversation.id;
+    let agent_run_id = delegated_agent_run_id;
+    let conversation_id = ChatConversationId::from_string(delegated_conversation_id);
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -1284,7 +1050,6 @@ pub(crate) async fn start_delegate_impl_with_parent_run(
 
     Ok(snapshot)
 }
-
 pub(crate) async fn start_delegate_impl(
     state: &HttpServerState,
     req: DelegateStartRequest,
