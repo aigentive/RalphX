@@ -19,7 +19,7 @@ test.describe("Repository capability settings", () => {
     const settingsPage = new SettingsPage(page);
     const repositoryPage = new RepositorySettingsPage(page);
     await settingsPage.openViaStore("repository");
-    await settingsPage.waitForSection("repository", "Repository");
+    await settingsPage.waitForSection("repository");
     await repositoryPage.expectLocalOnlyState();
     await settingsPage.waitForAnimations();
 

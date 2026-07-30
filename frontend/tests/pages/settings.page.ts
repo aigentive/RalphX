@@ -135,7 +135,13 @@ export class SettingsPage extends BasePage {
     await this.settingsDialog.getByTestId(`settings-nav-${navId}`).click();
   }
 
-  async waitForSection(sectionId: string, heading: string) {
+  /**
+   * Sections render no heading of their own — the page header names the nav
+   * entry (or the leaf, on Integrations drill-ins) and the leaf tab bar names
+   * the section — so readiness is proven by nav/leaf selection plus rendered
+   * body content.
+   */
+  async waitForSection(sectionId: string) {
     await expect(
       this.settingsDialog.locator('.settings-nav__item[aria-current="page"]'),
     ).toHaveCount(1, { timeout: 10000 });
@@ -150,12 +156,11 @@ export class SettingsPage extends BasePage {
         timeout: 10000,
       });
     }
-    // Scoped to the page body: the nav-level h1 can carry the same words as a
-    // section's own card heading (e.g. "Agents", "Repository").
+    await expect(this.page.getByTestId("settings-page-title")).toBeVisible({
+      timeout: 10000,
+    });
     await expect(
-      this.settingsDialog
-        .locator(".settings-page__body")
-        .getByRole("heading", { name: heading, exact: true }),
+      this.settingsDialog.locator(".settings-page__body > *").first(),
     ).toBeVisible({ timeout: 10000 });
   }
 

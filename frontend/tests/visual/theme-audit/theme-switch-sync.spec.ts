@@ -1,11 +1,21 @@
 import { test, expect } from "@playwright/test";
 
-async function settingsCardIconTileBackground(page: import("@playwright/test").Page) {
+/**
+ * Settings content pane paint. Section cards no longer carry an icon tile, so
+ * the pane surface is the stable proof that the active theme actually painted
+ * inside the dialog (`--dialog-pane-bg` is a literal per theme).
+ */
+async function settingsPaneBackground(page: import("@playwright/test").Page) {
   return page
-    .locator('[data-testid="settings-dialog"] div.p-2.rounded-lg.shrink-0')
+    .locator('[data-testid="settings-dialog"] .settings-pane')
     .first()
     .evaluate((node) => getComputedStyle(node).backgroundColor);
 }
+
+/** High-contrast paints the settings pane pure black (`--dialog-pane-bg: #000000`). */
+const HIGH_CONTRAST_PANE_BG = "rgb(0, 0, 0)";
+/** Dark paints the settings pane `#17171A`. */
+const DARK_PANE_BG = "rgb(23, 23, 26)";
 
 function settingsThemeSelector(page: import("@playwright/test").Page) {
   return page.getByTestId("settings-dialog").getByTestId("theme-selector");
@@ -50,7 +60,7 @@ test("stored HC switches to Dark via the theme selector only", async ({ page }) 
   await expect(page.locator('[data-testid="theme-high-contrast"]')).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.getAttribute("data-theme")))
     .toBe("high-contrast");
-  expect(await settingsCardIconTileBackground(page)).not.toBe("rgb(255, 255, 255)");
+  expect(await settingsPaneBackground(page)).toBe(HIGH_CONTRAST_PANE_BG);
 
   // Pick Dark from dropdown.
   await selectSettingsTheme(page, "Dark (default)");
@@ -89,7 +99,7 @@ test("Dark→HC→Dark roundtrip stays dropdown-only and ends on Dark", async ({
   await page.waitForTimeout(300);
   expect(await page.evaluate(() => document.documentElement.getAttribute("data-theme")))
     .toBe("high-contrast");
-  expect(await settingsCardIconTileBackground(page)).not.toBe("rgb(255, 255, 255)");
+  expect(await settingsPaneBackground(page)).toBe(HIGH_CONTRAST_PANE_BG);
 
   // HC → Dark via dropdown
   await selectSettingsTheme(page, "Dark (default)");
@@ -101,5 +111,5 @@ test("Dark→HC→Dark roundtrip stays dropdown-only and ends on Dark", async ({
   }));
   expect(state.attr).toBe("dark");
   expect(state.ls).toBe("dark");
-  expect(await settingsCardIconTileBackground(page)).not.toBe("rgb(255, 255, 255)");
+  expect(await settingsPaneBackground(page)).toBe(DARK_PANE_BG);
 });
