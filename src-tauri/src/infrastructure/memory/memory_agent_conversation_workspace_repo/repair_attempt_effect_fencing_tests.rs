@@ -261,7 +261,7 @@ async fn effect_writes_reject_stale_attempt_or_effect_versions_and_keep_exact_co
     assert!(matches!(
         idempotent,
         CompleteAgentWorkspaceRepairEffectOutcome::Applied(ref effect)
-            if effect == &completed
+            if **effect == completed
     ));
     assert_eq!(
         repo.get_by_conversation_id(&conversation_id)
