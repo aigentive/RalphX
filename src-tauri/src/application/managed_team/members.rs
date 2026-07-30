@@ -623,8 +623,7 @@ impl ManagedTeamService {
         {
             if reservation.team_member_id == *member_id
                 && reservation.team_member_generation == generation
-            {
-                if !self
+                && !self
                     .reservation_repo
                     .release_if_current(
                         &reservation.id,
@@ -632,11 +631,10 @@ impl ManagedTeamService {
                         reservation.attempt_number,
                     )
                     .await?
-                {
-                    return Err(AppError::Conflict(
-                        "Team workspace reservation changed during settlement".to_string(),
-                    ));
-                }
+            {
+                return Err(AppError::Conflict(
+                    "Team workspace reservation changed during settlement".to_string(),
+                ));
             }
         }
         let binding = self
@@ -775,23 +773,21 @@ impl ManagedTeamService {
         if let Ok(Some(mut member)) = self.team_repo.get_member(&original_member.id).await {
             if member.is_current_generation(original_member.generation)
                 && member.status == TeamMemberStatus::Working
-            {
-                if member
+                && member
                     .transition_to(TeamMemberStatus::Idle, Utc::now())
                     .is_ok()
+            {
+                member.current_assignment_id = None;
+                member.current_run_id = None;
+                member.delegated_session_id = None;
+                member.last_error = Some(reason.to_string());
+                if self
+                    .team_repo
+                    .update_member(member.clone(), original_member.generation)
+                    .await
+                    .unwrap_or(false)
                 {
-                    member.current_assignment_id = None;
-                    member.current_run_id = None;
-                    member.delegated_session_id = None;
-                    member.last_error = Some(reason.to_string());
-                    if self
-                        .team_repo
-                        .update_member(member.clone(), original_member.generation)
-                        .await
-                        .unwrap_or(false)
-                    {
-                        self.emit_member_updated(&member).await;
-                    }
+                    self.emit_member_updated(&member).await;
                 }
             }
         }

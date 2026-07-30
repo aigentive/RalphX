@@ -221,7 +221,7 @@ impl<'a> NativeDelegationLauncher<'a> {
                     "delegate_start task_ref requires a trusted active caller run",
                 ));
             };
-            let caller_scope = resolve_caller_agent_task_scope(&parent, caller_agent_name);
+            let caller_scope = resolve_caller_agent_task_scope(parent, caller_agent_name);
             match assignment_service
                 .reserve_assignment(
                     &caller_scope,
