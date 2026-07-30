@@ -86,11 +86,11 @@ describe("IdeationSettingsPanel", () => {
     });
   });
 
-  it("renders the compatibility wrapper as Tasks", () => {
+  it("renders the compatibility wrapper on the combined surface", async () => {
     render(<IdeationSettingsPanel />, { wrapper: createWrapper() });
 
-    expect(screen.getByText("Tasks")).toBeInTheDocument();
-    expect(screen.getByText("Configure task and acceptance gates")).toBeInTheDocument();
+    expect(await screen.findByTestId("enable-tasks")).toBeInTheDocument();
+    expect(screen.getByTestId("external-overrides-toggle")).toBeInTheDocument();
   });
 
   it("keeps automatic verification out of the Tasks surface", async () => {

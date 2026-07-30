@@ -158,7 +158,7 @@ describe("design-tokens", () => {
         /\[data-theme="light"\]\s+\[data-testid="settings-dialog"\]\s+\.settings-pane\s*\{[^}]*background-color:\s*#FAFAFB\s*!important;/s
       );
       expect(cssContent).toMatch(
-        /\[data-theme="light"\]\s+\[data-testid="settings-dialog"\]\s+\.settings-modal__crumbs\s+\.cur,[^{]*\.settings-pane-head__title,[^{]*\.settings-row__label,[^{]*\.settings-diag-card__title,[^{]*\.settings-nav__item\[aria-current="true"\]\s*\{[^}]*color:\s*#18181D\s*!important;/s
+        /\[data-theme="light"\]\s+\[data-testid="settings-dialog"\]\s+\.settings-modal__crumbs\s+\.cur,[^{]*\.settings-row__label,[^{]*\.settings-diag-card__title,[^{]*\.settings-nav__item\[aria-current="true"\]\s*\{[^}]*color:\s*#18181D\s*!important;/s
       );
       expect(cssContent).toMatch(
         /\[data-theme="light"\]\s+\[data-testid="settings-dialog"\]\s+\.settings-nav__item,[^{]*\.settings-readonly-value,[^{]*\.settings-diag-card__body,[^{]*\.settings-btn-ghost\s*\{[^}]*color:\s*#404048\s*!important;/s

@@ -117,7 +117,6 @@ describe("ClickUpIntegrationSettingsPanel", () => {
   it("shows ClickUp task reference configuration status", () => {
     renderPanel();
 
-    expect(screen.getByText("ClickUp")).toBeInTheDocument();
     expect(screen.getByText("Task references not ready")).toBeInTheDocument();
   });
 

@@ -49,7 +49,6 @@ describe("GitHubIntegrationSettingsPanel", () => {
   it("renders authenticated gh status without a token field", () => {
     renderPanel();
 
-    expect(screen.getByText("GitHub")).toBeInTheDocument();
     expect(screen.getByText("GitHub CLI authenticated")).toBeInTheDocument();
     expect(screen.getByText("Host github.com")).toBeInTheDocument();
     expect(screen.getByText("Account octocat")).toBeInTheDocument();

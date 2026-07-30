@@ -66,7 +66,6 @@ describe("UpdatesSettingsSection", () => {
     const user = userEvent.setup();
     render(<UpdatesSettingsSection />);
 
-    expect(screen.getByRole("heading", { name: "Updates" })).toBeInTheDocument();
     expect(screen.getByRole("radiogroup", { name: "Update channel" })).toBeInTheDocument();
     expect(screen.getByRole("radio", { name: "Stable — Recommended" })).toHaveAttribute(
       "aria-checked",
