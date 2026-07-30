@@ -50,6 +50,7 @@ pub struct ClaudeCliCapabilities {
     pub version: Option<String>,
     pub supported_model_aliases: Vec<String>,
     pub supported_efforts: Vec<LogicalEffort>,
+    pub supports_include_partial_messages: bool,
 }
 
 impl ClaudeCliCapabilities {
@@ -74,6 +75,10 @@ impl ClaudeCliCapabilities {
     pub fn supports_fable_model(&self) -> bool {
         self.supports_model_alias(CLAUDE_FABLE_MODEL_ALIAS)
     }
+
+    pub fn supports_include_partial_messages(&self) -> bool {
+        self.supports_include_partial_messages
+    }
 }
 
 pub fn parse_claude_version(output: &str) -> Option<String> {
@@ -97,6 +102,7 @@ pub fn parse_claude_cli_capabilities(
         version,
         supported_model_aliases,
         supported_efforts,
+        supports_include_partial_messages: help_output.contains("--include-partial-messages"),
     }
 }
 
@@ -124,6 +130,20 @@ pub fn probe_claude_cli_cached(cli_path: &Path) -> Result<ClaudeCliCapabilities,
 pub fn clear_claude_cli_capability_cache() {
     if let Some(cache) = CLAUDE_CLI_CAPABILITY_CACHE.get() {
         cache.lock().unwrap().clear();
+    }
+}
+
+pub fn claude_cli_supports_partial_messages(cli_path: &Path) -> bool {
+    match probe_claude_cli_cached(cli_path) {
+        Ok(capabilities) => capabilities.supports_include_partial_messages(),
+        Err(error) => {
+            tracing::warn!(
+                cli_path = %cli_path.display(),
+                %error,
+                "Claude CLI partial-message capability probe failed; omitting optional flag"
+            );
+            false
+        }
     }
 }
 

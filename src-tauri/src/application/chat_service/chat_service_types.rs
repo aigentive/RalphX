@@ -56,6 +56,8 @@ fn normalize_ralphx_tool_name(tool_name: &str) -> String {
 pub mod events {
     /// Agent text chunk event
     pub const AGENT_CHUNK: &str = "agent:chunk";
+    /// Agent reasoning chunk event
+    pub const AGENT_THINKING: &str = "agent:thinking";
     /// Agent tool call event
     pub const AGENT_TOOL_CALL: &str = "agent:tool_call";
     /// Agent run started event
@@ -233,6 +235,22 @@ impl AgentRunStartedPayload {
 /// Payload for agent:chunk event
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentChunkPayload {
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub block_index: Option<u64>,
+    pub conversation_id: String,
+    pub context_type: String,
+    pub context_id: String,
+    pub seq: u64,
+    #[serde(default)]
+    pub append_to_previous: bool,
+}
+
+/// Payload for agent:thinking event.
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentThinkingPayload {
     pub text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,

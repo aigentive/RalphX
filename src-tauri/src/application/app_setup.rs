@@ -10,6 +10,9 @@ use crate::application::runtime_wiring::{
 use crate::application::server_boot::start_server_boot;
 use crate::application::setup_settings::initialize_settings_defaults;
 use crate::application::startup_cleanup::run_startup_cleanup;
+use crate::application::startup_failure_classification::{
+    classify_app_state_construction_failure, generic_app_state_construction_failure,
+};
 use crate::application::startup_pipeline_launch::launch_startup_pipeline_from_handle;
 use crate::application::startup_status::{StartupCoordinator, StartupFailureCode, StartupStage};
 use crate::application::AppPaths;
@@ -325,20 +328,16 @@ fn launch_startup_attempt(
         let mut app_state = match constructed {
             Ok(Ok(app_state)) => app_state,
             Ok(Err(error)) => {
-                startup_coordinator.fail(
-                    attempt_id,
-                    StartupFailureCode::AppStateConstruction,
-                    "RalphX could not open its local workspace.",
-                );
+                // Disk exhaustion is recoverable by the user, so the failure it
+                // reports has to say so instead of the generic sentence below.
+                let failure = classify_app_state_construction_failure(&error);
+                startup_coordinator.fail(attempt_id, failure.code, failure.diagnostic_summary);
                 tracing::error!(%error, "AppState construction failed");
                 return;
             }
             Err(error) => {
-                startup_coordinator.fail(
-                    attempt_id,
-                    StartupFailureCode::AppStateConstruction,
-                    "RalphX could not open its local workspace.",
-                );
+                let failure = generic_app_state_construction_failure();
+                startup_coordinator.fail(attempt_id, failure.code, failure.diagnostic_summary);
                 tracing::error!(%error, "AppState construction worker failed");
                 return;
             }

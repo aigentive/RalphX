@@ -375,6 +375,14 @@ fn test_processor_thinking_block_streaming() {
 
     let events4 = processor.process_message(stop);
     assert!(events4.is_empty()); // stop doesn't emit event for thinking
+    assert!(processor.response_text.is_empty());
+    assert!(matches!(
+        processor.content_blocks.as_slice(),
+        [ContentBlockItem::Thinking {
+            text,
+            duration_ms: Some(_)
+        }] if text == "Let me analyze this problem."
+    ));
 }
 
 #[test]
@@ -406,10 +414,45 @@ fn test_processor_thinking_block_verbose() {
     );
     assert!(matches!(&events[1], StreamEvent::TextChunk(t) if t == "Here's my answer."));
     assert!(matches!(&events[2], StreamEvent::SessionId(id) if id == "sess-456"));
+    assert!(matches!(
+        processor.content_blocks.first(),
+        Some(ContentBlockItem::Thinking {
+            text,
+            duration_ms: None
+        }) if text == "Deep analysis of the problem..."
+    ));
 }
 
 /// When Claude CLI emits both streaming delta events AND a verbose `assistant` summary,
 /// the `TextChunk` must not be emitted twice and `response_text` must contain the text once.
+#[test]
+fn wrapped_deltas_then_verbose_summary_emits_text_once() {
+    let mut processor = StreamProcessor::new();
+    let first = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello "}}}"#;
+    let second = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"world"}}}"#;
+    let summary = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Hello world"}]},"session_id":"sess-1"}"#;
+
+    let first_events = processor.process_parsed_line(
+        StreamProcessor::parse_line(first).expect("first wrapped delta should parse"),
+    );
+    let second_events = processor.process_parsed_line(
+        StreamProcessor::parse_line(second).expect("second wrapped delta should parse"),
+    );
+    let summary_events = processor.process_parsed_line(
+        StreamProcessor::parse_line(summary).expect("verbose summary should parse"),
+    );
+
+    assert!(matches!(&first_events[..], [StreamEvent::TextChunk(text)] if text == "Hello "));
+    assert!(matches!(&second_events[..], [StreamEvent::TextChunk(text)] if text == "world"));
+    assert!(
+        !summary_events
+            .iter()
+            .any(|event| matches!(event, StreamEvent::TextChunk(_))),
+        "verbose summary must not duplicate text emitted by wrapped deltas"
+    );
+    assert_eq!(processor.finish().response_text, "Hello world");
+}
+
 #[test]
 fn test_verbose_mode_no_double_emission() {
     let mut processor = StreamProcessor::new();
@@ -999,4 +1042,61 @@ fn test_system_without_subtype_still_works() {
     let events = processor.process_message(msg);
     assert_eq!(events.len(), 1);
     assert!(matches!(&events[0], StreamEvent::SessionId(id) if id == "sess-regular"));
+}
+
+/// With `--include-partial-messages`, text arrives only as deltas and the dedup
+/// guard suppresses the verbose Assistant summary — including its
+/// `content_blocks` push. `content_block_stop` must therefore seal the streamed
+/// text into `content_blocks`, or a delta-streamed turn persists no timeline
+/// text at all (the chat UI renders the turn as unanswered).
+#[test]
+fn test_streamed_text_reaches_content_blocks_via_content_block_stop() {
+    let mut processor = StreamProcessor::new();
+
+    for piece in ["Streamed ", "answer ", "text."] {
+        processor.process_message(StreamMessage::ContentBlockDelta {
+            index: Some(0),
+            delta: ContentDelta {
+                delta_type: "text_delta".to_string(),
+                text: Some(piece.to_string()),
+                partial_json: None,
+            },
+        });
+    }
+
+    processor.process_message(StreamMessage::ContentBlockStop { index: Some(0) });
+
+    // The verbose summary for the same message is deduped away.
+    processor.process_message(StreamMessage::Assistant {
+        message: AssistantMessage {
+            content: vec![AssistantContent::Text {
+                text: "Streamed answer text.".to_string(),
+            }],
+            stop_reason: Some("end_turn".to_string()),
+            usage: None,
+        },
+        session_id: None,
+    });
+
+    let result = processor.finish();
+    let text_blocks: Vec<&String> = result
+        .content_blocks
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlockItem::Text { text } => Some(text),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(
+        text_blocks.len(),
+        1,
+        "streamed text must land in content_blocks exactly once, got {:?}",
+        result.content_blocks
+    );
+    assert_eq!(text_blocks[0], "Streamed answer text.");
+    assert_eq!(
+        result.response_text, "Streamed answer text.",
+        "the dedup guard must still keep response_text single-copy"
+    );
 }

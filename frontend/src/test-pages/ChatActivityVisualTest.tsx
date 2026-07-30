@@ -115,6 +115,12 @@ function activityBlocks(provider: "claude" | "codex"): ContentBlockItem[] {
     : "ralphx::delegate_wait";
 
   return [
+    {
+      type: "thinking",
+      text: "Inspecting the live transcript ownership seam.\nKeeping reasoning separate from answer text.",
+      durationMs: 2_000,
+      isSettled: true,
+    },
     toolUse("create-component", write, { file_path: "src/ChatActivitySummary.tsx" }, {
       diffContext: {
         filePath: "src/ChatActivitySummary.tsx",

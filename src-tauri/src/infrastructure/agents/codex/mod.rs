@@ -1028,6 +1028,10 @@ fn build_codex_exec_args_with_security_policy(
 
     require_capability(capabilities.supports_config_override, "config_override")?;
     args.push("-c".to_string());
+    args.push("model_reasoning_summary=\"concise\"".to_string());
+
+    require_capability(capabilities.supports_config_override, "config_override")?;
+    args.push("-c".to_string());
     args.push(format!(
         "approval_policy=\"{}\"",
         normalize_cli_token(effective_codex_approval_policy(security_policy))
@@ -1100,6 +1104,10 @@ fn build_codex_exec_resume_args_with_security_policy(
         args.push("-c".to_string());
         args.push(format!("model_reasoning_effort=\"{}\"", reasoning_effort));
     }
+
+    require_capability(capabilities.supports_config_override, "config_override")?;
+    args.push("-c".to_string());
+    args.push("model_reasoning_summary=\"concise\"".to_string());
 
     require_capability(capabilities.supports_config_override, "config_override")?;
     args.push("-c".to_string());

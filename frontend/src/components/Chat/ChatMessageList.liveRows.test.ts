@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { StreamingContentBlock, StreamingTask } from "@/types/streaming-task";
-import { buildLiveTranscriptRows } from "./ChatMessageList.liveRows";
+import {
+  buildLiveTranscriptRows,
+  isLiveThinkingGroupKey,
+  liveThinkingGroupKey,
+} from "./ChatMessageList.liveRows";
 
 function textBlock(index: number, text = `Live update ${index}`): StreamingContentBlock {
   return { type: "text", text, seq: index };
@@ -41,6 +45,13 @@ function delegatedTask(toolUseId: string): StreamingTask {
 }
 
 describe("ChatMessageList live transcript rows", () => {
+  it("identifies keys built for live thinking rows", () => {
+    const key = liveThinkingGroupKey({ type: "thinking", text: "Reasoning", blockIndex: 2 }, 0);
+
+    expect(isLiveThinkingGroupKey(key)).toBe(true);
+    expect(isLiveThinkingGroupKey("streaming-text:block-2")).toBe(false);
+  });
+
   it("returns no rows for empty live blocks", () => {
     expect(buildLiveTranscriptRows([], new Map())).toEqual([]);
   });
@@ -52,6 +63,17 @@ describe("ChatMessageList live transcript rows", () => {
       "text",
       "text",
     ]);
+  });
+
+  it("keeps thinking as its own row between text and tool activity", () => {
+    const rows = buildLiveTranscriptRows([
+      textBlock(1, "Before"),
+      { type: "thinking", text: "Reasoning", blockIndex: 2, seq: 2 },
+      toolBlock(3),
+    ], new Map());
+
+    expect(rows.map((row) => row.kind)).toEqual(["text", "thinking", "tool_group"]);
+    expect(rows[1]).toMatchObject({ kind: "thinking", block: { text: "Reasoning", blockIndex: 2 } });
   });
 
   it("carries live block receipt timestamps onto visible rows", () => {

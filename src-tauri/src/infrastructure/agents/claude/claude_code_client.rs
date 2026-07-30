@@ -23,6 +23,7 @@ use crate::domain::agents::{
     ClientCapabilities, ClientType, ResponseChunk,
 };
 
+use super::cli_capabilities::claude_cli_supports_partial_messages;
 use super::{
     append_claude_permission_args, apply_common_spawn_env,
     build_spawnable_command_with_mcp_runtime_context_and_profile, claude_runtime_config,
@@ -464,6 +465,9 @@ impl ClaudeCodeClient {
         // Output format for streaming
         args.extend(["--output-format".to_string(), "stream-json".to_string()]);
         args.push("--verbose".to_string()); // Required for stream-json with -p
+        if !interactive && claude_cli_supports_partial_messages(cli_path) {
+            args.push("--include-partial-messages".to_string());
+        }
         if let Some(sources) = &claude_runtime_config().setting_sources {
             if !sources.is_empty() {
                 args.extend(["--setting-sources".to_string(), sources.join(",")]);

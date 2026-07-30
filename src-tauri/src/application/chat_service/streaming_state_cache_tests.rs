@@ -53,6 +53,9 @@ async fn test_changing_run_id_discards_stale_transient_projection() {
         .await;
     cache.append_text("conv-123", 0, "stale text").await;
     cache
+        .append_thinking("conv-123", 0, "stale reasoning")
+        .await;
+    cache
         .upsert_tool_call(
             "conv-123",
             CachedToolCall {
@@ -77,6 +80,7 @@ async fn test_changing_run_id_discards_stale_transient_projection() {
     assert_eq!(state.run_id.as_deref(), Some("run-2"));
     assert!(state.partial_text.is_empty());
     assert!(state.partial_text_segments.is_empty());
+    assert!(state.partial_thinking_segments.is_empty());
     assert!(state.tool_calls.is_empty());
     assert!(state.streaming_tasks.is_empty());
 }
@@ -161,6 +165,25 @@ async fn test_upsert_tool_call_updates_existing() {
 }
 
 #[tokio::test]
+async fn append_thinking_keeps_partial_text_isolated() {
+    let cache = StreamingStateCache::new();
+
+    cache.append_text("conv-123", 1, "answer").await;
+    cache.append_thinking("conv-123", 0, "reasoning").await;
+
+    let state = cache.get("conv-123").await.unwrap();
+    assert_eq!(state.partial_text, "answer");
+    assert_eq!(
+        state.partial_text_segments,
+        vec!["".to_string(), "answer".to_string()]
+    );
+    assert_eq!(
+        state.partial_thinking_segments,
+        vec!["reasoning".to_string()]
+    );
+}
+
+#[tokio::test]
 async fn test_add_task() {
     let cache = StreamingStateCache::new();
     let task = CachedStreamingTask {
@@ -225,7 +248,11 @@ async fn test_append_text_keeps_text_blocks_ordered_and_fills_gaps() {
         vec!["Before tool", "", "After"]
     );
     assert_eq!(state.partial_text, "Before toolAfter");
-    assert_eq!(state.partial_text, state.partial_text_segments.concat());
+    assert_eq!(
+        state.partial_text,
+        state.partial_text_segments.concat(),
+        "visible text must remain contiguous when the tool block position stays empty"
+    );
 }
 
 #[tokio::test]
@@ -326,6 +353,7 @@ async fn test_serialize_produces_expected_json() {
         }],
         partial_text: "Hello".to_string(),
         partial_text_segments: vec!["Hello".to_string()],
+        partial_thinking_segments: vec![],
         updated_at: Utc::now(),
     };
 
@@ -337,6 +365,20 @@ async fn test_serialize_produces_expected_json() {
     assert!(json.contains("\"toolu_001\""));
     assert!(json.contains("\"running\""));
     assert!(json.contains("\"Hello\""));
+}
+
+#[tokio::test]
+async fn test_cache_keeps_thinking_segments_in_index_order() {
+    let cache = StreamingStateCache::new();
+    cache.append_thinking("conv-123", 0, "First thought").await;
+    cache.append_thinking("conv-123", 1, "Second thought").await;
+
+    let cached_state = cache.get("conv-123").await.unwrap();
+
+    assert_eq!(
+        cached_state.partial_thinking_segments,
+        vec!["First thought", "Second thought"]
+    );
 }
 
 #[tokio::test]

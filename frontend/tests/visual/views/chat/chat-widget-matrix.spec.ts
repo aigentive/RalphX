@@ -20,7 +20,23 @@ test.describe("shared chat activity presentation", () => {
     await expect(page.getByText(SUMMARY)).toHaveCount(2);
     await expect(page.getByTestId("task-tool-call-card")).toHaveCount(4);
     await expect(page.getByTestId("streaming-tool-indicator")).toHaveCount(0);
+    await expect(page.getByTestId("thinking-group-toggle")).toHaveCount(2);
     await expect(page).toHaveScreenshot("chat-activity-provider-parity-dark.png", {
+      animations: "disabled",
+      fullPage: true,
+    });
+  });
+
+  test("renders a collapsed then expanded thinking viewer", async ({ page }) => {
+    await openChatActivityPage(page, { theme: "dark", width: 760 });
+    const fixture = page.getByTestId("chat-activity-claude");
+    const toggle = fixture.getByTestId("thinking-group-toggle");
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect(toggle).toHaveText("Agent thought for 2s");
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await expect(fixture.getByTestId("thinking-scroll-body")).toBeVisible();
+    await expect(page).toHaveScreenshot("chat-thinking-expanded-dark-narrow.png", {
       animations: "disabled",
       fullPage: true,
     });

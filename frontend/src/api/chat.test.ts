@@ -1139,6 +1139,7 @@ describe("chat api", () => {
       timelineStatus: "streaming",
       timelineKind: "text",
       timelineSequence: 4,
+      timelineBlockIndex: 0,
       inputTokens: 10,
       providerHarness: "codex",
     });
@@ -3605,6 +3606,7 @@ describe("getConversationActiveState", () => {
         },
       ],
       partial_text: "",
+      partial_thinking_segments: ["Reasoning through the response"],
     };
 
     mockFetch.mockResolvedValueOnce({
@@ -3631,6 +3633,7 @@ describe("getConversationActiveState", () => {
     expect(task.input_tokens).toBe(1100);
     expect(task.estimated_usd).toBe(1.23);
     expect(task.text_output).toBe("done");
+    expect(result.partial_thinking_segments).toEqual(["Reasoning through the response"]);
   });
 
   it("handles response with no stats fields (old format)", async () => {

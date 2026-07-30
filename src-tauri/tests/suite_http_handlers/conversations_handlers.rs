@@ -217,6 +217,44 @@ async fn test_get_active_state_returns_partial_text() {
 }
 
 #[tokio::test]
+async fn test_get_active_state_returns_partial_thinking_segments() {
+    let state = setup_test_state().await;
+
+    let session_id = IdeationSessionId::new();
+    let conversation = ChatConversation::new_ideation(session_id.clone());
+    let conversation_id = conversation.id.as_str().to_string();
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+
+    state
+        .app_state
+        .streaming_state_cache
+        .append_thinking(&conversation_id, 0, "First thought")
+        .await;
+    state
+        .app_state
+        .streaming_state_cache
+        .append_thinking(&conversation_id, 1, "Second thought")
+        .await;
+
+    let response = get_conversation_active_state(State(state), Path(conversation_id))
+        .await
+        .unwrap();
+
+    // Thinking segments travel separately from partial_text so the transcript
+    // has one owner per kind of live text.
+    assert_eq!(
+        response.0.partial_thinking_segments,
+        vec!["First thought", "Second thought"]
+    );
+    assert!(response.0.partial_text.is_empty());
+}
+
+#[tokio::test]
 async fn test_get_active_state_reflects_running_agent() {
     let state = setup_test_state().await;
 

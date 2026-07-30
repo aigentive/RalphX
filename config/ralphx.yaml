@@ -114,6 +114,8 @@ timeouts:
     default_line_read_secs: 600 # Env: RALPHX_STREAM_DEFAULT_LINE_READ_SECS
     # chat_service_streaming.rs — max stall for worker/ideation/other agents
     default_parse_stall_secs: 180 # Env: RALPHX_STREAM_DEFAULT_PARSE_STALL_SECS
+    # chat_service_streaming.rs — minimum interval between durable snapshots while text tokens stream
+    streaming_persistence_debounce_ms: 1000 # Env: RALPHX_STREAM_STREAMING_PERSISTENCE_DEBOUNCE_MS
     # chat_service_streaming.rs — max idle time (no meaningful activity) before killing agent stream
     max_wall_clock_secs: 1800 # Env: RALPHX_STREAM_MAX_WALL_CLOCK_SECS
     # chat_service_handlers.rs — slack for agent run start recorded before execution status history
