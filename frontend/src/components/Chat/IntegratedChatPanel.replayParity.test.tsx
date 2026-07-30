@@ -186,11 +186,41 @@ async function emit(events: readonly ReplayLiveEvent[]): Promise<void> {
   }
 }
 
+/**
+ * Expands every currently COLLAPSED tool-call group in `container`.
+ *
+ * Idempotent by construction — only toggles reporting `aria-expanded="false"` are
+ * clicked — which is what lets callers re-run it inside a `waitFor`. The panel
+ * hydrates its transcript behind a paint boundary, so the set of rendered groups grows
+ * across commits: a single up-front pass expands whatever happens to exist at that
+ * instant and leaves any group that arrives afterwards collapsed forever, no matter
+ * how long the following wait is. The unconditional-click form could not be retried,
+ * because a second pass would collapse the groups the first one opened.
+ */
 function expandVisibleToolGroups(container: HTMLElement): void {
   act(() => {
     within(container)
       .queryAllByTestId("tool-call-group-toggle")
+      .filter((toggle) => toggle.getAttribute("aria-expanded") !== "true")
       .forEach((toggle) => fireEvent.click(toggle));
+  });
+}
+
+/**
+ * Expands tool-call groups until none is left collapsed.
+ *
+ * Used where a transcript SNAPSHOT follows immediately: a snapshot taken while a group
+ * is still collapsed hides that group's rows, and the parity comparison would then be
+ * between two differently-hydrated transcripts rather than between the transcripts.
+ */
+async function expandAllToolGroups(container: HTMLElement): Promise<void> {
+  await waitFor(() => {
+    expandVisibleToolGroups(container);
+    expect(
+      within(container)
+        .queryAllByTestId("tool-call-group-toggle")
+        .filter((toggle) => toggle.getAttribute("aria-expanded") !== "true"),
+    ).toHaveLength(0);
   });
 }
 
@@ -271,8 +301,8 @@ describe("IntegratedChatPanel live replay/recovery parity", () => {
     await waitFor(() => {
       expect(within(p1.container).getAllByTestId("tool-call-group-toggle").length).toBeGreaterThan(0);
     });
-    expandVisibleToolGroups(p1.container);
     await waitFor(() => {
+      expandVisibleToolGroups(p1.container);
       expect(within(p1.container).getByTestId("diff-tool-call-view")).toBeInTheDocument();
       expect(within(p1.container).getByTestId("task-subagent-card")).toBeInTheDocument();
     });
@@ -298,8 +328,8 @@ describe("IntegratedChatPanel live replay/recovery parity", () => {
       expect(transport.getConversationActiveState).toHaveBeenCalledWith("conversation-replay");
       expect(within(p2.container).getAllByTestId("tool-call-group-toggle").length).toBeGreaterThan(0);
     });
-    expandVisibleToolGroups(p2.container);
     await waitFor(() => {
+      expandVisibleToolGroups(p2.container);
       expect(within(p2.container).getByTestId("diff-tool-call-view")).toBeInTheDocument();
       expect(captureTranscriptSnapshot(p2.container).filter(
         (row) => row.key === "text:Live turn two begins before remount.",
@@ -340,7 +370,7 @@ describe("IntegratedChatPanel live replay/recovery parity", () => {
       expect(p1.container.querySelectorAll("[data-chat-live-row-key]")).toHaveLength(0);
       expect(p1.container.textContent).toContain("Live turn two is ready to finalize.");
     });
-    expandVisibleToolGroups(p1.container);
+    await expandAllToolGroups(p1.container);
     const p3Finalized = captureTranscriptSnapshot(p1.container);
 
     // P4: no live state survives this fresh mount; it sees final persistence only.
@@ -359,7 +389,7 @@ describe("IntegratedChatPanel live replay/recovery parity", () => {
     await waitFor(() => {
       expect(p4.container.textContent).toContain("Live turn two is ready to finalize.");
     });
-    expandVisibleToolGroups(p4.container);
+    await expandAllToolGroups(p4.container);
     const p4Persisted = captureTranscriptSnapshot(p4.container);
 
     expectSameTranscript(p3Finalized, p4Persisted);
