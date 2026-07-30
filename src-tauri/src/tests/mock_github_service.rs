@@ -559,7 +559,7 @@ impl GithubServiceTrait for MockGithubService {
         s.last_rerun_failed_workflow_id = Some(run_id);
         s.rerun_failed_workflow_result
             .take()
-            .unwrap_or_else(|| Ok(()))
+            .unwrap_or(Ok(()))
     }
 
     async fn enable_pr_auto_merge(

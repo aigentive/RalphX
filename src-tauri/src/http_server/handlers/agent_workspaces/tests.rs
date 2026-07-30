@@ -1724,9 +1724,11 @@ async fn transient_ci_completion_reserves_one_rerun_without_settling_repair() {
     let response = complete_transient_ci_failure(&fixture).await;
 
     assert_eq!(response.status, "rerun_pending");
-    let github = fixture.github.state();
-    assert_eq!(github.rerun_failed_workflow_calls, 1);
-    assert_eq!(github.last_rerun_failed_workflow_id, Some(789));
+    {
+        let github = fixture.github.state();
+        assert_eq!(github.rerun_failed_workflow_calls, 1);
+        assert_eq!(github.last_rerun_failed_workflow_id, Some(789));
+    }
     let attempt = fixture
         .app_state
         .agent_workspace_repair_repo
