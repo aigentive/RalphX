@@ -1,13 +1,12 @@
 /**
  * IdeationModelSection — Settings section for configuring ideation agent model selection.
  *
- * Uses SectionCard (frosted glass pattern) from SettingsView.shared.tsx.
+ * Uses the chrome-free SettingsSection container from SettingsView.shared.tsx.
  * Shows global dropdowns and per-project override dropdowns.
  * Effective value hint shown only when value is `inherit`.
  */
 
 import { useState } from "react";
-import { Cpu } from "lucide-react";
 import { Separator } from "@/components/ui/separator";
 import {
   Select,
@@ -16,7 +15,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { SectionCard, ErrorBanner } from "./SettingsView.shared";
+import { SettingsSection, ErrorBanner } from "./SettingsView.shared";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { useIdeationModelSettings } from "@/hooks/useIdeationModelSettings";
 import { useProjectStore, selectActiveProject } from "@/stores/projectStore";
@@ -372,13 +371,7 @@ export function IdeationModelSection() {
   const modelOptions = modelOptionsForClaudeCapabilities(providers);
 
   return (
-    <SectionCard
-      icon={
-        <Cpu className="w-[18px] h-[18px] text-[var(--accent-primary)]" />
-      }
-      title="Ideation Model"
-      description="Configure AI model for ideation and verification agents"
-    >
+    <SettingsSection>
       <GlobalModelSubsection modelOptions={modelOptions} />
       <Separator className="my-4 bg-[var(--border-subtle)]" />
       <ProjectModelSubsection
@@ -386,6 +379,6 @@ export function IdeationModelSection() {
         projectName={activeProject?.name ?? null}
         modelOptions={modelOptions}
       />
-    </SectionCard>
+    </SettingsSection>
   );
 }

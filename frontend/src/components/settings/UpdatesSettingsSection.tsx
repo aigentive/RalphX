@@ -1,10 +1,10 @@
-import { RefreshCw, TriangleAlert } from "lucide-react";
+import { TriangleAlert } from "lucide-react";
 import type { ReactNode } from "react";
 
 import type { UpdateChannel } from "@/api/update-channel";
 import { useUpdateChannel } from "@/hooks/useUpdateChannel";
 
-import { SectionCard } from "./SettingsView.shared";
+import { SettingsSection } from "./SettingsView.shared";
 
 const UPDATE_CHANNEL_OPTIONS = [
   {
@@ -115,11 +115,7 @@ export function UpdatesSettingsSection() {
   } = useUpdateChannel();
 
   return (
-    <SectionCard
-      icon={<RefreshCw className="h-[18px] w-[18px] text-[var(--card-icon-color)]" />}
-      title="Updates"
-      description="Choose which RalphX release stream to check for updates."
-    >
+    <SettingsSection>
       <div
         role="radiogroup"
         aria-label="Update channel"
@@ -147,6 +143,6 @@ export function UpdatesSettingsSection() {
           Unable to save update channel. Please try again.
         </UpdateChannelError>
       ) : null}
-    </SectionCard>
+    </SettingsSection>
   );
 }
