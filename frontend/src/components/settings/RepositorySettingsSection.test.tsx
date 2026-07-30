@@ -26,6 +26,21 @@ vi.mock("@/hooks/useGitHubConnectionStatus", () => ({
   useGitHubConnectionStatus: vi.fn(),
 }));
 
+// `GitAuthRepairPanel` reads the bus through `useEventBus()` rather than raw `listen`, so
+// rendering it needs a bus in context. Mocked like the other hooks here — mounting the real
+// EventProvider would pull in every global listener this unit test has no business running.
+vi.mock("@/providers/EventProvider", () => ({
+  useEventBus: () => {
+    const unsubscribe = Object.assign(() => {}, {
+      ready: Promise.resolve(),
+    });
+    return {
+      subscribe: () => unsubscribe,
+      emit: () => {},
+    };
+  },
+}));
+
 const mockUpdateProject = vi.fn();
 vi.mock("@/stores/projectStore", () => ({
   useProjectStore: vi.fn(),
