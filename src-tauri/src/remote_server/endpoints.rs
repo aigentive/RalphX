@@ -4,7 +4,7 @@
 //! stranger can read, so it publishes identity and version negotiation data only (§3.1, §4.6).
 
 use std::net::Ipv4Addr;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use ralphx_remote_protocol::{EnvironmentDescriptor, PROTOCOL_VERSION};
@@ -50,12 +50,16 @@ pub(crate) struct RemoteRouterState {
     environment_id: Arc<str>,
     auth: Arc<RemoteAuthContext>,
     invoke_dispatcher: Arc<dyn RemoteInvokeDispatcher>,
-    /// The durable stream, installed at app setup when host mode is configured (P-23).
+    /// The durable stream slot, shared with `RemoteListenerHandle` (P-23).
     ///
-    /// `Option` because the listener and the stream have independent lifetimes by design: the
-    /// listener toggle governs network exposure only. A router without a stream still serves every
-    /// HTTP route and refuses only the WS upgrade, explicitly.
-    stream: Option<RemoteStreamHandle>,
+    /// The listener and the stream have independent lifetimes by design — the listener toggle
+    /// governs network exposure only — and on a FIRST enable the stream is installed only
+    /// after `start_listener` has already built this router (`enable_remote_access`). Holding
+    /// the `OnceLock` itself rather than a snapshot of its contents is what lets that install
+    /// reach a router that is already serving; a snapshot answered every WS subscribe with
+    /// `503 REMOTE_UNREACHABLE` until an off/on cycle rebuilt the router. A router whose slot
+    /// is still empty serves every HTTP route and refuses only the WS upgrade, explicitly.
+    stream: Arc<OnceLock<RemoteStreamHandle>>,
     lifecycle: Arc<dyn SessionLifecycleSink>,
     /// Request idempotency (PR 1.5-C).
     ///
@@ -96,7 +100,7 @@ impl RemoteRouterState {
             environment_id: environment_id.into(),
             auth: Arc::new(auth),
             invoke_dispatcher,
-            stream: None,
+            stream: Arc::new(OnceLock::new()),
             lifecycle: Arc::new(NoopLifecycleSink),
             dedup: None,
             attachments: None,
@@ -126,8 +130,10 @@ impl RemoteRouterState {
         self
     }
 
-    pub(crate) fn with_stream(mut self, stream: Option<RemoteStreamHandle>) -> Self {
-        self.stream = stream;
+    /// Adopts the handle-owned stream slot, so an install in EITHER order — app setup before
+    /// the listener, or first-enable after it — is visible to the live router (P-23).
+    pub(crate) fn with_stream_slot(mut self, slot: Arc<OnceLock<RemoteStreamHandle>>) -> Self {
+        self.stream = slot;
         self
     }
 
@@ -149,7 +155,7 @@ impl RemoteRouterState {
     }
 
     pub(crate) fn stream(&self) -> Option<&RemoteStreamHandle> {
-        self.stream.as_ref()
+        self.stream.get()
     }
 
     /// The dedup state, or `None` when the router was built without one.

@@ -183,7 +183,37 @@ pub struct RemoteHostHarness {
     environment_id: String,
 }
 
+/// When `start_inner` installs the durable sequencer relative to the listener bind.
+enum StreamInstall {
+    /// App-setup ordering: the settings row already existed, so capture is installed before
+    /// the listener is reachable.
+    BeforeListener,
+    /// First-enable ordering (`enable_remote_access`): the listener is already serving when
+    /// the sequencer lands in the shared slot.
+    AfterListener,
+}
+
 impl RemoteHostHarness {
+    /// The body of `install_remote_stream_from_handle`: sequencer first, then capture, then
+    /// the handle slot — the same ordering both production call sites use.
+    async fn install_capture_and_stream(
+        app: &tauri::App<MockRuntime>,
+        db: &DbConnection,
+        listener: &RemoteListenerHandle,
+    ) -> AppResult<RemoteStreamHandle> {
+        let (feed, receivers) = CaptureFeed::channels(REMOTE_CAPTURE_QUEUE_CAPACITY);
+        let log = Arc::new(SqliteRemoteEventLogRepository::from_db(db.clone()));
+        let stream = RemoteSequencer::start(log, receivers, RetentionLeaseRegistry::new()).await?;
+        // Installed only after the sequencer is live, so no captured event is dropped into a
+        // channel nobody drains yet — the same ordering production uses.
+        RemoteEventCapture::install(app.handle().clone(), feed);
+        assert!(
+            listener.install_stream(stream.clone()),
+            "the harness installs exactly one sequencer",
+        );
+        Ok(stream)
+    }
+
     /// Boots the host exactly the way production does, on a free loopback port.
     ///
     /// The port is reserved by binding `127.0.0.1:0`, reading the assigned port, and dropping
@@ -193,6 +223,22 @@ impl RemoteHostHarness {
     /// cannot be persisted and the listener has no other way to be told "pick one".
     /// See the flake-risk note in the lane tracker.
     pub async fn start() -> AppResult<Self> {
+        Self::start_inner(StreamInstall::BeforeListener).await
+    }
+
+    /// Boots with the FIRST-ENABLE ordering: the listener is already serving when the durable
+    /// sequencer lands in the shared stream slot.
+    ///
+    /// This is exactly what `enable_remote_access` does on a host whose settings row did not
+    /// exist at app setup (P-23): `start_listener` mints the row and binds first, and
+    /// `install_remote_stream_from_handle` runs after it returns. A router that snapshots the
+    /// slot instead of sharing it answers every WS subscribe with `503 REMOTE_UNREACHABLE`
+    /// here until an off/on cycle rebuilds it.
+    pub async fn start_first_enable() -> AppResult<Self> {
+        Self::start_inner(StreamInstall::AfterListener).await
+    }
+
+    async fn start_inner(order: StreamInstall) -> AppResult<Self> {
         // `RALPHX_REMOTE_PORT` would override the configured port at bind time and pin every
         // harness host to one port, which breaks both the ephemeral bind and any parallel run.
         // Refusing loudly beats binding somewhere the caller did not ask for.
@@ -225,19 +271,15 @@ impl RemoteHostHarness {
         })
         .await?;
 
-        // --- capture + durable sequencer: the body of `install_remote_stream_from_handle` ---
-        let (feed, receivers) = CaptureFeed::channels(REMOTE_CAPTURE_QUEUE_CAPACITY);
-        let log = Arc::new(SqliteRemoteEventLogRepository::from_db(db.clone()));
-        let stream = RemoteSequencer::start(log, receivers, RetentionLeaseRegistry::new()).await?;
-        // Installed only after the sequencer is live, so no captured event is dropped into a
-        // channel nobody drains yet — the same ordering production uses.
-        RemoteEventCapture::install(app.handle().clone(), feed);
-
         let listener = RemoteListenerHandle::new();
-        assert!(
-            listener.install_stream(stream.clone()),
-            "the harness installs exactly one sequencer",
-        );
+        // App-setup ordering installs the sequencer before the listener exists on the network;
+        // first-enable ordering (below, after the bind) leaves the slot empty until then.
+        let preinstalled = match order {
+            StreamInstall::BeforeListener => {
+                Some(Self::install_capture_and_stream(&app, &db, &listener).await?)
+            }
+            StreamInstall::AfterListener => None,
+        };
 
         let auth = RemoteAuthContext::from_db(
             db.clone(),
@@ -257,6 +299,13 @@ impl RemoteHostHarness {
         )
         .await
         .expect("the harness listener should bind an ephemeral loopback port");
+
+        let stream = match preinstalled {
+            Some(stream) => stream,
+            // The first-enable seam: the router is already built and serving; the install must
+            // reach it through the shared slot, not through a rebuild.
+            None => Self::install_capture_and_stream(&app, &db, &listener).await?,
+        };
 
         Ok(Self {
             app,

@@ -1052,6 +1052,42 @@ async fn p16_only_the_descriptor_and_pairing_routes_answer_without_a_bearer() {
 }
 
 // =========================================================================================
+// First-enable ordering (P-23 seam)
+// =========================================================================================
+
+/// On a first-ever enable, `start_listener` mints the settings row and binds BEFORE
+/// `install_remote_stream_from_handle` installs the sequencer — so the router is already
+/// serving when the stream lands in the shared slot. The WS route must observe that install
+/// live: a router that snapshots the slot at construction answers every subscribe with
+/// `503 REMOTE_UNREACHABLE` until an off/on cycle rebuilds it, which is precisely the
+/// "paired fine, then Reconnecting forever" failure this test pins.
+#[tokio::test]
+async fn a_first_enable_host_serves_the_event_stream_without_a_listener_restart() {
+    let host = RemoteHostHarness::start_first_enable()
+        .await
+        .expect("the first-enable host should boot");
+    let device = host
+        .pair_device("first-enable-client")
+        .await
+        .expect("pairing should succeed");
+    let mut client = ScriptedClient::new(host.base_url(), device.token);
+
+    // The full production connect: ticket → WS upgrade → `hello` → `subscribe` → `replayDone`.
+    // Reaching `replayDone` proves the stream installed after the bind is the one serving.
+    let (max_seq, epoch) = subscribe(&mut client).await;
+    assert_eq!(
+        max_seq, 0,
+        "a fresh first-enable host has no durable history"
+    );
+    assert!(
+        !epoch.is_empty(),
+        "hello must carry the epoch of the post-bind sequencer",
+    );
+
+    host.stop().await.expect("the host should stop cleanly");
+}
+
+// =========================================================================================
 // Suite-level guards
 // =========================================================================================
 

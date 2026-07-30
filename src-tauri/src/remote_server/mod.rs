@@ -296,6 +296,15 @@ impl RemoteListenerHandle {
         self.stream.get().cloned()
     }
 
+    /// The shared slot itself, for router construction.
+    ///
+    /// On a first-ever enable the sequencer is installed AFTER `start_listener` has built the
+    /// router, so the router must hold the slot, never a snapshot of its contents — a snapshot
+    /// left the WS route answering 503 until an off/on cycle rebuilt it (P-23).
+    pub(crate) fn stream_slot(&self) -> Arc<std::sync::OnceLock<sequencer::RemoteStreamHandle>> {
+        Arc::clone(&self.stream)
+    }
+
     /// Publishes the stream handle. Returns `false` if one was already installed.
     pub(crate) fn install_stream(&self, stream: sequencer::RemoteStreamHandle) -> bool {
         self.stream.set(stream).is_ok()
@@ -724,9 +733,11 @@ pub(crate) async fn start_listener_with_runtime(
         runtime.invoke_dispatcher,
     )
     .with_dedup(dedup.clone())
-    // Installed at app setup, not here: the listener toggle governs network exposure only, so
-    // a restart of the listener must not restart the stream (P-15, P-23).
-    .with_stream(handle.stream());
+    // Installed at app setup OR on first enable, never here: the listener toggle governs
+    // network exposure only, so a restart must not restart the stream (P-15) — and the router
+    // shares the handle's slot rather than snapshotting it, so a first-enable install that
+    // lands after this bind is still observed by the serving router (P-23).
+    .with_stream_slot(handle.stream_slot());
     // The attachment root is app-owned. If it cannot be resolved the routes stay unwired and
     // fail closed with `REMOTE_INTERNAL_ERROR` — never a fallback to a guessed directory. The
     // resolution itself happened in the `AppHandle` wrapper; the failure is reported here, at
