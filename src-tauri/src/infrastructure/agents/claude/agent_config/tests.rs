@@ -548,6 +548,64 @@ fn early_file_logging_zero_max_bytes_falls_back_to_default_from_any_source() {
 }
 
 #[test]
+fn early_file_logging_limits_default_on_malformed_yaml() {
+    let defaults = (default_file_logging_max_bytes(), default_file_logging_keep_files());
+    assert_eq!(
+        resolve_file_logging_limits_from_sources(None, None, None, "totally: [broken"),
+        defaults,
+    );
+}
+
+#[test]
+fn early_file_logging_limits_missing_runtime_config_uses_embedded() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let missing = temp_dir.path().join("does-not-exist.yaml");
+    assert_eq!(
+        resolve_file_logging_limits_from_sources(
+            None,
+            None,
+            Some(&missing),
+            "file_logging_max_bytes: 42\nfile_logging_keep_files: 2"
+        ),
+        (42, 2)
+    );
+}
+
+#[test]
+fn early_file_logging_limits_keep_files_env_overrides_config() {
+    assert_eq!(
+        resolve_file_logging_limits_from_sources(
+            None,
+            Some("11"),
+            None,
+            "file_logging_max_bytes: 42\nfile_logging_keep_files: 2"
+        ),
+        (42, 11)
+    );
+}
+
+#[test]
+fn early_file_logging_limits_non_numeric_env_falls_through() {
+    assert_eq!(
+        resolve_file_logging_limits_from_sources(
+            Some("abc"),
+            Some("xyz"),
+            None,
+            "file_logging_max_bytes: 42\nfile_logging_keep_files: 2"
+        ),
+        (42, 2)
+    );
+}
+
+#[test]
+fn database_maintenance_config_yaml_deserializes_with_defaults() {
+    let yaml = "database_maintenance:\n  db_auto_compact_enabled: false\n";
+    let cfg: RalphxConfig = serde_yaml::from_str(yaml).unwrap();
+    assert!(!cfg.database_maintenance.db_auto_compact_enabled);
+    assert_eq!(cfg.database_maintenance.db_auto_compact_max_db_bytes, 2_147_483_648);
+}
+
+#[test]
 fn test_live_runtime_agents_no_longer_reference_deprecated_plugin_prompt_paths() {
     for agent in agent_configs() {
         assert!(

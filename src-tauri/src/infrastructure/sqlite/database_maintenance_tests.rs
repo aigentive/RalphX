@@ -239,3 +239,47 @@ fn read_stats_for_missing_database_is_empty_and_fail_closed_on_headroom() {
     assert_eq!(stats.reclaimable_bytes, 0);
     assert!(!stats.headroom_ok);
 }
+
+#[test]
+fn set_pending_compaction_creates_parent_dirs() {
+    let dir = TempDir::new().unwrap();
+    let nested = dir.path().join("deeply").join("nested").join("marker");
+    set_pending_compaction_at(&nested, true).unwrap();
+    assert!(nested.exists());
+    set_pending_compaction_at(&nested, false).unwrap();
+    assert!(!nested.exists());
+}
+
+#[test]
+fn set_pending_compaction_noop_when_clearing_absent_marker() {
+    let dir = TempDir::new().unwrap();
+    let marker = dir.path().join("nonexistent-marker");
+    let result = set_pending_compaction_at(&marker, false);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn read_stats_reports_headroom_ok_when_disk_has_space() {
+    let dir = TempDir::new().unwrap();
+    let paths = temp_paths(&dir);
+    let conn = Connection::open(&paths.database_path).unwrap();
+    conn.execute_batch("CREATE TABLE tiny (id INTEGER PRIMARY KEY);")
+        .unwrap();
+    drop(conn);
+
+    let stats = read_stats_at(&paths).unwrap();
+    assert!(
+        stats.headroom_ok,
+        "a tiny database in a temp dir should have plenty of headroom"
+    );
+}
+
+#[test]
+fn read_stats_pending_reflects_missing_database_marker() {
+    let dir = TempDir::new().unwrap();
+    let paths = temp_paths(&dir);
+    set_pending_compaction_at(&paths.marker_path, true).unwrap();
+    let stats = read_stats_at(&paths).unwrap();
+    assert!(stats.pending_compaction);
+    assert_eq!(stats.database_bytes, 0);
+}

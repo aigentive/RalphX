@@ -56,3 +56,54 @@ fn disabled_file_logging_skips_previous_log_cleanup() {
     assert!(warnings.is_empty());
     assert!(old_log.exists());
 }
+
+#[test]
+fn enabled_file_logging_delegates_to_cleanup_and_removes_old_logs() {
+    let log_dir = tempfile::tempdir().unwrap();
+    let old_log = log_dir.path().join("ralphx_2026-07-30_09-00-00.log");
+    let current_log = log_dir.path().join("ralphx_2026-07-30_11-00-00.log");
+    std::fs::write(&old_log, "old output").unwrap();
+    std::fs::write(&current_log, "current output").unwrap();
+
+    let warnings = cleanup_previous_launch_logs_when_enabled(
+        true,
+        log_dir.path(),
+        "ralphx_2026-07-30_11-00-00.log",
+        0,
+    );
+
+    assert!(warnings.is_empty());
+    assert!(!old_log.exists(), "old log should be cleaned up");
+    assert!(current_log.exists(), "current log must survive cleanup");
+}
+
+#[test]
+fn file_log_collision_exhaustion_returns_error() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let log_dir = temp_dir.path().join("logs");
+    std::fs::create_dir_all(&log_dir).unwrap();
+
+    let base = "ralphx_2026-07-30_12-00-00";
+    std::fs::write(log_dir.join(format!("{base}.log")), "").unwrap();
+    for attempt in 1..10u32 {
+        std::fs::write(log_dir.join(format!("{base}_{attempt}.log")), "").unwrap();
+    }
+
+    let result = create_file_log(&log_dir, &format!("{base}.log"));
+
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::AlreadyExists);
+}
+
+#[test]
+fn file_log_without_log_extension_still_retries() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let log_dir = temp_dir.path().join("logs");
+    std::fs::create_dir_all(&log_dir).unwrap();
+
+    std::fs::write(log_dir.join("custom_name.log"), "occupied").unwrap();
+
+    let (path, _file) = create_file_log(&log_dir, "custom_name.log").unwrap();
+
+    assert_eq!(path, log_dir.join("custom_name_1.log"));
+}
