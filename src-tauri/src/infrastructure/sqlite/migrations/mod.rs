@@ -560,6 +560,9 @@ mod v20260727115037_agent_workspace_publication_metadata_receipts_tests;
 mod v20260728155615_agent_conversation_mutes;
 #[cfg(test)]
 mod v20260728155615_agent_conversation_mutes_tests;
+mod v20260728162405_rx_native_team_runtime;
+#[cfg(test)]
+mod v20260728162405_rx_native_team_runtime_tests;
 mod v20260728183000_workspace_review_plan_context;
 #[cfg(test)]
 mod v20260728183000_workspace_review_plan_context_tests;
@@ -1805,6 +1808,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260728155615,
         name: "agent_conversation_mutes",
         migrate: v20260728155615_agent_conversation_mutes::migrate,
+    },
+    Migration {
+        version: 20260728162405,
+        name: "rx_native_team_runtime",
+        migrate: v20260728162405_rx_native_team_runtime::migrate,
     },
     Migration {
         version: 20260728183000,

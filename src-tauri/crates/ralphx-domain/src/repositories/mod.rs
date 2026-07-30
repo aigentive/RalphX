@@ -67,6 +67,12 @@ pub mod task_proposal_repository;
 pub mod task_qa_repository;
 pub mod task_repository;
 pub mod task_step_repository;
+pub mod team_coordination_transition_repository;
+pub mod team_message_repository;
+pub mod team_repository;
+pub mod team_run_binding_repository;
+pub mod team_wake_batch_repository;
+pub mod team_workspace_reservation_repository;
 pub mod ticket_canonical_branch_repository;
 pub mod validation_run_repository;
 pub mod webhook_registration_repository;
@@ -174,6 +180,14 @@ pub use task_proposal_repository::TaskProposalRepository;
 pub use task_qa_repository::TaskQARepository;
 pub use task_repository::{StateHistoryMetadata, TaskRepository};
 pub use task_step_repository::TaskStepRepository;
+pub use team_coordination_transition_repository::{
+    TeamCoordinationTransitionRepository, TeamExitMarker,
+};
+pub use team_message_repository::TeamMessageRepository;
+pub use team_repository::TeamRepository;
+pub use team_run_binding_repository::TeamRunBindingRepository;
+pub use team_wake_batch_repository::TeamWakeBatchRepository;
+pub use team_workspace_reservation_repository::TeamWorkspaceReservationRepository;
 pub use ticket_canonical_branch_repository::TicketCanonicalBranchRepository;
 pub use validation_run_repository::ValidationRunRepository;
 pub use webhook_registration_repository::{WebhookRegistration, WebhookRegistrationRepository};

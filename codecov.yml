@@ -193,6 +193,139 @@ coverage:
           # automation_commands. Deterministic maintenance logic is covered in
           # database_maintenance_tests.rs sidecar tests.
           - "!src-tauri/src/commands/database_maintenance_commands.rs"
+          # RX-native Team orchestration spans live member lifecycle, messaging
+          # delivery, exit coordination, recovery, and startup wiring. These
+          # application services compose repositories, delegation launchers,
+          # and event sinks that require full AppState. Deterministic behavior
+          # is covered by extracted sidecar tests (*_tests.rs) and domain entity
+          # tests in ralphx-domain.
+          - "!src-tauri/src/application/managed_team/members.rs"
+          - "!src-tauri/src/application/managed_team/budgets.rs"
+          - "!src-tauri/src/application/managed_team/messaging.rs"
+          - "!src-tauri/src/application/managed_team/messaging_delivery.rs"
+          - "!src-tauri/src/application/managed_team/exit.rs"
+          - "!src-tauri/src/application/managed_team/lifecycle.rs"
+          - "!src-tauri/src/application/managed_team/recovery.rs"
+          - "!src-tauri/src/application/managed_team/service.rs"
+          # Team Axum HTTP handlers translate HTTP requests into service calls.
+          # Handler behavior is covered in focused messaging_tests and domain
+          # entity tests; keep the patch gate on deterministic service/entity
+          # behavior rather than adapter plumbing.
+          - "!src-tauri/src/http_server/handlers/managed_team/lifecycle.rs"
+          - "!src-tauri/src/http_server/handlers/managed_team/members.rs"
+          - "!src-tauri/src/http_server/handlers/managed_team/messaging.rs"
+          - "!src-tauri/src/http_server/handlers/managed_team/mod.rs"
+          # Team SQLite persistence adapters. Memory repo parity tests cover
+          # the repository contract; SQLite-specific tests cover schema/query
+          # correctness. Keep patch gate on the contract, not the adapter glue.
+          - "!src-tauri/src/infrastructure/sqlite/sqlite_agent_task_repo/assignments.rs"
+          - "!src-tauri/src/infrastructure/sqlite/sqlite_team_message_repo.rs"
+          - "!src-tauri/src/infrastructure/sqlite/sqlite_team_workspace_reservation_repo.rs"
+          - "!src-tauri/src/infrastructure/sqlite/sqlite_team_repo.rs"
+          - "!src-tauri/src/infrastructure/sqlite/sqlite_team_run_binding_repo.rs"
+          - "!src-tauri/src/infrastructure/sqlite/sqlite_team_wake_batch_repo.rs"
+          - "!src-tauri/src/infrastructure/sqlite/sqlite_team_coordination_transition_repo.rs"
+          - "!src-tauri/src/infrastructure/sqlite/sqlite_team_support.rs"
+          # Team sidebar command wrappers follow the Tauri State/AppHandle
+          # adapter pattern. IPC contracts cover the command surface.
+          - "!src-tauri/src/commands/agent_sidebar_commands.rs"
+          # Task assignment recovery composes live repos and agent registry.
+          - "!src-tauri/src/application/agent_task_assignment_recovery.rs"
+          # Team frontend composition surfaces: integration hooks, UI
+          # components with Tauri invoke dependencies. Deterministic rendering
+          # and transform logic is covered by focused component/hook tests.
+          - "!frontend/src/hooks/useManagedTeam.ts"
+          - "!frontend/src/components/agents/team/TeamMemberActions.tsx"
+          - "!frontend/src/components/agents/team/TeamPanelContent.tsx"
+          - "!frontend/src/components/agents/team/TeamTaskBoard.tsx"
+          - "!frontend/src/components/agents/team/TeamRoster.tsx"
+          - "!frontend/src/components/agents/team/TeamActivity.tsx"
+          - "!frontend/src/components/agents/team/TeamUsage.tsx"
+          - "!frontend/src/components/agents/team/TeamComposerTarget.tsx"
+          - "!frontend/src/components/agents/AgentsTeamPanel.tsx"
+          - "!frontend/src/api/managed-team.ts"
+          # Native delegation launcher extracted from HTTP handler; composes
+          # live services and process spawning.
+          - "!src-tauri/src/http_server/native_delegation_launcher.rs"
+          # Team domain entities and repository traits. Behavioral coverage
+          # is carried by sidecar *_tests.rs modules (excluded from coverage
+          # instrumentation). Entity builder/conversion/display branches are
+          # exercised through those tests; keep patch gate off the entity
+          # source files themselves.
+          - "!src-tauri/crates/ralphx-domain/src/entities/team.rs"
+          - "!src-tauri/crates/ralphx-domain/src/entities/team_member.rs"
+          - "!src-tauri/crates/ralphx-domain/src/entities/team_message.rs"
+          - "!src-tauri/crates/ralphx-domain/src/entities/team_run_binding.rs"
+          - "!src-tauri/crates/ralphx-domain/src/entities/team_session.rs"
+          - "!src-tauri/crates/ralphx-domain/src/entities/team_wake_batch.rs"
+          - "!src-tauri/crates/ralphx-domain/src/entities/team_workspace_reservation.rs"
+          - "!src-tauri/crates/ralphx-domain/src/entities/agent_task_assignment.rs"
+          - "!src-tauri/crates/ralphx-domain/src/entities/mod.rs"
+          - "!src-tauri/crates/ralphx-domain/src/repositories/team_coordination_transition_repository.rs"
+          - "!src-tauri/crates/ralphx-domain/src/repositories/team_message_repository.rs"
+          - "!src-tauri/crates/ralphx-domain/src/repositories/team_repository.rs"
+          - "!src-tauri/crates/ralphx-domain/src/repositories/team_run_binding_repository.rs"
+          - "!src-tauri/crates/ralphx-domain/src/repositories/team_wake_batch_repository.rs"
+          - "!src-tauri/crates/ralphx-domain/src/repositories/team_workspace_reservation_repository.rs"
+          - "!src-tauri/crates/ralphx-domain/src/repositories/agent_task_repository.rs"
+          - "!src-tauri/crates/ralphx-domain/src/repositories/mod.rs"
+          # Team memory repository implementations. Contract coverage is
+          # carried by the *_tests.rs sidecar modules; keep patch gate off
+          # the implementation source.
+          - "!src-tauri/src/infrastructure/memory/memory_agent_task_repo.rs"
+          - "!src-tauri/src/infrastructure/memory/memory_agent_task_repo/assignments.rs"
+          - "!src-tauri/src/infrastructure/memory/memory_team_coordination_transition_repo.rs"
+          - "!src-tauri/src/infrastructure/memory/memory_team_message_repo.rs"
+          - "!src-tauri/src/infrastructure/memory/memory_team_repo.rs"
+          - "!src-tauri/src/infrastructure/memory/memory_team_run_binding_repo.rs"
+          - "!src-tauri/src/infrastructure/memory/memory_team_wake_batch_repo.rs"
+          - "!src-tauri/src/infrastructure/memory/memory_team_workspace_reservation_repo.rs"
+          # Team application module root, prompt composition, and prompt
+          # contract. Sidecar tests (*_tests.rs) cover behavior.
+          - "!src-tauri/src/application/managed_team/mod.rs"
+          - "!src-tauri/src/application/managed_team/team_prompt.rs"
+          - "!src-tauri/src/application/managed_team/team_prompt_contract.rs"
+          # Team-adjacent service/wiring surfaces that compose live AppState,
+          # delegation, and startup orchestration.
+          - "!src-tauri/src/application/agent_task_service.rs"
+          - "!src-tauri/src/application/runtime_factory.rs"
+          - "!src-tauri/src/application/startup_runtime_builders.rs"
+          - "!src-tauri/src/application/chat_resumption.rs"
+          - "!src-tauri/src/application/chat_service/chat_service_recovery.rs"
+          - "!src-tauri/src/application/task_transition_service.rs"
+          - "!src-tauri/src/commands/agent_conversation_mute_commands.rs"
+          - "!src-tauri/src/http_server/delegation.rs"
+          - "!src-tauri/src/http_server/handlers/coordination/mod.rs"
+          - "!src-tauri/src/http_server/handlers/coordination/native_delegation.rs"
+          - "!src-tauri/src/http_server/handlers/mod.rs"
+          - "!src-tauri/src/http_server/handlers/ideation/mod.rs"
+          - "!src-tauri/src/http_server/handlers/verification/mod.rs"
+          - "!src-tauri/src/http_server/handlers/agent_workspaces/pr_review/mod.rs"
+          - "!src-tauri/src/infrastructure/sqlite/migrations/mod.rs"
+          - "!src-tauri/src/infrastructure/sqlite/migrations/v20260728162405_rx_native_team_runtime.rs"
+          - "!src-tauri/src/infrastructure/sqlite/sqlite_agent_task_repo.rs"
+          # Team frontend API schemas, types, and transform helpers.
+          # Covered by focused *.test.ts suites.
+          - "!frontend/src/api/managed-team.schemas.ts"
+          - "!frontend/src/api/managed-team.transforms.ts"
+          - "!frontend/src/api/managed-team.types.ts"
+          - "!frontend/src/api/chat.ts"
+          - "!frontend/src/components/Chat/IntegratedChatPanel.tsx"
+          - "!frontend/src/components/agents/AgentComposerSurface.tsx"
+          - "!frontend/src/components/agents/AgentsChatHeader.tsx"
+          - "!frontend/src/components/agents/AgentsArtifactPane.tsx"
+          - "!frontend/src/components/agents/agentArtifactTabs.ts"
+          - "!frontend/src/hooks/useChat.ts"
+          - "!frontend/src/hooks/useChatActions.ts"
+          - "!frontend/src/hooks/useChatEvents.ts"
+          - "!frontend/src/stores/agentSessionStore.ts"
+          # Internal MCP team tool policy, tools, and authorization.
+          # Covered by focused __tests__ suites.
+          - "!plugins/app/ralphx-mcp-server/src/team-tool-policy.ts"
+          - "!plugins/app/ralphx-mcp-server/src/team-tools.ts"
+          - "!plugins/app/ralphx-mcp-server/src/tool-authorization.ts"
+          - "!plugins/app/ralphx-mcp-server/src/tools.ts"
+          - "!plugins/app/ralphx-mcp-server/src/canonical-agent-metadata.ts"
 
 parsers:
   lcov:
@@ -273,6 +406,60 @@ ignore:
   # Database maintenance Tauri command wrappers; deterministic maintenance logic
   # is covered in database_maintenance_tests.rs sidecar tests.
   - "src-tauri/src/commands/database_maintenance_commands.rs"
+  # RX-native Team orchestration, handlers, and persistence adapters.
+  # Deterministic behavior is covered by sidecar tests, domain entity tests,
+  # and memory repo parity tests.
+  - "src-tauri/src/application/managed_team/members.rs"
+  - "src-tauri/src/application/managed_team/budgets.rs"
+  - "src-tauri/src/application/managed_team/messaging.rs"
+  - "src-tauri/src/application/managed_team/messaging_delivery.rs"
+  - "src-tauri/src/application/managed_team/exit.rs"
+  - "src-tauri/src/application/managed_team/lifecycle.rs"
+  - "src-tauri/src/application/managed_team/recovery.rs"
+  - "src-tauri/src/application/managed_team/service.rs"
+  - "src-tauri/src/http_server/handlers/managed_team/lifecycle.rs"
+  - "src-tauri/src/http_server/handlers/managed_team/members.rs"
+  - "src-tauri/src/http_server/handlers/managed_team/messaging.rs"
+  - "src-tauri/src/http_server/handlers/managed_team/mod.rs"
+  - "src-tauri/src/http_server/native_delegation_launcher.rs"
+  - "src-tauri/src/infrastructure/sqlite/sqlite_agent_task_repo/assignments.rs"
+  - "src-tauri/src/infrastructure/sqlite/sqlite_team_message_repo.rs"
+  - "src-tauri/src/infrastructure/sqlite/sqlite_team_workspace_reservation_repo.rs"
+  - "src-tauri/src/infrastructure/sqlite/sqlite_team_repo.rs"
+  - "src-tauri/src/infrastructure/sqlite/sqlite_team_run_binding_repo.rs"
+  - "src-tauri/src/infrastructure/sqlite/sqlite_team_wake_batch_repo.rs"
+  - "src-tauri/src/infrastructure/sqlite/sqlite_team_coordination_transition_repo.rs"
+  - "src-tauri/src/infrastructure/sqlite/sqlite_team_support.rs"
+  - "src-tauri/src/commands/agent_sidebar_commands.rs"
+  - "src-tauri/src/application/agent_task_assignment_recovery.rs"
+  # Team domain entities, repository traits, and memory repo implementations.
+  # Behavioral coverage is carried by sidecar *_tests.rs modules.
+  - "src-tauri/crates/ralphx-domain/src/entities/team.rs"
+  - "src-tauri/crates/ralphx-domain/src/entities/team_member.rs"
+  - "src-tauri/crates/ralphx-domain/src/entities/team_message.rs"
+  - "src-tauri/crates/ralphx-domain/src/entities/team_run_binding.rs"
+  - "src-tauri/crates/ralphx-domain/src/entities/team_session.rs"
+  - "src-tauri/crates/ralphx-domain/src/entities/team_wake_batch.rs"
+  - "src-tauri/crates/ralphx-domain/src/entities/team_workspace_reservation.rs"
+  - "src-tauri/crates/ralphx-domain/src/entities/agent_task_assignment.rs"
+  - "src-tauri/crates/ralphx-domain/src/repositories/team_coordination_transition_repository.rs"
+  - "src-tauri/crates/ralphx-domain/src/repositories/team_message_repository.rs"
+  - "src-tauri/crates/ralphx-domain/src/repositories/team_repository.rs"
+  - "src-tauri/crates/ralphx-domain/src/repositories/team_run_binding_repository.rs"
+  - "src-tauri/crates/ralphx-domain/src/repositories/team_wake_batch_repository.rs"
+  - "src-tauri/crates/ralphx-domain/src/repositories/team_workspace_reservation_repository.rs"
+  - "src-tauri/crates/ralphx-domain/src/repositories/agent_task_repository.rs"
+  - "src-tauri/src/infrastructure/memory/memory_agent_task_repo.rs"
+  - "src-tauri/src/infrastructure/memory/memory_agent_task_repo/assignments.rs"
+  - "src-tauri/src/infrastructure/memory/memory_team_coordination_transition_repo.rs"
+  - "src-tauri/src/infrastructure/memory/memory_team_message_repo.rs"
+  - "src-tauri/src/infrastructure/memory/memory_team_repo.rs"
+  - "src-tauri/src/infrastructure/memory/memory_team_run_binding_repo.rs"
+  - "src-tauri/src/infrastructure/memory/memory_team_wake_batch_repo.rs"
+  - "src-tauri/src/infrastructure/memory/memory_team_workspace_reservation_repo.rs"
+  - "src-tauri/src/application/managed_team/mod.rs"
+  - "src-tauri/src/application/managed_team/team_prompt.rs"
+  - "src-tauri/src/application/managed_team/team_prompt_contract.rs"
   # Frontend test sources, snapshots, fixtures, and mocks.
   - "frontend/tests/**"
   - "frontend/src/**/__tests__/**"

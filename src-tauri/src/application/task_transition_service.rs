@@ -2000,12 +2000,12 @@ impl TaskTransitionService {
                 InternalStatus::PendingReview.as_str(),
             )
             .await;
-        self.execute_entry_actions_with_notification_context(
+        Box::pin(self.execute_entry_actions_with_notification_context(
             task_id,
             &task,
             InternalStatus::PendingReview,
             Some(history_entry_id),
-        )
+        ))
         .await;
 
         Ok(task)
@@ -2179,12 +2179,12 @@ impl TaskTransitionService {
             new_status = new_status.as_str(),
             "Executing entry actions for new status"
         );
-        self.execute_entry_actions_with_notification_context(
+        Box::pin(self.execute_entry_actions_with_notification_context(
             task_id,
             &task,
             new_status,
             history_entry_id,
-        )
+        ))
         .await;
 
         tracing::debug!("Task transition complete");
@@ -2292,12 +2292,12 @@ impl TaskTransitionService {
             .await;
         self.execute_exit_actions(&task.id, &task, old_status, InternalStatus::Ready)
             .await;
-        self.execute_entry_actions_with_notification_context(
+        Box::pin(self.execute_entry_actions_with_notification_context(
             &task.id,
             &task,
             InternalStatus::Ready,
             Some(history_entry_id),
-        )
+        ))
         .await;
 
         Ok(task)
@@ -3672,8 +3672,14 @@ impl TaskTransitionService {
         task: &Task,
         status: InternalStatus,
     ) {
-        self.execute_entry_actions_with_notification_context(task_id, task, status, None)
-            .await;
+        // Box::pin to cap the future size on the caller's stack frame; the
+        // inner function fans out into every on_enter arm which, combined with
+        // TaskServices and TransitionHandler state, can exceed the default 8 MB
+        // thread stack in deeply-nested async call chains (e.g. StartupJobRunner).
+        Box::pin(self.execute_entry_actions_with_notification_context(
+            task_id, task, status, None,
+        ))
+        .await;
     }
 
     async fn execute_entry_actions_with_notification_context(

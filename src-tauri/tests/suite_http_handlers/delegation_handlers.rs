@@ -7,6 +7,9 @@ use async_trait::async_trait;
 use axum::{extract::State, http::HeaderMap, Json};
 use chrono::{DateTime, Utc};
 use ralphx_lib::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
+use ralphx_lib::http_server::native_delegation_launcher::{
+    NativeDelegationLaunchParent, NativeDelegationLaunchRequest, NativeDelegationLauncher,
+};
 use ralphx_lib::application::AppState;
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::agents::{
@@ -307,6 +310,25 @@ impl AgentTaskRepository for FailBindingAgentTaskRepository {
     ) -> AppResult<Option<AgentTaskAssignmentView>> {
         self.inner
             .plan_assignment_run(assignment_id, delegated_session_id, delegated_agent_run_id)
+            .await
+    }
+
+    async fn set_assignment_team_identity(
+        &self,
+        assignment_id: &AgentTaskAssignmentId,
+        delegated_session_id: &DelegatedSessionId,
+        team_id: &ralphx_lib::domain::entities::TeamSessionId,
+        team_member_id: &ralphx_lib::domain::entities::TeamMemberId,
+        team_member_generation: i64,
+    ) -> AppResult<Option<AgentTaskAssignmentView>> {
+        self.inner
+            .set_assignment_team_identity(
+                assignment_id,
+                delegated_session_id,
+                team_id,
+                team_member_id,
+                team_member_generation,
+            )
             .await
     }
 
@@ -1040,6 +1062,60 @@ async fn test_delegate_start_creates_delegated_session_and_completes_with_mock_c
     assert_eq!(latest_run.input_tokens, Some(11));
     assert_eq!(latest_run.cache_read_tokens, Some(2));
     assert_eq!(latest_run.output_tokens, Some(7));
+}
+
+#[tokio::test]
+async fn native_delegation_launcher_does_not_create_http_delegation_job_state() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (_fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let app_state = Arc::new(AppState::new_sqlite_test());
+    let state = build_state(app_state);
+    let (project, parent_conversation, workspace) = create_project_agent_workspace_with_harness(
+        state.app_state.as_ref(),
+        worktree_parent.path(),
+        AgentHarnessKind::Codex,
+    )
+    .await;
+
+    assert_eq!(state.delegation_service.job_count_for_test().await, 0);
+    let launch = NativeDelegationLauncher::new(&state)
+        .launch(NativeDelegationLaunchRequest {
+            caller_agent_name: "ralphx-general-worker".to_string(),
+            caller_agent_profile: None,
+            parent: NativeDelegationLaunchParent {
+                context_type: ChatContextType::Project,
+                context_id: project.id.as_str().to_string(),
+                project_id: project.id.as_str().to_string(),
+                working_directory: PathBuf::from(workspace.worktree_path),
+                caller_conversation_id: Some(parent_conversation.id.as_str()),
+                parent_conversation_id: Some(parent_conversation.id.as_str()),
+                ideation_verification: false,
+            },
+            caller_agent_run_id: None,
+            target_agent_name: "ralphx-general-explorer".to_string(),
+            reusable_delegated_session: None,
+            task_ref: None,
+            preallocated_agent_run_id: None,
+            prompt: "Inspect the project without creating a delegation job.".to_string(),
+            title: Some("Direct launcher test".to_string()),
+            parent_turn_id: None,
+            parent_message_id: None,
+            parent_tool_use_id: None,
+            harness: Some(AgentHarnessKind::Codex),
+            model: None,
+            logical_effort: None,
+            approval_policy: None,
+            sandbox_mode: None,
+        })
+        .await
+        .expect("direct application launcher should start");
+
+    assert!(!launch.delegated_session_id.is_empty());
+    assert!(!launch.delegated_conversation_id.is_empty());
+    assert!(!launch.delegated_agent_run_id.is_empty());
+    assert_eq!(state.delegation_service.job_count_for_test().await, 0);
 }
 
 #[tokio::test]

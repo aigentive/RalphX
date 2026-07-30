@@ -2,6 +2,7 @@
 // Cost-optimized test prompts and helpers
 
 pub mod sqlite_test_db;
+pub mod team_fixtures;
 pub mod test_prompts;
 
 // Re-export commonly used items

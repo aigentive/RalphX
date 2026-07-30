@@ -117,6 +117,7 @@ pub(crate) struct StartupChatResumptionDeps {
     pub plan_branch_repo: Arc<dyn PlanBranchRepository>,
     pub interactive_process_registry: Arc<InteractiveProcessRegistry>,
     pub app_handle: tauri::AppHandle,
+    pub managed_team_barrier: Arc<crate::application::managed_team::ManagedTeamStartupBarrier>,
 }
 
 pub(crate) fn build_startup_chat_resumption_runner(
@@ -135,6 +136,7 @@ pub(crate) fn build_startup_chat_resumption_runner(
     .with_agent_provider_settings_repo(deps.agent_provider_settings_repo)
     .with_plan_branch_repo(deps.plan_branch_repo)
     .with_interactive_process_registry(deps.interactive_process_registry)
+    .with_managed_team_barrier(deps.managed_team_barrier)
 }
 
 pub(crate) struct StartupReconciliationDeps {

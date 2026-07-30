@@ -352,9 +352,12 @@ pub async fn attempt_session_recovery<R: Runtime>(
         .bound_agent_name
         .is_none()
         .then(|| {
-            conversation
-                .agent_mode
-                .and_then(super::agent_profile_for_conversation_mode)
+            conversation.agent_mode.and_then(|agent_mode| {
+                super::resolve_agent_conversation_runtime_profile(
+                    agent_mode,
+                    conversation.coordination_mode,
+                )
+            })
         })
         .flatten();
     chat_service_context::await_required_external_mcp(

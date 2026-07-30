@@ -916,6 +916,19 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         startup_phase_completed("memory_archive_recovery", phase_started_at);
     }
 
+    // Managed-Team recovery barrier: must settle before chat resumption so Team
+    // conversations cannot relaunch against unverified Team state. A failed
+    // barrier fences Team conversations only; non-Team startup is unaffected.
+    {
+        let phase_started_at = startup_phase_started("managed_team_barrier");
+        let managed_team = Arc::clone(&app_state.managed_team);
+        managed_team
+            .startup_barrier()
+            .run(&managed_team.team_repo())
+            .await;
+        startup_phase_completed("managed_team_barrier", phase_started_at);
+    }
+
     if active_git_startup_blocked {
         tracing::warn!(
             "Startup Git auth preflight blocked active-project chat resumption until user repair"
@@ -934,6 +947,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
             plan_branch_repo: Arc::clone(&plan_branch_repo),
             interactive_process_registry: Arc::clone(&interactive_process_registry),
             app_handle: app_handle.clone(),
+            managed_team_barrier: app_state.managed_team.startup_barrier(),
         });
         run_startup_owned_phase("chat_resumption", STARTUP_BACKGROUND_DB_GRACE, async move {
             chat_resumption.run().await;
@@ -949,18 +963,93 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
             Arc::clone(&conversation_repo),
             Arc::clone(&agent_run_repo),
             Arc::clone(&running_agent_registry),
-        );
-    match assignment_recovery.recover().await {
-        Ok(report) => tracing::info!(
-            inspected = report.inspected,
-            settled = report.settled,
-            retained_running = report.retained_running,
-            "Startup delegate assignment recovery completed"
-        ),
-        Err(error) => tracing::error!(
-            %error,
-            "Startup delegate assignment recovery failed closed; unresolved tasks remain unavailable"
-        ),
+        )
+        .with_managed_team(Arc::clone(&app_state.managed_team));
+    // Sequential recovery chain: each step gates the next; errors fence remaining steps.
+    let recovery_ok = match assignment_recovery.recover().await {
+        Ok(report) => {
+            tracing::info!(
+                inspected = report.inspected,
+                settled = report.settled,
+                retained_running = report.retained_running,
+                "Startup delegate assignment recovery completed"
+            );
+            true
+        }
+        Err(error) => {
+            tracing::error!(
+                %error,
+                "Startup delegate assignment recovery failed closed; unresolved tasks remain unavailable"
+            );
+            false
+        }
+    };
+
+    let recovery_ok = recovery_ok
+        && match app_state
+            .managed_team
+            .recover_terminal_binding_reservations()
+            .await
+        {
+            Ok(released) => {
+                tracing::info!(
+                    released,
+                    "Released terminal managed Team workspace reservations during startup recovery"
+                );
+                true
+            }
+            Err(error) => {
+                tracing::error!(
+                    %error,
+                    "Managed Team reservation recovery failed; delivery projection remains fenced"
+                );
+                false
+            }
+        };
+
+    let recovery_ok = if recovery_ok {
+        let task_service = crate::application::AgentTaskService::new(Arc::clone(
+            &app_state.agent_task_repo,
+        ));
+        match app_state
+            .managed_team
+            .recover_pending_exits(&task_service)
+            .await
+        {
+            Ok(recovered) => {
+                tracing::info!(
+                    recovered,
+                    "Resumed staged managed Team exits during startup recovery"
+                );
+                true
+            }
+            Err(error) => {
+                tracing::error!(
+                    %error,
+                    "Managed Team pending exit recovery failed; delivery projection remains fenced"
+                );
+                false
+            }
+        }
+    } else {
+        false
+    };
+
+    if recovery_ok {
+        match app_state
+            .managed_team
+            .release_delivery_projection_after_recovery()
+            .await
+        {
+            Ok(projected) => tracing::info!(
+                projected,
+                "Managed Team delivery projection released after assignment recovery"
+            ),
+            Err(error) => tracing::error!(
+                %error,
+                "Managed Team delivery projection remains deferred after recovery"
+            ),
+        }
     }
     startup_phase_completed("agent_task_assignment_recovery", phase_started_at);
 

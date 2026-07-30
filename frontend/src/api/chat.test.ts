@@ -2952,7 +2952,7 @@ describe("chat api", () => {
     });
   });
 
-  it("sends unified agent message with native team target fields", async () => {
+  it("sends unified agent message with a normalized Team member target", async () => {
     mockInvoke.mockResolvedValue({
       conversation_id: "c1",
       agent_run_id: "r1",
@@ -2969,9 +2969,7 @@ describe("chat api", () => {
         teamIntent: { coordinationMode: "rx_native_team" },
         teamMessageTarget: {
           kind: "member",
-          teamId: "team-1",
-          teamMemberId: "member-1",
-          conversationId: "member-conversation-1",
+          memberName: "worker one",
         },
       },
     );
@@ -2985,9 +2983,7 @@ describe("chat api", () => {
         teamIntent: { coordinationMode: "rx_native_team" },
         teamMessageTarget: {
           kind: "member",
-          teamId: "team-1",
-          teamMemberId: "member-1",
-          conversationId: "member-conversation-1",
+          memberName: "worker one",
         },
       },
     });

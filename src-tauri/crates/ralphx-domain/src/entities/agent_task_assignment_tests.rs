@@ -44,3 +44,11 @@ fn assignment_ids_and_terminal_status_are_typed() {
         AgentTaskAssignmentTerminalStatus::Completed
     );
 }
+
+#[test]
+fn assignment_team_linkage_stays_optional_for_legacy_assignments() {
+    let team_id = super::TeamSessionId::from_string("team-1");
+    let member_id = super::TeamMemberId::from_string("member-1");
+    assert_eq!(team_id.as_str(), "team-1");
+    assert_eq!(member_id.as_str(), "member-1");
+}

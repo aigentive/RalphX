@@ -44,7 +44,8 @@ import {
   useRemoveConversationFolderReference,
 } from "@/hooks/useConversationFolderReferences";
 import type { ChatComposerFolder } from "@/stores/chatStore";
-import type { CapabilityIntent, TeamIntent } from "@/api/chat";
+import type { CapabilityIntent, TeamIntent, TeamMessageTarget } from "@/api/chat";
+import type { ManagedTeamMember } from "@/api/managed-team";
 import type { AgentStatus } from "@/stores/chatStore";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -90,6 +91,7 @@ import {
 } from "./composer/AgentComposerCommandMenu";
 import { ComposerRuntimeSelector } from "./composer/runtime/ComposerRuntimeSelector";
 import { ComposerReferencePill } from "./ComposerReferencePill";
+import { TeamComposerTarget } from "./team/TeamComposerTarget";
 import { FolderReferenceChips } from "./FolderReferenceChips";
 import { subscribeToComposerExcerptReferences } from "./artifact-selection/composerExcerptBridge";
 import {
@@ -249,6 +251,14 @@ export interface AgentComposerSendOptions {
   excerptReferences?: ComposerExcerptReference[];
   capabilityIntent?: CapabilityIntent | null;
   teamIntent?: TeamIntent | null;
+  teamMessageTarget?: TeamMessageTarget | null;
+}
+
+export interface TeamTargetFieldConfig {
+  value: TeamMessageTarget | null;
+  onValueChange: (target: TeamMessageTarget | null) => void;
+  members: readonly ManagedTeamMember[];
+  disabled?: boolean;
 }
 
 export interface AgentComposerSlashCommand {
@@ -313,6 +323,7 @@ export interface AgentComposerSurfaceProps {
   onIntegrationReferencesChange?: (references: AgentComposerIntegrationReference[]) => void;
   mode?: ModeFieldConfig;
   capability?: CapabilityFieldConfig;
+  teamTarget?: TeamTargetFieldConfig;
   chatFocus?: ChatFocusFieldConfig;
   /** Optional compact control appended to the composer toolbar. */
   personaControl?: ReactNode;
@@ -379,6 +390,7 @@ export function AgentComposerSurface({
   onIntegrationReferencesChange,
   mode,
   capability,
+  teamTarget,
   chatFocus,
   personaControl,
   slashCommands = [],
@@ -1416,6 +1428,7 @@ export function AgentComposerSurface({
       const capabilityIntent = capability
         ? ({ coordinationMode: capability.value } satisfies CapabilityIntent)
         : null;
+      const teamMessageTarget = teamTarget?.value ?? null;
       return {
         message: withInternalSkillDirectives,
         ...(folderReferenceSnapshots.length > 0 ||
@@ -1423,7 +1436,8 @@ export function AgentComposerSurface({
           normalizedIntegrationReferences.length > 0 ||
           normalizedArtifactReferences.length > 0 ||
           excerptReferences.length > 0 ||
-          capabilityIntent
+          capabilityIntent ||
+          teamMessageTarget
           ? {
               options: {
                 ...(folderReferenceSnapshots.length > 0
@@ -1438,6 +1452,7 @@ export function AgentComposerSurface({
                   : {}),
                 ...(excerptReferences.length > 0 ? { excerptReferences } : {}),
                 ...(capabilityIntent ? { capabilityIntent } : {}),
+                ...(teamMessageTarget ? { teamMessageTarget } : {}),
               },
             }
           : {}),
@@ -1455,6 +1470,7 @@ export function AgentComposerSurface({
       selectedProjectReferenceList,
       skills,
       capability,
+      teamTarget,
     ],
   );
 
@@ -2127,6 +2143,17 @@ export function AgentComposerSurface({
                   compact={compact}
                 />
               </div>
+            )}
+
+            {teamTarget && (
+              <TeamComposerTarget
+                members={teamTarget.members}
+                value={teamTarget.value}
+                onValueChange={teamTarget.onValueChange}
+                {...(teamTarget.disabled !== undefined
+                  ? { disabled: teamTarget.disabled }
+                  : {})}
+              />
             )}
 
             <Button

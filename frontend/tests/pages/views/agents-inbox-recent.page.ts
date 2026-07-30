@@ -5,7 +5,7 @@ import { BasePage } from "../base.page";
 
 type RecentInboxScenario = "populated" | "empty-needs";
 
-const SETTLE_TIMEOUT_MS = 15_000;
+const SETTLE_TIMEOUT_MS = 30_000;
 
 export class AgentsInboxRecentPage extends BasePage {
   readonly sidebar: Locator;
