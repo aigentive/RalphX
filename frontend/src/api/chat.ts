@@ -97,6 +97,7 @@ export interface ChatMessageResponse {
   timelineStatus?: string | null;
   timelineKind?: string | null;
   timelineSequence?: number | null;
+  timelineBlockIndex?: number | null;
   runId?: string | null;
   createdAt: string;
 }
@@ -368,6 +369,8 @@ export function parseContentBlocks(raw: unknown): ContentBlockItem[] {
     const item: ContentBlockItem = {
       type: block.type,
       text: block.text,
+      durationMs: typeof block.duration_ms === "number" ? block.duration_ms : block.durationMs,
+      isSettled: typeof block.is_settled === "boolean" ? block.is_settled : block.isSettled,
       id: block.id,
       name: block.name,
       arguments: block.arguments ?? block.input,
@@ -546,6 +549,7 @@ export interface ConversationActiveStateResponse {
   streaming_tasks: ActiveStreamingTaskResponse[];
   partial_text: string;
   partial_text_segments?: string[];
+  partial_thinking_segments?: string[];
 }
 
 const ConversationActiveStateResponseSchema = z.object({
@@ -566,6 +570,7 @@ const ConversationActiveStateResponseSchema = z.object({
   })).default([]),
   partial_text: z.string().default(""),
   partial_text_segments: z.array(z.string()).default([]),
+  partial_thinking_segments: z.array(z.string()).default([]),
 });
 
 /**
@@ -597,6 +602,7 @@ export async function getConversationActiveState(
       : parsed.partial_text.length > 0
         ? [parsed.partial_text]
         : [],
+    partial_thinking_segments: parsed.partial_thinking_segments,
   };
 }
 
@@ -1383,6 +1389,7 @@ function transformTimelineItem(
     timelineStatus: raw.status,
     timelineKind: raw.kind,
     timelineSequence: raw.sequence,
+    timelineBlockIndex: raw.block_index,
     runId: raw.run_id ?? null,
     content: raw.content,
     metadata: raw.metadata ?? null,

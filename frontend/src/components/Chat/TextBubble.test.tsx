@@ -196,6 +196,33 @@ describe("TextBubble", () => {
       expect(screen.getByText("latest streamed text")).toBeInTheDocument();
     });
 
+    it("renders a fenced code block streamed one character at a time after the flush window", async () => {
+      vi.useFakeTimers();
+      try {
+        const fencedCode = `\`\`\`ts
+const answer = 42;
+\`\`\``;
+        const { rerender } = render(
+          <TextBubble text="" isUser={false} isStreaming />,
+        );
+
+        for (let index = 1; index <= fencedCode.length; index += 1) {
+          rerender(<TextBubble text={fencedCode.slice(0, index)} isUser={false} isStreaming />);
+        }
+
+        expect(() => {
+          act(() => {
+            vi.advanceTimersByTime(200);
+          });
+        }).not.toThrow();
+        const bubble = screen.getByTestId("text-bubble-assistant");
+        expect(bubble).not.toHaveTextContent("```");
+        expect(bubble).toHaveTextContent("const answer = 42;");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("opens absolute local file links with the system opener instead of navigating the webview", async () => {
       const user = userEvent.setup();
       render(

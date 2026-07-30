@@ -45,12 +45,18 @@ import {
 } from "./scroll/controller";
 import {
   buildLiveTranscriptRows,
+  isLiveThinkingGroupKey,
+  liveThinkingGroupKey,
   liveToolGroupKey,
+  synchronizeThinkingGroupExpansion,
   type LiveTranscriptRow,
   type StreamingToolUseBlock,
+  type ThinkingGroupIntent,
 } from "./ChatMessageList.liveRows";
 import type { AgentRun } from "@/types/chat-conversation";
 import { ToolActivityGroupToggle } from "./ToolActivityGroupToggle";
+import { ThinkingGroupToggle } from "./ThinkingGroupToggle";
+import { ThinkingWidget } from "./tool-widgets/ThinkingWidget";
 import {
   summarizeToolActivity,
   type ToolActivitySummary,
@@ -583,6 +589,18 @@ function LiveTranscriptRowItem({
     if (row.kind === "tool_call") {
       return renderStreamingToolCallBlock(row.block, row.index);
     }
+    if (row.kind === "thinking") {
+      const groupKey = liveThinkingGroupKey(row.block, row.index);
+      const isExpanded = expandedToolGroupKeys.has(groupKey);
+      return (
+        <div className="space-y-1.5 overflow-hidden">
+          <ThinkingGroupToggle groupKey={groupKey} isExpanded={isExpanded}
+            isSettled={row.block.isSettled ?? false} {...(row.block.durationMs != null ? { durationMs: row.block.durationMs } : {})}
+            onToggle={(event) => onToggleToolCallGroup(groupKey, event.currentTarget)} />
+          {isExpanded ? <ThinkingWidget text={row.block.text} /> : null}
+        </div>
+      );
+    }
 
     const groupKey = liveToolGroupKey(row.entries, row.taskEntries);
     const isExpanded = expandedToolGroupKeys.has(groupKey);
@@ -876,6 +894,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       () => new Set(),
     );
     const expandedToolGroupConversationRef = useRef<string | undefined>(conversationId);
+    const thinkingIntentRef = useRef<Map<string, ThinkingGroupIntent>>(new Map());
     const transcriptRootRef = useRef<HTMLDivElement | null>(null);
     const initialPaintReadyFrameRef = useRef<number | null>(null);
     const initialPaintReadyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -885,6 +904,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         return;
       }
       expandedToolGroupConversationRef.current = conversationId;
+      thinkingIntentRef.current.clear();
       setExpandedToolGroupKeys(new Set());
     }, [conversationId]);
 
@@ -973,8 +993,14 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         const next = new Set(current);
         if (next.has(groupKey)) {
           next.delete(groupKey);
+          if (isLiveThinkingGroupKey(groupKey)) {
+            thinkingIntentRef.current.set(groupKey, "collapsed");
+          }
         } else {
           next.add(groupKey);
+          if (isLiveThinkingGroupKey(groupKey)) {
+            thinkingIntentRef.current.set(groupKey, "expanded");
+          }
         }
         return next;
       });
@@ -1135,6 +1161,12 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         streamingTasks,
       ],
     );
+
+    useEffect(() => {
+      setExpandedToolGroupKeys((current) =>
+        synchronizeThinkingGroupExpansion(current, liveTranscriptRows, thinkingIntentRef.current),
+      );
+    }, [liveTranscriptRows]);
 
     const hasRenderableStreamingBlocks = useMemo(
       () => liveTranscriptRows.length > 0,

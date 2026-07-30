@@ -226,6 +226,7 @@ pub mod startup_bootstrap;
 #[cfg(test)]
 mod startup_bootstrap_tests;
 pub mod startup_cleanup;
+pub mod startup_failure_classification;
 pub mod startup_git_auth_preflight;
 pub mod startup_jobs;
 pub mod startup_pipeline;
@@ -498,6 +499,8 @@ mod session_namer_agent_tests;
 mod session_namer_prompt_tests;
 #[cfg(test)]
 mod startup_background_tests;
+#[cfg(test)]
+mod startup_failure_classification_tests;
 #[cfg(test)]
 mod startup_status_guard_tests;
 #[cfg(test)]

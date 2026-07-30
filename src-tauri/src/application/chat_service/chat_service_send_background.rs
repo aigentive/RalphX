@@ -299,6 +299,7 @@ fn has_recoverable_tool_activity_after_final_text(
                 recoverable_tool_after_last_text = false;
             }
             ContentBlockItem::Text { .. } => {}
+            ContentBlockItem::Thinking { .. } => {}
             ContentBlockItem::ToolUse { name, result, .. } => {
                 recoverable_tool_after_last_text =
                     is_recoverable_terminal_tool_activity(name, result.as_ref());
@@ -497,6 +498,9 @@ fn build_assistant_transcript_segments(
         match block {
             ContentBlockItem::Text { text } => {
                 current.content.push_str(text);
+                current.content_blocks.push(block.clone());
+            }
+            ContentBlockItem::Thinking { .. } => {
                 current.content_blocks.push(block.clone());
             }
             ContentBlockItem::ToolUse {

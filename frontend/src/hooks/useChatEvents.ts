@@ -452,6 +452,14 @@ function buildFinalizedContentBlocks(
       if (block.type === "text") {
         return block.text.trim().length > 0 ? { type: "text", text: block.text } : null;
       }
+      if (block.type === "thinking") {
+        return {
+          type: "thinking",
+          text: block.text,
+          ...(block.durationMs != null ? { durationMs: block.durationMs } : {}),
+          ...(block.isSettled != null ? { isSettled: block.isSettled } : {}),
+        };
+      }
       return contentBlockFromToolCall(block.toolCall);
     })
     .filter((block): block is ContentBlockItem => block != null);
@@ -1434,10 +1442,12 @@ export function useChatEvents({
           seq?: number;
           append_to_previous?: boolean;
           block_index?: number;
+          run_id?: string | null;
         }>(
           "agent:chunk", (payload) => {
             const receivedAt = Date.now();
             if (!isRelevant(payload)) return;
+            if (activeAgentRunId && payload.run_id && payload.run_id !== activeAgentRunId) return;
             if (
               payload.seq != null
               && lastChunkSeqRef.current != null
@@ -1447,7 +1457,6 @@ export function useChatEvents({
               lastChunkSeqRef.current = payload.seq;
             }
             setStreamingContentBlocks((prev) => {
-              const lastBlock = prev[prev.length - 1];
               const shouldAppend = payload.append_to_previous ?? true;
               // Staleness is guarded by lastChunkSeqRef above; block seq values
               // are not comparable to chunk seq — recovered anchors carry
@@ -1456,12 +1465,12 @@ export function useChatEvents({
               // If last block is text and the backend says this chunk extends it, append.
               // Codex agent_message events are already logical text blocks, so they set
               // append_to_previous=false to preserve live block boundaries.
-              const shouldAppendToIndexedBlock = hasBlockIndex
-                && lastBlock?.type === "text"
-                && lastBlock.blockIndex === payload.block_index;
-              const shouldAppendToLegacyBlock = !hasBlockIndex && lastBlock?.type === "text";
-              if (shouldAppend && (shouldAppendToIndexedBlock || shouldAppendToLegacyBlock)) {
+              const appendIndex = hasBlockIndex
+                ? prev.findIndex((block) => block.type === "text" && block.blockIndex === payload.block_index)
+                : prev[prev.length - 1]?.type === "text" ? prev.length - 1 : -1;
+              if (shouldAppend && appendIndex >= 0) {
                 const updated = [...prev];
+                const lastBlock = updated[appendIndex]! as Extract<StreamingContentBlock, { type: "text" }>;
                 const appendBlock = {
                   ...lastBlock,
                   text: lastBlock.text + payload.text,
@@ -1469,7 +1478,7 @@ export function useChatEvents({
                     seq: Math.max(lastBlock.seq ?? payload.seq, payload.seq),
                   }),
                 };
-                updated[updated.length - 1] = appendBlock;
+                updated[appendIndex] = appendBlock;
                 return updated;
               }
               // New text block: use seq from payload
@@ -1486,6 +1495,32 @@ export function useChatEvents({
         )
       );
     }
+
+    unsubscribes.push(
+      bus.subscribe<{
+        text: string; conversation_id: string; block_index?: number; duration_ms?: number;
+        is_settled?: boolean; seq?: number; append_to_previous?: boolean; run_id?: string | null;
+      }>("agent:thinking", (payload) => {
+        if (!isRelevant(payload)) return;
+        if (activeAgentRunId && payload.run_id && payload.run_id !== activeAgentRunId) return;
+        const receivedAt = Date.now();
+        setStreamingContentBlocks((prev) => {
+          const at = prev.findIndex((block) => block.type === "thinking" && block.blockIndex === payload.block_index);
+          const existing = at >= 0 ? prev[at] : null;
+          const text = existing?.type === "thinking" && (payload.append_to_previous ?? true)
+            ? existing.text + payload.text : payload.text;
+          const block: StreamingContentBlock = {
+            type: "thinking", text, receivedAt,
+            ...(payload.block_index != null ? { blockIndex: payload.block_index } : {}),
+            ...(payload.duration_ms != null ? { durationMs: payload.duration_ms } : {}),
+            ...(payload.is_settled != null ? { isSettled: payload.is_settled } : {}),
+            ...(payload.seq != null ? { seq: payload.seq } : {}),
+          };
+          if (at < 0) return [...prev, block];
+          const next = [...prev]; next[at] = block; return next;
+        });
+      }),
+    );
 
     // ── agent:message_created ────────────────────────────────────────
     // Clear streaming state for assistant messages to prevent duplicate display.

@@ -13,8 +13,17 @@ export interface LiveTranscriptTaskEntry {
   index: number;
   receivedAt?: number;
 }
+export type StreamingThinkingBlock = Extract<StreamingContentBlock, { type: "thinking" }>;
 
 export type LiveTranscriptRow =
+  | {
+      kind: "thinking";
+      key: string;
+      block: StreamingThinkingBlock;
+      index: number;
+      sourceIndex: number;
+      receivedAt?: number;
+    }
   | {
       kind: "text";
       key: string;
@@ -50,6 +59,8 @@ export type LiveTranscriptRow =
 export type ShouldHideLiveToolCall = (toolCall: ToolCall) => boolean;
 export type ShouldHideLiveTask = (task: StreamingTask) => boolean;
 
+const LIVE_THINKING_GROUP_KEY_PREFIX = "streaming-thinking:";
+
 function blockKeyPart(block: StreamingContentBlock, index: number): string {
   const seq = "seq" in block ? block.seq : undefined;
   return seq != null ? `seq-${seq}` : `idx-${index}`;
@@ -63,6 +74,53 @@ function textRowKey(
     ? `block-${block.blockIndex}`
     : blockKeyPart(block, index);
   return `streaming-text:${keyPart}`;
+}
+
+export function liveThinkingGroupKey(block: StreamingThinkingBlock, index: number): string {
+  return `${LIVE_THINKING_GROUP_KEY_PREFIX}${block.blockIndex ?? blockKeyPart(block, index)}`;
+}
+
+export function isLiveThinkingGroupKey(groupKey: string): boolean {
+  return groupKey.startsWith(LIVE_THINKING_GROUP_KEY_PREFIX);
+}
+
+export type ThinkingGroupIntent = "expanded" | "collapsed";
+
+/**
+ * Sole owner of automatic thinking-group expansion: the latest running group is
+ * open and every other one is closed. A recorded user intent always wins, so a
+ * manual collapse is not undone by the next streaming delta. Returns `current`
+ * unchanged when nothing moved, keeping the Set identity stable across deltas.
+ */
+export function synchronizeThinkingGroupExpansion(
+  current: Set<string>,
+  rows: LiveTranscriptRow[],
+  intentByGroupKey: ReadonlyMap<string, ThinkingGroupIntent>,
+): Set<string> {
+  const thinkingRows = rows.filter((row) => row.kind === "thinking");
+  const latestRunningThinking = [...thinkingRows].reverse().find((row) => !row.block.isSettled);
+  let next = current;
+
+  for (const row of thinkingRows) {
+    const groupKey = liveThinkingGroupKey(row.block, row.index);
+    const intent = intentByGroupKey.get(groupKey);
+    const shouldExpand = intent === "expanded" || (
+      intent === undefined && latestRunningThinking === row
+    );
+    if (current.has(groupKey) === shouldExpand) {
+      continue;
+    }
+    if (next === current) {
+      next = new Set(current);
+    }
+    if (shouldExpand) {
+      next.add(groupKey);
+    } else {
+      next.delete(groupKey);
+    }
+  }
+
+  return next;
 }
 
 export function liveToolGroupKey(
@@ -112,6 +170,18 @@ export function buildLiveTranscriptRows(
           ...(block.receivedAt != null ? { receivedAt: block.receivedAt } : {}),
         });
       }
+      index += 1;
+      continue;
+    }
+    if (block.type === "thinking") {
+      rows.push({
+        kind: "thinking",
+        key: liveThinkingGroupKey(block, index),
+        block,
+        index,
+        sourceIndex: index,
+        ...(block.receivedAt != null ? { receivedAt: block.receivedAt } : {}),
+      });
       index += 1;
       continue;
     }

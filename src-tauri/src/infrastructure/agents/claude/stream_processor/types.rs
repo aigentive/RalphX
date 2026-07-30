@@ -176,6 +176,7 @@ pub struct ContentBlock {
 pub struct ContentDelta {
     #[serde(rename = "type")]
     pub delta_type: String,
+    #[serde(alias = "thinking")]
     pub text: Option<String>,
     pub partial_json: Option<String>,
 }
@@ -232,6 +233,12 @@ pub struct ToolCall {
 pub enum ContentBlockItem {
     #[serde(rename = "text")]
     Text { text: String },
+    #[serde(rename = "thinking")]
+    Thinking {
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
+    },
     #[serde(rename = "tool_use")]
     ToolUse {
         id: Option<String>,
