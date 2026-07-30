@@ -99,6 +99,7 @@ function messageFromEntry(
   entry: PersistedTimelineEntry,
   sequence: number,
   status: TimelineStatus,
+  timelineBlockIndex: number,
 ): ChatMessageResponse {
   const toolCalls = entry.contentBlocks.flatMap((block) => {
     if (block.type !== "tool_use" || !block.name) return [];
@@ -130,6 +131,7 @@ function messageFromEntry(
     timelineStatus: status,
     timelineKind: entry.contentBlocks[0]?.type === "tool_use" ? "tool" : "text",
     timelineSequence: sequence,
+    timelineBlockIndex,
     runId: RUN_ID,
   };
 }
@@ -633,7 +635,11 @@ export function createReplayConversationFixture(): ReplayConversationFixture {
       const allItems = entries.map((entry, index) => {
         const sequence = index + 1;
         const status = statusAt(entry, throughIndex);
-        const asMessage = messageFromEntry(entry, sequence, status);
+        const timelineBlockIndex = entries
+          .slice(0, index)
+          .filter((candidate) => candidate.parentMessageId === entry.parentMessageId)
+          .length;
+        const asMessage = messageFromEntry(entry, sequence, status, timelineBlockIndex);
         const createdAt = timestampFor(sequence);
         return {
           id: `timeline-${entry.id}`,
@@ -641,7 +647,7 @@ export function createReplayConversationFixture(): ReplayConversationFixture {
           messageId: entry.parentMessageId,
           runId: RUN_ID,
           sequence,
-          blockIndex: 0,
+          blockIndex: timelineBlockIndex,
           role: entry.role,
           kind: asMessage.timelineKind ?? "text",
           status,

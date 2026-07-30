@@ -751,6 +751,7 @@ function mockTimelineItemsForMessages(
         timelineStatus: status,
         timelineKind: isToolCall ? "tool_use" : "text",
         timelineSequence: sequence,
+        timelineBlockIndex: blockIndex,
       };
 
       return {

@@ -1,6 +1,6 @@
 use super::{
     agent_run_usage_from_codex_usage, capture_file_diff_baseline, codex_tool_call_content_block,
-    completion_tool_result_accepted, current_text_block_ordinal, flush_content_before_error,
+    completion_tool_result_accepted, current_text_block_position, flush_content_before_error,
     format_agent_exit_stderr, is_completion_tool_name, is_user_attended_turn_completion,
     normalize_codex_cumulative_usage_for_persistence, normalize_codex_stream_usage_for_persistence,
     persist_assistant_message_snapshot, persist_message_text_timeline_item,
@@ -61,7 +61,7 @@ fn completion_tool_result_accepts_success_payloads() {
 }
 
 #[test]
-fn current_text_block_ordinal_counts_completed_text_blocks_only() {
+fn current_text_block_position_uses_absolute_completed_block_position() {
     let completed_blocks = vec![
         ContentBlockItem::Text {
             text: "before tool".to_string(),
@@ -76,14 +76,88 @@ fn current_text_block_ordinal_counts_completed_text_blocks_only() {
         },
     ];
 
-    assert_eq!(current_text_block_ordinal(&[]), 0);
-    assert_eq!(current_text_block_ordinal(&completed_blocks), 1);
+    assert_eq!(current_text_block_position(&[]), 0);
+    assert_eq!(current_text_block_position(&completed_blocks), 2);
 
     let mut completed_blocks = completed_blocks;
     completed_blocks.push(ContentBlockItem::Text {
         text: "after tool".to_string(),
     });
-    assert_eq!(current_text_block_ordinal(&completed_blocks), 2);
+    assert_eq!(current_text_block_position(&completed_blocks), 3);
+}
+
+#[tokio::test]
+async fn chunk_block_index_matches_persisted_block_index_across_interleaved_blocks() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let message_id = Some("assistant-message-interleaved-block-index".to_string());
+    let blocks = vec![
+        ContentBlockItem::Text {
+            text: "A".to_string(),
+        },
+        ContentBlockItem::ToolUse {
+            id: Some("t1".to_string()),
+            name: "bash".to_string(),
+            arguments: serde_json::json!({}),
+            result: None,
+            parent_tool_use_id: None,
+            diff_context: None,
+        },
+        ContentBlockItem::Text {
+            text: "B".to_string(),
+        },
+    ];
+
+    let chunk_block_index = current_text_block_position(&blocks[..2]);
+    let persisted = persist_timeline_snapshot(
+        &Some(state.chat_timeline_repo.clone()),
+        &conversation_id.as_str(),
+        &message_id,
+        &blocks,
+        ChatTimelineItemStatus::Streaming,
+    )
+    .await;
+    let persisted_block_index = persisted
+        .iter()
+        .find(|item| item.text.as_deref() == Some("B"))
+        .expect("B must persist as a text timeline item")
+        .block_index;
+
+    assert_eq!(chunk_block_index, persisted_block_index as u64);
+    assert_eq!(chunk_block_index, 2);
+}
+
+#[tokio::test]
+async fn chunk_block_index_ignores_skipped_empty_text_block() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let message_id = Some("assistant-message-empty-block-index".to_string());
+    let blocks = vec![
+        ContentBlockItem::Text {
+            text: String::new(),
+        },
+        ContentBlockItem::Text {
+            text: "A".to_string(),
+        },
+    ];
+
+    let chunk_block_index = current_text_block_position(&blocks[..1]);
+    let persisted = persist_timeline_snapshot(
+        &Some(state.chat_timeline_repo.clone()),
+        &conversation_id.as_str(),
+        &message_id,
+        &blocks,
+        ChatTimelineItemStatus::Streaming,
+    )
+    .await;
+    let persisted_block_index = persisted
+        .iter()
+        .find(|item| item.text.as_deref() == Some("A"))
+        .expect("A must persist as a text timeline item")
+        .block_index;
+
+    assert_eq!(chunk_block_index, persisted_block_index as u64);
+    assert_eq!(chunk_block_index, 1);
 }
 
 #[test]

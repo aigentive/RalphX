@@ -29,10 +29,11 @@ export function projectPersistedStreamingContentBlocks(
     const seq = message.timelineSequence ?? undefined;
     return (message.contentBlocks ?? []).flatMap((block): StreamingContentBlock[] => {
       if (block.type === "text") {
+        const legacyBlockIndex = textBlockIndex++;
         return [{
           type: "text",
           text: block.text ?? "",
-          blockIndex: textBlockIndex++,
+          blockIndex: message.timelineBlockIndex ?? legacyBlockIndex,
           ...(seq != null ? { seq } : {}),
         }];
       }

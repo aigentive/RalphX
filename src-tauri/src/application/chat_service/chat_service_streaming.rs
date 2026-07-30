@@ -60,11 +60,10 @@ use super::{
 use crate::utils::truncate_str;
 use crate::AppState;
 
-fn current_text_block_ordinal(completed_blocks: &[ContentBlockItem]) -> u64 {
-    completed_blocks
-        .iter()
-        .filter(|block| matches!(block, ContentBlockItem::Text { .. }))
-        .count() as u64
+/// Returns the index `persist_timeline_snapshot` will assign to the text block
+/// this chunk belongs to.
+fn current_text_block_position(completed_blocks: &[ContentBlockItem]) -> u64 {
+    completed_blocks.len() as u64
 }
 
 #[doc(hidden)]
@@ -1718,10 +1717,10 @@ pub async fn process_stream_background<R: Runtime>(
 
                 match event {
                     StreamEvent::TextChunk(text) => {
-                        let ordinal = current_text_block_ordinal(&processor.content_blocks);
+                        let block_position = current_text_block_position(&processor.content_blocks);
                         // Update streaming state cache
                         streaming_state_cache
-                            .append_text(&conversation_id_str, ordinal as usize, &text)
+                            .append_text(&conversation_id_str, block_position as usize, &text)
                             .await;
 
                         // Persist text-only turns as they stream so a remount can recover the
@@ -1750,7 +1749,7 @@ pub async fn process_stream_background<R: Runtime>(
                                 AgentChunkPayload {
                                     text: text.clone(),
                                     run_id: agent_run_id.clone(),
-                                    block_index: Some(ordinal),
+                                    block_index: Some(block_position),
                                     conversation_id: conversation_id_str.clone(),
                                     context_type: context_type_str.clone(),
                                     context_id: context_id_str.clone(),
@@ -3515,7 +3514,7 @@ async fn process_codex_stream_background<R: Runtime>(
             }
 
             if let Some(text) = extract_codex_agent_message(&event) {
-                let ordinal = current_text_block_ordinal(&content_blocks);
+                let block_position = current_text_block_position(&content_blocks);
                 if !response_text.is_empty() {
                     response_text.push_str("\n\n");
                 }
@@ -3545,7 +3544,7 @@ async fn process_codex_stream_background<R: Runtime>(
                         AgentChunkPayload {
                             text,
                             run_id: agent_run_id.clone(),
-                            block_index: Some(ordinal),
+                            block_index: Some(block_position),
                             conversation_id: conversation_id_str.clone(),
                             context_type: context_type_str.clone(),
                             context_id: context_id_str.clone(),

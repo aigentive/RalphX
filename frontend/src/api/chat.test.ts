@@ -1139,6 +1139,7 @@ describe("chat api", () => {
       timelineStatus: "streaming",
       timelineKind: "text",
       timelineSequence: 4,
+      timelineBlockIndex: 0,
       inputTokens: 10,
       providerHarness: "codex",
     });

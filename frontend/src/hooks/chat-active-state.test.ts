@@ -693,10 +693,18 @@ describe("chat-active-state helpers", () => {
         id: "message-new",
         runId: "run-new",
         timelineStatus: "streaming",
+        timelineBlockIndex: 0,
         contentBlocks: [
           { type: "text", text: "New text" },
           { type: "tool_use", id: "toolu_new", name: "Write", arguments: {} },
         ],
+      }),
+      messageFixture({
+        id: "message-new-after-tool",
+        runId: "run-new",
+        timelineStatus: "streaming",
+        timelineBlockIndex: 2,
+        contentBlocks: [{ type: "text", text: "New text after tool" }],
       }),
     ];
 
@@ -706,6 +714,7 @@ describe("chat-active-state helpers", () => {
         type: "tool_use",
         toolCall: { id: "toolu_new", name: "Write", arguments: {} },
       },
+      { type: "text", text: "New text after tool", blockIndex: 2 },
     ]);
     expect(projectPersistedStreamingContentBlocks([
       messages[1],
@@ -729,11 +738,12 @@ describe("chat-active-state helpers", () => {
         type: "tool_use",
         toolCall: { id: "toolu_old", name: "Read", arguments: {} },
       },
-      { type: "text", text: "New text", blockIndex: 1 },
+      { type: "text", text: "New text", blockIndex: 0 },
       {
         type: "tool_use",
         toolCall: { id: "toolu_new", name: "Write", arguments: {} },
       },
+      { type: "text", text: "New text after tool", blockIndex: 2 },
     ]);
   });
 

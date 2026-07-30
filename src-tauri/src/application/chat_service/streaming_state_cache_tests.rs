@@ -225,7 +225,11 @@ async fn test_append_text_keeps_text_blocks_ordered_and_fills_gaps() {
         vec!["Before tool", "", "After"]
     );
     assert_eq!(state.partial_text, "Before toolAfter");
-    assert_eq!(state.partial_text, state.partial_text_segments.concat());
+    assert_eq!(
+        state.partial_text,
+        state.partial_text_segments.concat(),
+        "visible text must remain contiguous when the tool block position stays empty"
+    );
 }
 
 #[tokio::test]

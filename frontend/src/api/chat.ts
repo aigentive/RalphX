@@ -97,6 +97,7 @@ export interface ChatMessageResponse {
   timelineStatus?: string | null;
   timelineKind?: string | null;
   timelineSequence?: number | null;
+  timelineBlockIndex?: number | null;
   runId?: string | null;
   createdAt: string;
 }
@@ -1383,6 +1384,7 @@ function transformTimelineItem(
     timelineStatus: raw.status,
     timelineKind: raw.kind,
     timelineSequence: raw.sequence,
+    timelineBlockIndex: raw.block_index,
     runId: raw.run_id ?? null,
     content: raw.content,
     metadata: raw.metadata ?? null,
