@@ -13,6 +13,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { RadioTower } from "lucide-react";
 
 import {
+  REMOTE_DEVICE_PAIRED_EVENT,
   REMOTE_SESSION_CLOSED_EVENT,
   REMOTE_SESSION_CONNECTED_EVENT,
   remoteHostApi,
@@ -392,11 +393,35 @@ function RemoteAccessPanel() {
     };
     const unsubscribeConnected = bus.subscribe(REMOTE_SESSION_CONNECTED_EVENT, refresh);
     const unsubscribeClosed = bus.subscribe(REMOTE_SESSION_CLOSED_EVENT, refresh);
+    // Pairing completes over HTTP on the remote listener, in a code path this pane cannot
+    // observe, so without this the device list stayed stale until the user navigated away and
+    // back. The event is a "re-read the backend" trigger only: nothing from its payload is
+    // spliced into any list, so the durable rows remain the sole authority for what is paired.
+    // A pairing also burns the code, opens the door for a session, and writes an audit row, so
+    // the whole pane re-proves itself rather than only the card that happened to change.
+    const refreshAfterPairing = () => {
+      void loadDevices();
+      void loadSessions();
+      void loadOutstandingCodes();
+      void loadAudit();
+    };
+    const unsubscribePaired = bus.subscribe(
+      REMOTE_DEVICE_PAIRED_EVENT,
+      refreshAfterPairing,
+    );
     return () => {
       unsubscribeConnected();
       unsubscribeClosed();
+      unsubscribePaired();
     };
-  }, [bus, hydrated, loadSessions, loadDevices]);
+  }, [
+    bus,
+    hydrated,
+    loadSessions,
+    loadDevices,
+    loadOutstandingCodes,
+    loadAudit,
+  ]);
 
   const displayEnabled = pendingEnabled ?? status?.enabled ?? false;
   const displayMode = pendingMode ?? status?.exposureMode ?? "serve";

@@ -587,6 +587,11 @@ pub const EVENT_CLASSIFICATIONS: &[EventClassification] = &[
     // rows structurally, so they can never reach the sequencer or `remote_event_log`.
     local_backend("remote:session_connected"),
     local_backend("remote:session_closed"),
+    // PR 1.7 (§5.5): a pairing code was redeemed on `/remote/v1/auth/pair`. Local-only for the
+    // same reason as the session pair — forwarding it would tell every paired device when a new
+    // device joins the host. The host's own Remote Access pane consumes it to re-read its device,
+    // session, outstanding-code, and audit lists from the backend.
+    local_backend("remote:device_paired"),
     // PR 2.3: the CLIENT proxy's inbound relay channel — the outbound-WS relay re-emits every
     // host frame (`remote:stream_frame`) and its own teardown (`remote:stream_closed`) onto the
     // local bus for the TS NetworkEventBus. Local-only so a client's own relay can never be

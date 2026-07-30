@@ -18,6 +18,16 @@ import { typedInvoke } from "@/lib/tauri";
 export const REMOTE_SESSION_CONNECTED_EVENT = "remote:session_connected";
 /** Local-only event: a remote device session ended (§5.5). */
 export const REMOTE_SESSION_CLOSED_EVENT = "remote:session_closed";
+/**
+ * Local-only event: a pairing code was redeemed on `/remote/v1/auth/pair` and a device now
+ * exists (§5.5).
+ *
+ * Pairing runs over HTTP on the remote listener, so it is invisible to this pane otherwise.
+ * The payload carries `deviceId`/`deviceName` for logging only — the pane must re-read the
+ * backend on this signal rather than splice the payload into its lists, so the durable rows
+ * stay the single authority for what is paired.
+ */
+export const REMOTE_DEVICE_PAIRED_EVENT = "remote:device_paired";
 
 // ---------------------------------------------------------------------------
 // Schemas

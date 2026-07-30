@@ -576,6 +576,12 @@
     "excludedFromV1": false
   },
   {
+    "name": "remote:device_paired",
+    "delivery": "localOnly",
+    "origin": "backend",
+    "excludedFromV1": false
+  },
+  {
     "name": "remote:stream_frame",
     "delivery": "localOnly",
     "origin": "backend",

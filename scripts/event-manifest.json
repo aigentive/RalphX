@@ -1148,6 +1148,12 @@
       "kind": "method"
     },
     {
+      "name": "remote:device_paired",
+      "file": "src-tauri/src/remote_server/auth_endpoints.rs",
+      "line": 186,
+      "kind": "method"
+    },
+    {
       "name": "remote:session_closed",
       "file": "src-tauri/src/remote_server/ws.rs",
       "line": 927,
@@ -1803,6 +1809,7 @@
     "ralphx://check-for-updates",
     "ralphx://show-release-notes",
     "recovery:prompt",
+    "remote:device_paired",
     "remote:session_closed",
     "remote:session_connected",
     "review:update",
@@ -1924,6 +1931,7 @@
     "gh-auth:login_prompt",
     "remote:session_connected",
     "remote:session_closed",
+    "remote:device_paired",
     "remote:stream_frame",
     "remote:stream_closed"
   ],

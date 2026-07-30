@@ -23,6 +23,19 @@ use crate::remote_server::auth::{
 use crate::remote_server::endpoints::RemoteRouterState;
 use crate::remote_server::rate_limit::RemoteRateLimitKey;
 use crate::remote_server::remote_error_response;
+use crate::remote_server::ws::SessionLifecycleSink;
+
+/// Local-only event: a pairing code was redeemed and a device now exists (§5.5).
+///
+/// Pairing happens over HTTP on the remote listener, in a different process path from the
+/// Tauri UI, so nothing else tells the host's own Remote Access pane that its device list
+/// changed. This is the durable-authority signal for that: the pane re-reads the backend on
+/// it rather than inferring the new device from anything it holds locally.
+///
+/// **Local-only is a security property here, exactly as it is for the session events** —
+/// forwarding it would tell every paired device when another device joins. The capture bank
+/// drops Local-only rows structurally, so it can never reach the sequencer or the durable log.
+pub(crate) const REMOTE_DEVICE_PAIRED_EVENT: &str = "remote:device_paired";
 
 /// Longest device name the host will store, so a hostile client cannot bloat the row.
 const MAX_DEVICE_NAME_CHARS: usize = 120;
@@ -166,6 +179,17 @@ pub(crate) async fn pair_handler(
             // there is deliberately no post-commit audit write here, because failing one
             // would strand an active device whose token was never handed to anybody.
             tracing::info!(device_id = %device.id, "Remote device paired");
+            // Emitted only on the committed `Paired` outcome, after `redeem` accepted the
+            // transition — the pane treats this as "re-read the backend", never as the new
+            // device's contents, so a rejected or errored pairing can never move its lists.
+            let lifecycle = state.lifecycle();
+            lifecycle.emit(
+                REMOTE_DEVICE_PAIRED_EVENT,
+                serde_json::json!({
+                    "deviceId": device.id.to_string(),
+                    "deviceName": device.name,
+                }),
+            );
             (
                 StatusCode::OK,
                 Json(PairResponse {

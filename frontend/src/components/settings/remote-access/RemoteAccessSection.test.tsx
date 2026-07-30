@@ -73,6 +73,7 @@ vi.mock("@/providers/EventProvider", () => {
 vi.mock("@/api/remote-host", () => ({
   REMOTE_SESSION_CONNECTED_EVENT: "remote:session_connected",
   REMOTE_SESSION_CLOSED_EVENT: "remote:session_closed",
+  REMOTE_DEVICE_PAIRED_EVENT: "remote:device_paired",
   remoteHostApi: {
     getListenerStatus: vi.fn(),
     startListener: vi.fn(),
@@ -228,6 +229,46 @@ describe("feature gating", () => {
     expect(api.getListenerStatus).not.toHaveBeenCalled();
     expect(api.listDevices).not.toHaveBeenCalled();
     expect(busState.subscribe).not.toHaveBeenCalled();
+  });
+
+  // The pairing signal must not become a back door into the flag gate: no subscription and
+  // no poll may exist while the pane is dark, and emitting the event must move nothing.
+  it("never subscribes to the pairing event or polls while the flag is off", async () => {
+    setRemoteFlag(false);
+    renderSection();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    });
+    expect(busState.handlers.get("remote:device_paired")).toBeUndefined();
+
+    act(() => {
+      busState.emit("remote:device_paired", { deviceId: "dev-3" });
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    });
+    expect(api.listDevices).not.toHaveBeenCalled();
+    expect(api.listSessions).not.toHaveBeenCalled();
+    expect(api.listPairingCodes).not.toHaveBeenCalled();
+    expect(api.listAuditEntries).not.toHaveBeenCalled();
+  });
+
+  // No polling anywhere: the pane is event-driven, so an idle open pane must go quiet after
+  // its one hydration pass. A timer-based refresh would keep invoking forever.
+  it("does not poll while the pane sits open and idle", async () => {
+    renderSection();
+    await hydrate();
+    await waitFor(() => {
+      expect(api.listDevices).toHaveBeenCalled();
+    });
+    const devicesAfterHydration = api.listDevices.mock.calls.length;
+    const sessionsAfterHydration = api.listSessions.mock.calls.length;
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    });
+    expect(api.listDevices.mock.calls.length).toBe(devicesAfterHydration);
+    expect(api.listSessions.mock.calls.length).toBe(sessionsAfterHydration);
   });
 });
 
@@ -623,6 +664,43 @@ describe("revoke and sessions", () => {
       busState.emit("remote:session_connected", { sessionId: "sess-2" });
     });
     expect(await screen.findByTestId("remote-session-sess-2")).toBeInTheDocument();
+  });
+
+  // Pairing happens over HTTP on :3849, in a code path the pane cannot observe. Without a
+  // signal the device list stays stale until the user leaves the screen and comes back.
+  it("refreshes the whole pane when a device pairs", async () => {
+    api.listDevices.mockResolvedValue([deviceOff]);
+    renderSection();
+    await hydrate();
+    await screen.findByTestId("remote-device-dev-1");
+    expect(screen.queryByTestId("remote-device-dev-2")).not.toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(busState.subscribe).toHaveBeenCalledWith(
+        "remote:device_paired",
+        expect.any(Function),
+      );
+    });
+
+    const codesBefore = api.listPairingCodes.mock.calls.length;
+    const auditBefore = api.listAuditEntries.mock.calls.length;
+    const sessionsBefore = api.listSessions.mock.calls.length;
+
+    // The pane re-reads the backend; it must never splice the event payload into its lists.
+    api.listDevices.mockResolvedValue([deviceOff, deviceOn]);
+    act(() => {
+      busState.emit("remote:device_paired", {
+        deviceId: "dev-2",
+        deviceName: "Work MacBook",
+      });
+    });
+
+    expect(await screen.findByTestId("remote-device-dev-2")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(api.listSessions.mock.calls.length).toBeGreaterThan(sessionsBefore);
+      expect(api.listPairingCodes.mock.calls.length).toBeGreaterThan(codesBefore);
+      expect(api.listAuditEntries.mock.calls.length).toBeGreaterThan(auditBefore);
+    });
   });
 
   // Same as endpoint discovery: `list_remote_audit_entries` is registered, so a rejection is a

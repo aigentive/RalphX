@@ -4,6 +4,7 @@ export const LOCAL_ONLY_BACKEND_EVENTS = [
   "gh-auth:login_prompt",
   "ralphx://check-for-updates",
   "ralphx://show-release-notes",
+  "remote:device_paired",
   "remote:session_closed",
   "remote:session_connected",
   "remote:stream_closed",
