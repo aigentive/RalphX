@@ -247,37 +247,9 @@ export function PersonasManagementSection({
 
   return (
     <section aria-labelledby="personas-heading" className="space-y-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h3 id="personas-heading" className="text-sm font-semibold tracking-[-0.01em] text-[var(--text-primary)]">
-            Personas
-          </h3>
-          <p className="mt-1 text-sm text-[var(--text-secondary)]">
-            Craft reusable voices for project agents.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              setShowScopeChooser(true);
-            }}
-          >
-            Build with Agent
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            aria-label="New persona"
-            onClick={() => setEditor({ kind: "create" })}
-            className="bg-[var(--accent-primary)] text-white hover:bg-[var(--accent-secondary)]"
-          >
-            + New
-          </Button>
-        </div>
-      </div>
+      <h3 id="personas-heading" className="settings-section__label">
+        Persona library
+      </h3>
 
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative min-w-44 flex-1">
@@ -315,7 +287,7 @@ export function PersonasManagementSection({
         <div
           role="tablist"
           aria-label="Persona status"
-          className="ml-auto inline-flex items-center gap-0.5 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-0.5"
+          className="inline-flex items-center gap-0.5 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-0.5"
         >
           {STATUS_TABS.map((tab) => (
             <button
@@ -338,6 +310,27 @@ export function PersonasManagementSection({
               )}
             </button>
           ))}
+        </div>
+        <div className="ml-auto flex items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setShowScopeChooser(true);
+            }}
+          >
+            Build with Agent
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            aria-label="New persona"
+            onClick={() => setEditor({ kind: "create" })}
+            className="bg-[var(--accent-primary)] text-white hover:bg-[var(--accent-secondary)]"
+          >
+            + New
+          </Button>
         </div>
       </div>
 
