@@ -6,13 +6,15 @@ use std::sync::Arc;
 use crate::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
 use crate::application::agent_workspace_publish_repair_state::{
     abort_agent_workspace_pr_fix_review_handoff, block_agent_workspace_pr_fix_claim,
-    claim_agent_workspace_repair, classify_agent_workspace_repair_completion_authority,
+    block_agent_workspace_repair_needs_human, claim_agent_workspace_repair,
+    classify_agent_workspace_repair_completion_authority,
     classify_agent_workspace_repair_delivery, complete_agent_workspace_pr_fix_claim,
     complete_agent_workspace_repair_claim, continue_agent_workspace_repair_at_boundary,
     continue_agent_workspace_repair_at_boundary_with_review_starter,
     current_agent_workspace_repair_claim_for_completion, inspect_agent_workspace_repair_completion,
     reconcile_active_agent_workspace_repair,
     reopen_agent_workspace_repair_after_validation_failure, repair_event_authorizes_active_run,
+    reserve_agent_workspace_ci_rerun, reserve_agent_workspace_pre_existing_on_base,
     reserve_agent_workspace_repair_completion_validation, reserve_agent_workspace_repair_dispatch,
     resume_current_agent_workspace_repair_publish, settle_agent_workspace_repair_dispatch_outcome,
     settle_agent_workspace_repair_failure, start_or_join_agent_workspace_repair,
@@ -23,8 +25,9 @@ use crate::application::agent_workspace_publish_repair_state::{
     AgentWorkspaceRepairStartOutcome, AgentWorkspaceRepairStartRequest,
     AgentWorkspaceRepairTransitionOutcome, DurableRepairWorkspaceReviewStartFuture,
     DurableRepairWorkspaceReviewStarter, AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION,
-    DEFERRED_REPAIR_WAIT_TIMEOUT_SECS, MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES,
-    REPAIR_SENT_STEP,
+    DEFERRED_REPAIR_WAIT_TIMEOUT_SECS, MAX_AGENT_WORKSPACE_CI_RERUN_RETRIES,
+    MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES, NEEDS_HUMAN_REPAIR_REASON,
+    PRE_EXISTING_ON_BASE_REPAIR_REASON, REPAIR_SENT_STEP,
 };
 use crate::application::agent_workspace_review::{
     load_agent_workspace_review_context, AgentWorkspaceReviewStart,
@@ -2973,5 +2976,276 @@ async fn pr_fix_blocker_requires_current_claim_but_not_a_commit_sha() {
             .filter(|event| event.step == "pr_autofix_blocked")
             .count(),
         1
+    );
+}
+
+#[tokio::test]
+async fn block_needs_human_persists_marker_and_blocks_repair() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let repair_repo = Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>;
+    let branch_update_repo: Arc<dyn BranchUpdateRepository> =
+        Arc::new(MemoryBranchUpdateRepository::new());
+    let conversation_id = ChatConversationId::from_string("needs-human-repair");
+    workspace_repo
+        .create_or_update(repair_workspace(conversation_id.clone()))
+        .await
+        .expect("persist workspace");
+    let attempt = start_or_join_agent_workspace_repair(
+        Arc::clone(&repair_repo),
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        repair_start_request(
+            conversation_id.clone(),
+            AgentWorkspaceRepairSource::Publish,
+            AgentWorkspaceRepairContinuation::Publish,
+            "needs human",
+        ),
+    )
+    .await
+    .expect("start repair")
+    .into_attempt();
+
+    let result = block_agent_workspace_repair_needs_human(
+        Arc::clone(&repair_repo),
+        Arc::clone(&branch_update_repo),
+        attempt,
+        "CI failure requires human intervention",
+        None,
+    )
+    .await
+    .expect("block as needs-human");
+
+    let AgentWorkspaceRepairTransitionOutcome::Applied(blocked) = result else {
+        panic!("needs-human block must apply");
+    };
+    assert_eq!(blocked.phase, AgentWorkspaceRepairPhase::Blocked);
+    assert!(
+        blocked
+            .pending_reasons
+            .contains(&NEEDS_HUMAN_REPAIR_REASON.to_string()),
+        "the needs-human marker must be persisted in pending_reasons"
+    );
+    assert!(
+        blocked.blocker.is_some(),
+        "a blocked attempt must carry a blocker message"
+    );
+}
+
+#[tokio::test]
+async fn block_needs_human_is_idempotent_on_pending_reasons() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let repair_repo = Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>;
+    let branch_update_repo: Arc<dyn BranchUpdateRepository> =
+        Arc::new(MemoryBranchUpdateRepository::new());
+    let conversation_id = ChatConversationId::from_string("needs-human-idempotent");
+    workspace_repo
+        .create_or_update(repair_workspace(conversation_id.clone()))
+        .await
+        .expect("persist workspace");
+    let mut attempt = start_or_join_agent_workspace_repair(
+        Arc::clone(&repair_repo),
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        repair_start_request(
+            conversation_id.clone(),
+            AgentWorkspaceRepairSource::Publish,
+            AgentWorkspaceRepairContinuation::Publish,
+            "needs human idempotent",
+        ),
+    )
+    .await
+    .expect("start repair")
+    .into_attempt();
+    attempt
+        .pending_reasons
+        .push(NEEDS_HUMAN_REPAIR_REASON.to_string());
+
+    let result = block_agent_workspace_repair_needs_human(
+        Arc::clone(&repair_repo),
+        Arc::clone(&branch_update_repo),
+        attempt,
+        "already marked",
+        None,
+    )
+    .await
+    .expect("block as needs-human again");
+
+    let AgentWorkspaceRepairTransitionOutcome::Applied(blocked) = result else {
+        panic!("idempotent needs-human block must apply");
+    };
+    assert_eq!(
+        blocked
+            .pending_reasons
+            .iter()
+            .filter(|r| *r == NEEDS_HUMAN_REPAIR_REASON)
+            .count(),
+        1,
+        "the marker must not be duplicated"
+    );
+}
+
+#[tokio::test]
+async fn reserve_pre_existing_on_base_settles_to_ready_with_marker() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let repair_repo = Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>;
+    let conversation_id = ChatConversationId::from_string("pre-existing-on-base");
+    workspace_repo
+        .create_or_update(repair_workspace(conversation_id.clone()))
+        .await
+        .expect("persist workspace");
+    let mut attempt = start_or_join_agent_workspace_repair(
+        Arc::clone(&repair_repo),
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        repair_start_request(
+            conversation_id.clone(),
+            AgentWorkspaceRepairSource::Publish,
+            AgentWorkspaceRepairContinuation::Publish,
+            "pre-existing failure",
+        ),
+    )
+    .await
+    .expect("start repair")
+    .into_attempt();
+    attempt.pr_autofix_health_fingerprint = Some("fp-abc123".to_string());
+
+    let result = reserve_agent_workspace_pre_existing_on_base(
+        Arc::clone(&repair_repo),
+        attempt,
+        "codecov failure pre-exists on base",
+        None,
+    )
+    .await
+    .expect("reserve pre-existing on base");
+
+    let AgentWorkspaceRepairTransitionOutcome::Applied(settled) = result else {
+        panic!("pre-existing-on-base reservation must apply");
+    };
+    assert_eq!(settled.phase, AgentWorkspaceRepairPhase::Ready);
+    assert!(
+        settled
+            .pending_reasons
+            .contains(&PRE_EXISTING_ON_BASE_REPAIR_REASON.to_string()),
+        "the pre-existing-on-base marker must be persisted"
+    );
+    assert!(settled.blocker.is_none(), "Ready phase must not carry a blocker");
+}
+
+#[tokio::test]
+async fn reserve_pre_existing_on_base_rejects_without_health_fingerprint() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let repair_repo = Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>;
+    let conversation_id = ChatConversationId::from_string("pre-existing-no-fp");
+    workspace_repo
+        .create_or_update(repair_workspace(conversation_id.clone()))
+        .await
+        .expect("persist workspace");
+    let attempt = start_or_join_agent_workspace_repair(
+        Arc::clone(&repair_repo),
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        repair_start_request(
+            conversation_id.clone(),
+            AgentWorkspaceRepairSource::Publish,
+            AgentWorkspaceRepairContinuation::Publish,
+            "no fingerprint",
+        ),
+    )
+    .await
+    .expect("start repair")
+    .into_attempt();
+    assert!(attempt.pr_autofix_health_fingerprint.is_none());
+
+    let result = reserve_agent_workspace_pre_existing_on_base(
+        Arc::clone(&repair_repo),
+        attempt,
+        "should reject",
+        None,
+    )
+    .await
+    .expect("returns stale, not error");
+
+    assert!(
+        matches!(result, AgentWorkspaceRepairTransitionOutcome::Stale(_)),
+        "missing health fingerprint must return Stale"
+    );
+}
+
+#[tokio::test]
+async fn reserve_ci_rerun_increments_count_and_settles_to_ready() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let repair_repo = Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>;
+    let conversation_id = ChatConversationId::from_string("ci-rerun-reserve");
+    workspace_repo
+        .create_or_update(repair_workspace(conversation_id.clone()))
+        .await
+        .expect("persist workspace");
+    let attempt = start_or_join_agent_workspace_repair(
+        Arc::clone(&repair_repo),
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        repair_start_request(
+            conversation_id.clone(),
+            AgentWorkspaceRepairSource::Publish,
+            AgentWorkspaceRepairContinuation::Publish,
+            "ci rerun",
+        ),
+    )
+    .await
+    .expect("start repair")
+    .into_attempt();
+    assert_eq!(attempt.ci_rerun_count, 0);
+
+    let result = reserve_agent_workspace_ci_rerun(
+        Arc::clone(&repair_repo),
+        attempt,
+        "fp-ci-abc",
+        "rerunning failed CI jobs",
+        None,
+    )
+    .await
+    .expect("reserve ci rerun");
+
+    let AgentWorkspaceRepairTransitionOutcome::Applied(rerun) = result else {
+        panic!("first ci rerun reservation must apply");
+    };
+    assert_eq!(rerun.phase, AgentWorkspaceRepairPhase::Ready);
+    assert_eq!(rerun.ci_rerun_count, 1);
+    assert_eq!(rerun.ci_rerun_fingerprint.as_deref(), Some("fp-ci-abc"));
+    assert!(rerun.blocker.is_none());
+}
+
+#[tokio::test]
+async fn reserve_ci_rerun_rejects_after_max_retries() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let repair_repo = Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>;
+    let conversation_id = ChatConversationId::from_string("ci-rerun-exhausted");
+    workspace_repo
+        .create_or_update(repair_workspace(conversation_id.clone()))
+        .await
+        .expect("persist workspace");
+    let mut attempt = start_or_join_agent_workspace_repair(
+        Arc::clone(&repair_repo),
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        repair_start_request(
+            conversation_id.clone(),
+            AgentWorkspaceRepairSource::Publish,
+            AgentWorkspaceRepairContinuation::Publish,
+            "ci rerun exhausted",
+        ),
+    )
+    .await
+    .expect("start repair")
+    .into_attempt();
+    attempt.ci_rerun_count = MAX_AGENT_WORKSPACE_CI_RERUN_RETRIES;
+
+    let result = reserve_agent_workspace_ci_rerun(
+        Arc::clone(&repair_repo),
+        attempt,
+        "fp-ci-exhausted",
+        "should reject",
+        None,
+    )
+    .await
+    .expect("returns stale, not error");
+
+    assert!(
+        matches!(result, AgentWorkspaceRepairTransitionOutcome::Stale(_)),
+        "exhausted ci rerun budget must return Stale"
     );
 }
