@@ -1,5 +1,4 @@
 import {
-  lazy,
   Suspense,
   type MouseEvent as ReactMouseEvent,
 } from "react";
@@ -8,6 +7,7 @@ import type {
   AgentConversationWorkspace,
   AgentConversationWorkspaceFreshness,
 } from "@/api/chat";
+import { lazyWithRetry } from "@/lib/lazy-with-retry";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
 import { cn } from "@/lib/utils";
 import type {
@@ -35,7 +35,7 @@ import type {
 export const AGENTS_ARTIFACT_MIN_WIDTH = 600;
 export const AGENTS_CHAT_MIN_WIDTH = 600;
 
-const LazyAgentsArtifactPane = lazy(() =>
+const LazyAgentsArtifactPane = lazyWithRetry(() =>
   preloadAgentsArtifactPane().then((module) => ({ default: module.AgentsArtifactPane })),
 );
 

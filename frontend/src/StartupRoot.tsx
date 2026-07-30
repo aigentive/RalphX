@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
 
 import { startupApi } from "@/api/startup";
@@ -6,13 +6,14 @@ import { StartupBackgroundStatus } from "@/components/StartupBackgroundStatus";
 import { StartupScreen } from "@/components/StartupScreen";
 import { useStartupStatus } from "@/hooks/useStartupStatus";
 import { getQueryClient } from "@/lib/queryClient";
+import { lazyWithRetry } from "@/lib/lazy-with-retry";
 import { clearPostUpdatePreparing, readFreshPostUpdatePreparingMarker } from "@/lib/postUpdatePreparing";
 
 function loadAppShell() {
   return import("./App");
 }
 
-const LazyApp = lazy(loadAppShell);
+const LazyApp = lazyWithRetry(loadAppShell);
 
 function StartupShellPaintReporter({ onPainted }: { onPainted: () => void }) {
   useEffect(() => {

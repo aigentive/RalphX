@@ -1,5 +1,4 @@
 import {
-  lazy,
   Suspense,
   useCallback,
   useEffect,
@@ -12,6 +11,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { Terminal as TerminalIcon } from "lucide-react";
 
 import type { AgentConversationWorkspace } from "@/api/chat";
+import { lazyWithRetry } from "@/lib/lazy-with-retry";
 import type { AgentArtifactTab } from "@/stores/agentSessionStore";
 import { formatBranchDisplay } from "@/lib/branch-utils";
 import {
@@ -32,7 +32,7 @@ import {
   type AgentTerminalPlacement,
 } from "./agentTerminalStore";
 
-const LazyAgentTerminalDrawer = lazy(() =>
+const LazyAgentTerminalDrawer = lazyWithRetry(() =>
   preloadAgentTerminalDrawer().then((module) => ({ default: module.AgentTerminalDrawer })),
 );
 

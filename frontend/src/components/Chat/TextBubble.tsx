@@ -6,7 +6,8 @@
  * - Markdown rendering for user and assistant messages
  */
 
-import { lazy, memo, Suspense, useEffect, useRef, useState } from "react";
+import { memo, Suspense, useEffect, useRef, useState } from "react";
+import { lazyWithRetry } from "@/lib/lazy-with-retry";
 import { cn } from "@/lib/utils";
 import { markdownComponents } from "./MessageItem.markdown";
 
@@ -20,7 +21,7 @@ interface MarkdownContentProps {
   text: string;
 }
 
-const LazyMarkdownContent = lazy(async () => {
+const LazyMarkdownContent = lazyWithRetry(async () => {
   const [{ default: ReactMarkdown }, { default: remarkGfm }] = await Promise.all([
     import("react-markdown"),
     import("remark-gfm"),

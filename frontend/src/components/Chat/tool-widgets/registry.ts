@@ -11,10 +11,10 @@
  */
 
 import {
-  lazy,
   type ComponentType,
   type LazyExoticComponent,
 } from "react";
+import { lazyWithRetry } from "@/lib/lazy-with-retry";
 import type { ToolCallWidgetProps } from "./shared";
 import { getToolCallLookupCandidates } from "./tool-name";
 
@@ -27,7 +27,7 @@ export type ToolCallWidgetRegistry = Record<string, ToolCallWidgetComponent>;
 function lazyWidget(
   loader: () => Promise<{ default: ComponentType<ToolCallWidgetProps> }>
 ): LazyExoticComponent<ComponentType<ToolCallWidgetProps>> {
-  return lazy(loader);
+  return lazyWithRetry(loader);
 }
 
 const StepIndicator = lazyWidget(() =>
