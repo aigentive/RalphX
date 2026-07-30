@@ -29,13 +29,14 @@ you left, and a remote host going offline never affects your Local environment.
 
 ## Turning on host mode
 
-1. **Settings → Remote Access → Enable host mode.**
+1. **Settings → Integrations → Remote Access → Enable remote access.**
 2. **Choose how it is exposed.**
-   - *Loopback* — only this machine can reach it. Useful for testing.
-   - *Tailnet* — reachable from your Tailscale network.
+   - *Tailscale Serve* — TLS terminated at the tailnet edge, reached via your MagicDNS name.
+   - *Tailnet direct* — plain HTTP on your tailnet IP, inside WireGuard.
 
-   There is no "expose to the whole internet" option, and the listener will refuse to bind a
-   wildcard address. If you want access from outside your tailnet, put it behind something that
+   Both options are tailnet-only. There is no "expose to the whole internet" option, and the
+   listener refuses to bind a wildcard or LAN address — the bind address must sit inside
+   `100.64.0.0/10`. If you want access from outside your tailnet, put it behind something that
    terminates TLS and authenticates — do not port-forward to `3849`.
 3. The pane shows the listener's status, the address clients should use, and every paired device.
 
@@ -45,10 +46,10 @@ you left, and a remote host going offline never affects your Local environment.
 
 Pairing is deliberately a face-to-face gesture: you must be able to see the host's screen.
 
-1. On the **host**: Settings → Remote Access → **Add device**. A short pairing code appears, with
-   a copyable URL and a QR code.
-2. On the **client**: Settings → Environments → **Add environment**, then enter the code (or scan
-   the QR).
+1. On the **host**: Settings → Integrations → Remote Access → *Pair a device* → **Generate
+   pairing code**. A short pairing code appears, with a copyable URL and a QR code.
+2. On the **client**: Settings → Integrations → Connections → **Add environment**, then enter the
+   code (or scan the QR).
 3. The host mints a long-term token for that device and lists it by name.
 
 Things worth knowing:
@@ -129,8 +130,9 @@ build fails if someone tries to add one under an insufficient permission level.
 
 ## Managing and revoking devices
 
-The host's device list shows each device's name, the client version it reported, and when it was
-last seen. Each row has a **Revoke** action, and each has its own agent-control toggle.
+The host's *Paired devices* list shows each device's name, its token prefix, when it was paired,
+when it was last seen, and how many live sessions it holds. Each row has a **Revoke** action, and
+each has its own agent-control toggle.
 
 **Revocation is immediate and applies to live sessions.** The device's open connection is closed
 within the heartbeat window — it does not keep streaming until it happens to reconnect — and its
