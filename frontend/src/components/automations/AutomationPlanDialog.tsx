@@ -1,5 +1,6 @@
-import { lazy, Suspense } from "react";
+import { Suspense } from "react";
 
+import { lazyWithRetry } from "@/lib/lazy-with-retry";
 import { useAfterPaintMounted } from "@/components/agents/agentDeferredFrame";
 import {
   Dialog,
@@ -19,7 +20,7 @@ import { useArtifact } from "@/hooks/useArtifacts";
  * artifact reads render an explicit error state — never a blank success.
  */
 
-const LazyPlanMarkdown = lazy(async () => {
+const LazyPlanMarkdown = lazyWithRetry(async () => {
   const [{ default: ReactMarkdown }, { default: remarkGfm }, { markdownComponents }] =
     await Promise.all([
       import("react-markdown"),

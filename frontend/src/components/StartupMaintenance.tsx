@@ -1,13 +1,14 @@
-import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
 
+import { lazyWithRetry } from "@/lib/lazy-with-retry";
 import { useUpdateCheckerNativeEvents } from "./UpdateChecker.events";
 
-const LazyUpdateChecker = lazy(async () => {
+const LazyUpdateChecker = lazyWithRetry(async () => {
   const { UpdateChecker } = await import("./UpdateChecker");
   return { default: UpdateChecker };
 });
 
-const LazyProviderCliUpdateChecker = lazy(async () => {
+const LazyProviderCliUpdateChecker = lazyWithRetry(async () => {
   const { ProviderCliUpdateChecker } = await import("./ProviderCliUpdateChecker");
   return { default: ProviderCliUpdateChecker };
 });

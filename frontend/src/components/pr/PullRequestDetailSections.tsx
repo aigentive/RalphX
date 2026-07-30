@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState } from "react";
+import { Suspense, useState } from "react";
 import {
   CheckCircle2,
   ChevronDown,
@@ -16,6 +16,7 @@ import type {
 } from "@/api/github";
 import type { PrDiffAnnotation } from "@/api/diff";
 import { diffApi } from "@/api/diff";
+import { lazyWithRetry } from "@/lib/lazy-with-retry";
 import { openExternalTicketUrl } from "@/components/ticketing/ticketing-open-external";
 import { Button } from "@/components/ui/button";
 import {
@@ -31,7 +32,7 @@ import {
 } from "./PullRequestDetailPrimitives";
 import { bucketCheck, summarizeChecks } from "./pullRequestChecksSummary";
 
-const LazyIntegratedChatPanel = lazy(() =>
+const LazyIntegratedChatPanel = lazyWithRetry(() =>
   import("@/components/Chat/IntegratedChatPanel").then((module) => ({
     default: module.IntegratedChatPanel,
   })),

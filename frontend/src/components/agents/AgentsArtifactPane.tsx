@@ -20,7 +20,6 @@ import {
 } from "lucide-react";
 import type { ElementType } from "react";
 import {
-  lazy,
   memo,
   Suspense,
   useCallback,
@@ -34,6 +33,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { artifactApi } from "@/api/artifact";
+import { lazyWithRetry } from "@/lib/lazy-with-retry";
 import { atlassianApi } from "@/api/atlassian";
 import { clickupApi } from "@/api/clickup";
 import { granolaApi } from "@/api/granola";
@@ -303,89 +303,89 @@ function hasGeneratingConversationRuntime(
   );
 }
 
-const LazyTaskGraphView = lazy(() =>
+const LazyTaskGraphView = lazyWithRetry(() =>
   import("@/components/TaskGraph").then((module) => ({
     default: module.TaskGraphView,
   })),
 );
-const LazyTaskBoard = lazy(() =>
+const LazyTaskBoard = lazyWithRetry(() =>
   import("@/components/tasks/TaskBoard").then((module) => ({
     default: module.TaskBoard,
   })),
 );
-const LazyAgentsTaskDetailOverlay = lazy(() =>
+const LazyAgentsTaskDetailOverlay = lazyWithRetry(() =>
   import("@/components/agents/task-details/AgentsTaskDetailOverlay").then(
     (module) => ({
       default: module.AgentsTaskDetailOverlay,
     }),
   ),
 );
-const LazyExportPlanDialog = lazy(() =>
+const LazyExportPlanDialog = lazyWithRetry(() =>
   import("@/components/Ideation/ExportPlanDialog").then((module) => ({
     default: module.ExportPlanDialog,
   })),
 );
-const LazyPlanDisplay = lazy(() =>
+const LazyPlanDisplay = lazyWithRetry(() =>
   import("@/components/Ideation/PlanDisplay").then((module) => ({
     default: module.PlanDisplay,
   })),
 );
-const LazyPlanEditor = lazy(() =>
+const LazyPlanEditor = lazyWithRetry(() =>
   import("@/components/Ideation/PlanEditor").then((module) => ({
     default: module.PlanEditor,
   })),
 );
-const LazyPlanEmptyState = lazy(() =>
+const LazyPlanEmptyState = lazyWithRetry(() =>
   import("@/components/Ideation/PlanEmptyState").then((module) => ({
     default: module.PlanEmptyState,
   })),
 );
-const LazyProposalsTabContent = lazy(() =>
+const LazyProposalsTabContent = lazyWithRetry(() =>
   import("@/components/Ideation/ProposalsTabContent").then((module) => ({
     default: module.ProposalsTabContent,
   })),
 );
-const LazyProposalDetailSheet = lazy(() =>
+const LazyProposalDetailSheet = lazyWithRetry(() =>
   import("@/components/Ideation/ProposalDetailSheet").then((module) => ({
     default: module.ProposalDetailSheet,
   })),
 );
-const LazyAgentsJiraIssuePanel = lazy(() =>
+const LazyAgentsJiraIssuePanel = lazyWithRetry(() =>
   import("@/components/agents/AgentsJiraIssuePanel").then((module) => ({
     default: module.AgentsJiraIssuePanel,
   })),
 );
-const LazyAgentsLinearIssuePanel = lazy(() =>
+const LazyAgentsLinearIssuePanel = lazyWithRetry(() =>
   import("@/components/agents/AgentsLinearIssuePanel").then((module) => ({
     default: module.AgentsLinearIssuePanel,
   })),
 );
-const LazyAgentsClickUpIssuePanel = lazy(() =>
+const LazyAgentsClickUpIssuePanel = lazyWithRetry(() =>
   import("@/components/agents/AgentsClickUpIssuePanel").then((module) => ({
     default: module.AgentsClickUpIssuePanel,
   })),
 );
-const LazyAgentsGranolaNotePanel = lazy(() =>
+const LazyAgentsGranolaNotePanel = lazyWithRetry(() =>
   import("@/components/agents/AgentsGranolaNotePanel").then((module) => ({
     default: module.AgentsGranolaNotePanel,
   })),
 );
-const LazyAgentsIssuesPanel = lazy(() =>
+const LazyAgentsIssuesPanel = lazyWithRetry(() =>
   import("@/components/agents/AgentsIssuesPanel").then((module) => ({
     default: module.AgentsIssuesPanel,
   })),
 );
-const LazyPullRequestDetailPanel = lazy(() =>
+const LazyPullRequestDetailPanel = lazyWithRetry(() =>
   import("@/components/pr/PullRequestDetailPanel").then((module) => ({
     default: module.PullRequestDetailPanel,
   })),
 );
-const LazyAgentsAutomationPanel = lazy(() =>
+const LazyAgentsAutomationPanel = lazyWithRetry(() =>
   import("@/components/agents/AgentsAutomationPanel").then((module) => ({
     default: module.AgentsAutomationPanel,
   })),
 );
-const LazyPersonaArtifactPanel = lazy(() =>
+const LazyPersonaArtifactPanel = lazyWithRetry(() =>
   import("@/components/agents/PersonaArtifactPanel").then((module) => ({
     default: module.PersonaArtifactPanel,
   })),
