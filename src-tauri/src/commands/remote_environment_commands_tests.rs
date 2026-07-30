@@ -39,21 +39,26 @@ fn summary_is_an_explicit_allowlist_without_token_material() {
     let json = serde_json::to_value(&summary).expect("summary should serialize");
 
     let object = json.as_object().expect("summary should be an object");
-    let keys: Vec<&str> = object.keys().map(String::as_str).collect();
+    // Compared as a SET: `serde_json::Map` is a `BTreeMap` unless the `preserve_order` feature
+    // happens to be unified in, so key order is a build detail. The allowlist claim is about
+    // which fields exist, not the order they serialize in.
+    let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    let mut expected = vec![
+        "id",
+        "environmentId",
+        "name",
+        "baseUrl",
+        "candidateUrls",
+        "scopes",
+        "protocolVersion",
+        "status",
+        "createdAt",
+        "lastConnectedAt",
+    ];
+    expected.sort_unstable();
     assert_eq!(
-        keys,
-        vec![
-            "id",
-            "environmentId",
-            "name",
-            "baseUrl",
-            "candidateUrls",
-            "scopes",
-            "protocolVersion",
-            "status",
-            "createdAt",
-            "lastConnectedAt",
-        ],
+        keys, expected,
         "summary field set is an explicit allowlist — extending it requires a P-18 review"
     );
     // Neither the token nor the Keychain reference crosses the IPC boundary.
@@ -360,10 +365,12 @@ async fn list_remote_environments_maps_a_seeded_environment() {
         Arc::new(crate::infrastructure::UnavailableRemoteHostClient::new(
             "not needed by list",
         )),
-        Arc::new(crate::application::remote_event_relay::RemoteEventRelay::new(
-            Arc::new(crate::infrastructure::remote_ws_client::MockRemoteWsClient::new()),
-            Arc::new(crate::application::remote_event_relay::NoopFrameSink),
-        )),
+        Arc::new(
+            crate::application::remote_event_relay::RemoteEventRelay::new(
+                Arc::new(crate::infrastructure::remote_ws_client::MockRemoteWsClient::new()),
+                Arc::new(crate::application::remote_event_relay::NoopFrameSink),
+            ),
+        ),
     );
     let app = test_app_with_service(service);
 

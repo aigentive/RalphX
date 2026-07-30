@@ -40,9 +40,16 @@ fn redemption(raw_code: &str, now: &str) -> RemotePairingRedemption {
 /// C-1: every repository method here goes through `DbConnection::run` /
 /// `run_transaction`. A direct `conn.lock().await` would silently reintroduce blocking
 /// access, so the source itself is the assertion.
+///
+/// The scan runs on comment-stripped source: the module header legitimately DOCUMENTS that no
+/// `conn.lock().await` appears here, and prose about a forbidden call is not the call.
 #[test]
 fn the_repository_never_locks_the_connection_directly() {
-    let source = include_str!("sqlite_remote_access_repo.rs");
+    let source: String = include_str!("sqlite_remote_access_repo.rs")
+        .lines()
+        .map(|line| line.split("//").next().unwrap_or(line))
+        .collect::<Vec<_>>()
+        .join("\n");
 
     assert!(!source.contains("lock().await"));
     assert!(!source.contains("blocking_lock()"));
@@ -471,12 +478,17 @@ async fn audit_rows_are_appended_newest_first() {
 
     let entries = repo.list_recent(Some(10)).await.expect("audit log reads");
 
-    assert_eq!(entries.len(), 2);
+    // Three rows, not two: `paired_device` redeems a pairing code, and redemption commits its
+    // `pairing_succeeded` row in the SAME transaction as the device row
+    // (`redeeming_a_code_writes_its_audit_row_in_the_same_transaction`). Ordering is `id DESC`,
+    // so that oldest row is last.
+    assert_eq!(entries.len(), 3);
     assert_eq!(entries[0].action, "pairing_rejected");
     assert_eq!(entries[0].device_id, None);
     assert_eq!(entries[1].action, "auth_accepted");
     assert_eq!(entries[1].device_id.as_ref(), Some(&device.id));
     assert_eq!(entries[1].detail.as_deref(), Some("GET /remote/v1/session"));
+    assert_eq!(entries[2].action, "pairing_succeeded");
 }
 
 /// Retention: the request path appends a row per auth decision, so the log needs a ceiling.
@@ -500,7 +512,9 @@ async fn pruning_drops_only_rows_older_than_the_cutoff() {
     let pruned = repo.prune_before(LATER).await.expect("prune should run");
     let entries = repo.list_recent(Some(10)).await.expect("audit log reads");
 
-    assert_eq!(pruned, 1);
+    // Two rows fall below the cutoff: the `auth_accepted` row written at NOW and the
+    // `pairing_succeeded` row `paired_device`'s redemption committed at NOW.
+    assert_eq!(pruned, 2);
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].created_at, MUCH_LATER);
 }

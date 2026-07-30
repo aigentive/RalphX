@@ -834,10 +834,18 @@ fn the_ws_route_is_ticket_authenticated_not_pre_auth() {
 #[test]
 fn the_upgrade_consumes_the_ticket_then_rechecks_the_device_before_upgrading() {
     let source = include_str!("ws.rs");
-    let body = source
+    // Comment- and whitespace-stripped: rustfmt is free to break `auth.tickets.consume(...)`
+    // across lines, and a scan that a reformat can silently turn green proves nothing.
+    let body: String = source
         .split("pub(crate) async fn ws_events_handler")
         .nth(1)
-        .expect("handler should exist");
+        .expect("handler should exist")
+        .lines()
+        .map(|line| line.split("//").next().unwrap_or(line))
+        .collect::<String>()
+        .split_whitespace()
+        .collect();
+    let body = body.as_str();
     let consume = body.find("tickets.consume(").expect("ticket consume");
     let recheck = body
         .find("auth.devices.get(&device_id)")
