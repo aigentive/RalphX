@@ -858,6 +858,50 @@ async fn reconciliation_keeps_workspace_unchanged_when_no_external_pr_matches() 
 }
 
 #[tokio::test]
+async fn reconciliation_rejects_external_pr_with_a_different_head_branch() {
+    let project = test_project();
+    let workspace = test_workspace(&project);
+    let conversation_id = workspace.conversation_id.clone();
+    let github = Arc::new(MockGithubService::new());
+    github.set_find_latest_pr_by_head_branch(Ok(Some(PrBranchMatch {
+        number: 942,
+        url: "https://github.com/owner/repo/pull/942".to_string(),
+        status: PrStatus::Open,
+        is_draft: false,
+        head_ref_name: "another-agent-branch".to_string(),
+        updated_at: Some("2026-05-11T22:00:00Z".to_string()),
+        author_login: None,
+    })));
+    let (deps, workspace_repo) = deps_with_workspace(project, workspace, github.clone()).await;
+
+    let outcome = reconcile_agent_workspace_external_pr(
+        deps,
+        conversation_id.clone(),
+        AgentWorkspaceExternalPrReconciliationTrigger::WorkspaceLoad,
+    )
+    .await
+    .expect("reconciliation should reject the mismatched PR safely");
+
+    assert_eq!(
+        outcome,
+        AgentWorkspaceExternalPrReconciliationOutcome::NotFound
+    );
+    let updated = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    assert_eq!(updated.publication_pr_number, None);
+    assert_eq!(updated.publication_pr_status, None);
+    assert!(workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("events should list")
+        .is_empty());
+    assert_eq!(github.state().find_latest_pr_by_head_branch_calls, 1);
+}
+
+#[tokio::test]
 async fn reconciliation_leaves_linked_open_pr_repair_state_unchanged() {
     let project = test_project();
     let mut workspace = test_workspace(&project);

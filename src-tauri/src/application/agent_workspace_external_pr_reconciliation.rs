@@ -207,6 +207,17 @@ pub(crate) async fn reconcile_agent_workspace_external_pr(
         return Ok(AgentWorkspaceExternalPrReconciliationOutcome::NotFound);
     };
 
+    if pr.head_ref_name != workspace.branch_name {
+        tracing::warn!(
+            conversation_id = conversation_id.as_str(),
+            workspace_branch = workspace.branch_name.as_str(),
+            pr_number = pr.number,
+            pr_head_branch = pr.head_ref_name.as_str(),
+            "Agent workspace external PR lookup returned a mismatched head branch"
+        );
+        return Ok(AgentWorkspaceExternalPrReconciliationOutcome::NotFound);
+    }
+
     require_durable_live_pr_poller(&deps, matches!(&pr.status, PrStatus::Open))?;
 
     let pr_status = pr.publication_status();
