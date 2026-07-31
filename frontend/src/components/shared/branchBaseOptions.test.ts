@@ -4,6 +4,7 @@ import {
   loadBranchBaseOptions,
   loadPullRequestBaseOptions,
   normalizeGitBranchName,
+  synthesizeLocalBranchOption,
 } from "./branchBaseOptions";
 
 const {
@@ -184,6 +185,91 @@ describe("branchBaseOptions", () => {
     ).toBe(false);
   });
 
+  it("reports agent-branch loader failure as degraded", async () => {
+    listAgentConversationWorkspacesByProjectMock.mockRejectedValueOnce(
+      new Error("unavailable"),
+    );
+
+    const result = await loadBranchBaseOptions({
+      projectId: "project-1",
+      workingDirectory: "/tmp/ralphx",
+      projectBaseBranch: "main",
+    });
+
+    expect(result.degraded).toEqual({
+      planBranches: false,
+      agentBranches: true,
+    });
+    expect(result.options.some((option) => option.source === "agent")).toBe(
+      false,
+    );
+  });
+
+  it("reports plan-branch loader failure as degraded", async () => {
+    getPlanBranchesMock.mockRejectedValueOnce(new Error("unavailable"));
+
+    const result = await loadBranchBaseOptions({
+      projectId: "project-1",
+      workingDirectory: "/tmp/ralphx",
+      projectBaseBranch: "main",
+    });
+
+    expect(result.degraded).toEqual({
+      planBranches: true,
+      agentBranches: false,
+    });
+    expect(result.options.some((option) => option.source === "plan")).toBe(
+      false,
+    );
+  });
+
+  it("keeps RalphX internal branches in known refs when the agent loader fails", async () => {
+    listAgentConversationWorkspacesByProjectMock.mockRejectedValueOnce(
+      new Error("unavailable"),
+    );
+
+    const result = await loadBranchBaseOptions({
+      projectId: "project-1",
+      workingDirectory: "/tmp/ralphx",
+      projectBaseBranch: "main",
+    });
+
+    expect(result.knownBranchRefs).toContain("ralphx/ralphx/agent-789");
+    expect(result.options.some((option) => option.source === "agent")).toBe(
+      false,
+    );
+  });
+
+  it("synthesizes a local branch option with a default label", () => {
+    expect(synthesizeLocalBranchOption("feature/recover")).toEqual({
+      key: "local_branch:feature/recover",
+      label: "feature/recover",
+      detail: "Local branch",
+      source: "local",
+      selection: {
+        kind: "local_branch",
+        ref: "feature/recover",
+        displayName: "feature/recover",
+      },
+    });
+    expect(
+      synthesizeLocalBranchOption("feature/recover", "Recovered branch").label,
+    ).toBe("Recovered branch");
+  });
+
+  it("reports no degradation for a clean load", async () => {
+    const result = await loadBranchBaseOptions({
+      projectId: "project-1",
+      workingDirectory: "/tmp/ralphx",
+      projectBaseBranch: "main",
+    });
+
+    expect(result.degraded).toEqual({
+      planBranches: false,
+      agentBranches: false,
+    });
+  });
+
   it("uses the configured project base before Git's detected default", async () => {
     const result = await loadBranchBaseOptions({
       projectId: "project-1",
@@ -282,5 +368,4 @@ describe("branchBaseOptions", () => {
       },
     ]);
   });
-
 });
