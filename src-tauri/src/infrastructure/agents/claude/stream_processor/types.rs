@@ -103,6 +103,10 @@ pub enum StreamMessage {
         exit_code: Option<i32>,
         #[serde(default)]
         outcome: Option<String>,
+        #[serde(default)]
+        estimated_tokens: Option<u64>,
+        #[serde(default)]
+        estimated_tokens_delta: Option<u64>,
     },
     /// User message (contains tool results when using MCP)
     #[serde(rename = "user")]
@@ -263,6 +267,11 @@ pub enum StreamEvent {
     TextChunk(String),
     /// Thinking block from Claude's extended reasoning
     Thinking(String),
+    /// Estimated tokens consumed while Claude is thinking.
+    ThinkingProgress {
+        estimated_tokens: u64,
+        estimated_tokens_delta: Option<u64>,
+    },
     /// Tool call started (name and id available)
     ToolCallStarted {
         name: String,

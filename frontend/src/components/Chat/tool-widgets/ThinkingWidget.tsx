@@ -1,6 +1,4 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Brain } from "lucide-react";
-import { WidgetCard, WidgetHeader } from "./shared";
 import { colors } from "./shared.constants";
 
 const BOTTOM_EPSILON_PX = 2;
@@ -29,10 +27,7 @@ export const ThinkingWidget = React.memo(function ThinkingWidget({ text, compact
     if (hydrated && pinned && element) element.scrollTop = element.scrollHeight;
   }, [hydrated, pinned, text]);
 
-  return (
-    <WidgetCard alwaysExpanded compact={compact}
-      header={<WidgetHeader icon={<Brain size={14} />} title="Thinking" compact={compact} />}>
-      {hydrated ? (
+  return hydrated ? (
         <div ref={scrollRef} data-testid="thinking-scroll-body"
           onScroll={(event) => {
             const element = event.currentTarget;
@@ -41,13 +36,9 @@ export const ThinkingWidget = React.memo(function ThinkingWidget({ text, compact
           style={{
             maxHeight: "15.5em", overflowY: "auto", whiteSpace: "pre-wrap",
             fontFamily: "var(--font-mono)", fontSize: compact ? 10 : 11, lineHeight: 1.55,
-            color: colors.textSecondary, backgroundColor: colors.bgTerminal,
-            borderColor: colors.borderSubtle, borderWidth: 1, borderStyle: "solid",
-            borderRadius: 4, padding: "6px 8px",
+            color: colors.textSecondary, padding: "2px 2px 2px 4px",
           }}>
           {text}
         </div>
-      ) : <div data-testid="thinking-widget-shell" style={{ minHeight: "2em" }} />}
-    </WidgetCard>
-  );
+      ) : <div data-testid="thinking-widget-shell" style={{ minHeight: "2em" }} />;
 });

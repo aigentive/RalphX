@@ -204,7 +204,8 @@ pub use chat_service_types::{
     AgentHookPayload, AgentMessageCreatedPayload, AgentMessageQueuedPayload,
     AgentMessageRenderReadyPayload, AgentQueueSentPayload, AgentRunCompletedPayload,
     AgentRunStartedPayload, AgentTaskCompletedPayload, AgentTaskStartedPayload,
-    AgentThinkingPayload, AgentToolCallPayload, AgentToolCallPreviewFields,
+    AgentThinkingPayload, AgentThinkingProgressPayload, AgentToolCallPayload,
+    AgentToolCallPreviewFields,
     ChatConversationWithMessages, ChatServiceError, SendCallerContext, SendResult,
     TeamArtifactCreatedPayload, MESSAGE_DELIVERED_NOT_PERSISTED_PREFIX,
 };

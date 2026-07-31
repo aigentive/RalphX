@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, act, fireEvent } from "@testing-library/react";
 import { ThinkingWidget } from "./ThinkingWidget";
+import { colors } from "./shared.constants";
 
 describe("ThinkingWidget", () => {
   let rafCallbacks: Array<FrameRequestCallback>;
@@ -58,6 +59,23 @@ describe("ThinkingWidget", () => {
 
     const body = screen.getByTestId("thinking-scroll-body");
     expect(body.style.fontSize).toBe("11px");
+  });
+
+  it("renders cardless mono text inside the scroll body", async () => {
+    render(<ThinkingWidget text="plain thought" />);
+
+    await act(() => flushHydration());
+
+    const body = screen.getByTestId("thinking-scroll-body");
+    expect(body.style.maxHeight).toBe("15.5em");
+    expect(body.style.overflowY).toBe("auto");
+    expect(body.style.whiteSpace).toBe("pre-wrap");
+    expect(body.style.fontFamily).toBe("var(--font-mono)");
+    expect(body.style.lineHeight).toBe("1.55");
+    expect(body.style.color).toBe(colors.textSecondary);
+    expect(body.style.padding).toBe("2px 2px 2px 4px");
+    expect(body.style.backgroundColor).toBe("");
+    expect(body.style.borderStyle).toBe("");
   });
 
   it("keeps scrolling contained within its own overflow node", async () => {

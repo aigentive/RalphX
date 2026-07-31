@@ -24,6 +24,31 @@ fn parse_line_unwraps_stream_event_thinking_delta() {
 }
 
 #[test]
+fn parse_and_process_thinking_tokens_progress() {
+    let line = r#"{"type":"system","subtype":"thinking_tokens","estimated_tokens":95,"estimated_tokens_delta":45}"#;
+    let parsed = StreamProcessor::parse_line(line).expect("thinking token progress should parse");
+    let StreamMessage::System {
+        estimated_tokens,
+        estimated_tokens_delta,
+        ..
+    } = &parsed.message
+    else {
+        panic!("expected system message");
+    };
+    assert_eq!(*estimated_tokens, Some(95));
+    assert_eq!(*estimated_tokens_delta, Some(45));
+
+    let events = StreamProcessor::new().process_parsed_line(parsed);
+    assert!(matches!(
+        events.as_slice(),
+        [StreamEvent::ThinkingProgress {
+            estimated_tokens: 95,
+            estimated_tokens_delta: Some(45),
+        }]
+    ));
+}
+
+#[test]
 fn parse_line_unwraps_stream_event_content_block_start_stop() {
     let start = r#"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu-1","name":"Read"}}}"#;
     let stop = r#"{"type":"stream_event","event":{"type":"content_block_stop","index":0}}"#;
