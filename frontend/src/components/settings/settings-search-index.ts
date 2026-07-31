@@ -149,6 +149,11 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     keywords: ["update", "release", "channel", "stable", "beta"],
   },
   {
+    label: "Database maintenance",
+    section: "database",
+    keywords: ["compact", "vacuum", "size", "reclaim", "storage", "sqlite"],
+  },
+  {
     label: "Theme",
     section: "accessibility",
     keywords: ["theme", "dark", "light", "high contrast", "appearance"],
