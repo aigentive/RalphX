@@ -360,7 +360,7 @@ pub async fn send_ideation_session_message_handler(
                 .write_message(&ipr_key, &stream_json_message)
                 .await
             {
-                Ok(()) => {
+                Ok(_) => {
                     return Ok(Json(SendSessionMessageResponse {
                         delivery_status: "sent".to_string(),
                         conversation_id: None,

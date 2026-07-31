@@ -14,9 +14,11 @@ coverage:
         only_pulls: true
         paths:
           # Async streaming loops (process_stream_background, process_codex_stream_background)
+          # and the background send/exit-cleanup path (spawn_send_message_background)
           # are only exercised by integration tests with real process spawning.
           # Testable logic is extracted into public helper functions with full unit coverage.
           - "!src-tauri/src/application/chat_service/chat_service_streaming.rs"
+          - "!src-tauri/src/application/chat_service/chat_service_send_background.rs"
           # Startup composition roots mostly wire long-lived Tauri services, timers, and
           # background loops. Keep behavior covered through extracted helpers/services.
           - "!src-tauri/src/application/app_setup.rs"

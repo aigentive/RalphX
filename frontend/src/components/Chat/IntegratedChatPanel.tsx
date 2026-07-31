@@ -138,7 +138,6 @@ import { toast } from "sonner";
 
 // Stable empty array to avoid new reference on every render when tasks query returns undefined
 const EMPTY_TASKS: never[] = [];
-const EMPTY_PRESENTED_QUEUED_MESSAGES: never[] = [];
 const AUTOMATION_SETUP_PROPOSAL_KIND = "automation_setup_proposal";
 const AUTOMATION_SETUP_PROPOSAL_APPLY_VALUE = "apply_automation_proposal";
 
@@ -990,7 +989,7 @@ export function IntegratedChatPanel({
       agentRunQuery.data?.status === "running" &&
       recoveryDelivery === "interactive");
   const presentedQueuedMessages = shouldHideQueuedMessages
-    ? EMPTY_PRESENTED_QUEUED_MESSAGES
+    ? queuedMessages.filter((message) => message.source === "backend")
     : queuedMessages;
   const hasPresentedQueuedMessages = presentedQueuedMessages.length > 0;
   const personaChipProjectName = useProjectStore(

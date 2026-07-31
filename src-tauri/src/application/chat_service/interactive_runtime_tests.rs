@@ -69,7 +69,9 @@ async fn assert_retiring_owner_remains_armed_until_turn_complete(
             .interactive_process_registry
             .complete_turn_if_owner(key, token, run_id)
             .await,
-        InteractiveProcessTurnCompleteDisposition::RetireAfterTurn,
+        InteractiveProcessTurnCompleteDisposition::RetireAfterTurn {
+            pending_turns: Vec::new(),
+        },
         "the original TurnComplete must still retire its exact owner"
     );
 }

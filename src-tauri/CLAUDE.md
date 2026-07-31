@@ -87,6 +87,7 @@ New pattern → add one-liner here. Pattern name + rule only.
 
 | Pattern | Rule |
 |---|---|
+| User-message delivery contract | Queue-drain/session gates may refuse to resume a session, never to discard a user message; blocked continuations fall back to fresh-session replay (`chat_service_queue.rs`), and staleness applies only to hidden recovery messages. |
 | Backend-owned Startup Gate | `StartupCoordinator` is the sole readiness writer: window first → AppState registration → listener + safety barrier → interactive shell → owned finite recovery settlement; timers/localStorage/recurring loops never authorize readiness |
 | Reuse before invent (NON-NEGOTIABLE) | New behavior extends the seam that owns the domain — transitions → `TaskTransitionService`, publish/review gates → `agent_workspace_review*`, events → `AppState.events`, spawns → `provider_onboarding_gate` + `harness_runtime_registry`, git primitives → `git_service/`, queueing → `chat_service_queue` + durable repo, recovery → the domain's dedicated recovery module. ❌ New parallel services/engines/managers for owned concerns |
 | Validated task transitions | Normal workflow status changes use validated `TaskTransitionService::transition_task*`; corrective/recovery-only jumps use `transition_task_corrective()` / `apply_corrective_transition()`; raw `internal_status` writes are limited to canonical engine/bootstrap paths |

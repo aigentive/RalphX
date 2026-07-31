@@ -3,7 +3,7 @@
 // Handles queued messages that were sent while an agent was running.
 // These messages are automatically processed via --resume after the initial run completes.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
@@ -14,17 +14,19 @@ use super::chat_service_streaming::{
     persist_message_text_timeline_item, process_stream_background,
 };
 use super::chat_service_types::{
-    AgentErrorPayload, AgentMessageCreatedPayload, AgentQueueSentPayload, AgentRunStartedPayload,
+    AgentErrorPayload, AgentMessageCreatedPayload, AgentMessageQueuedPayload,
+    AgentQueueSentPayload, AgentRunStartedPayload,
 };
 use super::has_meaningful_output;
 use super::{
-    persona_resolve_flags_for_conversation, team_intent_for_persisted_coordination_mode,
-    ChatService, SendMessageOptions,
+    message_metadata_hidden_from_ui, persona_resolve_flags_for_conversation,
+    team_intent_for_persisted_coordination_mode, ChatService, SendMessageOptions,
 };
 use crate::application::conversation_reference_inheritance::collect_conversation_inherited_integration_references;
 use crate::application::integration_reference_expansion::{
     expand_integration_references_for_prompt, log_skipped_integration_references,
 };
+use crate::application::interactive_process_registry::PendingStdinTurn;
 use crate::application::persona_resolver::resolve_persona_for_send;
 use crate::application::question_state::QuestionState;
 use crate::application::AppState;
@@ -279,6 +281,128 @@ async fn restore_queue_front(
     persist_durable_front(queued_message_repo, key, &message).await;
 }
 
+fn emit_queue_sent<R: Runtime>(
+    app_handle: Option<&AppHandle<R>>,
+    message: &QueuedMessage,
+    conversation_id: &ChatConversationId,
+    key: &QueueKey,
+) {
+    if let Some(handle) = app_handle {
+        let _ = handle.emit(
+            "agent:queue_sent",
+            AgentQueueSentPayload {
+                message_id: message.id.clone(),
+                conversation_id: conversation_id.as_str().to_string(),
+                context_type: key.context_type.to_string(),
+                context_id: key.context_id.clone(),
+            },
+        );
+    }
+}
+
+fn emit_backend_message_queued<R: Runtime>(
+    app_handle: Option<&AppHandle<R>>,
+    message: &QueuedMessage,
+    conversation_id: Option<String>,
+    key: &QueueKey,
+) {
+    if message_metadata_hidden_from_ui(message.metadata_override.as_deref()) {
+        return;
+    }
+    if let Some(handle) = app_handle {
+        let _ = handle.emit(
+            "agent:message_queued",
+            AgentMessageQueuedPayload {
+                message_id: message.id.clone(),
+                content: message.content.clone(),
+                context_type: key.context_type.to_string(),
+                context_id: key.context_id.clone(),
+                conversation_id,
+                created_at: message.created_at.clone(),
+                attachment_ids: message
+                    .attachment_ids
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect(),
+            },
+        );
+    }
+}
+
+/// Transfer unanswered stdin turns into memory + durable queue truth, then publish it.
+///
+/// Durable failures retain the in-memory retry and surface an error instead of claiming
+/// backend confirmation to the frontend.
+pub(crate) async fn requeue_pending_stdin_turns<R: Runtime>(
+    queued_message_repo: Option<&Arc<dyn QueuedMessageRepository>>,
+    message_queue: &MessageQueue,
+    app_handle: Option<&AppHandle<R>>,
+    context_type: ChatContextType,
+    queue_context_id: &str,
+    conversation_id: Option<String>,
+    pending_turns: Vec<PendingStdinTurn>,
+) {
+    let key = QueueKey::new(context_type, queue_context_id);
+    let queued_messages = pending_turns
+        .into_iter()
+        .map(|turn| {
+            let mut queued = QueuedMessage::new(turn.content);
+            queued.created_at = turn.queued_at.clone();
+            queued.created_at_override = Some(turn.queued_at);
+            queued.metadata_override = turn.metadata_override;
+            queued.persisted_message_id = Some(turn.persisted_message_id);
+            queued
+        })
+        .collect::<Vec<_>>();
+    let mut confirmed_ids = HashSet::new();
+    for queued in queued_messages.iter().rev() {
+        message_queue.queue_front_existing(
+            context_type,
+            queue_context_id.to_string(),
+            queued.clone(),
+        );
+
+        let durable_result = match queued_message_repo {
+            Some(repo) => repo.enqueue_front(&key, queued).await,
+            None => Ok(()),
+        };
+        match durable_result {
+            Ok(()) => {
+                confirmed_ids.insert(queued.id.clone());
+            }
+            Err(error) => {
+                tracing::warn!(
+                    %context_type,
+                    queue_context_id,
+                    queued_message_id = %queued.id,
+                    error = %error,
+                    "[QUEUE] Failed to persist recovered stdin turn"
+                );
+                if let Some(handle) = app_handle {
+                    let _ = handle.emit(
+                        "agent:error",
+                        AgentErrorPayload {
+                            conversation_id: conversation_id.clone(),
+                            context_type: context_type.to_string(),
+                            context_id: queue_context_id.to_string(),
+                            agent_run_id: None,
+                            error: format!(
+                                "Recovered your unanswered message in memory, but durable queue persistence failed: {error}"
+                            ),
+                            stderr: None,
+                        },
+                    );
+                }
+            }
+        }
+    }
+    for queued in &queued_messages {
+        if confirmed_ids.contains(&queued.id) {
+            emit_backend_message_queued(app_handle, queued, conversation_id.clone(), &key);
+        }
+    }
+}
+
 async fn clear_durable_queue(
     queued_message_repo: Option<&Arc<dyn QueuedMessageRepository>>,
     key: &QueueKey,
@@ -460,6 +584,7 @@ fn provider_switch_send_options_for_queued_message(
     SendMessageOptions {
         metadata: queued_msg.metadata_override.clone(),
         created_at: queued_persisted_created_at(queued_msg),
+        persisted_message_id: queued_msg.persisted_message_id.clone(),
         harness_override: queued_msg.harness_override,
         agent_name_override: queued_msg.agent_name_override.clone(),
         persona_directive: queued_msg.persona_directive.clone(),
@@ -496,6 +621,101 @@ fn can_reuse_fresh_provider_run(
         && queued_msg
             .harness_override
             .is_some_and(|harness| Some(harness) == fresh_provider_harness)
+}
+
+enum ReplayOutcome {
+    Delivered {
+        was_queued: bool,
+        agent_run_id: Option<String>,
+    },
+    Failed {
+        error: String,
+    },
+    NoHandle,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn replay_queued_message_via_fresh_session<R: Runtime + 'static>(
+    app_handle: Option<&AppHandle<R>>,
+    execution_state: Option<&Arc<ExecutionState>>,
+    queued_msg: &QueuedMessage,
+    conversation_id: ChatConversationId,
+    context_type: ChatContextType,
+    context_id: &str,
+    queue_context_id: &str,
+    queue_team_intent: Option<TeamIntent>,
+    force_new_provider_session: bool,
+    message_queue: &Arc<MessageQueue>,
+    queued_message_repo: Option<&Arc<dyn QueuedMessageRepository>>,
+    queue_key: &QueueKey,
+    persona_feature_enabled: bool,
+) -> ReplayOutcome {
+    let Some(handle) = app_handle else {
+        restore_queue_front(
+            queued_message_repo,
+            message_queue,
+            queue_key,
+            queued_msg.clone(),
+        )
+        .await;
+        tracing::warn!(
+            %context_type,
+            context_id,
+            queue_context_id,
+            "[QUEUE] Queued message requires chat service replay but no app handle is available"
+        );
+        return ReplayOutcome::NoHandle;
+    };
+
+    let app_state = handle.state::<AppState>();
+    let service = app_state
+        .build_chat_service_for_runtime(execution_state.map(Arc::clone), Some(handle.clone()))
+        .with_persona_feature_enabled(persona_feature_enabled);
+    let send_result = service
+        .send_message(
+            context_type,
+            context_id,
+            &queued_msg.content,
+            provider_switch_send_options_for_queued_message(
+                queued_msg,
+                conversation_id,
+                force_new_provider_session,
+                queue_team_intent,
+            ),
+        )
+        .await;
+
+    match send_result {
+        Ok(result) => {
+            let agent_run_id = (!result.agent_run_id.is_empty()).then_some(result.agent_run_id);
+            tracing::info!(
+                %context_type,
+                context_id,
+                queue_context_id,
+                queued_message_id = %queued_msg.id,
+                agent_run_id = ?agent_run_id,
+                was_queued = result.was_queued,
+                force_new_provider_session,
+                "[QUEUE] Replayed queued message through chat service"
+            );
+            ReplayOutcome::Delivered {
+                was_queued: result.was_queued,
+                agent_run_id,
+            }
+        }
+        Err(error) => {
+            let error = error.to_string();
+            tracing::error!(
+                %context_type,
+                context_id,
+                queue_context_id,
+                queued_message_id = %queued_msg.id,
+                error = %error,
+                "[QUEUE] Failed to replay queued message through chat service"
+            );
+            ReplayOutcome::Failed { error }
+        }
+    }
 }
 
 async fn persist_hidden_resume_in_place_marker(
@@ -1345,80 +1565,44 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
             }
             let target_harness = queued_target_harness(&queued_msg, harness);
 
-            // Emit queue sent event (removes from frontend optimistic UI)
-            if let Some(ref handle) = app_handle {
-                let _ = handle.emit(
-                    "agent:queue_sent",
-                    AgentQueueSentPayload {
-                        message_id: queued_msg.id.clone(),
-                        conversation_id: conversation_id.as_str().to_string(),
-                        context_type: context_type.to_string(),
-                        context_id: queue_context_id.to_string(),
-                    },
-                );
-            }
             if queued_message_requires_fresh_provider_session(&queued_msg, harness) {
-                let Some(ref handle) = app_handle else {
-                    restore_queue_front(
-                        queued_message_repo.as_ref(),
-                        message_queue,
-                        &queue_key,
-                        queued_msg,
-                    )
-                    .await;
-                    tracing::warn!(
-                        %context_type,
-                        context_id,
-                        queue_context_id,
-                        "[QUEUE] Provider switch queued message requires chat service replay but no app handle is available"
-                    );
-                    return QueueProcessingOutcome {
-                        total_processed,
-                        last_run_id,
-                    };
-                };
-
-                let app_state = handle.state::<AppState>();
-                let service = app_state.build_chat_service_for_runtime(
-                    execution_state.as_ref().map(Arc::clone),
-                    Some(handle.clone()),
-                );
                 let force_new_provider_session =
                     !can_reuse_fresh_provider_run(&queued_msg, fresh_provider_harness);
-                let send_result = service
-                    .send_message(
-                        context_type,
-                        context_id,
-                        &queued_msg.content,
-                        provider_switch_send_options_for_queued_message(
+                match replay_queued_message_via_fresh_session(
+                    app_handle.as_ref(),
+                    execution_state.as_ref(),
+                    &queued_msg,
+                    conversation_id.clone(),
+                    context_type,
+                    context_id,
+                    queue_context_id,
+                    queue_team_intent.clone(),
+                    force_new_provider_session,
+                    message_queue,
+                    queued_message_repo.as_ref(),
+                    &queue_key,
+                    persona_feature_enabled,
+                )
+                .await
+                {
+                    ReplayOutcome::Delivered {
+                        was_queued,
+                        agent_run_id,
+                    } => {
+                        emit_queue_sent(
+                            app_handle.as_ref(),
                             &queued_msg,
-                            conversation_id.clone(),
-                            force_new_provider_session,
-                            queue_team_intent.clone(),
-                        ),
-                    )
-                    .await;
-
-                match send_result {
-                    Ok(result) => {
+                            &conversation_id,
+                            &queue_key,
+                        );
                         total_processed += 1;
-                        if !result.agent_run_id.is_empty() {
-                            last_run_id = Some(result.agent_run_id.clone());
+                        if let Some(agent_run_id) = agent_run_id {
+                            last_run_id = Some(agent_run_id);
                         }
-                        if !result.was_queued {
+                        if !was_queued {
                             fresh_provider_harness = Some(target_harness);
                         }
-                        tracing::info!(
-                            %context_type,
-                            context_id,
-                            queue_context_id,
-                            queued_message_id = %queued_msg.id,
-                            agent_run_id = %result.agent_run_id,
-                            was_queued = result.was_queued,
-                            force_new_provider_session,
-                            "[QUEUE] Replayed provider-switch queued message through chat service"
-                        );
-                        if result.was_queued {
+                        if was_queued {
                             return QueueProcessingOutcome {
                                 total_processed,
                                 last_run_id,
@@ -1426,30 +1610,29 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                         }
                         continue;
                     }
-                    Err(error) => {
-                        let error_string = error.to_string();
-                        tracing::error!(
-                            %context_type,
-                            context_id,
-                            queue_context_id,
-                            queued_message_id = %queued_msg.id,
-                            error = %error_string,
-                            "[QUEUE] Failed to replay provider-switch queued message"
+                    ReplayOutcome::Failed { error } => {
+                        emit_queue_sent(
+                            app_handle.as_ref(),
+                            &queued_msg,
+                            &conversation_id,
+                            &queue_key,
                         );
-                        if let Some(ref handle) = app_handle {
-                            let _ = handle.emit(
-                                "agent:error",
-                                AgentErrorPayload {
-                                    conversation_id: Some(conversation_id.as_str().to_string()),
-                                    context_type: context_type.to_string(),
-                                    context_id: context_id.to_string(),
-                                    agent_run_id: None,
-                                    error: error_string,
-                                    stderr: None,
-                                },
-                            );
-                        }
+                        emit_queued_preflight_error(
+                            app_handle.as_ref(),
+                            &conversation_id,
+                            context_type,
+                            context_id,
+                            None,
+                            error,
+                        );
                         total_processed += 1;
+                        return QueueProcessingOutcome {
+                            total_processed,
+                            last_run_id,
+                        };
+                    }
+                    ReplayOutcome::NoHandle => {
+                        // Message was restored to the queue front, not processed.
                         return QueueProcessingOutcome {
                             total_processed,
                             last_run_id,
@@ -1490,45 +1673,90 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     Ok(Some(runtime)) => runtime,
                     Ok(None) => {
                         let error = format!(
-                            "No completed {harness} run owns provider session {session_id}; queued continuation blocked"
+                            "No completed {harness} run owns provider session {session_id}; falling back to fresh-session replay"
                         );
-                        tracing::error!(
+                        tracing::warn!(
                             %conversation_id,
                             %harness,
                             provider_session_id = session_id,
                             "{error}"
                         );
-                        let failed_run = build_queued_preflight_failure_run(
-                            conversation_id.clone(),
-                            harness,
-                            session_id,
-                            run_chain_id,
-                            parent_run_id,
-                            queued_msg.metadata_override.as_deref(),
+                        match replay_queued_message_via_fresh_session(
+                            app_handle.as_ref(),
+                            execution_state.as_ref(),
                             &queued_msg,
-                            parent_run.as_ref(),
-                            queued_agent_context.identity.agent_name.as_deref(),
-                        );
-                        let failed_run_id = persist_failed_queued_run(
-                            agent_run_repo,
-                            app_handle.as_ref(),
-                            failed_run,
-                            &error,
-                        )
-                        .await;
-                        emit_queued_preflight_error(
-                            app_handle.as_ref(),
-                            &conversation_id,
+                            conversation_id.clone(),
                             context_type,
                             context_id,
-                            failed_run_id.clone(),
-                            error,
-                        );
-                        last_run_id = failed_run_id.or(last_run_id);
-                        return QueueProcessingOutcome {
-                            total_processed,
-                            last_run_id,
-                        };
+                            queue_context_id,
+                            queue_team_intent.clone(),
+                            true,
+                            message_queue,
+                            queued_message_repo.as_ref(),
+                            &queue_key,
+                            persona_feature_enabled,
+                        )
+                        .await
+                        {
+                            ReplayOutcome::Delivered { agent_run_id, .. } => {
+                                emit_queue_sent(
+                                    app_handle.as_ref(),
+                                    &queued_msg,
+                                    &conversation_id,
+                                    &queue_key,
+                                );
+                                last_run_id = agent_run_id.or(last_run_id);
+                                return QueueProcessingOutcome {
+                                    total_processed,
+                                    last_run_id,
+                                };
+                            }
+                            ReplayOutcome::NoHandle => {
+                                return QueueProcessingOutcome {
+                                    total_processed,
+                                    last_run_id,
+                                };
+                            }
+                            ReplayOutcome::Failed { error } => {
+                                emit_queue_sent(
+                                    app_handle.as_ref(),
+                                    &queued_msg,
+                                    &conversation_id,
+                                    &queue_key,
+                                );
+                                let failed_run = build_queued_preflight_failure_run(
+                                    conversation_id.clone(),
+                                    harness,
+                                    session_id,
+                                    run_chain_id,
+                                    parent_run_id,
+                                    queued_msg.metadata_override.as_deref(),
+                                    &queued_msg,
+                                    parent_run.as_ref(),
+                                    queued_agent_context.identity.agent_name.as_deref(),
+                                );
+                                let failed_run_id = persist_failed_queued_run(
+                                    agent_run_repo,
+                                    app_handle.as_ref(),
+                                    failed_run,
+                                    &error,
+                                )
+                                .await;
+                                emit_queued_preflight_error(
+                                    app_handle.as_ref(),
+                                    &conversation_id,
+                                    context_type,
+                                    context_id,
+                                    failed_run_id.clone(),
+                                    error,
+                                );
+                                last_run_id = failed_run_id.or(last_run_id);
+                                return QueueProcessingOutcome {
+                                    total_processed,
+                                    last_run_id,
+                                };
+                            }
+                        }
                     }
                     Err(error) => {
                         let error = format!(
@@ -1541,22 +1769,11 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                             error = %error,
                             "Failed to resolve queued continuation runtime"
                         );
-                        let failed_run = build_queued_preflight_failure_run(
-                            conversation_id.clone(),
-                            harness,
-                            session_id,
-                            run_chain_id,
-                            parent_run_id,
-                            queued_msg.metadata_override.as_deref(),
-                            &queued_msg,
-                            parent_run.as_ref(),
-                            queued_agent_context.identity.agent_name.as_deref(),
-                        );
-                        let failed_run_id = persist_failed_queued_run(
-                            agent_run_repo,
-                            app_handle.as_ref(),
-                            failed_run,
-                            &error,
+                        restore_queue_front(
+                            queued_message_repo.as_ref(),
+                            message_queue,
+                            &queue_key,
+                            queued_msg,
                         )
                         .await;
                         emit_queued_preflight_error(
@@ -1564,16 +1781,23 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                             &conversation_id,
                             context_type,
                             context_id,
-                            failed_run_id.clone(),
+                            None,
                             error,
                         );
-                        last_run_id = failed_run_id.or(last_run_id);
+                        // Restored to the queue front, so the message was not processed.
+                        total_processed = total_processed.saturating_sub(1);
                         return QueueProcessingOutcome {
                             total_processed,
                             last_run_id,
                         };
                     }
                 };
+            emit_queue_sent(
+                app_handle.as_ref(),
+                &queued_msg,
+                &conversation_id,
+                &queue_key,
+            );
             let (launch_context_type, launch_context_id) = queued_agent_context
                 .conversation
                 .as_ref()
@@ -1841,7 +2065,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
             };
 
             // Persist user message at enqueue time so replayed timelines match live ordering.
-            if !resume_in_place {
+            if !resume_in_place && queued_msg.persisted_message_id.is_none() {
                 let mut user_msg = chat_service_context::create_user_message(
                     context_type,
                     context_id,
@@ -2773,9 +2997,15 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                                     queued_message_repo.as_ref(),
                                     message_queue,
                                     &queue_key,
-                                    resumed_msg,
+                                    resumed_msg.clone(),
                                 )
                                 .await;
+                                emit_backend_message_queued(
+                                    app_handle.as_ref(),
+                                    &resumed_msg,
+                                    Some(conversation_id.as_str()),
+                                    &queue_key,
+                                );
                                 super::chat_service_handlers::apply_system_wide_provider_pause(
                                     &app_handle,
                                     category,

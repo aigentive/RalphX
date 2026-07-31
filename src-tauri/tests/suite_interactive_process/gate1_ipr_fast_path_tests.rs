@@ -18,9 +18,7 @@ use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::{Listener, Manager};
 use tokio::io::AsyncReadExt;
 
-use ralphx_lib::application::chat_service::{
-    ChatService, ChatServiceError, SendMessageOptions, MESSAGE_DELIVERED_NOT_PERSISTED_PREFIX,
-};
+use ralphx_lib::application::chat_service::{ChatService, ChatServiceError, SendMessageOptions};
 use ralphx_lib::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessMetadata, InteractiveProcessRegistry,
 };
@@ -1325,7 +1323,7 @@ async fn gate1_ownerless_process_falls_through_without_stdin_or_message_side_eff
 }
 
 #[tokio::test]
-async fn gate1_message_persistence_failure_reports_delivery_and_keeps_run_authority() {
+async fn gate1_message_persistence_failure_prevents_untracked_stdin_delivery() {
     let mut seed_state = AppState::new_test();
     seed_state.chat_message_repo = Arc::new(FailingChatMessageRepository::new());
     let app = mock_builder()
@@ -1335,7 +1333,7 @@ async fn gate1_message_persistence_failure_reports_delivery_and_keeps_run_author
     let handle = app.handle().clone();
     let state = app.state::<AppState>();
     let context_id = "project-gate1-message-persistence-failure";
-    let (_project_dir, conversation_id, run_id, interactive_key, mut child) =
+    let (_project_dir, conversation_id, _run_id, interactive_key, mut child) =
         setup_live_project_continuation(&state, context_id, None).await;
 
     let run_started_events = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
@@ -1372,17 +1370,13 @@ async fn gate1_message_persistence_failure_reports_delivery_and_keeps_run_author
         .await
         .expect_err("a Gate-1 message persistence failure must not return SendResult success");
 
-    // The turn WAS delivered to the live process, so the caller must be told exactly
-    // that — not "failed to send message", which would discard the user's turn from the
-    // transcript while the agent is answering it.
     assert!(
         matches!(
             error,
-            ChatServiceError::MessageDeliveredNotPersisted(ref message)
-                if message.starts_with(MESSAGE_DELIVERED_NOT_PERSISTED_PREFIX)
-                    && message.contains(CHAT_MESSAGE_CREATE_FAILURE)
+            ChatServiceError::RepositoryError(ref message)
+                if message.contains(CHAT_MESSAGE_CREATE_FAILURE)
         ),
-        "Gate 1 must report delivery-without-persistence distinctly: {error}"
+        "Gate 1 must fail before delivery when the pending turn cannot be persisted: {error}"
     );
     assert!(
         state
@@ -1409,25 +1403,16 @@ async fn gate1_message_persistence_failure_reports_delivery_and_keeps_run_author
             .is_empty(),
         "a failed user-message create must not claim the message was persisted"
     );
-    // Run authority is still emitted: the live process is streaming this turn, and the
-    // frontend drops chunks for run ids it never saw start.
     let observed_run_started = run_started_events
         .lock()
         .expect("run_started event lock")
         .clone();
     assert_eq!(
         observed_run_started.len(),
-        1,
-        "a delivered turn must emit exactly one run_started even when persistence fails"
-    );
-    assert_eq!(
-        observed_run_started[0]["run_id"], run_id,
-        "run_started must reuse the live process run id"
+        0,
+        "an undelivered turn must not emit run_started"
     );
 
-    // Gate 1 intentionally writes the live continuation before persistence. That stdin
-    // delivery is unavoidable once the live process accepts the turn; only later success
-    // effects (message/timeline rows and success events) must be withheld on failure.
     state
         .interactive_process_registry
         .remove(&interactive_key)
@@ -1441,20 +1426,9 @@ async fn gate1_message_persistence_failure_reports_delivery_and_keeps_run_author
         .await
         .expect("read delivered Gate-1 stdin");
     let _ = child.wait().await;
-    let stdin_line = observed.trim();
-    assert_eq!(
-        stdin_line.lines().count(),
-        1,
-        "Gate 1 must send one stdin line"
-    );
-    let envelope: serde_json::Value =
-        serde_json::from_str(stdin_line).expect("Gate 1 must deliver stream-json stdin");
-    assert_eq!(envelope["type"], "user");
     assert!(
-        envelope["message"]["content"]
-            .as_str()
-            .is_some_and(|content| content.contains("deliver stdin before persistence fails")),
-        "Gate 1 must deliver the failed-persistence turn to the live stdin"
+        observed.is_empty(),
+        "failed persistence must not write an untracked user turn to stdin"
     );
 }
 

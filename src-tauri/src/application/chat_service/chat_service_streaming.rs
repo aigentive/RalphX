@@ -2428,6 +2428,17 @@ pub async fn process_stream_background<R: Runtime>(
 
                         turns_finalized += 1;
 
+                        // Interactive stdin turns are consumed in order. Once an
+                        // assistant turn finalizes, its matching pending user turn
+                        // no longer needs exit recovery.
+                        if let (Some(registry), Some(key), Some(token)) = (
+                            interactive_process_registry.as_ref(),
+                            interactive_process_key.as_ref(),
+                            interactive_process_token,
+                        ) {
+                            let _ = registry.pop_pending_turn(key, token).await;
+                        }
+
                         // Free the execution slot while process is idle between turns.
                         // Only for contexts that use execution slots.
                         if super::uses_execution_slot(context_type) {
@@ -2553,22 +2564,41 @@ pub async fn process_stream_background<R: Runtime>(
                             }
                         }
 
-                        let retire_after_turn =
+                        let retired_pending_turns =
                             if let (Some(registry), Some(key), Some(token), Some(run_id)) = (
                                 interactive_process_registry.as_ref(),
                                 interactive_process_key.as_ref(),
                                 interactive_process_token,
                                 agent_run_id.as_deref(),
                             ) {
-                                matches!(
-                                    registry.complete_turn_if_owner(key, token, run_id).await,
-                                    InteractiveProcessTurnCompleteDisposition::RetireAfterTurn
-                                )
+                                match registry.complete_turn_if_owner(key, token, run_id).await {
+                                    InteractiveProcessTurnCompleteDisposition::RetireAfterTurn {
+                                        pending_turns,
+                                    } => Some(pending_turns),
+                                    InteractiveProcessTurnCompleteDisposition::Stale
+                                    | InteractiveProcessTurnCompleteDisposition::KeepAlive => None,
+                                }
                             } else {
-                                false
+                                None
                             };
 
-                        if retire_after_turn {
+                        if let Some(pending_turns) = retired_pending_turns {
+                            if let Some(handle) = app_handle.as_ref() {
+                                let state = handle.state::<crate::application::AppState>();
+                                super::chat_service_queue::requeue_pending_stdin_turns(
+                                    Some(&state.queued_message_repo),
+                                    &state.message_queue,
+                                    Some(handle),
+                                    context_type,
+                                    interactive_process_key
+                                        .as_ref()
+                                        .map(|key| key.context_id.as_str())
+                                        .unwrap_or(context_id),
+                                    Some(conversation_id.as_str()),
+                                    pending_turns,
+                                )
+                                .await;
+                            }
                             tracing::info!(
                                 conversation_id = %conversation_id_str,
                                 "TurnComplete retired exact runtime for mode handoff"

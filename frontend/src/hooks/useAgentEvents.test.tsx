@@ -397,6 +397,40 @@ describe("useAgentEvents", () => {
     });
   });
 
+  describe("agent:message_queued", () => {
+    it("marks backend queue events as backend-confirmed", () => {
+      const wrapper = createWrapper();
+      renderHook(() => useAgentEvents("conv-1"), { wrapper });
+
+      useChatStore.getState().queueMessage(
+        "task:task-123",
+        "Continue after this turn",
+        "queued-backend-1",
+      );
+      expect(
+        useChatStore.getState().queuedMessages["task:task-123"]?.[0]?.source,
+      ).toBe("optimistic");
+
+      act(() => {
+        emitEvent("agent:message_queued", {
+          message_id: "queued-backend-1",
+          content: "Continue after this turn",
+          context_type: "task",
+          context_id: "task-123",
+          conversation_id: "conv-1",
+          created_at: "2026-07-31T10:00:00Z",
+        });
+      });
+
+      expect(
+        useChatStore.getState().queuedMessages["task:task-123"]?.[0],
+      ).toMatchObject({
+        id: "queued-backend-1",
+        source: "backend",
+      });
+    });
+  });
+
   describe("agent:message_created cache updates", () => {
     it("appends optimistic user messages to the infinite conversation history shape", () => {
       const { queryClient, wrapper } = createWrapperWithClient();
