@@ -983,7 +983,12 @@ fn detector_b_is_calibrated_and_floor_enforced() {
         // `remote_conversation_list_reads_carry_no_spawn_authority` as the proof.
         // 546 -> 548: the two merged frontend commands dispositioned here. This is a census
         // count change; their mechanisms are pinned independently below.
-        548,
+        // 548 -> 551: three commands were added to `generate_handler!` on this branch after the
+        // 548 comment without bumping this literal; reconciled here to the measured census.
+        // 551 -> 552: the spawn-free Agents-sidebar inbox read `list_remote_agent_sidebar_conversations`.
+        // Detector-silent by construction (recovery-free hydrator seam);
+        // `remote_agent_sidebar_read_carries_no_spawn_authority` is the proof.
+        552,
         "review the detector against the full command census"
     );
     let flagged = spawn_triggering_writers(
@@ -3361,6 +3366,82 @@ fn remote_conversation_list_reads_carry_no_spawn_authority() {
     }
 }
 
+// ---------------------------------------------------------------------------------------
+// The Agents-sidebar inbox seam split (registers the paired-device inbox read)
+// ---------------------------------------------------------------------------------------
+//
+// Unlike the batch-5 list reads, the sidebar list WAS a genuine detector-(c) refusal: it
+// hydrates each workspace through `agent_workspace_response_for_state`, whose FIRST action is
+// to schedule PR-supervision recovery, and the recovery scheduler reaches the git CLI
+// resolver. The registered twin routes through a recovery-free hydrator instead. The split is
+// a REAL by-name call graph split, not a runtime flag: the two hydrators are separate named
+// functions so the detector can prove which one each entry point reaches.
+
+/// The registered sidebar twin reaches NO arming sink and NO process-launch sink.
+///
+/// This is the detector-(c) clearance for the registration: it is the whole reason the split
+/// exists, so it is asserted directly over the call graph rather than trusted from the ledger
+/// reason. If a future edit reconnects the recovery-scheduling hydrator to the remote path,
+/// this fails instead of silently re-arming the paired-device inbox read.
+#[test]
+fn remote_agent_sidebar_read_carries_no_spawn_authority() {
+    let graph = CallGraph::build(&load_production_sources());
+
+    let closure = graph.closure(["list_remote_agent_sidebar_conversations".to_string()]);
+    assert!(
+        !closure.visited.is_empty(),
+        "`list_remote_agent_sidebar_conversations` resolved to an empty closure; the graph did \
+         not find its body and this assertion would be vacuous"
+    );
+    assert!(
+        !closure_is_arming(&closure),
+        "`list_remote_agent_sidebar_conversations` reaches an arming sink; the recovery-free \
+         hydrator seam has been broken"
+    );
+    assert!(
+        !tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS),
+        "`list_remote_agent_sidebar_conversations` reaches a process-launch sink; the remote \
+         inbox read must not resolve a CLI"
+    );
+    assert!(
+        !tokens_reach_any(&closure.tokens, TRANSITION_SINKS),
+        "`list_remote_agent_sidebar_conversations` reaches a transition sink"
+    );
+}
+
+/// CALIBRATION: the LOCAL sidebar command still arms and still reaches the CLI resolver.
+///
+/// The split is only meaningful if the detector still fires on the local shape — otherwise the
+/// remote twin's silence would be a property of a detector that stopped working, not of the
+/// seam. The local `list_agent_sidebar_conversations` remains host-denied because it schedules
+/// PR-supervision recovery on every inbox load; that behaviour, and its process-launch reach,
+/// is pinned here so a refactor that quietly drops it returns the command to review.
+#[test]
+fn local_agent_sidebar_read_still_schedules_recovery_and_reaches_the_cli() {
+    let graph = CallGraph::build(&load_production_sources());
+
+    let closure = graph.closure(["list_agent_sidebar_conversations".to_string()]);
+    assert!(
+        !closure.visited.is_empty(),
+        "`list_agent_sidebar_conversations` resolved to an empty closure"
+    );
+    assert!(
+        closure_is_arming(&closure),
+        "`list_agent_sidebar_conversations` stopped arming; if the local inbox load no longer \
+         schedules recovery, re-audit its host-denied ledger row"
+    );
+    assert!(
+        tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS),
+        "`list_agent_sidebar_conversations` no longer reaches a process-launch sink; re-audit \
+         its `host-denied-spawns-process` classification"
+    );
+    // It must stay OFF the facade: only the recovery-free twin is registered.
+    assert!(
+        find_spec("list_agent_sidebar_conversations").is_none(),
+        "the recovery-scheduling local sidebar command must never be registered on the facade"
+    );
+}
+
 /// CALIBRATION for the batch-5 split: the spawn-free read module holds none of the three
 /// authority carriers, asserted over SOURCE rather than left as prose.
 ///
@@ -3496,9 +3577,14 @@ fn the_b2_workspace_read_refusals_are_pinned() {
     );
 
     // MECHANISM 2 — the sidebar list reaches the same arming surface through its own seam, so
-    // its `_for_app_state` shape is NOT sufficient to make it registrable. Recorded explicitly
-    // because a reviewer who saw batch 5's list split could reasonably expect this one to be
-    // the same easy win, and it is not.
+    // its `_for_app_state` shape is NOT sufficient to make the LOCAL command registrable: it
+    // hydrates through `agent_workspace_response_for_state`, which schedules PR-supervision
+    // recovery. That is why `list_agent_sidebar_conversations` stays host-denied and off the
+    // facade. The paired-device inbox read is served instead by a REGISTERED remote twin,
+    // `list_remote_agent_sidebar_conversations`, which routes through a recovery-free hydrator
+    // and blanks `worktree_path` — see `remote_agent_sidebar_read_carries_no_spawn_authority`
+    // and `local_agent_sidebar_read_still_schedules_recovery_and_reaches_the_cli`. The refusal
+    // recorded here is the refusal of the LOCAL/arming command, which is unchanged.
     let sidebar = graph.closure(["list_agent_sidebar_conversations_for_app_state".to_string()]);
     assert!(!sidebar.visited.is_empty());
     assert!(

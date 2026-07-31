@@ -602,6 +602,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: [],
     pins: [],
   },
+  "get_remote_provider_readiness": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
   "get_research_presets": {
     opClass: "read",
     argumentSensitive: false,
@@ -903,6 +909,18 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     pins: [],
   },
   "list_remote_agent_conversations_page": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "list_remote_agent_sidebar_conversations": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
+  "list_remote_projects": {
     opClass: "read",
     argumentSensitive: false,
     capabilities: [],
@@ -1293,6 +1311,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     pins: [],
   },
   "update_qa_settings": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl"],
+    pins: [],
+  },
+  "update_remote_execution_settings": {
     opClass: "agentControl",
     argumentSensitive: false,
     capabilities: ["agentControl"],

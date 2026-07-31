@@ -67,6 +67,10 @@
 use tauri::State;
 
 use crate::application::AppState;
+use crate::commands::agent_sidebar_commands::{
+    list_agent_sidebar_conversations_read_only_for_app_state,
+    AgentSidebarConversationGroupsResponse, AgentSidebarConversationsInput,
+};
 use crate::commands::unified_chat_commands::{
     get_agent_conversation_for_app_state, get_agent_conversation_messages_page_for_app_state,
     get_agent_conversation_timeline_page_for_app_state, list_agent_conversations_for_app_state,
@@ -173,4 +177,52 @@ pub async fn get_remote_agent_conversation_timeline_page(
         before_sequence,
     )
     .await
+}
+
+/// List the Agents-sidebar inbox groups for a paired device, without scheduling recovery or
+/// disclosing host paths.
+///
+/// This twin exists for two reasons, both security boundaries rather than conveniences:
+///
+/// * **No host-side spawn.** It delegates to
+///   `list_agent_sidebar_conversations_read_only_for_app_state`, which hydrates workspaces
+///   through the recovery-free hydrator. The LOCAL `list_agent_sidebar_conversations` schedules
+///   PR-supervision recovery on every inbox load (and thereby reaches the git CLI resolver), so
+///   it is deliberately unregistered on the facade — a paired viewer polling its inbox must not
+///   nudge host-owned background recovery. The read-only seam is what keeps this closure clear
+///   of detector (c)'s process-launch floor.
+/// * **No host path disclosure.** Every other field of `AgentConversationWorkspaceResponse`
+///   (branch names, PR/publication status, IDs, mode, timestamps) is safe metadata already
+///   exposed through registered reads, but `worktree_path` is an absolute host filesystem path.
+///   [`strip_worktree_paths_from_sidebar_groups`] blanks it out of every row before the payload
+///   crosses the wire. The blanking happens HERE, at the facade, so the shared local response
+///   type keeps the field for local callers (the desktop UI reads it for the terminal/publish
+///   surfaces).
+#[tauri::command]
+pub async fn list_remote_agent_sidebar_conversations(
+    input: AgentSidebarConversationsInput,
+    state: State<'_, AppState>,
+) -> Result<AgentSidebarConversationGroupsResponse, String> {
+    let mut groups =
+        list_agent_sidebar_conversations_read_only_for_app_state(input, state.inner()).await?;
+    strip_worktree_paths_from_sidebar_groups(&mut groups);
+    Ok(groups)
+}
+
+/// Blank the host `worktree_path` on every sidebar row's workspace.
+///
+/// The field is set to an empty string rather than dropped: the frontend zod schema requires
+/// `worktree_path` (it is not optional), and the Agents sidebar never renders it, so an empty
+/// string is both wire-compatible and non-disclosing. The absence guarantee is asserted by
+/// `commands::agent_sidebar_commands::tests::remote_agent_sidebar_projection_blanks_only_the_worktree_path`.
+pub(crate) fn strip_worktree_paths_from_sidebar_groups(
+    groups: &mut AgentSidebarConversationGroupsResponse,
+) {
+    for group in &mut groups.groups {
+        for row in &mut group.rows {
+            if let Some(workspace) = row.workspace.as_mut() {
+                workspace.worktree_path = String::new();
+            }
+        }
+    }
 }

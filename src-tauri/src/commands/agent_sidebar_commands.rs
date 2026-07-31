@@ -7,7 +7,8 @@ use tauri::State;
 use crate::application::AppState;
 use crate::commands::unified_chat_commands::{
     agent_conversation_response_for_state, agent_workspace_response_for_state,
-    AgentConversationResponse, AgentConversationWorkspaceResponse,
+    agent_workspace_response_without_repair_recovery_for_state, AgentConversationResponse,
+    AgentConversationWorkspaceResponse,
 };
 use crate::domain::entities::{
     AgentRunStatus, ChatContextType, ChatConversation, ChatConversationId, Project, ProjectId,
@@ -234,10 +235,102 @@ pub async fn list_agent_sidebar_conversations(
     list_agent_sidebar_conversations_for_app_state(input, state.inner()).await
 }
 
+/// Hydrate every requested project's workspace responses through the FULL hydrator, which — by
+/// design — schedules host-side PR-supervision recovery as a side effect of a workspace load.
+/// This is the LOCAL/host path: a local inbox load is allowed to nudge recovery.
+///
+/// The remote facade must NOT do this; see [`hydrate_sidebar_workspaces_read_only`]. The two
+/// hydrators are named (never passed as a function pointer) so the authority call graph can
+/// PROVE which one each entry point reaches — a pointer would collapse both to the same
+/// token-only, edge-free node and the detector could no longer distinguish them. The local
+/// wrapper reaches `agent_workspace_response_for_state`, which arms and resolves the git CLI
+/// through the recovery scheduler; the remote wrapper reaches only the recovery-free hydrator.
+async fn hydrate_sidebar_workspaces_with_recovery(
+    state: &AppState,
+    project_ids: &[String],
+) -> Result<HashMap<ChatConversationId, AgentConversationWorkspaceResponse>, String> {
+    let mut workspace_responses = HashMap::new();
+    for project_id_string in normalize_project_ids(project_ids.to_vec()) {
+        let project_id = ProjectId::from_string(project_id_string);
+        let workspaces = state
+            .agent_conversation_workspace_repo
+            .get_by_project_id(&project_id)
+            .await
+            .map_err(|e| e.to_string())?;
+        for workspace in workspaces {
+            let conversation_id = workspace.conversation_id;
+            let response = agent_workspace_response_for_state(state, workspace).await?;
+            workspace_responses.insert(conversation_id, response);
+        }
+    }
+    Ok(workspace_responses)
+}
+
+/// Recovery-free twin of [`hydrate_sidebar_workspaces_with_recovery`] for the remote facade.
+///
+/// Delegates to `agent_workspace_response_without_repair_recovery_for_state`, which returns the
+/// SAME persisted workspace projection but does NOT schedule PR-supervision recovery. A paired
+/// device reading its Agents inbox must not trigger host-owned background recovery work, and —
+/// because the recovery scheduler is what reaches the git CLI resolver — routing the remote
+/// read through this hydrator is also what keeps the remote closure clear of detector (c)'s
+/// process-launch floor. Proven by
+/// `remote_server::capability_ledger_tests::remote_agent_sidebar_read_carries_no_spawn_authority`.
+async fn hydrate_sidebar_workspaces_read_only(
+    state: &AppState,
+    project_ids: &[String],
+) -> Result<HashMap<ChatConversationId, AgentConversationWorkspaceResponse>, String> {
+    let mut workspace_responses = HashMap::new();
+    for project_id_string in normalize_project_ids(project_ids.to_vec()) {
+        let project_id = ProjectId::from_string(project_id_string);
+        let workspaces = state
+            .agent_conversation_workspace_repo
+            .get_by_project_id(&project_id)
+            .await
+            .map_err(|e| e.to_string())?;
+        for workspace in workspaces {
+            let conversation_id = workspace.conversation_id;
+            let response =
+                agent_workspace_response_without_repair_recovery_for_state(state, workspace)
+                    .await?;
+            workspace_responses.insert(conversation_id, response);
+        }
+    }
+    Ok(workspace_responses)
+}
+
 #[doc(hidden)]
 pub async fn list_agent_sidebar_conversations_for_app_state(
     input: AgentSidebarConversationsInput,
     state: &AppState,
+) -> Result<AgentSidebarConversationGroupsResponse, String> {
+    let workspace_responses =
+        hydrate_sidebar_workspaces_with_recovery(state, &input.project_ids).await?;
+    list_agent_sidebar_conversation_groups_from_hydrated(input, state, workspace_responses).await
+}
+
+/// Spawn-free `_for_app_state` seam for the remote facade: identical grouping, recovery-free
+/// workspace hydration. The facade twin
+/// (`commands::remote_transcript_commands::list_remote_agent_sidebar_conversations`) blanks
+/// `worktree_path` on top of this; the grouping logic itself is shared verbatim with the local
+/// path via [`list_agent_sidebar_conversation_groups_from_hydrated`], so the two transports
+/// cannot drift.
+pub(crate) async fn list_agent_sidebar_conversations_read_only_for_app_state(
+    input: AgentSidebarConversationsInput,
+    state: &AppState,
+) -> Result<AgentSidebarConversationGroupsResponse, String> {
+    let workspace_responses =
+        hydrate_sidebar_workspaces_read_only(state, &input.project_ids).await?;
+    list_agent_sidebar_conversation_groups_from_hydrated(input, state, workspace_responses).await
+}
+
+/// Shared grouping over PRE-HYDRATED workspace responses. Holds no hydrator call of its own, so
+/// its authority profile is inherited entirely from whichever caller built `workspace_responses`
+/// — the seam that lets the local path arm and the remote path stay clean without forking this
+/// grouping assembler.
+async fn list_agent_sidebar_conversation_groups_from_hydrated(
+    input: AgentSidebarConversationsInput,
+    state: &AppState,
+    mut workspace_responses: HashMap<ChatConversationId, AgentConversationWorkspaceResponse>,
 ) -> Result<AgentSidebarConversationGroupsResponse, String> {
     let group_by = SidebarGroupBy::parse(input.group_by.as_deref())?;
     let row_sort = SidebarRowSort::parse(input.sort.as_deref())?;
@@ -294,18 +387,6 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
             }
         }
 
-        let workspaces = state
-            .agent_conversation_workspace_repo
-            .get_by_project_id(&project_id)
-            .await
-            .map_err(|e| e.to_string())?;
-        let mut workspace_by_conversation_id = HashMap::new();
-        for workspace in workspaces {
-            let conversation_id = workspace.conversation_id;
-            let response = agent_workspace_response_for_state(state, workspace).await?;
-            workspace_by_conversation_id.insert(conversation_id, response);
-        }
-
         let conversations = state
             .chat_conversation_repo
             .get_by_context_filtered(
@@ -317,7 +398,7 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
             .map_err(|e| e.to_string())?;
 
         for conversation in conversations {
-            let workspace = workspace_by_conversation_id.remove(&conversation.id);
+            let workspace = workspace_responses.remove(&conversation.id);
             if conversation.automation_run_id.is_some() {
                 continue;
             }
@@ -2871,5 +2952,127 @@ mod tests {
             publication_state_from_domain(Some(&workspace), Some(AgentRunStatus::Cancelled)),
             SidebarPublicationState::Active
         );
+    }
+
+    /// Sentinel host path seeded into a workspace row so the absence assertion cannot pass
+    /// vacuously.
+    const WORKTREE_SENTINEL: &str = "/SECRET/HOST/WORKTREE";
+
+    async fn seed_sidebar_row_with_worktree_sentinel(
+        state: &AppState,
+    ) -> (Project, ProjectId, ChatConversation) {
+        let project = create_project(state, "sentinel-project").await;
+        let project_id = project.id.clone();
+        let conversation =
+            create_conversation(state, &project_id, "Ship the inbox", Utc::now()).await;
+        let workspace = AgentConversationWorkspace::new(
+            conversation.id,
+            project_id.clone(),
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "develop".to_string(),
+            Some("Current branch (develop)".to_string()),
+            None,
+            format!("agent/{}", conversation.id),
+            WORKTREE_SENTINEL.to_string(),
+        );
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .unwrap();
+        (project, project_id, conversation)
+    }
+
+    /// Returns the single sidebar row workspace object from a serialized groups payload.
+    fn only_row_workspace(value: &serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+        let mut found = None;
+        for group in value["groups"].as_array().expect("groups is an array") {
+            for row in group["rows"].as_array().expect("rows is an array") {
+                if let Some(workspace) = row.get("workspace").and_then(|w| w.as_object()) {
+                    assert!(
+                        found.is_none(),
+                        "expected exactly one workspace-bearing row"
+                    );
+                    found = Some(workspace.clone());
+                }
+            }
+        }
+        found.expect("a workspace-bearing row must be present")
+    }
+
+    /// The remote projection blanks ONLY `worktree_path`; every other workspace field survives
+    /// byte-for-byte, and the sentinel host path never appears anywhere in the remote payload.
+    ///
+    /// This is the parity + ABSENCE guarantee for `list_remote_agent_sidebar_conversations`:
+    /// the local read (through the recovery-scheduling hydrator) carries the real host path, and
+    /// the projected read (recovery-free hydrator + facade strip, exactly what the twin does)
+    /// carries an empty string in its place with no other field changed.
+    #[tokio::test]
+    async fn remote_agent_sidebar_projection_blanks_only_the_worktree_path() {
+        let state = AppState::new_test();
+        let (_, project_id, _) = seed_sidebar_row_with_worktree_sentinel(&state).await;
+
+        // Local path: the full response carries the real host worktree_path.
+        let local =
+            list_agent_sidebar_conversations_for_app_state(sidebar_input(&project_id), &state)
+                .await
+                .unwrap();
+        let local_value = serde_json::to_value(&local).unwrap();
+        let local_serialized = serde_json::to_string(&local_value).unwrap();
+        assert!(
+            local_serialized.contains(WORKTREE_SENTINEL),
+            "the local sidebar read must carry the real worktree_path, or the absence check below \
+             would pass for the wrong reason"
+        );
+        let local_workspace = only_row_workspace(&local_value);
+        assert_eq!(
+            local_workspace["worktree_path"],
+            serde_json::json!(WORKTREE_SENTINEL)
+        );
+
+        // Remote path: recovery-free hydration + the exact facade projection the twin applies.
+        let mut projected = list_agent_sidebar_conversations_read_only_for_app_state(
+            sidebar_input(&project_id),
+            &state,
+        )
+        .await
+        .unwrap();
+        crate::commands::remote_transcript_commands::strip_worktree_paths_from_sidebar_groups(
+            &mut projected,
+        );
+        let projected_value = serde_json::to_value(&projected).unwrap();
+        let projected_serialized = serde_json::to_string(&projected_value).unwrap();
+
+        // ABSENCE: the sentinel host path cannot appear anywhere in the remote payload.
+        assert!(
+            !projected_serialized.contains(WORKTREE_SENTINEL),
+            "the host worktree_path leaked into the remote sidebar payload"
+        );
+
+        let projected_workspace = only_row_workspace(&projected_value);
+        // The field is present but blank — not omitted (the zod schema requires it).
+        assert_eq!(projected_workspace["worktree_path"], serde_json::json!(""));
+
+        // PARITY: every OTHER workspace field is identical to the local read.
+        assert_eq!(
+            local_workspace
+                .keys()
+                .collect::<std::collections::BTreeSet<_>>(),
+            projected_workspace
+                .keys()
+                .collect::<std::collections::BTreeSet<_>>(),
+            "the projection must not add or drop workspace keys"
+        );
+        for (key, local_field) in &local_workspace {
+            if key == "worktree_path" {
+                continue;
+            }
+            assert_eq!(
+                projected_workspace.get(key),
+                Some(local_field),
+                "allowlisted field `{key}` diverged between local and remote sidebar reads"
+            );
+        }
     }
 }

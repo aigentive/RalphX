@@ -32,6 +32,7 @@ import {
   getConversation,
   getConversationMessagesPage,
   getConversationTimelinePage,
+  listAgentSidebarConversations,
   listConversations,
   listConversationsPage,
 } from "@/api/chat";
@@ -363,6 +364,58 @@ describe("local transcript reads are unchanged", () => {
       "get_agent_conversation_timeline_page",
     ]);
     // Nothing left the machine.
+    expect(
+      primitiveInvoke.mock.calls.some((call) => call[0] === "remote_invoke"),
+    ).toBe(false);
+  });
+});
+
+describe("agent sidebar inbox read routing", () => {
+  const SIDEBAR_INPUT = {
+    projectIds: [PROJECT_ID],
+    groupBy: "publication",
+  } as const;
+
+  it("routes to list_remote_agent_sidebar_conversations under a remote environment", async () => {
+    useRemoteEnvironment();
+    remoteOk({ groups: [] });
+
+    await listAgentSidebarConversations({ ...SIDEBAR_INPUT });
+
+    expect(primitiveInvoke).toHaveBeenCalledTimes(1);
+    expect(primitiveInvoke.mock.calls[0]?.[0]).toBe("remote_invoke");
+
+    const input = wireInput();
+    expect(input.id).toBe(REMOTE_ID);
+    expect(input.cmd).toBe("list_remote_agent_sidebar_conversations");
+    expect(input.cmd).not.toBe("list_agent_sidebar_conversations");
+    // camelCase, wrapped under `input` — the shape the host struct deserializes.
+    expect(input.args).toEqual({
+      input: {
+        projectIds: [PROJECT_ID],
+        includeArchived: false,
+        archivedOnly: false,
+        groupBy: "publication",
+      },
+    });
+  });
+
+  it("routes to the local list_agent_sidebar_conversations otherwise", async () => {
+    primitiveInvoke.mockResolvedValue({ groups: [] });
+
+    await listAgentSidebarConversations({ ...SIDEBAR_INPUT });
+
+    expect(primitiveInvoke).toHaveBeenCalledTimes(1);
+    expect(primitiveInvoke.mock.calls[0]?.[0]).toBe("list_agent_sidebar_conversations");
+    // The same wrapped-under-`input` camelCase args reach the local command.
+    expect(primitiveInvoke.mock.calls[0]?.[1]).toEqual({
+      input: {
+        projectIds: [PROJECT_ID],
+        includeArchived: false,
+        archivedOnly: false,
+        groupBy: "publication",
+      },
+    });
     expect(
       primitiveInvoke.mock.calls.some((call) => call[0] === "remote_invoke"),
     ).toBe(false);

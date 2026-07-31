@@ -1155,6 +1155,14 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
         ),
     },
     CommandOverride {
+        command: "list_remote_agent_sidebar_conversations",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "Agents-sidebar inbox read over conversation/workspace/run repositories, hydrated through the recovery-free workspace seam so it schedules NO PR-supervision recovery and reaches no CLI resolver; the host worktree_path is blanked at the facade; propagates read errors. The local list_agent_sidebar_conversations stays host-denied because it DOES schedule recovery",
+        ),
+    },
+    CommandOverride {
         command: "get_agent_conversation_stats",
         policy: policy(
             RiskClass::Read,

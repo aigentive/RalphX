@@ -1575,6 +1575,20 @@ crate::remote_commands! {
         call: async,
         result: fallible,
     },
+    // The Agents-sidebar inbox read. Registered through the recovery-free `_for_app_state` seam
+    // and the `worktree_path`-blanking facade twin, NOT the local `list_agent_sidebar_conversations`
+    // (which schedules PR-supervision recovery and reaches the git CLI resolver — detector (c)).
+    "list_remote_agent_sidebar_conversations"
+        => crate::commands::remote_transcript_commands::list_remote_agent_sidebar_conversations {
+        class: Read,
+        caps: [],
+        params: [
+            (arg input: crate::commands::agent_sidebar_commands::AgentSidebarConversationsInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
 
     // -----------------------------------------------------------------------------------
     // The B2 detector-silent getters (batch 4). Five of seventeen candidates; the other

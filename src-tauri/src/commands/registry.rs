@@ -431,6 +431,7 @@ macro_rules! register_tauri_commands {
             commands::remote_workspace_commands::list_remote_projects,
             commands::remote_workspace_commands::get_remote_provider_readiness,
             commands::remote_transcript_commands::list_remote_agent_conversations_page,
+            commands::remote_transcript_commands::list_remote_agent_sidebar_conversations,
             // Task context commands
             commands::task_context_commands::get_task_context,
             commands::task_context_commands::get_artifact_full,

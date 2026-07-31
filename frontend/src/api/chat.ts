@@ -3945,33 +3945,47 @@ export async function listAgentSidebarConversations(
   input: AgentSidebarConversationsInput,
 ): Promise<AgentSidebarConversationGroupsResponse> {
   const normalizedSearch = input.search?.trim();
-  const raw = await typedInvoke(
-    "list_agent_sidebar_conversations",
-    {
-      input: {
-        projectIds: input.projectIds,
-        includeArchived: input.includeArchived ?? false,
-        archivedOnly: input.archivedOnly ?? false,
-        ...(normalizedSearch ? { search: normalizedSearch } : {}),
-        ...(input.publicationStates
-          ? { publicationStates: input.publicationStates }
-          : {}),
-        ...(input.groupBy ? { groupBy: input.groupBy } : {}),
-        ...(input.sort ? { sort: input.sort } : {}),
-        ...(input.limitPerGroup != null
-          ? { limitPerGroup: input.limitPerGroup }
-          : {}),
-        ...(input.offsets ? { offsets: input.offsets } : {}),
-        ...(input.pinnedConversationIds
-          ? { pinnedConversationIds: input.pinnedConversationIds }
-          : {}),
-        ...(input.priorityConversationIds
-          ? { priorityConversationIds: input.priorityConversationIds }
-          : {}),
-      },
+  const args = {
+    input: {
+      projectIds: input.projectIds,
+      includeArchived: input.includeArchived ?? false,
+      archivedOnly: input.archivedOnly ?? false,
+      ...(normalizedSearch ? { search: normalizedSearch } : {}),
+      ...(input.publicationStates
+        ? { publicationStates: input.publicationStates }
+        : {}),
+      ...(input.groupBy ? { groupBy: input.groupBy } : {}),
+      ...(input.sort ? { sort: input.sort } : {}),
+      ...(input.limitPerGroup != null
+        ? { limitPerGroup: input.limitPerGroup }
+        : {}),
+      ...(input.offsets ? { offsets: input.offsets } : {}),
+      ...(input.pinnedConversationIds
+        ? { pinnedConversationIds: input.pinnedConversationIds }
+        : {}),
+      ...(input.priorityConversationIds
+        ? { priorityConversationIds: input.priorityConversationIds }
+        : {}),
     },
-    AgentSidebarConversationGroupsResponseSchema,
-  );
+  };
+  // Two literal command names, not a computed one: the local
+  // `list_agent_sidebar_conversations` is unregistered on the facade (it schedules PR-supervision
+  // recovery), so a paired device must call the spawn-free, worktree_path-blanking twin
+  // `list_remote_agent_sidebar_conversations`. The projected payload differs only in that
+  // `worktree_path` is blanked, which the sidebar UI does not render, so the schema and transform
+  // below are shared verbatim. Duplicating the invoke keeps every command name statically
+  // enumerable for the P-11 transport-drift scan (see `remoteTranscriptReadsEnabled`).
+  const raw = remoteTranscriptReadsEnabled()
+    ? await typedInvoke(
+        "list_remote_agent_sidebar_conversations",
+        args,
+        AgentSidebarConversationGroupsResponseSchema,
+      )
+    : await typedInvoke(
+        "list_agent_sidebar_conversations",
+        args,
+        AgentSidebarConversationGroupsResponseSchema,
+      );
   return transformAgentSidebarConversationGroups(raw);
 }
 
