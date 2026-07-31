@@ -26,10 +26,9 @@ use crate::domain::agents::{
 use super::spawn_args::shared_streaming_cli_args;
 use super::{
     append_claude_permission_args, apply_common_spawn_env,
-    build_spawnable_command_with_mcp_runtime_context_and_profile, claude_runtime_config,
-    create_mcp_config, ensure_claude_spawn_allowed, find_claude_cli, get_allowed_tools,
-    get_effective_settings, get_preapproved_tools, validate_claude_model_for_cli_path,
-    SpawnableCommand,
+    build_spawnable_command_with_mcp_runtime_context_and_profile, create_mcp_config,
+    ensure_claude_spawn_allowed, find_claude_cli, get_allowed_tools, get_effective_settings,
+    get_preapproved_tools, validate_claude_model_for_cli_path, SpawnableCommand,
 };
 
 #[cfg(test)]
