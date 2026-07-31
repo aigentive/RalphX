@@ -352,12 +352,12 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-  rust-clippy:
-    name: Rust Clippy
+  rust-clippy-min:
+    name: Rust Clippy (no default features)
     needs: changes
     if: needs.changes.outputs.run_rust == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     env:
       RALPHX_TEST_MODE: "1"
     steps:
@@ -376,6 +376,7 @@ jobs:
         uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
           workspaces: './src-tauri -> target'
+          shared-key: rust-clippy-min
 
       - name: Run clippy without default features
         run: |
@@ -385,6 +386,32 @@ jobs:
             --bins \
             --no-default-features \
             -- -D warnings
+
+  rust-clippy-full:
+    name: Rust Clippy (all features)
+    needs: changes
+    if: needs.changes.outputs.run_rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RALPHX_TEST_MODE: "1"
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Linux system dependencies
+        uses: ./.github/actions/linux-deps
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.91.0
+          components: clippy
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: './src-tauri -> target'
+          shared-key: rust-clippy-full
 
       - name: Run clippy with all targets and all features
         run: |
@@ -583,7 +610,8 @@ jobs:
       - rust-ipc-contracts
       - rust-lib-nextest-archive
       - rust-lib-tests
-      - rust-clippy
+      - rust-clippy-min
+      - rust-clippy-full
       - rust-doctests
       - rust-integration-nextest-archive
       - rust-full-integration
@@ -610,7 +638,8 @@ jobs:
             "${{ needs.rust-ipc-contracts.result }}" \
             "${{ needs.rust-lib-nextest-archive.result }}" \
             "${{ needs.rust-lib-tests.result }}" \
-            "${{ needs.rust-clippy.result }}" \
+            "${{ needs.rust-clippy-min.result }}" \
+            "${{ needs.rust-clippy-full.result }}" \
             "${{ needs.rust-doctests.result }}" \
             "${{ needs.rust-integration-nextest-archive.result }}" \
             "${{ needs.rust-full-integration.result }}" \
