@@ -134,7 +134,8 @@ pub async fn list_remote_projects_for_app_state(
             github_pr_enabled: project.github_pr_enabled,
             detected_analysis: project.detected_analysis,
             custom_analysis: project.custom_analysis,
-            analyzed_at: project.analyzed_at.map(|at| at.to_rfc3339()),
+            // Already RFC3339 text on the entity, unlike the two timestamps below.
+            analyzed_at: project.analyzed_at,
             created_at: project.created_at.to_rfc3339(),
             updated_at: project.updated_at.to_rfc3339(),
         })
