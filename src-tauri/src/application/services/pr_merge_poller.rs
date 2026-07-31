@@ -2886,11 +2886,11 @@ async fn route_agent_workspace_pr_autofix_for_target(
             .await?
         {
             if attempt.phase == AgentWorkspaceRepairPhase::Ready {
-                let pre_existing_suppressed = attempt
-                    .pending_reasons
-                    .iter()
-                    .any(|reason| reason == crate::application::agent_workspace_publish_repair_state::PRE_EXISTING_ON_BASE_REPAIR_REASON);
-                if pre_existing_suppressed
+                // Both hold kinds — pre-existing-on-base and unchanged-health — park a generation
+                // against an exact observed failure identity, and neither may be ended by anything
+                // other than GitHub reporting different health.
+                let health_suppressed = crate::application::agent_workspace_publish_repair_state::agent_workspace_repair_is_health_held(&attempt);
+                if health_suppressed
                     && current_issue.as_ref().is_some_and(|issue| {
                         attempt.pr_autofix_health_fingerprint.as_deref()
                             == Some(issue.classification.as_str())
@@ -2898,9 +2898,14 @@ async fn route_agent_workspace_pr_autofix_for_target(
                 {
                     return Ok(false);
                 }
-                if pre_existing_suppressed || attempt.ci_rerun_count > 0 {
-                    if attempt.ci_rerun_fingerprint.as_deref()
-                        == transient_ci_health_fingerprint(&health).as_deref()
+                if health_suppressed || attempt.ci_rerun_count > 0 {
+                    // Only a generation that actually reserved a rerun can be waiting on that
+                    // rerun's conclusion. Without this guard a health hold whose failure is not
+                    // transient-CI shaped compares `None == None` here and suppresses itself
+                    // forever, even once GitHub reports something new.
+                    if attempt.ci_rerun_count > 0
+                        && attempt.ci_rerun_fingerprint.as_deref()
+                            == transient_ci_health_fingerprint(&health).as_deref()
                     {
                         return Ok(false);
                     }

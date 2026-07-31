@@ -305,6 +305,23 @@ async fn reserve_pre_existing_on_base_attempt(
     conversation_id: &ChatConversationId,
     fingerprint: &str,
 ) -> AgentWorkspaceRepairAttempt {
+    reserve_health_held_attempt(
+        repair_repo,
+        conversation_id,
+        fingerprint,
+        crate::application::agent_workspace_publish_repair_state::PRE_EXISTING_ON_BASE_REPAIR_REASON,
+    )
+    .await
+}
+
+/// Parks a PR autofix generation at an exact health fingerprint under the given hold reason. Both
+/// hold reasons must behave identically at the poller's dispatch gate.
+async fn reserve_health_held_attempt(
+    repair_repo: &dyn AgentWorkspaceRepairRepository,
+    conversation_id: &ChatConversationId,
+    fingerprint: &str,
+    hold_reason: &str,
+) -> AgentWorkspaceRepairAttempt {
     use crate::domain::repositories::{
         AgentWorkspaceRepairAttemptTransition, AgentWorkspaceRepairAttemptTransitionOutcome,
         StartOrJoinAgentWorkspaceRepairAttempt, StartOrJoinAgentWorkspaceRepairAttemptOutcome,
@@ -323,24 +340,21 @@ async fn reserve_pre_existing_on_base_attempt(
                 None,
                 Utc::now(),
             ),
-            reason: "PR failure was already present on base".to_string(),
+            reason: hold_reason.to_string(),
             verified_newer_base: false,
             compatibility_projection: None,
             events: Vec::new(),
         })
         .await
-        .expect("pre-existing-on-base repair attempt should start")
+        .expect("health-held repair attempt should start")
     {
         StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(attempt) => attempt,
-        outcome => panic!("expected pre-existing-on-base attempt to start, got {outcome:?}"),
+        outcome => panic!("expected health-held attempt to start, got {outcome:?}"),
     };
     let mut suppressed = started.clone();
     suppressed.phase = AgentWorkspaceRepairPhase::Ready;
     suppressed.pr_autofix_health_fingerprint = Some(fingerprint.to_string());
-    suppressed.pending_reasons = vec![
-        crate::application::agent_workspace_publish_repair_state::PRE_EXISTING_ON_BASE_REPAIR_REASON
-            .to_string(),
-    ];
+    suppressed.pending_reasons = vec![hold_reason.to_string()];
     suppressed.updated_at += chrono::Duration::microseconds(1);
     match repair_repo
         .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
@@ -352,10 +366,10 @@ async fn reserve_pre_existing_on_base_attempt(
             events: Vec::new(),
         })
         .await
-        .expect("pre-existing-on-base reservation should persist")
+        .expect("health-held reservation should persist")
     {
         AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
-        outcome => panic!("expected pre-existing-on-base reservation, got {outcome:?}"),
+        outcome => panic!("expected health-held reservation, got {outcome:?}"),
     }
 }
 
@@ -5899,6 +5913,111 @@ async fn live_pr_autofix_dispatches_new_generation_after_ci_rerun_fingerprint_ch
         .expect("changed fingerprint should start a new generation");
     assert_eq!(current.generation, pending.generation + 1);
     assert_eq!(current.phase, AgentWorkspaceRepairPhase::Repairing);
+}
+
+/// A generation parked because GitHub reported unchanged health must be honoured by the poller's
+/// dispatch gate exactly like a pre-existing-on-base hold. Without this the durable recovery lane
+/// parks the attempt and the very next poll starts another fixer on identical evidence — the
+/// four-generation loop from the 2026-07-31 incident.
+#[tokio::test]
+async fn live_pr_autofix_unchanged_health_hold_suppresses_same_fingerprint_then_redispatches() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let mut workspace = supervised_workspace(
+        "unchanged-health-hold-fingerprint",
+        "project-unchanged-health-hold",
+        worktree.path(),
+    );
+    init_repair_dispatch_repo(worktree.path(), &workspace.branch_name);
+    workspace.base_commit = Some("base-unchanged-health".to_string());
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
+    let branch_update_repo: Arc<dyn BranchUpdateRepository> =
+        Arc::new(MemoryBranchUpdateRepository::new());
+    let agent_run_repo = seeded_latest_pr_fixer_run_repo(&conversation_id).await;
+    let mut original_health = open_pr_health("unchanged-health-head");
+    original_health.checks.push(PrHealthCheck {
+        name: "Rust tests".to_string(),
+        status: Some("completed".to_string()),
+        conclusion: Some("failure".to_string()),
+        details_url: Some("https://github.com/owner/repo/actions/runs/920".to_string()),
+    });
+    let fingerprint = super::classify_agent_workspace_pr_autofix_issue(101, &original_health)
+        .expect("failed check should classify")
+        .classification;
+    let held = reserve_health_held_attempt(
+        repair_repo.as_ref(),
+        &conversation_id,
+        &fingerprint,
+        crate::application::agent_workspace_publish_repair_state::UNCHANGED_HEALTH_REPAIR_REASON,
+    )
+    .await;
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(original_health));
+    let chat = Arc::new(MockChatService::with_agent_run_repo(Arc::clone(
+        &agent_run_repo,
+    )));
+
+    let routed = super::route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        workspace_repo.clone(),
+        Some(agent_run_repo.clone()),
+        Some(Arc::clone(&repair_repo)),
+        Some(Arc::clone(&branch_update_repo)),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("unchanged health should be suppressed");
+
+    assert!(!routed, "unchanged health must not start another generation");
+    assert!(chat.get_sent_messages().await.is_empty());
+    let current = repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("held attempt should load")
+        .expect("held attempt remains current");
+    assert_eq!(current.id, held.id);
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Ready);
+
+    // A different failing check is new evidence, so the hold ends and a fresh generation runs.
+    let mut changed_health = open_pr_health("unchanged-health-head");
+    changed_health.checks.push(PrHealthCheck {
+        name: "Clippy".to_string(),
+        status: Some("completed".to_string()),
+        conclusion: Some("failure".to_string()),
+        details_url: Some("https://github.com/owner/repo/actions/runs/921".to_string()),
+    });
+    github.state().fetch_pr_health_result = Some(Ok(changed_health));
+
+    let routed = super::route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        workspace_repo,
+        Some(agent_run_repo),
+        Some(Arc::clone(&repair_repo)),
+        Some(branch_update_repo),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("changed health should dispatch a new generation");
+
+    assert!(routed, "changed health must be able to end the hold");
+    assert_eq!(chat.get_sent_messages().await.len(), 1);
+    let current = repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("new repair generation should load")
+        .expect("changed fingerprint should create a new generation");
+    assert_eq!(current.generation, held.generation + 1);
 }
 
 #[tokio::test]
