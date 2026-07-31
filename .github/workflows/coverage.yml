@@ -6,6 +6,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  merge_group:
 
 permissions:
   statuses: read
@@ -37,6 +38,7 @@ jobs:
 
       - name: Detect changed paths
         id: filter
+        if: github.event_name != 'merge_group'
         uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
         with:
           list-files: shell
@@ -65,6 +67,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          if [[ "${GITHUB_EVENT_NAME}" == "merge_group" ]]; then
+            {
+              echo "run_plugins=true"
+              echo "run_rust=true"
+              echo "run_frontend=true"
+            } >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
 
           if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
             {
@@ -949,6 +960,7 @@ jobs:
       - plugin-coverage
     if: >
       always() &&
+      github.event_name != 'merge_group' &&
       needs.changes.result == 'success' &&
       (
         needs.changes.outputs.run_rust == 'true' ||
@@ -1150,7 +1162,7 @@ jobs:
             exit 1
           fi
 
-          if [[ "${GITHUB_EVENT_NAME}" != "pull_request" ]]; then
+          if [[ "${GITHUB_EVENT_NAME}" != "pull_request" && "${GITHUB_EVENT_NAME}" != "merge_group" ]]; then
             echo "Coverage gate only enforces patch coverage on pull requests."
             exit 0
           fi
@@ -1176,11 +1188,18 @@ jobs:
           if [[ "${{ needs.changes.outputs.run_plugins }}" == "true" ]]; then
             [[ "${{ needs.plugin-coverage.result }}" == "success" ]] || failures+=("Plugin Coverage: ${{ needs.plugin-coverage.result }}")
           fi
-          [[ "${{ needs.publish-codecov.result }}" == "success" ]] || failures+=("Publish Codecov Coverage: ${{ needs.publish-codecov.result }}")
+          if [[ "${GITHUB_EVENT_NAME}" != "merge_group" ]]; then
+            [[ "${{ needs.publish-codecov.result }}" == "success" ]] || failures+=("Publish Codecov Coverage: ${{ needs.publish-codecov.result }}")
+          fi
 
           if (( ${#failures[@]} > 0 )); then
             printf 'Coverage prerequisite failed: %s\n' "${failures[@]}"
             exit 1
+          fi
+
+          if [[ "${GITHUB_EVENT_NAME}" == "merge_group" ]]; then
+            echo "Queue run enforces coverage job success; codecov/patch is PR-scoped and publish-codecov is intentionally skipped."
+            exit 0
           fi
 
           if [[ "${IS_FORK_PR}" == "true" ]]; then

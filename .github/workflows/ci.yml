@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  merge_group:
 
 permissions:
   contents: read
@@ -38,6 +39,7 @@ jobs:
 
       - name: Detect changed paths
         id: filter
+        if: github.event_name != 'merge_group'
         uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
         with:
           filters: |
@@ -92,6 +94,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          if [[ "${GITHUB_EVENT_NAME}" == "merge_group" ]]; then
+            {
+              echo "run_automation=true"
+              echo "run_plugins=true"
+              echo "run_rust=true"
+              echo "run_frontend=true"
+              echo "run_visual=true"
+            } >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
 
           if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
             {
