@@ -189,6 +189,21 @@ export const LOCAL_ONLY_COMMANDS: readonly LocalOnlyCommand[] = [
       "Opens THIS client's own launch log; the user asking for it is sitting at this Mac.",
   },
 
+  // --- This Mac's dock icon. ---
+  //
+  // The COUNT is the host's (the notification reads are all registered on the facade and
+  // should follow the active environment), but painting the badge is a local act:
+  // `set_dock_badge_count` runs `set_macos_dock_badge` on the running process's main thread,
+  // so routing it remotely badges the HOST's dock with this client's number and leaves this
+  // Mac's icon stale. `run-locally` rather than `reject` — the badge must keep working while
+  // a remote environment is active, showing the host's count on this Mac's dock.
+  {
+    command: "set_dock_badge_count",
+    disposition: "run-locally",
+    reason:
+      "Paints THIS Mac's dock icon on its own main thread; the host has its own dock and its own badge. The count it displays is still the active environment's.",
+  },
+
   // --- This client's own boot lifecycle. The mount gate cannot be answered by a host. ---
   //
   // `StartupRoot` scopes its QueryClient to LOCAL_ENVIRONMENT_ID, but cache scoping and

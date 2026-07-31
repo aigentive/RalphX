@@ -19,7 +19,7 @@ PASS: remote transport drift — 509 invoke command name(s), 0 dynamic, 0 seam b
 | Dynamic / unresolvable expressions | 0 | drift scan — must stay 0 |
 | Transport seam bypasses | 0 | drift scan — must stay 0 |
 | Remote-registered (`remote_commands!`) | 219 | `docs/generated/remote-commands.json` |
-| Reason-coded local-only rows | 33 | `frontend/src/lib/remote/local-only-commands.ts` |
+| Reason-coded local-only rows | 34 | `frontend/src/lib/remote/local-only-commands.ts` |
 | Ledger rows (exhaustive over `generate_handler!`) | 548 | `docs/generated/remote-commands.json` |
 | Manifest-classified (host-denied / v1-deferred) | 287 | `v1Resolution` in `docs/generated/remote-commands.json` |
 | **Unclassified — the 3.1 gap** | **0** | `scripts/remote-transport-drift-baseline.json` |
