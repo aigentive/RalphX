@@ -740,7 +740,7 @@ pub(super) fn human_repair_dispatch_context(
         })
 }
 
-fn due_repair_dispatch_message(
+pub(crate) fn due_repair_dispatch_message(
     attempt: &AgentWorkspaceRepairAttempt,
     workspace: &AgentConversationWorkspace,
 ) -> String {
@@ -755,7 +755,9 @@ fn due_repair_dispatch_message(
     };
     let reason = human_repair_dispatch_context(attempt).unwrap_or(DEFAULT_REPAIR_DISPATCH_CONTEXT);
     format!(
-        "{continuation}\n\nInspect the current workspace state before changing files. When the repair is committed, use the available repair-completion tool.\n\nContext: {reason}\nWorkspace branch: {}\nBase ref: {}",
+        // Naming the exact tool is safe now that redelivery is source-aware: this message is only
+        // ever addressed to the workspace repairer, which is the agent granted that tool.
+        "{continuation}\n\nInspect the current workspace state before changing files. When the repair is committed, call `complete_agent_workspace_repair` with a summary, adding a blocker if the repair cannot be completed safely.\n\nContext: {reason}\nWorkspace branch: {}\nBase ref: {}",
         workspace.branch_name, attempt.target_base_ref
     )
 }

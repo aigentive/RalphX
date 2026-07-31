@@ -156,7 +156,7 @@ pub(super) async fn evaluate_pr_autofix_successor(
 /// identity and completion contract the poller's first dispatch uses. A redelivery is also not a
 /// fresh dispatch: an earlier generation may already have committed part of the work, so the
 /// recipient must re-observe GitHub before changing anything.
-pub(super) fn due_pr_autofix_redispatch_message(
+pub(crate) fn due_pr_autofix_redispatch_message(
     attempt: &AgentWorkspaceRepairAttempt,
     workspace: &AgentConversationWorkspace,
 ) -> String {

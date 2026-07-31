@@ -4617,7 +4617,10 @@ wait "$stdin_drain_pid" 2>/dev/null || true
     );
 
     let message = latest_sent_repair_message(&state, &conversation_id).await;
-    assert!(message.contains("use the available repair-completion tool"));
+    assert!(
+        message.contains("complete_agent_workspace_repair"),
+        "a publish repair must name the repairer's own completion tool: {message}"
+    );
     assert!(
         !message.contains("complete_agent_workspace_pr_fix"),
         "a publish repair must not be addressed to the PR fixer: {message}"

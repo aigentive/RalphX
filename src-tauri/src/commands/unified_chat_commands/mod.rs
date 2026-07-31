@@ -8855,7 +8855,7 @@ pub fn build_agent_workspace_publish_repair_message_for_target(
     )
 }
 
-fn build_agent_workspace_repair_message_for_target(
+pub(crate) fn build_agent_workspace_repair_message_for_target(
     error: &str,
     workspace: &AgentConversationWorkspace,
     target: &AgentConversationWorkspaceRepairTarget,

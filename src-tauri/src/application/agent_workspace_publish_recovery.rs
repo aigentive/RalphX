@@ -51,6 +51,10 @@ pub use durable_attempt_recovery::recover_agent_workspace_repair_after_terminal_
 #[cfg(not(any(test, feature = "test-utils")))]
 pub(crate) use durable_attempt_recovery::recover_agent_workspace_repair_after_terminal_run;
 pub(crate) use durable_attempt_recovery::recover_agent_workspace_repair_attempts_for_state;
+#[cfg(test)]
+pub(crate) use durable_attempt_recovery::due_repair_dispatch_message;
+#[cfg(test)]
+pub(crate) use pr_autofix_redelivery::due_pr_autofix_redispatch_message;
 use durable_attempt_recovery::recover_stale_publish_repair_for_workspace_in_state_result;
 pub(crate) use durable_attempt_recovery::{
     AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX, AUTO_RETRY_READY_REPAIR_REASON_PREFIX,

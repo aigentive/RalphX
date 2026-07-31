@@ -4480,7 +4480,7 @@ fn build_agent_workspace_pr_conflict_repair_message(
     out
 }
 
-fn build_agent_workspace_pr_autofix_message(
+pub(crate) fn build_agent_workspace_pr_autofix_message(
     pr_number: i64,
     pr_url: Option<&str>,
     target_label: &str,
