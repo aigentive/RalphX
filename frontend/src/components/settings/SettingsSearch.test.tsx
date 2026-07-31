@@ -23,6 +23,9 @@ describe("searchSettings", () => {
     expect(searchSettings("jira").map((r) => r.section)).toContain(
       "integrations",
     );
+    expect(searchSettings("vacuum").map((r) => r.section)).toContain(
+      "database",
+    );
   });
 
   it("caps the result list", () => {
