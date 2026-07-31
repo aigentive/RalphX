@@ -946,6 +946,11 @@ pub struct AgentConversationWorkspace {
     pub pr_supervision_status: Option<String>,
     pub pr_supervision_summary: Option<String>,
     pub pr_supervision_updated_at: Option<DateTime<Utc>>,
+    /// The failure identity the most recent PR autofix streak exhausted itself against. Repair
+    /// attempts are per-streak, so without this the next streak has no memory of what already
+    /// failed and re-spends agents on identical evidence.
+    pub last_blocked_pr_health_fingerprint: Option<String>,
+    pub last_blocked_pr_health_at: Option<DateTime<Utc>>,
     pub status: AgentConversationWorkspaceStatus,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -997,6 +1002,8 @@ impl AgentConversationWorkspace {
             pr_supervision_status: None,
             pr_supervision_summary: None,
             pr_supervision_updated_at: None,
+            last_blocked_pr_health_fingerprint: None,
+            last_blocked_pr_health_at: None,
             status: AgentConversationWorkspaceStatus::Active,
             created_at: now,
             updated_at: now,

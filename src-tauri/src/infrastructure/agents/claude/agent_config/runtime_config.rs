@@ -724,10 +724,19 @@ pub struct LimitsConfig {
     pub max_resume_attempts: u64,
     #[serde(default = "default_max_live_folder_references")]
     pub max_live_folder_references: usize,
+    /// Total agent minutes RalphX will spend repairing one PR failure identity before handing it
+    /// to a human. Unattended repair can otherwise burn an unbounded budget on a failure no agent
+    /// can fix. `0` disables the budget.
+    #[serde(default = "default_repair_fingerprint_budget_minutes")]
+    pub repair_fingerprint_budget_minutes: u64,
 }
 
 fn default_max_live_folder_references() -> usize {
     5
+}
+
+fn default_repair_fingerprint_budget_minutes() -> u64 {
+    45
 }
 
 impl Default for LimitsConfig {
@@ -735,6 +744,7 @@ impl Default for LimitsConfig {
         Self {
             max_resume_attempts: 5,
             max_live_folder_references: default_max_live_folder_references(),
+            repair_fingerprint_budget_minutes: default_repair_fingerprint_budget_minutes(),
         }
     }
 }
@@ -1219,6 +1229,10 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
     env_u64!(
         cfg.limits.max_resume_attempts,
         "RALPHX_LIMITS_MAX_RESUME_ATTEMPTS"
+    );
+    env_u64!(
+        cfg.limits.repair_fingerprint_budget_minutes,
+        "RALPHX_LIMITS_REPAIR_FINGERPRINT_BUDGET_MINUTES"
     );
 
     // Verification

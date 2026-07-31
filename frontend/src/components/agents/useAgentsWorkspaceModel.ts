@@ -22,6 +22,7 @@ import {
 } from "./agentConversationRuntime";
 import {
   getAgentWorkspaceEffectiveBaseLabel,
+  getAgentWorkspacePrAutofixFingerprintSpendPresentation,
   getAgentWorkspaceTerminalPublicationLabel,
   hasPublishedWorkspacePr,
   isAgentWorkspacePublishCurrent,
@@ -104,6 +105,8 @@ export function useAgentsWorkspaceModel({
   );
   const terminalPublicationLabel =
     getAgentWorkspaceTerminalPublicationLabel(activeWorkspace);
+  const activeWorkspaceFingerprintSpend =
+    getAgentWorkspacePrAutofixFingerprintSpendPresentation(activeWorkspace);
   const workspacePublishMode = getProjectWorkspacePublishMode(
     activeProject,
     hasPublishedWorkspacePr(activeWorkspace),
@@ -160,6 +163,7 @@ export function useAgentsWorkspaceModel({
     activeConversationModeLocked,
     activeWorkspace,
     activeWorkspaceFreshness,
+    activeWorkspaceFingerprintSpend,
     focusedWorkspaceReviewServiceTier,
     normalizedActiveRuntime,
     publishShortcutLabel,

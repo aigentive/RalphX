@@ -330,4 +330,36 @@ describe("useAgentsWorkspaceModel", () => {
       expect(persistedResult.current.publishShortcutLabel).toBe("Commit & Publish"),
     );
   });
+
+  it("exposes the current failure fingerprint spend from the polled workspace", async () => {
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspaceFixture({
+        prAutofixFingerprintSpend: {
+          generations: 3,
+          minutes: 92,
+          budgetMinutes: 45,
+          isExhausted: true,
+        },
+      }),
+    );
+    const { result } = renderHook(
+      () =>
+        useAgentsWorkspaceModel({
+          activeConversation: projectConversation(),
+          modelRegistry: AGENT_MODEL_CATALOG,
+          optimisticWorkspacesByConversationId: {},
+          runtimeByConversationId: {},
+          selectedConversationId: "conversation-1",
+          workspaceReviewerRuntime: null,
+        }),
+      { wrapper: wrapper() },
+    );
+
+    await waitFor(() =>
+      expect(result.current.activeWorkspaceFingerprintSpend).toEqual({
+        summary: "3 generations · 92 min on this failure",
+        exhausted: true,
+      }),
+    );
+  });
 });

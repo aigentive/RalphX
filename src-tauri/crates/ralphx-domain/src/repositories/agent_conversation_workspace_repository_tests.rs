@@ -145,6 +145,14 @@ impl AgentConversationWorkspaceRepository for FallbackOnlyWorkspaceRepository {
         Ok(false)
     }
 
+    async fn set_last_blocked_pr_health_fingerprint(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _fingerprint: Option<&str>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
     async fn delete(&self, _conversation_id: &ChatConversationId) -> AppResult<()> {
         Ok(())
     }

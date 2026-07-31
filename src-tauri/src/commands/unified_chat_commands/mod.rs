@@ -85,7 +85,9 @@ use crate::application::agent_workspace_pr_supervision_recovery::{
     schedule_agent_workspace_pr_supervision_recovery_with_lazy_deps,
     AgentWorkspacePrFixReviewPublishResumer, AgentWorkspacePrSupervisionRecoveryTrigger,
 };
-use crate::application::agent_workspace_publish_recovery::recover_stale_publish_repair_for_workspace_in_state;
+use crate::application::agent_workspace_publish_recovery::{
+    pr_autofix_fingerprint_spend, recover_stale_publish_repair_for_workspace_in_state,
+};
 use crate::application::agent_workspace_publish_repair_state::{
     classify_agent_workspace_repair_delivery, reserve_agent_workspace_repair_dispatch,
     resume_current_agent_workspace_repair_publish, resume_ready_agent_workspace_repair_for_publish,
@@ -444,6 +446,15 @@ pub struct AgentConversationWorkspaceResponse {
     pub mode_switch_lock_reason: Option<String>,
     pub maintenance_operation:
         Option<crate::domain::entities::AgentWorkspaceRepairOperationSnapshot>,
+    pub pr_autofix_fingerprint_spend: Option<PrAutofixFingerprintSpendResponse>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PrAutofixFingerprintSpendResponse {
+    pub generations: u32,
+    pub minutes: u64,
+    pub budget_minutes: u64,
+    pub is_exhausted: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -536,6 +547,7 @@ impl From<AgentConversationWorkspace> for AgentConversationWorkspaceResponse {
             mode_switch_locked: false,
             mode_switch_lock_reason: None,
             maintenance_operation: None,
+            pr_autofix_fingerprint_spend: None,
         }
     }
 }
@@ -1091,6 +1103,8 @@ async fn agent_workspace_response_without_repair_recovery_for_state(
 ) -> Result<AgentConversationWorkspaceResponse, String> {
     let mode_lock = resolve_agent_conversation_workspace_mode_lock(state, &workspace).await?;
     let linked_plan_branch_id = workspace.linked_plan_branch_id.clone();
+    let pr_autofix_fingerprint = workspace.last_blocked_pr_health_fingerprint.clone();
+    let conversation_id = workspace.conversation_id.clone();
     let mut response = AgentConversationWorkspaceResponse::from(workspace);
     response.mode_switch_locked = mode_lock.locked;
     response.mode_switch_lock_reason = mode_lock.reason;
@@ -1103,6 +1117,29 @@ async fn agent_workspace_response_without_repair_recovery_for_state(
         .map_err(|error| error.to_string())?
         .filter(|attempt| attempt.is_unsettled())
         .map(|attempt| attempt.operation_snapshot());
+    // Purely informational. A failed cost query must degrade this one field rather than fail the
+    // whole workspace payload the Agents surface depends on.
+    response.pr_autofix_fingerprint_spend = match pr_autofix_fingerprint {
+        Some(fingerprint) => {
+            match pr_autofix_fingerprint_spend(state, &conversation_id, &fingerprint).await {
+                Ok(spend) => Some(PrAutofixFingerprintSpendResponse {
+                    generations: spend.generations,
+                    minutes: spend.minutes,
+                    budget_minutes: spend.budget_minutes,
+                    is_exhausted: spend.is_exhausted(),
+                }),
+                Err(error) => {
+                    tracing::warn!(
+                        conversation_id = conversation_id.as_str(),
+                        %error,
+                        "Could not compute repair spend for the publish surface"
+                    );
+                    None
+                }
+            }
+        }
+        None => None,
+    };
 
     if let Some(plan_branch_id) = linked_plan_branch_id {
         if let Some(plan_branch) = state
@@ -8862,7 +8899,7 @@ pub fn build_agent_workspace_publish_repair_message_for_target(
     )
 }
 
-fn build_agent_workspace_repair_message_for_target(
+pub(crate) fn build_agent_workspace_repair_message_for_target(
     error: &str,
     workspace: &AgentConversationWorkspace,
     target: &AgentConversationWorkspaceRepairTarget,
@@ -8876,7 +8913,7 @@ fn build_agent_workspace_repair_message_for_target(
         post_repair_action.failure_title().to_string(),
         String::new(),
         post_repair_action.repair_instruction().to_string(),
-        "After the repair is committed, call complete_agent_workspace_repair with the conversation ID, repair commit SHA, resolved base ref, resolved base commit, and summary."
+        "After the repair is committed, call complete_agent_workspace_repair with a summary; add a blocker if the repair cannot be completed safely, and use resolution to classify the outcome honestly."
             .to_string(),
         String::new(),
         format!("Error: {error}"),
@@ -9264,6 +9301,7 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
             summary: post_repair_action.repair_requested_summary().to_string(),
             auto_merge_current: workspace.pr_auto_merge_current,
             retry_blocked,
+            carryover_pr_autofix_evidence: None,
         },
     )
     .await;
