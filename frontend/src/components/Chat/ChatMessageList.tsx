@@ -654,8 +654,9 @@ function LiveTranscriptRowItem({
         <div className="space-y-1.5 overflow-hidden">
           <ThinkingGroupToggle groupKey={groupKey} isExpanded={isExpanded}
             isSettled={row.block.isSettled ?? false} {...(row.block.durationMs != null ? { durationMs: row.block.durationMs } : {})}
+            {...(row.block.estimatedTokens != null ? { estimatedTokens: row.block.estimatedTokens } : {})}
             onToggle={(event) => onToggleToolCallGroup(groupKey, event.currentTarget)} />
-          {isExpanded ? <ThinkingWidget text={row.block.text} /> : null}
+          {isExpanded && row.block.text ? <ThinkingWidget text={row.block.text} /> : null}
         </div>
       );
     }

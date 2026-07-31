@@ -10277,6 +10277,98 @@ fn timeline_item_response_builds_text_message_block() {
 }
 
 #[test]
+fn timeline_item_response_builds_thinking_block_with_duration() {
+    let conversation_id = ChatConversationId::new();
+    let message_id = ChatMessageId::from_string("assistant-message-thinking");
+    let mut item = ChatTimelineItem::for_message_block(
+        message_id,
+        conversation_id,
+        0,
+        MessageRole::Orchestrator,
+        ChatTimelineItemKind::Thinking,
+    );
+    item.text = Some("Considering the request".to_string());
+    item.metadata = Some(r#"{"duration_ms":1234}"#.to_string());
+
+    let response = AgentTimelineItemResponse::from(item);
+
+    assert!(response.tool_call.is_none());
+    assert_eq!(
+        response.content_blocks,
+        json!([{
+            "type": "thinking",
+            "text": "Considering the request",
+            "duration_ms": 1234
+        }])
+    );
+}
+
+#[test]
+fn timeline_item_response_builds_thinking_block_without_duration_or_tool_use() {
+    let conversation_id = ChatConversationId::new();
+    let message_id = ChatMessageId::from_string("assistant-message-thinking-no-duration");
+    let mut item = ChatTimelineItem::for_message_block(
+        message_id,
+        conversation_id,
+        0,
+        MessageRole::Orchestrator,
+        ChatTimelineItemKind::Thinking,
+    );
+    item.text = Some("Still considering".to_string());
+
+    let response = AgentTimelineItemResponse::from(item);
+    let block = &response.content_blocks[0];
+
+    assert!(response.tool_call.is_none());
+    assert_eq!(
+        block,
+        &json!({ "type": "thinking", "text": "Still considering" })
+    );
+    assert!(block.get("duration_ms").is_none());
+    assert_ne!(block["type"], "tool_use");
+}
+
+#[tokio::test]
+async fn conversation_timeline_page_hydrates_persisted_thinking_item() {
+    let state = AppState::new_test();
+    let conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(ProjectId::new()))
+        .await
+        .expect("create conversation");
+    let mut item = ChatTimelineItem::for_message_block(
+        ChatMessageId::from_string("assistant-message-thinking-page"),
+        conversation.id,
+        0,
+        MessageRole::Orchestrator,
+        ChatTimelineItemKind::Thinking,
+    );
+    item.text = Some("Persisted reasoning".to_string());
+    item.metadata = Some(r#"{"duration_ms":1234}"#.to_string());
+    state
+        .chat_timeline_repo
+        .upsert_item(item)
+        .await
+        .expect("upsert thinking timeline item");
+
+    let page =
+        get_agent_conversation_timeline_page_for_app_state(&state, conversation.id, 10, None)
+            .await
+            .expect("timeline page")
+            .expect("conversation exists");
+
+    assert_eq!(
+        page.items[0].content_blocks,
+        json!([{
+            "type": "thinking",
+            "text": "Persisted reasoning",
+            "duration_ms": 1234
+        }])
+    );
+    assert!(page.items[0].tool_call.is_none());
+}
+
+#[test]
 fn timeline_item_response_builds_tool_block_with_detail_ref_and_diff_context() {
     let conversation_id = ChatConversationId::new();
     let message_id = ChatMessageId::from_string("assistant-message-tool");

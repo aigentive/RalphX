@@ -29,10 +29,12 @@ export function projectPersistedStreamingContentBlocks(
         }];
       }
       if (block.type === "thinking") {
+        const text = block.text ?? "";
+        if (text.length === 0) return [];
         const legacyBlockIndex = thinkingBlockIndex++;
         return [{
           type: "thinking",
-          text: block.text ?? "",
+          text,
           blockIndex: message.timelineBlockIndex ?? legacyBlockIndex,
           ...(block.durationMs != null ? { durationMs: block.durationMs } : {}),
           ...(block.isSettled != null ? { isSettled: block.isSettled } : {}),

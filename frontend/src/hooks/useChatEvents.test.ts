@@ -1249,6 +1249,63 @@ describe("useChatEvents", () => {
 
       expect(props.setStreamingContentBlocks).not.toHaveBeenCalled();
     });
+
+    it("creates one empty synthetic thinking block for token-only progress and updates it", () => {
+      const props = makeProps({ activeAgentRunId: "current-run" });
+      renderAndClear(props);
+
+      act(() => fireEvent("agent:thinking_progress", {
+        estimated_tokens: 1_200, conversation_id: CONV_ID, context_id: CTX_ID,
+        context_type: "task_execution", run_id: "current-run",
+      }));
+      const synthetic = executeUpdater<StreamingContentBlock[]>(props.setStreamingContentBlocks, []);
+      expect(synthetic).toMatchObject([{ type: "thinking", text: "", estimatedTokens: 1_200 }]);
+
+      act(() => fireEvent("agent:thinking_progress", {
+        estimated_tokens: 2_000, conversation_id: CONV_ID, context_id: CTX_ID,
+        context_type: "task_execution", run_id: "current-run",
+      }));
+      const updated = executeUpdater<StreamingContentBlock[]>(props.setStreamingContentBlocks, synthetic, 1);
+      expect(updated).toEqual([{ ...synthetic[0], estimatedTokens: 2_000, receivedAt: expect.any(Number) }]);
+    });
+
+    it("attaches token progress to an existing thinking block and rejects stale runs", () => {
+      const props = makeProps({ activeAgentRunId: "current-run" });
+      renderAndClear(props);
+
+      act(() => fireEvent("agent:thinking_progress", {
+        estimated_tokens: 700, conversation_id: CONV_ID, context_id: CTX_ID,
+        context_type: "task_execution", run_id: "old-run",
+      }));
+      expect(props.setStreamingContentBlocks).not.toHaveBeenCalled();
+
+      act(() => fireEvent("agent:thinking_progress", {
+        estimated_tokens: 700, conversation_id: CONV_ID, context_id: CTX_ID,
+        context_type: "task_execution", run_id: "current-run",
+      }));
+      const updated = executeUpdater<StreamingContentBlock[]>(props.setStreamingContentBlocks, [
+        { type: "thinking", text: "visible", blockIndex: 4 },
+      ]);
+      expect(updated).toMatchObject([{ type: "thinking", text: "visible", blockIndex: 4, estimatedTokens: 700 }]);
+    });
+
+    it("replaces synthetic progress with text while retaining its token estimate", () => {
+      const props = makeProps();
+      renderAndClear(props);
+
+      act(() => fireEvent("agent:thinking", {
+        text: "Visible thought", conversation_id: CONV_ID, context_id: CTX_ID,
+        block_index: 4, append_to_previous: false,
+      }));
+      const result = executeUpdater<StreamingContentBlock[]>(props.setStreamingContentBlocks, [{
+        type: "thinking", text: "", blockIndex: Number.MIN_SAFE_INTEGER, estimatedTokens: 1_200,
+      }]);
+
+      expect(result).toEqual([{
+        type: "thinking", text: "Visible thought", blockIndex: 4, estimatedTokens: 1_200,
+        receivedAt: expect.any(Number),
+      }]);
+    });
   });
 
   // --------------------------------------------------------------------------

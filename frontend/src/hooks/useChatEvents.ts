@@ -54,6 +54,8 @@ import {
   reconcileDelegationTaskMarkers,
 } from "@/components/Chat/delegation-tool-calls";
 
+const SYNTHETIC_THINKING_BLOCK_INDEX = Number.MIN_SAFE_INTEGER;
+
 function stableSerialize(value: unknown): string {
   if (value == null || typeof value !== "object") {
     return JSON.stringify(value) ?? String(value);
@@ -1505,7 +1507,9 @@ export function useChatEvents({
         if (activeAgentRunId && payload.run_id && payload.run_id !== activeAgentRunId) return;
         const receivedAt = Date.now();
         setStreamingContentBlocks((prev) => {
-          const at = prev.findIndex((block) => block.type === "thinking" && block.blockIndex === payload.block_index);
+          const matchingBlockIndex = prev.findIndex((block) => block.type === "thinking" && block.blockIndex === payload.block_index);
+          const syntheticBlockIndex = prev.findIndex((block) => block.type === "thinking" && block.blockIndex === SYNTHETIC_THINKING_BLOCK_INDEX);
+          const at = matchingBlockIndex >= 0 ? matchingBlockIndex : syntheticBlockIndex;
           const existing = at >= 0 ? prev[at] : null;
           const text = existing?.type === "thinking" && (payload.append_to_previous ?? true)
             ? existing.text + payload.text : payload.text;
@@ -1514,10 +1518,43 @@ export function useChatEvents({
             ...(payload.block_index != null ? { blockIndex: payload.block_index } : {}),
             ...(payload.duration_ms != null ? { durationMs: payload.duration_ms } : {}),
             ...(payload.is_settled != null ? { isSettled: payload.is_settled } : {}),
+            ...(existing?.type === "thinking" && existing.estimatedTokens != null
+              ? { estimatedTokens: existing.estimatedTokens } : {}),
             ...(payload.seq != null ? { seq: payload.seq } : {}),
           };
           if (at < 0) return [...prev, block];
           const next = [...prev]; next[at] = block; return next;
+        });
+      }),
+    );
+
+    unsubscribes.push(
+      bus.subscribe<{
+        estimated_tokens: number; estimated_tokens_delta?: number; run_id?: string | null;
+        conversation_id: string; context_type: string; context_id: string;
+      }>("agent:thinking_progress", (payload) => {
+        if (!isRelevant(payload)) return;
+        if (activeAgentRunId && payload.run_id && payload.run_id !== activeAgentRunId) return;
+        const receivedAt = Date.now();
+        setStreamingContentBlocks((prev) => {
+          // Attach progress to the most recent thinking block: earlier ones are
+          // settled and their pill no longer displays a token count.
+          let at = -1;
+          for (let i = prev.length - 1; i >= 0; i--) {
+            if (prev[i]?.type === "thinking") { at = i; break; }
+          }
+          if (at < 0) {
+            return [...prev, {
+              type: "thinking", text: "", receivedAt,
+              blockIndex: SYNTHETIC_THINKING_BLOCK_INDEX,
+              estimatedTokens: payload.estimated_tokens,
+            }];
+          }
+          const existing = prev[at]!;
+          if (existing.type !== "thinking") return prev;
+          const next = [...prev];
+          next[at] = { ...existing, receivedAt, estimatedTokens: payload.estimated_tokens };
+          return next;
         });
       }),
     );

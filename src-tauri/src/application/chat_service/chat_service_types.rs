@@ -58,6 +58,8 @@ pub mod events {
     pub const AGENT_CHUNK: &str = "agent:chunk";
     /// Agent reasoning chunk event
     pub const AGENT_THINKING: &str = "agent:thinking";
+    /// Agent reasoning token progress event
+    pub const AGENT_THINKING_PROGRESS: &str = "agent:thinking_progress";
     /// Agent tool call event
     pub const AGENT_TOOL_CALL: &str = "agent:tool_call";
     /// Agent run started event
@@ -271,6 +273,19 @@ pub struct AgentThinkingPayload {
     pub seq: u64,
     #[serde(default)]
     pub append_to_previous: bool,
+}
+
+/// Payload for agent:thinking_progress event.
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentThinkingProgressPayload {
+    pub estimated_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub estimated_tokens_delta: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    pub conversation_id: String,
+    pub context_type: String,
+    pub context_id: String,
 }
 
 /// Payload for agent:usage_updated event

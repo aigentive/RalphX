@@ -2390,6 +2390,26 @@ fn timeline_item_content_block(
         });
     }
 
+    if item.kind.to_string() == "thinking" {
+        let duration_ms = item
+            .metadata
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+            .and_then(|metadata| {
+                metadata
+                    .get("duration_ms")
+                    .and_then(serde_json::Value::as_u64)
+            });
+        let mut block = serde_json::json!({
+            "type": "thinking",
+            "text": item.text.clone().unwrap_or_default(),
+        });
+        if let Some(duration_ms) = duration_ms {
+            block["duration_ms"] = serde_json::json!(duration_ms);
+        }
+        return block;
+    }
+
     let arguments = item
         .input_json
         .as_deref()
