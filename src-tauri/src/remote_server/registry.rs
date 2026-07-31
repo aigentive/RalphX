@@ -1505,6 +1505,22 @@ crate::remote_commands! {
     // extraction forks no logic (A-7) and drops two spawn-authority carriers from a read
     // command rather than merely routing around them.
     // -----------------------------------------------------------------------------------
+    // Closes the read/write asymmetry: `get_execution_settings` is registered, so the pane
+    // already shows the host's live values and could not persist a change to them.
+    "update_remote_execution_settings"
+        => crate::commands::remote_execution_settings_commands::update_remote_execution_settings {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [
+            (arg project_id: Option<String>),
+            (arg input: crate::commands::execution_commands::UpdateExecutionSettingsInput),
+            (execution_state),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+
     // The workspace shell's two boot reads. Without them a connected client has no project
     // list and no provider answer, so it renders first-run onboarding over a populated host.
     "list_remote_projects"

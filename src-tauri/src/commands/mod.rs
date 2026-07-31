@@ -83,6 +83,7 @@ pub mod question_commands;
 mod question_commands_tests;
 pub mod registry;
 pub mod remote_chat_commands;
+pub mod remote_execution_settings_commands;
 pub mod remote_transcript_commands;
 pub mod remote_workspace_commands;
 #[cfg(test)]

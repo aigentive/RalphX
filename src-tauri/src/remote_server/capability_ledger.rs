@@ -1090,6 +1090,28 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
     // fail-open shape batch 4 refused four times.
     // -----------------------------------------------------------------------------------
     // -----------------------------------------------------------------------------------
+    // The execution-settings write (`remote_execution_settings_commands`).
+    //
+    // `update_execution_settings` is Elevated because it reaches two spawn sinks:
+    // `schedule_ready_tasks_for_project` (launches queued work when the cap rises) and
+    // `PendingSessionDrainService` (builds a chat service, which spawns a provider CLI). The
+    // split below persists and syncs the in-process caps and reaches NEITHER, so the
+    // registrable class is the one the remaining authority earns.
+    //
+    // AgentControl, not Operate: persisting a higher cap seeds state a background scheduling
+    // pass turns into a spawn. Classification traces downstream authority, not immediate
+    // action, so a write whose only effect is a database row is still AgentControl when a
+    // loop consumes that row. Requires `ui:agent`, which is off by default per device.
+    // -----------------------------------------------------------------------------------
+    CommandOverride {
+        command: "update_remote_execution_settings",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "persists execution settings and syncs the in-process caps; reaches neither the scheduler kick nor the ideation drain, but a raised cap seeds work a later scheduling pass can launch",
+        ),
+    },
+    // -----------------------------------------------------------------------------------
     // The workspace shell reads (`remote_workspace_commands`).
     //
     // Both are splits, not reclassifications. `list_projects` is Elevated because

@@ -2,6 +2,10 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { z } from "zod";
+import {
+  getTransportEnvironmentId,
+  isRemoteEnvironmentId,
+} from "@/lib/remote/active-environment";
 import { DEFAULT_PROJECT_SETTINGS } from "@/types/settings";
 import {
   ExecutionStatusResponseSchema,
@@ -27,6 +31,15 @@ import type {
 } from "./execution.types";
 
 // Re-export types for convenience
+
+/**
+ * True while the active environment is remote, so settings writes must use the spawn-free
+ * twin rather than the Elevated local command.
+ */
+function remoteExecutionWritesEnabled(): boolean {
+  return isRemoteEnvironmentId(getTransportEnvironmentId());
+}
+
 export type {
   ExecutionHaltMode,
   ExecutionStatusResponse,
@@ -174,13 +187,30 @@ export const executionApi = {
   updateSettings: (
     input: UpdateExecutionSettingsInput,
     projectId?: string
-  ): Promise<ExecutionSettingsResponse> =>
-    typedInvokeWithTransform(
-      "update_execution_settings",
-      { input: transformExecutionSettingsInput(input), projectId: projectId ?? null },
-      ExecutionSettingsResponseSchema,
-      transformExecutionSettings
-    ),
+  ): Promise<ExecutionSettingsResponse> => {
+    const args = {
+      input: transformExecutionSettingsInput(input),
+      projectId: projectId ?? null,
+    };
+    // `get_execution_settings` is registered, so under a remote environment the pane already
+    // shows the HOST's live values — but `update_execution_settings` is Elevated (it kicks
+    // the scheduler and drains pending ideation sessions, both spawn sinks) and unregistered,
+    // so saving them failed silently. The spawn-free twin persists and syncs the caps without
+    // arming queued work. Two literal call sites, because P-11 requires literal names.
+    return remoteExecutionWritesEnabled()
+      ? typedInvokeWithTransform(
+          "update_remote_execution_settings",
+          args,
+          ExecutionSettingsResponseSchema,
+          transformExecutionSettings
+        )
+      : typedInvokeWithTransform(
+          "update_execution_settings",
+          args,
+          ExecutionSettingsResponseSchema,
+          transformExecutionSettings
+        );
+  },
 
   /**
    * Set the active project for scoped execution operations

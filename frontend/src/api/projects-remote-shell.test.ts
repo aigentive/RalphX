@@ -27,6 +27,7 @@ vi.mock("#tauri-core-primitive", async (importOriginal) => {
   return { ...actual, invoke: primitiveInvoke };
 });
 
+import { executionApi } from "@/api/execution";
 import { projectsApi } from "@/api/projects";
 import { LOCAL_ENVIRONMENT_ID, useEnvironmentStore } from "@/stores/environmentStore";
 
@@ -128,6 +129,34 @@ describe("workspace shell read routing", () => {
 
     expect(wireInput().cmd).toBe("get_remote_provider_readiness");
     expect(readiness).toEqual({ onboardingComplete: true, enabledProviderCount: 2 });
+  });
+
+  it("saves execution settings via the spawn-free twin, never the Elevated local command", async () => {
+    useRemoteEnvironment();
+    remoteOk({
+      max_concurrent_tasks: 3,
+      project_ideation_max: 2,
+      auto_commit: true,
+      pause_on_failure: false,
+      agent_workspace_pr_autofix_default: false,
+      agent_workspace_pr_auto_merge_default: false,
+    });
+
+    // `get_execution_settings` is registered, so the pane already shows host values; before
+    // this the save silently went nowhere because `update_execution_settings` is Elevated.
+    await executionApi.updateSettings(
+      {
+        maxConcurrentTasks: 3,
+        projectIdeationMax: 2,
+        autoCommit: true,
+        pauseOnFailure: false,
+        agentWorkspacePrAutofixDefault: false,
+        agentWorkspacePrAutoMergeDefault: false,
+      },
+      "project-1",
+    );
+
+    expect(wireInput().cmd).toBe("update_remote_execution_settings");
   });
 
   it("surfaces a failed project read instead of returning an empty workspace", async () => {
