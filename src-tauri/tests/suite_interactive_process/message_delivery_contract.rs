@@ -2,7 +2,10 @@
 
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
-use ralphx_lib::application::chat_service::process_queued_messages_for_test;
+use ralphx_lib::application::chat_service::{process_queued_messages_for_test, ChatService};
+use ralphx_lib::application::interactive_process_registry::{
+    InteractiveProcessKey, InteractiveProcessMetadata, PendingStdinTurn,
+};
 use ralphx_lib::application::AppState;
 use ralphx_lib::domain::agents::{AgentHarnessKind, AgentProviderSettings};
 use ralphx_lib::domain::entities::{
@@ -17,6 +20,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::{Listener, Manager};
+use tokio::process::Command;
 
 const STALE_SECS: u64 = 300;
 
@@ -227,6 +231,11 @@ async fn continuation_resolution_error_restores_queue_front_and_emits_error() {
     let _listener = app.listen("agent:error", move |event| {
         captured.lock().unwrap().push(event.payload().to_string())
     });
+    let queue_sent = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&queue_sent);
+    let _queue_sent_listener = app.listen("agent:queue_sent", move |event| {
+        captured.lock().unwrap().push(event.payload().to_string())
+    });
     let (processed, run_id) = process_queued_messages_for_test(
         app.handle().clone(),
         ChatContextType::Project,
@@ -251,6 +260,10 @@ async fn continuation_resolution_error_restores_queue_front_and_emits_error() {
         .unwrap()
         .iter()
         .any(|event| event.contains("injected continuation resolution failure")));
+    assert!(
+        queue_sent.lock().unwrap().is_empty(),
+        "restored queue truth must not be followed by a terminal queue_sent event"
+    );
 }
 
 #[test]
@@ -282,6 +295,11 @@ async fn replayed_message_is_delivered_exactly_once_on_reentry() {
         .manage(state)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("app");
+    let queue_sent = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&queue_sent);
+    let _queue_sent_listener = app.listen("agent:queue_sent", move |event| {
+        captured.lock().unwrap().push(event.payload().to_string())
+    });
     let first = process_queued_messages_for_test(
         app.handle().clone(),
         ChatContextType::Project,
@@ -308,6 +326,11 @@ async fn replayed_message_is_delivered_exactly_once_on_reentry() {
     // Give a wrongly-started duplicate spawn time to land before counting.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     assert_eq!(fs::read_to_string(calls).expect("calls").lines().count(), 1);
+    assert_eq!(
+        queue_sent.lock().unwrap().len(),
+        1,
+        "re-entry must not emit a duplicate delivery event"
+    );
 }
 
 #[tokio::test]
@@ -325,7 +348,6 @@ async fn recovered_stdin_turn_drains_without_duplicate_user_message_row() {
         .create(persisted)
         .await
         .expect("persist Gate 1 user row");
-
     // This is the durable queue state created by the stream-exit cancellation
     // path after it drains the registry's pending stdin ledger.
     let mut recovered = QueuedMessage::new("deliver after cancel".to_string());
@@ -365,6 +387,124 @@ async fn recovered_stdin_turn_drains_without_duplicate_user_message_row() {
         .collect::<Vec<_>>();
     assert_eq!(user_rows.len(), 1, "recovery must reuse the Gate 1 row");
     assert_eq!(user_rows[0].id, persisted_message_id);
+}
+
+#[tokio::test]
+async fn stopping_exact_interactive_owner_requeues_pending_turn_and_publishes_backend_truth() {
+    let state = AppState::new_test();
+    let (project, conversation) = seed(&state, "stdin stop recovery").await;
+    let persisted_message_id = ChatMessageId::from_string("stdin-stop-user-row".to_string());
+    let mut persisted = ChatMessage::user_in_project(project.id.clone(), "recover after stop");
+    persisted.id = persisted_message_id.clone();
+    persisted.conversation_id = Some(conversation.id);
+    state
+        .chat_message_repo
+        .create(persisted)
+        .await
+        .expect("persist Gate 1 user row");
+    let second_message_id = ChatMessageId::from_string("stdin-stop-second-row".to_string());
+    let mut second = ChatMessage::user_in_project(project.id.clone(), "recover second after stop");
+    second.id = second_message_id.clone();
+    second.conversation_id = Some(conversation.id);
+    state
+        .chat_message_repo
+        .create(second)
+        .await
+        .expect("persist second Gate 1 user row");
+
+    let mut child = Command::new("/bin/cat")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn stdin observer");
+    let key = InteractiveProcessKey::new(
+        ChatContextType::Project.to_string(),
+        conversation.id.as_str(),
+    );
+    let token = state
+        .interactive_process_registry
+        .register_with_metadata(
+            key.clone(),
+            child.stdin.take().expect("observer stdin"),
+            InteractiveProcessMetadata {
+                agent_run_id: Some("stdin-stop-run".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+    state
+        .interactive_process_registry
+        .write_message_if_owner_with_pending_turn(
+            &key,
+            token,
+            "stdin-stop-run",
+            "recover after stop",
+            PendingStdinTurn {
+                persisted_message_id: persisted_message_id.as_str().to_string(),
+                content: "recover after stop".to_string(),
+                metadata_override: None,
+                queued_at: Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .expect("atomic stdin delivery");
+    state
+        .interactive_process_registry
+        .write_message_if_owner_with_pending_turn(
+            &key,
+            token,
+            "stdin-stop-run",
+            "recover second after stop",
+            PendingStdinTurn {
+                persisted_message_id: second_message_id.as_str().to_string(),
+                content: "recover second after stop".to_string(),
+                metadata_override: None,
+                queued_at: Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .expect("second atomic stdin delivery");
+
+    let app = tauri::test::mock_builder()
+        .manage(state)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("app");
+    let queued_events = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&queued_events);
+    let _listener = app.listen("agent:message_queued", move |event| {
+        captured.lock().unwrap().push(event.payload().to_string())
+    });
+    let state = app.state::<AppState>();
+    let service = state.build_chat_service_for_runtime(None, Some(app.handle().clone()));
+
+    assert!(!service
+        .stop_agent(ChatContextType::Project, &conversation.id.as_str())
+        .await
+        .expect("stop without running-registry row"));
+
+    let recovered = state
+        .queued_message_repo
+        .list(&ralphx_lib::domain::services::QueueKey::new(
+            ChatContextType::Project,
+            conversation.id.as_str(),
+        ))
+        .await
+        .expect("durable recovered queue");
+    assert_eq!(recovered.len(), 2);
+    assert_eq!(
+        recovered[0].persisted_message_id.as_deref(),
+        Some(persisted_message_id.as_str())
+    );
+    assert_eq!(
+        recovered[1].persisted_message_id.as_deref(),
+        Some(second_message_id.as_str())
+    );
+    let queued_events = queued_events.lock().unwrap();
+    assert_eq!(queued_events.len(), 2);
+    assert!(queued_events[0].contains("recover after stop"));
+    assert!(queued_events[1].contains("recover second after stop"));
+
+    let _ = child.kill().await;
+    let _ = child.wait().await;
 }
 
 struct FailingContinuationRepo;

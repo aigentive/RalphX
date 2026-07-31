@@ -5,6 +5,47 @@ use tokio::io::AsyncReadExt;
 use tokio::process::ChildStdin;
 
 #[tokio::test]
+async fn successful_tracked_write_and_concurrent_removal_preserve_the_turn_exactly_once() {
+    let registry = Arc::new(InteractiveProcessRegistry::new());
+    let key = InteractiveProcessKey::new("project", "atomic-write-removal");
+    let (stdin, _child) = create_test_stdin().await;
+    let token = registry
+        .register_with_metadata(
+            key.clone(),
+            stdin,
+            InteractiveProcessMetadata {
+                agent_run_id: Some("current-run".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+    let turn = PendingStdinTurn {
+        persisted_message_id: "message-1".to_string(),
+        content: "unanswered".to_string(),
+        metadata_override: None,
+        queued_at: "2026-07-30T10:00:00Z".to_string(),
+    };
+
+    let (write_result, removed) = tokio::join!(
+        registry.write_message_if_owner_with_pending_turn(
+            &key,
+            token,
+            "current-run",
+            "user follow-up",
+            turn.clone(),
+        ),
+        registry.remove_if_token(&key, token),
+    );
+    let mut removed = removed.expect("exact owner removal");
+    assert!(
+        write_result.is_ok(),
+        "the first-polled write owns the registry lock"
+    );
+    assert_eq!(removed.take_pending_stdin_turns(), vec![turn]);
+    assert!(removed.take_pending_stdin_turns().is_empty());
+}
+
+#[tokio::test]
 async fn pending_stdin_turns_are_fifo_and_exact_owner_scoped() {
     let registry = InteractiveProcessRegistry::new();
     let key = InteractiveProcessKey::new("project", "pending-turns");
@@ -402,7 +443,9 @@ async fn retire_after_turn_requires_exact_token_and_run_owner() {
         registry
             .complete_turn_if_owner(&key, token, "current-run")
             .await,
-        InteractiveProcessTurnCompleteDisposition::RetireAfterTurn
+        InteractiveProcessTurnCompleteDisposition::RetireAfterTurn {
+            pending_turns: Vec::new(),
+        }
     );
     assert!(!registry.has_process(&key).await);
 }
@@ -611,7 +654,9 @@ async fn stale_retirement_cannot_remove_a_replacement_entry() {
         registry
             .complete_turn_if_owner(&key, current_token, "current-run")
             .await,
-        InteractiveProcessTurnCompleteDisposition::RetireAfterTurn
+        InteractiveProcessTurnCompleteDisposition::RetireAfterTurn {
+            pending_turns: Vec::new(),
+        }
     );
     assert!(!registry.has_process(&key).await);
 }

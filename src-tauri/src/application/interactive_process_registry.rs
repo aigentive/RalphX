@@ -79,11 +79,13 @@ pub enum InteractiveProcessState {
 ///
 /// Only the entry's original token and launch run id may settle a turn. This keeps
 /// delayed stream events from changing the lifecycle of a replacement registration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InteractiveProcessTurnCompleteDisposition {
     Stale,
     KeepAlive,
-    RetireAfterTurn,
+    RetireAfterTurn {
+        pending_turns: Vec<PendingStdinTurn>,
+    },
 }
 
 /// Result of staging retirement for one concrete interactive-process registration.
@@ -263,7 +265,21 @@ impl InteractiveProcessRegistry {
         key: &InteractiveProcessKey,
         message: &str,
     ) -> Result<InteractiveProcessToken, InteractiveProcessWriteError> {
-        self.write_message_for_owner(key, None, message).await
+        self.write_message_for_owner(key, None, message, None).await
+    }
+
+    /// Write and record the delivered user turn while the same entry remains locked.
+    ///
+    /// A successful result guarantees that exact registry owner contains the turn in
+    /// its exit-recovery ledger. Write or flush failures never append the turn.
+    pub async fn write_message_with_pending_turn(
+        &self,
+        key: &InteractiveProcessKey,
+        message: &str,
+        pending_turn: PendingStdinTurn,
+    ) -> Result<InteractiveProcessToken, InteractiveProcessWriteError> {
+        self.write_message_for_owner(key, None, message, Some(pending_turn))
+            .await
     }
 
     /// Write only when the key still belongs to the captured registration.
@@ -277,8 +293,26 @@ impl InteractiveProcessRegistry {
         agent_run_id: &str,
         message: &str,
     ) -> Result<InteractiveProcessToken, InteractiveProcessWriteError> {
-        self.write_message_for_owner(key, Some((token, agent_run_id)), message)
+        self.write_message_for_owner(key, Some((token, agent_run_id)), message, None)
             .await
+    }
+
+    /// Write and record a user turn only for the captured exact owner.
+    pub async fn write_message_if_owner_with_pending_turn(
+        &self,
+        key: &InteractiveProcessKey,
+        token: InteractiveProcessToken,
+        agent_run_id: &str,
+        message: &str,
+        pending_turn: PendingStdinTurn,
+    ) -> Result<InteractiveProcessToken, InteractiveProcessWriteError> {
+        self.write_message_for_owner(
+            key,
+            Some((token, agent_run_id)),
+            message,
+            Some(pending_turn),
+        )
+        .await
     }
 
     async fn write_message_for_owner(
@@ -286,6 +320,7 @@ impl InteractiveProcessRegistry {
         key: &InteractiveProcessKey,
         expected_owner: Option<(InteractiveProcessToken, &str)>,
         message: &str,
+        pending_turn: Option<PendingStdinTurn>,
     ) -> Result<InteractiveProcessToken, InteractiveProcessWriteError> {
         let mut processes = self.processes.lock().await;
         let entry =
@@ -345,6 +380,9 @@ impl InteractiveProcessRegistry {
                 operation: "flush",
                 source,
             })?;
+        if let Some(turn) = pending_turn {
+            entry.pending_stdin_turns.push_back(turn);
+        }
         Ok(token)
     }
 
@@ -376,6 +414,7 @@ impl InteractiveProcessRegistry {
 
     /// Record a successfully stdin-delivered user turn for exactly one owner.
     /// A stale token cannot append to a replacement process under the same key.
+    #[cfg(test)]
     pub async fn push_pending_turn(
         &self,
         key: &InteractiveProcessKey,
@@ -542,8 +581,12 @@ impl InteractiveProcessRegistry {
         };
 
         if retire_after_turn {
-            processes.remove(key);
-            InteractiveProcessTurnCompleteDisposition::RetireAfterTurn
+            let mut removed = processes
+                .remove(key)
+                .expect("exact turn owner must remain present while registry is locked");
+            InteractiveProcessTurnCompleteDisposition::RetireAfterTurn {
+                pending_turns: removed.take_pending_stdin_turns(),
+            }
         } else if let Some(entry) = processes.get_mut(key) {
             entry.state = InteractiveProcessState::Idle;
             InteractiveProcessTurnCompleteDisposition::KeepAlive

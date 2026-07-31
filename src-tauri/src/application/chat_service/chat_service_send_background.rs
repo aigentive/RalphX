@@ -25,7 +25,7 @@ use super::chat_service_types::{
 };
 use super::{event_context, has_meaningful_output, EventContextPayload, StreamingStateCache};
 use crate::application::interactive_process_registry::{
-    InteractiveProcessKey, InteractiveProcessRegistry, InteractiveProcessToken, PendingStdinTurn,
+    InteractiveProcess, InteractiveProcessKey, InteractiveProcessRegistry, InteractiveProcessToken,
 };
 use crate::application::memory_orchestration::trigger_memory_pipelines;
 use crate::application::notification_service::NotificationService;
@@ -1080,23 +1080,28 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                 &runtime_context_id,
             );
 
-            let pending_turns = match interactive_process_token {
-                Some(token) => ipr.take_pending_turns(&ipr_key, token).await,
-                None => Vec::new(),
+            let mut removed = match interactive_process_token {
+                Some(token) => ipr.remove_if_token(&ipr_key, token).await,
+                None => ipr.remove(&ipr_key).await,
             };
-            requeue_pending_stdin_turns(
+            let pending_turns = removed
+                .as_mut()
+                .map(InteractiveProcess::take_pending_stdin_turns)
+                .unwrap_or_default();
+            let queued_message_repo = app_handle.as_ref().map(|handle| {
+                let app_state = handle.state::<crate::application::AppState>();
+                Arc::clone(&app_state.queued_message_repo)
+            });
+            super::chat_service_queue::requeue_pending_stdin_turns(
+                queued_message_repo.as_ref(),
                 &message_queue,
                 app_handle.as_ref(),
                 context_type,
                 &runtime_context_id,
+                Some(conversation_id.as_str()),
                 pending_turns,
             )
             .await;
-
-            let removed = match interactive_process_token {
-                Some(token) => ipr.remove_if_token(&ipr_key, token).await,
-                None => ipr.remove(&ipr_key).await,
-            };
             if removed.is_none() {
                 tracing::debug!(
                     %context_type,
@@ -2260,44 +2265,6 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
             }
         }
     }.instrument(span));
-}
-
-async fn requeue_pending_stdin_turns<R: Runtime>(
-    message_queue: &MessageQueue,
-    app_handle: Option<&AppHandle<R>>,
-    context_type: ChatContextType,
-    queue_context_id: &str,
-    pending_turns: Vec<PendingStdinTurn>,
-) {
-    let key = QueueKey::new(context_type, queue_context_id);
-    for turn in pending_turns.into_iter().rev() {
-        let mut queued = QueuedMessage::new(turn.content);
-        queued.created_at = turn.queued_at.clone();
-        queued.created_at_override = Some(turn.queued_at);
-        queued.metadata_override = turn.metadata_override;
-        queued.persisted_message_id = Some(turn.persisted_message_id);
-        message_queue.queue_front_existing(
-            context_type,
-            queue_context_id.to_string(),
-            queued.clone(),
-        );
-        if let Some(handle) = app_handle {
-            let app_state = handle.state::<crate::application::AppState>();
-            if let Err(error) = app_state
-                .queued_message_repo
-                .enqueue_front(&key, &queued)
-                .await
-            {
-                tracing::warn!(
-                    %context_type,
-                    queue_context_id,
-                    queued_message_id = %queued.id,
-                    error = %error,
-                    "[QUEUE] Failed to persist recovered stdin turn"
-                );
-            }
-        }
-    }
 }
 
 #[cfg(test)]
