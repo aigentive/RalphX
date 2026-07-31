@@ -26,7 +26,8 @@ paths:
 |---|---|
 | Provider-exposed content only | “Thinking” means summaries/deltas explicitly emitted by the harness CLI. Never claim RalphX captures hidden chain-of-thought. |
 | Harness adapters normalize | Claude and Codex keep their native parsers; normalize into shared `ContentBlockItem::Thinking` + `agent:thinking`, not pairwise frontend branches. |
-| Capability probes fail closed | Optional CLI flags are enabled only by falsifiable capability evidence. Claude help text owns `--include-partial-messages` / `--thinking-display`; ❌ unknown-arg + `--version` exit status. |
+| Capability probes fail closed | Optional CLI flags are enabled only by falsifiable capability evidence. Claude help text owns `--include-partial-messages`; `--thinking-display` uses help marker OR the value-rejection acceptance probe (bogus value must be rejected with non-zero exit + stderr echoing both flag and probe value); ❌ unknown-arg + `--version` exit status, ❌ unknown-arg + `--help` exit status (both exit 0). |
+| One spawn-arg seam | `spawn_args::shared_streaming_cli_args` is the sole production source of `--output-format stream-json` / `--verbose` / `--include-partial-messages` / `--thinking-display summarized`; both the chat/base builder and `ClaudeCodeClient::build_cli_args` must consume it. ❌ Re-adding these flags inline in any builder. |
 | Backend owns lifecycle | The backend emits authoritative logical `block_index`, `is_settled`, and `duration_ms`; the UI must not infer settlement from array position, tools, or run completion. |
 | One wire contract | `AgentThinkingPayload` is the event authority. Any field change must keep Rust serialization fixtures and frontend fixture consumers aligned. |
 | Settle never erases | Claude settle uses empty text + append semantics; frontend merging must preserve accumulated text and ignore an unmatched empty settle. |
