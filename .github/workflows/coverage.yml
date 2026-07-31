@@ -47,6 +47,7 @@ jobs:
               - 'plugins/app/ralphx-mcp-server/**'
             rust:
               - '.cargo/**'
+              - '.github/actions/**'
               - 'scripts/summarize-coverage.mjs'
               - 'scripts/bench-rust-build.sh'
               - 'scripts/check-rust-test-features.py'
@@ -145,8 +146,7 @@ jobs:
           df -h /
 
       - name: Install Linux system dependencies
-        shell: bash
-        run: bash scripts/ci-install-linux-deps.sh
+        uses: ./.github/actions/linux-deps
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
@@ -221,8 +221,7 @@ jobs:
           df -h /
 
       - name: Install Linux system dependencies
-        shell: bash
-        run: bash scripts/ci-install-linux-deps.sh
+        uses: ./.github/actions/linux-deps
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
@@ -510,8 +509,7 @@ jobs:
           df -h /
 
       - name: Install Linux system dependencies
-        shell: bash
-        run: bash scripts/ci-install-linux-deps.sh
+        uses: ./.github/actions/linux-deps
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
