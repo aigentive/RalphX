@@ -1,6 +1,7 @@
 use super::*;
 use crate::domain::agents::AgentRole;
 use crate::infrastructure::agents::claude::build_mcp_config_with_runtime_context;
+use crate::infrastructure::agents::claude::claude_runtime_config;
 use crate::infrastructure::agents::claude::clear_claude_cli_capability_cache;
 
 fn make_temp_project_plugin_dir() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
@@ -94,7 +95,7 @@ fn write_fake_claude_cli_with_partial_messages_support(
     std::fs::write(
         path,
         format!(
-            "#!/bin/sh\nif [ \"$1\" = \"--help\" ]; then\n  printf '%s\\n' 'Claude Code' 'Options:' '{partial_messages_flag}' '{thinking_display_flag}'\n  exit 0\nfi\nfor arg in \"$@\"; do\n  if [ \"$arg\" = \"--version\" ]; then\n    printf 'claude-code 2.1.219\\n'\n    exit 0\n  fi\ndone\nprintf \"error: unknown option '%s'\\n\" \"$1\" >&2\nexit 1\n"
+            "#!/bin/sh\nif [ \"$1\" = \"--help\" ]; then\n  printf '%s\\n' 'Claude Code' 'Options:' '{partial_messages_flag}' '{thinking_display_flag}'\n  exit 0\nfi\nfor arg in \"$@\"; do\n  if [ \"$arg\" = \"--version\" ]; then\n    printf 'claude-code 2.1.219\\n'\n    exit 0\n  fi\ndone\nexit 0\n"
         ),
     )
     .expect("write fake claude");
@@ -777,7 +778,7 @@ fn test_create_mcp_config_resolves_node_command() {
     let json = build_mcp_config_with_runtime_context(plugin_dir, "worker", false, None)
         .expect("build_mcp_config_with_runtime_context should succeed");
 
-    let mcp_server_name = super::claude_runtime_config().mcp_server_name.as_str();
+    let mcp_server_name = claude_runtime_config().mcp_server_name.as_str();
     let command = json["mcpServers"][mcp_server_name]["command"]
         .as_str()
         .expect("command field must be a string");
@@ -809,7 +810,7 @@ fn test_create_mcp_config_replaces_bare_node_default() {
     let tmp = tempfile::tempdir().unwrap();
     let plugin_dir = tmp.path();
 
-    let mcp_server_name = super::claude_runtime_config().mcp_server_name.as_str();
+    let mcp_server_name = claude_runtime_config().mcp_server_name.as_str();
     let json = build_mcp_config_with_runtime_context(plugin_dir, "worker", false, None)
         .expect("build_mcp_config_with_runtime_context should succeed");
     let command = json["mcpServers"][mcp_server_name]["command"]
@@ -836,7 +837,7 @@ fn test_create_mcp_config_uses_plugin_root_server_path() {
     let tmp = tempfile::tempdir().unwrap();
     let plugin_dir = tmp.path();
 
-    let mcp_server_name = super::claude_runtime_config().mcp_server_name.as_str();
+    let mcp_server_name = claude_runtime_config().mcp_server_name.as_str();
     let json = build_mcp_config_with_runtime_context(plugin_dir, "worker", false, None)
         .expect("build_mcp_config_with_runtime_context should succeed");
 
@@ -949,7 +950,7 @@ fn test_create_mcp_config_injects_agent_type() {
     let json = build_mcp_config_with_runtime_context(plugin_dir, "ralphx-ideation", false, None)
         .expect("build_mcp_config_with_runtime_context should succeed");
 
-    let mcp_server_name = super::claude_runtime_config().mcp_server_name.as_str();
+    let mcp_server_name = claude_runtime_config().mcp_server_name.as_str();
     let args = json["mcpServers"][mcp_server_name]["args"]
         .as_array()
         .expect("args must be an array");

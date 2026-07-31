@@ -258,6 +258,9 @@ fn test_build_base_cli_command_internal_mcp_blocked_in_tests() {
 
 #[test]
 fn test_build_base_cli_command_defaults_to_most_permissive_claude_permissions() {
+    // Serialize against the permission-override sibling test, which mutates the
+    // global permission override while holding this lock.
+    let _lock = lock_runtime_plugin_dirs_for_tests();
     let command = build_base_cli_command_for_test(
         Path::new("/fake/claude"),
         Path::new("/fake/plugin"),
