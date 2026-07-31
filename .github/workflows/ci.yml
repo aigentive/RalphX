@@ -16,6 +16,10 @@ concurrency:
 
 env:
   NEXTEST_VERSION: "0.9.133"
+  # Deep async poll chains (repair -> workspace-review -> chat send) exceed the
+  # 2 MiB std default test-thread stack in unoptimized builds; give libtest/nextest
+  # worker threads real headroom instead of sitting at the overflow boundary.
+  RUST_MIN_STACK: "8388608"
 
 jobs:
   changes:

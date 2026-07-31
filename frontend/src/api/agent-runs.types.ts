@@ -1,3 +1,10 @@
+export type RuntimeSource =
+  | "composer_selection"
+  | "conversation_override"
+  | "role_default"
+  | "project_default"
+  | "harness_fallback";
+
 export interface AgentRunAttribution {
   id: string;
   conversationId: string;
@@ -25,5 +32,5 @@ export interface AgentRunAttribution {
   personaSlug: string | null;
   agentName: string | null;
   launchRole: string | null;
-  runtimeSource: string | null;
+  runtimeSource: RuntimeSource | null;
 }

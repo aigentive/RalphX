@@ -12,7 +12,7 @@ use crate::domain::entities::{
     AgentWorkspaceReviewOutcome, AgentWorkspaceSourcePullRequest, Artifact, ArtifactId,
     ArtifactType, ChatConversation, ChatConversationId, ChatMessage, IdeationAnalysisBaseRefKind,
     IdeationSession, IdeationSessionFlow, IdeationSessionId, IdeationSessionStatus, ProjectId,
-    TaskId,
+    RuntimeSource, TaskId,
 };
 use crate::domain::repositories::AgentProviderSettingsRepository;
 use crate::domain::review::ReviewSettings;
@@ -2233,6 +2233,10 @@ async fn start_review_uses_the_workspace_reviewer_role_default() {
         sent_options[0].logical_effort_override,
         Some(LogicalEffort::High)
     );
+    assert_eq!(
+        sent_options[0].runtime_source_override,
+        Some(RuntimeSource::RoleDefault)
+    );
 }
 
 #[tokio::test]
@@ -2331,6 +2335,10 @@ async fn start_review_prefers_an_explicit_runtime_override_over_the_reviewer_def
     assert_eq!(
         sent_options[0].service_tier_override.as_deref(),
         Some("standard")
+    );
+    assert_eq!(
+        sent_options[0].runtime_source_override,
+        Some(RuntimeSource::ConversationOverride)
     );
 }
 
@@ -3752,12 +3760,20 @@ async fn manual_blocking_review_fixer_routes_hidden_repair_message_when_autofix_
             .expect("review artifact version should remain current"),
         blocking_fingerprint: blocking_fingerprint.clone(),
     };
+    let runtime_override = ManualRoleRuntimeOverride {
+        harness: AgentHarnessKind::Claude,
+        model: Some("claude-explicit-fixer".to_string()),
+        effort: Some(LogicalEffort::High),
+        service_tier: ManualServiceTier::Standard,
+        coordination_mode: None,
+        persona_id: None,
+    };
     let (_timing_guard, captured_timings) = capture_workspace_review_timings();
     let start = start_agent_workspace_review_blocking_fixer_with_chat_service(
         &state,
         &workspace,
         Some(&confirmation),
-        None,
+        Some(&runtime_override),
         &chat_service,
     )
     .await
@@ -3798,6 +3814,10 @@ async fn manual_blocking_review_fixer_routes_hidden_repair_message_when_autofix_
     assert_eq!(
         options.agent_name_override.as_deref(),
         Some(agent_names::AGENT_WORKSPACE_REPAIR)
+    );
+    assert_eq!(
+        options.runtime_source_override,
+        Some(RuntimeSource::ConversationOverride)
     );
     let action = AgentRunAction::from_metadata_json(options.metadata.as_deref())
         .expect("repair send should carry typed action authority");
@@ -3966,6 +3986,10 @@ async fn assert_blocking_fixer_uses_enabled_default_over_stale_claude_session(
         Some(CODEX_DEFAULT_SANDBOX_MODE)
     );
     assert_eq!(options.service_tier_override.as_deref(), Some("standard"));
+    assert_eq!(
+        options.runtime_source_override,
+        Some(RuntimeSource::RoleDefault)
+    );
     assert!(options.preserve_conversation_provider_session_ref);
     assert!(options.force_new_provider_session);
 }

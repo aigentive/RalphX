@@ -495,7 +495,7 @@ pub(super) async fn cancel_armed_runtime_handoff_owner(
 pub(super) async fn finalize_idle_runtime_handoff(
     interactive_process_registry: &InteractiveProcessRegistry,
     owner: &RuntimeHandoffOwner,
-) -> bool {
+) -> Option<crate::application::interactive_process_registry::InteractiveProcess> {
     interactive_process_registry
         .retire_armed_idle_if_owner(
             &owner.interactive_key(),
@@ -503,5 +503,4 @@ pub(super) async fn finalize_idle_runtime_handoff(
             &owner.agent_run_id,
         )
         .await
-        .is_some()
 }

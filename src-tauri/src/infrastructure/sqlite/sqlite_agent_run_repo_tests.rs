@@ -3,7 +3,7 @@ use crate::domain::agents::{AgentHarnessKind, LogicalEffort, ProviderSessionRef}
 use crate::domain::entities::agent_run::PersonaRunAttribution;
 use crate::domain::entities::{
     AgentRunActionKind, AgentRunAttribution, AgentRunUsage, IdeationSessionId,
-    ProviderUsageSnapshot, UsageCapture, UsageProvenance,
+    ProviderUsageSnapshot, RuntimeSource, UsageCapture, UsageProvenance,
 };
 use crate::domain::repositories::{ORPHANED_AGENT_RUN_ON_APP_RESTART, PRUNED_STALE_AGENT_RUN};
 use crate::testing::SqliteTestDb;
@@ -319,7 +319,7 @@ async fn agent_run_identity_fields_round_trip_in_sqlite() {
     let run_id = run.id;
     run.agent_name = Some("ralphx-workspace-reviewer".to_string());
     run.launch_role = Some("workspace_reviewer".to_string());
-    run.runtime_source = Some("role_default".to_string());
+    run.runtime_source = Some(RuntimeSource::RoleDefault);
 
     repo.create(run).await.unwrap();
 
@@ -329,7 +329,7 @@ async fn agent_run_identity_fields_round_trip_in_sqlite() {
         Some("ralphx-workspace-reviewer")
     );
     assert_eq!(persisted.launch_role.as_deref(), Some("workspace_reviewer"));
-    assert_eq!(persisted.runtime_source.as_deref(), Some("role_default"));
+    assert_eq!(persisted.runtime_source, Some(RuntimeSource::RoleDefault));
 }
 
 #[tokio::test]
@@ -859,16 +859,82 @@ async fn test_update_status() {
     let (db, repo) = setup_repo();
     let conv = db.seed_ideation_conversation();
 
-    let run = AgentRun::new(conv.id);
+    for status in [
+        AgentRunStatus::Completed,
+        AgentRunStatus::Failed,
+        AgentRunStatus::Cancelled,
+    ] {
+        let run = AgentRun::new(conv.id);
+        let run_id = run.id;
+        repo.create(run).await.unwrap();
+
+        repo.update_status(&run_id, status).await.unwrap();
+
+        let updated = repo.get_by_id(&run_id).await.unwrap().unwrap();
+        assert_eq!(updated.status, status);
+        assert!(updated.completed_at.is_some());
+    }
+}
+
+#[tokio::test]
+async fn unknown_persisted_runtime_source_hydrates_as_none() {
+    let (db, repo) = setup_repo();
+    let conversation = db.seed_ideation_conversation();
+    let run = AgentRun::new(conversation.id);
     let run_id = run.id;
     repo.create(run).await.unwrap();
 
-    repo.update_status(&run_id, AgentRunStatus::Cancelled)
+    db.with_connection(|conn| {
+        conn.execute(
+            "UPDATE agent_runs SET runtime_source = 'future_runtime_source' WHERE id = ?1",
+            [run_id.as_str()],
+        )
+        .expect("seed unknown runtime source");
+    });
+
+    assert_eq!(
+        repo.get_by_id(&run_id)
+            .await
+            .unwrap()
+            .expect("persisted run")
+            .runtime_source,
+        None
+    );
+}
+
+#[tokio::test]
+async fn update_status_keeps_existing_terminal_timestamp_and_clears_it_for_running() {
+    let (db, repo) = setup_repo();
+    let conv = db.seed_ideation_conversation();
+    let fixed_completed_at = chrono::Utc::now() - chrono::Duration::minutes(1);
+
+    let mut run = AgentRun::new(conv.id);
+    let run_id = run.id;
+    run.completed_at = Some(fixed_completed_at);
+    repo.create(run).await.unwrap();
+
+    repo.update_status(&run_id, AgentRunStatus::Failed)
         .await
         .unwrap();
+    assert_eq!(
+        repo.get_by_id(&run_id)
+            .await
+            .unwrap()
+            .expect("persisted run")
+            .completed_at,
+        Some(fixed_completed_at)
+    );
 
-    let updated = repo.get_by_id(&run_id).await.unwrap().unwrap();
-    assert_eq!(updated.status, AgentRunStatus::Cancelled);
+    repo.update_status(&run_id, AgentRunStatus::Running)
+        .await
+        .unwrap();
+    assert!(repo
+        .get_by_id(&run_id)
+        .await
+        .unwrap()
+        .expect("persisted run")
+        .completed_at
+        .is_none());
 }
 
 #[tokio::test]

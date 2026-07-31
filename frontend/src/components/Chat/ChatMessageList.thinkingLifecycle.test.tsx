@@ -6,6 +6,7 @@ import {
   liveThinkingGroupKey,
   synchronizeThinkingGroupExpansion,
 } from "./ChatMessageList.liveRows";
+import { createWrapper } from "@/test/store-utils";
 import type { StreamingContentBlock } from "@/types/streaming-task";
 
 vi.mock("@/hooks/useMessageAttachments", () => ({
@@ -32,7 +33,9 @@ function thinking(blockIndex: number, text: string, isSettled = false): Streamin
 }
 
 function renderList(streamingContentBlocks: StreamingContentBlock[]) {
-  return render(<ChatMessageList {...defaultProps} streamingContentBlocks={streamingContentBlocks} />);
+  return render(<ChatMessageList {...defaultProps} streamingContentBlocks={streamingContentBlocks} />, {
+    wrapper: createWrapper(),
+  });
 }
 
 describe("ChatMessageList thinking lifecycle", () => {

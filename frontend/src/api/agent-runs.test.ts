@@ -27,4 +27,20 @@ describe("agentRunsApi", () => {
     await expect(agentRunsApi.getAttribution("run-1")).resolves.toMatchObject({ id: "run-1", completedAt: null, agentName: null });
     expect(invoke).toHaveBeenCalledWith("get_agent_run_attribution", { runId: "run-1" });
   });
+
+  it("degrades an unknown runtime source to null", () => {
+    expect(transformAgentRunAttribution(AgentRunAttributionSchema.parse({
+      ...fullPayload,
+      runtime_source: "future_runtime_source",
+    })).runtimeSource).toBeNull();
+  });
+
+  it("loads a batch of attributions through the plural command", async () => {
+    invoke.mockResolvedValue([fullPayload]);
+
+    await expect(agentRunsApi.getAttributions(["run-1"])).resolves.toMatchObject([
+      { id: "run-1", runtimeSource: "role_default" },
+    ]);
+    expect(invoke).toHaveBeenCalledWith("get_agent_run_attributions", { runIds: ["run-1"] });
+  });
 });

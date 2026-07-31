@@ -432,6 +432,7 @@ macro_rules! register_tauri_commands {
             commands::unified_chat_commands::restore_agent_conversation,
             commands::unified_chat_commands::get_agent_run_status_unified,
             commands::unified_chat_commands::get_agent_run_attribution,
+            commands::unified_chat_commands::get_agent_run_attributions,
             commands::unified_chat_commands::is_chat_service_available,
             commands::unified_chat_commands::stop_agent,
             commands::unified_chat_commands::is_agent_running,

@@ -190,20 +190,15 @@ export function useGlobalAgentLifecycle() {
         }
 
         useChatStore.getState().setAgentStatus(eventContextKey, "generating");
-        const lifecyclePayload = payload as AgentRunStartedPayload & {
-          started_at?: string | null; startedAt?: string | null;
-          agent_name?: string | null; agentName?: string | null;
-          launch_role?: string | null; launchRole?: string | null;
-        };
-        const launchRole = lifecyclePayload.launch_role ?? lifecyclePayload.launchRole ?? null;
+        const launchRole = payload.launch_role ?? payload.launchRole ?? null;
         useChatStore.getState().setAgentActivityLabel(eventContextKey, `${roleVerb(launchRole)} working`);
         useChatStore.getState().setActiveAgentRun(
           eventContextKey,
           payload.run_id,
           payload.provider_harness ?? payload.providerHarness ?? null,
           {
-            startedAt: Date.parse(lifecyclePayload.started_at ?? lifecyclePayload.startedAt ?? "") || Date.now(),
-            agentName: lifecyclePayload.agent_name ?? lifecyclePayload.agentName ?? null,
+            startedAt: Date.parse(payload.started_at ?? payload.startedAt ?? "") || Date.now(),
+            agentName: payload.agent_name ?? payload.agentName ?? null,
             launchRole,
           },
         );

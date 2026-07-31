@@ -702,14 +702,18 @@ async fn idle_finalization_requires_armed_idle_exact_owner_and_removes_it_after_
     ));
 
     assert!(
-        !finalize_idle_runtime_handoff(&interactive, &owner).await,
+        finalize_idle_runtime_handoff(&interactive, &owner)
+            .await
+            .is_none(),
         "an active owner must remain available to finish its current turn"
     );
     assert!(interactive.has_process(&key).await);
 
     assert!(interactive.mark_idle_if_token(&key, token).await);
     assert!(
-        finalize_idle_runtime_handoff(&interactive, &owner).await,
+        finalize_idle_runtime_handoff(&interactive, &owner)
+            .await
+            .is_some(),
         "the exact armed idle owner must retire after answer commit"
     );
     assert!(

@@ -813,13 +813,16 @@ pub(crate) async fn start_agent_workspace_review_unlocked_with_runtime_override(
     runtime_override: Option<&crate::domain::agents::ManualRoleRuntimeOverride>,
 ) -> AppResult<AgentWorkspaceReviewStart> {
     let chat_service = state.build_chat_service();
-    start_agent_workspace_review_with_chat_service(
+    // Box::pin keeps this large review-start state machine off caller poll frames;
+    // the guarded/repair chains embed this future several levels deep and overflow
+    // debug/test stacks when it is inlined (see rule: Large async state entry).
+    Box::pin(start_agent_workspace_review_with_chat_service(
         state,
         workspace,
         force,
         runtime_override,
         &chat_service,
-    )
+    ))
     .await
 }
 
@@ -1188,6 +1191,7 @@ async fn start_agent_workspace_review_with_chat_service<S: ChatService + ?Sized>
                 preallocated_agent_run_id: Some(preallocated_agent_run_id),
                 queue_policy: SendQueuePolicy::RequireImmediateStart,
                 conversation_id_override: Some(review_conversation_id.clone()),
+                runtime_source_override: Some(runtime.runtime_source),
                 harness_override: runtime.harness,
                 agent_name_override: Some(agent_names::AGENT_WORKSPACE_REVIEWER.to_string()),
                 model_override: runtime.model,
@@ -2768,12 +2772,15 @@ async fn start_agent_workspace_review_blocking_fixer_with_override_unlocked(
     runtime_override: Option<&crate::domain::agents::ManualRoleRuntimeOverride>,
 ) -> AppResult<AgentWorkspaceReviewFixerStart> {
     let chat_service = state.build_chat_service();
-    start_agent_workspace_review_blocking_fixer_with_chat_service(
-        state,
-        workspace,
-        confirmation,
-        runtime_override,
-        &chat_service,
+    // Box::pin: keep the large fixer-start machine off caller poll frames (stack safety).
+    Box::pin(
+        start_agent_workspace_review_blocking_fixer_with_chat_service(
+            state,
+            workspace,
+            confirmation,
+            runtime_override,
+            &chat_service,
+        ),
     )
     .await
 }
@@ -3069,7 +3076,8 @@ async fn route_workspace_review_blocking_fixer(
     target: Option<&AgentWorkspaceReviewTarget>,
 ) -> AppResult<AgentWorkspaceReviewMonitor> {
     let chat_service = state.build_chat_service();
-    route_workspace_review_blocking_fixer_with_chat_service(
+    // Box::pin: keep the large fixer-routing machine off caller poll frames (stack safety).
+    Box::pin(route_workspace_review_blocking_fixer_with_chat_service(
         state,
         workspace,
         monitor,
@@ -3078,7 +3086,7 @@ async fn route_workspace_review_blocking_fixer(
         None,
         None,
         &chat_service,
-    )
+    ))
     .await
 }
 
@@ -3181,6 +3189,7 @@ async fn route_workspace_review_blocking_fixer_with_chat_service<S: ChatService 
             SendMessageOptions {
                 conversation_id_override: Some(workspace.conversation_id.clone()),
                 agent_name_override: Some(agent_names::AGENT_WORKSPACE_REPAIR.to_string()),
+                runtime_source_override: Some(runtime.runtime_source),
                 harness_override: runtime.harness,
                 model_override: runtime.model,
                 logical_effort_override: runtime.logical_effort,

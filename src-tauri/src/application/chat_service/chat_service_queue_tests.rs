@@ -108,7 +108,7 @@ fn queued_agent_run_inherits_identity_from_parent_run_with_name_fallback() {
     let mut parent = crate::domain::entities::AgentRun::new(ChatConversationId::new());
     parent.agent_name = Some("ralphx-agent-workspace-repair".to_string());
     parent.launch_role = Some("workspace_repair".to_string());
-    parent.runtime_source = Some("role_default".to_string());
+    parent.runtime_source = Some(crate::domain::entities::RuntimeSource::RoleDefault);
 
     let run = build_queued_agent_run(
         ChatConversationId::new(),
@@ -128,7 +128,10 @@ fn queued_agent_run_inherits_identity_from_parent_run_with_name_fallback() {
         Some("ralphx-agent-workspace-repair")
     );
     assert_eq!(run.launch_role.as_deref(), Some("workspace_repair"));
-    assert_eq!(run.runtime_source.as_deref(), Some("role_default"));
+    assert_eq!(
+        run.runtime_source,
+        Some(crate::domain::entities::RuntimeSource::RoleDefault)
+    );
 
     let orphan_run = build_queued_agent_run(
         ChatConversationId::new(),
@@ -532,7 +535,7 @@ async fn provider_switch_queue_without_app_handle_requeues_instead_of_resuming()
 }
 
 #[tokio::test]
-async fn missing_continuation_authority_records_failed_action_run() {
+async fn missing_completed_owner_requeues_message_without_preflight_failure_run() {
     let app_state = AppState::new_test();
     let message_queue = Arc::clone(&app_state.message_queue);
     let running_agent_registry = Arc::clone(&app_state.running_agent_registry);
@@ -605,31 +608,16 @@ async fn missing_continuation_authority_records_failed_action_run() {
     .await;
 
     assert_eq!(outcome.total_processed, 1);
-    assert!(
-        message_queue
-            .get_queued(ChatContextType::Ideation, "plan-session")
-            .is_empty(),
-        "permanent authority failures must not be retried forever"
-    );
+    let queued = message_queue.get_queued(ChatContextType::Ideation, "plan-session");
+    assert_eq!(queued.len(), 1, "the undelivered message must be retained");
+    assert_eq!(queued[0].content, "verify plan");
     let runs = agent_run_repo
         .get_by_conversation(&conversation_id)
         .await
-        .expect("load failed action run");
-    assert_eq!(runs.len(), 1);
-    assert_eq!(
-        runs[0].status,
-        crate::domain::entities::AgentRunStatus::Failed
-    );
-    assert_eq!(
-        runs[0].action_kind,
-        Some(crate::domain::entities::AgentRunActionKind::VerifyPlan)
-    );
-    assert_eq!(runs[0].action_context_id.as_deref(), Some("plan-session"));
-    assert_eq!(runs[0].action_target_id.as_deref(), Some("plan-artifact"));
-    assert_eq!(runs[0].harness, Some(AgentHarnessKind::Codex));
-    assert_eq!(
-        runs[0].provider_session_id.as_deref(),
-        Some("missing-codex-session")
+        .expect("load agent runs");
+    assert!(
+        runs.is_empty(),
+        "no queued_preflight failure run is persisted"
     );
 }
 

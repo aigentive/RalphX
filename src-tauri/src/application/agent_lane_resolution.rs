@@ -8,7 +8,7 @@ use crate::domain::agents::{
     ManualServiceTier, RoutingRole, RoutingRoleFamily, StoredAgentLaneSettings,
     DEFAULT_AGENT_HARNESS,
 };
-use crate::domain::entities::{AgentConversationWorkspaceMode, ChatContextType};
+use crate::domain::entities::{AgentConversationWorkspaceMode, ChatContextType, RuntimeSource};
 use crate::domain::repositories::AgentLaneSettingsRepository;
 use crate::error::AppResult;
 use crate::infrastructure::agents::claude::{canonical_short_agent_name, resolve_model};
@@ -205,6 +205,7 @@ pub struct ResolvedAgentSpawnSettings {
     pub service_tier: Option<String>,
     pub configured_subagent_model_cap: Option<String>,
     pub subagent_model_cap: Option<String>,
+    pub runtime_source: RuntimeSource,
 }
 
 /// Integration-test seam (doc-hidden): suites resolve spawn settings to feed
@@ -267,6 +268,7 @@ pub async fn resolve_agent_spawn_settings(
             service_tier: None,
             configured_subagent_model_cap: None,
             subagent_model_cap: None,
+            runtime_source: RuntimeSource::HarnessFallback,
         };
     }
 
@@ -396,6 +398,13 @@ pub async fn resolve_agent_spawn_settings(
         service_tier: None,
         configured_subagent_model_cap,
         subagent_model_cap,
+        runtime_source: if primary_project_row.is_some() {
+            RuntimeSource::ProjectDefault
+        } else if primary_global_row.is_some() {
+            RuntimeSource::RoleDefault
+        } else {
+            RuntimeSource::HarnessFallback
+        },
     }
 }
 
@@ -580,7 +589,24 @@ pub async fn resolve_manual_role_spawn_settings(
         service_tier,
         configured_subagent_model_cap,
         subagent_model_cap,
+        runtime_source: if runtime_override.is_some() {
+            RuntimeSource::ConversationOverride
+        } else {
+            runtime_source_for_manual_default(resolved.source)
+        },
     })
+}
+
+fn runtime_source_for_manual_default(source: ManualDefaultSource) -> RuntimeSource {
+    match source {
+        ManualDefaultSource::ProviderDefault => RuntimeSource::HarnessFallback,
+        ManualDefaultSource::ProjectUi
+        | ManualDefaultSource::ProjectYaml
+        | ManualDefaultSource::GlobalUi
+        | ManualDefaultSource::GlobalYaml
+        | ManualDefaultSource::LegacyLane
+        | ManualDefaultSource::LegacyWorkspaceReview => RuntimeSource::RoleDefault,
+    }
 }
 
 fn manual_role_harness_defaults(
