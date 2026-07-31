@@ -2777,7 +2777,7 @@ describe("AgentsView start conversation", () => {
 
     await waitFor(() =>
       expect(
-        useAgentSessionStore.getState().lastRuntimeByProjectId["project-1"],
+        useAgentSessionStore.getState().lastRuntimeByProjectMode["project-1:edit"],
       ).toEqual({
         provider: "claude",
         modelId: "opus",

@@ -206,7 +206,8 @@ pub use chat_service_types::{
     AgentHookPayload, AgentMessageCreatedPayload, AgentMessageQueuedPayload,
     AgentMessageRenderReadyPayload, AgentQueueSentPayload, AgentRunCompletedPayload,
     AgentRunStartedPayload, AgentTaskCompletedPayload, AgentTaskStartedPayload,
-    AgentThinkingPayload, AgentToolCallPayload, AgentToolCallPreviewFields,
+    AgentThinkingPayload, AgentThinkingProgressPayload, AgentToolCallPayload,
+    AgentToolCallPreviewFields,
     ChatConversationWithMessages, ChatServiceError, SendCallerContext, SendResult,
     TeamArtifactCreatedPayload, MESSAGE_DELIVERED_NOT_PERSISTED_PREFIX,
 };
@@ -5837,9 +5838,14 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     // Emit run_started on BOTH paths so the frontend shows activity and
                     // accepts the streamed response. The process is answering this turn
                     // whether or not the transcript row survived.
-                    self.emit_event(
-                        "agent:run_started",
-                        AgentRunStartedPayload::with_provider_session(
+                    let interactive_run_attribution = self
+                        .agent_run_repo
+                        .get_by_id(&AgentRunId::from_string(&interactive_run_id))
+                        .await
+                        .ok()
+                        .flatten();
+                    self.emit_event("agent:run_started", {
+                        let mut payload = AgentRunStartedPayload::with_provider_session(
                             interactive_run_id.clone(),
                             conversation.id.as_str().to_string(),
                             context_type.to_string(),
@@ -5850,8 +5856,18 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                             None,
                             Some(provider_harness),
                             provider_session_id,
-                        ),
-                    );
+                        );
+                        payload.agent_name = interactive_run_attribution
+                            .as_ref()
+                            .and_then(|run| run.agent_name.clone());
+                        payload.launch_role = interactive_run_attribution
+                            .as_ref()
+                            .and_then(|run| run.launch_role.clone());
+                        payload.started_at = interactive_run_attribution
+                            .as_ref()
+                            .map(|run| run.started_at.to_rfc3339());
+                        payload
+                    });
 
                     if let Err(error) = delivered_turn_persisted {
                         tracing::error!(
@@ -6049,6 +6065,12 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         //     If an agent is already registered for this context, queue the message.
         //     Create the AgentRun early so its ID can be stored in the slot for ownership tracking.
         let mut agent_run = AgentRun::new(conversation.id);
+        agent_run.agent_name = Some(agent_name.to_string());
+        agent_run.launch_role =
+            crate::infrastructure::agents::claude::agent_names::launch_role_for_agent_name(
+                agent_name,
+            )
+            .map(str::to_string);
         if let Some(preallocated_agent_run_id) = options.preallocated_agent_run_id {
             agent_run.id = preallocated_agent_run_id;
         }
@@ -7240,6 +7262,10 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         };
         pre_spawn_assistant_attribution = Some(assistant_message_attribution.clone());
 
+        let run_agent_name = agent_run.agent_name.clone();
+        let run_launch_role = agent_run.launch_role.clone();
+        let run_started_at = agent_run.started_at.to_rfc3339();
+
         // Persist agent run record after the effective harness/model metadata is populated.
         let agent_run_create_started = Instant::now();
         if let Err(e) = self.agent_run_repo.create(agent_run).await {
@@ -7292,6 +7318,9 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 stored_session_id.clone(),
             );
             payload.service_tier = resolved_spawn_settings.service_tier.clone();
+            payload.agent_name = run_agent_name;
+            payload.launch_role = run_launch_role;
+            payload.started_at = Some(run_started_at);
             payload
         });
 

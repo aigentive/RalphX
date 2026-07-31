@@ -63,6 +63,8 @@ fn queued_agent_run_inherits_exact_continuation_runtime_attribution() {
         &codex_continuation_runtime(),
         &message,
         super::super::conversation_launch_security::ConversationLaunchSecurityClass::ConfiguredMcp,
+        None,
+        None,
     );
 
     assert_eq!(run.logical_model.as_deref(), Some("gpt-5.5"));
@@ -90,12 +92,63 @@ fn queued_agent_run_records_explicit_runtime_overrides() {
         &codex_continuation_runtime(),
         &message,
         super::super::conversation_launch_security::ConversationLaunchSecurityClass::ConfiguredMcp,
+        None,
+        None,
     );
 
     assert_eq!(run.logical_model.as_deref(), Some("gpt-5.6"));
     assert_eq!(run.effective_model_id.as_deref(), Some("gpt-5.6"));
     assert_eq!(run.logical_effort, Some(LogicalEffort::High));
     assert_eq!(run.service_tier.as_deref(), Some("standard"));
+}
+
+#[test]
+fn queued_agent_run_inherits_identity_from_parent_run_with_name_fallback() {
+    let message = crate::domain::services::QueuedMessage::new("follow up".to_string());
+    let mut parent = crate::domain::entities::AgentRun::new(ChatConversationId::new());
+    parent.agent_name = Some("ralphx-agent-workspace-repair".to_string());
+    parent.launch_role = Some("workspace_repair".to_string());
+    parent.runtime_source = Some("role_default".to_string());
+
+    let run = build_queued_agent_run(
+        ChatConversationId::new(),
+        AgentHarnessKind::Codex,
+        "codex-session",
+        None,
+        None,
+        None,
+        &codex_continuation_runtime(),
+        &message,
+        super::super::conversation_launch_security::ConversationLaunchSecurityClass::ConfiguredMcp,
+        Some(&parent),
+        Some("ralphx-general-worker"),
+    );
+    assert_eq!(
+        run.agent_name.as_deref(),
+        Some("ralphx-agent-workspace-repair")
+    );
+    assert_eq!(run.launch_role.as_deref(), Some("workspace_repair"));
+    assert_eq!(run.runtime_source.as_deref(), Some("role_default"));
+
+    let orphan_run = build_queued_agent_run(
+        ChatConversationId::new(),
+        AgentHarnessKind::Codex,
+        "codex-session",
+        None,
+        None,
+        None,
+        &codex_continuation_runtime(),
+        &message,
+        super::super::conversation_launch_security::ConversationLaunchSecurityClass::ConfiguredMcp,
+        None,
+        Some("ralphx-general-worker"),
+    );
+    assert_eq!(
+        orphan_run.agent_name.as_deref(),
+        Some("ralphx-general-worker")
+    );
+    assert_eq!(orphan_run.launch_role, None);
+    assert_eq!(orphan_run.runtime_source, None);
 }
 
 #[test]

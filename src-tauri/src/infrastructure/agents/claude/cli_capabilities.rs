@@ -51,6 +51,7 @@ pub struct ClaudeCliCapabilities {
     pub supported_model_aliases: Vec<String>,
     pub supported_efforts: Vec<LogicalEffort>,
     pub supports_include_partial_messages: bool,
+    pub supports_thinking_display: bool,
 }
 
 impl ClaudeCliCapabilities {
@@ -79,6 +80,10 @@ impl ClaudeCliCapabilities {
     pub fn supports_include_partial_messages(&self) -> bool {
         self.supports_include_partial_messages
     }
+
+    pub fn supports_thinking_display(&self) -> bool {
+        self.supports_thinking_display
+    }
 }
 
 pub fn parse_claude_version(output: &str) -> Option<String> {
@@ -103,16 +108,17 @@ pub fn parse_claude_cli_capabilities(
         supported_model_aliases,
         supported_efforts,
         supports_include_partial_messages: help_output.contains("--include-partial-messages"),
+        supports_thinking_display: false,
     }
 }
 
 pub fn probe_claude_cli(cli_path: &Path) -> Result<ClaudeCliCapabilities, String> {
     let version_output = run_claude_command(cli_path, &["--version"])?;
     let help_output = run_claude_command(cli_path, &["--help"])?;
-    Ok(parse_claude_cli_capabilities(
-        &help_output,
-        Some(&version_output),
-    ))
+    let mut capabilities = parse_claude_cli_capabilities(&help_output, Some(&version_output));
+    capabilities.supports_thinking_display =
+        run_claude_command(cli_path, &["--thinking-display", "summarized", "--version"]).is_ok();
+    Ok(capabilities)
 }
 
 pub fn probe_claude_cli_cached(cli_path: &Path) -> Result<ClaudeCliCapabilities, String> {
@@ -141,6 +147,20 @@ pub fn claude_cli_supports_partial_messages(cli_path: &Path) -> bool {
                 cli_path = %cli_path.display(),
                 %error,
                 "Claude CLI partial-message capability probe failed; omitting optional flag"
+            );
+            false
+        }
+    }
+}
+
+pub fn claude_cli_supports_thinking_display(cli_path: &Path) -> bool {
+    match probe_claude_cli_cached(cli_path) {
+        Ok(capabilities) => capabilities.supports_thinking_display(),
+        Err(error) => {
+            tracing::warn!(
+                cli_path = %cli_path.display(),
+                %error,
+                "Claude CLI thinking-display capability probe failed; omitting optional flag"
             );
             false
         }

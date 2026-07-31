@@ -55,7 +55,8 @@ use super::tool_result_preview::{
 use super::{
     event_context, events, has_meaningful_output, message_metadata_hidden_from_ui,
     AgentChunkPayload, AgentHookPayload, AgentTaskCompletedPayload, AgentTaskStartedPayload,
-    AgentThinkingPayload, AgentToolCallPayload, AgentToolCallPreviewFields,
+    AgentThinkingPayload, AgentThinkingProgressPayload, AgentToolCallPayload,
+    AgentToolCallPreviewFields,
 };
 use crate::utils::truncate_str;
 use crate::AppState;
@@ -1940,6 +1941,24 @@ pub async fn process_stream_background<R: Runtime>(
                                 };
                                 let _ = repo.save(event).await;
                             }
+                        }
+                    }
+                    StreamEvent::ThinkingProgress {
+                        estimated_tokens,
+                        estimated_tokens_delta,
+                    } => {
+                        if let Some(ref handle) = app_handle {
+                            let _ = handle.emit(
+                                events::AGENT_THINKING_PROGRESS,
+                                AgentThinkingProgressPayload {
+                                    estimated_tokens,
+                                    estimated_tokens_delta,
+                                    run_id: agent_run_id.clone(),
+                                    conversation_id: conversation_id_str.clone(),
+                                    context_type: context_type_str.clone(),
+                                    context_id: context_id_str.clone(),
+                                },
+                            );
                         }
                     }
                     StreamEvent::ToolCallStarted {

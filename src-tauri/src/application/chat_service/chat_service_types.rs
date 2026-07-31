@@ -58,6 +58,8 @@ pub mod events {
     pub const AGENT_CHUNK: &str = "agent:chunk";
     /// Agent reasoning chunk event
     pub const AGENT_THINKING: &str = "agent:thinking";
+    /// Agent reasoning token progress event
+    pub const AGENT_THINKING_PROGRESS: &str = "agent:thinking_progress";
     /// Agent tool call event
     pub const AGENT_TOOL_CALL: &str = "agent:tool_call";
     /// Agent run started event
@@ -188,6 +190,12 @@ pub struct AgentRunStartedPayload {
     pub run_chain_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_run_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub launch_role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
     /// The resolved Claude model ID used for this run (e.g. "claude-sonnet-4-6").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effective_model_id: Option<String>,
@@ -223,6 +231,9 @@ impl AgentRunStartedPayload {
             context_id: context_id.into(),
             run_chain_id,
             parent_run_id,
+            agent_name: None,
+            launch_role: None,
+            started_at: None,
             effective_model_id,
             effective_model_label,
             provider_harness: harness.map(|value| value.to_string()),
@@ -262,6 +273,19 @@ pub struct AgentThinkingPayload {
     pub seq: u64,
     #[serde(default)]
     pub append_to_previous: bool,
+}
+
+/// Payload for agent:thinking_progress event.
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentThinkingProgressPayload {
+    pub estimated_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub estimated_tokens_delta: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    pub conversation_id: String,
+    pub context_type: String,
+    pub context_id: String,
 }
 
 /// Payload for agent:usage_updated event

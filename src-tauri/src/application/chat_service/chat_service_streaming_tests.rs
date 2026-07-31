@@ -171,6 +171,37 @@ async fn chunk_block_index_ignores_skipped_empty_text_block() {
     assert_eq!(chunk_block_index, 1);
 }
 
+#[tokio::test]
+async fn persist_timeline_snapshot_has_no_item_for_empty_thinking_summary() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let mut processor = StreamProcessor::new();
+    let message_id = Some("assistant-message-empty-thinking".to_string());
+
+    processor.process_message(StreamMessage::Assistant {
+        message: AssistantMessage {
+            content: vec![AssistantContent::Thinking {
+                thinking: String::new(),
+            }],
+            stop_reason: Some("end_turn".to_string()),
+            usage: None,
+        },
+        session_id: None,
+    });
+    assert!(processor.content_blocks.is_empty());
+
+    let persisted = persist_timeline_snapshot(
+        &Some(state.chat_timeline_repo.clone()),
+        &conversation_id.as_str(),
+        &message_id,
+        &processor.content_blocks,
+        ChatTimelineItemStatus::Streaming,
+    )
+    .await;
+
+    assert!(persisted.is_empty());
+}
+
 #[test]
 fn completion_tool_result_rejects_error_payloads() {
     assert!(!completion_tool_result_accepted(Some(

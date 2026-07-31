@@ -59,6 +59,8 @@ pub struct StreamProcessor {
     thinking_block_started_at: Option<std::time::Instant>,
     // Track if any ContentBlockDelta text events were received (for dedup guard)
     had_streaming_text_deltas: bool,
+    // Track if any non-empty thinking deltas were received (for dedup guard)
+    had_streaming_thinking_deltas: bool,
 }
 
 impl StreamProcessor {
@@ -153,8 +155,11 @@ impl StreamProcessor {
                 } else if delta.delta_type == "thinking_delta" {
                     // Thinking block delta - accumulate and emit
                     if let Some(text) = delta.text {
-                        self.current_thinking_block.push_str(&text);
-                        events.push(StreamEvent::Thinking(text));
+                        if !text.is_empty() {
+                            self.had_streaming_thinking_deltas = true;
+                            self.current_thinking_block.push_str(&text);
+                            events.push(StreamEvent::Thinking(text));
+                        }
                     }
                 } else if delta.delta_type == "input_json_delta" {
                     if let Some(json) = delta.partial_json {
@@ -381,11 +386,13 @@ impl StreamProcessor {
                             });
                         }
                         AssistantContent::Thinking { thinking } => {
-                            self.content_blocks.push(ContentBlockItem::Thinking {
-                                text: thinking.clone(),
-                                duration_ms: None,
-                            });
-                            events.push(StreamEvent::Thinking(thinking));
+                            if !thinking.is_empty() && !self.had_streaming_thinking_deltas {
+                                self.content_blocks.push(ContentBlockItem::Thinking {
+                                    text: thinking.clone(),
+                                    duration_ms: None,
+                                });
+                                events.push(StreamEvent::Thinking(thinking));
+                            }
                         }
                         AssistantContent::Other => {}
                     }
@@ -410,6 +417,8 @@ impl StreamProcessor {
                 output,
                 exit_code,
                 outcome,
+                estimated_tokens,
+                estimated_tokens_delta,
                 ..
             } => {
                 if let Some(ref id) = session_id {
@@ -418,6 +427,14 @@ impl StreamProcessor {
                 }
 
                 match subtype.as_deref() {
+                    Some("thinking_tokens") => {
+                        if let Some(estimated_tokens) = estimated_tokens {
+                            events.push(StreamEvent::ThinkingProgress {
+                                estimated_tokens,
+                                estimated_tokens_delta,
+                            });
+                        }
+                    }
                     Some("hook_started") => {
                         if let (Some(hid), Some(hname), Some(hevent)) =
                             (hook_id, hook_name, hook_event)
@@ -588,6 +605,7 @@ impl StreamProcessor {
         self.current_thinking_block.clear();
         self.thinking_block_started_at = None;
         self.had_streaming_text_deltas = false;
+        self.had_streaming_thinking_deltas = false;
         self.result_is_error = false;
         self.result_errors.clear();
         self.result_subtype = None;

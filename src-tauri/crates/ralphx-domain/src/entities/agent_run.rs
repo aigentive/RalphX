@@ -294,6 +294,12 @@ pub struct AgentRun {
     /// Sandbox mode used for the run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sandbox_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub launch_role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_source: Option<String>,
     /// Correlation ID linking all runs in a single message chain
     /// (initial run + all queue continuations via --resume)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -359,6 +365,9 @@ impl AgentRun {
             raw_usage_snapshot: None,
             approval_policy: None,
             sandbox_mode: None,
+            agent_name: None,
+            launch_role: None,
+            runtime_source: None,
             run_chain_id: Some(chain_id),
             parent_run_id: None,
             action_kind: None,
@@ -404,6 +413,9 @@ impl AgentRun {
             raw_usage_snapshot: None,
             approval_policy: None,
             sandbox_mode: None,
+            agent_name: None,
+            launch_role: None,
+            runtime_source: None,
             run_chain_id: Some(run_chain_id),
             parent_run_id: Some(parent_run_id),
             action_kind: None,
@@ -527,6 +539,11 @@ impl AgentRun {
         };
 
         self.action_kind = Some(action.kind);
+        self.launch_role = match action.kind {
+            AgentRunActionKind::WorkspaceReviewFixer => Some("workspace_repair".to_string()),
+            AgentRunActionKind::PrAutofix => Some("pr_fixer".to_string()),
+            _ => self.launch_role.take(),
+        };
         self.action_context_id = Some(action.context_id);
         self.action_target_id = Some(action.target_id);
     }

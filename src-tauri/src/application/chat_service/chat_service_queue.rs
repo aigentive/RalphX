@@ -630,6 +630,8 @@ fn build_queued_agent_run(
     runtime: &super::continuation_runtime::ContinuationRuntime,
     queued_message: &QueuedMessage,
     launch_security: super::conversation_launch_security::ConversationLaunchSecurityClass,
+    parent_run: Option<&AgentRun>,
+    fallback_agent_name: Option<&str>,
 ) -> AgentRun {
     let mut run = match (run_chain_id, parent_run_id) {
         (Some(chain_id), Some(parent_id)) => {
@@ -661,6 +663,11 @@ fn build_queued_agent_run(
         .or_else(|| runtime.service_tier.clone());
     run.approval_policy = runtime.approval_policy.clone();
     run.sandbox_mode = runtime.sandbox_mode.clone();
+    run.agent_name = parent_run
+        .and_then(|parent| parent.agent_name.clone())
+        .or_else(|| fallback_agent_name.map(str::to_string));
+    run.launch_role = parent_run.and_then(|parent| parent.launch_role.clone());
+    run.runtime_source = parent_run.and_then(|parent| parent.runtime_source.clone());
     run.apply_action_metadata_json(metadata);
     launch_security.apply_to_agent_run(&mut run);
     run
@@ -674,6 +681,8 @@ fn build_queued_preflight_failure_run(
     parent_run_id: Option<&str>,
     metadata: Option<&str>,
     queued_message: &QueuedMessage,
+    parent_run: Option<&AgentRun>,
+    fallback_agent_name: Option<&str>,
 ) -> AgentRun {
     let mut run = match (run_chain_id, parent_run_id) {
         (Some(chain_id), Some(parent_id)) => {
@@ -693,6 +702,11 @@ fn build_queued_preflight_failure_run(
         .service_tier_override
         .as_deref()
         .and_then(super::normalize_service_tier_override);
+    run.agent_name = parent_run
+        .and_then(|parent| parent.agent_name.clone())
+        .or_else(|| fallback_agent_name.map(str::to_string));
+    run.launch_role = parent_run.and_then(|parent| parent.launch_role.clone());
+    run.runtime_source = parent_run.and_then(|parent| parent.runtime_source.clone());
     run.apply_action_metadata_json(metadata);
     run
 }
@@ -1502,6 +1516,24 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
 
             total_processed += 1;
 
+            let parent_run = match parent_run_id {
+                Some(parent_id) => match agent_run_repo
+                    .get_by_id(&AgentRunId::from_string(parent_id.to_string()))
+                    .await
+                {
+                    Ok(run) => run,
+                    Err(error) => {
+                        tracing::warn!(
+                            %error,
+                            parent_run_id = parent_id,
+                            "failed to load queued continuation parent run attribution"
+                        );
+                        None
+                    }
+                },
+                None => None,
+            };
+
             let continuation_runtime =
                 match super::continuation_runtime::resolve_for_provider_session(
                     agent_run_repo,
@@ -1560,6 +1592,8 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                                     parent_run_id,
                                     queued_msg.metadata_override.as_deref(),
                                     &queued_msg,
+                                    parent_run.as_ref(),
+                                    queued_agent_context.identity.agent_name.as_deref(),
                                 );
                                 let failed_run_id = persist_failed_queued_run(
                                     agent_run_repo,
@@ -1656,6 +1690,8 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                         &continuation_runtime,
                         &queued_msg,
                         launch_security,
+                        parent_run.as_ref(),
+                        queued_agent_context.identity.agent_name.as_deref(),
                     );
                     let failed_run_id = persist_failed_queued_run(
                         agent_run_repo,
@@ -1690,8 +1726,13 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 &continuation_runtime,
                 &queued_msg,
                 launch_security,
+                parent_run.as_ref(),
+                queued_agent_context.identity.agent_name.as_deref(),
             );
             let queued_run_id = queued_run.id.as_str().to_string();
+            let queued_run_agent_name = queued_run.agent_name.clone();
+            let queued_run_launch_role = queued_run.launch_role.clone();
+            let queued_run_started_at = queued_run.started_at.to_rfc3339();
             if let Err(error) = agent_run_repo.create(queued_run).await {
                 let error_string =
                     format!("Failed to persist queued continuation agent run: {error}");
@@ -1767,9 +1808,8 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 "[QUEUE] Continuation run"
             );
             if let Some(ref handle) = app_handle {
-                let _ = handle.emit(
-                    "agent:run_started",
-                    AgentRunStartedPayload::with_provider_session(
+                let _ = handle.emit("agent:run_started", {
+                    let mut payload = AgentRunStartedPayload::with_provider_session(
                         queued_run_id.clone(),
                         conversation_id.as_str().to_string(),
                         context_type.to_string(),
@@ -1780,8 +1820,12 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                         None,
                         Some(harness),
                         Some(session_id.to_string()),
-                    ),
-                );
+                    );
+                    payload.agent_name = queued_run_agent_name.clone();
+                    payload.launch_role = queued_run_launch_role.clone();
+                    payload.started_at = Some(queued_run_started_at.clone());
+                    payload
+                });
             }
 
             let resume_in_place =
