@@ -7,7 +7,8 @@ use std::os::unix::fs::PermissionsExt;
 
 use crate::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
 use crate::application::agent_workspace_publish_recovery::{
-    is_blocked_and_not_auto_retryable, recover_agent_workspace_repair_after_terminal_run,
+    evaluate_pr_autofix_successor, is_blocked_and_not_auto_retryable,
+    recover_agent_workspace_repair_after_terminal_run,
     recover_agent_workspace_repair_attempts_for_state,
     recover_stale_agent_workspace_publish_repairs,
     recover_stale_agent_workspace_publish_repairs_for_state,
@@ -18,9 +19,10 @@ use crate::application::agent_workspace_publish_recovery::{
     recover_stale_publish_repair_for_workspace_and_reload_with_review_target,
     recover_stale_publish_repair_for_workspace_in_state,
     recover_stale_publish_repair_for_workspace_with_project_repo_outcome,
-    recover_stale_transient_publish_statuses, StalePublishRepairRecoveryOutcome,
-    STALE_NEEDS_AGENT_CLASSIFICATION, STALE_REPAIR_BLOCKED_SUMMARY, STALE_REPAIR_RECOVERED_STEP,
-    STALE_TRANSIENT_CLASSIFICATION, STALE_TRANSIENT_RECOVERED_STEP,
+    recover_stale_transient_publish_statuses, PrAutofixSuccessorDecision,
+    StalePublishRepairRecoveryOutcome, STALE_NEEDS_AGENT_CLASSIFICATION,
+    STALE_REPAIR_BLOCKED_SUMMARY, STALE_REPAIR_RECOVERED_STEP, STALE_TRANSIENT_CLASSIFICATION,
+    STALE_TRANSIENT_RECOVERED_STEP,
 };
 use crate::application::agent_workspace_publish_repair_state::{
     reserve_agent_workspace_repair_dispatch, start_or_join_agent_workspace_repair,
@@ -41,7 +43,8 @@ use crate::domain::entities::{
     AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource, AgentWorkspaceReviewGateStatus,
     AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewTargetScope, ArtifactId, ChatConversation, ChatConversationId,
-    GitTargetIdentity, GitTargetLeaseOwner, IdeationAnalysisBaseRefKind, Project, ProjectId,
+    GitTargetIdentity, GitTargetLeaseOwner, IdeationAnalysisBaseRefKind, IdeationSessionId,
+    PlanBranch, Project, ProjectId,
 };
 use crate::domain::repositories::{
     AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, AgentConversationWorkspaceRepository,
@@ -54,6 +57,7 @@ use crate::infrastructure::memory::{
     MemoryAgentConversationWorkspaceRepository, MemoryAgentProviderSettingsRepository,
     MemoryAgentRunRepository,
 };
+use crate::tests::mock_github_service::MockGithubService;
 
 fn conversation_id(suffix: u8) -> ChatConversationId {
     ChatConversationId::from_string(format!("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbb{suffix:02}"))
@@ -4953,4 +4957,145 @@ async fn start_blocked_pr_autofix_generation(state: &AppState, conversation_id: 
         started,
         StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(_)
     ));
+}
+
+/// A PR autofix generation that was dispatched against an exact observed failure, with a base that
+/// has not moved. This is the only shape the successor gate applies to.
+fn blocked_pr_autofix_attempt(
+    conversation_id: &ChatConversationId,
+    fingerprint: &str,
+) -> AgentWorkspaceRepairAttempt {
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        conversation_id.clone(),
+        AgentWorkspaceRepairSource::PrAutofix,
+        AgentWorkspaceRepairContinuation::ResumePrSupervision,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    attempt.phase = AgentWorkspaceRepairPhase::Blocked;
+    attempt.pr_autofix_health_fingerprint = Some(fingerprint.to_string());
+    attempt
+}
+
+#[tokio::test]
+async fn pr_autofix_successor_withholds_when_github_cannot_be_read_at_all() {
+    let state = AppState::new_test();
+    let conversation_id = conversation_id(70);
+    let workspace = needs_agent_workspace(conversation_id.clone());
+    // No target base commit means the base cannot have advanced, so nothing but GitHub could
+    // authorize another generation — and there is no GitHub service to ask.
+    let attempt = blocked_pr_autofix_attempt(&conversation_id, "ci:Clippy:failure");
+    assert!(attempt.target_base_commit.is_none());
+    assert!(state.github_service.is_none());
+
+    assert_eq!(
+        evaluate_pr_autofix_successor(&state, &attempt, &workspace).await,
+        PrAutofixSuccessorDecision::Withhold("github_service_unavailable")
+    );
+}
+
+#[tokio::test]
+async fn pr_autofix_successor_proceeds_when_the_repair_base_moved() {
+    let state = AppState::new_test();
+    let conversation_id = conversation_id(71);
+    let mut workspace = needs_agent_workspace(conversation_id.clone());
+    workspace.base_commit = Some("base-b".to_string());
+    let mut attempt = blocked_pr_autofix_attempt(&conversation_id, "ci:Clippy:failure");
+    attempt.target_base_commit = Some("base-a".to_string());
+
+    // A moved base is new input independent of the PR, so it authorizes a successor before the
+    // gate ever reaches GitHub.
+    assert_eq!(
+        evaluate_pr_autofix_successor(&state, &attempt, &workspace).await,
+        PrAutofixSuccessorDecision::Proceed(None)
+    );
+}
+
+#[tokio::test]
+async fn pr_autofix_successor_withholds_when_no_pr_owns_the_workspace() {
+    let mut state = AppState::new_test();
+    state.github_service = Some(Arc::new(MockGithubService::new()));
+    let conversation_id = conversation_id(72);
+    let mut workspace = needs_agent_workspace(conversation_id.clone());
+    workspace.publication_pr_number = None;
+    workspace.linked_plan_branch_id = None;
+    let attempt = blocked_pr_autofix_attempt(&conversation_id, "ci:Clippy:failure");
+
+    assert_eq!(
+        evaluate_pr_autofix_successor(&state, &attempt, &workspace).await,
+        PrAutofixSuccessorDecision::Withhold("pr_number_unresolved")
+    );
+}
+
+#[tokio::test]
+async fn pr_autofix_successor_borrows_the_linked_plan_branch_pr_only_for_its_own_session() {
+    let mut state = AppState::new_test();
+    state.github_service = Some(Arc::new(MockGithubService::new()));
+    let conversation_id = conversation_id(73);
+    let session_id = IdeationSessionId::from_string("session-pr-autofix-successor");
+    let mut plan_branch = PlanBranch::new(
+        ArtifactId::from_string("plan-artifact-pr-autofix"),
+        session_id.clone(),
+        project_id(),
+        "ralphx/plan/pr-autofix".to_string(),
+        "main".to_string(),
+    );
+    plan_branch.pr_number = Some(910);
+    state
+        .plan_branch_repo
+        .create(plan_branch.clone())
+        .await
+        .expect("seed linked plan branch");
+
+    let mut workspace = needs_agent_workspace(conversation_id.clone());
+    workspace.publication_pr_number = None;
+    workspace.linked_plan_branch_id = Some(plan_branch.id.clone());
+    workspace.linked_ideation_session_id = Some(session_id);
+    let attempt = blocked_pr_autofix_attempt(&conversation_id, "ci:Clippy:failure");
+
+    // The borrowed PR resolves, so evaluation advances past PR identity and fails on the missing
+    // project instead of on an unresolved PR number.
+    assert_eq!(
+        evaluate_pr_autofix_successor(&state, &attempt, &workspace).await,
+        PrAutofixSuccessorDecision::Withhold("project_missing")
+    );
+
+    // A workspace bound to a different ideation session must not borrow this plan branch's PR.
+    let mut foreign = workspace.clone();
+    foreign.linked_ideation_session_id =
+        Some(IdeationSessionId::from_string("session-someone-else"));
+    assert_eq!(
+        evaluate_pr_autofix_successor(&state, &attempt, &foreign).await,
+        PrAutofixSuccessorDecision::Withhold("pr_number_unresolved")
+    );
+}
+
+#[tokio::test]
+async fn pr_autofix_successor_withholds_when_the_workspace_path_cannot_be_resolved() {
+    let mut state = AppState::new_test();
+    state.github_service = Some(Arc::new(MockGithubService::new()));
+    let conversation_id = conversation_id(74);
+    let mut project = Project::new(
+        "pr autofix successor project".to_string(),
+        "/tmp/ralphx-pr-autofix-successor-missing-project".to_string(),
+    );
+    project.id = project_id();
+    state
+        .project_repo
+        .create(project)
+        .await
+        .expect("seed project");
+    let workspace = needs_agent_workspace(conversation_id.clone());
+    let attempt = blocked_pr_autofix_attempt(&conversation_id, "ci:Clippy:failure");
+
+    // An unreadable workspace is not evidence that the PR changed; it must never look like
+    // "health changed", which is the one answer that spends another agent.
+    assert_eq!(
+        evaluate_pr_autofix_successor(&state, &attempt, &workspace).await,
+        PrAutofixSuccessorDecision::Withhold("workspace_path_unresolved")
+    );
 }

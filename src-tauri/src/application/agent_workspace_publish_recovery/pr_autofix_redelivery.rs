@@ -77,7 +77,7 @@ pub(crate) async fn pr_autofix_fingerprint_spend(
 
 /// Whether a blocked PR autofix generation has earned another agent generation.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum PrAutofixSuccessorDecision {
+pub(crate) enum PrAutofixSuccessorDecision {
     /// A successor is authorized. Carries freshly observed PR evidence when GitHub could be read,
     /// so downstream fingerprint suppression has something to compare on the next round.
     Proceed(Option<PrAutofixCarryover>),
@@ -135,7 +135,7 @@ fn repair_base_advanced(
 /// generations on one unchanged failing check. Once it does apply, every failure mode returns
 /// `Withhold`: a repository error, an unreachable GitHub, or an unresolvable PR must never look
 /// like "health changed", because that is the one answer that authorizes spending an agent.
-pub(super) async fn evaluate_pr_autofix_successor(
+pub(crate) async fn evaluate_pr_autofix_successor(
     state: &AppState,
     current: &AgentWorkspaceRepairAttempt,
     workspace: &AgentConversationWorkspace,

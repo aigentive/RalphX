@@ -59,6 +59,8 @@ pub(crate) use durable_attempt_recovery::{
 };
 #[cfg(test)]
 pub(crate) use pr_autofix_redelivery::due_pr_autofix_redispatch_message;
+#[cfg(test)]
+pub(crate) use pr_autofix_redelivery::{evaluate_pr_autofix_successor, PrAutofixSuccessorDecision};
 pub(crate) use pr_autofix_redelivery::pr_autofix_fingerprint_spend;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
