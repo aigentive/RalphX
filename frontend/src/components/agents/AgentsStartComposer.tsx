@@ -137,7 +137,11 @@ interface AgentsStartComposerProps {
   isLoadingProjects: boolean;
   isSubmitting: boolean;
   modelRegistry: AgentModelRegistry;
-  onRuntimePreferenceChange?: (projectId: string, runtime: AgentRuntimeSelection) => void;
+  onRuntimePreferenceChange?: (
+    projectId: string,
+    mode: AgentConversationWorkspaceMode,
+    runtime: AgentRuntimeSelection,
+  ) => void;
   onSubmit: (input: AgentsStartComposerSubmitInput) => Promise<void>;
 }
 
@@ -365,11 +369,15 @@ export function AgentsStartComposer({
   const lastModelEffortByProvider = useAgentSessionStore(
     (s) => s.lastModelEffortByProvider
   );
-  const persistedRuntimeOverride = useAgentSessionStore((s) =>
-    projectId ? s.lastRuntimeByProjectId[projectId] : undefined
-  );
-  const clearLastRuntimeForProject = useAgentSessionStore(
-    (s) => s.clearLastRuntimeForProject
+  const persistedRuntimeOverride = useAgentSessionStore((s) => {
+    if (!projectId) return undefined;
+    // Legacy project-scoped memory predates per-mode memory and was written by
+    // the edit-mode composer; it must never leak into other modes.
+    return s.lastRuntimeByProjectMode[`${projectId}:${mode}`] ??
+      (mode === "edit" ? s.lastRuntimeByProjectId[projectId] : undefined);
+  });
+  const clearLastRuntimeForProjectMode = useAgentSessionStore(
+    (s) => s.clearLastRuntimeForProjectMode,
   );
   const startConversationDraft = useAgentSessionStore(
     (s) => s.startConversationDraft
@@ -789,6 +797,7 @@ export function AgentsStartComposer({
       }
       onRuntimePreferenceChange?.(
         nextProjectId,
+        mode,
         normalizeRuntimeSelection(
           runtime,
           modelRegistry,
@@ -797,7 +806,7 @@ export function AgentsStartComposer({
         )
       );
     },
-    [modelRegistry, onRuntimePreferenceChange, providerOptions]
+    [mode, modelRegistry, onRuntimePreferenceChange, providerOptions]
   );
 
   useEffect(() => {
@@ -1003,7 +1012,7 @@ export function AgentsStartComposer({
         return;
       }
       if (projectId) {
-        clearLastRuntimeForProject(projectId);
+        clearLastRuntimeForProjectMode(projectId, mode);
       }
       setRoleOverrideKey(null);
       applyRoleDefault(result.data);
@@ -1020,8 +1029,9 @@ export function AgentsStartComposer({
     }
   }, [
     applyRoleDefault,
-    clearLastRuntimeForProject,
+    clearLastRuntimeForProjectMode,
     clearStartError,
+    mode,
     projectId,
     roleDefaultQuery,
   ]);
@@ -1691,9 +1701,6 @@ export function AgentsStartComposer({
                 clearStartError();
                 const nextMode = value as AgentConversationWorkspaceMode;
                 if (nextMode !== mode) {
-                  if (projectId) {
-                    clearLastRuntimeForProject(projectId);
-                  }
                   setRoleOverrideKey(null);
                 }
                 setMode(nextMode);

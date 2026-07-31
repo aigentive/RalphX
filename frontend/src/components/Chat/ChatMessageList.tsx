@@ -35,6 +35,7 @@ import type { MessageAttachment } from "./MessageAttachments";
 import { ToolCallStoreKeyContext } from "./tool-widgets/ToolCallStoreKeyContext";
 import { shouldHideCompletedProjectOrchestrationToolCall } from "./tool-widgets/ProjectOrchestrationWidget.utils";
 import { isProviderRole } from "@/lib/chat/provider-role";
+import { selectActiveAgentRunId, useChatStore } from "@/stores/chatStore";
 import { cn } from "@/lib/utils";
 import { isTranscriptRootReadyForReveal } from "./ChatMessageList.readiness";
 import { VISUAL_BOTTOM_EPSILON_PX } from "./ChatMessageList.scroll";
@@ -56,6 +57,7 @@ import {
 import type { AgentRun } from "@/types/chat-conversation";
 import { ToolActivityGroupToggle } from "./ToolActivityGroupToggle";
 import { ThinkingGroupToggle } from "./ThinkingGroupToggle";
+import { RunAttributionWidget } from "./RunAttributionWidget";
 import { ThinkingWidget } from "./tool-widgets/ThinkingWidget";
 import {
   summarizeToolActivity,
@@ -239,6 +241,7 @@ export interface ChatMessageData {
   estimatedUsd?: number | null;
   timelineSequence?: number | null;
   runId?: string | null;
+  finalizedAt?: string | null;
 }
 
 type ToolCallGroupMarker = {
@@ -376,6 +379,61 @@ function isVisibleTimelineItem(
   expandedToolGroupKeys: Set<string>,
 ): boolean {
   return !isCollapsedToolCallGroupCoveredItem(item, expandedToolGroupKeys);
+}
+
+interface RunAttributionTiming {
+  runId: string;
+  startedAt: string;
+  completedAt: string | null;
+}
+
+/**
+ * One pass over the transcript: for every settled run, compute its timing span
+ * and anchor the worked-widget on the run's last provider message. The active
+ * run is excluded so a live run never shows a premature "worked" widget.
+ */
+function buildRunAttributionTimingByMessageId(
+  messages: readonly ChatMessageData[],
+  activeRunId: string | null | undefined,
+): Map<string, RunAttributionTiming> {
+  const timingByRun = new Map<
+    string,
+    { startedAt: number; completedAt: number; lastMessageId: string }
+  >();
+  for (const message of messages) {
+    if (!message.runId || !isProviderRole(message.role)) continue;
+    if (activeRunId != null && message.runId === activeRunId) continue;
+    const created = Date.parse(message.createdAt);
+    const finalized = Date.parse(message.finalizedAt ?? message.createdAt);
+    const existing = timingByRun.get(message.runId);
+    if (!existing) {
+      timingByRun.set(message.runId, {
+        startedAt: created,
+        completedAt: finalized,
+        lastMessageId: message.id,
+      });
+      continue;
+    }
+    if (Number.isFinite(created) && !(created >= existing.startedAt)) {
+      existing.startedAt = created;
+    }
+    if (Number.isFinite(finalized) && !(finalized <= existing.completedAt)) {
+      existing.completedAt = finalized;
+    }
+    existing.lastMessageId = message.id;
+  }
+  const byMessageId = new Map<string, RunAttributionTiming>();
+  for (const [runId, timing] of timingByRun) {
+    if (!Number.isFinite(timing.startedAt)) continue;
+    byMessageId.set(timing.lastMessageId, {
+      runId,
+      startedAt: new Date(timing.startedAt).toISOString(),
+      completedAt: Number.isFinite(timing.completedAt)
+        ? new Date(timing.completedAt).toISOString()
+        : null,
+    });
+  }
+  return byMessageId;
 }
 
 function senderGroupPart(value: string | null | undefined) {
@@ -1124,6 +1182,15 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       () => streamingContentBlocks ?? [],
       [streamingContentBlocks],
     );
+    const activeRunIdSelector = useMemo(
+      () => selectActiveAgentRunId(contextKey ?? ""),
+      [contextKey],
+    );
+    const activeAgentRunId = useChatStore(activeRunIdSelector);
+    const runAttributionTimingByMessageId = useMemo(
+      () => buildRunAttributionTimingByMessageId(messages, activeAgentRunId),
+      [messages, activeAgentRunId],
+    );
     const delegationProjection = useMemo(
       () => projectDelegationTimelineMessages(messages, streamingTasks),
       [messages, streamingTasks],
@@ -1708,7 +1775,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
             </MessageItem>
           )}
           {shouldShowActiveTypingIndicator && (
-            <TypingIndicator label={activeTypingIndicatorLabel} />
+            <TypingIndicator label={activeTypingIndicatorLabel} storeKey={contextKey} />
           )}
         </>
       );
@@ -1720,6 +1787,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       providerSessionId,
       streamingSenderGroupState,
       activeTypingIndicatorLabel,
+      contextKey,
       shouldShowActiveTypingIndicator,
       shouldShowFooterFallback,
       streamingMessageCreatedAt,
@@ -1880,6 +1948,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
               reserveAssistantIconSpace={effectiveSenderGroupState.reserveAssistantGutter}
               showProviderMeta={effectiveSenderGroupState.showSenderHeader}
             />
+            {runAttributionTimingByMessageId.has(msg.id) ? <RunAttributionWidget {...runAttributionTimingByMessageId.get(msg.id)!} /> : null}
           </ContentShell>
         </div>
       );
@@ -1902,6 +1971,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       providerHarness,
       providerSessionId,
       renderStreamingToolCallBlock,
+      runAttributionTimingByMessageId,
       streamingMessageCreatedAt,
       streamingTasks,
       timelineSenderGroups,
@@ -2057,6 +2127,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
                     reserveAssistantIconSpace={effectiveSenderGroupState.reserveAssistantGutter}
                     showProviderMeta={effectiveSenderGroupState.showSenderHeader}
                   />
+                  {runAttributionTimingByMessageId.has(msg.id) ? <RunAttributionWidget {...runAttributionTimingByMessageId.get(msg.id)!} /> : null}
                 </ContentShell>
               </div>
             );

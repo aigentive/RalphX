@@ -280,10 +280,12 @@ export interface AgentComposerSurfaceProps {
   speed?: SpeedFieldConfig;
   runtimeDefault?: {
     source?: string | null;
+    scopeLabel?: string;
     isResetting?: boolean;
     disabled?: boolean;
     onReset: () => Promise<unknown> | void;
   };
+  runtimeTag?: string;
   onSend: (
     message: string,
     options?: AgentComposerSendOptions,
@@ -361,6 +363,7 @@ export function AgentComposerSurface({
   persona,
   speed,
   runtimeDefault,
+  runtimeTag,
   onSend,
   onStop,
   placeholder = "Ask the agent to plan, build, debug, or review something",
@@ -2130,6 +2133,7 @@ export function AgentComposerSurface({
                 {...(runtimePersona ? { persona: runtimePersona } : {})}
                 {...(speed ? { speed } : {})}
                 {...(runtimeDefault ? { runtimeDefault } : {})}
+                {...(runtimeTag ? { runtimeTag } : {})}
                 compact={compact}
                 className="max-w-[34rem]"
                 surfaceRef={surfaceRef}

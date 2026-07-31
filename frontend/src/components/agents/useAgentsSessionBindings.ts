@@ -23,7 +23,9 @@ export function useAgentsSessionBindings({
   const selectAgentConversation = useAgentSessionStore((s) => s.selectConversation);
   const clearSelection = useAgentSessionStore((s) => s.clearSelection);
   const setRuntimeForConversation = useAgentSessionStore((s) => s.setRuntimeForConversation);
-  const setLastRuntimeForProject = useAgentSessionStore((s) => s.setLastRuntimeForProject);
+  const setLastRuntimeForProjectMode = useAgentSessionStore(
+    (s) => s.setLastRuntimeForProjectMode,
+  );
   const setTaskHistoryState = useUiStore((s) => s.setTaskHistoryState);
   const selectProject = useProjectStore((s) => s.selectProject);
   const selectConversation = useCallback(
@@ -59,7 +61,7 @@ export function useAgentsSessionBindings({
     selectedProjectId,
     setActiveConversation,
     setFocusedProject,
-    setLastRuntimeForProject,
+    setLastRuntimeForProjectMode,
     setRuntimeForConversation,
     storedSelectedConversationId,
   };

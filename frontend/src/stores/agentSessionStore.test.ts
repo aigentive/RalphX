@@ -991,6 +991,60 @@ describe("agentSessionStore", () => {
       });
     });
 
+    it("keeps new-run runtime preferences isolated by project mode", () => {
+      const state = useAgentSessionStore.getState();
+      state.setLastRuntimeForProjectMode("project-1", "edit", {
+        provider: "claude",
+        modelId: "opus",
+        effort: "xhigh",
+      });
+      state.setLastRuntimeForProjectMode("project-1", "plan", {
+        provider: "codex",
+        modelId: "gpt-5.4-mini",
+        effort: "medium",
+      });
+
+      expect(useAgentSessionStore.getState().lastRuntimeByProjectMode).toMatchObject({
+        "project-1:edit": { provider: "claude", modelId: "opus" },
+        "project-1:plan": { provider: "codex", modelId: "gpt-5.4-mini" },
+      });
+      state.clearLastRuntimeForProjectMode("project-1", "edit");
+      expect(useAgentSessionStore.getState().lastRuntimeByProjectMode).not.toHaveProperty(
+        "project-1:edit",
+      );
+      expect(useAgentSessionStore.getState().lastRuntimeByProjectMode).toHaveProperty(
+        "project-1:plan",
+      );
+    });
+
+    it("persists and normalizes mode runtime preferences without touching role overrides", () => {
+      const merged = mergeAgentSessionStore(
+        {
+          lastRuntimeByProjectMode: {
+            "project-1:edit": { provider: "codex", modelId: "gpt-5.6-terra", effort: "ultra" },
+          },
+          roleRuntimeOverridesByConversationId: {
+            conversation: {
+              workspace_reviewer: {
+                provider: "claude", model: "sonnet", effort: "high", serviceTier: "standard", coordinationMode: "solo", personaId: null,
+              },
+            },
+          },
+        },
+        useAgentSessionStore.getState(),
+      );
+      expect(merged.lastRuntimeByProjectMode["project-1:edit"]).toMatchObject({
+        provider: "codex", modelId: "gpt-5.6-terra", effort: "max",
+      });
+      expect(merged.roleRuntimeOverridesByConversationId.conversation).toHaveProperty(
+        "workspace_reviewer",
+      );
+      const persisted = useAgentSessionStore.persist.getOptions().partialize?.(
+        useAgentSessionStore.getState(),
+      ) as Record<string, unknown>;
+      expect(persisted).toHaveProperty("lastRuntimeByProjectMode");
+    });
+
     it("clears a project runtime override without changing remembered provider choices", () => {
       const state = useAgentSessionStore.getState();
       state.setRuntimeForConversation("c-reset", "p-reset", {

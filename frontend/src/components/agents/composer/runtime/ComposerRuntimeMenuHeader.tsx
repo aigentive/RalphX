@@ -63,6 +63,7 @@ interface ComposerRuntimeMenuHeaderProps {
   model: ComposerRuntimeModelField;
   runtimeDefault?: {
     source?: string | null;
+    scopeLabel?: string;
     isResetting?: boolean;
     disabled?: boolean;
     onReset: () => Promise<unknown> | void;
@@ -76,7 +77,7 @@ export function ComposerRuntimeMenuHeader({
   return (
     <div className="flex shrink-0 items-center gap-2 p-2 pb-1">
       <div className="flex h-8 min-w-0 flex-1 items-center px-2 text-[0.75rem] font-medium text-[var(--text-secondary)]">
-        Advanced
+        {runtimeDefault?.scopeLabel ?? "Advanced"}
       </div>
                   {runtimeDefault && (
                     <Tooltip delayDuration={180}>
@@ -109,7 +110,7 @@ export function ComposerRuntimeMenuHeader({
                       </TooltipTrigger>
                       <TooltipContent side="top" className="max-w-64 leading-snug">
                         Reset provider, model, effort, speed, capability, and
-                        persona to the current role default
+                        persona to the {runtimeDefault.scopeLabel ?? "current role default"}
                         {runtimeDefault.source
                           ? ` (${runtimeDefault.source})`
                           : ""}

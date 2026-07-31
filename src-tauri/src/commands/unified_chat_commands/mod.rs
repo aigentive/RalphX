@@ -10165,6 +10165,19 @@ pub async fn get_agent_run_status_unified(
     }))
 }
 
+/// Return persisted attribution for one agent run.
+#[tauri::command]
+pub async fn get_agent_run_attribution(
+    run_id: String,
+    state: State<'_, AppState>,
+) -> crate::AppResult<crate::domain::entities::AgentRun> {
+    state
+        .agent_run_repo
+        .get_by_id(&AgentRunId::from_string(run_id.clone()))
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Agent run not found: {run_id}")))
+}
+
 /// Check if the chat service is available
 #[tauri::command]
 pub async fn is_chat_service_available(

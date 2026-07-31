@@ -32,6 +32,7 @@ import type {
   AgentRunStartedPayload,
 } from "@/types/events";
 import { logger } from "@/lib/logger";
+import { roleVerb } from "@/components/Chat/run-attribution";
 
 type TerminalLifecyclePayload = {
   run_id?: string | null;
@@ -189,11 +190,22 @@ export function useGlobalAgentLifecycle() {
         }
 
         useChatStore.getState().setAgentStatus(eventContextKey, "generating");
-        useChatStore.getState().setAgentActivityLabel(eventContextKey, "Agent working");
+        const lifecyclePayload = payload as AgentRunStartedPayload & {
+          started_at?: string | null; startedAt?: string | null;
+          agent_name?: string | null; agentName?: string | null;
+          launch_role?: string | null; launchRole?: string | null;
+        };
+        const launchRole = lifecyclePayload.launch_role ?? lifecyclePayload.launchRole ?? null;
+        useChatStore.getState().setAgentActivityLabel(eventContextKey, `${roleVerb(launchRole)} working`);
         useChatStore.getState().setActiveAgentRun(
           eventContextKey,
           payload.run_id,
           payload.provider_harness ?? payload.providerHarness ?? null,
+          {
+            startedAt: Date.parse(lifecyclePayload.started_at ?? lifecyclePayload.startedAt ?? "") || Date.now(),
+            agentName: lifecyclePayload.agent_name ?? lifecyclePayload.agentName ?? null,
+            launchRole,
+          },
         );
         // Track the active conversation for this context so the stale guard can function
         // for ALL sessions, not just those with mounted per-panel hooks.

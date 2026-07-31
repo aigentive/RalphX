@@ -266,7 +266,7 @@ export function useAgentsViewController({
     selectedProjectId,
     setActiveConversation,
     setFocusedProject,
-    setLastRuntimeForProject,
+    setLastRuntimeForProjectMode,
     setRuntimeForConversation,
     storedSelectedConversationId,
   } = useAgentsSessionBindings({
@@ -1599,13 +1599,14 @@ export function useAgentsViewController({
     ],
   );
   const handleStartRuntimePreferenceChange = useCallback(
-    (targetProjectId: string, runtime: AgentRuntimeSelection) => {
-      setLastRuntimeForProject(
+    (targetProjectId: string, mode: AgentConversationWorkspaceMode, runtime: AgentRuntimeSelection) => {
+      setLastRuntimeForProjectMode(
         targetProjectId,
+        mode,
         normalizeRuntimeForPersistence(runtime, modelRegistry),
       );
     },
-    [modelRegistry, setLastRuntimeForProject],
+    [modelRegistry, setLastRuntimeForProjectMode],
   );
 
   const { handlePublishWorkspace, publishAttemptsByConversationId } =
