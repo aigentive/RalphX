@@ -79,6 +79,7 @@ paths:
 | Add an integration test module | Prefer an existing `src-tauri/tests/suite_*/main.rs` target and update the suite mapping below; the existing target is already included in the integration archive |
 | Add an unavoidable top-level integration target | Add it to `FULL_INTEGRATION_TESTS` in `scripts/test-rust-fast.sh`; add a `nextest.toml` group override only when resource behavior requires one; ❌ duplicate the target list in workflow YAML |
 | Change archive execution | Keep one archive producer and partition-only consumers on the same profile/features/workspace remap; consumers must not rebuild Cargo targets |
+| Change lib coverage topology | `rust-lib-coverage-archive` is the sole archive producer; four partition-only consumers mirror the CI test archive pattern; update `scripts/tests/test-coverage-rust-shards.sh` and Codecov inputs with shard/artifact changes |
 | Add IPC/command coverage | Update the single target/filter union in `.github/workflows/coverage.yml`; keep one `cargo llvm-cov nextest` invocation so filter groups do not relink the instrumented root crate repeatedly |
 | Change shard counts or artifact names | Update the matrix, unique artifact/JUnit names, publish-time artifact validation, and every Codecov input together |
 | Validate topology changes | Run `scripts/tests/test-ci-rust-full-integration-targets.sh` and `scripts/tests/test-coverage-rust-shards.sh` plus YAML/actionlint checks; do not run broad Rust/llvm-cov suites merely to validate workflow wiring |

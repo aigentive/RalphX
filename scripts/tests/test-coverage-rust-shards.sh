@@ -20,6 +20,14 @@ rust_lib_job="$({
   ' "${WORKFLOW}"
 })"
 
+rust_archive_job="$({
+  awk '
+    /^  rust-lib-coverage-archive:/ { capture = 1 }
+    /^  rust-lib-coverage:/ { capture = 0 }
+    capture
+  ' "${WORKFLOW}"
+})"
+
 rust_ipc_job="$({
   awk '
     /^  rust-ipc-coverage:/ { capture = 1 }
@@ -37,8 +45,28 @@ publish_job="$({
 })"
 
 [[ -n "${rust_lib_job}" ]] || fail "Rust lib coverage job is missing"
+[[ -n "${rust_archive_job}" ]] || fail "Rust lib coverage archive job is missing"
 [[ -n "${rust_ipc_job}" ]] || fail "Rust IPC coverage job is missing"
 [[ -n "${publish_job}" ]] || fail "Codecov publish job is missing"
+
+grep -Fq 'cargo llvm-cov nextest-archive' <<< "${rust_archive_job}" \
+  || fail "Rust lib coverage archive does not create a nextest archive"
+grep -Fq 'shared-key: rust-coverage-deps' <<< "${rust_archive_job}" \
+  || fail "Rust lib coverage archive does not own the shared dependency cache"
+
+grep -Fq -- '--archive-file' <<< "${rust_lib_job}" \
+  || fail "Rust lib coverage does not consume a nextest archive"
+grep -Fq -- "--partition hash:${MATRIX_PARTITION_EXPR}" <<< "${rust_lib_job}" \
+  || fail "Rust lib coverage does not use deterministic matrix partitioning"
+if grep -Fq 'cargo llvm-cov nextest-archive' <<< "${rust_lib_job}"; then
+  fail "Rust lib coverage shards must not create nextest archives"
+fi
+if grep -Fq 'swatinem/rust-cache' <<< "${rust_lib_job}"; then
+  fail "Rust lib coverage shards must not use the Rust cache"
+fi
+if grep -Fq 'llvm-cov clean --workspace' "${WORKFLOW}"; then
+  fail "Coverage workflow must not clean the workspace"
+fi
 
 for shard in 1 2 3 4; do
   grep -Fq "partition: \"${shard}/4\"" <<< "${rust_lib_job}" \
@@ -48,9 +76,6 @@ for shard in 1 2 3 4; do
   grep -Fq "coverage-artifacts/coverage-rust-lib-${shard}/lcov.info" <<< "${publish_job}" \
     || fail "Codecov publishing omits Rust lib coverage shard ${shard}"
 done
-
-grep -Fq -- "--partition hash:${MATRIX_PARTITION_EXPR}" <<< "${rust_lib_job}" \
-  || fail "Rust lib coverage does not use deterministic matrix partitioning"
 
 ipc_invocations="$(grep -Fc 'cargo llvm-cov nextest' <<< "${rust_ipc_job}")"
 [[ "${ipc_invocations}" -eq 1 ]] \
