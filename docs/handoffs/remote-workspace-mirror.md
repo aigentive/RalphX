@@ -122,6 +122,51 @@ onboarding, ticketing/GitHub integrations, terminal.
 
 ---
 
+## 3.5 Settings mirror — audited command inventory (owner decisions 2026-07-31)
+
+The client must show the HOST's settings, not this Mac's. Audited against the ledger, the
+work splits three ways — and a useful amount already works.
+
+### Already registered — these mirror the host today
+
+`get_execution_settings`, `get_ideation_settings`, `update_ideation_settings`,
+`get_notification_settings`, `update_notification_settings`, `list_personas`,
+`list_agent_models`, `get_ui_feature_flags`.
+
+No work. They appear empty today only because the host is stalling (see
+`remote-host-auth-stall.md`), not because they are unwired.
+
+### Device-local by decision — must NOT come from the host
+
+| Surface | Why |
+|---|---|
+| Accessibility, theme, font scale | Describes how THIS Mac renders. The host's theme is not this device's. |
+| Updates | Updates THIS binary. A host-driven update targets the wrong machine. |
+| Startup status | This process's own mount gate; already pinned (`local-only-commands.ts`). |
+
+Same client-owned/host-owned split as `remoteEnvironments` in `feature-flag-authority.ts`;
+extend that precedent rather than inventing a second mechanism. Banner copy therefore says
+"Workspace settings run on <host>", never "everything".
+
+### Needs work — reads to project, writes to register
+
+Owner decision: **writes should work too**, not read-only. Each `update_*` needs its own
+hand-audited ledger row; the spawn detectors may still refuse some, and a refusal is an
+answer, not an obstacle to argue with.
+
+| Surface | Read | Write | Note |
+|---|---|---|---|
+| Providers | `get_agent_provider_settings` — **Denied** | `update_agent_provider_settings` — Denied | Read needs a projection (enabled/available/model, never CLI paths, probes, or credential surface). Write is the hardest case: it configures future provider process authority. Treat as its own decision, last. |
+| Managed CLI status | `get_managed_provider_cli_status` — Denied | — | Probes CLIs. Project to a status enum or leave host-only. |
+| Agent roles | `get_manual_role_defaults` — `agentControl` | `update_manual_role_defaults` | Read is a settings read; the `agentControl` class is a conservative module default, so re-audit the actual sinks first. |
+| Execution settings | registered | `update_execution_settings` — `elevated` | The asymmetry to fix first: the pane already shows host values and silently cannot save. |
+| Integrations (GitHub, ticketing) | `get_github_connection_status`, `list_ticketing_providers` — `elevated` | — | Credential/network process authority. Project to connected/not-connected booleans. |
+| API keys | `list_api_keys` — Denied | — | Project to count + prefixes; never key material. |
+| MCP | `get_mcp_catalog` — `elevated`, `get_external_mcp_config` — Denied | `update_external_mcp_config` — Denied | Redacted catalog projection; provider definitions/auth/trust never enter frontend state (see `frontend/src/CLAUDE.md` Provider MCP Settings). |
+
+Suggested order: execution-settings write (closes the read/write asymmetry) → agent roles →
+integrations + API keys read projections → MCP → providers last.
+
 ## 4. Invariants that bound this work (non-negotiable)
 
 1. **Rule 27**: every new `:3849` command is a hand-audited `registry.rs` allowlist entry with

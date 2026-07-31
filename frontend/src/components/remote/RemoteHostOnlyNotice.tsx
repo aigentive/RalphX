@@ -21,6 +21,12 @@ import { useActiveEnvironment } from "@/hooks/useActiveEnvironment";
 export interface RemoteHostOnlyNoticeProps {
   /** What the host owns, e.g. "Provider setup". Used as the banner title. */
   subject: string;
+  /**
+   * Verb agreeing with `subject`. Singular subjects keep the default ("Provider setup runs
+   * on X"); plural ones pass "run" ("Workspace settings run on X"). A fixed verb produced
+   * "Workspace settings runs on X".
+   */
+  verb?: string;
   /** One sentence on what to do instead. */
   detail?: string;
   testId?: string;
@@ -38,6 +44,7 @@ export interface RemoteHostOnlyNoticeProps {
  */
 export function RemoteHostOnlyNotice({
   subject,
+  verb = "runs",
   detail,
   testId = "remote-host-only-notice",
   layout = "card",
@@ -57,7 +64,7 @@ export function RemoteHostOnlyNotice({
       tone="warning"
       testId={testId}
       icon={<RadioTower className="h-4 w-4" aria-hidden="true" />}
-      title={`${subject} runs on ${name}`}
+      title={`${subject} ${verb} on ${name}`}
       layout={layout}
       className={className ?? "mb-4 w-full"}
     >

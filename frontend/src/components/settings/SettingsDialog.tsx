@@ -248,8 +248,9 @@ export default function SettingsDialog({
               panes that are host-only would otherwise each have to say so themselves. */}
           {isRemoteEnvironment && (
             <RemoteHostOnlyNotice
-              subject="Everything in Settings"
-              detail="You are viewing the machine you are connected to. Switch to This Mac to change your own settings."
+              subject="Workspace settings"
+              verb="run"
+              detail="You are viewing the machine you are connected to. Appearance, accessibility, and app updates stay with this Mac."
               layout="strip"
               className="w-full shrink-0"
               testId="settings-remote-environment-notice"

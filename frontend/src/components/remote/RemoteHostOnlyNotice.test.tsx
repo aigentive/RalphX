@@ -68,6 +68,16 @@ describe("RemoteHostOnlyNotice", () => {
     expect(screen.getByText(BASE_URL)).toBeInTheDocument();
   });
 
+  it("agrees the verb with a plural subject", () => {
+    // "Workspace settings runs on X" is what a fixed verb produced; the dialog passes "run".
+    activateRemote("Studio Mac");
+    render(<RemoteHostOnlyNotice subject="Workspace settings" verb="run" />);
+
+    expect(
+      screen.getByText("Workspace settings run on Studio Mac"),
+    ).toBeInTheDocument();
+  });
+
   it("carries the warning tone rather than an error tone", () => {
     // This is not a failure — the setting simply lives elsewhere.
     activateRemote("Studio Mac");
