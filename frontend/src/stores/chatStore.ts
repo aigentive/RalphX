@@ -46,6 +46,8 @@ export interface QueuedMessage {
   createdAt: string;
   /** Whether this message is currently being edited */
   isEditing: boolean;
+  /** Whether this entry is locally optimistic or backend-confirmed. */
+  source: "optimistic" | "backend";
   /** Chat attachment IDs selected when the message was queued */
   attachmentIds: string[];
   /** Frozen artifact/ticket excerpt carried by the queued turn. */
@@ -174,9 +176,13 @@ interface ChatActions {
     clientId?: string,
     attachmentIds?: string[],
     composerSelectionSnapshot?: ComposerSelectionSnapshot,
+    source?: QueuedMessage["source"],
   ) => void;
   /** Replace a context queue with backend-owned queued messages */
-  setQueuedMessages: (contextKey: string, messages: QueuedMessage[]) => void;
+  setQueuedMessages: (
+    contextKey: string,
+    messages: Array<Omit<QueuedMessage, "source">>,
+  ) => void;
   /** Edit a queued message */
   editQueuedMessage: (contextKey: string, id: string, content: string) => void;
   /** Delete a queued message */
@@ -235,6 +241,7 @@ function queuedMessageListsEqual(
       message.content === other.content &&
       message.createdAt === other.createdAt &&
       message.isEditing === other.isEditing &&
+      message.source === other.source &&
       JSON.stringify(message.composerSelectionSnapshot) ===
         JSON.stringify(other.composerSelectionSnapshot) &&
       message.attachmentIds.length === other.attachmentIds.length &&
@@ -481,6 +488,7 @@ export const useChatStore = create<ChatState & ChatActions>()(
       clientId,
       attachmentIds,
       composerSelectionSnapshot,
+      source = "optimistic",
     ) =>
       set((state) => {
         const id = clientId ?? `queued-${Date.now()}-${Math.random()}`;
@@ -493,6 +501,9 @@ export const useChatStore = create<ChatState & ChatActions>()(
           ? state.queuedMessages[contextKey].find((m) => m.id === clientId)
           : undefined;
         if (existingMessage) {
+          if (source === "backend") {
+            existingMessage.source = "backend";
+          }
           if (
             (existingMessage.attachmentIds ?? []).length === 0
             && attachmentIds !== undefined
@@ -513,6 +524,7 @@ export const useChatStore = create<ChatState & ChatActions>()(
           content,
           createdAt: new Date().toISOString(),
           isEditing: false,
+          source,
           attachmentIds: [...(attachmentIds ?? [])],
           ...(composerSelectionSnapshot ? { composerSelectionSnapshot } : {}),
         };
@@ -529,6 +541,7 @@ export const useChatStore = create<ChatState & ChatActions>()(
           const current = currentById.get(message.id);
           return {
             ...message,
+            source: "backend" as const,
             isEditing: current?.isEditing ?? message.isEditing,
             attachmentIds: [...(message.attachmentIds ?? [])],
           };

@@ -12,6 +12,7 @@ mod support;
 
 mod gate1_conversation_identity;
 mod gate1_ipr_fast_path_tests;
+mod message_delivery_contract;
 mod scripted_claude_second_turn;
 mod ipr_cleanup_guard_tests;
 mod interactive_mode_integration;
