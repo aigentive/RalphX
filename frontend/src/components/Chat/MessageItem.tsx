@@ -448,6 +448,9 @@ export const MessageItem = React.memo(function MessageItem({
         continue;
       }
       if (block.type === "thinking") {
+        if (!block.text?.trim()) {
+          continue;
+        }
         const groupKey = `content-thinking-group:${index}`;
         const isExpanded = expandedContentToolGroupKeys.has(groupKey);
         renderedBlocks.push(

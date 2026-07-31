@@ -1508,21 +1508,39 @@ export function useChatEvents({
         const receivedAt = Date.now();
         setStreamingContentBlocks((prev) => {
           const matchingBlockIndex = prev.findIndex((block) => block.type === "thinking" && block.blockIndex === payload.block_index);
-          const syntheticBlockIndex = prev.findIndex((block) => block.type === "thinking" && block.blockIndex === SYNTHETIC_THINKING_BLOCK_INDEX);
+          let syntheticBlockIndex = -1;
+          for (let index = prev.length - 1; index >= 0; index -= 1) {
+            const candidate = prev[index];
+            if (
+              candidate?.type === "thinking" &&
+              candidate.blockIndex === SYNTHETIC_THINKING_BLOCK_INDEX &&
+              candidate.isSettled !== true
+            ) {
+              syntheticBlockIndex = index;
+              break;
+            }
+          }
           const at = matchingBlockIndex >= 0 ? matchingBlockIndex : syntheticBlockIndex;
           const existing = at >= 0 ? prev[at] : null;
-          const text = existing?.type === "thinking" && (payload.append_to_previous ?? true)
-            ? existing.text + payload.text : payload.text;
+          const existingThinking = existing?.type === "thinking" ? existing : null;
+          const isAppend = existingThinking != null && (payload.append_to_previous ?? true);
+          // A settle event carries no text; never let it clear accumulated reasoning.
+          const text = isAppend
+            ? existingThinking.text + payload.text
+            : (payload.text || existingThinking?.text || "");
           const block: StreamingContentBlock = {
             type: "thinking", text, receivedAt,
             ...(payload.block_index != null ? { blockIndex: payload.block_index } : {}),
             ...(payload.duration_ms != null ? { durationMs: payload.duration_ms } : {}),
             ...(payload.is_settled != null ? { isSettled: payload.is_settled } : {}),
-            ...(existing?.type === "thinking" && existing.estimatedTokens != null
-              ? { estimatedTokens: existing.estimatedTokens } : {}),
+            ...(existingThinking?.estimatedTokens != null
+              ? { estimatedTokens: existingThinking.estimatedTokens } : {}),
             ...(payload.seq != null ? { seq: payload.seq } : {}),
           };
-          if (at < 0) return [...prev, block];
+          if (at < 0) {
+            if (payload.is_settled && !payload.text) return prev;
+            return [...prev, block];
+          }
           const next = [...prev]; next[at] = block; return next;
         });
       }),
@@ -1537,11 +1555,15 @@ export function useChatEvents({
         if (activeAgentRunId && payload.run_id && payload.run_id !== activeAgentRunId) return;
         const receivedAt = Date.now();
         setStreamingContentBlocks((prev) => {
-          // Attach progress to the most recent thinking block: earlier ones are
-          // settled and their pill no longer displays a token count.
+          // Token progress belongs to the block that is still running. Attaching it to
+          // a settled block puts live counts on an already-finished pill.
           let at = -1;
           for (let i = prev.length - 1; i >= 0; i--) {
-            if (prev[i]?.type === "thinking") { at = i; break; }
+            const candidate = prev[i];
+            if (candidate?.type === "thinking" && candidate.isSettled !== true) {
+              at = i;
+              break;
+            }
           }
           if (at < 0) {
             return [...prev, {

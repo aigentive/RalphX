@@ -86,15 +86,15 @@ fn write_fake_claude_cli_with_partial_messages_support(
     } else {
         ""
     };
-    let thinking_display_probe = if supports_thinking_display {
-        "elif [ \"$1\" = \"--thinking-display\" ] && [ \"$2\" = \"summarized\" ] && [ \"$3\" = \"--version\" ]; then\n  printf 'claude-code 2.1.219\\n'\n"
+    let thinking_display_flag = if supports_thinking_display {
+        "  --thinking-display <mode>"
     } else {
         ""
     };
     std::fs::write(
         path,
         format!(
-            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  printf 'claude-code 2.1.219\\n'\nelif [ \"$1\" = \"--help\" ]; then\n  printf '%s\\n' 'Claude Code' 'Options:' '{partial_messages_flag}'\n{thinking_display_probe}else\n  printf 'unexpected args: %s\\n' \"$*\" >&2\n  exit 64\nfi\n"
+            "#!/bin/sh\nif [ \"$1\" = \"--help\" ]; then\n  printf '%s\\n' 'Claude Code' 'Options:' '{partial_messages_flag}' '{thinking_display_flag}'\n  exit 0\nfi\nfor arg in \"$@\"; do\n  if [ \"$arg\" = \"--version\" ]; then\n    printf 'claude-code 2.1.219\\n'\n    exit 0\n  fi\ndone\nprintf \"error: unknown option '%s'\\n\" \"$1\" >&2\nexit 1\n"
         ),
     )
     .expect("write fake claude");

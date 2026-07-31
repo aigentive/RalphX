@@ -367,22 +367,37 @@ fn test_processor_thinking_block_streaming() {
 
     let events2 = processor.process_message(delta1);
     assert_eq!(events2.len(), 1);
-    assert!(matches!(&events2[0], StreamEvent::Thinking(t) if t == "Let me analyze "));
+    assert!(matches!(
+        &events2[0],
+        StreamEvent::Thinking { text, block_index: 0 } if text == "Let me analyze "
+    ));
 
     let events3 = processor.process_message(delta2);
     assert_eq!(events3.len(), 1);
-    assert!(matches!(&events3[0], StreamEvent::Thinking(t) if t == "this problem."));
+    assert!(matches!(
+        &events3[0],
+        StreamEvent::Thinking { text, block_index: 0 } if text == "this problem."
+    ));
 
     let events4 = processor.process_message(stop);
-    assert!(events4.is_empty()); // stop doesn't emit event for thinking
+    let settled_duration_ms = match events4.as_slice() {
+        [StreamEvent::ThinkingSettled {
+            block_index: 0,
+            duration_ms: Some(duration_ms),
+        }] => *duration_ms,
+        other => panic!("expected one settled thinking event, got {other:?}"),
+    };
     assert!(processor.response_text.is_empty());
-    assert!(matches!(
-        processor.content_blocks.as_slice(),
+    match processor.content_blocks.as_slice() {
         [ContentBlockItem::Thinking {
             text,
-            duration_ms: Some(_)
-        }] if text == "Let me analyze this problem."
-    ));
+            duration_ms: Some(duration_ms),
+        }] => {
+            assert_eq!(text, "Let me analyze this problem.");
+            assert_eq!(*duration_ms, settled_duration_ms);
+        }
+        other => panic!("expected one persisted thinking block, got {other:?}"),
+    }
 }
 
 #[test]
@@ -407,13 +422,22 @@ fn test_processor_thinking_block_verbose() {
 
     let events = processor.process_message(msg);
 
-    // Should emit: Thinking, TextChunk, SessionId
-    assert_eq!(events.len(), 3);
-    assert!(
-        matches!(&events[0], StreamEvent::Thinking(t) if t == "Deep analysis of the problem...")
-    );
-    assert!(matches!(&events[1], StreamEvent::TextChunk(t) if t == "Here's my answer."));
-    assert!(matches!(&events[2], StreamEvent::SessionId(id) if id == "sess-456"));
+    // Should emit: Thinking, ThinkingSettled, TextChunk, SessionId
+    assert_eq!(events.len(), 4);
+    assert!(matches!(
+        &events[0],
+        StreamEvent::Thinking { text, block_index: 0 }
+            if text == "Deep analysis of the problem..."
+    ));
+    assert!(matches!(
+        &events[1],
+        StreamEvent::ThinkingSettled {
+            block_index: 0,
+            duration_ms: None
+        }
+    ));
+    assert!(matches!(&events[2], StreamEvent::TextChunk(t) if t == "Here's my answer."));
+    assert!(matches!(&events[3], StreamEvent::SessionId(id) if id == "sess-456"));
     assert!(matches!(
         processor.content_blocks.first(),
         Some(ContentBlockItem::Thinking {
@@ -503,7 +527,13 @@ fn summary_only_non_empty_thinking_keeps_one_block() {
 
     assert!(matches!(
         events.as_slice(),
-        [StreamEvent::Thinking(text)] if text == "Reasoning"
+        [
+            StreamEvent::Thinking { text, block_index: 0 },
+            StreamEvent::ThinkingSettled {
+                block_index: 0,
+                duration_ms: None
+            }
+        ] if text == "Reasoning"
     ));
     assert!(matches!(
         processor.content_blocks.as_slice(),

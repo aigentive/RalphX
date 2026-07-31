@@ -273,6 +273,10 @@ pub struct AgentThinkingPayload {
     pub seq: u64,
     #[serde(default)]
     pub append_to_previous: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(default)]
+    pub is_settled: bool,
 }
 
 /// Payload for agent:thinking_progress event.

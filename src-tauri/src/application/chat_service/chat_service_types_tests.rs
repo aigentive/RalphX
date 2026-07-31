@@ -1,6 +1,6 @@
 use crate::application::chat_service::{
     AgentErrorPayload, AgentMessageQueuedPayload, AgentMessageRenderReadyPayload,
-    AgentRunCompletedPayload, AgentRunStartedPayload,
+    AgentRunCompletedPayload, AgentRunStartedPayload, AgentThinkingPayload,
 };
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
@@ -27,6 +27,42 @@ fn full_raw_payload_allowlist_matches_renderer_hydration_tools() {
     for name in ["bash", "Read", "mcp__ralphx__get_artifact"] {
         assert!(!retains_full_raw_tool_payload(name), "{name}");
     }
+}
+
+#[test]
+fn agent_thinking_payload_serializes_committed_streaming_and_settled_contracts() {
+    let streaming = AgentThinkingPayload {
+        text: "partial reasoning".to_string(),
+        run_id: Some("run-1".to_string()),
+        block_index: Some(0),
+        conversation_id: "conversation-1".to_string(),
+        context_type: "task_execution".to_string(),
+        context_id: "task-1".to_string(),
+        seq: 7,
+        append_to_previous: true,
+        duration_ms: None,
+        is_settled: false,
+    };
+    let settled = AgentThinkingPayload {
+        text: String::new(),
+        duration_ms: Some(1_500),
+        is_settled: true,
+        ..streaming.clone()
+    };
+
+    let expected_streaming: serde_json::Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/agent_thinking_payload.streaming.json"
+    )))
+    .expect("streaming fixture must be valid JSON");
+    let expected_settled: serde_json::Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/agent_thinking_payload.settled.json"
+    )))
+    .expect("settled fixture must be valid JSON");
+
+    assert_eq!(serde_json::to_value(streaming).unwrap(), expected_streaming);
+    assert_eq!(serde_json::to_value(settled).unwrap(), expected_settled);
 }
 
 /// The allowlist is intentionally triplicated (application helper plus both
