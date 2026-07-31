@@ -426,8 +426,6 @@ mod agent_workspace_continuation_tests;
 #[cfg(test)]
 mod agent_workspace_external_pr_reconciliation_tests;
 #[cfg(test)]
-mod agent_workspace_dispatch_contract_tests;
-#[cfg(test)]
 mod agent_workspace_pr_metadata_reconciliation_tests;
 #[cfg(test)]
 mod agent_workspace_pr_supervision_recovery_tests;

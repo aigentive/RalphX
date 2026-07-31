@@ -2744,6 +2744,7 @@ async fn route_agent_workspace_pr_autofix_if_needed(
 
 /// Compatibility entry point without user notifications. Production polling uses
 /// [`route_agent_workspace_pr_autofix_if_needed_with_notifications`] so hand-offs reach the Inbox.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 async fn route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
     github: Arc<dyn GithubServiceTrait>,

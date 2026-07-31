@@ -6,6 +6,8 @@ pub mod agent_composer_commands;
 pub mod agent_conversation_mute_commands;
 #[cfg(test)]
 mod agent_conversation_mute_commands_tests;
+#[cfg(test)]
+mod agent_workspace_dispatch_contract_tests;
 pub mod agent_issue_report_commands;
 #[cfg(test)]
 mod agent_issue_report_commands_tests;
