@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::domain::services::github_service::{
     validate_pr_metadata_patch, GithubConnectionStatus, GithubServiceTrait, PrBranchMatch,
-    PrDetail, PrDiffAnnotations, PrHealth, PrReviewFeedback, PrReviewSubmissionEvent,
+    PrDetail, PrDiffAnnotations, PrHealth, PrHealthCheck, PrReviewFeedback, PrReviewSubmissionEvent,
     PrReviewThread, PrSearchResult, PrStatus, PrSubmittedReview, PrSyncState,
 };
 use crate::error::AppError;
@@ -38,6 +38,8 @@ pub struct MockGithubState {
     pub fetch_pr_review_thread_result: Option<AppResult<PrReviewThread>>,
     pub fetch_github_connection_status_result: Option<AppResult<GithubConnectionStatus>>,
     pub fetch_pr_health_result: Option<AppResult<PrHealth>>,
+    /// `None` leaves the trait default (unknown base state); `Some` overrides it.
+    pub list_branch_check_conclusions_result: Option<AppResult<Option<Vec<PrHealthCheck>>>>,
     pub rerun_failed_workflow_result: Option<AppResult<()>>,
     pub enable_pr_auto_merge_result: Option<AppResult<()>>,
     pub enable_pr_auto_merge_delay_ms: u64,
@@ -551,6 +553,19 @@ impl GithubServiceTrait for MockGithubService {
             issue_comments: Vec::new(),
             auto_merge_request: None,
         })
+    }
+
+    async fn list_branch_check_conclusions(
+        &self,
+        _working_dir: &Path,
+        _branch_ref: &str,
+    ) -> AppResult<Option<Vec<PrHealthCheck>>> {
+        self.state
+            .lock()
+            .expect("lock poisoned")
+            .list_branch_check_conclusions_result
+            .take()
+            .unwrap_or(Ok(None))
     }
 
     async fn rerun_failed_workflow(&self, _working_dir: &Path, run_id: i64) -> AppResult<()> {

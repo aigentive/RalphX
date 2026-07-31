@@ -1745,11 +1745,15 @@ fn generated_workspace_repair_prompt_keeps_identity_transport_owned_and_tools_li
     let definition = load_canonical_agent_definition(&root, "ralphx-agent-workspace-repair")
         .expect("workspace repair canonical definition should exist");
 
+    // Only call-shaped references (`tool({ ... })`) are tool invocations. Bare backticked
+    // snake_case tokens are field names and enum literals such as `resolution` values, which
+    // must not be mistaken for a tool the prompt claims to call.
     let named_workflow_tools = body
         .split('`')
         .enumerate()
         .filter(|(index, _)| index % 2 == 1)
-        .map(|(_, segment)| segment.split_once('(').map_or(segment, |(name, _)| name))
+        .filter_map(|(_, segment)| segment.split_once('('))
+        .map(|(name, _)| name.trim())
         .filter(|name| name.contains('_'))
         .map(str::to_owned)
         .collect::<BTreeSet<_>>();

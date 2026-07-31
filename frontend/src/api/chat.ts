@@ -2101,6 +2101,13 @@ export interface AgentWorkspaceMaintenanceOperation {
   updatedAt: string;
 }
 
+export interface AgentWorkspacePrAutofixFingerprintSpend {
+  generations: number;
+  minutes: number;
+  budgetMinutes: number;
+  isExhausted: boolean;
+}
+
 export interface AgentConversationWorkspace {
   conversationId: string;
   projectId: string;
@@ -2124,6 +2131,7 @@ export interface AgentConversationWorkspace {
   publicationPrStatus: string | null;
   publicationPushStatus: string | null;
   maintenanceOperation?: AgentWorkspaceMaintenanceOperation | null;
+  prAutofixFingerprintSpend?: AgentWorkspacePrAutofixFingerprintSpend | null;
   publicationMetadataAttemptId: string | null;
   publicationMetadataPhase: AgentWorkspacePublicationMetadataPhase | null;
   publicationMetadataState: AgentWorkspacePublicationMetadataState | null;
@@ -2671,6 +2679,13 @@ export const AgentWorkspaceMaintenanceOperationResponseSchema = z.object({
   updated_at: z.string(),
 });
 
+export const AgentWorkspacePrAutofixFingerprintSpendResponseSchema = z.object({
+  generations: z.number().int().nonnegative(),
+  minutes: z.number().int().nonnegative(),
+  budget_minutes: z.number().int().nonnegative(),
+  is_exhausted: z.boolean(),
+});
+
 export const AgentConversationWorkspaceResponseSchema = z.object({
   conversation_id: z.string(),
   project_id: z.string(),
@@ -2699,6 +2714,10 @@ export const AgentConversationWorkspaceResponseSchema = z.object({
   maintenance_operation: AgentWorkspaceMaintenanceOperationResponseSchema.nullable()
     .optional()
     .default(null),
+  pr_autofix_fingerprint_spend:
+    AgentWorkspacePrAutofixFingerprintSpendResponseSchema.nullable()
+      .optional()
+      .default(null),
   publication_metadata_attempt_id: z.string().nullable().optional().default(null),
   publication_metadata_phase: z
     .enum(["prepared", "mutating", "reconciling", "settled"])
@@ -3304,6 +3323,14 @@ function transformAgentConversationWorkspace(
           automaticContinuation: raw.maintenance_operation.automatic_continuation,
           startedAt: raw.maintenance_operation.started_at,
           updatedAt: raw.maintenance_operation.updated_at,
+        }
+      : null,
+    prAutofixFingerprintSpend: raw.pr_autofix_fingerprint_spend
+      ? {
+          generations: raw.pr_autofix_fingerprint_spend.generations,
+          minutes: raw.pr_autofix_fingerprint_spend.minutes,
+          budgetMinutes: raw.pr_autofix_fingerprint_spend.budget_minutes,
+          isExhausted: raw.pr_autofix_fingerprint_spend.is_exhausted,
         }
       : null,
     publicationMetadataAttemptId: raw.publication_metadata_attempt_id,

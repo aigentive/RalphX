@@ -994,6 +994,38 @@ impl GithubServiceTrait for GhCliGithubService {
         parse_pr_health_output(&view_stdout.join("\n"), &comments_stdout.join("\n"))
     }
 
+    async fn list_branch_check_conclusions(
+        &self,
+        working_dir: &Path,
+        branch_ref: &str,
+    ) -> AppResult<Option<Vec<PrHealthCheck>>> {
+        let branch_ref = branch_ref.trim();
+        if branch_ref.is_empty() {
+            return Ok(None);
+        }
+        // The latest completed workflow runs on the branch tip. `gh run list` is the only surface
+        // that reports checks for a branch with no pull request of its own, which is exactly the
+        // base-branch case this exists for.
+        let stdout = self
+            .runner
+            .run_gh(
+                working_dir,
+                &[
+                    "run".to_string(),
+                    "list".to_string(),
+                    "--branch".to_string(),
+                    branch_ref.to_string(),
+                    "--limit".to_string(),
+                    "40".to_string(),
+                    "--json".to_string(),
+                    "name,workflowName,status,conclusion,url,headSha".to_string(),
+                ],
+            )
+            .await?;
+
+        Ok(Some(parse_branch_check_conclusions(&stdout.join("\n"))))
+    }
+
     async fn rerun_failed_workflow(&self, working_dir: &Path, run_id: i64) -> AppResult<()> {
         if run_id <= 0 {
             return Err(AppError::Validation(
@@ -1798,6 +1830,47 @@ fn parse_status_check_rollup(view_value: &Value) -> Vec<PrHealthCheck> {
             })
         })
         .collect()
+}
+
+/// Reduces `gh run list --json ...` output to the newest completed conclusion per check name.
+/// Older runs for the same check are historical noise; only the current state of the branch tip
+/// can tell us whether a failure already exists on the base.
+pub(crate) fn parse_branch_check_conclusions(json_str: &str) -> Vec<PrHealthCheck> {
+    let Ok(runs) = serde_json::from_str::<Value>(json_str) else {
+        return Vec::new();
+    };
+    let mut newest_by_name: std::collections::BTreeMap<String, PrHealthCheck> =
+        std::collections::BTreeMap::new();
+    for run in runs.as_array().into_iter().flatten() {
+        let name = run
+            .get("name")
+            .or_else(|| run.get("workflowName"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if name.is_empty() {
+            continue;
+        }
+        let status = run.get("status").and_then(Value::as_str).map(str::to_string);
+        // An in-progress run proves nothing about the base yet.
+        if !status
+            .as_deref()
+            .is_some_and(|value| value.eq_ignore_ascii_case("completed"))
+        {
+            continue;
+        }
+        newest_by_name.entry(name.clone()).or_insert(PrHealthCheck {
+            name,
+            status,
+            conclusion: run
+                .get("conclusion")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            details_url: run.get("url").and_then(Value::as_str).map(str::to_string),
+        });
+    }
+    newest_by_name.into_values().collect()
 }
 
 fn parse_auto_merge_request(view_value: &Value) -> Option<PrAutoMergeRequest> {

@@ -6,7 +6,7 @@
 use crate::domain::services::github_service::{PrMergeStateStatus, PrMergeableState, PrStatus};
 use crate::error::AppError;
 use crate::infrastructure::services::gh_cli_github_service::{
-    parse_check_run_annotations_output, parse_check_runs_output,
+    parse_branch_check_conclusions, parse_check_run_annotations_output, parse_check_runs_output,
     parse_code_scanning_alert_annotations_output, parse_gh_auth_status_lines,
     parse_issue_create_plain_output, parse_pr_annotation_head_sha_output, parse_pr_create_output,
     parse_pr_create_plain_output, parse_pr_detail_output, parse_pr_health_output,
@@ -936,6 +936,54 @@ fn parse_gh_auth_status_empty_returns_none() {
     assert!(account.is_none());
 }
 
+// ── parse_branch_check_conclusions ─────────────────────────────────────────
+
+#[test]
+fn parse_branch_check_conclusions_keeps_only_the_newest_completed_run_per_check() {
+    // `gh run list` returns newest first, so the first completed entry per name wins and later
+    // rows for the same workflow are historical noise.
+    let json = r#"[
+        {"name": "CI", "status": "completed", "conclusion": "failure", "url": "https://github.com/o/r/actions/runs/2"},
+        {"name": "CI", "status": "completed", "conclusion": "success", "url": "https://github.com/o/r/actions/runs/1"}
+    ]"#;
+
+    let checks = parse_branch_check_conclusions(json);
+
+    assert_eq!(checks.len(), 1);
+    assert_eq!(checks[0].name, "CI");
+    assert_eq!(checks[0].status.as_deref(), Some("completed"));
+    assert_eq!(checks[0].conclusion.as_deref(), Some("failure"));
+    assert_eq!(
+        checks[0].details_url.as_deref(),
+        Some("https://github.com/o/r/actions/runs/2")
+    );
+}
+
+#[test]
+fn parse_branch_check_conclusions_skips_in_progress_and_unnamed_runs() {
+    // An in-progress run proves nothing about the base yet, and a run with no resolvable name
+    // cannot be compared against the PR's checks.
+    let json = r#"[
+        {"name": "Flaky", "status": "in_progress", "conclusion": null},
+        {"name": "   ", "workflowName": "", "status": "completed", "conclusion": "success"},
+        {"workflowName": "Lint", "status": "completed", "conclusion": "success", "url": "https://github.com/o/r/actions/runs/9"}
+    ]"#;
+
+    let checks = parse_branch_check_conclusions(json);
+
+    assert_eq!(checks.len(), 1);
+    assert_eq!(checks[0].name, "Lint");
+    assert_eq!(checks[0].conclusion.as_deref(), Some("success"));
+}
+
+#[test]
+fn parse_branch_check_conclusions_returns_empty_for_unparseable_output() {
+    assert!(parse_branch_check_conclusions("not json").is_empty());
+    // A completed run without a conclusion still reports the check so callers can see it is not
+    // a pass; only unusable output collapses to empty.
+    assert!(parse_branch_check_conclusions("{}").is_empty());
+}
+
 // ── MockGithubService round-trip ───────────────────────────────────────────
 
 mod mock_roundtrip {
@@ -1691,6 +1739,56 @@ mod mock_roundtrip {
         assert!(first.to_string().contains("ambiguous patch outcome"));
         assert!(third.to_string().contains("fallback patch failure"));
         assert_eq!(mock.state().patch_pr_metadata_calls, 3);
+    }
+
+    #[tokio::test]
+    async fn list_branch_check_conclusions_reads_the_branch_tip_run_list() {
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![Ok(vec![r#"[
+            {"name": "CI", "status": "completed", "conclusion": "failure", "url": "https://github.com/o/r/actions/runs/2"}
+        ]"#
+        .to_string()])]));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        let checks = service
+            .list_branch_check_conclusions(Path::new("/tmp"), "  main  ")
+            .await
+            .unwrap()
+            .expect("a readable branch reports its checks");
+
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].name, "CI");
+        assert_eq!(checks[0].conclusion.as_deref(), Some("failure"));
+        assert_eq!(
+            runner.gh_calls(),
+            vec![vec![
+                "run",
+                "list",
+                "--branch",
+                "main",
+                "--limit",
+                "40",
+                "--json",
+                "name,workflowName,status,conclusion,url,headSha",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()]
+        );
+    }
+
+    #[tokio::test]
+    async fn list_branch_check_conclusions_reports_unknown_without_a_branch() {
+        // An empty ref cannot be read, and "unknown" must never be spelled as an empty check list
+        // that a caller could mistake for a healthy base.
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(Vec::new()));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        assert!(service
+            .list_branch_check_conclusions(Path::new("/tmp"), "   ")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(runner.gh_calls().is_empty());
     }
 
     #[tokio::test]

@@ -1174,10 +1174,12 @@ describe('agent workspace repair tool', () => {
     expect(tool).toBeDefined();
   });
 
-  it('should accept only a completion summary and optional blocker', () => {
+  it('should accept a completion summary, optional blocker, and classified resolution', () => {
     expect(tool?.inputSchema.type).toBe('object');
     expect(tool?.inputSchema.properties).toHaveProperty('summary');
     expect(tool?.inputSchema.properties).toHaveProperty('blocker');
+    expect(tool?.inputSchema.properties).toHaveProperty('resolution');
+    expect(tool?.inputSchema.properties).toHaveProperty('fix_commit_sha');
     expect(tool?.inputSchema.properties).not.toHaveProperty('conversation_id');
     expect(tool?.inputSchema.properties).not.toHaveProperty('repair_commit_sha');
     expect(tool?.inputSchema.properties).not.toHaveProperty('resolved_base_ref');
@@ -1186,10 +1188,31 @@ describe('agent workspace repair tool', () => {
     expect(tool?.inputSchema.additionalProperties).toBe(false);
   });
 
+  it('matches the PR fix resolution enum and validates the reported fix commit SHA', () => {
+    const prFixTool = allTools.find((t) => t.name === 'complete_agent_workspace_pr_fix');
+    const repairProperties = tool?.inputSchema.properties as
+      | Record<string, { enum?: string[]; pattern?: string }>
+      | undefined;
+    const prFixProperties = prFixTool?.inputSchema.properties as
+      | Record<string, { enum?: string[]; pattern?: string }>
+      | undefined;
+
+    expect(repairProperties?.resolution?.enum).toEqual(prFixProperties?.resolution?.enum);
+    expect(repairProperties?.fix_commit_sha).toMatchObject({
+      pattern: '^[0-9a-f]{40}$',
+    });
+  });
+
   it('accepts valid repair completion objects and rejects model-supplied identity or SHA extras', () => {
     const validate = new AjvValidator().compile(tool!.inputSchema);
 
-    expect(validate({ summary: 'Resolved conflicts', blocker: 'Needs input' })).toBe(true);
+    expect(validate({
+      summary: 'Resolved conflicts',
+      blocker: 'Needs input',
+      resolution: 'fixed',
+      fix_commit_sha: 'a'.repeat(40),
+    })).toBe(true);
+    expect(validate({ summary: 'Resolved conflicts', fix_commit_sha: 'not-a-sha' })).toBe(false);
     for (const [property, value] of Object.entries({
       conversation_id: 'conversation-from-model',
       agent_run_id: 'run-from-model',
@@ -2326,6 +2349,7 @@ describe('agent workspace publish tool transport', () => {
       {
         summary: 'Resolved conflicts',
         blocker: 'Needs maintainer decision',
+        reported_fix_commit_sha: 'a'.repeat(40),
       },
     ],
     [
@@ -2422,6 +2446,8 @@ describe('agent workspace repair tool transport', () => {
       callCompleteAgentWorkspaceRepairTool(callTauri, {
         summary: 'Resolved conflicts',
         blocker: 'Needs maintainer decision',
+        resolution: 'pre_existing_on_base',
+        fix_commit_sha: 'a'.repeat(40),
       }, {
         agentRunId: 'run-1',
         parentConversationId: 'conversation-1',
@@ -2432,6 +2458,8 @@ describe('agent workspace repair tool transport', () => {
     expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-1/complete-repair', {
       summary: 'Resolved conflicts',
       blocker: 'Needs maintainer decision',
+      resolution: 'pre_existing_on_base',
+      reported_fix_commit_sha: 'a'.repeat(40),
     }, {
       headers: {
         'x-ralphx-agent-run-id': 'run-1',

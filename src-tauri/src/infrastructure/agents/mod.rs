@@ -24,6 +24,7 @@ pub use claude::{
 #[cfg(any(test, feature = "test-utils"))]
 pub use claude::{
     reset_agent_personas_override_for_test, reset_standalone_conversations_override_for_test,
+    LiveFlagOverrideTestGuard,
 };
 pub use claude::{StreamEvent, StreamingSpawnResult};
 pub use codex::stream_processor::{

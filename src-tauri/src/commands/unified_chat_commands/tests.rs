@@ -874,17 +874,18 @@ async fn create_agent_conversation_persists_team_intent_coordination_mode() {
     assert_eq!(stored.coordination_mode, CoordinationMode::RxNativeTeam);
 }
 
-struct StandaloneConversationsFlagOverrideReset;
-
-impl Drop for StandaloneConversationsFlagOverrideReset {
-    fn drop(&mut self) {
-        crate::infrastructure::agents::reset_standalone_conversations_override_for_test();
-    }
+/// The standalone-conversations override is process-global. Acquiring this guard serializes every
+/// test that sets it and restores the ambient value on drop, so a test asserting "flag off" can
+/// never observe another test's "flag on".
+fn standalone_conversations_flag_override_guard(
+) -> crate::infrastructure::agents::LiveFlagOverrideTestGuard {
+    crate::infrastructure::agents::LiveFlagOverrideTestGuard::default()
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn create_agent_conversation_standalone_flag_on_round_trips_self_keyed() {
-    let _reset = StandaloneConversationsFlagOverrideReset;
+    let _flag_guard = standalone_conversations_flag_override_guard();
     crate::infrastructure::agents::set_standalone_conversations_override(Some(true));
     let app = build_send_now_command_app(AppState::new_test());
 
@@ -915,8 +916,9 @@ async fn create_agent_conversation_standalone_flag_on_round_trips_self_keyed() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn create_agent_conversation_standalone_flag_off_is_rejected() {
-    let _reset = StandaloneConversationsFlagOverrideReset;
+    let _flag_guard = standalone_conversations_flag_override_guard();
     crate::infrastructure::agents::set_standalone_conversations_override(Some(false));
     let app = build_send_now_command_app(AppState::new_test());
 
@@ -937,8 +939,9 @@ async fn create_agent_conversation_standalone_flag_off_is_rejected() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn create_agent_conversation_standalone_rejects_supplied_context_id() {
-    let _reset = StandaloneConversationsFlagOverrideReset;
+    let _flag_guard = standalone_conversations_flag_override_guard();
     crate::infrastructure::agents::set_standalone_conversations_override(Some(true));
     let app = build_send_now_command_app(AppState::new_test());
 
@@ -959,8 +962,9 @@ async fn create_agent_conversation_standalone_rejects_supplied_context_id() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn create_agent_conversation_standalone_rejects_team_intent() {
-    let _reset = StandaloneConversationsFlagOverrideReset;
+    let _flag_guard = standalone_conversations_flag_override_guard();
     crate::infrastructure::agents::set_standalone_conversations_override(Some(true));
     let app = build_send_now_command_app(AppState::new_test());
 
@@ -1299,6 +1303,7 @@ fn linked_plan_branch_publication_is_projected_into_workspace_response() {
         mode_switch_locked: false,
         mode_switch_lock_reason: None,
         maintenance_operation: None,
+        pr_autofix_fingerprint_spend: None,
     };
     let mut plan_branch = PlanBranch::new(
         ArtifactId::from_string("artifact-1"),
@@ -1369,6 +1374,7 @@ fn linked_plan_branch_publication_overrides_stale_workspace_publication_response
         mode_switch_locked: true,
         mode_switch_lock_reason: Some("Plan execution is still active".to_string()),
         maintenance_operation: None,
+        pr_autofix_fingerprint_spend: None,
     };
     let mut plan_branch = PlanBranch::new(
         ArtifactId::from_string("artifact-1"),
@@ -3760,7 +3766,9 @@ async fn base_update_retry_returns_successful_repair_started_response() {
 #[tokio::test]
 async fn workspace_response_does_not_recover_a_stranded_repair_inline() {
     let state = AppState::new_test();
-    let workspace = command_test_workspace();
+    let mut workspace = command_test_workspace();
+    workspace.last_blocked_pr_health_fingerprint =
+        Some("github_pr_autofix:42:checks:rust-tests".to_string());
     state
         .agent_conversation_workspace_repo
         .create_or_update(workspace.clone())
@@ -3820,6 +3828,16 @@ async fn workspace_response_does_not_recover_a_stranded_repair_inline() {
     .expect("workspace response should succeed");
 
     assert_eq!(response.conversation_id, workspace.conversation_id.as_str());
+    assert_eq!(
+        response.pr_autofix_fingerprint_spend,
+        Some(super::PrAutofixFingerprintSpendResponse {
+            generations: 0,
+            minutes: 0,
+            budget_minutes: crate::infrastructure::agents::limits_config()
+                .repair_fingerprint_budget_minutes,
+            is_exhausted: false,
+        })
+    );
     assert_eq!(
         state
             .agent_workspace_repair_repo

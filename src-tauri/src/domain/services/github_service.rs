@@ -570,6 +570,20 @@ pub trait GithubServiceTrait: Send + Sync {
 
     /// Re-run only failed jobs for an authoritative GitHub Actions workflow run.
     /// The run id must be derived from fresh PR health by the caller, never model input.
+    /// Completed check conclusions on the tip of `branch_ref`, used to tell "this PR broke it"
+    /// from "this was already broken on the base branch".
+    ///
+    /// `None` means RalphX could not determine the base branch's check state — an unimplemented
+    /// backend, an API error, or no run to read. Callers must treat `None` as unknown and fall
+    /// back to their normal behavior; it must never be read as "the base is healthy".
+    async fn list_branch_check_conclusions(
+        &self,
+        _working_dir: &Path,
+        _branch_ref: &str,
+    ) -> AppResult<Option<Vec<PrHealthCheck>>> {
+        Ok(None)
+    }
+
     async fn rerun_failed_workflow(&self, _working_dir: &Path, _run_id: i64) -> AppResult<()> {
         Err(AppError::Infrastructure(
             "GitHub Actions rerun is unavailable for this runtime".to_string(),

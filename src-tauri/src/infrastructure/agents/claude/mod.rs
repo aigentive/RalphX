@@ -25,6 +25,8 @@ pub use agent_config::live_flags::{
     reset_agent_personas_override_for_test, reset_standalone_conversations_override_for_test,
     set_agent_personas_override, set_standalone_conversations_override,
 };
+#[cfg(any(test, feature = "test-utils"))]
+pub use agent_config::live_flags::LiveFlagOverrideTestGuard;
 pub use agent_config::process_config::{resolve_process_agent, ProcessMapping, ProcessSlot};
 pub use agent_config::{
     agent_configs, agent_harness_defaults_config, agent_personas_enabled, automations_config,
