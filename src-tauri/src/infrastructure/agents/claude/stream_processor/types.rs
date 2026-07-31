@@ -265,8 +265,15 @@ pub enum ContentBlockItem {
 pub enum StreamEvent {
     /// Text chunk received
     TextChunk(String),
-    /// Thinking block from Claude's extended reasoning
-    Thinking(String),
+    /// Thinking block from Claude's extended reasoning.
+    /// `block_index` is authoritative, so consumers do not infer it from
+    /// mutable processor state.
+    Thinking { text: String, block_index: u64 },
+    /// A thinking block was sealed with its final duration.
+    ThinkingSettled {
+        block_index: u64,
+        duration_ms: Option<u64>,
+    },
     /// Estimated tokens consumed while Claude is thinking.
     ThinkingProgress {
         estimated_tokens: u64,
