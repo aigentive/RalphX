@@ -132,6 +132,24 @@ type WorkspaceReviewPublishPromotionState = Pick<
   "monitor" | "reviewArtifactIsCurrent" | "reviewArtifactIsOutdated"
 >;
 
+export function getWorkspaceRepairFocusTarget({
+  reviewFixerConversationId,
+  repairRuntimeConversationId,
+  repairFixerKind,
+}: {
+  reviewFixerConversationId: string | null;
+  repairRuntimeConversationId: string | null;
+  repairFixerKind: "workspace_repair" | "pr_fixer" | null;
+}): Extract<AgentsChatFocus, { type: "workspace_repair" }> | null {
+  // Backend guards make a Review fixer and an ordinary repair attempt mutually exclusive.
+  const conversationId =
+    reviewFixerConversationId ??
+    (repairFixerKind === "workspace_repair"
+      ? repairRuntimeConversationId
+      : null);
+  return conversationId ? { type: "workspace_repair", conversationId } : null;
+}
+
 function hasCurrentPassedWorkspaceReview(
   context: WorkspaceReviewPublishPromotionState | null,
 ): boolean {
@@ -482,6 +500,21 @@ export function useAgentsViewController({
       focusWorkspaceReview(current, conversationId, runtimeHint),
     );
   }, []);
+  const handleFocusWorkspaceRepair = useCallback((conversationId: string) => {
+    setChatFocus((current) =>
+      current.type === "workspace_repair" &&
+      current.conversationId === conversationId
+        ? current
+        : { type: "workspace_repair", conversationId },
+    );
+  }, []);
+  const handleFocusPrFixer = useCallback((conversationId: string) => {
+    setChatFocus((current) =>
+      current.type === "pr_fixer" && current.conversationId === conversationId
+        ? current
+        : { type: "pr_fixer", conversationId },
+    );
+  }, []);
   const handleTaskArtifactSelectionChange = useCallback(
     (taskId: string | null) => {
       setSelectedTaskArtifactId(taskId);
@@ -500,36 +533,40 @@ export function useAgentsViewController({
       current.type === "workspace" ? current : { type: "workspace" },
     );
   }, []);
-  const focusedWorkspaceReviewRuntimeConversationId =
-    chatFocus.type === "workspace_review" ? chatFocus.conversationId : null;
-  const focusedWorkspaceReviewSummaryQuery = useConversationSummary(
-    focusedWorkspaceReviewRuntimeConversationId,
-    { enabled: Boolean(focusedWorkspaceReviewRuntimeConversationId) },
+  const focusedChildRuntimeConversationId =
+    chatFocus.type === "workspace_review" ||
+    chatFocus.type === "workspace_repair" ||
+    chatFocus.type === "pr_fixer"
+      ? chatFocus.conversationId
+      : null;
+  const focusedChildRuntimeSummaryQuery = useConversationSummary(
+    focusedChildRuntimeConversationId,
+    { enabled: Boolean(focusedChildRuntimeConversationId) },
   );
   const focusedWorkspaceReviewConversation = useMemo(
     () => {
-      const summary = focusedWorkspaceReviewSummaryQuery.data;
+      const summary = focusedChildRuntimeSummaryQuery.data;
       if (
         summary &&
-        summary.id === focusedWorkspaceReviewRuntimeConversationId
+        summary.id === focusedChildRuntimeConversationId
       ) {
         return toProjectAgentConversation(summary);
       }
-      return focusedWorkspaceReviewRuntimeConversationId
+      return focusedChildRuntimeConversationId
         ? focusedConversations.data?.find(
             (conversation) =>
-              conversation.id === focusedWorkspaceReviewRuntimeConversationId,
+              conversation.id === focusedChildRuntimeConversationId,
           ) ?? null
         : null;
     },
     [
       focusedConversations.data,
-      focusedWorkspaceReviewRuntimeConversationId,
-      focusedWorkspaceReviewSummaryQuery.data,
+      focusedChildRuntimeConversationId,
+      focusedChildRuntimeSummaryQuery.data,
     ],
   );
   const activeRuntimeConversationId =
-    focusedWorkspaceReviewRuntimeConversationId ?? selectedConversationId;
+    focusedChildRuntimeConversationId ?? selectedConversationId;
   const reviewerRoleDefaults = useManualRoleDefaults(activeProjectId);
   const activeProject = useMemo(
     () => projects.find((project) => project.id === activeProjectId) ?? null,
@@ -560,7 +597,9 @@ export function useAgentsViewController({
     activeProject,
     focusedWorkspaceReviewConversation,
     focusedWorkspaceReviewConversationId:
-      focusedWorkspaceReviewRuntimeConversationId,
+      chatFocus.type === "workspace_review"
+        ? focusedChildRuntimeConversationId
+        : null,
     focusedWorkspaceReviewRuntimeHint:
       chatFocus.type === "workspace_review"
         ? (chatFocus.runtimeHint ?? null)
@@ -896,6 +935,33 @@ export function useAgentsViewController({
         : null,
     [workspaceReviewChildConversationId],
   );
+  const repairRuntimeConversationId =
+    workspaceReviewContext?.repairRuntimeConversationId ?? null;
+  const repairFixerKind = workspaceReviewContext?.repairFixerKind ?? null;
+  const workspaceRepairFocusTarget = useMemo(
+    () =>
+      getWorkspaceRepairFocusTarget({
+        reviewFixerConversationId:
+          workspaceReviewContext?.monitor.reviewFixerConversationId ?? null,
+        repairRuntimeConversationId,
+        repairFixerKind,
+      }),
+    [
+      repairFixerKind,
+      repairRuntimeConversationId,
+      workspaceReviewContext?.monitor.reviewFixerConversationId,
+    ],
+  );
+  const prFixerFocusTarget = useMemo(
+    () =>
+      repairFixerKind === "pr_fixer" && repairRuntimeConversationId
+        ? ({
+            type: "pr_fixer",
+            conversationId: repairRuntimeConversationId,
+          } satisfies Extract<AgentsChatFocus, { type: "pr_fixer" }>)
+        : null,
+    [repairFixerKind, repairRuntimeConversationId],
+  );
   useEffect(() => {
     if (
       workspaceReviewContext?.monitor.status !== "reviewing" ||
@@ -914,17 +980,23 @@ export function useAgentsViewController({
     );
   }, [workspaceReviewChildConversationId, workspaceReviewContext?.monitor.status]);
   useEffect(() => {
-    const fixerStatus = workspaceReviewContext?.monitor.reviewFixerStatus ?? null;
-    if (fixerStatus !== "queued" && fixerStatus !== "running") {
-      return;
-    }
+    if (!workspaceRepairFocusTarget) return;
     setChatFocus((current) =>
-      current.type === "workspace_review" ? { type: "workspace" } : current,
+      current.type === "workspace_repair" &&
+      current.conversationId === workspaceRepairFocusTarget.conversationId
+        ? current
+        : workspaceRepairFocusTarget,
     );
-  }, [
-    workspaceReviewContext?.monitor.reviewFixerRunId,
-    workspaceReviewContext?.monitor.reviewFixerStatus,
-  ]);
+  }, [workspaceRepairFocusTarget]);
+  useEffect(() => {
+    if (!prFixerFocusTarget) return;
+    setChatFocus((current) =>
+      current.type === "pr_fixer" &&
+      current.conversationId === prFixerFocusTarget.conversationId
+        ? current
+        : prFixerFocusTarget,
+    );
+  }, [prFixerFocusTarget]);
   const chatFocusOptions = useMemo(() => {
     return getAgentChatFocusSwitchOptions({
       mode: activeConversationMode,
@@ -932,6 +1004,8 @@ export function useAgentsViewController({
       verificationFocusTarget,
       taskRuntimeFocusTarget,
       workspaceReviewFocusTarget,
+      workspaceRepairFocusTarget,
+      prFixerFocusTarget,
       automationRunFocusTarget,
       hasPlanArtifact: hasAttachedPlanArtifact,
     });
@@ -943,6 +1017,8 @@ export function useAgentsViewController({
     taskRuntimeFocusTarget,
     verificationFocusTarget,
     workspaceReviewFocusTarget,
+    workspaceRepairFocusTarget,
+    prFixerFocusTarget,
   ]);
   useEffect(() => {
     if (chatFocusOptions.some((option) => option.type === chatFocus.type)) {
@@ -983,6 +1059,16 @@ export function useAgentsViewController({
         return;
       }
 
+      if (type === "workspace_repair" && workspaceRepairFocusTarget) {
+        setChatFocus(workspaceRepairFocusTarget);
+        return;
+      }
+
+      if (type === "pr_fixer" && prFixerFocusTarget) {
+        setChatFocus(prFixerFocusTarget);
+        return;
+      }
+
       if (type === "automation_run" && automationRunFocusTarget) {
         setChatFocus(automationRunFocusTarget);
       }
@@ -996,6 +1082,8 @@ export function useAgentsViewController({
       verificationFocusTarget,
       automationRunFocusTarget,
       workspaceReviewFocusTarget,
+      workspaceRepairFocusTarget,
+      prFixerFocusTarget,
     ],
   );
   const {
@@ -1703,6 +1791,8 @@ export function useAgentsViewController({
       onFocusIdeationSessionForConversation:
         handleFocusIdeationSessionForConversation,
       onFocusWorkspaceReview: handleFocusWorkspaceReview,
+      onFocusWorkspaceRepair: handleFocusWorkspaceRepair,
+      onFocusPrFixer: handleFocusPrFixer,
       onFocusVerificationSession: handleFocusVerificationSession,
       onFocusTaskRuntime: handleFocusTaskRuntime,
       onFocusAutomationRun: handleFocusAutomationRun,

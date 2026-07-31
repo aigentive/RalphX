@@ -149,6 +149,22 @@ impl AgentWorkspaceRepairRepository for MemoryAgentConversationWorkspaceReposito
             .cloned())
     }
 
+    async fn get_unsettled_attempt_by_runtime_conversation(
+        &self,
+        runtime_conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentWorkspaceRepairAttempt>> {
+        Ok(self
+            .repair_attempts
+            .read()
+            .await
+            .values()
+            .find(|attempt| {
+                attempt.runtime_conversation_id.as_ref() == Some(runtime_conversation_id)
+                    && attempt.settled_at.is_none()
+            })
+            .cloned())
+    }
+
     async fn get_latest_repair_attempt_for_conversation(
         &self,
         conversation_id: &ChatConversationId,
@@ -326,6 +342,9 @@ impl AgentWorkspaceRepairRepository for MemoryAgentConversationWorkspaceReposito
             .get_mut(&request.attempt_id)
             .expect("repair attempt existed while the write lock was held");
         current.reserved_agent_run_id = Some(request.run_id);
+        if current.runtime_conversation_id.is_none() {
+            current.runtime_conversation_id = request.runtime_conversation_id;
+        }
         current.updated_at = request.updated_at;
         Ok(AgentWorkspaceRepairAttemptTransitionOutcome::Applied(
             current.clone(),
@@ -516,7 +535,9 @@ impl AgentWorkspaceRepairRepository for MemoryAgentConversationWorkspaceReposito
             || current.updated_at != request.expected_attempt_updated_at
             || current.settled_at.is_some()
         {
-            return Ok(CreateAgentWorkspaceRepairEffectOutcome::Stale(Box::new(current)));
+            return Ok(CreateAgentWorkspaceRepairEffectOutcome::Stale(Box::new(
+                current,
+            )));
         }
         if request.effect.attempt_id != current.id {
             return Err(AppError::Validation(
@@ -628,7 +649,9 @@ impl AgentWorkspaceRepairRepository for MemoryAgentConversationWorkspaceReposito
             ));
         }
         if existing.completed_at.is_some() && existing == request.effect {
-            return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Applied(Box::new(existing)));
+            return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Applied(
+                Box::new(existing),
+            ));
         }
         if current.generation != request.generation
             || current.phase != request.expected_phase
@@ -637,7 +660,9 @@ impl AgentWorkspaceRepairRepository for MemoryAgentConversationWorkspaceReposito
             || existing.updated_at != request.expected_effect_updated_at
             || existing.status != request.expected_effect_status
         {
-            return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Stale(Box::new(current)));
+            return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Stale(Box::new(
+                current,
+            )));
         }
         let workspace = workspaces
             .get_mut(&current.conversation_id)

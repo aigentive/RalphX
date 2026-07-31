@@ -47,6 +47,9 @@ pub struct BindAgentWorkspaceRepairAttemptRun {
     /// schedule must not let an older dispatcher bind a run onto newer durable authority.
     pub expected_updated_at: DateTime<Utc>,
     pub run_id: AgentRunId,
+    /// First reservation records the attempt's dedicated fixer child; redelivery must preserve
+    /// the existing value.
+    pub runtime_conversation_id: Option<ChatConversationId>,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -192,6 +195,18 @@ pub trait AgentWorkspaceRepairRepository: Send + Sync {
     async fn get_current_repair_attempt(
         &self,
         conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentWorkspaceRepairAttempt>>;
+
+    /// Resolve the attempt whose dedicated runtime conversation is `runtime_conversation_id`.
+    ///
+    /// Returns `None` when no unsettled attempt owns that conversation.
+    ///
+    /// # Errors
+    /// Returns a repository error when the lookup fails. A failed lookup MUST NOT be reported as
+    /// `Ok(None)`; callers treat `Ok(None)` as "not authorized".
+    async fn get_unsettled_attempt_by_runtime_conversation(
+        &self,
+        runtime_conversation_id: &ChatConversationId,
     ) -> AppResult<Option<AgentWorkspaceRepairAttempt>>;
 
     /// Returns the latest durable generation, including settled generations. Legacy import is

@@ -36,10 +36,6 @@ use crate::application::agent_workspace_terminal_cleanup::{
     settle_review_pr_terminal_observation, terminalize_agent_workspace_after_pr,
     TerminalAgentWorkspaceCause,
 };
-use crate::domain::entities::{
-    NewNotification, NotificationCategory, NotificationSeverity, NotificationTarget,
-    NotificationTargetKind,
-};
 use crate::application::chat_service::{ChatService, SendMessageOptions, SendQueuePolicy};
 use crate::application::interactive_notification_producer::pr_review_notification_key;
 use crate::application::services::pr_auto_merge_status::{
@@ -57,6 +53,10 @@ use crate::domain::entities::{
     AgentWorkspaceRepairSource, ChatContextType, ChatConversationId, IdeationSessionId, ProjectId,
 };
 use crate::domain::entities::{InternalStatus, PlanBranch, PlanBranchId, Project, TaskId};
+use crate::domain::entities::{
+    NewNotification, NotificationCategory, NotificationSeverity, NotificationTarget,
+    NotificationTargetKind,
+};
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, AgentWorkspaceRepairRepository,
     BranchUpdateRepository, PlanBranchRepository, SettleAgentWorkspaceRepairAttempt,
@@ -2059,6 +2059,7 @@ async fn route_agent_workspace_pr_conflict_repair_if_needed_with_repair_repo(
         target_identity,
         attempt,
         repair_run_id.clone(),
+        None,
         &repair_summary,
         workspace.pr_auto_merge_current,
     )
@@ -2117,7 +2118,7 @@ async fn route_agent_workspace_pr_conflict_repair_if_needed_with_repair_repo(
             SendMessageOptions {
                 preallocated_agent_run_id: Some(repair_run_id),
                 queue_policy: SendQueuePolicy::RequireImmediateStart,
-                conversation_id_override: Some(workspace.conversation_id.clone()),
+                conversation_id_override: Some(*dispatch.runtime_conversation_id()),
                 agent_name_override: Some(AGENT_WORKSPACE_REPAIR.to_string()),
                 working_directory_override: Some(PathBuf::from(&workspace.worktree_path)),
                 force_new_provider_session: true,
@@ -2128,7 +2129,7 @@ async fn route_agent_workspace_pr_conflict_repair_if_needed_with_repair_repo(
         .await;
     let settlement = classify_agent_workspace_repair_delivery(
         delivery.as_ref(),
-        conversation_id,
+        dispatch.runtime_conversation_id(),
         &repair_run_id,
     );
     match delivery {
@@ -2337,6 +2338,7 @@ async fn route_agent_workspace_pr_conflict_repair_legacy(
             SendMessageOptions {
                 preallocated_agent_run_id: Some(repair_run_id),
                 queue_policy: SendQueuePolicy::RequireImmediateStart,
+                // Legacy claim-only route has no durable attempt to resolve child completion.
                 conversation_id_override: Some(workspace.conversation_id.clone()),
                 agent_name_override: Some(AGENT_WORKSPACE_REPAIR.to_string()),
                 working_directory_override: Some(PathBuf::from(&workspace.worktree_path)),
@@ -3688,6 +3690,7 @@ async fn dispatch_agent_workspace_pr_autofix(
         target_identity,
         attempt,
         preallocated_run_id.clone(),
+        None,
         dispatch.repair_summary,
         auto_merge_before_reservation,
     )
@@ -3794,6 +3797,7 @@ async fn dispatch_agent_workspace_pr_autofix(
             }
         };
     send_options.preallocated_agent_run_id = Some(preallocated_run_id.clone());
+    send_options.conversation_id_override = Some(*dispatch_attempt.runtime_conversation_id());
     send_options.queue_policy = SendQueuePolicy::RequireImmediateStart;
     send_options.metadata = Some(pr_autofix_action_metadata(pr_number, classification));
 
@@ -3807,7 +3811,7 @@ async fn dispatch_agent_workspace_pr_autofix(
         .await;
     let settlement = classify_agent_workspace_repair_delivery(
         delivery.as_ref(),
-        conversation_id,
+        dispatch_attempt.runtime_conversation_id(),
         &preallocated_run_id,
     );
     let send_result = match delivery {
@@ -3922,6 +3926,7 @@ async fn dispatch_agent_workspace_pr_autofix_legacy(
             }
         };
     send_options.preallocated_agent_run_id = Some(preallocated_run_id.clone());
+    // Legacy claim-only route has no durable attempt to resolve child completion.
     send_options.queue_policy = SendQueuePolicy::RequireImmediateStart;
     send_options.metadata = Some(pr_autofix_action_metadata(pr_number, classification));
     if let Some(pr_status) = dispatch.publication_status {

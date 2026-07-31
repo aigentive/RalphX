@@ -281,6 +281,7 @@ async fn bind_current_attempt(
             expected_phase: AgentWorkspaceRepairPhase::Requested,
             expected_updated_at: started.updated_at,
             run_id: owner_run_id,
+            runtime_conversation_id: None,
             updated_at: Utc::now(),
         })
         .await

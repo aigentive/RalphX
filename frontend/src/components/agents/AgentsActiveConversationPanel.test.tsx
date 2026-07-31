@@ -1630,6 +1630,10 @@ describe("AgentsActiveConversationPanel", () => {
             role: "workspace_repair", display_name: "Fixer", description: "Fix", family: "workspace", family_display_name: "Workspace", requires_tasks: false,
             configured: null, effective: { provider: "claude", model: "sonnet", effort: "medium", service_tier: "provider_default", coordination_mode: "solo", persona_id: null, approval_policy: null, sandbox_mode: null }, source: "project", diagnostics: [], controls: { capabilities: [], speeds: [], persona: { enabled: true, disabled_reason: null } },
           },
+          {
+            role: "pr_fixer", display_name: "PR Fixer", description: "Fix PR", family: "workspace", family_display_name: "Workspace", requires_tasks: false,
+            configured: null, effective: { provider: "codex", model: "gpt-5.6", effort: "medium", service_tier: "standard", coordination_mode: "solo", persona_id: null, approval_policy: null, sandbox_mode: null }, source: "project", diagnostics: [], controls: { capabilities: [], speeds: [], persona: { enabled: true, disabled_reason: null } },
+          },
         ] });
       }
       return Promise.resolve(undefined);
@@ -1639,8 +1643,12 @@ describe("AgentsActiveConversationPanel", () => {
       "project-1",
       { provider: "claude", modelId: "opus", effort: "xhigh" },
     );
-    useChatStore.setState({ activeAgentRunMeta: { "project:conversation-1": { launchRole: "workspace_reviewer", agentName: "reviewer" } } });
-    const { rerenderPanel } = renderPanel();
+    const { rerenderPanel } = renderPanel({
+      chatFocus: {
+        type: "workspace_review",
+        conversationId: "review-conversation-1",
+      },
+    });
 
     expect(await screen.findByTestId("agents-role-runtime-banner")).toHaveTextContent("Reviewer run active");
     expect(screen.getByTestId("workspace-runtime-tag")).toHaveTextContent("REV");
@@ -1663,15 +1671,27 @@ describe("AgentsActiveConversationPanel", () => {
       effort: "xhigh",
     });
 
-    useChatStore.setState({ activeAgentRunMeta: { "project:conversation-1": { launchRole: "workspace_repair", agentName: "fixer" } } });
-    rerenderPanel({ publishAttemptsByConversationId: { "conversation-1": { conversationId: "conversation-1", startedAtMs: 1 } } });
+    rerenderPanel({
+      chatFocus: {
+        type: "workspace_repair",
+        conversationId: "repair-conversation-1",
+      },
+    });
     expect(await screen.findByTestId("agents-role-runtime-banner")).toHaveTextContent("Fixer run active");
     expect(screen.getByTestId("workspace-runtime-tag")).toHaveTextContent("FIX");
     await waitFor(() => expect(screen.getByTestId("workspace-provider-value")).toHaveTextContent("claude"));
     expect(screen.getByTestId("workspace-model-value")).toHaveTextContent("sonnet");
+    fireEvent.click(screen.getByTestId("change-workspace-model"));
+    expect(useAgentSessionStore.getState().roleRuntimeOverridesByConversationId["conversation-1"]?.workspace_repair?.model).toBe("sonnet");
 
-    useChatStore.setState({ activeAgentRunMeta: {} });
-    rerenderPanel({ publishAttemptsByConversationId: { "conversation-1": { conversationId: "conversation-1", startedAtMs: 2 } } });
+    rerenderPanel({
+      chatFocus: { type: "pr_fixer", conversationId: "pr-fixer-conversation-1" },
+    });
+    expect(await screen.findByTestId("agents-role-runtime-banner")).toHaveTextContent("PR Fixer run active");
+    fireEvent.click(screen.getByTestId("change-workspace-model"));
+    expect(useAgentSessionStore.getState().roleRuntimeOverridesByConversationId["conversation-1"]?.pr_fixer?.model).toBe("sonnet");
+
+    rerenderPanel({ chatFocus: { type: "workspace" } });
     expect(screen.queryByTestId("agents-role-runtime-banner")).not.toBeInTheDocument();
     expect(screen.getByTestId("workspace-provider-value")).toHaveTextContent("claude");
     expect(screen.getByTestId("workspace-model-value")).toHaveTextContent("opus");
@@ -2261,18 +2281,13 @@ describe("AgentsActiveConversationPanel", () => {
     fireEvent.click(screen.getByTestId("change-workspace-model"));
     fireEvent.click(screen.getByTestId("change-workspace-effort"));
 
-    expect(onActiveModelChange).toHaveBeenCalledWith("sonnet", [
-      "low",
-      "medium",
-      "high",
-      "max",
-    ], null);
-    expect(onActiveEffortChange).toHaveBeenCalledWith("max", [
-      "low",
-      "medium",
-      "high",
-      "max",
-    ], null);
+    expect(onActiveModelChange).not.toHaveBeenCalled();
+    expect(onActiveEffortChange).not.toHaveBeenCalled();
+    expect(
+      useAgentSessionStore.getState().roleRuntimeOverridesByConversationId[
+        "conversation-1"
+      ]?.workspace_reviewer,
+    ).toMatchObject({ model: "sonnet", effort: "max" });
   });
 
   it("allows provider changes in an existing workspace conversation", () => {
@@ -2912,6 +2927,28 @@ describe("AgentsActiveConversationPanel", () => {
     expect(panel).toHaveAttribute(
       "data-store-context-key",
       "project:review-conversation-1",
+    );
+  });
+
+  it.each([
+    { type: "workspace_repair" as const, conversationId: "repair-conversation-1" },
+    { type: "pr_fixer" as const, conversationId: "pr-fixer-conversation-1" },
+  ])("routes $type focus sends through its child project chat", (chatFocus) => {
+    renderPanel({ chatFocus });
+
+    const panel = screen.getByTestId("integrated-chat-panel");
+    expect(panel).toHaveAttribute("data-conversation-id", chatFocus.conversationId);
+    expect(panel).toHaveAttribute(
+      "data-agent-process-context-id",
+      chatFocus.conversationId,
+    );
+    expect(panel).toHaveAttribute(
+      "data-store-context-key",
+      `project:${chatFocus.conversationId}`,
+    );
+    expect(panel).toHaveAttribute(
+      "data-send-conversation-id",
+      chatFocus.conversationId,
     );
   });
 

@@ -15,6 +15,10 @@ use tracing::{error, info, warn};
 use crate::application::agent_plan_context::{
     load_linked_workspace_plan_snapshot, merge_authoritative_plan_references,
 };
+use crate::application::agent_workspace_fixer_conversation::{
+    ensure_agent_workspace_fixer_conversation, AgentWorkspaceFixerKind,
+    AgentWorkspaceFixerTitleContext,
+};
 use crate::application::agent_workspace_review_base::resolve_agent_workspace_review_base;
 use crate::application::chat_service::{
     ChatService, SendCallerContext, SendMessageOptions, SendQueuePolicy,
@@ -2492,6 +2496,16 @@ pub(crate) async fn complete_agent_workspace_review_run_unlocked(
                     Some(WORKSPACE_REVIEW_FIXER_STATUS_ROUTING.to_string());
                 monitor.review_fixer_attempt_id = Some(uuid::Uuid::new_v4().to_string());
                 clear_review_fixer_linkage(&mut monitor);
+                monitor.review_fixer_conversation_id = Some(
+                    ensure_agent_workspace_fixer_conversation(
+                        state,
+                        workspace,
+                        None,
+                        AgentWorkspaceFixerKind::WorkspaceRepair,
+                        AgentWorkspaceFixerTitleContext::ReviewBlocking,
+                    )
+                    .await?,
+                );
             }
         }
         AgentWorkspaceReviewOutcome::NoChanges if target.is_none() => {
@@ -3179,6 +3193,27 @@ async fn route_workspace_review_blocking_fixer_with_chat_service<S: ChatService 
         next.last_error = Some(format!("Failed to route Review fixer: {error}"));
         return settle_workspace_review_fixer_attempt(state, next, monitor).await;
     }
+    let fixer_conversation_id = match ensure_agent_workspace_fixer_conversation(
+        state,
+        workspace,
+        monitor.review_fixer_conversation_id.as_ref(),
+        AgentWorkspaceFixerKind::WorkspaceRepair,
+        AgentWorkspaceFixerTitleContext::ReviewBlocking,
+    )
+    .await
+    {
+        Ok(conversation_id) => conversation_id,
+        Err(error) => {
+            next.review_fixer_status = Some(WORKSPACE_REVIEW_FIXER_STATUS_FAILED.to_string());
+            next.last_error = Some(format!("Failed to create Review fixer child: {error}"));
+            return settle_workspace_review_fixer_attempt(state, next, monitor).await;
+        }
+    };
+    next.review_fixer_conversation_id = Some(fixer_conversation_id);
+    let mut next = state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(next)
+        .await?;
     let preserve_conversation_provider_session_ref = true;
     let send_started = Instant::now();
     match chat_service
@@ -3187,7 +3222,7 @@ async fn route_workspace_review_blocking_fixer_with_chat_service<S: ChatService 
             workspace.project_id.as_str(),
             &prepared_launch.message,
             SendMessageOptions {
-                conversation_id_override: Some(workspace.conversation_id.clone()),
+                conversation_id_override: Some(fixer_conversation_id),
                 agent_name_override: Some(agent_names::AGENT_WORKSPACE_REPAIR.to_string()),
                 runtime_source_override: Some(runtime.runtime_source),
                 harness_override: runtime.harness,
@@ -3221,6 +3256,14 @@ async fn route_workspace_review_blocking_fixer_with_chat_service<S: ChatService 
         .await
     {
         Ok(result) => {
+            if result.conversation_id != fixer_conversation_id.as_str() {
+                next.review_fixer_status = Some(WORKSPACE_REVIEW_FIXER_STATUS_FAILED.to_string());
+                next.last_error = Some(
+                    "Workspace Review fixer launch did not preserve its reserved child conversation"
+                        .to_string(),
+                );
+                return settle_workspace_review_fixer_attempt(state, next, monitor).await;
+            }
             next.review_fixer_status = Some(if result.was_queued || result.queued_as_pending {
                 WORKSPACE_REVIEW_FIXER_STATUS_QUEUED.to_string()
             } else {
@@ -3231,8 +3274,6 @@ async fn route_workspace_review_blocking_fixer_with_chat_service<S: ChatService 
             } else {
                 Some(result.agent_run_id)
             };
-            next.review_fixer_conversation_id =
-                Some(ChatConversationId::from_string(result.conversation_id));
             info!(
                 target: WORKSPACE_REVIEW_LOG_TARGET,
                 operation = "blocking_fixer_sent",

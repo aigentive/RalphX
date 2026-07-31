@@ -8,6 +8,10 @@ use super::pr_autofix_redelivery::{
 };
 use super::StalePublishRepairRecoveryOutcome;
 use crate::application::agent_conversation_workspace::resolve_effective_agent_conversation_workspace_path;
+use crate::application::agent_workspace_fixer_conversation::{
+    ensure_agent_workspace_fixer_conversation, AgentWorkspaceFixerKind,
+    AgentWorkspaceFixerTitleContext,
+};
 use crate::application::agent_workspace_pr_autofix_attempt::load_latest_exact_pr_autofix_run_for_pr;
 use crate::application::agent_workspace_publish_repair_state::{
     agent_workspace_repair_dispatch_is_due, agent_workspace_repair_is_health_held,
@@ -1005,12 +1009,31 @@ async fn reserve_and_deliver_repair_dispatch(
     } else {
         None
     };
+    let kind = if attempt.source == AgentWorkspaceRepairSource::PrAutofix {
+        AgentWorkspaceFixerKind::PrFixer
+    } else {
+        AgentWorkspaceFixerKind::WorkspaceRepair
+    };
+    let title_context = if kind == AgentWorkspaceFixerKind::PrFixer {
+        AgentWorkspaceFixerTitleContext::PullRequest(workspace.publication_pr_number)
+    } else {
+        AgentWorkspaceFixerTitleContext::Repair(attempt.source)
+    };
+    let runtime_conversation_id = ensure_agent_workspace_fixer_conversation(
+        state,
+        &workspace,
+        attempt.runtime_conversation_id.as_ref(),
+        kind,
+        title_context,
+    )
+    .await?;
     let reserved = match reserve_agent_workspace_repair_dispatch(
         Arc::clone(&state.agent_workspace_repair_repo),
         Arc::clone(&state.branch_update_repo),
         target_identity,
         attempt,
         run_id.clone(),
+        Some(runtime_conversation_id),
         reservation_summary,
         workspace.pr_auto_merge_current,
     )
@@ -1048,6 +1071,8 @@ async fn reserve_and_deliver_repair_dispatch(
             },
         ),
     };
+    let mut options = options;
+    options.conversation_id_override = Some(*reserved.runtime_conversation_id());
     let service = state.build_chat_service();
     let delivery = service
         .send_message(
@@ -1059,7 +1084,7 @@ async fn reserve_and_deliver_repair_dispatch(
         .await;
     let settlement = classify_agent_workspace_repair_delivery(
         delivery.as_ref(),
-        &workspace.conversation_id,
+        reserved.runtime_conversation_id(),
         &run_id,
     );
     match settle_agent_workspace_repair_dispatch_outcome(

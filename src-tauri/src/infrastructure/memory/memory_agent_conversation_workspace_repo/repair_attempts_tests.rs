@@ -16,7 +16,7 @@ use crate::domain::repositories::{
     CompleteAgentWorkspaceRepairEffect, CompleteAgentWorkspaceRepairEffectOutcome,
     CreateAgentWorkspaceRepairEffect, CreateAgentWorkspaceRepairEffectOutcome,
     ImportLegacyAgentWorkspaceRepairAttempt, ImportLegacyAgentWorkspaceRepairAttemptOutcome,
-    SettleAndStartAgentWorkspaceRepairSuccessor,
+    SettleAgentWorkspaceRepairAttempt, SettleAndStartAgentWorkspaceRepairSuccessor,
     SettleAndStartAgentWorkspaceRepairSuccessorOutcome, StartOrJoinAgentWorkspaceRepairAttempt,
     StartOrJoinAgentWorkspaceRepairAttemptOutcome,
 };
@@ -74,6 +74,7 @@ async fn bind_repair_run_rejects_a_stale_same_phase_snapshot() {
             expected_phase: AgentWorkspaceRepairPhase::Requested,
             expected_updated_at: stale.updated_at,
             run_id: AgentRunId::from_string("stale-memory-repair-run"),
+            runtime_conversation_id: None,
             updated_at: stale.updated_at + Duration::seconds(1),
         })
         .await
@@ -172,6 +173,140 @@ fn repair_attempt(conversation_id: ChatConversationId) -> AgentWorkspaceRepairAt
         None,
         Utc::now(),
     )
+}
+
+#[tokio::test]
+async fn runtime_conversation_id_round_trips_when_set_or_unset() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("repair-runtime-memory");
+    repo.create_or_update(workspace(conversation_id.clone()))
+        .await
+        .expect("persist workspace");
+    let runtime_conversation_id = ChatConversationId::from_string("runtime-child-memory");
+    let mut configured = repair_attempt(conversation_id.clone());
+    configured.runtime_conversation_id = Some(runtime_conversation_id.clone());
+    let started = match repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: configured,
+            reason: "runtime conversation".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("start repair attempt")
+    {
+        StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(attempt) => attempt,
+        outcome => panic!("expected started repair attempt, got {outcome:?}"),
+    };
+    let persisted = repo
+        .get_repair_attempt(&started.id)
+        .await
+        .expect("reload configured repair attempt")
+        .expect("configured repair attempt exists");
+    assert_eq!(
+        persisted.runtime_conversation_id,
+        Some(runtime_conversation_id.clone())
+    );
+    assert_eq!(
+        persisted.runtime_conversation_id(),
+        &runtime_conversation_id
+    );
+
+    let settled_at = persisted.updated_at + Duration::seconds(1);
+    repo.settle_repair_attempt(SettleAgentWorkspaceRepairAttempt {
+        attempt_id: persisted.id,
+        generation: persisted.generation,
+        expected_phase: persisted.phase,
+        expected_updated_at: persisted.updated_at,
+        outcome: AgentWorkspaceRepairOutcome::Succeeded,
+        settled_at,
+        compatibility_projection: None,
+        events: Vec::new(),
+    })
+    .await
+    .expect("settle configured repair attempt");
+
+    let next = match repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: repair_attempt(conversation_id.clone()),
+            reason: "legacy runtime fallback".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("start repair attempt without runtime conversation")
+    {
+        StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(attempt) => attempt,
+        outcome => panic!("expected started repair attempt, got {outcome:?}"),
+    };
+    let persisted_next = repo
+        .get_repair_attempt(&next.id)
+        .await
+        .expect("reload legacy repair attempt")
+        .expect("legacy repair attempt exists");
+    assert_eq!(persisted_next.runtime_conversation_id, None);
+    assert_eq!(persisted_next.runtime_conversation_id(), &conversation_id);
+}
+
+#[tokio::test]
+async fn lookup_by_runtime_conversation_only_returns_unsettled_attempts() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("lookup-runtime-memory");
+    repo.create_or_update(workspace(conversation_id.clone()))
+        .await
+        .expect("persist workspace");
+    let runtime_conversation_id = ChatConversationId::from_string("runtime-lookup-memory");
+    let mut configured = repair_attempt(conversation_id);
+    configured.runtime_conversation_id = Some(runtime_conversation_id.clone());
+    let started = match repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: configured,
+            reason: "runtime lookup".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("start repair attempt")
+    {
+        StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(attempt) => attempt,
+        outcome => panic!("expected started repair attempt, got {outcome:?}"),
+    };
+    assert_eq!(
+        repo.get_unsettled_attempt_by_runtime_conversation(&runtime_conversation_id)
+            .await
+            .expect("look up active runtime conversation")
+            .map(|attempt| attempt.id),
+        Some(started.id.clone())
+    );
+
+    let settled_at = started.updated_at + Duration::seconds(1);
+    repo.settle_repair_attempt(SettleAgentWorkspaceRepairAttempt {
+        attempt_id: started.id,
+        generation: started.generation,
+        expected_phase: started.phase,
+        expected_updated_at: started.updated_at,
+        outcome: AgentWorkspaceRepairOutcome::Succeeded,
+        settled_at,
+        compatibility_projection: None,
+        events: Vec::new(),
+    })
+    .await
+    .expect("settle repair attempt");
+    assert!(repo
+        .get_unsettled_attempt_by_runtime_conversation(&runtime_conversation_id)
+        .await
+        .expect("settled runtime conversation is no longer authorized")
+        .is_none());
+    assert!(repo
+        .get_unsettled_attempt_by_runtime_conversation(&ChatConversationId::from_string(
+            "unknown-runtime-memory",
+        ))
+        .await
+        .expect("unknown runtime conversation lookup")
+        .is_none());
 }
 
 fn publication_event(

@@ -69,6 +69,10 @@ use crate::application::agent_workspace_external_pr_reconciliation::{
     schedule_agent_workspace_external_pr_reconciliation_with_lazy_deps,
     AgentWorkspaceExternalPrReconciliationDeps, AgentWorkspaceExternalPrReconciliationTrigger,
 };
+use crate::application::agent_workspace_fixer_conversation::{
+    ensure_agent_workspace_fixer_conversation, AgentWorkspaceFixerKind,
+    AgentWorkspaceFixerTitleContext,
+};
 use crate::application::agent_workspace_local_commit::{
     commit_agent_workspace_locally, AgentWorkspaceLocalCommitRequest,
 };
@@ -1053,13 +1057,11 @@ impl AgentWorkspaceRepairPublishContinuation for AgentWorkspaceRepairPublishComm
                 PublishAfterRepairPushError::Failed(error)
             }
         })?;
-        let pr_number = result
-            .pr_number
-            .ok_or_else(|| {
-                PublishAfterRepairPushError::Failed(
-                    "normal publish completed without a pull-request number".to_string(),
-                )
-            })?;
+        let pr_number = result.pr_number.ok_or_else(|| {
+            PublishAfterRepairPushError::Failed(
+                "normal publish completed without a pull-request number".to_string(),
+            )
+        })?;
         Ok(AgentWorkspaceRepairPrHandoffResult {
             pr_number,
             pr_url: result.pr_url,
@@ -8971,6 +8973,7 @@ where
         target,
         AgentWorkspacePostRepairAction::Publish,
         None,
+        &workspace.conversation_id,
     )
     .await
 }
@@ -8983,6 +8986,7 @@ async fn send_agent_workspace_repair_message_for_target<S>(
     target: &AgentConversationWorkspaceRepairTarget,
     post_repair_action: AgentWorkspacePostRepairAction,
     preallocated_agent_run_id: Option<AgentRunId>,
+    runtime_conversation_id: &ChatConversationId,
 ) -> Result<SendResult, ChatServiceError>
 where
     S: ChatService + ?Sized,
@@ -9000,7 +9004,7 @@ where
             SendMessageOptions {
                 preallocated_agent_run_id,
                 queue_policy: SendQueuePolicy::RequireImmediateStart,
-                conversation_id_override: Some(workspace.conversation_id),
+                conversation_id_override: Some(*runtime_conversation_id),
                 agent_name_override: Some(AGENT_WORKSPACE_REPAIR.to_string()),
                 harness_override: runtime_overrides.harness,
                 model_override: runtime_overrides.model,
@@ -9208,9 +9212,7 @@ where
 
 /// Delivery retries append `auto_retry_*` streak markers to the durable reason history. Those
 /// markers describe recovery bookkeeping rather than the publish failure the repair agent needs.
-fn last_meaningful_agent_workspace_repair_reason(
-    attempt: &AgentWorkspaceRepairAttempt,
-) -> &str {
+fn last_meaningful_agent_workspace_repair_reason(attempt: &AgentWorkspaceRepairAttempt) -> &str {
     attempt
         .pending_reasons
         .iter()
@@ -9356,6 +9358,25 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
             return;
         }
     };
+    let runtime_conversation_id = match ensure_agent_workspace_fixer_conversation(
+        state,
+        workspace,
+        attempt.runtime_conversation_id.as_ref(),
+        AgentWorkspaceFixerKind::WorkspaceRepair,
+        AgentWorkspaceFixerTitleContext::Repair(attempt.source),
+    )
+    .await
+    {
+        Ok(conversation_id) => conversation_id,
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = %workspace.conversation_id,
+                error = %error,
+                "Failed to create workspace repair child conversation before dispatch"
+            );
+            return;
+        }
+    };
     let runtime_overrides = AgentWorkspaceRepairRuntimeOverrides::default();
     if should_defer_agent_workspace_repair_message(state, workspace).await {
         let repair_run_id = AgentRunId::new();
@@ -9365,6 +9386,7 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
             dispatch_target.clone(),
             attempt,
             repair_run_id.clone(),
+            Some(runtime_conversation_id),
             post_repair_action.repair_requested_summary(),
             workspace.pr_auto_merge_current,
         )
@@ -9407,6 +9429,7 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
         dispatch_target,
         attempt,
         repair_run_id.clone(),
+        Some(runtime_conversation_id),
         post_repair_action.repair_requested_summary(),
         workspace.pr_auto_merge_current,
     )
@@ -9437,13 +9460,16 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
         target,
         post_repair_action,
         Some(repair_run_id.clone()),
+        dispatch.runtime_conversation_id(),
     )
     .await
     {
         Ok(result) => {
-            if let Some(authority_error) =
-                repair_dispatch_authority_error(&result, &workspace.conversation_id, &repair_run_id)
-            {
+            if let Some(authority_error) = repair_dispatch_authority_error(
+                &result,
+                dispatch.runtime_conversation_id(),
+                &repair_run_id,
+            ) {
                 let repair_summary =
                     post_repair_action.repair_send_failed_summary(&authority_error);
                 settle_agent_workspace_repair_dispatch_failure(
@@ -9452,7 +9478,7 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
                     &repair_summary,
                     classify_agent_workspace_repair_delivery(
                         Ok(&result),
-                        &workspace.conversation_id,
+                        dispatch.runtime_conversation_id(),
                         &repair_run_id,
                     ),
                 )
@@ -9480,7 +9506,7 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
                 &repair_summary,
                 classify_agent_workspace_repair_delivery(
                     Err(&repair_error),
-                    &workspace.conversation_id,
+                    dispatch.runtime_conversation_id(),
                     &repair_run_id,
                 ),
             )
@@ -9635,13 +9661,16 @@ async fn spawn_deferred_agent_workspace_repair_message(
             &target,
             post_repair_action,
             Some(repair_run_id.clone()),
+            dispatch.runtime_conversation_id(),
         )
         .await
         {
             Ok(result) => {
-                if let Some(authority_error) =
-                    repair_dispatch_authority_error(&result, &conversation_id, &repair_run_id)
-                {
+                if let Some(authority_error) = repair_dispatch_authority_error(
+                    &result,
+                    dispatch.runtime_conversation_id(),
+                    &repair_run_id,
+                ) {
                     let repair_summary =
                         post_repair_action.repair_send_failed_summary(&authority_error);
                     settle_agent_workspace_repair_dispatch_failure(
@@ -9650,7 +9679,7 @@ async fn spawn_deferred_agent_workspace_repair_message(
                         &repair_summary,
                         classify_agent_workspace_repair_delivery(
                             Ok(&result),
-                            &conversation_id,
+                            dispatch.runtime_conversation_id(),
                             &repair_run_id,
                         ),
                     )
@@ -9678,7 +9707,7 @@ async fn spawn_deferred_agent_workspace_repair_message(
                     &repair_summary,
                     classify_agent_workspace_repair_delivery(
                         Err(&repair_error),
-                        &conversation_id,
+                        dispatch.runtime_conversation_id(),
                         &repair_run_id,
                     ),
                 )

@@ -6156,7 +6156,10 @@ async fn exhausted_streak_fingerprint_suppresses_a_fresh_streak_until_health_cha
     .await
     .expect("an exhausted fingerprint should suppress a fresh streak");
 
-    assert!(!routed, "a fresh streak on identical evidence must not start");
+    assert!(
+        !routed,
+        "a fresh streak on identical evidence must not start"
+    );
     assert!(chat.get_sent_messages().await.is_empty());
     assert!(
         repair_repo
@@ -6226,7 +6229,10 @@ async fn exhausted_streak_fingerprint_suppresses_a_fresh_streak_until_health_cha
     .await
     .expect("changed health should clear the memory and dispatch");
 
-    assert!(routed, "a genuinely new failure must not be held by a stale one");
+    assert!(
+        routed,
+        "a genuinely new failure must not be held by a stale one"
+    );
     let refreshed = workspace_repo
         .get_by_conversation_id(&conversation_id)
         .await
@@ -6299,7 +6305,10 @@ async fn live_pr_autofix_unchanged_health_hold_suppresses_same_fingerprint_then_
     .await
     .expect("unchanged health should be suppressed");
 
-    assert!(!routed, "unchanged health must not start another generation");
+    assert!(
+        !routed,
+        "unchanged health must not start another generation"
+    );
     assert!(chat.get_sent_messages().await.is_empty());
     let current = repair_repo
         .get_current_repair_attempt(&conversation_id)

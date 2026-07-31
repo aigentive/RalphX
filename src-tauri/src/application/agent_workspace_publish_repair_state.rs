@@ -553,9 +553,7 @@ pub(crate) async fn block_agent_workspace_repair_needs_human(
 /// True while a PR autofix generation is parked against a backend-derived health fingerprint.
 /// Only the poller may end such a hold, and only after GitHub reports different health; no other
 /// retry path may consume the hold's budget or settle it on a timer.
-pub(crate) fn agent_workspace_repair_is_health_held(
-    attempt: &AgentWorkspaceRepairAttempt,
-) -> bool {
+pub(crate) fn agent_workspace_repair_is_health_held(attempt: &AgentWorkspaceRepairAttempt) -> bool {
     attempt.pending_reasons.iter().any(|reason| {
         reason == PRE_EXISTING_ON_BASE_REPAIR_REASON || reason == UNCHANGED_HEALTH_REPAIR_REASON
     })
@@ -924,6 +922,7 @@ pub(crate) async fn reserve_agent_workspace_repair_dispatch(
     target_identity: GitTargetIdentity,
     attempt: AgentWorkspaceRepairAttempt,
     run_id: AgentRunId,
+    runtime_conversation_id: Option<ChatConversationId>,
     summary: &str,
     auto_merge_current: Option<bool>,
 ) -> AppResult<AgentWorkspaceRepairDispatchOutcome> {
@@ -1011,6 +1010,7 @@ pub(crate) async fn reserve_agent_workspace_repair_dispatch(
             expected_phase: AgentWorkspaceRepairPhase::Requested,
             expected_updated_at: attempt.updated_at,
             run_id: run_id.clone(),
+            runtime_conversation_id,
             updated_at: next_transition_at(Some(attempt.updated_at)),
         })
         .await?;

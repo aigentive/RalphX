@@ -166,6 +166,7 @@ async fn seed_current_repair_attempt(
             expected_phase: AgentWorkspaceRepairPhase::Requested,
             expected_updated_at: started.updated_at,
             run_id,
+            runtime_conversation_id: None,
             updated_at: chrono::Utc::now(),
         })
         .await
