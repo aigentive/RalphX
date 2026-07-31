@@ -1289,7 +1289,7 @@ describe('agent workspace PR fix tools', () => {
     expect(tool?.inputSchema.properties).not.toHaveProperty('orchestration_id');
     expect(tool?.inputSchema.properties).toMatchObject({
       fix_commit_sha: {
-        description: expect.stringContaining('Required when blocker is absent'),
+        description: expect.stringContaining('Required for a fixed completion'),
         pattern: '^[0-9a-f]{40}$',
       },
     });

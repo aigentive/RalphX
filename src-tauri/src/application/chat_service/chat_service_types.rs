@@ -931,6 +931,10 @@ pub enum ChatServiceError {
     InvalidInput(String),
     AgentNotAvailable(String),
     SpawnFailed(String),
+    /// The caller required a fresh runtime turn, but current conversation or launch capacity
+    /// makes that impossible right now. This is intentionally distinct from a spawn failure:
+    /// orchestrators can defer it without spending delivery retry budget.
+    ImmediateStartRejected(String),
     SpawnValidation {
         harness: crate::domain::agents::AgentHarnessKind,
         model: String,
@@ -954,6 +958,7 @@ impl std::fmt::Display for ChatServiceError {
             Self::InvalidInput(msg) => write!(f, "Invalid input: {}", msg),
             Self::AgentNotAvailable(msg) => write!(f, "Agent not available: {}", msg),
             Self::SpawnFailed(msg) => write!(f, "Failed to spawn agent: {}", msg),
+            Self::ImmediateStartRejected(msg) => write!(f, "Immediate start rejected: {msg}"),
             Self::SpawnValidation {
                 harness,
                 model,

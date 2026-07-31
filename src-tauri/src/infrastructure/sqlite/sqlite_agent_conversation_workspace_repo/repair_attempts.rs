@@ -68,6 +68,11 @@ fn row_to_repair_attempt(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentWorks
         next_dispatch_at: row
             .get::<_, Option<String>>("next_dispatch_at")?
             .map(|value| parse_datetime(&value)),
+        ci_rerun_count: u32::try_from(row.get::<_, i64>("ci_rerun_count")?)
+            .map_err(|error| invalid_repair_row_value(16, rusqlite::types::Type::Integer, error))?,
+        ci_rerun_fingerprint: row.get("ci_rerun_fingerprint")?,
+        pr_autofix_dispatch_head_commit: row.get("pr_autofix_dispatch_head_commit")?,
+        pr_autofix_health_fingerprint: row.get("pr_autofix_health_fingerprint")?,
         repair_head_commit: row.get("repair_head_commit")?,
         summary: row.get("summary")?,
         blocker: row.get("blocker")?,
@@ -189,12 +194,14 @@ fn write_repair_attempt(conn: &Connection, attempt: &AgentWorkspaceRepairAttempt
             id, conversation_id, generation, source, phase, continuation,
             reserved_agent_run_id, target_base_ref, target_base_commit, pending_reasons_json,
             review_required, auto_publish_enabled, auto_merge_desired, auto_merge_method,
-            dispatch_count, next_dispatch_at, repair_head_commit, summary, blocker,
+            dispatch_count, next_dispatch_at, ci_rerun_count, ci_rerun_fingerprint,
+            pr_autofix_dispatch_head_commit, pr_autofix_health_fingerprint,
+            repair_head_commit, summary, blocker,
             git_common_dir, target_ref, target_identity_version, target_lease_epoch, outcome,
             created_at, updated_at, settled_at
          ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-            ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27
+            ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31
          )",
         rusqlite::params![
             attempt.id.as_str(),
@@ -216,6 +223,10 @@ fn write_repair_attempt(conn: &Connection, attempt: &AgentWorkspaceRepairAttempt
             attempt.auto_merge_method,
             i64::from(attempt.dispatch_count),
             attempt.next_dispatch_at.map(|value| value.to_rfc3339()),
+            i64::from(attempt.ci_rerun_count),
+            attempt.ci_rerun_fingerprint,
+            attempt.pr_autofix_dispatch_head_commit,
+            attempt.pr_autofix_health_fingerprint,
             attempt.repair_head_commit,
             attempt.summary,
             attempt.blocker,
@@ -269,19 +280,23 @@ fn update_repair_attempt(
              auto_merge_method = ?13,
              dispatch_count = ?14,
              next_dispatch_at = ?15,
-             repair_head_commit = ?16,
-             summary = ?17,
-             blocker = ?18,
-             git_common_dir = ?19,
-             target_ref = ?20,
-             target_identity_version = ?21,
-             target_lease_epoch = ?22,
-             outcome = ?23,
-             updated_at = ?24,
-             settled_at = ?25
+             ci_rerun_count = ?16,
+             ci_rerun_fingerprint = ?17,
+             pr_autofix_dispatch_head_commit = ?18,
+             pr_autofix_health_fingerprint = ?19,
+             repair_head_commit = ?20,
+             summary = ?21,
+             blocker = ?22,
+             git_common_dir = ?23,
+             target_ref = ?24,
+             target_identity_version = ?25,
+             target_lease_epoch = ?26,
+             outcome = ?27,
+             updated_at = ?28,
+             settled_at = ?29
          WHERE id = ?1 AND generation = ?2 AND phase = ?3
-           AND (?26 IS NULL OR updated_at = ?26)
-           AND (?27 = 0 OR settled_at IS NULL)",
+           AND (?30 IS NULL OR updated_at = ?30)
+           AND (?31 = 0 OR settled_at IS NULL)",
         rusqlite::params![
             attempt.id.as_str(),
             i64::try_from(attempt.generation).map_err(|_| {
@@ -301,6 +316,10 @@ fn update_repair_attempt(
             attempt.auto_merge_method,
             i64::from(attempt.dispatch_count),
             attempt.next_dispatch_at.map(|value| value.to_rfc3339()),
+            i64::from(attempt.ci_rerun_count),
+            attempt.ci_rerun_fingerprint,
+            attempt.pr_autofix_dispatch_head_commit,
+            attempt.pr_autofix_health_fingerprint,
             attempt.repair_head_commit,
             attempt.summary,
             attempt.blocker,
@@ -906,7 +925,7 @@ impl AgentWorkspaceRepairRepository for SqliteAgentConversationWorkspaceReposito
                     || current.updated_at != request.expected_attempt_updated_at
                     || current.settled_at.is_some()
                 {
-                    return Ok(CreateAgentWorkspaceRepairEffectOutcome::Stale(current));
+                    return Ok(CreateAgentWorkspaceRepairEffectOutcome::Stale(Box::new(current)));
                 }
                 if request.effect.attempt_id != current.id {
                     return Err(AppError::Validation(
@@ -1024,7 +1043,7 @@ impl AgentWorkspaceRepairRepository for SqliteAgentConversationWorkspaceReposito
                     ));
                 }
                 if existing.completed_at.is_some() && existing == request.effect {
-                    return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Applied(existing));
+                    return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Applied(Box::new(existing)));
                 }
                 if current.generation != request.generation
                     || current.phase != request.expected_phase
@@ -1033,7 +1052,7 @@ impl AgentWorkspaceRepairRepository for SqliteAgentConversationWorkspaceReposito
                     || existing.updated_at != request.expected_effect_updated_at
                     || existing.status != request.expected_effect_status
                 {
-                    return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Stale(current));
+                    return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Stale(Box::new(current)));
                 }
                 if !update_repair_effect(
                     conn,
@@ -1052,9 +1071,9 @@ impl AgentWorkspaceRepairRepository for SqliteAgentConversationWorkspaceReposito
                             AppError::NotFound(format!("repair effect {}", request.effect.id))
                         })?;
                     if latest.completed_at.is_some() && latest == request.effect {
-                        return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Applied(latest));
+                        return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Applied(Box::new(latest)));
                     }
-                    return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Stale(current));
+                    return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Stale(Box::new(current)));
                 }
                 apply_compatibility_projection(
                     conn,
@@ -1064,7 +1083,7 @@ impl AgentWorkspaceRepairRepository for SqliteAgentConversationWorkspaceReposito
                 )?;
                 append_repair_events(conn, &request.events)?;
                 Ok(CompleteAgentWorkspaceRepairEffectOutcome::Applied(
-                    request.effect,
+                    Box::new(request.effect),
                 ))
             })
             .await

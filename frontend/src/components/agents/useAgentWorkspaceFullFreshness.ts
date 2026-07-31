@@ -7,8 +7,12 @@ import {
   agentWorkspaceKeys,
 } from "./agentWorkspaceQueries";
 
+const ACTIVE_FRESHNESS_POLL_MS = 5_000;
+const IDLE_FRESHNESS_POLL_MS = 60_000;
+
 interface AgentWorkspaceFullFreshnessOptions {
   enabled?: boolean | undefined;
+  isOperationActive?: boolean | undefined;
 }
 
 /** Shared owner for the authoritative remote + worktree freshness read. */
@@ -24,5 +28,9 @@ export function useAgentWorkspaceFullFreshness(
       }),
     enabled: (options.enabled ?? true) && Boolean(conversationId),
     staleTime: AGENT_WORKSPACE_FRESHNESS_STALE_MS,
+    refetchInterval: options.isOperationActive
+      ? ACTIVE_FRESHNESS_POLL_MS
+      : IDLE_FRESHNESS_POLL_MS,
+    refetchIntervalInBackground: false,
   });
 }

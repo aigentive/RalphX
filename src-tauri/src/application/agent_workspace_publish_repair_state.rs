@@ -60,9 +60,14 @@ pub(crate) const DEFERRED_REPAIR_WAIT_TIMEOUT_SECS: u64 = 300;
 const REPAIR_RUN_CLASSIFICATION_PREFIX: &str = "agent_fixable:run:";
 pub(crate) const AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION: u64 = 1;
 pub(crate) const MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES: u32 = 3;
+/// A deliberately small cap: transient runner failures must not create an unbounded CI loop.
+pub(crate) const MAX_AGENT_WORKSPACE_CI_RERUN_RETRIES: u32 = 3;
+pub(crate) const NEEDS_HUMAN_REPAIR_REASON: &str = "pr_autofix_needs_human";
+pub(crate) const PRE_EXISTING_ON_BASE_REPAIR_REASON: &str = "pr_autofix_pre_existing_on_base";
 pub(crate) const ORPHANED_REPAIR_DISPATCH_RESCUE_GRACE_SECS: i64 = 60;
 const AGENT_WORKSPACE_REPAIR_DISPATCH_INITIAL_BACKOFF_SECS: i64 = 5;
 const AGENT_WORKSPACE_REPAIR_DISPATCH_MAX_BACKOFF_SECS: i64 = 60;
+const AGENT_WORKSPACE_REPAIR_DISPATCH_DEFERRED_DELAY_SECS: i64 = 15;
 
 #[cfg(any(test, feature = "test-utils"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,6 +148,9 @@ pub(crate) enum AgentWorkspaceRepairDispatchOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AgentWorkspaceRepairDispatchSettlement {
     Delivered,
+    /// The chat service accepted the delivery but could not start the reserved repair turn yet.
+    /// This is capacity pressure, not a failed repair delivery, so it must not spend retry budget.
+    DeferredQueued,
     RetryableFailure,
     NonRetryableFailure,
 }
@@ -156,6 +164,9 @@ pub(crate) fn classify_agent_workspace_repair_delivery(
     run_id: &AgentRunId,
 ) -> AgentWorkspaceRepairDispatchSettlement {
     match delivery {
+        Ok(result) if result.was_queued || result.queued_as_pending => {
+            AgentWorkspaceRepairDispatchSettlement::DeferredQueued
+        }
         Ok(result)
             if !result.was_queued
                 && !result.queued_as_pending
@@ -176,6 +187,9 @@ pub(crate) fn classify_agent_workspace_repair_delivery(
         ) => AgentWorkspaceRepairDispatchSettlement::NonRetryableFailure,
         Err(ChatServiceError::MessageDeliveredNotPersisted(_)) => {
             AgentWorkspaceRepairDispatchSettlement::Delivered
+        }
+        Err(ChatServiceError::ImmediateStartRejected(_)) => {
+            AgentWorkspaceRepairDispatchSettlement::DeferredQueued
         }
         Err(
             ChatServiceError::SpawnFailed(_)
@@ -483,6 +497,111 @@ pub(crate) async fn block_agent_workspace_repair_completion(
         }
         outcome => Ok(outcome),
     }
+}
+
+/// A typed PR-fixer escalation is terminal for automatic recovery. The marker is persisted on
+/// the current generation rather than inferred from agent-authored summary text.
+pub(crate) async fn block_agent_workspace_repair_needs_human(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    branch_update_repo: Arc<dyn BranchUpdateRepository>,
+    mut attempt: AgentWorkspaceRepairAttempt,
+    summary: &str,
+    auto_merge_current: Option<bool>,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    if !attempt
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == NEEDS_HUMAN_REPAIR_REASON)
+    {
+        attempt
+            .pending_reasons
+            .push(NEEDS_HUMAN_REPAIR_REASON.to_string());
+    }
+    block_agent_workspace_repair_completion(
+        repair_repo,
+        branch_update_repo,
+        attempt,
+        summary,
+        summary,
+        auto_merge_current,
+    )
+    .await
+}
+
+/// Holds a PR autofix generation at a backend-derived health fingerprint without pretending the
+/// failing state was repaired. The poller settles it only after health changes.
+pub(crate) async fn reserve_agent_workspace_pre_existing_on_base(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    mut attempt: AgentWorkspaceRepairAttempt,
+    summary: &str,
+    auto_merge_current: Option<bool>,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    let Some(_) = attempt.pr_autofix_health_fingerprint.as_deref() else {
+        return Ok(AgentWorkspaceRepairTransitionOutcome::Stale(attempt));
+    };
+    let expected_phase = attempt.phase;
+    let expected_updated_at = attempt.updated_at;
+    if !attempt
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == PRE_EXISTING_ON_BASE_REPAIR_REASON)
+    {
+        attempt
+            .pending_reasons
+            .push(PRE_EXISTING_ON_BASE_REPAIR_REASON.to_string());
+    }
+    attempt.phase = AgentWorkspaceRepairPhase::Ready;
+    attempt.summary = Some(summary.to_string());
+    attempt.blocker = None;
+    attempt.updated_at = next_transition_at(Some(expected_updated_at));
+    let projection = repair_attempt_projection(&attempt, summary, auto_merge_current);
+    repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Ready,
+            compatibility_projection: Some(projection),
+            events: Vec::new(),
+        })
+        .await
+        .map(repair_attempt_transition_outcome)
+}
+
+/// CAS-reserve a GitHub Actions rerun after the completion boundary has authenticated the
+/// current repair attempt. The caller invokes `gh` only after this write succeeds.
+pub(crate) async fn reserve_agent_workspace_ci_rerun(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    mut attempt: AgentWorkspaceRepairAttempt,
+    fingerprint: &str,
+    summary: &str,
+    auto_merge_current: Option<bool>,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    if attempt.ci_rerun_count >= MAX_AGENT_WORKSPACE_CI_RERUN_RETRIES {
+        return Ok(AgentWorkspaceRepairTransitionOutcome::Stale(attempt));
+    }
+    let expected_phase = attempt.phase;
+    let expected_updated_at = attempt.updated_at;
+    attempt.ci_rerun_count += 1;
+    attempt.ci_rerun_fingerprint = Some(fingerprint.to_string());
+    // Ready is deliberately non-terminal: startup/recovery sees a settled boundary, while the
+    // poller owns observation of the next CI conclusion rather than replaying this agent run.
+    attempt.phase = AgentWorkspaceRepairPhase::Ready;
+    attempt.summary = Some(summary.to_string());
+    attempt.blocker = None;
+    attempt.updated_at = next_transition_at(Some(expected_updated_at));
+    let projection = repair_attempt_projection(&attempt, summary, auto_merge_current);
+    repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Ready,
+            compatibility_projection: Some(projection),
+            events: Vec::new(),
+        })
+        .await
+        .map(repair_attempt_transition_outcome)
 }
 
 /// Persists Git facts derived by the backend after the trusted run has passed authority checks.
@@ -1258,6 +1377,9 @@ pub(crate) async fn settle_agent_workspace_repair_dispatch_outcome(
         retryable && attempt.dispatch_count >= MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES;
     let next_phase = match settlement {
         AgentWorkspaceRepairDispatchSettlement::Delivered => AgentWorkspaceRepairPhase::Repairing,
+        AgentWorkspaceRepairDispatchSettlement::DeferredQueued => {
+            AgentWorkspaceRepairPhase::Requested
+        }
         AgentWorkspaceRepairDispatchSettlement::RetryableFailure if !exhausted => {
             AgentWorkspaceRepairPhase::Requested
         }
@@ -1270,6 +1392,9 @@ pub(crate) async fn settle_agent_workspace_repair_dispatch_outcome(
     let expected_updated_at = attempt.updated_at;
     attempt.phase = next_phase;
     attempt.summary = Some(match settlement {
+        AgentWorkspaceRepairDispatchSettlement::DeferredQueued => {
+            format!("{summary} Waiting for the conversation to become available.")
+        }
         AgentWorkspaceRepairDispatchSettlement::RetryableFailure if !exhausted => format!(
             "{summary} Retrying delivery {}/{} automatically.",
             attempt.dispatch_count + 1,
@@ -1283,6 +1408,13 @@ pub(crate) async fn settle_agent_workspace_repair_dispatch_outcome(
     match settlement {
         AgentWorkspaceRepairDispatchSettlement::Delivered => {
             attempt.next_dispatch_at = None;
+            attempt.blocker = None;
+        }
+        AgentWorkspaceRepairDispatchSettlement::DeferredQueued => {
+            attempt.next_dispatch_at = Some(
+                Utc::now() + Duration::seconds(AGENT_WORKSPACE_REPAIR_DISPATCH_DEFERRED_DELAY_SECS),
+            );
+            attempt.reserved_agent_run_id = None;
             attempt.blocker = None;
         }
         AgentWorkspaceRepairDispatchSettlement::RetryableFailure if !exhausted => {
@@ -1312,6 +1444,7 @@ pub(crate) async fn settle_agent_workspace_repair_dispatch_outcome(
         REPAIR_SENT_STEP,
         match settlement {
             AgentWorkspaceRepairDispatchSettlement::Delivered => "succeeded",
+            AgentWorkspaceRepairDispatchSettlement::DeferredQueued => "deferred",
             AgentWorkspaceRepairDispatchSettlement::RetryableFailure if !exhausted => "retrying",
             AgentWorkspaceRepairDispatchSettlement::RetryableFailure
             | AgentWorkspaceRepairDispatchSettlement::NonRetryableFailure => "failed",

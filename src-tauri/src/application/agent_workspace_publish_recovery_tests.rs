@@ -7,7 +7,7 @@ use std::os::unix::fs::PermissionsExt;
 
 use crate::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
 use crate::application::agent_workspace_publish_recovery::{
-    recover_agent_workspace_repair_after_terminal_run,
+    is_blocked_and_not_auto_retryable, recover_agent_workspace_repair_after_terminal_run,
     recover_agent_workspace_repair_attempts_for_state,
     recover_stale_agent_workspace_publish_repairs,
     recover_stale_agent_workspace_publish_repairs_for_state,
@@ -61,6 +61,93 @@ fn conversation_id(suffix: u8) -> ChatConversationId {
 
 fn project_id() -> ProjectId {
     ProjectId::from_string("project-publish-recovery".to_string())
+}
+
+#[test]
+fn blocked_repair_is_exhausted_only_for_spent_delivery_or_automatic_successor_budget() {
+    let now = chrono::Utc::now();
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        conversation_id(91),
+        AgentWorkspaceRepairSource::PrAutofix,
+        AgentWorkspaceRepairContinuation::Publish,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        now,
+    );
+    attempt.phase = AgentWorkspaceRepairPhase::Blocked;
+    attempt.dispatch_count = MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES;
+    attempt.blocker = Some("delivery retries exhausted".to_string());
+    assert!(is_blocked_and_not_auto_retryable(&attempt));
+
+    attempt.dispatch_count = 0;
+    attempt.next_dispatch_at = Some(now + chrono::Duration::seconds(60));
+    assert!(!is_blocked_and_not_auto_retryable(&attempt));
+
+    attempt.next_dispatch_at = None;
+    attempt.pending_reasons = vec!["auto_retry_blocked_repair:3".to_string()];
+    assert!(is_blocked_and_not_auto_retryable(&attempt));
+
+    attempt.phase = AgentWorkspaceRepairPhase::Requested;
+    assert!(!is_blocked_and_not_auto_retryable(&attempt));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn needs_human_blocker_is_exempt_from_automatic_repair_reconciliation() {
+    let (state, conversation_id, _worktree_parent, _project_dir) =
+        seed_orphaned_repair_dispatch(119, "#!/bin/sh\nexit 1\n").await;
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load seeded repair")
+        .expect("seeded repair exists");
+    let mut needs_human = current.clone();
+    needs_human.source = AgentWorkspaceRepairSource::PrAutofix;
+    needs_human.phase = AgentWorkspaceRepairPhase::Blocked;
+    needs_human.blocker = Some("A maintainer must approve this change.".to_string());
+    needs_human.pending_reasons = vec![
+        crate::application::agent_workspace_publish_repair_state::NEEDS_HUMAN_REPAIR_REASON
+            .to_string(),
+    ];
+    needs_human.updated_at = chrono::Utc::now() - chrono::Duration::seconds(61);
+    let needs_human = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: needs_human,
+            expected_phase: current.phase,
+            expected_updated_at: current.updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Blocked,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("persist needs-human completion marker")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("needs-human marker must apply, got {outcome:?}"),
+    };
+
+    assert!(is_blocked_and_not_auto_retryable(&needs_human));
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("needs-human recovery sweep"),
+        0,
+        "needs-human repairs must never redispatch automatically"
+    );
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load post-recovery repair")
+        .expect("needs-human repair remains current");
+    assert_eq!(current.id, needs_human.id);
+    assert_eq!(current.generation, needs_human.generation);
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Blocked);
 }
 
 #[cfg(unix)]
@@ -295,6 +382,73 @@ async fn block_repair_attempt_after(
         AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
         outcome => panic!("blocking repair attempt must apply, got {outcome:?}"),
     }
+}
+
+#[cfg(unix)]
+async fn block_push_handoff_base_advanced_repair(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    project_dir: &std::path::Path,
+    retry_streak: u32,
+) -> (AgentWorkspaceRepairAttempt, String, String) {
+    let stale_base_commit = recovery_git(project_dir, &["rev-parse", "main"]);
+    std::fs::write(project_dir.join("base-advanced.md"), "fresh base\n")
+        .expect("write fresh base fixture");
+    recovery_git(project_dir, &["add", "base-advanced.md"]);
+    recovery_git(project_dir, &["commit", "-m", "advance repair base"]);
+    let fresh_base_commit = recovery_git(project_dir, &["rev-parse", "main"]);
+    assert_ne!(fresh_base_commit, stale_base_commit);
+
+    let mut workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await
+        .expect("load workspace whose base advanced")
+        .expect("workspace whose base advanced exists");
+    workspace.base_commit = Some(fresh_base_commit.clone());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("persist fresh workspace base");
+
+    let mut attempt = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(conversation_id)
+        .await
+        .expect("load repair attempt to block at push handoff")
+        .expect("repair attempt exists to block at push handoff");
+    let expected_updated_at = attempt.updated_at;
+    let blocker = format!(
+        "workspace repair push handoff base advanced from '{stale_base_commit}' to '{fresh_base_commit}'"
+    );
+    attempt.source = AgentWorkspaceRepairSource::PrAutofix;
+    attempt.phase = AgentWorkspaceRepairPhase::Blocked;
+    attempt.target_base_commit = Some(stale_base_commit.clone());
+    attempt.summary = Some(blocker.clone());
+    attempt.blocker = Some(blocker);
+    attempt.pending_reasons = (retry_streak > 0)
+        .then(|| format!("auto_retry_blocked_repair:{retry_streak}"))
+        .into_iter()
+        .collect();
+    attempt.updated_at = chrono::Utc::now() - chrono::Duration::seconds(1_000);
+    let blocked = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase: AgentWorkspaceRepairPhase::Requested,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Blocked,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("record push-handoff base-advanced blocker")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("push-handoff blocker transition must apply, got {outcome:?}"),
+    };
+    (blocked, stale_base_commit, fresh_base_commit)
 }
 
 async fn park_repair_attempt_ready_after(
@@ -1486,6 +1640,97 @@ wait "$stdin_drain_pid" 2>/dev/null || true
         .iter()
         .any(|reason| reason == "auto_retry_blocked_repair:1"));
     assert!(successor.reserved_agent_run_id.is_some());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn push_handoff_base_advanced_blocker_retries_with_the_fresh_base() {
+    let _environment_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("lock test environment");
+    let _spawn_permission = TestEnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let (state, conversation_id, _worktree_parent, project_dir) = seed_orphaned_repair_dispatch(
+        117,
+        r#"#!/bin/sh
+cat >/dev/null &
+sleep 1
+"#,
+    )
+    .await;
+    let (blocked, stale_base_commit, fresh_base_commit) =
+        block_push_handoff_base_advanced_repair(&state, &conversation_id, project_dir.path(), 0)
+            .await;
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("recover push-handoff base-advanced repair"),
+        1
+    );
+    let predecessor = state
+        .agent_workspace_repair_repo
+        .get_repair_attempt(&blocked.id)
+        .await
+        .expect("load superseded push-handoff predecessor")
+        .expect("push-handoff predecessor persists");
+    assert_eq!(
+        predecessor.outcome,
+        Some(AgentWorkspaceRepairOutcome::Superseded)
+    );
+    let successor = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load push-handoff automatic successor")
+        .expect("push-handoff automatic successor remains current");
+    assert_eq!(successor.generation, blocked.generation + 1);
+    assert_eq!(successor.source, AgentWorkspaceRepairSource::PrAutofix);
+    assert_eq!(successor.target_base_ref, "main");
+    assert_eq!(
+        successor.target_base_commit.as_deref(),
+        Some(fresh_base_commit.as_str())
+    );
+    assert_ne!(
+        successor.target_base_commit.as_deref(),
+        Some(stale_base_commit.as_str())
+    );
+    assert!(successor
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == "auto_retry_blocked_repair:1"));
+    assert_ne!(successor.phase, AgentWorkspaceRepairPhase::Blocked);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn push_handoff_base_advanced_blocker_stays_blocked_after_auto_retry_cap() {
+    let (state, conversation_id, _worktree_parent, project_dir) =
+        seed_orphaned_repair_dispatch(118, "#!/bin/sh\nexit 1\n").await;
+    let (blocked, _stale_base_commit, _fresh_base_commit) =
+        block_push_handoff_base_advanced_repair(&state, &conversation_id, project_dir.path(), 3)
+            .await;
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("capped push-handoff recovery is harmless"),
+        0
+    );
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load capped push-handoff repair")
+        .expect("capped push-handoff repair remains current");
+    assert_eq!(current.id, blocked.id);
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Blocked);
+    assert_eq!(current.target_base_commit, blocked.target_base_commit);
+    assert_eq!(
+        current.blocker.as_deref(),
+        blocked.blocker.as_deref(),
+        "the capped attempt remains actionable with its original push-handoff blocker"
+    );
 }
 
 #[cfg(unix)]

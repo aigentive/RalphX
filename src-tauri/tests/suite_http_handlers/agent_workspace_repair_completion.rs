@@ -544,6 +544,8 @@ async fn block_valid_current_attempt(
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "The repair needs an explicit maintainer decision.".to_string(),
             blocker: Some("Choose the safe repair path before continuing.".to_string()),
+            reported_fix_commit_sha: None,
+            resolution: None,
         }),
     )
     .await
@@ -606,6 +608,7 @@ async fn legacy_pr_fix_transport_without_a_durable_attempt_fails_closed_without_
             blocker: None,
             fix_commit_sha: None,
             created_by_run_id: Some(owner_run_id.to_string()),
+            resolution: None,
         },
     )
     .await;
@@ -665,6 +668,7 @@ async fn legacy_pr_fix_transport_rejects_wrong_durable_run_without_effects() {
             blocker: None,
             fix_commit_sha: None,
             created_by_run_id: Some(wrong_run_id.to_string()),
+            resolution: None,
         },
     )
     .await;
@@ -697,6 +701,7 @@ async fn legacy_pr_fix_transport_uses_durable_completion_without_legacy_publish_
             blocker: None,
             fix_commit_sha: Some("f".repeat(40)),
             created_by_run_id: Some(owner_run_id.to_string()),
+            resolution: None,
         },
     )
     .await;
@@ -770,6 +775,8 @@ async fn transport_authority_rejects_missing_runtime_headers_without_mutation() 
         CompleteAgentWorkspaceRepairRequest {
             summary: "Missing runtime identity must never settle a repair.".to_string(),
             blocker: None,
+            reported_fix_commit_sha: None,
+            resolution: None,
         },
     )
     .await;
@@ -810,6 +817,8 @@ async fn transport_authority_rejects_malformed_runtime_run_without_mutation() {
         CompleteAgentWorkspaceRepairRequest {
             summary: "Malformed runtime identity must never settle a repair.".to_string(),
             blocker: None,
+            reported_fix_commit_sha: None,
+            resolution: None,
         },
     )
     .await;
@@ -836,6 +845,8 @@ async fn transport_authority_rejects_header_conversation_mismatch_without_mutati
         CompleteAgentWorkspaceRepairRequest {
             summary: "A mismatched runtime conversation must never settle a repair.".to_string(),
             blocker: None,
+            reported_fix_commit_sha: None,
+            resolution: None,
         },
     )
     .await;
@@ -870,6 +881,8 @@ async fn transport_authority_rejects_cross_conversation_runtime_run_without_muta
         CompleteAgentWorkspaceRepairRequest {
             summary: "A cross-conversation run must not settle this repair.".to_string(),
             blocker: None,
+            reported_fix_commit_sha: None,
+            resolution: None,
         },
     )
     .await;
@@ -904,6 +917,8 @@ async fn transport_authority_rejects_nonowning_runtime_run_without_mutation() {
         CompleteAgentWorkspaceRepairRequest {
             summary: "A nonowning run must not settle this repair.".to_string(),
             blocker: None,
+            reported_fix_commit_sha: None,
+            resolution: None,
         },
     )
     .await;
@@ -936,6 +951,8 @@ async fn transport_authority_rejects_missing_current_run_row_without_mutation() 
         CompleteAgentWorkspaceRepairRequest {
             summary: "A missing current run row must not settle a repair.".to_string(),
             blocker: None,
+            reported_fix_commit_sha: None,
+            resolution: None,
         },
     )
     .await;
@@ -968,6 +985,8 @@ async fn transport_authority_rejects_nonrunning_current_run_without_mutation() {
         CompleteAgentWorkspaceRepairRequest {
             summary: "A non-running current run must not settle a repair.".to_string(),
             blocker: None,
+            reported_fix_commit_sha: None,
+            resolution: None,
         },
     )
     .await;
@@ -995,6 +1014,8 @@ async fn transport_authority_keeps_semantic_repair_outcomes_successful() {
             CompleteAgentWorkspaceRepairRequest {
                 summary: "The repaired branch is clean and contains the current base.".to_string(),
                 blocker: None,
+                reported_fix_commit_sha: None,
+                resolution: None,
             },
         )
         .await,
@@ -1034,6 +1055,8 @@ async fn transport_authority_keeps_semantic_repair_outcomes_successful() {
             CompleteAgentWorkspaceRepairRequest {
                 summary: "This duplicate completion is safely idempotent.".to_string(),
                 blocker: None,
+                reported_fix_commit_sha: None,
+                resolution: None,
             },
         )
         .await,
@@ -1052,6 +1075,8 @@ async fn transport_authority_keeps_semantic_repair_outcomes_successful() {
             CompleteAgentWorkspaceRepairRequest {
                 summary: "The repair needs a maintainer decision.".to_string(),
                 blocker: Some("Choose whether to preserve the legacy schema.".to_string()),
+                reported_fix_commit_sha: None,
+                resolution: None,
             },
         )
         .await,
@@ -1108,6 +1133,8 @@ async fn transport_authority_keeps_semantic_repair_outcomes_successful() {
             CompleteAgentWorkspaceRepairRequest {
                 summary: "A superseded repair must not affect the successor.".to_string(),
                 blocker: None,
+                reported_fix_commit_sha: None,
+                resolution: None,
             },
         )
         .await,
@@ -1141,6 +1168,8 @@ async fn unknown_run_is_rejected_before_any_git_probe_or_attempt_mutation() {
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "This stale run must be harmless".to_string(),
             blocker: None,
+            reported_fix_commit_sha: None,
+            resolution: None,
         }),
     )
     .await
@@ -1203,6 +1232,8 @@ async fn stale_validation_reservation_returns_before_every_git_probe() {
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "The completion snapshot must not validate after replacement.".to_string(),
             blocker: None,
+            reported_fix_commit_sha: None,
+            resolution: None,
         }),
     ));
     reservation_gate.wait().await;
@@ -1281,6 +1312,8 @@ async fn racing_success_handoff_for_the_same_run_is_already_completed_without_du
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "The repaired branch is clean and contains the current base.".to_string(),
             blocker: None,
+            reported_fix_commit_sha: None,
+            resolution: None,
         }),
     ));
     continuation_gate.wait().await;
@@ -1375,6 +1408,8 @@ async fn racing_success_duplicates_for_the_same_run_skip_extra_git_and_complete_
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "The repaired branch is clean and contains the current base.".to_string(),
             blocker: None,
+            reported_fix_commit_sha: None,
+            resolution: None,
         })
     };
     let mut first = tokio::spawn(complete_agent_workspace_repair(
@@ -1475,6 +1510,8 @@ async fn racing_blocker_duplicates_for_the_same_run_are_already_blocked_without_
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "The repair needs an explicit schema choice.".to_string(),
             blocker: Some("Choose whether to preserve the legacy schema.".to_string()),
+            reported_fix_commit_sha: None,
+            resolution: None,
         }),
     ));
     let second = tokio::spawn(complete_agent_workspace_repair(
@@ -1484,6 +1521,8 @@ async fn racing_blocker_duplicates_for_the_same_run_are_already_blocked_without_
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "The repair needs an explicit schema choice.".to_string(),
             blocker: Some("Choose whether to preserve the legacy schema.".to_string()),
+            reported_fix_commit_sha: None,
+            resolution: None,
         }),
     ));
     blocker_gate.wait().await;
@@ -1564,6 +1603,8 @@ async fn completion_from_a_superseded_generation_stays_superseded_without_side_e
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "A superseded repair must not affect the next generation.".to_string(),
             blocker: None,
+            reported_fix_commit_sha: None,
+            resolution: None,
         }),
     )
     .await
@@ -1606,6 +1647,8 @@ async fn trusted_blocker_settles_the_generation_once_without_git_or_audit_side_e
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "The repair cannot safely choose a migration path.".to_string(),
             blocker: Some("Choose whether to preserve the legacy schema.".to_string()),
+            reported_fix_commit_sha: None,
+            resolution: None,
         }),
     )
     .await
@@ -1640,6 +1683,8 @@ async fn trusted_blocker_settles_the_generation_once_without_git_or_audit_side_e
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "Duplicate blocker signal".to_string(),
             blocker: Some("Different stale blocker".to_string()),
+            reported_fix_commit_sha: None,
+            resolution: None,
         }),
     )
     .await
@@ -1707,6 +1752,8 @@ async fn blocked_exact_run_with_clean_repair_resurrects_through_validation_and_c
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "The committed repair is clean at the durable target base.".to_string(),
             blocker: None,
+            reported_fix_commit_sha: None,
+            resolution: None,
         }),
     )
     .await
@@ -1763,6 +1810,8 @@ async fn blocked_exact_run_with_unproven_repair_stays_blocked_without_continuati
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "The repair cannot be proven clean.".to_string(),
             blocker: None,
+            reported_fix_commit_sha: None,
+            resolution: None,
         }),
     )
     .await
@@ -1810,6 +1859,8 @@ async fn blocked_different_run_cannot_resurrect_the_current_generation() {
         CompleteAgentWorkspaceRepairRequest {
             summary: "A different run cannot settle this blocked repair.".to_string(),
             blocker: None,
+            reported_fix_commit_sha: None,
+            resolution: None,
         },
     )
     .await;
@@ -1842,6 +1893,8 @@ async fn blocked_exact_run_with_blocker_keeps_the_canned_blocked_response() {
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "A duplicate blocker must not resurrect the repair.".to_string(),
             blocker: Some("Still awaiting maintainer direction.".to_string()),
+            reported_fix_commit_sha: None,
+            resolution: None,
         }),
     )
     .await

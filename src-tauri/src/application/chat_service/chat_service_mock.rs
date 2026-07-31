@@ -230,7 +230,7 @@ impl ChatService for MockChatService {
         if let Some(threshold) = *self.already_running_after.lock().await {
             if current > threshold {
                 if options.queue_policy == super::SendQueuePolicy::RequireImmediateStart {
-                    return Err(ChatServiceError::SpawnFailed(
+                    return Err(ChatServiceError::ImmediateStartRejected(
                         "immediate start required, but another agent run is active".to_string(),
                     ));
                 }

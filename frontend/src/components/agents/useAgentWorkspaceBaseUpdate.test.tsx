@@ -10,6 +10,7 @@ import { useAgentWorkspaceBaseUpdate } from "./useAgentWorkspaceBaseUpdate";
 
 const {
   getAgentConversationWorkspaceMock,
+  updateAgentConversationWorkspaceFromBaseMock,
   toastDismissMock,
   toastErrorMock,
   toastInfoMock,
@@ -17,6 +18,7 @@ const {
   toastSuccessMock,
 } = vi.hoisted(() => ({
     getAgentConversationWorkspaceMock: vi.fn(),
+    updateAgentConversationWorkspaceFromBaseMock: vi.fn(),
     toastDismissMock: vi.fn(),
     toastErrorMock: vi.fn(),
     toastInfoMock: vi.fn(),
@@ -32,6 +34,8 @@ vi.mock("@/api/chat", async (importOriginal) => {
       ...actual.chatApi,
       getAgentConversationWorkspace: (...args: unknown[]) =>
         getAgentConversationWorkspaceMock(...args),
+      updateAgentConversationWorkspaceFromBase: (...args: unknown[]) =>
+        updateAgentConversationWorkspaceFromBaseMock(...args),
     },
   };
 });
@@ -55,6 +59,7 @@ function wrapper(queryClient: ReturnType<typeof createTestQueryClient>) {
 describe("useAgentWorkspaceBaseUpdate", () => {
   beforeEach(() => {
     getAgentConversationWorkspaceMock.mockReset();
+    updateAgentConversationWorkspaceFromBaseMock.mockReset();
     toastDismissMock.mockClear();
     toastErrorMock.mockClear();
     toastInfoMock.mockClear();
@@ -64,6 +69,45 @@ describe("useAgentWorkspaceBaseUpdate", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("shows an informational repair-started toast for a successful base-update retry", async () => {
+    const queryClient = createTestQueryClient();
+    const workspace = conversationWorkspaceFixture({
+      publicationPushStatus: "needs_agent",
+    });
+    updateAgentConversationWorkspaceFromBaseMock.mockResolvedValue({
+      workspace,
+      updated: false,
+      repairStarted: true,
+      targetRef: "main",
+      baseCommit: "base-sha",
+      baseStatus: "valid",
+      effectiveBaseDisplayName: null,
+    });
+    const { result } = renderHook(
+      () => useAgentWorkspaceBaseUpdate({ conversationTitle: "Checkout flow fix" }),
+      { wrapper: wrapper(queryClient) },
+    );
+
+    act(() => {
+      result.current.runUpdateFromBase({
+        conversationId: "conversation-1",
+        detail: "Update workspace from main",
+        kind: "update-from-base",
+        title: "Updating from base",
+      });
+    });
+
+    await waitFor(() =>
+      expect(toastInfoMock).toHaveBeenCalledWith(
+        "Repair started",
+        expect.objectContaining({
+          description: expect.stringContaining("will continue automatically"),
+        }),
+      ),
+    );
+    expect(toastErrorMock).not.toHaveBeenCalled();
   });
 
   it("dismisses live maintenance progress when the hook unmounts", () => {

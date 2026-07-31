@@ -144,7 +144,7 @@ pub struct CreateAgentWorkspaceRepairEffect {
 pub enum CreateAgentWorkspaceRepairEffectOutcome {
     Created(AgentWorkspaceRepairEffect),
     OpenEffectExists(AgentWorkspaceRepairEffect),
-    Stale(AgentWorkspaceRepairAttempt),
+    Stale(Box<AgentWorkspaceRepairAttempt>),
     Missing,
 }
 
@@ -165,8 +165,8 @@ pub struct CompleteAgentWorkspaceRepairEffect {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompleteAgentWorkspaceRepairEffectOutcome {
-    Applied(AgentWorkspaceRepairEffect),
-    Stale(AgentWorkspaceRepairAttempt),
+    Applied(Box<AgentWorkspaceRepairEffect>),
+    Stale(Box<AgentWorkspaceRepairAttempt>),
     Missing,
 }
 
