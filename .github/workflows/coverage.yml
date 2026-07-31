@@ -264,9 +264,11 @@ jobs:
             --partition hash:${{ matrix.partition }} \
             --remap-path-prefix \
             | tee "../${RUST_LIB_COVERAGE_ROOT}/summary.txt"
-          cargo llvm-cov report --lcov --output-path "../${RUST_LIB_COVERAGE_ROOT}/lcov.info"
-          cargo llvm-cov report --json --output-path "../${RUST_LIB_COVERAGE_ROOT}/coverage.json"
-          cargo llvm-cov report --html --output-dir "../${RUST_LIB_COVERAGE_ROOT}/html"
+          # Archive-based runs never populate target/llvm-cov-target/debug, so
+          # report must read object files from the nextest archive itself.
+          cargo llvm-cov report --nextest-archive-file ../rust-lib-coverage.tar.zst --lcov --output-path "../${RUST_LIB_COVERAGE_ROOT}/lcov.info"
+          cargo llvm-cov report --nextest-archive-file ../rust-lib-coverage.tar.zst --json --output-path "../${RUST_LIB_COVERAGE_ROOT}/coverage.json"
+          cargo llvm-cov report --nextest-archive-file ../rust-lib-coverage.tar.zst --html --output-dir "../${RUST_LIB_COVERAGE_ROOT}/html"
 
       - name: Filter Rust coverage noise
         shell: bash

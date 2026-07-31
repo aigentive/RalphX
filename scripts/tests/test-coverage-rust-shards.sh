@@ -56,6 +56,10 @@ grep -Fq 'shared-key: rust-coverage-deps' <<< "${rust_archive_job}" \
 
 grep -Fq -- '--archive-file' <<< "${rust_lib_job}" \
   || fail "Rust lib coverage does not consume a nextest archive"
+shard_report_calls="$(grep -Fc 'cargo llvm-cov report' <<< "${rust_lib_job}")"
+shard_archive_report_calls="$(grep -F 'cargo llvm-cov report' <<< "${rust_lib_job}" | grep -Fc -- '--nextest-archive-file')"
+[[ "${shard_report_calls}" -gt 0 && "${shard_report_calls}" -eq "${shard_archive_report_calls}" ]] \
+  || fail "Rust lib coverage report calls must read object files via --nextest-archive-file"
 grep -Fq -- "--partition hash:${MATRIX_PARTITION_EXPR}" <<< "${rust_lib_job}" \
   || fail "Rust lib coverage does not use deterministic matrix partitioning"
 if grep -Fq 'cargo llvm-cov nextest-archive' <<< "${rust_lib_job}"; then
