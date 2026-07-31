@@ -15,6 +15,66 @@ use super::durable_attempt_recovery::{
     human_repair_dispatch_context, DEFAULT_REPAIR_DISPATCH_CONTEXT,
 };
 
+/// How much agent time has already been spent on one failure identity, and whether that spend has
+/// passed the configured budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PrAutofixFingerprintSpend {
+    pub(crate) generations: u32,
+    pub(crate) minutes: u64,
+    pub(crate) budget_minutes: u64,
+}
+
+impl PrAutofixFingerprintSpend {
+    pub(crate) fn is_exhausted(self) -> bool {
+        self.budget_minutes > 0 && self.minutes >= self.budget_minutes
+    }
+}
+
+/// Sums the wall-clock time of every agent run that already worked on this exact failure identity.
+///
+/// Retry caps count attempts, not cost: three cheap generations and three hour-long Opus
+/// generations look identical to a streak counter. Only finished runs are counted, so an
+/// in-flight run can never push a conversation over budget mid-repair.
+pub(crate) async fn pr_autofix_fingerprint_spend(
+    state: &AppState,
+    conversation_id: &crate::domain::entities::ChatConversationId,
+    fingerprint: &str,
+) -> crate::error::AppResult<PrAutofixFingerprintSpend> {
+    let budget_minutes = crate::infrastructure::agents::limits_config()
+        .repair_fingerprint_budget_minutes;
+    let attempts = state
+        .agent_workspace_repair_repo
+        .list_repair_attempts_for_conversation(conversation_id)
+        .await?;
+
+    let mut generations = 0;
+    let mut seconds: i64 = 0;
+    for attempt in attempts {
+        if attempt.pr_autofix_health_fingerprint.as_deref() != Some(fingerprint) {
+            continue;
+        }
+        generations += 1;
+        let Some(run_id) = attempt.reserved_agent_run_id.as_ref() else {
+            continue;
+        };
+        let Some(run) = state.agent_run_repo.get_by_id(run_id).await? else {
+            continue;
+        };
+        if run.conversation_id != *conversation_id {
+            continue;
+        }
+        if let Some(completed_at) = run.completed_at {
+            seconds += (completed_at - run.started_at).num_seconds().max(0);
+        }
+    }
+
+    Ok(PrAutofixFingerprintSpend {
+        generations,
+        minutes: (seconds / 60) as u64,
+        budget_minutes,
+    })
+}
+
 /// Whether a blocked PR autofix generation has earned another agent generation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum PrAutofixSuccessorDecision {

@@ -4,14 +4,16 @@ use chrono::{Duration, Utc};
 
 use super::pr_autofix_redelivery::{
     due_pr_autofix_redispatch_message, evaluate_pr_autofix_successor,
-    remember_blocked_pr_autofix_fingerprint, PrAutofixSuccessorDecision,
+    pr_autofix_fingerprint_spend, remember_blocked_pr_autofix_fingerprint,
+    PrAutofixFingerprintSpend, PrAutofixSuccessorDecision,
 };
 use super::StalePublishRepairRecoveryOutcome;
 use crate::application::agent_conversation_workspace::resolve_effective_agent_conversation_workspace_path;
 use crate::application::agent_workspace_pr_autofix_attempt::load_latest_exact_pr_autofix_run_for_pr;
 use crate::application::agent_workspace_publish_repair_state::{
     agent_workspace_repair_dispatch_is_due, agent_workspace_repair_is_health_held,
-    block_agent_workspace_repair_completion, classify_agent_workspace_repair_delivery,
+    block_agent_workspace_repair_completion, block_agent_workspace_repair_needs_human,
+    classify_agent_workspace_repair_delivery,
     continue_agent_workspace_repair_at_boundary, inspect_agent_workspace_repair_completion,
     record_agent_workspace_repair_validation,
     release_and_clear_agent_workspace_repair_target_lease,
@@ -27,6 +29,10 @@ use crate::application::agent_workspace_publish_repair_state::{
 use crate::application::chat_service::{ChatService, SendMessageOptions, SendQueuePolicy};
 use crate::application::{AppState, GitService};
 use crate::domain::entities::{
+    NewNotification, NotificationCategory, NotificationSeverity, NotificationTarget,
+    NotificationTargetKind,
+};
+use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspacePublicationEvent, AgentRunId,
     AgentRunStatus, AgentWorkspaceRepairAttempt, AgentWorkspaceRepairAttemptId,
     AgentWorkspaceRepairContinuation, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
@@ -41,6 +47,8 @@ use crate::domain::repositories::{
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_REPAIR;
 
+/// Publication step recorded when unattended repair stops because its budget is spent.
+const REPAIR_BUDGET_EXHAUSTED_STEP: &str = "repair_budget_exhausted";
 const LEGACY_REPAIR_IMPORT_BLOCKED_STEP: &str = "legacy_repair_import_blocked";
 const LEGACY_REPAIR_IMPORT_BLOCKED_CLASSIFICATION: &str = "legacy_repair_import_ambiguous";
 const LEGACY_REPAIR_IMPORTED_STEP: &str = "legacy_repair_imported";
@@ -581,6 +589,17 @@ async fn retry_safe_blocked_agent_workspace_repair(
     // Spawning a successor is the most expensive thing this pass can do, so a PR autofix
     // generation must earn it against live PR health rather than against the streak counter alone.
     // Blocker text is deliberately not consulted: it is free-form agent prose, not evidence.
+    // Cost, not attempt count, is what actually needs bounding: three cheap generations and three
+    // hour-long Opus generations look identical to the streak counter above.
+    if current.source == AgentWorkspaceRepairSource::PrAutofix {
+        if let Some(fingerprint) = current.pr_autofix_health_fingerprint.as_deref() {
+            let spend =
+                pr_autofix_fingerprint_spend(state, &current.conversation_id, fingerprint).await?;
+            if spend.is_exhausted() {
+                return park_exhausted_pr_autofix_budget(state, current, &workspace, spend).await;
+            }
+        }
+    }
     let carryover_pr_autofix_evidence = if current.source == AgentWorkspaceRepairSource::PrAutofix {
         match evaluate_pr_autofix_successor(state, &current, &workspace).await {
             PrAutofixSuccessorDecision::Proceed(carryover) => carryover,
@@ -628,6 +647,85 @@ async fn retry_safe_blocked_agent_workspace_repair(
         | AgentWorkspaceRepairStartOutcome::BlockedByCurrent(_) => {
             Ok(DurableRepairRecoveryOutcome::Stale)
         }
+    }
+}
+
+/// Stops unattended repair on one failure identity once it has consumed its agent-minutes budget,
+/// and tells the user why. Budget exhaustion is a handover, never a silent skip: the generation is
+/// marked needs-human so no automatic path may revive it, the spend is recorded on the publication
+/// timeline, and an Inbox notification carries it to the user.
+async fn park_exhausted_pr_autofix_budget(
+    state: &AppState,
+    current: AgentWorkspaceRepairAttempt,
+    workspace: &AgentConversationWorkspace,
+    spend: PrAutofixFingerprintSpend,
+) -> AppResult<DurableRepairRecoveryOutcome> {
+    let conversation_id = current.conversation_id.clone();
+    let summary = format!(
+        "RalphX has spent {} minutes across {} repair generations on this same PR failure without \
+         resolving it, which is the configured limit. Automatic repair has stopped so it does not \
+         keep spending on a failure it cannot fix.",
+        spend.minutes, spend.generations
+    );
+
+    remember_blocked_pr_autofix_fingerprint(state, &current).await;
+    state
+        .agent_conversation_workspace_repo
+        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+            conversation_id.clone(),
+            REPAIR_BUDGET_EXHAUSTED_STEP,
+            "blocked",
+            &summary,
+            current.pr_autofix_health_fingerprint.clone(),
+        ))
+        .await?;
+
+    let outcome = block_agent_workspace_repair_needs_human(
+        Arc::clone(&state.agent_workspace_repair_repo),
+        Arc::clone(&state.branch_update_repo),
+        current,
+        &summary,
+        workspace.pr_auto_merge_current,
+    )
+    .await?;
+
+    state
+        .notification_service()
+        .record(NewNotification {
+            project_id: Some(workspace.project_id.to_string()),
+            category: NotificationCategory::TaskBlocked,
+            severity: NotificationSeverity::ActionRequired,
+            title: match workspace.publication_pr_number {
+                Some(pr_number) => format!("PR #{pr_number} repair needs you"),
+                None => "Workspace repair needs you".to_string(),
+            },
+            body: Some(summary),
+            target: NotificationTarget {
+                kind: NotificationTargetKind::AgentConversation,
+                project_id: Some(workspace.project_id.to_string()),
+                task_id: None,
+                conversation_id: Some(conversation_id.to_string()),
+                setup_conversation_id: None,
+                automation_id: None,
+                run_id: None,
+            },
+            dedupe_key: Some(format!(
+                "repair_budget:{}:{}",
+                conversation_id.as_str(),
+                workspace
+                    .last_blocked_pr_health_fingerprint
+                    .as_deref()
+                    .unwrap_or("unknown")
+            )),
+        })
+        .await;
+
+    match outcome {
+        AgentWorkspaceRepairTransitionOutcome::Applied(_) => {
+            Ok(DurableRepairRecoveryOutcome::Blocked)
+        }
+        AgentWorkspaceRepairTransitionOutcome::Stale(_)
+        | AgentWorkspaceRepairTransitionOutcome::Missing => Ok(DurableRepairRecoveryOutcome::Stale),
     }
 }
 

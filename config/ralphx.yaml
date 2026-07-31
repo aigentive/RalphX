@@ -299,6 +299,11 @@ limits:
   # chat_service_errors.rs — max times an agent conversation is auto-resumed after a provider error
   max_resume_attempts: 5 # Env: RALPHX_LIMITS_MAX_RESUME_ATTEMPTS
 
+  # agent_workspace repair — total agent minutes spent on one PR failure identity before RalphX
+  # stops retrying and hands the failure to a human. 0 disables the budget.
+  # Env: RALPHX_LIMITS_REPAIR_FINGERPRINT_BUDGET_MINUTES
+  repair_fingerprint_budget_minutes: 45
+
 ideation:
   # Seconds of inactivity before an agent is considered "likely_waiting" vs "likely_generating".
   # Used by get_child_session_status MCP tool to derive estimated_status. Env: RALPHX_IDEATION_ACTIVITY_THRESHOLD_SECS

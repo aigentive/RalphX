@@ -4758,6 +4758,135 @@ async fn blocked_pr_autofix_with_unchanged_health_parks_without_spawning() {
     assert!(still_held.settled_at.is_none());
 }
 
+/// Retry caps count attempts, not cost. A conversation that has already burned its agent-minutes
+/// budget on one failure identity must hand the failure to a human instead of buying another
+/// generation, and the handover must be visible rather than a silent stop.
+#[tokio::test]
+async fn exhausted_agent_minutes_budget_parks_needs_human_with_a_notification() {
+    let (state, conversation_id, _worktree_parent, _project_dir) =
+        seed_pr_autofix_health_workspace(125).await;
+    start_blocked_pr_autofix_generation(&state, &conversation_id).await;
+    let fingerprint = "github_pr_autofix:684:checks:rust-tests".to_string();
+    let blocked = block_pr_autofix_attempt_with_fingerprint(
+        &state,
+        &conversation_id,
+        Some(fingerprint.clone()),
+    )
+    .await;
+
+    // A finished run that already consumed far more than the default 45-minute budget.
+    let mut run = crate::domain::entities::AgentRun::new(conversation_id.clone());
+    run.started_at = chrono::Utc::now() - chrono::Duration::minutes(90);
+    run.completed_at = Some(chrono::Utc::now() - chrono::Duration::minutes(1));
+    run.status = crate::domain::entities::AgentRunStatus::Completed;
+    let run_id = run.id.clone();
+    state
+        .agent_run_repo
+        .create(run)
+        .await
+        .expect("seed an expensive finished repair run");
+    bind_reserved_run_to_attempt(&state, &conversation_id, &run_id).await;
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("evaluate an over-budget PR autofix generation"),
+        1
+    );
+
+    let parked = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load parked attempt")
+        .expect("parked attempt remains current");
+    assert_eq!(
+        parked.generation, blocked.generation,
+        "an exhausted budget must not buy another generation"
+    );
+    assert!(
+        parked.pending_reasons.iter().any(|reason| reason
+            == crate::application::agent_workspace_publish_repair_state::NEEDS_HUMAN_REPAIR_REASON),
+        "budget exhaustion is a human handover, not an automatic retry: {parked:?}"
+    );
+
+    let events = state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("list publication events");
+    assert!(
+        events
+            .iter()
+            .any(|event| event.step == "repair_budget_exhausted"),
+        "the spend must be recorded on the publication timeline"
+    );
+
+    let notifications = state
+        .notification_repo
+        .list(None, None, 20)
+        .await
+        .expect("list notifications");
+    assert!(
+        notifications.notifications.iter().any(|notification| {
+            notification.target.conversation_id.as_deref()
+                == Some(conversation_id.as_str().as_str())
+                && notification
+                    .body
+                    .as_deref()
+                    .is_some_and(|body| body.contains("repair generations"))
+        }),
+        "budget exhaustion must reach the user, never stop silently: {:?}",
+        notifications.notifications
+    );
+
+    // The workspace also remembers the identity, so a fresh streak cannot restart on it.
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("reload workspace")
+        .expect("workspace exists");
+    assert_eq!(
+        workspace.last_blocked_pr_health_fingerprint.as_deref(),
+        Some(fingerprint.as_str())
+    );
+}
+
+/// Binds an existing run to the current attempt as its durable reservation.
+async fn bind_reserved_run_to_attempt(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    run_id: &AgentRunId,
+) {
+    let mut attempt = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(conversation_id)
+        .await
+        .expect("load attempt to bind")
+        .expect("attempt exists to bind");
+    let expected_phase = attempt.phase;
+    let expected_updated_at = attempt.updated_at;
+    attempt.reserved_agent_run_id = Some(run_id.clone());
+    attempt.updated_at += chrono::Duration::microseconds(1);
+    let outcome = state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase,
+            expected_updated_at,
+            next_phase: expected_phase,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("bind reserved run");
+    assert!(matches!(
+        outcome,
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_)
+    ));
+}
+
 #[tokio::test]
 async fn blocked_pr_autofix_without_provable_health_withholds_the_successor() {
     let state = AppState::new_test();
