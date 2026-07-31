@@ -3100,6 +3100,117 @@ async fn test_delegate_start_enforces_profile_specific_allowed_targets() {
         .contains("may not delegate"));
 }
 
+/// `managed_team::members` passes `caller_agent_profile = "team_coordinator"` when a coordinator
+/// launches a member. Before the profile-name validator accepted underscores, that profile failed
+/// to resolve and this call returned `400 Unknown canonical caller agent` — the coordinator could
+/// not delegate at all. Authorization must now come from the profile's own allowed targets.
+#[tokio::test]
+async fn test_delegate_start_enforces_team_coordinator_profile_allowed_targets() {
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let parent = create_parent_session(&state).await;
+
+    let error = start_delegate(
+        State(state),
+        Json(DelegateStartRequest {
+            caller_agent_name: Some("ralphx-general-worker".to_string()),
+            caller_agent_profile: Some("team_coordinator".to_string()),
+            caller_context_type: Some("ideation".to_string()),
+            caller_context_id: Some(parent.id.as_str().to_string()),
+            parent_session_id: Some(parent.id.as_str().to_string()),
+            parent_turn_id: None,
+            parent_message_id: None,
+            parent_conversation_id: None,
+            parent_tool_use_id: None,
+            delegated_session_id: None,
+            child_session_id: None,
+            task_ref: None,
+            agent_name: "ralphx-ideation-specialist-backend".to_string(),
+            prompt: "noop".to_string(),
+            title: None,
+            inherit_context: true,
+            harness: Some(AgentHarnessKind::Codex),
+            model: None,
+            logical_effort: None,
+            approval_policy: None,
+            sandbox_mode: None,
+        }),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(
+        error.0,
+        axum::http::StatusCode::FORBIDDEN,
+        "an out-of-allowlist target must fail authorization, not caller resolution: {:?}",
+        error.1 .0
+    );
+    let message = error.1 .0["error"].as_str().unwrap_or_default().to_string();
+    assert!(
+        message.contains("may not delegate"),
+        "expected an allowlist rejection, got: {message}"
+    );
+    assert!(
+        !message.contains("Unknown canonical caller agent"),
+        "the team_coordinator profile must resolve before authorization runs, got: {message}"
+    );
+}
+
+/// Proves the positive half of the same obligation: both targets declared by the coordinator
+/// profile's `delegation.allowed_targets` actually launch from an Edit-mode agent workspace.
+#[tokio::test]
+async fn test_delegate_start_allows_team_coordinator_profile_declared_targets() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (_fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let app_state = Arc::new(AppState::new_sqlite_test());
+    let state = build_state(app_state);
+    seed_codex_provider_default(state.app_state.as_ref(), "gpt-5.5", LogicalEffort::XHigh).await;
+    let (project, parent_conversation, _workspace) =
+        create_project_agent_workspace(state.app_state.as_ref(), worktree_parent.path()).await;
+    let parent_conversation_id = parent_conversation.id.as_str();
+
+    for target in ["ralphx-general-explorer", "ralphx-general-worker"] {
+        let start = start_delegate(
+            State(state.clone()),
+            Json(DelegateStartRequest {
+                caller_agent_name: Some("ralphx-general-worker".to_string()),
+                caller_agent_profile: Some("team_coordinator".to_string()),
+                caller_context_type: Some("project".to_string()),
+                caller_context_id: Some(project.id.as_str().to_string()),
+                parent_session_id: None,
+                parent_turn_id: None,
+                parent_message_id: None,
+                parent_conversation_id: Some(parent_conversation_id.clone()),
+                parent_tool_use_id: None,
+                delegated_session_id: None,
+                child_session_id: None,
+                task_ref: None,
+                agent_name: target.to_string(),
+                prompt: "Inspect the assigned surface and report findings.".to_string(),
+                title: Some(format!("Team member {target}")),
+                inherit_context: true,
+                harness: None,
+                model: None,
+                logical_effort: None,
+                approval_policy: None,
+                sandbox_mode: None,
+            }),
+        )
+        .await
+        .unwrap_or_else(|error| {
+            panic!(
+                "team_coordinator must be allowed to delegate to {target}: {:?}",
+                error.1 .0
+            )
+        })
+        .0;
+
+        assert_eq!(start.agent_name, target);
+        assert_eq!(start.status, "running");
+    }
+}
+
 #[tokio::test]
 async fn test_delegate_start_infers_parent_session_from_verification_child_context() {
     let _env_lock = codex_cli_env_lock().lock().await;
