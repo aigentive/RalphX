@@ -3052,6 +3052,15 @@ async fn route_agent_workspace_pr_autofix_for_target(
             return Ok(false);
         }
     }
+    if cross_streak_fingerprint_suppresses_dispatch(
+        workspace_repo.as_ref(),
+        conversation_id,
+        &issue.classification,
+    )
+    .await?
+    {
+        return Ok(false);
+    }
     if authorize_agent_workspace_pr_autofix(workspace_repo.as_ref(), conversation_id, &target)
         .await?
         .is_none()
@@ -3143,6 +3152,67 @@ async fn route_agent_workspace_pr_autofix_for_target(
         },
     )
     .await
+}
+
+/// The step recorded when a fresh PR autofix streak is suppressed by cross-streak memory.
+pub(crate) const CROSS_STREAK_FINGERPRINT_HOLD_STEP: &str = "repair_fingerprint_cross_streak_hold";
+
+/// A repair attempt's fingerprint hold dies with its streak. Once a streak exhausts its retries,
+/// the next poll would otherwise start a brand new streak against the exact same failing check —
+/// the outer loop that turned one unchanged failure into four Opus generations on 2026-07-31.
+///
+/// Returns `true` when this dispatch must be suppressed. Different health clears the memory so a
+/// genuinely new failure is never held by a stale one. A read failure never suppresses: a broken
+/// query must not silently disable PR autofix.
+async fn cross_streak_fingerprint_suppresses_dispatch(
+    workspace_repo: &dyn AgentConversationWorkspaceRepository,
+    conversation_id: &ChatConversationId,
+    classification: &str,
+) -> crate::error::AppResult<bool> {
+    let Some(workspace) = workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await?
+    else {
+        return Ok(false);
+    };
+    let Some(remembered) = workspace.last_blocked_pr_health_fingerprint.as_deref() else {
+        return Ok(false);
+    };
+    if remembered != classification {
+        workspace_repo
+            .set_last_blocked_pr_health_fingerprint(conversation_id, None)
+            .await?;
+        return Ok(false);
+    }
+
+    // Record the hold once. Repeating it every poll would bury the publication timeline.
+    let already_recorded = workspace_repo
+        .list_publication_events(conversation_id)
+        .await?
+        .into_iter()
+        .any(|event| {
+            event.step == CROSS_STREAK_FINGERPRINT_HOLD_STEP
+                && event.classification.as_deref() == Some(classification)
+        });
+    if !already_recorded {
+        workspace_repo
+            .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                conversation_id.clone(),
+                CROSS_STREAK_FINGERPRINT_HOLD_STEP,
+                "blocked",
+                "A previous repair streak already exhausted itself against this exact PR failure. \
+                 RalphX is waiting for GitHub to report something different instead of starting \
+                 another fixer generation.",
+                Some(classification.to_string()),
+            ))
+            .await?;
+    }
+    tracing::info!(
+        conversation_id = conversation_id.as_str(),
+        classification,
+        "Suppressing a fresh PR autofix streak against an already-exhausted failure identity"
+    );
+    Ok(true)
 }
 
 fn transient_ci_health_fingerprint(health: &PrHealth) -> Option<String> {

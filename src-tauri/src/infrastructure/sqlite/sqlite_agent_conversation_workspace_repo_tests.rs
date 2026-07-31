@@ -3814,6 +3814,58 @@ async fn list_active_transient_publish_status_workspaces_filters_stale_open_rows
 }
 
 #[tokio::test]
+async fn last_blocked_pr_health_fingerprint_round_trips_and_clears() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .unwrap();
+
+    let fresh = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+    assert!(fresh.last_blocked_pr_health_fingerprint.is_none());
+    assert!(fresh.last_blocked_pr_health_at.is_none());
+
+    repo.set_last_blocked_pr_health_fingerprint(
+        &conversation_id,
+        Some("github_pr_autofix:684:checks:rust-tests"),
+    )
+    .await
+    .unwrap();
+
+    let remembered = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+    assert_eq!(
+        remembered.last_blocked_pr_health_fingerprint.as_deref(),
+        Some("github_pr_autofix:684:checks:rust-tests")
+    );
+    assert!(
+        remembered.last_blocked_pr_health_at.is_some(),
+        "a remembered failure identity records when it was observed"
+    );
+
+    repo.set_last_blocked_pr_health_fingerprint(&conversation_id, None)
+        .await
+        .unwrap();
+
+    let cleared = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+    assert!(cleared.last_blocked_pr_health_fingerprint.is_none());
+    assert!(
+        cleared.last_blocked_pr_health_at.is_none(),
+        "clearing the identity must also clear its observation time"
+    );
+}
+
+#[tokio::test]
 async fn pr_supervision_preferences_round_trip() {
     let (_db, repo, conversation_id) = setup_repo();
     let workspace = make_workspace(conversation_id.clone());

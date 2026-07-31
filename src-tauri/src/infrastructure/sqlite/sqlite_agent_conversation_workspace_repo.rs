@@ -153,6 +153,10 @@ fn row_to_workspace(row: &rusqlite::Row<'_>) -> AppResult<AgentConversationWorks
         pr_supervision_updated_at: row
             .get::<_, Option<String>>("pr_supervision_updated_at")?
             .map(|value| parse_datetime(&value)),
+        last_blocked_pr_health_fingerprint: row.get("last_blocked_pr_health_fingerprint")?,
+        last_blocked_pr_health_at: row
+            .get::<_, Option<String>>("last_blocked_pr_health_at")?
+            .map(|value| parse_datetime(&value)),
         status: AgentConversationWorkspaceStatus::from_str(&status)
             .unwrap_or(AgentConversationWorkspaceStatus::Active),
         created_at: parse_datetime(&created_at),
@@ -2469,6 +2473,30 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                 }
                 transaction.commit()?;
                 Ok(true)
+            })
+            .await
+    }
+
+    async fn set_last_blocked_pr_health_fingerprint(
+        &self,
+        conversation_id: &ChatConversationId,
+        fingerprint: Option<&str>,
+    ) -> AppResult<()> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let fingerprint = fingerprint.map(str::to_string);
+        let observed_at = fingerprint.as_ref().map(|_| Utc::now().to_rfc3339());
+        let now = Utc::now().to_rfc3339();
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE agent_conversation_workspaces
+                     SET last_blocked_pr_health_fingerprint = ?2,
+                         last_blocked_pr_health_at = ?3,
+                         updated_at = ?4
+                     WHERE conversation_id = ?1",
+                    rusqlite::params![conversation_id, fingerprint, observed_at, now],
+                )?;
+                Ok(())
             })
             .await
     }

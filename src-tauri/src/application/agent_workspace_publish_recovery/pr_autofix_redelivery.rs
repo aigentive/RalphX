@@ -152,6 +152,33 @@ pub(super) async fn evaluate_pr_autofix_successor(
     }))
 }
 
+/// Persists the failure identity a PR autofix generation stopped against, so a later streak can
+/// recognise it. Best effort by design: failing to remember must never block the settlement that
+/// is already correct, it only costs the cross-streak suppression on the next poll.
+pub(super) async fn remember_blocked_pr_autofix_fingerprint(
+    state: &AppState,
+    attempt: &AgentWorkspaceRepairAttempt,
+) {
+    if attempt.source != crate::domain::entities::AgentWorkspaceRepairSource::PrAutofix {
+        return;
+    }
+    let Some(fingerprint) = attempt.pr_autofix_health_fingerprint.as_deref() else {
+        return;
+    };
+    if let Err(error) = state
+        .agent_conversation_workspace_repo
+        .set_last_blocked_pr_health_fingerprint(&attempt.conversation_id, Some(fingerprint))
+        .await
+    {
+        tracing::warn!(
+            conversation_id = attempt.conversation_id.as_str(),
+            attempt_id = attempt.id.as_str(),
+            %error,
+            "Could not remember the blocked PR autofix failure identity; a later streak may repeat it"
+        );
+    }
+}
+
 /// A redelivered PR autofix is addressed to the PR fixer, so the assignment must carry the same PR
 /// identity and completion contract the poller's first dispatch uses. A redelivery is also not a
 /// fresh dispatch: an earlier generation may already have committed part of the work, so the

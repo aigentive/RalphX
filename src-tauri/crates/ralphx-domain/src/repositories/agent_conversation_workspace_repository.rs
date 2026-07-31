@@ -459,6 +459,15 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         auto_merge_method: &str,
     ) -> AppResult<()>;
 
+    /// Remembers the failure identity a PR autofix streak exhausted itself against, so a fresh
+    /// streak can recognise it instead of re-spending agents on the same evidence. Passing `None`
+    /// clears the memory once GitHub reports something different.
+    async fn set_last_blocked_pr_health_fingerprint(
+        &self,
+        conversation_id: &ChatConversationId,
+        fingerprint: Option<&str>,
+    ) -> AppResult<()>;
+
     async fn update_auto_publish_preferences(
         &self,
         _conversation_id: &ChatConversationId,

@@ -5915,6 +5915,146 @@ async fn live_pr_autofix_dispatches_new_generation_after_ci_rerun_fingerprint_ch
     assert_eq!(current.phase, AgentWorkspaceRepairPhase::Repairing);
 }
 
+/// Cross-streak memory: an exhausted streak leaves its failure identity on the workspace, and the
+/// next poll must recognise it instead of starting a fresh streak on identical evidence.
+#[tokio::test]
+async fn exhausted_streak_fingerprint_suppresses_a_fresh_streak_until_health_changes() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let mut workspace = supervised_workspace(
+        "cross-streak-fingerprint",
+        "project-cross-streak-fingerprint",
+        worktree.path(),
+    );
+    init_repair_dispatch_repo(worktree.path(), &workspace.branch_name);
+    workspace.base_commit = Some("base-cross-streak".to_string());
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
+    let branch_update_repo: Arc<dyn BranchUpdateRepository> =
+        Arc::new(MemoryBranchUpdateRepository::new());
+    let agent_run_repo = seeded_latest_pr_fixer_run_repo(&conversation_id).await;
+    let mut exhausted_health = open_pr_health("cross-streak-head");
+    exhausted_health.checks.push(PrHealthCheck {
+        name: "Rust tests".to_string(),
+        status: Some("completed".to_string()),
+        conclusion: Some("failure".to_string()),
+        details_url: Some("https://github.com/owner/repo/actions/runs/930".to_string()),
+    });
+    let fingerprint = super::classify_agent_workspace_pr_autofix_issue(101, &exhausted_health)
+        .expect("failed check should classify")
+        .classification;
+    // No current repair attempt: the previous streak is gone, exactly as after exhaustion.
+    workspace_repo
+        .set_last_blocked_pr_health_fingerprint(&conversation_id, Some(&fingerprint))
+        .await
+        .expect("remember the exhausted failure identity");
+
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(exhausted_health));
+    let chat = Arc::new(MockChatService::with_agent_run_repo(Arc::clone(
+        &agent_run_repo,
+    )));
+
+    let routed = super::route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        workspace_repo.clone(),
+        Some(agent_run_repo.clone()),
+        Some(Arc::clone(&repair_repo)),
+        Some(Arc::clone(&branch_update_repo)),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("an exhausted fingerprint should suppress a fresh streak");
+
+    assert!(!routed, "a fresh streak on identical evidence must not start");
+    assert!(chat.get_sent_messages().await.is_empty());
+    assert!(
+        repair_repo
+            .get_current_repair_attempt(&conversation_id)
+            .await
+            .expect("load current attempt")
+            .is_none(),
+        "suppression must not create a repair generation"
+    );
+    let hold_events = workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("list publication events")
+        .into_iter()
+        .filter(|event| event.step == super::CROSS_STREAK_FINGERPRINT_HOLD_STEP)
+        .count();
+    assert_eq!(hold_events, 1, "the hold must be visible, exactly once");
+
+    // Polling again must stay suppressed and must not repeat the event.
+    let routed = super::route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        workspace_repo.clone(),
+        Some(agent_run_repo.clone()),
+        Some(Arc::clone(&repair_repo)),
+        Some(Arc::clone(&branch_update_repo)),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("repeat polls stay suppressed");
+    assert!(!routed);
+    assert_eq!(
+        workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("list publication events")
+            .into_iter()
+            .filter(|event| event.step == super::CROSS_STREAK_FINGERPRINT_HOLD_STEP)
+            .count(),
+        1,
+        "the hold event must be deduped, not repeated every poll"
+    );
+
+    // Different health is new evidence: the memory clears and autofix runs again.
+    let mut changed_health = open_pr_health("cross-streak-head");
+    changed_health.checks.push(PrHealthCheck {
+        name: "Clippy".to_string(),
+        status: Some("completed".to_string()),
+        conclusion: Some("failure".to_string()),
+        details_url: Some("https://github.com/owner/repo/actions/runs/931".to_string()),
+    });
+    github.state().fetch_pr_health_result = Some(Ok(changed_health));
+
+    let routed = super::route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        workspace_repo.clone(),
+        Some(agent_run_repo),
+        Some(Arc::clone(&repair_repo)),
+        Some(branch_update_repo),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("changed health should clear the memory and dispatch");
+
+    assert!(routed, "a genuinely new failure must not be held by a stale one");
+    let refreshed = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("reload workspace")
+        .expect("workspace exists");
+    assert!(
+        refreshed.last_blocked_pr_health_fingerprint.is_none(),
+        "changed health must clear the remembered failure identity"
+    );
+}
+
 /// A generation parked because GitHub reported unchanged health must be honoured by the poller's
 /// dispatch gate exactly like a pre-existing-on-base hold. Without this the durable recovery lane
 /// parks the attempt and the very next poll starts another fixer on identical evidence — the
@@ -7315,6 +7455,13 @@ impl SequencedWorkspaceRepository {
 
 #[async_trait]
 impl AgentConversationWorkspaceRepository for SequencedWorkspaceRepository {
+    async fn set_last_blocked_pr_health_fingerprint(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _fingerprint: Option<&str>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
     async fn create_or_update(
         &self,
         workspace: AgentConversationWorkspace,
@@ -7565,6 +7712,13 @@ struct ReviewMonitorLookupErrorRepository {
 
 #[async_trait]
 impl AgentConversationWorkspaceRepository for ReviewMonitorLookupErrorRepository {
+    async fn set_last_blocked_pr_health_fingerprint(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _fingerprint: Option<&str>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
     async fn create_or_update(
         &self,
         workspace: AgentConversationWorkspace,
@@ -7704,6 +7858,13 @@ struct WorkspaceLookupErrorRepository;
 
 #[async_trait]
 impl AgentConversationWorkspaceRepository for WorkspaceLookupErrorRepository {
+    async fn set_last_blocked_pr_health_fingerprint(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _fingerprint: Option<&str>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
     async fn create_or_update(
         &self,
         _workspace: AgentConversationWorkspace,

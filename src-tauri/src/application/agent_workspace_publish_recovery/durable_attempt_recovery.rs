@@ -3,7 +3,8 @@ use std::sync::Arc;
 use chrono::{Duration, Utc};
 
 use super::pr_autofix_redelivery::{
-    due_pr_autofix_redispatch_message, evaluate_pr_autofix_successor, PrAutofixSuccessorDecision,
+    due_pr_autofix_redispatch_message, evaluate_pr_autofix_successor,
+    remember_blocked_pr_autofix_fingerprint, PrAutofixSuccessorDecision,
 };
 use super::StalePublishRepairRecoveryOutcome;
 use crate::application::agent_conversation_workspace::resolve_effective_agent_conversation_workspace_path;
@@ -560,9 +561,14 @@ async fn retry_safe_blocked_agent_workspace_repair(
         return Ok(DurableRepairRecoveryOutcome::Noop);
     }
     let streak = automatic_blocked_repair_streak(&current);
-    if streak >= MAX_AUTO_RETRY_BLOCKED_REPAIR_STREAK
-        || Utc::now() - current.updated_at < automatic_blocked_repair_retry_delay(streak)
-    {
+    if streak >= MAX_AUTO_RETRY_BLOCKED_REPAIR_STREAK {
+        // This streak is finished. Repair attempts are per-streak, so unless the workspace itself
+        // remembers what this streak died against, the next poll starts a brand new streak with
+        // no memory and re-spends the same agents on the same failing check.
+        remember_blocked_pr_autofix_fingerprint(state, &current).await;
+        return Ok(DurableRepairRecoveryOutcome::Noop);
+    }
+    if Utc::now() - current.updated_at < automatic_blocked_repair_retry_delay(streak) {
         return Ok(DurableRepairRecoveryOutcome::Noop);
     }
     let Some(workspace) = state
@@ -643,6 +649,7 @@ async fn hold_unchanged_pr_autofix_health(
     .await?
     {
         AgentWorkspaceRepairTransitionOutcome::Applied(attempt) => {
+            remember_blocked_pr_autofix_fingerprint(state, &attempt).await;
             release_repair_lease_if_settled_boundary(state, &attempt).await?;
             Ok(DurableRepairRecoveryOutcome::Noop)
         }
