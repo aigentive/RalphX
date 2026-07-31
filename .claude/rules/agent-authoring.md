@@ -29,6 +29,7 @@ paths:
 | Process mapping / team constraints | `config/processes.yaml` |
 | MCP registration / dispatch | `plugins/app/ralphx-mcp-server/src/*-tools.ts` and `index.ts` |
 | Agent short-name constants | `plugins/app/ralphx-mcp-server/src/agentNames.ts` and `src-tauri/src/infrastructure/agents/claude/agent_names.rs` |
+| Canonical profile-key validation | `trusted_canonical_profile_name` (`src-tauri/src/infrastructure/agents/harness_agent_catalog.rs`) and `SAFE_CANONICAL_PROFILE_NAME` (`plugins/app/ralphx-mcp-server/src/canonical-agent-metadata.ts`) must identically enforce `^[a-z0-9]+(?:[_-][a-z0-9]+)*$`; change both together |
 
 **Rule:** Do not create or edit authored prompt files under `plugins/app/agents/`. Claude plugin markdown is generated from the canonical `agents/` tree.
 
@@ -64,6 +65,7 @@ paths:
 | Unsupported harnesses stay explicit | No prompt file for that harness means unsupported; do not silently inherit another harness prompt |
 | Canonical Claude metadata lives in root `agent.yaml` | Prefer `harnesses.claude.*` in root `agents/<agent>/agent.yaml`; `claude/agent.yaml` is legacy fallback only |
 | Prompts are contracts, not migration diaries | Keep prompts limited to the live role, live tool surface, and output contract; put migration notes, removed-tool warnings, and compatibility ballast in tests/docs/runtime enforcement instead |
+| Profile prompts replace base prompts | `agents/<agent>/profiles/<profile>/<harness>/prompt.md` fully replaces the base prompt; there is no `shared/` fallback, so the profile prompt must be self-contained |
 
 ## MCP / Tool Checklist
 
@@ -85,6 +87,7 @@ See `agent-mcp-tools.md` for the strict alignment rule.
 | Codex hygiene test | Codex prompt contains no Claude-only syntax when the agent is cross-harness |
 | Runtime config test | canonical metadata resolves into the effective harness/runtime configuration |
 | Prompt schema contract test | prompt tool examples and required payloads satisfy live MCP schemas and backend request types |
+| Profile catalog load-contract test | adding a profile requires proof that the catalog can load it; selecting its string alone is not coverage |
 
 ## Fast Failure Rules
 
@@ -94,3 +97,4 @@ See `agent-mcp-tools.md` for the strict alignment rule.
 | Add new ownership to `claude/agent.yaml` or other legacy fallback files | New harness-specific ownership belongs under root `agent.yaml` `harnesses.<harness>` |
 | Reuse a Claude prompt for Codex by omission | Unsupported harnesses must fail clearly, not inherit accidentally |
 | Change MCP tools in only one layer | The agent will drift between prompt contract, runtime config, and server allowlist |
+| Change profile-key validation in one layer | Rust and MCP validation must stay identical; update `trusted_canonical_profile_name` and `SAFE_CANONICAL_PROFILE_NAME` together |
