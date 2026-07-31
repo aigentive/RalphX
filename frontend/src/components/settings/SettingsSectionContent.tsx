@@ -90,6 +90,11 @@ const LazyUpdatesSettingsSection = lazyWithRetry(() =>
     default: module.UpdatesSettingsSection,
   })),
 );
+const LazyDatabaseMaintenanceSection = lazyWithRetry(() =>
+  import("./DatabaseMaintenanceSection").then((module) => ({
+    default: module.DatabaseMaintenanceSection,
+  })),
+);
 const LazyPersonasSection = lazyWithRetry(() =>
   import("./PersonasSection").then((module) => ({
     default: module.PersonasSection,
@@ -201,6 +206,7 @@ export function SettingsSectionContent({
       {section === "external-mcp" && <LazyExternalMcpSettingsPanel />}
       {section === "mcp" && <LazyMcpSettingsSection />}
       {section === "updates" && <LazyUpdatesSettingsSection />}
+      {section === "database" && <LazyDatabaseMaintenanceSection />}
       {section === "accessibility" && <LazyAccessibilitySection />}
       {section === "notifications" && <LazyNotificationSettingsPanel />}
     </Suspense>
