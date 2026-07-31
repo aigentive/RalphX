@@ -223,6 +223,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --features test-utils 'infrastru
 |---|---|
 | Converting an old SQLite test | Replace `open_memory_connection() + run_migrations()` with `SqliteTestDb` first, then extract shared seed helpers |
 | Reproducing a named Rust CI failure | Run only the failing lane/target first; use `scripts/test-rust-fast.sh pr` / `main` only when the user explicitly requests full parity or the failure cannot be isolated |
+| Suspected environmental CI failure (timeout/infra/download flake, not a code signal) | First response: `gh run rerun <run-id> --failed` to re-run only red jobs without a push; a code fix still requires a push and full re-run; ❌ pushing no-op commits to re-trigger CI |
 | Seeing remaining `open_memory_connection()` calls after migration work | Check whether the suite is connection/formatting-only before converting it; optimize real migration-replay hotspots first |
 | Splitting oversized lib suites | Move them to `src-tauri/tests/<suite>.rs`, compile them as a separate integration binary, and keep the exported surface minimal and explicitly internal-facing |
 | Splitting HTTP handler suites | Make the handler/types module reachable from integration tests, import through `ralphx_lib::http_server::{handlers, types}`, and keep SQLite-only handler helpers on `AppState::new_sqlite_test()` / `new_sqlite_test_with_registry()` instead of duplicating ad hoc setup |
