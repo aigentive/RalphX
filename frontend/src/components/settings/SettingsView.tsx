@@ -22,7 +22,6 @@ import CapacitySettingsSection from "./sections/CapacitySettingsSection";
 import PlanningSettingsSection from "./sections/PlanningSettingsSection";
 import TasksSettingsSection from "./sections/TasksSettingsSection";
 import WorkspaceSettingsSection from "./sections/WorkspaceSettingsSection";
-import { DatabaseMaintenanceSection } from "./DatabaseMaintenanceSection";
 
 // ============================================================================
 // Main Component
@@ -93,7 +92,6 @@ export function SettingsView({
       <WorkspaceSettingsSection settings={settings} disabled={isSaving} onSettingsChange={handleSettingsChange} />
       <CapacitySettingsSection settings={settings} disabled={isSaving} onSettingsChange={handleSettingsChange} />
       <RepositorySettingsSection />
-      <DatabaseMaintenanceSection />
       <ProjectAnalysisSection />
       <IdeationEffortSection />
       <IdeationModelSection />
