@@ -23,6 +23,18 @@ fn queued_message_pre_upgrade_payload_without_persona_keys_deserializes_to_inher
     assert_eq!(queued.agent_name_override, None);
     assert_eq!(queued.composer_selection_snapshot, None);
     assert!(queued.composer_excerpt_references.is_empty());
+    assert_eq!(queued.persisted_message_id, None);
+}
+
+#[test]
+fn queued_message_round_trips_persisted_message_id() {
+    let mut queued = QueuedMessage::new("Retry stdin turn".to_string());
+    queued.persisted_message_id = Some("existing-user-message".to_string());
+
+    let serialized = serde_json::to_string(&queued).expect("serialize queued message");
+    let restored: QueuedMessage = serde_json::from_str(&serialized).expect("deserialize queue");
+
+    assert_eq!(restored.persisted_message_id, queued.persisted_message_id);
 }
 
 #[test]
@@ -537,10 +549,25 @@ fn test_with_key_methods() {
 }
 
 #[test]
-fn test_remove_stale_drops_old_messages() {
+fn message_metadata_hidden_from_ui_accepts_hidden_or_recovery_flags() {
+    assert!(message_metadata_hidden_from_ui(Some(
+        r#"{"hidden_from_ui":true}"#,
+    )));
+    assert!(message_metadata_hidden_from_ui(Some(
+        r#"{"recovery_context":true}"#,
+    )));
+    assert!(!message_metadata_hidden_from_ui(Some(
+        r#"{"hidden_from_ui":false}"#,
+    )));
+    assert!(!message_metadata_hidden_from_ui(Some("not-json")));
+    assert!(!message_metadata_hidden_from_ui(None));
+}
+
+#[test]
+fn test_remove_stale_retains_old_user_messages_and_drops_hidden_recovery_messages() {
     let queue = MessageQueue::new();
 
-    // Manually construct a stale message (created 10 minutes ago)
+    // Manually construct messages created 10 minutes ago.
     let stale_ts = (chrono::Utc::now() - chrono::Duration::seconds(600)).to_rfc3339();
     let fresh_ts = chrono::Utc::now().to_rfc3339();
 
@@ -551,9 +578,33 @@ fn test_remove_stale_drops_old_messages() {
         q.push(QueuedMessage {
             id: "stale-1".to_string(),
             content: "Old message".to_string(),
-            created_at: stale_ts,
+            created_at: stale_ts.clone(),
             is_editing: false,
+            persisted_message_id: None,
             metadata_override: None,
+            created_at_override: None,
+            harness_override: None,
+            agent_name_override: None,
+            persona_directive: PersonaDirective::Inherit,
+            model_override: None,
+            logical_effort_override: None,
+            service_tier_override: None,
+            preserve_conversation_provider_session_ref: false,
+            force_new_provider_session: false,
+            composer_project_references: Vec::new(),
+            composer_integration_references: Vec::new(),
+            composer_artifact_references: Vec::new(),
+            composer_selection_snapshot: None,
+            composer_excerpt_references: Vec::new(),
+            attachment_ids: Vec::new(),
+        });
+        q.push(QueuedMessage {
+            id: "hidden-recovery-1".to_string(),
+            content: "Internal recovery".to_string(),
+            created_at: stale_ts.clone(),
+            is_editing: false,
+            persisted_message_id: None,
+            metadata_override: Some(r#"{"recovery_context":true,"recovery_reason":"silent_completion_after_tool_activity"}"#.to_string()),
             created_at_override: None,
             harness_override: None,
             agent_name_override: None,
@@ -575,6 +626,7 @@ fn test_remove_stale_drops_old_messages() {
             content: "Fresh message".to_string(),
             created_at: fresh_ts,
             is_editing: false,
+            persisted_message_id: None,
             metadata_override: None,
             created_at_override: None,
             harness_override: None,
@@ -594,14 +646,15 @@ fn test_remove_stale_drops_old_messages() {
         });
     }
 
-    // Threshold: 300s — stale-1 (600s old) should be dropped, fresh-1 kept
+    // Threshold: 300s — only the hidden recovery message should be dropped.
     let dropped = queue.remove_stale(ChatContextType::Ideation, "sess-stale", 300);
     assert_eq!(dropped.len(), 1);
-    assert_eq!(dropped[0].id, "stale-1");
+    assert_eq!(dropped[0].id, "hidden-recovery-1");
 
     let remaining = queue.get_queued(ChatContextType::Ideation, "sess-stale");
-    assert_eq!(remaining.len(), 1);
-    assert_eq!(remaining[0].id, "fresh-1");
+    assert_eq!(remaining.len(), 2);
+    assert_eq!(remaining[0].id, "stale-1");
+    assert_eq!(remaining[1].id, "fresh-1");
 }
 
 #[test]
@@ -974,6 +1027,7 @@ fn test_remove_stale_unparseable_timestamp_retained() {
             content: "Unparseable timestamp".to_string(),
             created_at: "not-a-timestamp".to_string(),
             is_editing: false,
+            persisted_message_id: None,
             metadata_override: None,
             created_at_override: None,
             harness_override: None,

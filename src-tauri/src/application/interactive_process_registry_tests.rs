@@ -5,6 +5,149 @@ use tokio::io::AsyncReadExt;
 use tokio::process::ChildStdin;
 
 #[tokio::test]
+async fn successful_tracked_write_and_concurrent_removal_preserve_the_turn_exactly_once() {
+    let registry = Arc::new(InteractiveProcessRegistry::new());
+    let key = InteractiveProcessKey::new("project", "atomic-write-removal");
+    let (stdin, _child) = create_test_stdin().await;
+    let token = registry
+        .register_with_metadata(
+            key.clone(),
+            stdin,
+            InteractiveProcessMetadata {
+                agent_run_id: Some("current-run".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+    let turn = PendingStdinTurn {
+        persisted_message_id: "message-1".to_string(),
+        content: "unanswered".to_string(),
+        metadata_override: None,
+        queued_at: "2026-07-30T10:00:00Z".to_string(),
+    };
+
+    let (write_result, removed) = tokio::join!(
+        registry.write_message_if_owner_with_pending_turn(
+            &key,
+            token,
+            "current-run",
+            "user follow-up",
+            turn.clone(),
+        ),
+        registry.remove_if_token(&key, token),
+    );
+    let mut removed = removed.expect("exact owner removal");
+    assert!(
+        write_result.is_ok(),
+        "the first-polled write owns the registry lock"
+    );
+    assert_eq!(removed.take_pending_stdin_turns(), vec![turn]);
+    assert!(removed.take_pending_stdin_turns().is_empty());
+}
+
+#[tokio::test]
+async fn pending_stdin_turns_are_fifo_and_exact_owner_scoped() {
+    let registry = InteractiveProcessRegistry::new();
+    let key = InteractiveProcessKey::new("project", "pending-turns");
+    let (stdin, _child) = create_test_stdin().await;
+    let token = registry
+        .register_with_metadata(key.clone(), stdin, InteractiveProcessMetadata::default())
+        .await;
+    let first = PendingStdinTurn {
+        persisted_message_id: "message-1".to_string(),
+        content: "first".to_string(),
+        metadata_override: None,
+        queued_at: "2026-07-30T10:00:00Z".to_string(),
+    };
+    let second = PendingStdinTurn {
+        persisted_message_id: "message-2".to_string(),
+        content: "second".to_string(),
+        metadata_override: Some(r#"{\"source\":\"stdin\"}"#.to_string()),
+        queued_at: "2026-07-30T10:00:01Z".to_string(),
+    };
+
+    assert!(registry.push_pending_turn(&key, token, first.clone()).await);
+    assert!(
+        registry
+            .push_pending_turn(&key, token, second.clone())
+            .await
+    );
+    assert_eq!(registry.pop_pending_turn(&key, token).await, Some(first));
+    assert_eq!(registry.take_pending_turns(&key, token).await, vec![second]);
+    assert!(registry.take_pending_turns(&key, token).await.is_empty());
+}
+
+#[tokio::test]
+async fn pending_stdin_turns_do_not_cross_registration_owners() {
+    let registry = InteractiveProcessRegistry::new();
+    let key = InteractiveProcessKey::new("project", "pending-replacement");
+    let (old_stdin, _old_child) = create_test_stdin().await;
+    let old_token = registry
+        .register_with_metadata(
+            key.clone(),
+            old_stdin,
+            InteractiveProcessMetadata::default(),
+        )
+        .await;
+    assert!(
+        registry
+            .push_pending_turn(
+                &key,
+                old_token,
+                PendingStdinTurn {
+                    persisted_message_id: "old-message".to_string(),
+                    content: "old".to_string(),
+                    metadata_override: None,
+                    queued_at: "2026-07-30T10:00:00Z".to_string(),
+                },
+            )
+            .await
+    );
+
+    let (new_stdin, _new_child) = create_test_stdin().await;
+    let new_token = registry
+        .register_with_metadata(
+            key.clone(),
+            new_stdin,
+            InteractiveProcessMetadata::default(),
+        )
+        .await;
+
+    assert!(registry
+        .take_pending_turns(&key, old_token)
+        .await
+        .is_empty());
+    assert!(registry
+        .take_pending_turns(&key, new_token)
+        .await
+        .is_empty());
+}
+
+#[tokio::test]
+async fn removed_entry_hands_back_pending_stdin_turns() {
+    let registry = InteractiveProcessRegistry::new();
+    let key = InteractiveProcessKey::new("project", "removed-pending-turns");
+    let (stdin, _child) = create_test_stdin().await;
+    let token = registry
+        .register_with_metadata(key.clone(), stdin, InteractiveProcessMetadata::default())
+        .await;
+    let turn = PendingStdinTurn {
+        persisted_message_id: "message-1".to_string(),
+        content: "unanswered".to_string(),
+        metadata_override: None,
+        queued_at: "2026-07-30T10:00:00Z".to_string(),
+    };
+    assert!(registry.push_pending_turn(&key, token, turn.clone()).await);
+
+    let mut removed = registry
+        .remove_if_token(&key, token)
+        .await
+        .expect("owner must remove its own entry");
+    assert_eq!(removed.take_pending_stdin_turns(), vec![turn]);
+    assert!(removed.take_pending_stdin_turns().is_empty());
+}
+
+#[tokio::test]
 async fn capture_owner_returns_current_token_run_id_and_cloned_metadata() {
     let registry = InteractiveProcessRegistry::new();
     let key = InteractiveProcessKey::new("project", "capture-owner");
@@ -300,7 +443,9 @@ async fn retire_after_turn_requires_exact_token_and_run_owner() {
         registry
             .complete_turn_if_owner(&key, token, "current-run")
             .await,
-        InteractiveProcessTurnCompleteDisposition::RetireAfterTurn
+        InteractiveProcessTurnCompleteDisposition::RetireAfterTurn {
+            pending_turns: Vec::new(),
+        }
     );
     assert!(!registry.has_process(&key).await);
 }
@@ -509,7 +654,9 @@ async fn stale_retirement_cannot_remove_a_replacement_entry() {
         registry
             .complete_turn_if_owner(&key, current_token, "current-run")
             .await,
-        InteractiveProcessTurnCompleteDisposition::RetireAfterTurn
+        InteractiveProcessTurnCompleteDisposition::RetireAfterTurn {
+            pending_turns: Vec::new(),
+        }
     );
     assert!(!registry.has_process(&key).await);
 }
@@ -904,7 +1051,14 @@ async fn test_clear_removes_all() {
 }
 
 /// Helper: create a real stdin pipe via `cat` subprocess for testing writes.
+/// Serializes fixture pipe creation + spawn so a concurrently forked `cat`
+/// cannot inherit another test's pipe read end before CLOEXEC is applied.
+/// Without this, closed-stdin write tests miss their EPIPE when enough
+/// spawning tests run in parallel.
+static SPAWN_GUARD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 async fn create_test_stdin() -> (ChildStdin, tokio::process::Child) {
+    let _guard = SPAWN_GUARD.lock().await;
     let mut child = tokio::process::Command::new("cat")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
@@ -916,6 +1070,7 @@ async fn create_test_stdin() -> (ChildStdin, tokio::process::Child) {
 }
 
 async fn create_observable_test_stdin() -> (ChildStdin, tokio::process::Child) {
+    let _guard = SPAWN_GUARD.lock().await;
     let mut child = tokio::process::Command::new("cat")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())

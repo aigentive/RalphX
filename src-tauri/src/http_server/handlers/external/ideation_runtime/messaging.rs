@@ -156,7 +156,7 @@ pub async fn ideation_message_http(
             .write_message(&ipr_key, &stream_json_message)
             .await
         {
-            Ok(()) => {
+            Ok(_) => {
                 maybe_transition_to_planning(
                     Arc::clone(&state.app_state.ideation_session_repo),
                     IdeationSessionId::from_string(session_id_str.clone()),

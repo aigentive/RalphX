@@ -220,6 +220,22 @@ describe("MessageItem - Attachment Integration", () => {
     expect(screen.getByText("Second block")).toBeInTheDocument();
   });
 
+  it("renders no thinking pill for a persisted thinking block with empty text", () => {
+    renderMessageItem(
+      <MessageItem
+        {...baseProps}
+        role="assistant"
+        contentBlocks={[
+          { type: "thinking", text: "  " },
+          makeContentText("The answer remains visible."),
+        ]}
+      />,
+    );
+
+    expect(screen.queryByTestId("thinking-group-toggle")).not.toBeInTheDocument();
+    expect(screen.getByText("The answer remains visible.")).toBeInTheDocument();
+  });
+
   it("passes argument preview metadata from content block tool uses into diff widgets", async () => {
     const user = userEvent.setup();
     const contentBlocks = [

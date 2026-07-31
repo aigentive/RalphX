@@ -30,6 +30,8 @@ import { TaskSubagentCard } from "./TaskSubagentCard";
 import { shouldUseWebkitSafeScrollBehavior } from "@/lib/platform-quirks";
 import { logger } from "@/lib/logger";
 import { useMessageAttachments } from "@/hooks/useMessageAttachments";
+import { useRunAttributions } from "@/hooks/useRunAttributions";
+import type { AgentRunAttribution } from "@/api/agent-runs";
 import { ChevronDown } from "lucide-react";
 import type { MessageAttachment } from "./MessageAttachments";
 import { ToolCallStoreKeyContext } from "./tool-widgets/ToolCallStoreKeyContext";
@@ -385,6 +387,11 @@ interface RunAttributionTiming {
   runId: string;
   startedAt: string;
   completedAt: string | null;
+  launchRole: string | null;
+}
+
+interface ResolvedRunAttributionTiming extends RunAttributionTiming {
+  attribution: AgentRunAttribution | null;
 }
 
 /**
@@ -431,6 +438,7 @@ function buildRunAttributionTimingByMessageId(
       completedAt: Number.isFinite(timing.completedAt)
         ? new Date(timing.completedAt).toISOString()
         : null,
+      launchRole: null,
     });
   }
   return byMessageId;
@@ -1192,6 +1200,35 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       () => buildRunAttributionTimingByMessageId(messages, activeAgentRunId),
       [messages, activeAgentRunId],
     );
+    const runAttributionRunIds = useMemo(
+      () => [...new Set([...runAttributionTimingByMessageId.values()].map(({ runId }) => runId))],
+      [runAttributionTimingByMessageId],
+    );
+    const {
+      data: runAttributions,
+      isError: isRunAttributionsError,
+      isPending: isRunAttributionsPending,
+      refetch: refetchRunAttributions,
+    } = useRunAttributions(runAttributionRunIds, {
+      enabled: !shouldShowInitialPaintCover,
+    });
+    const resolvedRunAttributionTimingByMessageId = useMemo(() => {
+      const resolved = new Map<string, ResolvedRunAttributionTiming>();
+      for (const [messageId, timing] of runAttributionTimingByMessageId) {
+        const attribution = runAttributions?.get(timing.runId) ?? null;
+        resolved.set(messageId, {
+          ...timing,
+          startedAt: attribution?.startedAt ?? timing.startedAt,
+          completedAt: attribution?.completedAt ?? timing.completedAt,
+          launchRole: attribution?.launchRole ?? timing.launchRole,
+          attribution,
+        });
+      }
+      return resolved;
+    }, [runAttributionTimingByMessageId, runAttributions]);
+    const retryRunAttributions = useCallback(() => {
+      void refetchRunAttributions();
+    }, [refetchRunAttributions]);
     const delegationProjection = useMemo(
       () => projectDelegationTimelineMessages(messages, streamingTasks),
       [messages, streamingTasks],
@@ -1949,7 +1986,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
               reserveAssistantIconSpace={effectiveSenderGroupState.reserveAssistantGutter}
               showProviderMeta={effectiveSenderGroupState.showSenderHeader}
             />
-            {runAttributionTimingByMessageId.has(msg.id) ? <RunAttributionWidget {...runAttributionTimingByMessageId.get(msg.id)!} /> : null}
+            {resolvedRunAttributionTimingByMessageId.has(msg.id) ? <RunAttributionWidget {...resolvedRunAttributionTimingByMessageId.get(msg.id)!} isAttributionPending={isRunAttributionsPending} isAttributionError={isRunAttributionsError} retryAttribution={retryRunAttributions} /> : null}
           </ContentShell>
         </div>
       );
@@ -1972,7 +2009,10 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       providerHarness,
       providerSessionId,
       renderStreamingToolCallBlock,
-      runAttributionTimingByMessageId,
+      resolvedRunAttributionTimingByMessageId,
+      isRunAttributionsError,
+      isRunAttributionsPending,
+      retryRunAttributions,
       streamingMessageCreatedAt,
       streamingTasks,
       timelineSenderGroups,
@@ -2128,7 +2168,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
                     reserveAssistantIconSpace={effectiveSenderGroupState.reserveAssistantGutter}
                     showProviderMeta={effectiveSenderGroupState.showSenderHeader}
                   />
-                  {runAttributionTimingByMessageId.has(msg.id) ? <RunAttributionWidget {...runAttributionTimingByMessageId.get(msg.id)!} /> : null}
+                  {resolvedRunAttributionTimingByMessageId.has(msg.id) ? <RunAttributionWidget {...resolvedRunAttributionTimingByMessageId.get(msg.id)!} isAttributionPending={isRunAttributionsPending} isAttributionError={isRunAttributionsError} retryAttribution={retryRunAttributions} /> : null}
                 </ContentShell>
               </div>
             );

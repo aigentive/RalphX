@@ -60,5 +60,15 @@ describe("ChatActivityVisualTestPage", () => {
     expect(within(codex).getByText("write")).toBeInTheDocument();
     expect(within(codex).getAllByText("ralphx::delegate_start")).toHaveLength(2);
     expect(within(codex).getAllByText("ralphx::delegate_wait")).toHaveLength(2);
+
+    expect(screen.getByRole("button", {
+      name: "Agent thinking… Expand thinking details.",
+    })).toBeInTheDocument();
+    expect(screen.getByRole("button", {
+      name: "Agent thinking… · ~2,000 tokens Expand thinking details.",
+    })).toBeInTheDocument();
+    expect(screen.getByRole("button", {
+      name: "Agent thought for 2s Expand thinking details.",
+    })).toBeInTheDocument();
   });
 });

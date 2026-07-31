@@ -123,6 +123,7 @@ vi.mock("@/lib/chat-context-registry", () => ({
 import { useChatEvents } from "./useChatEvents";
 import { managedTeamKeys } from "./useManagedTeam";
 import { useChatStore } from "@/stores/chatStore";
+import settledThinkingPayload from "../../../src-tauri/tests/fixtures/agent_thinking_payload.settled.json";
 
 // ============================================================================
 // Helpers
@@ -1205,25 +1206,21 @@ describe("useChatEvents", () => {
       expect(result[0]).toMatchObject({ type: "thinking", text: "Initial more" });
     });
 
-    it("carries duration_ms and is_settled from the payload", () => {
+    it("preserves accumulated reasoning from the committed settled payload contract", () => {
       const props = makeProps();
       renderAndClear(props);
 
       act(() => {
         fireEvent("agent:thinking", {
-          text: "Done thinking",
+          ...settledThinkingPayload,
           conversation_id: CONV_ID,
           context_id: CTX_ID,
-          block_index: 0,
-          duration_ms: 1500,
-          is_settled: true,
-          append_to_previous: false,
         });
       });
 
       const result = executeUpdater<StreamingContentBlock[]>(
         props.setStreamingContentBlocks,
-        [],
+        [{ type: "thinking", text: "Done thinking", blockIndex: 0 }],
       );
       expect(result[0]).toMatchObject({
         type: "thinking",
@@ -1231,6 +1228,19 @@ describe("useChatEvents", () => {
         durationMs: 1500,
         isSettled: true,
       });
+    });
+
+    it("does not create an empty thinking block from an unmatched settle event", () => {
+      const props = makeProps();
+      renderAndClear(props);
+
+      act(() => fireEvent("agent:thinking", {
+        text: "", conversation_id: CONV_ID, context_id: CTX_ID,
+        block_index: 8, duration_ms: 1_500, is_settled: true, append_to_previous: true,
+      }));
+
+      const existing: StreamingContentBlock[] = [{ type: "text", text: "Already visible" }];
+      expect(executeUpdater<StreamingContentBlock[]>(props.setStreamingContentBlocks, existing)).toBe(existing);
     });
 
     it("rejects a thinking event from a stale run", () => {
@@ -1289,6 +1299,46 @@ describe("useChatEvents", () => {
       expect(updated).toMatchObject([{ type: "thinking", text: "visible", blockIndex: 4, estimatedTokens: 700 }]);
     });
 
+    it("attaches token progress to the unsettled thinking block, not the last settled one", () => {
+      const props = makeProps({ activeAgentRunId: "current-run" });
+      renderAndClear(props);
+
+      act(() => fireEvent("agent:thinking_progress", {
+        estimated_tokens: 700, conversation_id: CONV_ID, context_id: CTX_ID,
+        context_type: "task_execution", run_id: "current-run",
+      }));
+
+      const updated = executeUpdater<StreamingContentBlock[]>(props.setStreamingContentBlocks, [
+        { type: "thinking", text: "Finished", blockIndex: 0, isSettled: true, estimatedTokens: 50 },
+        { type: "tool_use", toolCall: { id: "tool-1", name: "Read", arguments: {} } },
+        { type: "thinking", text: "Still working", blockIndex: 2, isSettled: false },
+        { type: "thinking", text: "Earlier settled", blockIndex: 3, isSettled: true },
+      ]);
+
+      expect(updated[0]).toMatchObject({ estimatedTokens: 50 });
+      expect(updated[2]).toMatchObject({ estimatedTokens: 700 });
+      expect(updated[3]).not.toHaveProperty("estimatedTokens");
+    });
+
+    it("creates a fresh synthetic block when every thinking block is settled", () => {
+      const props = makeProps({ activeAgentRunId: "current-run" });
+      renderAndClear(props);
+
+      act(() => fireEvent("agent:thinking_progress", {
+        estimated_tokens: 700, conversation_id: CONV_ID, context_id: CTX_ID,
+        context_type: "task_execution", run_id: "current-run",
+      }));
+
+      const updated = executeUpdater<StreamingContentBlock[]>(props.setStreamingContentBlocks, [
+        { type: "thinking", text: "Finished", blockIndex: 0, isSettled: true },
+      ]);
+
+      expect(updated).toMatchObject([
+        { type: "thinking", text: "Finished", blockIndex: 0, isSettled: true },
+        { type: "thinking", text: "", blockIndex: Number.MIN_SAFE_INTEGER, estimatedTokens: 700 },
+      ]);
+    });
+
     it("replaces synthetic progress with text while retaining its token estimate", () => {
       const props = makeProps();
       renderAndClear(props);
@@ -1305,6 +1355,27 @@ describe("useChatEvents", () => {
         type: "thinking", text: "Visible thought", blockIndex: 4, estimatedTokens: 1_200,
         receivedAt: expect.any(Number),
       }]);
+    });
+
+    it("adopts the last unsettled synthetic thinking block when real text arrives", () => {
+      const props = makeProps();
+      renderAndClear(props);
+
+      act(() => fireEvent("agent:thinking", {
+        text: "Second thought", conversation_id: CONV_ID, context_id: CTX_ID,
+        block_index: 4, append_to_previous: false,
+      }));
+      const result = executeUpdater<StreamingContentBlock[]>(props.setStreamingContentBlocks, [
+        { type: "thinking", text: "First thought", blockIndex: Number.MIN_SAFE_INTEGER, isSettled: true },
+        { type: "tool_use", toolCall: { id: "tool-1", name: "Read", arguments: {} } },
+        { type: "thinking", text: "", blockIndex: Number.MIN_SAFE_INTEGER, estimatedTokens: 1_200 },
+      ]);
+
+      expect(result).toMatchObject([
+        { type: "thinking", text: "First thought", blockIndex: Number.MIN_SAFE_INTEGER, isSettled: true },
+        { type: "tool_use", toolCall: { id: "tool-1", name: "Read", arguments: {} } },
+        { type: "thinking", text: "Second thought", blockIndex: 4, estimatedTokens: 1_200 },
+      ]);
     });
   });
 

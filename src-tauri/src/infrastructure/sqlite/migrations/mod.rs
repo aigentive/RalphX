@@ -577,11 +577,14 @@ mod v20260730151837_agent_workspace_repair_ci_rerun_reservations;
 mod v20260730151837_agent_workspace_repair_ci_rerun_reservations_tests;
 mod v20260730161032_agent_workspace_pr_autofix_completion_evidence;
 mod v20260731023949_agent_run_identity;
+mod v20260731111346_purge_empty_thinking_blocks;
 mod v20260731125157_add_workspace_repair_fingerprint_state;
 #[cfg(test)]
 mod v20260730161032_agent_workspace_pr_autofix_completion_evidence_tests;
 #[cfg(test)]
 mod v20260731023949_agent_run_identity_tests;
+#[cfg(test)]
+mod v20260731111346_purge_empty_thinking_blocks_tests;
 #[cfg(test)]
 mod v20260731125157_add_workspace_repair_fingerprint_state_tests;
 #[cfg(test)]
@@ -1858,6 +1861,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260731023949,
         name: "agent_run_identity",
         migrate: v20260731023949_agent_run_identity::migrate,
+    },
+    Migration {
+        version: 20260731111346,
+        name: "purge_empty_thinking_blocks",
+        migrate: v20260731111346_purge_empty_thinking_blocks::migrate,
     },
     Migration {
         version: 20260731125157,

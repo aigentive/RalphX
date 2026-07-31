@@ -161,6 +161,8 @@ impl AgentRunRepository for MemoryAgentRunRepository {
             if status == AgentRunStatus::Running {
                 run.completed_at = None;
                 run.error_message = None;
+            } else if run.completed_at.is_none() {
+                run.completed_at = Some(chrono::Utc::now());
             }
         }
         Ok(())

@@ -44,6 +44,14 @@ The goal is to make adding a future harness a targeted extension of that shared 
 
 RalphX also has provider-neutral [internal skills](internal-skills.md). These are RalphX-owned instruction packs that can be injected into Claude, Codex, or future harness prompts through canonical per-agent allowlists.
 
+## Thinking and reasoning display
+
+RalphX displays only reasoning summaries or thinking deltas that the selected harness explicitly exposes through its CLI stream. It does not access hidden model chain-of-thought.
+
+Claude can stream a running thinking block and later settle it with a measured duration when its CLI supplies block start/delta/stop events. Codex reasoning currently arrives as complete summarized items, so it renders settled without a duration. Both normalize into the same chat UI and persisted timeline contract.
+
+For the exact CLI flags, capability probing, native event shapes, persistence, failure cases, and tests, see [Agent Thinking Capture](../architecture/agent-thinking-capture.md).
+
 ---
 
 ## Where you configure it

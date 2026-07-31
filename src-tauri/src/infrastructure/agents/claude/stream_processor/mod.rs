@@ -158,7 +158,10 @@ impl StreamProcessor {
                         if !text.is_empty() {
                             self.had_streaming_thinking_deltas = true;
                             self.current_thinking_block.push_str(&text);
-                            events.push(StreamEvent::Thinking(text));
+                            events.push(StreamEvent::Thinking {
+                                text,
+                                block_index: self.content_blocks.len() as u64,
+                            });
                         }
                     }
                 } else if delta.delta_type == "input_json_delta" {
@@ -233,12 +236,18 @@ impl StreamProcessor {
                         });
                     }
                     if !self.current_thinking_block.is_empty() {
+                        let duration_ms = self
+                            .thinking_block_started_at
+                            .take()
+                            .map(|started_at| started_at.elapsed().as_millis() as u64);
+                        let block_index = self.content_blocks.len() as u64;
                         self.content_blocks.push(ContentBlockItem::Thinking {
                             text: std::mem::take(&mut self.current_thinking_block),
-                            duration_ms: self
-                                .thinking_block_started_at
-                                .take()
-                                .map(|started_at| started_at.elapsed().as_millis() as u64),
+                            duration_ms,
+                        });
+                        events.push(StreamEvent::ThinkingSettled {
+                            block_index,
+                            duration_ms,
                         });
                     }
                     self.in_thinking_block = false;
@@ -387,11 +396,19 @@ impl StreamProcessor {
                         }
                         AssistantContent::Thinking { thinking } => {
                             if !thinking.is_empty() && !self.had_streaming_thinking_deltas {
+                                let block_index = self.content_blocks.len() as u64;
                                 self.content_blocks.push(ContentBlockItem::Thinking {
                                     text: thinking.clone(),
                                     duration_ms: None,
                                 });
-                                events.push(StreamEvent::Thinking(thinking));
+                                events.push(StreamEvent::Thinking {
+                                    text: thinking,
+                                    block_index,
+                                });
+                                events.push(StreamEvent::ThinkingSettled {
+                                    block_index,
+                                    duration_ms: None,
+                                });
                             }
                         }
                         AssistantContent::Other => {}

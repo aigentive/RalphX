@@ -431,6 +431,7 @@ pub(super) async fn persist_timeline_snapshot(
         let kind = match block {
             ContentBlockItem::Text { text } if text.is_empty() => continue,
             ContentBlockItem::Text { .. } => ChatTimelineItemKind::Text,
+            ContentBlockItem::Thinking { text, .. } if text.trim().is_empty() => continue,
             ContentBlockItem::Thinking { .. } => ChatTimelineItemKind::Thinking,
             ContentBlockItem::ToolUse { .. } => ChatTimelineItemKind::ToolUse,
         };
@@ -1764,7 +1765,7 @@ pub async fn process_stream_background<R: Runtime>(
                     && matches!(
                         event,
                         StreamEvent::TextChunk(_)
-                            | StreamEvent::Thinking(_)
+                            | StreamEvent::Thinking { .. }
                             | StreamEvent::ToolCallStarted { .. }
                     )
                 {
@@ -1869,10 +1870,9 @@ pub async fn process_stream_background<R: Runtime>(
                             }
                         }
                     }
-                    StreamEvent::Thinking(text) => {
-                        let block_position = current_text_block_position(&processor.content_blocks);
+                    StreamEvent::Thinking { text, block_index } => {
                         streaming_state_cache
-                            .append_thinking(&conversation_id_str, block_position as usize, &text)
+                            .append_thinking(&conversation_id_str, block_index as usize, &text)
                             .await;
                         if let Some(ref handle) = app_handle {
                             let _ = handle.emit(
@@ -1880,12 +1880,14 @@ pub async fn process_stream_background<R: Runtime>(
                                 AgentThinkingPayload {
                                     text: text.clone(),
                                     run_id: agent_run_id.clone(),
-                                    block_index: Some(block_position),
+                                    block_index: Some(block_index),
                                     conversation_id: conversation_id_str.clone(),
                                     context_type: context_type_str.clone(),
                                     context_id: context_id_str.clone(),
                                     seq: stream_seq,
                                     append_to_previous: true,
+                                    duration_ms: None,
+                                    is_settled: false,
                                 },
                             );
                             stream_seq += 1;
@@ -1941,6 +1943,29 @@ pub async fn process_stream_background<R: Runtime>(
                                 };
                                 let _ = repo.save(event).await;
                             }
+                        }
+                    }
+                    StreamEvent::ThinkingSettled {
+                        block_index,
+                        duration_ms,
+                    } => {
+                        if let Some(ref handle) = app_handle {
+                            let _ = handle.emit(
+                                events::AGENT_THINKING,
+                                AgentThinkingPayload {
+                                    text: String::new(),
+                                    run_id: agent_run_id.clone(),
+                                    block_index: Some(block_index),
+                                    conversation_id: conversation_id_str.clone(),
+                                    context_type: context_type_str.clone(),
+                                    context_id: context_id_str.clone(),
+                                    seq: stream_seq,
+                                    append_to_previous: true,
+                                    duration_ms,
+                                    is_settled: true,
+                                },
+                            );
+                            stream_seq += 1;
                         }
                     }
                     StreamEvent::ThinkingProgress {
@@ -2403,6 +2428,17 @@ pub async fn process_stream_background<R: Runtime>(
 
                         turns_finalized += 1;
 
+                        // Interactive stdin turns are consumed in order. Once an
+                        // assistant turn finalizes, its matching pending user turn
+                        // no longer needs exit recovery.
+                        if let (Some(registry), Some(key), Some(token)) = (
+                            interactive_process_registry.as_ref(),
+                            interactive_process_key.as_ref(),
+                            interactive_process_token,
+                        ) {
+                            let _ = registry.pop_pending_turn(key, token).await;
+                        }
+
                         // Free the execution slot while process is idle between turns.
                         // Only for contexts that use execution slots.
                         if super::uses_execution_slot(context_type) {
@@ -2528,22 +2564,41 @@ pub async fn process_stream_background<R: Runtime>(
                             }
                         }
 
-                        let retire_after_turn =
+                        let retired_pending_turns =
                             if let (Some(registry), Some(key), Some(token), Some(run_id)) = (
                                 interactive_process_registry.as_ref(),
                                 interactive_process_key.as_ref(),
                                 interactive_process_token,
                                 agent_run_id.as_deref(),
                             ) {
-                                matches!(
-                                    registry.complete_turn_if_owner(key, token, run_id).await,
-                                    InteractiveProcessTurnCompleteDisposition::RetireAfterTurn
-                                )
+                                match registry.complete_turn_if_owner(key, token, run_id).await {
+                                    InteractiveProcessTurnCompleteDisposition::RetireAfterTurn {
+                                        pending_turns,
+                                    } => Some(pending_turns),
+                                    InteractiveProcessTurnCompleteDisposition::Stale
+                                    | InteractiveProcessTurnCompleteDisposition::KeepAlive => None,
+                                }
                             } else {
-                                false
+                                None
                             };
 
-                        if retire_after_turn {
+                        if let Some(pending_turns) = retired_pending_turns {
+                            if let Some(handle) = app_handle.as_ref() {
+                                let state = handle.state::<crate::application::AppState>();
+                                super::chat_service_queue::requeue_pending_stdin_turns(
+                                    Some(&state.queued_message_repo),
+                                    &state.message_queue,
+                                    Some(handle),
+                                    context_type,
+                                    interactive_process_key
+                                        .as_ref()
+                                        .map(|key| key.context_id.as_str())
+                                        .unwrap_or(context_id),
+                                    Some(conversation_id.as_str()),
+                                    pending_turns,
+                                )
+                                .await;
+                            }
                             tracing::info!(
                                 conversation_id = %conversation_id_str,
                                 "TurnComplete retired exact runtime for mode handoff"
@@ -3747,6 +3802,8 @@ async fn process_codex_stream_background<R: Runtime>(
                             context_id: context_id_str.clone(),
                             seq: stream_seq,
                             append_to_previous: false,
+                            duration_ms: None,
+                            is_settled: true,
                         },
                     );
                     stream_seq += 1;
