@@ -79,16 +79,22 @@ fi
 fn write_fake_claude_cli_with_partial_messages_support(
     path: &std::path::Path,
     supports_partial_messages: bool,
+    supports_thinking_display: bool,
 ) {
     let partial_messages_flag = if supports_partial_messages {
         "  --include-partial-messages"
     } else {
         ""
     };
+    let thinking_display_probe = if supports_thinking_display {
+        "elif [ \"$1\" = \"--thinking-display\" ] && [ \"$2\" = \"summarized\" ] && [ \"$3\" = \"--version\" ]; then\n  printf 'claude-code 2.1.219\\n'\n"
+    } else {
+        ""
+    };
     std::fs::write(
         path,
         format!(
-            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  printf 'claude-code 2.1.219\\n'\nelif [ \"$1\" = \"--help\" ]; then\n  printf '%s\\n' 'Claude Code' 'Options:' '{partial_messages_flag}'\nelse\n  printf 'unexpected args: %s\\n' \"$*\" >&2\n  exit 64\nfi\n"
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  printf 'claude-code 2.1.219\\n'\nelif [ \"$1\" = \"--help\" ]; then\n  printf '%s\\n' 'Claude Code' 'Options:' '{partial_messages_flag}'\n{thinking_display_probe}else\n  printf 'unexpected args: %s\\n' \"$*\" >&2\n  exit 64\nfi\n"
         ),
     )
     .expect("write fake claude");
@@ -264,7 +270,7 @@ fn build_cli_args_includes_partial_messages_for_non_interactive() {
     clear_claude_cli_capability_cache();
     let temp = tempfile::tempdir().expect("tempdir");
     let cli_path = temp.path().join("claude");
-    write_fake_claude_cli_with_partial_messages_support(&cli_path, true);
+    write_fake_claude_cli_with_partial_messages_support(&cli_path, true, false);
     let client = ClaudeCodeClient::new().with_cli_path(&cli_path);
 
     let args = client
@@ -276,21 +282,21 @@ fn build_cli_args_includes_partial_messages_for_non_interactive() {
 }
 
 #[test]
-fn build_cli_args_omits_partial_messages_for_interactive() {
+fn build_cli_args_includes_partial_messages_for_interactive() {
     let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
         .lock()
         .expect("env mutex");
     clear_claude_cli_capability_cache();
     let temp = tempfile::tempdir().expect("tempdir");
     let cli_path = temp.path().join("claude");
-    write_fake_claude_cli_with_partial_messages_support(&cli_path, true);
+    write_fake_claude_cli_with_partial_messages_support(&cli_path, true, false);
     let client = ClaudeCodeClient::new().with_cli_path(&cli_path);
 
     let args = client
         .build_cli_args(&AgentConfig::worker("Test prompt"), None, true)
         .expect("build CLI args");
 
-    assert!(!args.contains(&"--include-partial-messages".to_string()));
+    assert!(args.contains(&"--include-partial-messages".to_string()));
     clear_claude_cli_capability_cache();
 }
 
@@ -302,7 +308,7 @@ fn build_cli_args_omits_partial_messages_when_cli_capability_is_unsupported() {
     clear_claude_cli_capability_cache();
     let temp = tempfile::tempdir().expect("tempdir");
     let cli_path = temp.path().join("claude");
-    write_fake_claude_cli_with_partial_messages_support(&cli_path, false);
+    write_fake_claude_cli_with_partial_messages_support(&cli_path, false, false);
     let client = ClaudeCodeClient::new().with_cli_path(&cli_path);
 
     let args = client
@@ -310,6 +316,61 @@ fn build_cli_args_omits_partial_messages_when_cli_capability_is_unsupported() {
         .expect("build CLI args");
 
     assert!(!args.contains(&"--include-partial-messages".to_string()));
+    clear_claude_cli_capability_cache();
+}
+
+#[test]
+fn build_cli_args_includes_thinking_display_when_cli_capability_is_supported() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
+    clear_claude_cli_capability_cache();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cli_path = temp.path().join("claude");
+    write_fake_claude_cli_with_partial_messages_support(&cli_path, false, true);
+    let client = ClaudeCodeClient::new().with_cli_path(&cli_path);
+
+    let args = client
+        .build_cli_args(&AgentConfig::worker("Test prompt"), None, true)
+        .expect("build CLI args");
+
+    assert_eq!(arg_value(&args, "--thinking-display"), Some("summarized"));
+    clear_claude_cli_capability_cache();
+}
+
+#[test]
+fn build_cli_args_omits_thinking_display_when_cli_capability_is_unsupported() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
+    clear_claude_cli_capability_cache();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cli_path = temp.path().join("claude");
+    write_fake_claude_cli_with_partial_messages_support(&cli_path, false, false);
+    let client = ClaudeCodeClient::new().with_cli_path(&cli_path);
+
+    let args = client
+        .build_cli_args(&AgentConfig::worker("Test prompt"), None, false)
+        .expect("build CLI args");
+
+    assert!(!args.contains(&"--thinking-display".to_string()));
+    clear_claude_cli_capability_cache();
+}
+
+#[test]
+fn build_cli_args_omits_thinking_display_when_cli_capability_probe_fails_entirely() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
+    clear_claude_cli_capability_cache();
+    let missing_cli_path = tempfile::tempdir().expect("tempdir").path().join("claude");
+    let client = ClaudeCodeClient::new().with_cli_path(&missing_cli_path);
+
+    let args = client
+        .build_cli_args(&AgentConfig::worker("Test prompt"), None, false)
+        .expect("optional capability probe failure should not block argument construction");
+
+    assert!(!args.contains(&"--thinking-display".to_string()));
     clear_claude_cli_capability_cache();
 }
 

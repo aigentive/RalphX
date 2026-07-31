@@ -48,6 +48,13 @@ describe("ChatMessageList thinking lifecycle", () => {
     expect(screen.queryByText("first thought")).not.toBeInTheDocument();
   });
 
+  it("keeps an empty live thinking block pill-only while showing token progress", () => {
+    renderList([{ type: "thinking", blockIndex: 9, text: "", estimatedTokens: 2_000 }]);
+
+    expect(screen.getByRole("button", { name: /Agent thinking… · ~2,000 tokens/ })).toBeInTheDocument();
+    expect(screen.queryByTestId("thinking-content")).not.toBeInTheDocument();
+  });
+
   it("keeps a user's collapsed or expanded thinking choice across later deltas", () => {
     const { rerender } = renderList([thinking(1, "live thought")]);
 

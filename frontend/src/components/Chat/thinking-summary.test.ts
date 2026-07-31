@@ -6,6 +6,10 @@ describe("formatThinkingSummary", () => {
     expect(formatThinkingSummary(false)).toBe("Agent thinking…");
   });
 
+  it("includes locale-formatted estimated tokens while active", () => {
+    expect(formatThinkingSummary(false, undefined, 12_345)).toBe("Agent thinking… · ~12,345 tokens");
+  });
+
   it("returns settled label with duration when provided", () => {
     expect(formatThinkingSummary(true, 5000)).toBe("Agent thought for 5s");
   });

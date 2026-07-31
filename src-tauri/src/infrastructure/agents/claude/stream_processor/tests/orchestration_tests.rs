@@ -423,6 +423,97 @@ fn test_processor_thinking_block_verbose() {
     ));
 }
 
+#[test]
+fn assistant_summary_with_empty_thinking_emits_nothing() {
+    let mut processor = StreamProcessor::new();
+
+    let events = processor.process_message(StreamMessage::Assistant {
+        message: AssistantMessage {
+            content: vec![AssistantContent::Thinking {
+                thinking: String::new(),
+            }],
+            stop_reason: Some("end_turn".to_string()),
+            usage: None,
+        },
+        session_id: None,
+    });
+
+    assert!(events.is_empty());
+    assert!(processor.content_blocks.is_empty());
+}
+
+#[test]
+fn streamed_thinking_then_summary_keeps_only_sealed_block() {
+    let mut processor = StreamProcessor::new();
+    processor.process_message(StreamMessage::ContentBlockStart {
+        index: Some(0),
+        content_block: ContentBlock {
+            block_type: "thinking".to_string(),
+            id: None,
+            name: None,
+            text: None,
+            input: None,
+        },
+    });
+    processor.process_message(StreamMessage::ContentBlockDelta {
+        index: Some(0),
+        delta: ContentDelta {
+            delta_type: "thinking_delta".to_string(),
+            text: Some("Reasoning".to_string()),
+            partial_json: None,
+        },
+    });
+    processor.process_message(StreamMessage::ContentBlockStop { index: Some(0) });
+
+    let summary_events = processor.process_message(StreamMessage::Assistant {
+        message: AssistantMessage {
+            content: vec![AssistantContent::Thinking {
+                thinking: "Reasoning".to_string(),
+            }],
+            stop_reason: Some("end_turn".to_string()),
+            usage: None,
+        },
+        session_id: None,
+    });
+
+    assert!(summary_events.is_empty());
+    assert!(matches!(
+        processor.content_blocks.as_slice(),
+        [ContentBlockItem::Thinking {
+            text,
+            duration_ms: Some(_),
+        }] if text == "Reasoning"
+    ));
+}
+
+#[test]
+fn summary_only_non_empty_thinking_keeps_one_block() {
+    let mut processor = StreamProcessor::new();
+
+    let events = processor.process_message(StreamMessage::Assistant {
+        message: AssistantMessage {
+            content: vec![AssistantContent::Thinking {
+                thinking: "Reasoning".to_string(),
+            }],
+            stop_reason: Some("end_turn".to_string()),
+            usage: None,
+        },
+        session_id: None,
+    });
+
+    assert!(matches!(
+        events.as_slice(),
+        [StreamEvent::Thinking(text)] if text == "Reasoning"
+    ));
+    assert!(matches!(
+        processor.content_blocks.as_slice(),
+        [ContentBlockItem::Thinking {
+            text,
+            duration_ms: None,
+        }] if text == "Reasoning"
+    ));
+}
+
 /// When Claude CLI emits both streaming delta events AND a verbose `assistant` summary,
 /// the `TextChunk` must not be emitted twice and `response_text` must contain the text once.
 #[test]
@@ -1037,6 +1128,8 @@ fn test_system_without_subtype_still_works() {
         output: None,
         exit_code: None,
         outcome: None,
+        estimated_tokens: None,
+        estimated_tokens_delta: None,
     };
 
     let events = processor.process_message(msg);
