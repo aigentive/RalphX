@@ -742,7 +742,14 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
           eventContextId,
           payload.conversation_id
         );
-        queueMessage(eventContextKey, content, message_id, payload.attachment_ids);
+        queueMessage(
+          eventContextKey,
+          content,
+          message_id,
+          payload.attachment_ids,
+          undefined,
+          "backend",
+        );
       })
     );
 

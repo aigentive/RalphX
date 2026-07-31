@@ -451,13 +451,14 @@ describe("IntegratedChatPanel", () => {
     mockChatPanelContext.isFinalizing = false;
   });
 
-  it("hides Claude queues, restores Codex queues, and rejects an old clear", () => {
+  it("hides optimistic Claude queues, restores Codex queues, and rejects an old clear", () => {
     const queuedMessage = {
       id: "queued-1",
       content: "Follow up",
       createdAt: "2026-07-23T00:00:00Z",
       isEditing: false,
       attachmentIds: [],
+      source: "optimistic" as const,
     };
     const hostComposer = (props: IntegratedChatComposerRenderProps) => (
       <div
@@ -507,6 +508,45 @@ describe("IntegratedChatPanel", () => {
     act(() => {
       useChatStore.getState().clearActiveAgentRun("task:task-1", "run-claude");
     });
+
+    expect(screen.getByTestId("queued-message-list")).toBeInTheDocument();
+    expect(screen.getByTestId("queue-aware-host-composer")).toHaveAttribute(
+      "data-has-queued",
+      "true",
+    );
+  });
+
+  it("keeps backend-confirmed queued messages visible for an interactive running run", () => {
+    const hostComposer = (props: IntegratedChatComposerRenderProps) => (
+      <div
+        data-testid="queue-aware-host-composer"
+        data-has-queued={String(props.hasQueuedMessages)}
+      />
+    );
+
+    act(() => {
+      useChatStore.setState({
+        queuedMessages: {
+          "task:task-1": [{
+            id: "queued-backend-1",
+            content: "Backend-confirmed follow up",
+            createdAt: "2026-07-31T10:00:00Z",
+            isEditing: false,
+            attachmentIds: [],
+            source: "backend",
+          }],
+        },
+        agentStatus: { "task:task-1": "generating" },
+        activeAgentRunIds: { "task:task-1": "run-claude" },
+        activeAgentRunHarnesses: { "task:task-1": "claude" },
+      });
+    });
+
+    render(
+      <TestWrapper>
+        <IntegratedChatPanel projectId="project-1" renderComposer={hostComposer} />
+      </TestWrapper>,
+    );
 
     expect(screen.getByTestId("queued-message-list")).toBeInTheDocument();
     expect(screen.getByTestId("queue-aware-host-composer")).toHaveAttribute(

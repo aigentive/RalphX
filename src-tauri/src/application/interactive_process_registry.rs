@@ -8,7 +8,7 @@
 // mid-turn are queued and processed after the current turn completes.
 
 use crate::domain::agents::AgentHarnessKind;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
@@ -44,6 +44,29 @@ pub struct InteractiveProcess {
     token: InteractiveProcessToken,
     state: InteractiveProcessState,
     retire_after_turn: bool,
+    pending_stdin_turns: VecDeque<PendingStdinTurn>,
+}
+
+/// A user turn accepted by a live interactive process but not yet answered.
+///
+/// This is deliberately process-lifetime state: exit recovery transfers any
+/// remaining turns into the durable message queue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingStdinTurn {
+    pub persisted_message_id: String,
+    pub content: String,
+    pub metadata_override: Option<String>,
+    pub queued_at: String,
+}
+
+impl InteractiveProcess {
+    /// Drain the unanswered stdin turns from an already-removed entry.
+    ///
+    /// Removal sites use this so a keyed or token-scoped removal can hand the
+    /// turns back to the message queue instead of dropping them with the entry.
+    pub fn take_pending_stdin_turns(&mut self) -> Vec<PendingStdinTurn> {
+        self.pending_stdin_turns.drain(..).collect()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,6 +238,7 @@ impl InteractiveProcessRegistry {
             token,
             state: InteractiveProcessState::Active,
             retire_after_turn: false,
+            pending_stdin_turns: VecDeque::new(),
         };
         processes.insert(key, entry);
         (completion_signal, token)
@@ -228,15 +252,17 @@ impl InteractiveProcessRegistry {
 
     /// Write a message to the stdin of a running interactive process.
     ///
-    /// Returns Ok(()) if the write succeeded, otherwise a typed outcome for the
-    /// missing, retiring, or exact-token stdin I/O failure case.
+    /// Returns the exact owner token that received the write on success so
+    /// callers can attach owner-scoped state (e.g., pending-turn tracking),
+    /// otherwise a typed outcome for the missing, retiring, or exact-token
+    /// stdin I/O failure case.
     /// The Claude CLI reads stdin line-by-line in interactive mode, so messages
     /// should end with a newline (this method appends one if missing).
     pub async fn write_message(
         &self,
         key: &InteractiveProcessKey,
         message: &str,
-    ) -> Result<(), InteractiveProcessWriteError> {
+    ) -> Result<InteractiveProcessToken, InteractiveProcessWriteError> {
         self.write_message_for_owner(key, None, message).await
     }
 
@@ -250,7 +276,7 @@ impl InteractiveProcessRegistry {
         token: InteractiveProcessToken,
         agent_run_id: &str,
         message: &str,
-    ) -> Result<(), InteractiveProcessWriteError> {
+    ) -> Result<InteractiveProcessToken, InteractiveProcessWriteError> {
         self.write_message_for_owner(key, Some((token, agent_run_id)), message)
             .await
     }
@@ -260,7 +286,7 @@ impl InteractiveProcessRegistry {
         key: &InteractiveProcessKey,
         expected_owner: Option<(InteractiveProcessToken, &str)>,
         message: &str,
-    ) -> Result<(), InteractiveProcessWriteError> {
+    ) -> Result<InteractiveProcessToken, InteractiveProcessWriteError> {
         let mut processes = self.processes.lock().await;
         let entry =
             processes
@@ -318,7 +344,8 @@ impl InteractiveProcessRegistry {
                 token,
                 operation: "flush",
                 source,
-            })
+            })?;
+        Ok(token)
     }
 
     /// Remove and return the InteractiveProcess for a context (e.g., on process exit).
@@ -345,6 +372,59 @@ impl InteractiveProcessRegistry {
         } else {
             None
         }
+    }
+
+    /// Record a successfully stdin-delivered user turn for exactly one owner.
+    /// A stale token cannot append to a replacement process under the same key.
+    pub async fn push_pending_turn(
+        &self,
+        key: &InteractiveProcessKey,
+        token: InteractiveProcessToken,
+        turn: PendingStdinTurn,
+    ) -> bool {
+        let mut processes = self.processes.lock().await;
+        let Some(entry) = processes.get_mut(key) else {
+            return false;
+        };
+        if entry.token != token {
+            return false;
+        }
+        entry.pending_stdin_turns.push_back(turn);
+        true
+    }
+
+    /// Remove the oldest unanswered stdin turn for exactly one owner.
+    pub async fn pop_pending_turn(
+        &self,
+        key: &InteractiveProcessKey,
+        token: InteractiveProcessToken,
+    ) -> Option<PendingStdinTurn> {
+        let mut processes = self.processes.lock().await;
+        let entry = processes.get_mut(key)?;
+        (entry.token == token)
+            .then(|| entry.pending_stdin_turns.pop_front())
+            .flatten()
+    }
+
+    /// Drain every unanswered stdin turn only when the exact owner is current.
+    ///
+    /// Draining seals the entry against another stdin write before its exit cleanup
+    /// removes it. A later registration under the same key never exposes an old
+    /// owner's turns.
+    pub async fn take_pending_turns(
+        &self,
+        key: &InteractiveProcessKey,
+        token: InteractiveProcessToken,
+    ) -> Vec<PendingStdinTurn> {
+        let mut processes = self.processes.lock().await;
+        let Some(entry) = processes.get_mut(key) else {
+            return Vec::new();
+        };
+        if entry.token != token {
+            return Vec::new();
+        }
+        entry.retire_after_turn = true;
+        entry.pending_stdin_turns.drain(..).collect()
     }
 
     /// Mark only the concrete stream registration that emitted TurnComplete as idle.

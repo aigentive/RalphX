@@ -2384,6 +2384,17 @@ pub async fn process_stream_background<R: Runtime>(
 
                         turns_finalized += 1;
 
+                        // Interactive stdin turns are consumed in order. Once an
+                        // assistant turn finalizes, its matching pending user turn
+                        // no longer needs exit recovery.
+                        if let (Some(registry), Some(key), Some(token)) = (
+                            interactive_process_registry.as_ref(),
+                            interactive_process_key.as_ref(),
+                            interactive_process_token,
+                        ) {
+                            let _ = registry.pop_pending_turn(key, token).await;
+                        }
+
                         // Free the execution slot while process is idle between turns.
                         // Only for contexts that use execution slots.
                         if super::uses_execution_slot(context_type) {

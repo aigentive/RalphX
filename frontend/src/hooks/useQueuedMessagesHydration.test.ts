@@ -74,6 +74,7 @@ describe("useQueuedMessagesHydration", () => {
           content: "Continue this run",
           createdAt: "2026-06-19T10:00:00Z",
           isEditing: false,
+          source: "backend",
           composerSelectionSnapshot: {
             sourceType: "artifact",
             sourceKind: "plan",

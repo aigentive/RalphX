@@ -69,8 +69,9 @@ use crate::application::integration_reference_expansion::{
     expand_integration_references_for_prompt, log_skipped_integration_references,
 };
 use crate::application::interactive_process_registry::{
-    InteractiveProcessKey, InteractiveProcessMetadata, InteractiveProcessRegistry,
-    InteractiveProcessToken, InteractiveProcessWriteError,
+    InteractiveProcess, InteractiveProcessKey, InteractiveProcessMetadata,
+    InteractiveProcessRegistry, InteractiveProcessToken, InteractiveProcessWriteError,
+    PendingStdinTurn,
 };
 use crate::application::notification_service::NotificationService;
 use crate::application::persona_prompt::ResolvedPersona;
@@ -110,6 +111,7 @@ use crate::domain::repositories::{
     QueuedMessageRepository, ReviewRepository, StateHistoryMetadata, TaskDependencyRepository,
     TaskProposalRepository, TaskRepository, TaskStepRepository, ValidationRunRepository,
 };
+pub(crate) use crate::domain::services::message_queue::message_metadata_hidden_from_ui;
 use crate::domain::services::{
     is_process_alive, kill_process, AttachProcessResult, ComposerArtifactReference,
     ComposerExcerptReference, ComposerIntegrationReference, ComposerProjectReference,
@@ -370,21 +372,6 @@ fn resume_in_place_requested(metadata: Option<&str>) -> bool {
         .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
         .and_then(|value| value.get("resume_in_place").and_then(|v| v.as_bool()))
         .unwrap_or(false)
-}
-
-pub(crate) fn message_metadata_hidden_from_ui(metadata: Option<&str>) -> bool {
-    metadata
-        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
-        .is_some_and(|value| {
-            value
-                .get("hidden_from_ui")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
-                || value
-                    .get("recovery_context")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false)
-        })
 }
 
 pub(crate) fn task_runtime_bootstrap_metadata(
@@ -1230,6 +1217,9 @@ pub struct SendMessageOptions {
     pub metadata: Option<String>,
     /// Optional timestamp override for the user message. If None, uses Utc::now().
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Existing user-message row for recovered stdin turns. This prevents replay
+    /// from creating a duplicate transcript row.
+    pub persisted_message_id: Option<String>,
     /// Optional provider harness selected for this send. A mismatch with the current
     /// conversation or interactive process provider starts a fresh provider-native session.
     pub harness_override: Option<AgentHarnessKind>,
@@ -1895,6 +1885,48 @@ impl<R: Runtime> AppChatService<R> {
                 .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?;
         }
         Ok(())
+    }
+
+    /// Re-queue the unanswered stdin turns of a removed interactive process
+    /// entry so no removal path silently discards a delivered-but-unanswered
+    /// user turn (delivery contract: refuse to resume, never to discard).
+    async fn requeue_pending_turns_from_removed(
+        &self,
+        removed: Option<InteractiveProcess>,
+        context_type: ChatContextType,
+        queue_context_id: &str,
+    ) {
+        let Some(mut removed) = removed else {
+            return;
+        };
+        let turns = removed.take_pending_stdin_turns();
+        if turns.is_empty() {
+            return;
+        }
+        let key = QueueKey::new(context_type, queue_context_id);
+        for turn in turns.into_iter().rev() {
+            let mut queued = QueuedMessage::new(turn.content);
+            queued.created_at = turn.queued_at.clone();
+            queued.created_at_override = Some(turn.queued_at);
+            queued.metadata_override = turn.metadata_override;
+            queued.persisted_message_id = Some(turn.persisted_message_id);
+            self.message_queue.queue_front_existing(
+                context_type,
+                queue_context_id.to_string(),
+                queued.clone(),
+            );
+            if let Some(repo) = self.queued_message_repo.as_ref() {
+                if let Err(error) = repo.enqueue_front(&key, &queued).await {
+                    tracing::warn!(
+                        %context_type,
+                        queue_context_id,
+                        queued_message_id = %queued.id,
+                        error = %error,
+                        "chat_service: failed to persist recovered stdin turn after process removal"
+                    );
+                }
+            }
+        }
     }
 
     async fn persist_queued_front(
@@ -5502,7 +5534,9 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 });
             }
 
-            ipr_ref.remove(&interactive_key).await;
+            let removed = ipr_ref.remove(&interactive_key).await;
+            self.requeue_pending_turns_from_removed(removed, context_type, &runtime_context_id)
+                .await;
             tracing::info!(
                 %context_type,
                 context_id,
@@ -5510,8 +5544,13 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 "chat_service.send_message: removed stale interactive process after persona mismatch"
             );
         }
-        if has_ipr_entry && !options.skips_provider_session_invalidation() && force_new_provider_session {
-            ipr_ref.remove(&interactive_key).await;
+        if has_ipr_entry
+            && !options.skips_provider_session_invalidation()
+            && force_new_provider_session
+        {
+            let removed = ipr_ref.remove(&interactive_key).await;
+            self.requeue_pending_turns_from_removed(removed, context_type, &runtime_context_id)
+                .await;
             tracing::info!(
                 %context_type,
                 context_id,
@@ -5649,7 +5688,22 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 )
                 .await
             {
-                Ok(()) => {
+                Ok(_) => {
+                    if let Some(user_msg) = pending_user_message.as_ref() {
+                        let _ = self
+                            .ipr()
+                            .push_pending_turn(
+                                &interactive_key,
+                                interactive_owner.token,
+                                PendingStdinTurn {
+                                    persisted_message_id: user_msg.id.as_str().to_string(),
+                                    content: message.to_string(),
+                                    metadata_override: persisted_metadata.clone(),
+                                    queued_at: user_msg.created_at.to_rfc3339(),
+                                },
+                            )
+                            .await;
+                    }
                     // Re-increment running count only if the process was idle
                     // (TurnComplete decremented and marked idle). If the agent is
                     // already active (mid-turn), skip — prevents double-increment
@@ -5860,7 +5914,13 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                         "chat_service.send_message: interactive stdin write failed, \
                          falling back to new spawn"
                     );
-                    self.ipr().remove_if_token(&interactive_key, token).await;
+                    let removed = self.ipr().remove_if_token(&interactive_key, token).await;
+                    self.requeue_pending_turns_from_removed(
+                        removed,
+                        context_type,
+                        &runtime_context_id,
+                    )
+                    .await;
                     // Fall through to normal spawn path.
                 }
                 Err(InteractiveProcessWriteError::Missing { .. }) => {
@@ -6662,116 +6722,119 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         };
 
         // 4. Store user message
-        let source_message_id = if !resume_in_place {
-            let user_msg = chat_service_context::create_user_message(
-                context_type,
-                context_id,
-                message,
-                conversation_id,
-                persisted_metadata.clone(),
-                options.created_at,
-            );
-            let user_msg_id = user_msg.id.as_str().to_string();
-            let user_msg_created_at = user_msg.created_at.to_rfc3339();
-            if let Err(e) = self.chat_message_repo.create(user_msg.clone()).await {
-                cleanup_and_err!(ChatServiceError::RepositoryError(e.to_string()));
-            }
-            user_message_persisted = true;
-            if !hide_user_message {
-                chat_service_streaming::persist_message_text_timeline_item(
-                    &self.chat_timeline_repo,
-                    &user_msg,
-                )
-                .await;
-                if context_type == ChatContextType::Ideation {
-                    let _ = self
-                        .ideation_session_repo
-                        .touch_updated_at(context_id)
-                        .await;
+        let source_message_id =
+            if let Some(persisted_message_id) = options.persisted_message_id.clone() {
+                Some(persisted_message_id)
+            } else if !resume_in_place {
+                let user_msg = chat_service_context::create_user_message(
+                    context_type,
+                    context_id,
+                    message,
+                    conversation_id,
+                    persisted_metadata.clone(),
+                    options.created_at,
+                );
+                let user_msg_id = user_msg.id.as_str().to_string();
+                let user_msg_created_at = user_msg.created_at.to_rfc3339();
+                if let Err(e) = self.chat_message_repo.create(user_msg.clone()).await {
+                    cleanup_and_err!(ChatServiceError::RepositoryError(e.to_string()));
                 }
-            }
-            tracing::debug!(
-                message_id = %user_msg_id,
-                "chat_service.send_message user message stored"
-            );
+                user_message_persisted = true;
+                if !hide_user_message {
+                    chat_service_streaming::persist_message_text_timeline_item(
+                        &self.chat_timeline_repo,
+                        &user_msg,
+                    )
+                    .await;
+                    if context_type == ChatContextType::Ideation {
+                        let _ = self
+                            .ideation_session_repo
+                            .touch_updated_at(context_id)
+                            .await;
+                    }
+                }
+                tracing::debug!(
+                    message_id = %user_msg_id,
+                    "chat_service.send_message user message stored"
+                );
 
-            // 4b. Link selected attachments to the user message while preserving
-            // the already-captured attachment context for the runtime prompt.
-            if let Err(error) = self
-                .link_turn_attachments(&turn_attachments, &user_msg_id)
+                // 4b. Link selected attachments to the user message while preserving
+                // the already-captured attachment context for the runtime prompt.
+                if let Err(error) = self
+                    .link_turn_attachments(&turn_attachments, &user_msg_id)
+                    .await
+                {
+                    cleanup_and_err!(error);
+                }
+                if !turn_attachments.is_empty() {
+                    tracing::debug!(
+                        message_id = %user_msg_id,
+                        attachment_count = turn_attachments.len(),
+                        "chat_service.send_message linked attachments to user message"
+                    );
+                }
+                if !hide_user_message {
+                    self.auto_assign_primary_jira_issue_from_turn(
+                        context_type,
+                        context_id,
+                        &conversation_id,
+                        agent_workspace.as_ref(),
+                        &options.composer_integration_references,
+                        &user_msg_id,
+                        user_msg.created_at,
+                    )
+                    .await;
+                    self.auto_assign_primary_linear_issue_from_turn(
+                        context_type,
+                        context_id,
+                        &conversation_id,
+                        agent_workspace.as_ref(),
+                        &options.composer_integration_references,
+                        &user_msg_id,
+                        user_msg.created_at,
+                    )
+                    .await;
+                    self.auto_assign_primary_granola_note_from_turn(
+                        context_type,
+                        context_id,
+                        &conversation_id,
+                        agent_workspace.as_ref(),
+                        &options.composer_integration_references,
+                        &user_msg_id,
+                        user_msg.created_at,
+                    )
+                    .await;
+
+                    // 5. Emit message created event
+                    self.emit_event(
+                        "agent:message_created",
+                        AgentMessageCreatedPayload {
+                            message_id: user_msg_id.clone(),
+                            conversation_id: conversation_id.as_str().to_string(),
+                            context_type: context_type.to_string(),
+                            context_id: context_id.to_string(),
+                            role: "user".to_string(),
+                            content: message.to_string(),
+                            created_at: Some(user_msg_created_at),
+                            metadata: persisted_metadata.clone(),
+                            render_ready: None,
+                        },
+                    );
+                }
+                Some(user_msg_id)
+            } else if let Err(error) = self
+                .persist_hidden_resume_in_place_marker(
+                    context_type,
+                    context_id,
+                    conversation_id,
+                    options.metadata.as_deref(),
+                )
                 .await
             {
                 cleanup_and_err!(error);
-            }
-            if !turn_attachments.is_empty() {
-                tracing::debug!(
-                    message_id = %user_msg_id,
-                    attachment_count = turn_attachments.len(),
-                    "chat_service.send_message linked attachments to user message"
-                );
-            }
-            if !hide_user_message {
-                self.auto_assign_primary_jira_issue_from_turn(
-                    context_type,
-                    context_id,
-                    &conversation_id,
-                    agent_workspace.as_ref(),
-                    &options.composer_integration_references,
-                    &user_msg_id,
-                    user_msg.created_at,
-                )
-                .await;
-                self.auto_assign_primary_linear_issue_from_turn(
-                    context_type,
-                    context_id,
-                    &conversation_id,
-                    agent_workspace.as_ref(),
-                    &options.composer_integration_references,
-                    &user_msg_id,
-                    user_msg.created_at,
-                )
-                .await;
-                self.auto_assign_primary_granola_note_from_turn(
-                    context_type,
-                    context_id,
-                    &conversation_id,
-                    agent_workspace.as_ref(),
-                    &options.composer_integration_references,
-                    &user_msg_id,
-                    user_msg.created_at,
-                )
-                .await;
-
-                // 5. Emit message created event
-                self.emit_event(
-                    "agent:message_created",
-                    AgentMessageCreatedPayload {
-                        message_id: user_msg_id.clone(),
-                        conversation_id: conversation_id.as_str().to_string(),
-                        context_type: context_type.to_string(),
-                        context_id: context_id.to_string(),
-                        role: "user".to_string(),
-                        content: message.to_string(),
-                        created_at: Some(user_msg_created_at),
-                        metadata: persisted_metadata.clone(),
-                        render_ready: None,
-                    },
-                );
-            }
-            Some(user_msg_id)
-        } else if let Err(error) = self
-            .persist_hidden_resume_in_place_marker(
-                context_type,
-                context_id,
-                conversation_id,
-                options.metadata.as_deref(),
-            )
-            .await
-        {
-            cleanup_and_err!(error);
-        } else {
-            None
-        };
+            } else {
+                None
+            };
 
         // 6. Resolve working directory
         let working_directory_started = Instant::now();
@@ -7650,7 +7713,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     .write_message(&interactive_key, &stream_json_msg)
                     .await
                 {
-                    Ok(()) => {
+                    Ok(write_token) => {
                         // Re-increment running count only if the process was idle.
                         // Same guard as send_message fast-path: prevents double-increment.
                         if uses_execution_slot(context_type) {
@@ -7722,6 +7785,23 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                             .await;
                         }
 
+                        // Track the delivered turn so exit recovery can re-queue
+                        // it if the process dies before answering. Token-scoped:
+                        // a replacement registration rejects this push.
+                        let _ = self
+                            .ipr()
+                            .push_pending_turn(
+                                &interactive_key,
+                                write_token,
+                                PendingStdinTurn {
+                                    persisted_message_id: user_msg_id.clone(),
+                                    content: content.to_string(),
+                                    metadata_override: None,
+                                    queued_at: user_msg_created_at.clone(),
+                                },
+                            )
+                            .await;
+
                         if context_type == ChatContextType::Ideation {
                             let _ = self
                                 .ideation_session_repo
@@ -7779,7 +7859,9 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                             error = %error,
                             "queue_message: interactive stdin write failed, falling back to normal queue"
                         );
-                        self.ipr().remove_if_token(&interactive_key, token).await;
+                        let removed = self.ipr().remove_if_token(&interactive_key, token).await;
+                        self.requeue_pending_turns_from_removed(removed, context_type, context_id)
+                            .await;
                     }
                     Err(InteractiveProcessWriteError::Missing { .. }) => {
                         // A concurrent retirement/replacement may have removed this entry.
@@ -8877,21 +8959,6 @@ mod agent_workspace_send_tests {
             "src/main.ts"
         );
         assert_eq!(value["composer_project_references"][0]["kind"], "file");
-    }
-
-    #[test]
-    fn message_metadata_hidden_from_ui_accepts_hidden_or_recovery_flags() {
-        assert!(super::message_metadata_hidden_from_ui(Some(
-            r#"{"hidden_from_ui":true}"#,
-        )));
-        assert!(super::message_metadata_hidden_from_ui(Some(
-            r#"{"recovery_context":true}"#,
-        )));
-        assert!(!super::message_metadata_hidden_from_ui(Some(
-            r#"{"hidden_from_ui":false}"#,
-        )));
-        assert!(!super::message_metadata_hidden_from_ui(Some("not-json")));
-        assert!(!super::message_metadata_hidden_from_ui(None));
     }
 
     #[test]

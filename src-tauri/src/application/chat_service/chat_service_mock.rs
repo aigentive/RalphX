@@ -216,12 +216,7 @@ impl ChatService for MockChatService {
         self.sent_messages.lock().await.push(message.to_string());
         self.sent_options.lock().await.push(options.clone());
 
-        if std::mem::take(
-            &mut *self
-                .fail_next_send_as_delivered_not_persisted
-                .lock()
-                .await,
-        ) {
+        if std::mem::take(&mut *self.fail_next_send_as_delivered_not_persisted.lock().await) {
             return Err(ChatServiceError::MessageDeliveredNotPersisted(format!(
                 "{MESSAGE_DELIVERED_NOT_PERSISTED_PREFIX} Repository error: mock create failed]"
             )));
