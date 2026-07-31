@@ -1,11 +1,13 @@
 use super::{
-    list_canonical_prompt_backed_agents, load_canonical_agent_definition,
-    load_canonical_agent_definition_for_profile, load_canonical_claude_metadata,
-    load_canonical_claude_metadata_for_profile, load_canonical_codex_metadata,
-    load_canonical_codex_metadata_for_profile, load_harness_agent_prompt,
-    load_harness_agent_prompt_for_profile, render_agent_runtime_profile_context,
-    resolve_harness_agent_prompt_path, resolve_project_root_from_catalog_path,
-    resolve_project_root_from_plugin_dir, try_load_canonical_claude_metadata, AgentPromptHarness,
+    list_canonical_agent_names, list_canonical_prompt_backed_agents,
+    load_canonical_agent_definition, load_canonical_agent_definition_for_profile,
+    load_canonical_claude_metadata, load_canonical_claude_metadata_for_profile,
+    load_canonical_codex_metadata, load_canonical_codex_metadata_for_profile,
+    load_harness_agent_prompt, load_harness_agent_prompt_for_profile,
+    render_agent_runtime_profile_context, resolve_harness_agent_prompt_path,
+    resolve_project_root_from_catalog_path, resolve_project_root_from_plugin_dir,
+    trusted_canonical_profile_name, try_load_canonical_claude_metadata,
+    try_load_canonical_claude_metadata_for_profile, AgentPromptHarness,
 };
 use crate::infrastructure::agents::claude::{
     get_agent_config, get_agent_config_for_profile, get_preapproved_tools_for_profile,
@@ -2919,4 +2921,273 @@ fn canonical_agent_tree_is_schema_valid_and_loadable() {
             "metadata-only compatibility agent {agent_name} must not be treated as a prompt-backed Claude runtime agent"
         );
     }
+}
+
+// ─── Canonical profile-key contract ─────────────────────────────────────────
+//
+// RX-native Team mode shipped broken because `trusted_canonical_profile_name` only accepted
+// `[a-z0-9-]` while the MCP server's `SAFE_CANONICAL_PROFILE_NAME` accepted underscores. The
+// canonical key `team_coordinator` was therefore unloadable in Rust, and every Team spawn failed
+// with `Missing canonical profile Some("team_coordinator")`. The tests below pin the shared
+// charset, the coordinator load contract, and a guard covering every declared profile key.
+
+#[test]
+fn trusted_canonical_profile_name_matches_mcp_server_charset() {
+    // Must stay identical to SAFE_CANONICAL_PROFILE_NAME in
+    // plugins/app/ralphx-mcp-server/src/canonical-agent-metadata.ts:
+    // ^[a-z0-9]+(?:[_-][a-z0-9]+)*$
+    for accepted in ["plan", "team_coordinator", "a1", "a-b_c"] {
+        assert_eq!(
+            trusted_canonical_profile_name(accepted),
+            Some(accepted),
+            "canonical profile name {accepted:?} must be accepted"
+        );
+    }
+
+    for rejected in [
+        "",
+        "Team_Coordinator",
+        "_lead",
+        "lead_",
+        "team__lead",
+        "team-_lead",
+        "..",
+        "../x",
+        "a/b",
+        "a\\b",
+        "team coordinator",
+        "team.coordinator",
+    ] {
+        assert_eq!(
+            trusted_canonical_profile_name(rejected),
+            None,
+            "canonical profile name {rejected:?} must be rejected"
+        );
+    }
+}
+
+#[test]
+fn team_coordinator_profile_resolves_for_rx_native_team_conversations() {
+    let root = project_root();
+    let definition = load_canonical_agent_definition_for_profile(
+        &root,
+        "ralphx-general-worker",
+        Some("team_coordinator"),
+    )
+    .expect("missing team_coordinator profile for ralphx-general-worker");
+    let runtime_config =
+        get_agent_config_for_profile("ralphx-general-worker", Some("team_coordinator"))
+            .expect("missing runtime team_coordinator profile for ralphx-general-worker");
+    let preapproved_tools =
+        get_preapproved_tools_for_profile("ralphx-general-worker", Some("team_coordinator"))
+            .expect("missing preapproved tools for ralphx-general-worker team_coordinator profile");
+    let claude_metadata = load_canonical_claude_metadata_for_profile(
+        &root,
+        "ralphx-general-worker",
+        Some("team_coordinator"),
+    );
+    let codex_metadata = load_canonical_codex_metadata_for_profile(
+        &root,
+        "ralphx-general-worker",
+        Some("team_coordinator"),
+    );
+    let runtime_profile_context = render_agent_runtime_profile_context(
+        &root,
+        "ralphx-general-worker",
+        Some("team_coordinator"),
+    )
+    .expect("missing runtime profile context for team_coordinator");
+
+    assert_eq!(definition.role, "team_coordinator");
+    assert_eq!(
+        definition.capabilities.mcp_tools, runtime_config.allowed_mcp_tools,
+        "coordinator runtime MCP grants must come from canonical profile capabilities"
+    );
+    for team_tool in [
+        "team_add_member",
+        "team_assign",
+        "team_list",
+        "team_stop_member",
+        "team_send_message",
+    ] {
+        assert!(
+            runtime_config
+                .allowed_mcp_tools
+                .iter()
+                .any(|tool| tool == team_tool),
+            "coordinator must be granted {team_tool}"
+        );
+    }
+    assert_eq!(
+        definition.delegation.allowed_targets,
+        vec![
+            "ralphx-general-explorer".to_string(),
+            "ralphx-general-worker".to_string()
+        ]
+    );
+
+    let claude_tools = claude_metadata.tools.clone().expect("claude tools block");
+    assert_eq!(claude_tools.extends, Some("readonly_tools".to_string()));
+    for disallowed in ["Write", "Edit", "NotebookEdit", "Bash"] {
+        assert!(
+            claude_metadata
+                .disallowed_tools
+                .iter()
+                .any(|tool| tool == disallowed),
+            "coordinator must disallow {disallowed}"
+        );
+    }
+    assert!(
+        !preapproved_tools.contains("Bash") && !preapproved_tools.contains("Write"),
+        "coordinator must not preapprove writable CLI tools, got: {preapproved_tools:?}"
+    );
+    assert_eq!(
+        codex_metadata.runtime_features.get("shell_tool"),
+        Some(&false),
+        "coordinator must run without the Codex shell tool"
+    );
+
+    assert!(runtime_profile_context.contains("<profile_slug>team_coordinator</profile_slug>"));
+    assert!(runtime_profile_context.contains("<profile_role>team_coordinator</profile_role>"));
+
+    for harness in [AgentPromptHarness::Claude, AgentPromptHarness::Codex] {
+        let prompt = load_harness_agent_prompt_for_profile(
+            &root,
+            "ralphx-general-worker",
+            harness,
+            Some("team_coordinator"),
+        )
+        .unwrap_or_else(|| panic!("missing {harness:?} coordinator prompt"));
+        assert!(
+            prompt.contains("team_add_member") && prompt.contains("team_assign"),
+            "{harness:?} coordinator prompt must describe how writable work is delegated"
+        );
+        assert!(
+            !prompt.contains("<rx_native_team_contract>"),
+            "{harness:?} coordinator prompt must not duplicate the runtime-injected team contract"
+        );
+    }
+
+    // The task-context coordinator shares the profile key but drops Task as well.
+    let task_definition = load_canonical_agent_definition_for_profile(
+        &root,
+        "ralphx-chat-task",
+        Some("team_coordinator"),
+    )
+    .expect("missing team_coordinator profile for ralphx-chat-task");
+    let task_claude_metadata = load_canonical_claude_metadata_for_profile(
+        &root,
+        "ralphx-chat-task",
+        Some("team_coordinator"),
+    );
+    assert_eq!(task_definition.role, "team_coordinator");
+    for disallowed in ["Write", "Edit", "NotebookEdit", "Bash", "Task"] {
+        assert!(
+            task_claude_metadata
+                .disallowed_tools
+                .iter()
+                .any(|tool| tool == disallowed),
+            "task-context coordinator must disallow {disallowed}"
+        );
+    }
+    assert!(
+        load_harness_agent_prompt_for_profile(
+            &root,
+            "ralphx-chat-task",
+            AgentPromptHarness::Claude,
+            Some("team_coordinator"),
+        )
+        .is_some_and(|prompt| prompt.contains("team_add_member")),
+        "task-context coordinator must ship a Claude profile prompt"
+    );
+}
+
+/// Class-killer: any profile key declared anywhere in `agents/*/agent.yaml` must resolve through
+/// the Rust catalog. A future key the validator rejects fails here instead of in a release build.
+#[test]
+fn every_declared_canonical_profile_resolves_through_the_catalog() {
+    let root = project_root();
+    let agent_names = list_canonical_agent_names(&root);
+    assert!(
+        agent_names.contains(&"ralphx-general-worker".to_string()),
+        "canonical agent enumeration must see the live agents tree, got: {agent_names:?}"
+    );
+
+    let mut checked_profiles = Vec::new();
+    for agent_name in &agent_names {
+        let Some(definition) = load_canonical_agent_definition(&root, agent_name) else {
+            continue;
+        };
+        for profile_name in definition.profiles.keys() {
+            assert!(
+                trusted_canonical_profile_name(profile_name).is_some(),
+                "profile key {profile_name:?} on agent {agent_name} is rejected by \
+                 trusted_canonical_profile_name; it can never load at spawn"
+            );
+            assert!(
+                load_canonical_agent_definition_for_profile(&root, agent_name, Some(profile_name))
+                    .is_some(),
+                "profile {profile_name:?} on agent {agent_name} must resolve through the catalog"
+            );
+            assert!(
+                try_load_canonical_claude_metadata_for_profile(
+                    &root,
+                    agent_name,
+                    Some(profile_name)
+                )
+                .is_ok(),
+                "profile {profile_name:?} on agent {agent_name} must load Claude metadata"
+            );
+            checked_profiles.push(format!("{agent_name}:{profile_name}"));
+        }
+    }
+
+    assert!(
+        checked_profiles.contains(&"ralphx-general-worker:team_coordinator".to_string())
+            && checked_profiles.contains(&"ralphx-ideation:plan".to_string()),
+        "guard must actually cover the live profile keys, got: {checked_profiles:?}"
+    );
+}
+
+/// The coordinator profile exists to remove `Write`/`Edit`/`Bash`. An unresolvable profile must
+/// error rather than silently hand back the base agent configuration.
+#[test]
+fn unresolvable_profiles_fail_closed_without_base_config_fallback() {
+    let root = project_root();
+
+    let missing = try_load_canonical_claude_metadata_for_profile(
+        &root,
+        "ralphx-general-worker",
+        Some("does-not-exist"),
+    )
+    .expect_err("unknown profile must not fall back to the base agent metadata");
+    assert!(
+        missing.contains("Missing canonical profile"),
+        "unknown profile should report a missing profile, got: {missing}"
+    );
+
+    let invalid = try_load_canonical_claude_metadata_for_profile(
+        &root,
+        "ralphx-general-worker",
+        Some("Team_Coordinator"),
+    )
+    .expect_err("malformed profile name must not fall back to the base agent metadata");
+    assert!(
+        invalid.contains("Invalid canonical profile name"),
+        "malformed profile name must be distinguishable from a missing profile, got: {invalid}"
+    );
+
+    assert!(
+        get_agent_config_for_profile("ralphx-general-worker", Some("does-not-exist")).is_none(),
+        "unknown profile must not resolve to the base runtime agent config"
+    );
+    assert!(
+        load_canonical_agent_definition_for_profile(
+            &root,
+            "ralphx-general-worker",
+            Some("does-not-exist")
+        )
+        .is_none(),
+        "unknown profile must not overlay onto the base definition"
+    );
 }

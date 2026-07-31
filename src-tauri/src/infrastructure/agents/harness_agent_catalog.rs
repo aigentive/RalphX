@@ -453,14 +453,46 @@ fn trusted_canonical_agent_name(agent_name: &str) -> Option<&str> {
     }
 }
 
+/// Accepts the same profile-name set as the MCP server's `SAFE_CANONICAL_PROFILE_NAME`
+/// (`plugins/app/ralphx-mcp-server/src/canonical-agent-metadata.ts`), i.e.
+/// `^[a-z0-9]+(?:[_-][a-z0-9]+)*$`. Both validators must stay in lockstep: a profile key
+/// accepted by one layer and rejected by the other makes the profile unloadable at spawn.
+fn is_safe_canonical_profile_component(profile_name: &str) -> bool {
+    let bytes = profile_name.as_bytes();
+    let is_alphanumeric = |byte: u8| byte.is_ascii_lowercase() || byte.is_ascii_digit();
+    let is_separator = |byte: u8| byte == b'-' || byte == b'_';
+
+    if bytes.is_empty() {
+        return false;
+    }
+    // No leading or trailing separator.
+    if !is_alphanumeric(bytes[0]) || !is_alphanumeric(bytes[bytes.len() - 1]) {
+        return false;
+    }
+
+    let mut previous_was_separator = false;
+    for &byte in bytes {
+        if is_alphanumeric(byte) {
+            previous_was_separator = false;
+        } else if is_separator(byte) {
+            // No two adjacent separators; this is what makes `..` unreachable.
+            if previous_was_separator {
+                return false;
+            }
+            previous_was_separator = true;
+        } else {
+            return false;
+        }
+    }
+
+    true
+}
+
 fn trusted_canonical_profile_name(profile_name: &str) -> Option<&str> {
-    let valid_component = !profile_name.is_empty()
-        && !profile_name.contains("..")
+    let valid_component = !profile_name.contains("..")
         && !profile_name.contains('/')
         && !profile_name.contains('\\')
-        && profile_name
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
+        && is_safe_canonical_profile_component(profile_name);
 
     if valid_component {
         Some(profile_name)
@@ -831,6 +863,44 @@ pub fn load_canonical_claude_metadata_for_profile(
         .unwrap_or_default()
 }
 
+/// Resolves the canonical definition a harness-metadata loader should merge from.
+///
+/// Fails closed: an invalid or unknown profile is an error, never a silent fall back to the
+/// base agent definition. A coordinator profile exists precisely to drop `Write`/`Edit`/`Bash`,
+/// so returning the base config on a profile miss would be a privilege escalation.
+///
+/// # Errors
+///
+/// Returns `Err` when `profile_name` is malformed, or when it is well-formed but the agent
+/// declares no such profile. The two cases carry distinguishable messages.
+fn resolve_canonical_definition_for_profile(
+    project_root: &Path,
+    agent_name: &str,
+    profile_name: Option<&str>,
+) -> Result<Option<CanonicalAgentDefinition>, String> {
+    let Some(profile_name) = profile_name else {
+        return Ok(load_canonical_agent_definition(project_root, agent_name));
+    };
+
+    if trusted_canonical_profile_name(profile_name).is_none() {
+        return Err(format!(
+            "Invalid canonical profile name {:?} for agent {}",
+            profile_name,
+            canonical_agent_name(agent_name)
+        ));
+    }
+
+    load_canonical_agent_definition_for_profile(project_root, agent_name, Some(profile_name))
+        .map(Some)
+        .ok_or_else(|| {
+            format!(
+                "Missing canonical profile {:?} for agent {}",
+                Some(profile_name),
+                canonical_agent_name(agent_name)
+            )
+        })
+}
+
 pub fn try_load_canonical_claude_metadata_for_profile(
     project_root: &Path,
     agent_name: &str,
@@ -849,20 +919,8 @@ pub fn try_load_canonical_claude_metadata_for_profile(
             None => CanonicalClaudeAgentMetadata::default(),
         };
 
-    let definition = if profile_name.is_some() {
-        Some(
-            load_canonical_agent_definition_for_profile(project_root, agent_name, profile_name)
-                .ok_or_else(|| {
-                    format!(
-                        "Missing canonical profile {:?} for agent {}",
-                        profile_name,
-                        canonical_agent_name(agent_name)
-                    )
-                })?,
-        )
-    } else {
-        load_canonical_agent_definition(project_root, agent_name)
-    };
+    let definition =
+        resolve_canonical_definition_for_profile(project_root, agent_name, profile_name)?;
 
     let Some(definition) = definition else {
         return Ok(legacy);
@@ -917,20 +975,8 @@ pub fn try_load_canonical_codex_metadata_for_profile(
     agent_name: &str,
     profile_name: Option<&str>,
 ) -> Result<CanonicalCodexAgentMetadata, String> {
-    let definition = if profile_name.is_some() {
-        Some(
-            load_canonical_agent_definition_for_profile(project_root, agent_name, profile_name)
-                .ok_or_else(|| {
-                    format!(
-                        "Missing canonical profile {:?} for agent {}",
-                        profile_name,
-                        canonical_agent_name(agent_name)
-                    )
-                })?,
-        )
-    } else {
-        load_canonical_agent_definition(project_root, agent_name)
-    };
+    let definition =
+        resolve_canonical_definition_for_profile(project_root, agent_name, profile_name)?;
 
     if let Some(definition) = definition {
         if !definition.harnesses.codex.is_empty() {
