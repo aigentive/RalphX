@@ -10,10 +10,11 @@ use super::{
     ensure_plan_workspace_planning_session_link_for_send, existing_pr_retarget_block_reason,
     filter_agent_list_visible_conversations, fork_agent_conversation,
     fork_agent_conversation_response_for_state, fork_terminal_agent_conversation_for_send,
-    get_agent_conversation_runtime_index_for_app_state, get_agent_run_attribution,
+    get_agent_conversation_runtime_index_for_app_state,
     get_agent_conversation_runtime_statuses_for_app_state,
     get_agent_conversation_summary_for_app_state,
     get_agent_conversation_timeline_page_for_app_state, get_agent_conversation_workspace_freshness,
+    get_agent_run_attribution, get_agent_run_attributions,
     get_agent_timeline_item_tool_call_detail_for_app_state, hidden_user_message_metadata,
     invalidate_agent_workspace_freshness_cache, list_agent_conversations_page,
     load_delegated_tool_runtime_snapshot, mark_agent_workspace_failure_with_routing_and_action,
@@ -56,7 +57,7 @@ use super::{
     DelegatedToolRuntimeSnapshot, ForkAgentConversationInput, ForkAgentConversationResponse,
     ModeSwitchInitiator, SwitchAgentConversationModeInput,
     UpdateAgentConversationCoordinationModeInput, AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE,
-    STANDALONE_TEAM_INTENT_REJECTED_ERROR,
+    MAX_ATTRIBUTION_BATCH, STANDALONE_TEAM_INTENT_REJECTED_ERROR,
 };
 use crate::application::agent_conversation_workspace::{
     ensure_linked_plan_branch_agent_worktree, prepare_agent_conversation_workspace,
@@ -82,7 +83,7 @@ use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
     AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent, AgentRun,
-    AgentRunStatus, AgentWorkspacePrMetadataDecision, AgentWorkspaceRepairAttempt,
+    AgentRunId, AgentRunStatus, AgentWorkspacePrMetadataDecision, AgentWorkspaceRepairAttempt,
     AgentWorkspaceRepairContinuation, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
     AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewAutoMergeGuardStatus,
     AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
@@ -92,8 +93,8 @@ use crate::domain::entities::{
     ChatTimelineItemKind, ChatTimelineItemStatus, CoordinationMode, DelegatedSession,
     ExecutionPlan, ExecutionPlanId, ExecutionPlanStatus, IdeationAnalysisBaseRefKind,
     IdeationSession, IdeationSessionFlow, IdeationSessionId, InternalStatus, MessageRole,
-    PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId, SessionPurpose, Task, TaskId,
-    TeamIntent, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId, RuntimeSource, SessionPurpose,
+    Task, TaskId, TeamIntent, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::execution::ExecutionSettings;
 use crate::domain::repositories::{
@@ -766,7 +767,7 @@ async fn get_agent_run_attribution_returns_persisted_run_and_rejects_missing_id(
     let run_id = run.id.as_str().to_string();
     run.agent_name = Some("ralphx-workspace-reviewer".to_string());
     run.launch_role = Some("workspace_reviewer".to_string());
-    run.runtime_source = Some("role_default".to_string());
+    run.runtime_source = Some(RuntimeSource::RoleDefault);
     state.agent_run_repo.create(run).await.unwrap();
     let app = build_send_now_command_app(state);
 
@@ -778,12 +779,58 @@ async fn get_agent_run_attribution_returns_persisted_run_and_rejects_missing_id(
         Some("ralphx-workspace-reviewer")
     );
     assert_eq!(found.launch_role.as_deref(), Some("workspace_reviewer"));
-    assert_eq!(found.runtime_source.as_deref(), Some("role_default"));
+    assert_eq!(found.runtime_source, Some(RuntimeSource::RoleDefault));
 
     let error = get_agent_run_attribution("missing-run".to_string(), app.state())
         .await
         .expect_err("missing run must return a typed not-found error");
     assert!(matches!(error, AppError::NotFound(_)));
+}
+
+#[tokio::test]
+async fn get_agent_run_attributions_returns_known_runs_and_rejects_oversized_batches() {
+    let state = AppState::new_test();
+    let first = AgentRun::new(ChatConversationId::new());
+    let first_id = first.id.as_str().to_string();
+    let second = AgentRun::new(ChatConversationId::new());
+    let second_id = second.id.as_str().to_string();
+    state.agent_run_repo.create(first).await.unwrap();
+    state.agent_run_repo.create(second).await.unwrap();
+    let app = build_send_now_command_app(state);
+
+    let found = get_agent_run_attributions(
+        vec![
+            first_id.clone(),
+            "missing-run".to_string(),
+            second_id.clone(),
+        ],
+        app.state(),
+    )
+    .await
+    .expect("known runs should be returned");
+    let found_ids = found
+        .into_iter()
+        .map(|run| run.id.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(
+        found_ids,
+        std::collections::HashSet::from([first_id, second_id])
+    );
+
+    let error = get_agent_run_attributions(
+        (0..=MAX_ATTRIBUTION_BATCH)
+            .map(|_| AgentRunId::new().as_str())
+            .collect(),
+        app.state(),
+    )
+    .await
+    .expect_err("over-limit batch must be rejected");
+    assert!(matches!(error, AppError::InvalidInput(_)));
+
+    assert!(get_agent_run_attributions(Vec::new(), app.state())
+        .await
+        .expect("empty batch does not require a repository read")
+        .is_empty());
 }
 
 fn enable_team_capability_for_test(state: &AppState) {

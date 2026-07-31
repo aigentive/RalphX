@@ -3,6 +3,16 @@ import { z } from "zod";
 const nullableString = z.string().nullable().optional();
 const nullableNumber = z.number().nullable().optional();
 
+export const RUNTIME_SOURCE_VALUES = [
+  "composer_selection",
+  "conversation_override",
+  "role_default",
+  "project_default",
+  "harness_fallback",
+] as const;
+
+export const RuntimeSourceSchema = z.enum(RUNTIME_SOURCE_VALUES);
+
 export const AgentRunAttributionSchema = z.object({
   id: z.string().min(1),
   conversation_id: z.string().min(1),
@@ -30,5 +40,6 @@ export const AgentRunAttributionSchema = z.object({
   persona_slug: nullableString,
   agent_name: nullableString,
   launch_role: nullableString,
-  runtime_source: nullableString,
+  // Future backend values must not make the complete attribution unreadable.
+  runtime_source: RuntimeSourceSchema.nullish().catch(null),
 });

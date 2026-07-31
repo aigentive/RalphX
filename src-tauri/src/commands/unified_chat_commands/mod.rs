@@ -152,8 +152,8 @@ use crate::domain::entities::{
     ChatMessage, ChatMessageId, ChatTimelineItem, CoordinationMode, DelegatedSessionId,
     ExecutionPlanStatus, GitTargetIdentity, IdeationAnalysisBaseRefKind, IdeationSession,
     IdeationSessionFlow, IdeationSessionId, InternalStatus, PersonaId, PlanBranch,
-    PlanBranchStatus, Project, ProjectId, Task, TaskCategory, TeamIntent, TeamMessageTarget,
-    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    PlanBranchStatus, Project, ProjectId, RuntimeSource, Task, TaskCategory, TeamIntent,
+    TeamMessageTarget, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::execution::{
     build_running_ideation_session, build_running_process, context_matches_running_status,
@@ -4229,6 +4229,12 @@ pub async fn send_agent_message_for_state<R: Runtime + 'static>(
         crate::application::chat_service::codex_fast_mode_service_tier_override(
             input.codex_fast_mode,
         );
+    let runtime_source_override = (input.runtime_override.is_some()
+        || legacy_harness_override.is_some()
+        || model_override.is_some()
+        || logical_effort_override.is_some()
+        || service_tier_override.is_some())
+    .then_some(RuntimeSource::ComposerSelection);
     let mut conversation_id_override = input
         .conversation_id
         .as_deref()
@@ -4309,6 +4315,7 @@ pub async fn send_agent_message_for_state<R: Runtime + 'static>(
                 logical_effort_override,
                 service_tier_override,
                 manual_role_runtime_override: input.runtime_override,
+                runtime_source_override,
                 conversation_id_override,
                 composer_project_references: input.composer_project_references,
                 composer_integration_references: input.composer_integration_references,
@@ -10183,6 +10190,30 @@ pub async fn get_agent_run_status_unified(
         persona_injected: run.persona_injected,
         persona_skipped_reason: run.persona_skipped_reason,
     }))
+}
+
+/// Maximum number of persisted agent runs returned by one attribution lookup.
+pub const MAX_ATTRIBUTION_BATCH: usize = 100;
+
+/// Return persisted attribution for the requested agent runs.
+#[tauri::command]
+pub async fn get_agent_run_attributions(
+    run_ids: Vec<String>,
+    state: State<'_, AppState>,
+) -> crate::AppResult<Vec<crate::domain::entities::AgentRun>> {
+    if run_ids.len() > MAX_ATTRIBUTION_BATCH {
+        return Err(AppError::InvalidInput(format!(
+            "At most {MAX_ATTRIBUTION_BATCH} agent run ids may be requested"
+        )));
+    }
+    if run_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let run_ids = run_ids
+        .into_iter()
+        .map(AgentRunId::from_string)
+        .collect::<Vec<_>>();
+    state.agent_run_repo.get_by_ids(&run_ids).await
 }
 
 /// Return persisted attribution for one agent run.

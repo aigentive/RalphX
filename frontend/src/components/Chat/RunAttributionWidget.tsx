@@ -1,7 +1,6 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { agentRunsApi } from "@/api/agent-runs";
-import type { AgentRunAttribution } from "@/api/agent-runs";
+import type { AgentRunAttribution, RuntimeSource } from "@/api/agent-runs";
 import { isFeedbackRole, roleVerb, workedDurationLabel } from "./run-attribution";
 
 type RunAttributionWidgetProps = {
@@ -9,6 +8,18 @@ type RunAttributionWidgetProps = {
   startedAt: string;
   completedAt?: string | null;
   launchRole?: string | null;
+  attribution?: AgentRunAttribution | null;
+  isAttributionPending?: boolean;
+  isAttributionError?: boolean;
+  retryAttribution?: () => void;
+};
+
+const runtimeSourceLabels: Record<RuntimeSource, string> = {
+  composer_selection: "Composer selection",
+  conversation_override: "Conversation override",
+  role_default: "Role default",
+  project_default: "Project default",
+  harness_fallback: "Harness fallback",
 };
 
 function valueTransition(logical: string | null, effective: string | null) {
@@ -45,7 +56,7 @@ function AttributionPanel({ attribution }: { attribution: AgentRunAttribution | 
   ].filter(Boolean).join(" · ");
   const rows: Array<[string, React.ReactNode, boolean?]> = [
     ["Agent", attribution.agentName], ["Role", attribution.launchRole], ["Trigger", attribution.actionKind],
-    ["Runtime source", attribution.runtimeSource], ["Provider", attribution.upstreamProvider ?? attribution.harness],
+    ["Runtime source", attribution.runtimeSource ? runtimeSourceLabels[attribution.runtimeSource] : null], ["Provider", attribution.upstreamProvider ?? attribution.harness],
     ["Model", valueTransition(attribution.logicalModel, attribution.effectiveModelId)],
     ["Effort", valueTransition(attribution.logicalEffort, attribution.effectiveEffort)], ["Speed", attribution.serviceTier],
     ["Persona", attribution.personaSlug], ["Approval", attribution.approvalPolicy], ["Sandbox", attribution.sandboxMode],
@@ -68,32 +79,34 @@ function AttributionPanel({ attribution }: { attribution: AgentRunAttribution | 
   </div>;
 }
 
-export function RunAttributionWidget({ runId, startedAt, completedAt = null, launchRole = null }: RunAttributionWidgetProps) {
+export function RunAttributionWidget({
+  runId,
+  startedAt,
+  completedAt = null,
+  launchRole = null,
+  attribution = null,
+  isAttributionPending = false,
+  isAttributionError = false,
+  retryAttribution,
+}: RunAttributionWidgetProps) {
   const [isExpanded, setIsExpanded] = useState(false);
-  const [attribution, setAttribution] = useState<AgentRunAttribution | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    if (!isExpanded || attribution || error) return;
-    let active = true;
-    void agentRunsApi.getAttribution(runId).then((result) => {
-      if (active) setAttribution(result);
-    }).catch(() => {
-      if (active) setError("Run attribution is unavailable.");
-    });
-    return () => { active = false; };
-  }, [attribution, error, isExpanded, runId]);
   const role = attribution?.launchRole ?? launchRole;
   const exactCompletedAt = attribution?.completedAt ?? completedAt;
+  const isAttributionUnavailable =
+    isAttributionError || (!isAttributionPending && attribution === null);
   return <div className="mt-1.5" data-testid="run-attribution-widget">
     <button type="button" data-testid="run-attribution-toggle" data-chat-run-attribution-key={runId}
       aria-expanded={isExpanded} aria-label={`${roleVerb(role)} worked for ${workedDurationLabel(attribution?.startedAt ?? startedAt, exactCompletedAt)} ${isExpanded ? "Collapse" : "Expand"} run attribution.`}
-      onClick={() => setIsExpanded((current) => !current)}
+      onClick={() => setIsExpanded((current) => {
+        if (!current && isAttributionUnavailable) retryAttribution?.();
+        return !current;
+      })}
       className="inline-flex max-w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-[0.6875rem] font-medium transition-opacity hover:opacity-80"
       style={{ backgroundColor: "var(--bg-elevated)", color: "var(--text-secondary)" }}>
       {isExpanded ? <ChevronDown className="h-3 w-3 shrink-0" aria-hidden="true" /> : <ChevronRight className="h-3 w-3 shrink-0" aria-hidden="true" />}
       <span>{roleVerb(role)} worked for <span className="tabular-nums">{workedDurationLabel(attribution?.startedAt ?? startedAt, exactCompletedAt)}</span></span>
       <RoleChip launchRole={role} />
     </button>
-    {isExpanded ? (error ? <p className="ml-1 mt-1 text-[0.6875rem]" style={{ color: "var(--text-muted)" }}>{error}</p> : <AttributionPanel attribution={attribution} />) : null}
+    {isExpanded ? (isAttributionUnavailable ? <p className="ml-1 mt-1 text-[0.6875rem]" style={{ color: "var(--text-muted)" }}>Run attribution is unavailable.</p> : <AttributionPanel attribution={isAttributionPending ? null : attribution} />) : null}
   </div>;
 }

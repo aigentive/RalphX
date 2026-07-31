@@ -518,11 +518,17 @@ export interface AgentRunStartedPayload {
   context_type: string;
   context_id: string;
   conversation_id: string;
+  started_at?: string | null;
+  agent_name?: string | null;
+  launch_role?: string | null;
   effective_model_id?: string;
   effective_model_label?: string;
   provider_harness?: string | null;
   provider_session_id?: string | null;
   service_tier?: string | null;
+  startedAt?: string | null;
+  agentName?: string | null;
+  launchRole?: string | null;
   effectiveModelId?: string;
   effectiveModelLabel?: string;
   providerHarness?: string | null;
