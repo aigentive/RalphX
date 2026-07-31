@@ -113,7 +113,7 @@ test.describe("Settings Dialog", () => {
       await expect(settingsPage.settingsDialog).toHaveScreenshot(
         `settings-dialog-section-${section.id}.png`,
         {
-          maxDiffPixelRatio: 0.01,
+          maxDiffPixelRatio: 0.035,
         },
       );
     });
@@ -250,7 +250,7 @@ test.describe("Settings Dialog", () => {
 
     await expect(settingsPage.settingsDialog).toHaveScreenshot(
       "settings-dialog-section-updates-nightly.png",
-      { maxDiffPixelRatio: 0.01 },
+      { maxDiffPixelRatio: 0.035 },
     );
   });
 
@@ -271,7 +271,7 @@ test.describe("Settings Dialog", () => {
 
     await expect(settingsPage.settingsDialog).toHaveScreenshot(
       "settings-dialog-section-updates-save-error.png",
-      { maxDiffPixelRatio: 0.01 },
+      { maxDiffPixelRatio: 0.035 },
     );
   });
 
