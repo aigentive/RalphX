@@ -2316,6 +2316,7 @@ export interface AgentConversationWorkspaceFreshness {
   effectiveBaseRef: string | null;
   effectiveBaseDisplayName: string | null;
   baseBlockReason: string | null;
+  recommendedActions?: readonly string[] | undefined;
 }
 
 export interface UpdateAgentConversationWorkspaceFromBaseResult {

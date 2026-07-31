@@ -16,6 +16,7 @@ export interface BranchBaseSelection {
   ref: string;
   displayName: string;
   sourcePullRequest?: AgentConversationSourcePullRequest | null;
+  retargetedFromPullRequest?: number | undefined;
 }
 
 export type BranchBaseOptionSource =
@@ -263,24 +264,37 @@ export async function loadPullRequestBaseOptions({
       continue;
     }
     const title = pullRequest.title.trim() || `Pull request #${pullRequest.number}`;
+    const mergeTarget = normalizeGitBranchName(pullRequest.baseRefName);
+    const isMerged = pullRequest.state?.toUpperCase() === "MERGED";
+    if (isMerged && !mergeTarget) {
+      continue;
+    }
     const draftLabel = pullRequest.isDraft ? " - Draft" : "";
+    const mergedDetail = `Merged → ${mergeTarget}`;
     options.push({
       key: `pull_request:${pullRequest.number}:${branchName}`,
       label: `#${pullRequest.number} ${title}`,
-      detail: `${branchName} -> ${pullRequest.baseRefName}${draftLabel}`,
+      detail: isMerged ? mergedDetail : `${branchName} -> ${pullRequest.baseRefName}${draftLabel}`,
       source: "pull_request",
       selection: {
         kind: "local_branch",
-        ref: branchName,
-        displayName: `PR #${pullRequest.number}: ${title}`,
-        sourcePullRequest: {
-          number: pullRequest.number,
-          url: pullRequest.url ?? null,
-          title,
-          headRefName: branchName,
-          baseRefName: pullRequest.baseRefName ?? null,
-          headRefOid: pullRequest.headRefOid ?? null,
-        },
+        ref: isMerged ? mergeTarget : branchName,
+        displayName: isMerged
+          ? `${mergeTarget} (PR #${pullRequest.number} merged)`
+          : `PR #${pullRequest.number}: ${title}`,
+        ...(isMerged ? { retargetedFromPullRequest: pullRequest.number } : {}),
+        ...(isMerged
+          ? {}
+          : {
+              sourcePullRequest: {
+                number: pullRequest.number,
+                url: pullRequest.url ?? null,
+                title,
+                headRefName: branchName,
+                baseRefName: pullRequest.baseRefName ?? null,
+                headRefOid: pullRequest.headRefOid ?? null,
+              },
+            }),
       },
     });
   }
