@@ -8,6 +8,9 @@ use futures::{stream, StreamExt as _};
 use tauri::{AppHandle, Emitter};
 
 use crate::application::agent_conversation_workspace::resolve_valid_agent_conversation_workspace_path;
+use crate::application::agent_workspace_publication_reconciliation::{
+    correct_foreign_agent_workspace_publication, PublicationCorrectionOutcome,
+};
 use crate::application::agent_workspace_terminal_cleanup::{
     terminalize_agent_workspace_after_pr, TerminalAgentWorkspaceCause,
 };
@@ -30,7 +33,7 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, AgentWorkspaceRepairRepository,
-    PlanBranchRepository, ProjectRepository,
+    ChatConversationRepository, PlanBranchRepository, ProjectRepository,
 };
 use crate::domain::services::{GithubServiceTrait, PrStatus};
 use crate::error::{AppError, AppResult};
@@ -81,6 +84,7 @@ impl AgentWorkspaceExternalPrReconciliationTrigger {
 #[derive(Clone)]
 pub(crate) struct AgentWorkspaceExternalPrReconciliationDeps {
     pub workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    pub chat_conversation_repo: Arc<dyn ChatConversationRepository>,
     pub project_repo: Arc<dyn ProjectRepository>,
     pub github: Arc<dyn GithubServiceTrait>,
     pub clickup_integration_service: Option<Arc<ClickUpIntegrationService>>,
@@ -159,6 +163,66 @@ pub(crate) async fn reconcile_agent_workspace_external_pr(
             "workspace_missing",
         ));
     };
+
+    // Archived linked workspaces are normally skipped by the gate below, but a foreign
+    // publication association must remain correctable so terminal cleanup that consumed a
+    // PR the workspace never owned can be reversed. Owned associations stay skipped so
+    // reconciliation cannot replay terminal events for archived workspaces.
+    if workspace.mode == AgentConversationWorkspaceMode::Edit
+        && workspace.linked_plan_branch_id.is_none()
+        && workspace.publication_pr_number.is_some()
+        && workspace.status == AgentConversationWorkspaceStatus::Archived
+    {
+        let project = match deps.project_repo.get_by_id(&workspace.project_id).await {
+            Ok(project) => project,
+            Err(error) => {
+                tracing::warn!(
+                    conversation_id = workspace.conversation_id.as_str(),
+                    error = %error,
+                    "Foreign publication correction skipped because project could not be read"
+                );
+                return Ok(AgentWorkspaceExternalPrReconciliationOutcome::Skipped(
+                    "foreign_publication_unverified",
+                ));
+            }
+        };
+        let Some(project) = project else {
+            return Ok(AgentWorkspaceExternalPrReconciliationOutcome::Skipped(
+                "project_missing",
+            ));
+        };
+        if project.archived_at.is_some() {
+            return Ok(AgentWorkspaceExternalPrReconciliationOutcome::Skipped(
+                "project_archived",
+            ));
+        }
+        return match correct_foreign_agent_workspace_publication(
+            Arc::clone(&deps.workspace_repo),
+            Arc::clone(&deps.chat_conversation_repo),
+            Arc::clone(&deps.github),
+            &project,
+            &workspace,
+        )
+        .await?
+        {
+            PublicationCorrectionOutcome::Corrected => {
+                emit_workspace_changed(deps.app_handle.as_ref(), &workspace.conversation_id);
+                Ok(AgentWorkspaceExternalPrReconciliationOutcome::Skipped(
+                    "foreign_publication_corrected",
+                ))
+            }
+            PublicationCorrectionOutcome::Unverified => {
+                Ok(AgentWorkspaceExternalPrReconciliationOutcome::Skipped(
+                    "foreign_publication_unverified",
+                ))
+            }
+            PublicationCorrectionOutcome::Skipped | PublicationCorrectionOutcome::NotApplicable => {
+                Ok(AgentWorkspaceExternalPrReconciliationOutcome::Skipped(
+                    "workspace_not_active",
+                ))
+            }
+        };
+    }
 
     if let Some(reason) = external_pr_reconciliation_skip_reason(&workspace) {
         return Ok(AgentWorkspaceExternalPrReconciliationOutcome::Skipped(
@@ -283,6 +347,29 @@ async fn reconcile_linked_agent_workspace_pr(
             "missing_pr_number",
         ));
     };
+
+    match correct_foreign_agent_workspace_publication(
+        Arc::clone(&deps.workspace_repo),
+        Arc::clone(&deps.chat_conversation_repo),
+        Arc::clone(&deps.github),
+        project,
+        workspace,
+    )
+    .await?
+    {
+        PublicationCorrectionOutcome::Corrected => {
+            emit_workspace_changed(deps.app_handle.as_ref(), &workspace.conversation_id);
+            return Ok(AgentWorkspaceExternalPrReconciliationOutcome::Skipped(
+                "foreign_publication_corrected",
+            ));
+        }
+        PublicationCorrectionOutcome::Unverified => {
+            return Ok(AgentWorkspaceExternalPrReconciliationOutcome::Skipped(
+                "foreign_publication_unverified",
+            ));
+        }
+        PublicationCorrectionOutcome::Skipped | PublicationCorrectionOutcome::NotApplicable => {}
+    }
 
     let status = deps
         .github

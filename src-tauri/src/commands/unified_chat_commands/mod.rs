@@ -162,7 +162,9 @@ use crate::domain::execution::{
     elapsed_seconds_for_status, RunningIdeationSession, RunningProcess,
 };
 use crate::domain::services::github_service::GithubServiceTrait;
-use crate::domain::services::pr_publish_service::AgentWorkspacePrPublishOutcome;
+use crate::domain::services::pr_publish_service::{
+    AgentWorkspacePrPublishOutcome, AgentWorkspacePrPublishResult,
+};
 use crate::domain::services::{
     normalize_title_with_jira_key, primary_jira_key_from_composer_metadata,
     AgentWorkspacePrPublisher, ComposerArtifactReference, ComposerExcerptReference,
@@ -1053,13 +1055,11 @@ impl AgentWorkspaceRepairPublishContinuation for AgentWorkspaceRepairPublishComm
                 PublishAfterRepairPushError::Failed(error)
             }
         })?;
-        let pr_number = result
-            .pr_number
-            .ok_or_else(|| {
-                PublishAfterRepairPushError::Failed(
-                    "normal publish completed without a pull-request number".to_string(),
-                )
-            })?;
+        let pr_number = result.pr_number.ok_or_else(|| {
+            PublishAfterRepairPushError::Failed(
+                "normal publish completed without a pull-request number".to_string(),
+            )
+        })?;
         Ok(AgentWorkspaceRepairPrHandoffResult {
             pr_number,
             pr_url: result.pr_url,
@@ -1173,6 +1173,7 @@ fn schedule_external_pr_reconciliation_for_workspace(
             let chat_service: Arc<dyn ChatService> = Arc::new(recovery_state.build_chat_service());
             AgentWorkspaceExternalPrReconciliationDeps {
                 workspace_repo: Arc::clone(&recovery_state.agent_conversation_workspace_repo),
+                chat_conversation_repo: Arc::clone(&recovery_state.chat_conversation_repo),
                 project_repo: Arc::clone(&recovery_state.project_repo),
                 github,
                 clickup_integration_service: Some(Arc::clone(
@@ -6705,6 +6706,9 @@ async fn resolve_agent_workspace_pr_metadata_target(
     worktree_path: &Path,
     workspace: &AgentConversationWorkspace,
 ) -> Result<ResolvedAgentWorkspacePrTarget, String> {
+    if workspace.has_terminal_publication_pr_status() {
+        return Ok(ResolvedAgentWorkspacePrTarget::NewPr);
+    }
     let github = github.ok_or_else(|| {
         "GitHub integration is required to update metadata for an existing pull request".to_string()
     })?;
@@ -7862,9 +7866,6 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
                 .to_string(),
         );
     }
-    if workspace.has_terminal_publication_pr_status() {
-        return Err("Cannot publish a workspace whose PR is already closed or merged".to_string());
-    }
     review_base_for_publish(workspace.base_commit.as_deref(), &workspace.base_ref)?;
     if let Some(blocker) = load_workspace_review_publish_blocker(state, &workspace)
         .await
@@ -8547,7 +8548,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
         ) => {
             let description =
                 AgentWorkspacePrDescription::new(title.clone(), body_markdown.clone());
-            match publisher
+            let publish_result = match publisher
                 .publish_draft_pr_without_duplicate_recovery(
                     &worktree_path,
                     &conversation,
@@ -8556,21 +8557,39 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
                 )
                 .await
             {
-                Err(AppError::DuplicatePr) => {
-                    recover_duplicate_agent_workspace_pr_publish(
-                        state,
-                        github.as_ref(),
-                        &publisher,
-                        &conversation,
-                        &project,
-                        &workspace,
-                        &worktree_path,
-                        review_base,
-                        conversation_id.clone(),
-                        &branch_head_sha,
-                        reviewable_commit_count,
-                    )
-                    .await
+                Err(AppError::DuplicatePr) => recover_duplicate_agent_workspace_pr_publish(
+                    state,
+                    github.as_ref(),
+                    &publisher,
+                    &conversation,
+                    &project,
+                    &workspace,
+                    &worktree_path,
+                    review_base,
+                    conversation_id.clone(),
+                    &branch_head_sha,
+                    reviewable_commit_count,
+                )
+                .await
+                .map(AgentWorkspacePrPublishResult::Published),
+                result => result,
+            };
+            match publish_result {
+                Ok(AgentWorkspacePrPublishResult::TerminalPublicationIdentity) => {
+                    clear_terminal_agent_workspace_publication_for_republish(state, &workspace)
+                        .await?;
+                    workspace.publication_pr_number = None;
+                    workspace.publication_pr_url = None;
+                    workspace.publication_pr_status = None;
+                    workspace.publication_push_status = None;
+                    publisher
+                        .publish_draft_pr_without_duplicate_recovery(
+                            &worktree_path,
+                            &conversation,
+                            &workspace,
+                            &description,
+                        )
+                        .await
                 }
                 result => result,
             }
@@ -8578,21 +8597,20 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
         (ResolvedAgentWorkspacePrTarget::NewPr, _) => Err(AppError::Validation(
             "new pull requests require a complete metadata body patch".to_string(),
         )),
-        (ResolvedAgentWorkspacePrTarget::Existing(snapshot), decision) => {
-            publisher
-                .publish_existing_pr_metadata_decision(
-                    &worktree_path,
-                    &conversation,
-                    snapshot.number,
-                    snapshot.url.as_deref(),
-                    snapshot.body.as_deref(),
-                    decision,
-                )
-                .await
-        }
+        (ResolvedAgentWorkspacePrTarget::Existing(snapshot), decision) => publisher
+            .publish_existing_pr_metadata_decision(
+                &worktree_path,
+                &conversation,
+                snapshot.number,
+                snapshot.url.as_deref(),
+                snapshot.body.as_deref(),
+                decision,
+            )
+            .await
+            .map(AgentWorkspacePrPublishResult::Published),
     };
     let outcome = match pr_result {
-        Ok(result) => {
+        Ok(AgentWorkspacePrPublishResult::Published(result)) => {
             tracing::info!(
                 target: "ralphx_lib::commands::agent_workspace_publish",
                 conversation_id = %workspace.conversation_id,
@@ -8604,6 +8622,11 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
                 "Published agent workspace draft pull request"
             );
             result
+        }
+        Ok(AgentWorkspacePrPublishResult::TerminalPublicationIdentity) => {
+            return Err(
+                "terminal publication identity was not cleared before draft creation".to_string(),
+            )
         }
         Err(error) => {
             let error = error.to_string();
@@ -8816,6 +8839,27 @@ async fn mark_agent_workspace_publish_status(
         None,
     )
     .await
+}
+
+async fn clear_terminal_agent_workspace_publication_for_republish(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+) -> Result<(), String> {
+    state
+        .agent_conversation_workspace_repo
+        .update_publication(&workspace.conversation_id, None, None, None, None)
+        .await
+        .map_err(|error| error.to_string())?;
+    append_agent_workspace_publication_event(
+        state,
+        &workspace.conversation_id,
+        "terminal_publication_identity_cleared",
+        "succeeded",
+        "Cleared terminal pull request association before creating a fresh draft",
+        None,
+    )
+    .await
+    .map_err(|error| error.to_string())
 }
 
 async fn mark_agent_workspace_publish_description_failure(
@@ -9210,9 +9254,7 @@ where
 
 /// Delivery retries append `auto_retry_*` streak markers to the durable reason history. Those
 /// markers describe recovery bookkeeping rather than the publish failure the repair agent needs.
-fn last_meaningful_agent_workspace_repair_reason(
-    attempt: &AgentWorkspaceRepairAttempt,
-) -> &str {
+fn last_meaningful_agent_workspace_repair_reason(attempt: &AgentWorkspaceRepairAttempt) -> &str {
     attempt
         .pending_reasons
         .iter()

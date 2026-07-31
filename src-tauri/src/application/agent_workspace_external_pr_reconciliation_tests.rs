@@ -200,13 +200,24 @@ async fn deps_with_workspace(
     let project_repo = Arc::new(MemoryProjectRepository::with_projects(vec![project]));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     workspace_repo
-        .create_or_update(workspace)
+        .create_or_update(workspace.clone())
         .await
         .expect("workspace should save");
+    if let Some(pr_number) = workspace.publication_pr_number {
+        github.will_return_pr_detail(pr_detail(
+            pr_number,
+            &workspace.branch_name,
+            "Owned workspace pull request",
+            None,
+        ));
+    }
 
     (
         AgentWorkspaceExternalPrReconciliationDeps {
             workspace_repo: workspace_repo.clone(),
+            chat_conversation_repo: Arc::new(
+                crate::infrastructure::memory::MemoryChatConversationRepository::new(),
+            ),
             project_repo,
             github,
             clickup_integration_service: None,
@@ -1004,6 +1015,9 @@ async fn reconciliation_skips_missing_workspace_project_and_disabled_projects() 
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let deps = AgentWorkspaceExternalPrReconciliationDeps {
         workspace_repo: workspace_repo.clone(),
+        chat_conversation_repo: Arc::new(
+            crate::infrastructure::memory::MemoryChatConversationRepository::new(),
+        ),
         project_repo: project_repo.clone(),
         github: github.clone(),
         clickup_integration_service: None,
@@ -1169,6 +1183,9 @@ async fn startup_reconciliation_processes_candidates_and_skips_blocked_projects(
         .unwrap();
     let deps = AgentWorkspaceExternalPrReconciliationDeps {
         workspace_repo: workspace_repo.clone(),
+        chat_conversation_repo: Arc::new(
+            crate::infrastructure::memory::MemoryChatConversationRepository::new(),
+        ),
         project_repo,
         github: github.clone(),
         clickup_integration_service: None,
@@ -1211,11 +1228,29 @@ async fn startup_reconciliation_marks_linked_failed_pr_terminal() {
         merge_commit_sha: Some("merge-sha".to_string()),
         merged_at: None,
     });
+    github.will_return_pr_detail(crate::domain::services::github_service::PrDetail {
+        number: 264,
+        title: "Owned PR".to_string(),
+        body: None,
+        author: None,
+        created_at: None,
+        url: None,
+        state: PrStatus::Merged {
+            merge_commit_sha: Some("merge-sha".to_string()),
+            merged_at: None,
+        },
+        is_draft: false,
+        head_ref_name: workspace.branch_name.clone(),
+        base_ref_name: "main".to_string(),
+    });
     let project_repo = Arc::new(MemoryProjectRepository::with_projects(vec![project]));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     workspace_repo.create_or_update(workspace).await.unwrap();
     let deps = AgentWorkspaceExternalPrReconciliationDeps {
         workspace_repo: workspace_repo.clone(),
+        chat_conversation_repo: Arc::new(
+            crate::infrastructure::memory::MemoryChatConversationRepository::new(),
+        ),
         project_repo,
         github: github.clone(),
         clickup_integration_service: None,
