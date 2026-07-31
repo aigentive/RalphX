@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Command as StdCommand;
+use std::process::{Command as StdCommand, Output};
 use std::sync::{Mutex, OnceLock};
 
 use crate::domain::agents::LogicalEffort;
@@ -18,6 +18,8 @@ pub const CLAUDE_OPUS_4_8_API_MODEL_ID: &str = "claude-opus-4-8";
 pub const CLAUDE_OPUS_4_8_MIN_VERSION: (u64, u64, u64) = (2, 1, 154);
 pub const CLAUDE_OPUS_5_API_MODEL_ID: &str = "claude-opus-5";
 pub const CLAUDE_OPUS_5_MIN_VERSION: (u64, u64, u64) = (2, 1, 219);
+pub(crate) const CLAUDE_THINKING_DISPLAY_ACCEPTANCE_MARKER: &str = "option '--thinking-display";
+pub(crate) const CLAUDE_THINKING_DISPLAY_PROBE_VALUE: &str = "ralphx-capability-probe";
 
 const CLAUDE_XHIGH_MIN_VERSION: (u64, u64, u64) = (2, 1, 111);
 const CLAUDE_FABLE_MIN_VERSION_LABEL: &str = "2.1.170";
@@ -107,6 +109,7 @@ pub fn parse_claude_cli_capabilities(
         version,
         supported_model_aliases,
         supported_efforts,
+        // This boolean flag cannot use the value-rejection acceptance probe below.
         supports_include_partial_messages: help_output.contains("--include-partial-messages"),
         supports_thinking_display: help_output.contains("--thinking-display"),
     }
@@ -115,10 +118,12 @@ pub fn parse_claude_cli_capabilities(
 pub fn probe_claude_cli(cli_path: &Path) -> Result<ClaudeCliCapabilities, String> {
     let version_output = run_claude_command(cli_path, &["--version"])?;
     let help_output = run_claude_command(cli_path, &["--help"])?;
-    Ok(parse_claude_cli_capabilities(
-        &help_output,
-        Some(&version_output),
-    ))
+    let mut capabilities = parse_claude_cli_capabilities(&help_output, Some(&version_output));
+    if !capabilities.supports_thinking_display {
+        capabilities.supports_thinking_display =
+            probe_claude_cli_thinking_display_acceptance(cli_path);
+    }
+    Ok(capabilities)
 }
 
 pub fn probe_claude_cli_cached(cli_path: &Path) -> Result<ClaudeCliCapabilities, String> {
@@ -415,19 +420,41 @@ fn effort_rank(effort: LogicalEffort) -> usize {
         .unwrap_or(usize::MAX)
 }
 
+/// Probes Claude CLI 2.1.220's value-rejection surface because exit status alone is invalid:
+/// unknown flags with `--help` exit successfully, while a recognized `--thinking-display`
+/// value rejects this bogus probe value with a distinct error.
+///
+/// The stderr check requires BOTH the option marker and the echoed probe value: a CLI that
+/// rejects unknown options would emit `error: unknown option '--thinking-display'` (which
+/// contains the marker) but never echoes the probe value, while genuine value rejection does.
+fn probe_claude_cli_thinking_display_acceptance(cli_path: &Path) -> bool {
+    match run_claude_command_output(
+        cli_path,
+        &[
+            "--thinking-display",
+            CLAUDE_THINKING_DISPLAY_PROBE_VALUE,
+            "--help",
+        ],
+    ) {
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            !output.status.success()
+                && stderr.contains(CLAUDE_THINKING_DISPLAY_ACCEPTANCE_MARKER)
+                && stderr.contains(CLAUDE_THINKING_DISPLAY_PROBE_VALUE)
+        }
+        Err(error) => {
+            tracing::debug!(
+                cli_path = %cli_path.display(),
+                %error,
+                "Claude CLI thinking-display acceptance probe could not start; omitting optional flag"
+            );
+            false
+        }
+    }
+}
+
 fn run_claude_command(cli_path: &Path, args: &[&str]) -> Result<String, String> {
-    let mut command = StdCommand::new(cli_path);
-    command.args(args);
-    command.env(
-        "PATH",
-        crate::infrastructure::tool_paths::agent_subprocess_env_path(),
-    );
-    crate::infrastructure::tool_paths::ensure_resolved_node_bin_in_path(&mut command);
-    crate::infrastructure::subprocess_env_policy::github_cli_env_policy()
-        .apply_to_std_command(&mut command);
-    let output = command
-        .output()
-        .map_err(|error| format!("Failed to run {} {:?}: {}", cli_path.display(), args, error))?;
+    let output = run_claude_command_output(cli_path, args)?;
 
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
@@ -440,6 +467,22 @@ fn run_claude_command(cli_path: &Path, args: &[&str]) -> Result<String, String> 
             String::from_utf8_lossy(&output.stderr)
         ))
     }
+}
+
+fn run_claude_command_output(cli_path: &Path, args: &[&str]) -> Result<Output, String> {
+    let mut command = StdCommand::new(cli_path);
+    command.args(args);
+    command.env(
+        "PATH",
+        crate::infrastructure::tool_paths::agent_subprocess_env_path(),
+    );
+    crate::infrastructure::tool_paths::ensure_resolved_node_bin_in_path(&mut command);
+    crate::infrastructure::subprocess_env_policy::github_cli_env_policy()
+        .apply_to_std_command(&mut command);
+    let output = command
+        .output()
+        .map_err(|error| format!("Failed to run {} {:?}: {}", cli_path.display(), args, error))?;
+    Ok(output)
 }
 
 #[cfg(test)]
