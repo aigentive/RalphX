@@ -1344,6 +1344,13 @@ struct WorkspaceLoadErrorRepository;
 
 #[async_trait]
 impl AgentConversationWorkspaceRepository for WorkspaceLoadErrorRepository {
+    async fn set_last_blocked_pr_health_fingerprint(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _fingerprint: Option<&str>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
     async fn create_or_update(
         &self,
         _workspace: AgentConversationWorkspace,

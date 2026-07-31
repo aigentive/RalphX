@@ -187,6 +187,22 @@ impl AgentWorkspaceRepairRepository for MemoryAgentConversationWorkspaceReposito
             .cloned())
     }
 
+    async fn list_repair_attempts_for_conversation(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Vec<AgentWorkspaceRepairAttempt>> {
+        let mut attempts = self
+            .repair_attempts
+            .read()
+            .await
+            .values()
+            .filter(|attempt| &attempt.conversation_id == conversation_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        attempts.sort_by(|left, right| left.generation.cmp(&right.generation));
+        Ok(attempts)
+    }
+
     async fn list_recoverable_repair_attempts(
         &self,
     ) -> AppResult<Vec<AgentWorkspaceRepairAttempt>> {

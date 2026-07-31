@@ -535,6 +535,8 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode_defaults_and_b
         pr_supervision_status: None,
         pr_supervision_summary: None,
         pr_supervision_updated_at: None,
+        last_blocked_pr_health_fingerprint: None,
+        last_blocked_pr_health_at: None,
         status: crate::domain::entities::AgentConversationWorkspaceStatus::Active,
         created_at: Utc::now(),
         updated_at: Utc::now(),

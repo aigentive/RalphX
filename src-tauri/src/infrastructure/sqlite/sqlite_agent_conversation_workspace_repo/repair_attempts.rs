@@ -588,6 +588,28 @@ impl AgentWorkspaceRepairRepository for SqliteAgentConversationWorkspaceReposito
             .await
     }
 
+    async fn list_repair_attempts_for_conversation(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Vec<AgentWorkspaceRepairAttempt>> {
+        let conversation_id = conversation_id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let mut statement = conn.prepare(
+                    "SELECT * FROM agent_workspace_repair_attempts
+                     WHERE conversation_id = ?1
+                     ORDER BY generation ASC, rowid ASC",
+                )?;
+                let rows = statement.query_map([conversation_id], row_to_repair_attempt)?;
+                let mut attempts = Vec::new();
+                for row in rows {
+                    attempts.push(row?);
+                }
+                Ok(attempts)
+            })
+            .await
+    }
+
     async fn list_recoverable_repair_attempts(
         &self,
     ) -> AppResult<Vec<AgentWorkspaceRepairAttempt>> {

@@ -7,7 +7,8 @@ use std::os::unix::fs::PermissionsExt;
 
 use crate::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
 use crate::application::agent_workspace_publish_recovery::{
-    is_blocked_and_not_auto_retryable, recover_agent_workspace_repair_after_terminal_run,
+    evaluate_pr_autofix_successor, is_blocked_and_not_auto_retryable,
+    recover_agent_workspace_repair_after_terminal_run,
     recover_agent_workspace_repair_attempts_for_state,
     recover_stale_agent_workspace_publish_repairs,
     recover_stale_agent_workspace_publish_repairs_for_state,
@@ -18,9 +19,10 @@ use crate::application::agent_workspace_publish_recovery::{
     recover_stale_publish_repair_for_workspace_and_reload_with_review_target,
     recover_stale_publish_repair_for_workspace_in_state,
     recover_stale_publish_repair_for_workspace_with_project_repo_outcome,
-    recover_stale_transient_publish_statuses, StalePublishRepairRecoveryOutcome,
-    STALE_NEEDS_AGENT_CLASSIFICATION, STALE_REPAIR_BLOCKED_SUMMARY, STALE_REPAIR_RECOVERED_STEP,
-    STALE_TRANSIENT_CLASSIFICATION, STALE_TRANSIENT_RECOVERED_STEP,
+    recover_stale_transient_publish_statuses, PrAutofixSuccessorDecision,
+    StalePublishRepairRecoveryOutcome, STALE_NEEDS_AGENT_CLASSIFICATION,
+    STALE_REPAIR_BLOCKED_SUMMARY, STALE_REPAIR_RECOVERED_STEP, STALE_TRANSIENT_CLASSIFICATION,
+    STALE_TRANSIENT_RECOVERED_STEP,
 };
 use crate::application::agent_workspace_publish_repair_state::{
     reserve_agent_workspace_repair_dispatch, start_or_join_agent_workspace_repair,
@@ -41,7 +43,8 @@ use crate::domain::entities::{
     AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource, AgentWorkspaceReviewGateStatus,
     AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewTargetScope, ArtifactId, ChatConversation, ChatConversationId,
-    GitTargetIdentity, GitTargetLeaseOwner, IdeationAnalysisBaseRefKind, Project, ProjectId,
+    GitTargetIdentity, GitTargetLeaseOwner, IdeationAnalysisBaseRefKind, IdeationSessionId,
+    PlanBranch, Project, ProjectId,
 };
 use crate::domain::repositories::{
     AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, AgentConversationWorkspaceRepository,
@@ -54,6 +57,7 @@ use crate::infrastructure::memory::{
     MemoryAgentConversationWorkspaceRepository, MemoryAgentProviderSettingsRepository,
     MemoryAgentRunRepository,
 };
+use crate::tests::mock_github_service::MockGithubService;
 
 fn conversation_id(suffix: u8) -> ChatConversationId {
     ChatConversationId::from_string(format!("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbb{suffix:02}"))
@@ -173,6 +177,48 @@ impl Drop for TestEnvVarGuard {
             None => std::env::remove_var(self.key),
         }
     }
+}
+
+/// A timestamp old enough that a reservation without a run row is a genuine interrupted delivery
+/// rather than a dispatch whose run row has not been written yet.
+fn aged_past_spawn_grace() -> chrono::DateTime<chrono::Utc> {
+    chrono::Utc::now()
+        - chrono::Duration::seconds(
+            crate::application::agent_workspace_publish_repair_state::ORPHANED_REPAIR_DISPATCH_RESCUE_GRACE_SECS
+                + 60,
+        )
+}
+
+/// Ages the current attempt past the spawn-grace window without changing anything else about it.
+async fn age_current_repair_attempt_past_spawn_grace(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+) {
+    let mut attempt = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(conversation_id)
+        .await
+        .expect("load attempt to age")
+        .expect("attempt exists to age");
+    let expected_phase = attempt.phase;
+    let expected_updated_at = attempt.updated_at;
+    attempt.updated_at = aged_past_spawn_grace();
+    let outcome = state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase,
+            expected_updated_at,
+            next_phase: expected_phase,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("age repair attempt");
+    assert!(matches!(
+        outcome,
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_)
+    ));
 }
 
 fn needs_agent_workspace(conversation_id: ChatConversationId) -> AgentConversationWorkspace {
@@ -710,7 +756,9 @@ async fn recovery_ignores_nonterminal_run_hints_and_blocks_exhausted_ownerless_d
         crate::application::agent_workspace_publish_repair_state::AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION,
     );
     exhausted.target_lease_epoch = Some(fencing_epoch);
-    exhausted.updated_at += chrono::Duration::microseconds(1);
+    // Aged past the spawn-grace window: this fixture is an ownerless dispatch left behind by a
+    // dead process, not a reservation whose run row has simply not been written yet.
+    exhausted.updated_at = aged_past_spawn_grace();
     assert!(matches!(
         state
             .agent_workspace_repair_repo
@@ -1089,6 +1137,118 @@ async fn startup_recovery_revalidates_a_clean_committed_validating_repair() {
     assert!(current.settled_at.is_none());
 }
 
+/// Production incident 2026-07-31: a live PR-fixer dispatch was settled `interrupted` 43 ms after
+/// spawn because the reservation is written before the agent run row exists. The reservation alone
+/// is not evidence of a dead worker, so a just-reserved dispatch must survive an immediate pass.
+#[tokio::test]
+async fn fresh_dispatch_reservation_is_not_settled_as_interrupted_before_its_run_row_exists() {
+    let state = AppState::new_test();
+    let conversation_id = conversation_id(124);
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(needs_agent_workspace(conversation_id.clone()))
+        .await
+        .expect("seed fresh dispatch workspace");
+    let started = state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                conversation_id.clone(),
+                AgentWorkspaceRepairSource::Publish,
+                AgentWorkspaceRepairContinuation::Publish,
+                "main",
+                false,
+                true,
+                false,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: "fresh dispatch".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("start fresh repair attempt");
+    let StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(started) = started else {
+        panic!("fresh durable repair attempt must start");
+    };
+    let target_identity = GitTargetIdentity::new(
+        PathBuf::from("/tmp/ralphx-repair-fresh-dispatch"),
+        "refs/heads/ralphx/test/publish-recovery",
+    )
+    .expect("valid canonical target identity");
+    let dispatch = reserve_agent_workspace_repair_dispatch(
+        Arc::clone(&state.agent_workspace_repair_repo),
+        Arc::clone(&state.branch_update_repo),
+        target_identity,
+        started,
+        AgentRunId::from_string("fresh-dispatch-run"),
+        "dispatch fresh repair",
+        None,
+    )
+    .await
+    .expect("reserve fresh repair delivery");
+    assert!(matches!(
+        dispatch,
+        AgentWorkspaceRepairDispatchOutcome::Reserved(_)
+    ));
+
+    // The agent is spawning right now; its run row has not been written yet.
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("recovery pass over a just-reserved dispatch"),
+        0
+    );
+    let held = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load fresh dispatch")
+        .expect("fresh dispatch remains current");
+    assert_eq!(
+        held.phase,
+        AgentWorkspaceRepairPhase::Dispatching,
+        "a spawning dispatch must not be settled as interrupted"
+    );
+    assert_eq!(held.dispatch_count, 0, "no retry was consumed");
+    assert!(held.next_dispatch_at.is_none(), "no duplicate delivery queued");
+    assert_eq!(
+        held.reserved_agent_run_id,
+        Some(AgentRunId::from_string("fresh-dispatch-run")),
+        "the original reservation still owns the dispatch"
+    );
+    assert!(
+        !state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("load publication events")
+            .iter()
+            .any(|event| event.step == "repair_sent" && event.status == "retrying"),
+        "no interrupted-retry event may be emitted inside the spawn grace window"
+    );
+
+    // Past the grace window the same reservation is a genuine orphan and settles as before.
+    age_current_repair_attempt_past_spawn_grace(&state, &conversation_id).await;
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("recover the aged orphaned dispatch"),
+        1
+    );
+    let retried = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load retried dispatch")
+        .expect("retried dispatch remains current");
+    assert_eq!(retried.phase, AgentWorkspaceRepairPhase::Requested);
+    assert_eq!(retried.dispatch_count, 1);
+    assert!(retried.reserved_agent_run_id.is_none());
+}
+
 #[tokio::test]
 async fn startup_recovery_schedules_one_due_retry_for_an_interrupted_repair_delivery() {
     let state = AppState::new_test();
@@ -1142,6 +1302,9 @@ async fn startup_recovery_schedules_one_due_retry_for_an_interrupted_repair_deli
         dispatch,
         AgentWorkspaceRepairDispatchOutcome::Reserved(_)
     ));
+    // Startup recovery runs after the process that owned this dispatch died, so the reservation is
+    // well past the spawn-grace window that protects a just-reserved delivery.
+    age_current_repair_attempt_past_spawn_grace(&state, &conversation_id).await;
 
     assert_eq!(
         recover_stale_agent_workspace_publish_repairs_for_state(&state)
@@ -1552,6 +1715,7 @@ wait "$stdin_drain_pid" 2>/dev/null || true
             summary: "Retry blocked repair.".to_string(),
             auto_merge_current: None,
             retry_blocked: true,
+            carryover_pr_autofix_evidence: None,
         },
     )
     .await
@@ -1640,6 +1804,18 @@ wait "$stdin_drain_pid" 2>/dev/null || true
         .iter()
         .any(|reason| reason == "auto_retry_blocked_repair:1"));
     assert!(successor.reserved_agent_run_id.is_some());
+
+    // The retry marker is internal scheduling bookkeeping. Rendering it as the assignment's
+    // "Context:" told the recipient nothing about what needed repairing.
+    let delivered = latest_sent_repair_message(&state, &conversation_id).await;
+    assert!(
+        !delivered.contains("auto_retry_blocked_repair"),
+        "internal retry markers must never reach an agent assignment: {delivered}"
+    );
+    assert!(
+        delivered.contains("The current durable workspace repair still needs attention."),
+        "a marker-only reason list must fall back to human context: {delivered}"
+    );
 }
 
 #[cfg(unix)]
@@ -4239,4 +4415,687 @@ mod extracted_inline_tests {
         assert_eq!(workspace.publication_push_status.as_deref(), Some("failed"));
         assert_eq!(workspace.pr_supervision_status.as_deref(), Some("blocked"));
     }
+}
+
+// --- Unattended repair loop regressions -------------------------------------------------------
+//
+// Production incident 2026-07-31 (PR #934): four Opus generations re-validated a clean workspace
+// because durable redelivery addressed the generic repairer, successors carried no failure
+// identity, and a live dispatch was settled as "interrupted" 43 ms after spawn.
+
+fn failing_check_pr_health(head: &str, check_name: &str) -> crate::domain::services::github_service::PrHealth {
+    crate::domain::services::github_service::PrHealth {
+        sync_state: crate::domain::services::PrSyncState {
+            status: crate::domain::services::PrStatus::Open,
+            merge_state_status: None,
+            mergeable: Some(crate::domain::services::github_service::PrMergeableState::Mergeable),
+            is_draft: false,
+            head_ref_name: "ralphx/test/publish-recovery".to_string(),
+            base_ref_name: "main".to_string(),
+            head_ref_oid: Some(head.to_string()),
+            base_ref_oid: Some("base-sha".to_string()),
+        },
+        review_decision: None,
+        checks: vec![crate::domain::services::github_service::PrHealthCheck {
+            name: check_name.to_string(),
+            status: Some("completed".to_string()),
+            conclusion: Some("failure".to_string()),
+            details_url: Some("https://github.com/owner/repo/actions/runs/1".to_string()),
+        }],
+        issue_comments: Vec::new(),
+        auto_merge_request: None,
+    }
+}
+
+fn health_fingerprint(pr_number: i64, health: &crate::domain::services::github_service::PrHealth) -> String {
+    crate::application::services::pr_merge_poller::classify_agent_workspace_pr_autofix_issue(
+        pr_number, health,
+    )
+    .expect("failing check classifies as a PR autofix issue")
+    .classification
+}
+
+/// Rewrites the current attempt into a blocked PR autofix generation carrying an exact failure
+/// identity, aged past the automatic blocked-retry backoff.
+async fn block_pr_autofix_attempt_with_fingerprint(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    fingerprint: Option<String>,
+) -> AgentWorkspaceRepairAttempt {
+    let mut attempt = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(conversation_id)
+        .await
+        .expect("load attempt to block")
+        .expect("attempt exists to block");
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await
+        .expect("load workspace for blocked fixture")
+        .expect("workspace exists for blocked fixture");
+    let expected_phase = attempt.phase;
+    let expected_updated_at = attempt.updated_at;
+    attempt.source = AgentWorkspaceRepairSource::PrAutofix;
+    attempt.phase = AgentWorkspaceRepairPhase::Blocked;
+    attempt.pr_autofix_health_fingerprint = fingerprint;
+    attempt.pr_autofix_dispatch_head_commit = Some("dispatch-head".to_string());
+    // Base parity keeps the base-advance escape hatch out of the way; these fixtures exercise the
+    // health comparison itself.
+    attempt.target_base_commit = workspace.base_commit.clone();
+    attempt.blocker = Some("transient_ci".to_string());
+    attempt.updated_at = chrono::Utc::now() - chrono::Duration::seconds(1_000);
+    match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Blocked,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("block PR autofix attempt")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("blocking PR autofix attempt must apply, got {outcome:?}"),
+    }
+}
+
+async fn latest_sent_repair_message(state: &AppState, conversation_id: &ChatConversationId) -> String {
+    let messages = state
+        .chat_message_repo
+        .get_by_conversation(conversation_id)
+        .await
+        .expect("load delivered repair messages");
+    messages
+        .iter()
+        .rev()
+        .find(|message| message.role == crate::domain::entities::MessageRole::User)
+        .map(|message| message.content.clone())
+        .expect("a repair assignment was delivered")
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn pr_autofix_redelivery_addresses_the_pr_fixer_with_pr_context() {
+    let _environment_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("lock test environment");
+    let _spawn_permission = TestEnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let (state, conversation_id, _worktree_parent, _project_dir) = seed_orphaned_repair_dispatch(
+        120,
+        r#"#!/bin/sh
+cat >/dev/null &
+stdin_drain_pid=$!
+printf '%s\n' '{"type":"result","session_id":"pr-fixer-redelivery","is_error":false,"result":"fix started","cost_usd":0.0}'
+sleep 1
+kill "$stdin_drain_pid" 2>/dev/null || true
+wait "$stdin_drain_pid" 2>/dev/null || true
+"#,
+    )
+    .await;
+    let mut attempt = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load seeded attempt")
+        .expect("seeded attempt exists");
+    let expected_updated_at = attempt.updated_at;
+    attempt.source = AgentWorkspaceRepairSource::PrAutofix;
+    attempt.pr_autofix_health_fingerprint = Some("github_pr_autofix:684:checks:rust".to_string());
+    // Internal scheduling markers must never surface to the recipient as repair context.
+    attempt.pending_reasons = vec!["auto_retry_blocked_repair:1".to_string()];
+    attempt.updated_at = chrono::Utc::now() - chrono::Duration::seconds(61);
+    assert!(matches!(
+        state
+            .agent_workspace_repair_repo
+            .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+                attempt,
+                expected_phase: AgentWorkspaceRepairPhase::Requested,
+                expected_updated_at,
+                next_phase: AgentWorkspaceRepairPhase::Requested,
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("age PR autofix orphan"),
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_)
+    ));
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("rescue orphaned PR autofix dispatch"),
+        1
+    );
+
+    let message = latest_sent_repair_message(&state, &conversation_id).await;
+    assert!(
+        message.contains("redelivering an interrupted PR fix"),
+        "PR autofix redelivery must use the PR fixer assignment, got: {message}"
+    );
+    assert!(message.contains("complete_agent_workspace_pr_fix"));
+    assert!(message.contains("get_agent_workspace_pr_fix_context"));
+    assert!(message.contains("PR #684"));
+    assert!(message.contains("github_pr_autofix:684:checks:rust"));
+    assert!(
+        !message.contains("use the available repair-completion tool"),
+        "PR autofix redelivery must not reuse the generic workspace repair assignment"
+    );
+    assert!(
+        !message.contains("auto_retry_blocked_repair"),
+        "internal scheduling markers must not leak into the assignment: {message}"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn non_pr_autofix_redelivery_keeps_the_generic_workspace_repair_assignment() {
+    let _environment_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("lock test environment");
+    let _spawn_permission = TestEnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let (state, conversation_id, _worktree_parent, _project_dir) = seed_orphaned_repair_dispatch(
+        121,
+        r#"#!/bin/sh
+cat >/dev/null &
+stdin_drain_pid=$!
+printf '%s\n' '{"type":"result","session_id":"generic-repair-redelivery","is_error":false,"result":"repair started","cost_usd":0.0}'
+sleep 1
+kill "$stdin_drain_pid" 2>/dev/null || true
+wait "$stdin_drain_pid" 2>/dev/null || true
+"#,
+    )
+    .await;
+    age_requested_repair_attempt(&state, &conversation_id).await;
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("rescue orphaned publish dispatch"),
+        1
+    );
+
+    let message = latest_sent_repair_message(&state, &conversation_id).await;
+    assert!(
+        message.contains("complete_agent_workspace_repair"),
+        "a publish repair must name the repairer's own completion tool: {message}"
+    );
+    assert!(
+        !message.contains("complete_agent_workspace_pr_fix"),
+        "a publish repair must not be addressed to the PR fixer: {message}"
+    );
+}
+
+/// Seeds a workspace whose path resolves the way production requires: a real project repository
+/// with a real worktree checked out at the workspace branch. Successor evaluation reads live PR
+/// health through that path, so a fixture without it can only ever exercise the withhold branch.
+async fn seed_pr_autofix_health_workspace(
+    suffix: u8,
+) -> (
+    AppState,
+    ChatConversationId,
+    tempfile::TempDir,
+    tempfile::TempDir,
+) {
+    let state = AppState::new_test();
+    let worktree_parent = tempfile::tempdir().expect("create PR autofix worktree parent");
+    let project_dir = tempfile::tempdir().expect("create PR autofix project directory");
+    recovery_git(project_dir.path(), &["init", "-b", "main"]);
+    recovery_git(
+        project_dir.path(),
+        &["config", "user.email", "recovery@example.com"],
+    );
+    recovery_git(project_dir.path(), &["config", "user.name", "Recovery Test"]);
+    std::fs::write(project_dir.path().join("README.md"), "base\n").expect("write base file");
+    recovery_git(project_dir.path(), &["add", "README.md"]);
+    recovery_git(project_dir.path(), &["commit", "-m", "base"]);
+
+    let conversation_id = conversation_id(suffix);
+    let mut project = Project::new(
+        "pr autofix health project".to_string(),
+        project_dir.path().display().to_string(),
+    );
+    project.id = project_id();
+    project.worktree_parent_directory = Some(worktree_parent.path().display().to_string());
+    let workspace_path = resolve_agent_conversation_workspace_path(&project, &conversation_id)
+        .expect("derive exact PR autofix workspace path");
+    recovery_git(
+        project_dir.path(),
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "ralphx/test/publish-recovery",
+            workspace_path.to_str().expect("workspace path"),
+            "main",
+        ],
+    );
+    state
+        .project_repo
+        .create(project)
+        .await
+        .expect("seed PR autofix project");
+    let mut workspace = needs_agent_workspace(conversation_id.clone());
+    workspace.worktree_path = workspace_path.display().to_string();
+    workspace.base_commit = Some(recovery_git(project_dir.path(), &["rev-parse", "HEAD"]));
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("seed PR autofix workspace");
+    (state, conversation_id, worktree_parent, project_dir)
+}
+
+#[tokio::test]
+async fn blocked_pr_autofix_with_unchanged_health_parks_without_spawning() {
+    let (mut state, conversation_id, _worktree_parent, _project_dir) =
+        seed_pr_autofix_health_workspace(122).await;
+    start_blocked_pr_autofix_generation(&state, &conversation_id).await;
+
+    let health = failing_check_pr_health("head-unchanged", "Rust Tests");
+    let fingerprint = health_fingerprint(684, &health);
+    let github = Arc::new(crate::tests::mock_github_service::MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    state.github_service = Some(github.clone() as Arc<dyn crate::domain::services::GithubServiceTrait>);
+
+    let blocked =
+        block_pr_autofix_attempt_with_fingerprint(&state, &conversation_id, Some(fingerprint.clone()))
+            .await;
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("evaluate blocked PR autofix successor"),
+        0
+    );
+
+    let held = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load held attempt")
+        .expect("held attempt remains current");
+    assert_eq!(held.generation, blocked.generation, "no successor generation");
+    assert_eq!(held.phase, AgentWorkspaceRepairPhase::Ready);
+    assert!(held.pending_reasons.iter().any(|reason| reason
+        == crate::application::agent_workspace_publish_repair_state::UNCHANGED_HEALTH_REPAIR_REASON));
+    assert_eq!(held.pr_autofix_health_fingerprint.as_deref(), Some(fingerprint.as_str()));
+    assert!(
+        state
+            .agent_run_repo
+            .get_by_conversation(&conversation_id)
+            .await
+            .expect("list runs")
+            .is_empty(),
+        "an unchanged failure fingerprint must not spend another agent generation"
+    );
+    let events = state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("list publication events");
+    assert!(
+        events.iter().any(|event| event.step
+            == crate::application::agent_workspace_publish_repair_state::REPAIR_FINGERPRINT_HOLD_STEP),
+        "the hold must be user visible, never a silent skip"
+    );
+
+    // A parked hold must survive the Ready auto-retry lane; only the poller may end it.
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("re-run recovery over the held attempt"),
+        0
+    );
+    let still_held = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload held attempt")
+        .expect("held attempt is still current");
+    assert_eq!(still_held.phase, AgentWorkspaceRepairPhase::Ready);
+    assert!(still_held.settled_at.is_none());
+}
+
+/// Retry caps count attempts, not cost. A conversation that has already burned its agent-minutes
+/// budget on one failure identity must hand the failure to a human instead of buying another
+/// generation, and the handover must be visible rather than a silent stop.
+#[tokio::test]
+async fn exhausted_agent_minutes_budget_parks_needs_human_with_a_notification() {
+    let (state, conversation_id, _worktree_parent, _project_dir) =
+        seed_pr_autofix_health_workspace(125).await;
+    start_blocked_pr_autofix_generation(&state, &conversation_id).await;
+    let fingerprint = "github_pr_autofix:684:checks:rust-tests".to_string();
+    let blocked = block_pr_autofix_attempt_with_fingerprint(
+        &state,
+        &conversation_id,
+        Some(fingerprint.clone()),
+    )
+    .await;
+
+    // A finished run that already consumed far more than the default 45-minute budget.
+    let mut run = crate::domain::entities::AgentRun::new(conversation_id.clone());
+    run.started_at = chrono::Utc::now() - chrono::Duration::minutes(90);
+    run.completed_at = Some(chrono::Utc::now() - chrono::Duration::minutes(1));
+    run.status = crate::domain::entities::AgentRunStatus::Completed;
+    let run_id = run.id.clone();
+    state
+        .agent_run_repo
+        .create(run)
+        .await
+        .expect("seed an expensive finished repair run");
+    bind_reserved_run_to_attempt(&state, &conversation_id, &run_id).await;
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("evaluate an over-budget PR autofix generation"),
+        1
+    );
+
+    let parked = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load parked attempt")
+        .expect("parked attempt remains current");
+    assert_eq!(
+        parked.generation, blocked.generation,
+        "an exhausted budget must not buy another generation"
+    );
+    assert!(
+        parked.pending_reasons.iter().any(|reason| reason
+            == crate::application::agent_workspace_publish_repair_state::NEEDS_HUMAN_REPAIR_REASON),
+        "budget exhaustion is a human handover, not an automatic retry: {parked:?}"
+    );
+
+    let events = state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("list publication events");
+    assert!(
+        events
+            .iter()
+            .any(|event| event.step == "repair_budget_exhausted"),
+        "the spend must be recorded on the publication timeline"
+    );
+
+    let notifications = state
+        .notification_repo
+        .list(None, None, 20)
+        .await
+        .expect("list notifications");
+    assert!(
+        notifications.notifications.iter().any(|notification| {
+            notification.target.conversation_id.as_deref()
+                == Some(conversation_id.as_str().as_str())
+                && notification
+                    .body
+                    .as_deref()
+                    .is_some_and(|body| body.contains("repair generations"))
+        }),
+        "budget exhaustion must reach the user, never stop silently: {:?}",
+        notifications.notifications
+    );
+
+    // The workspace also remembers the identity, so a fresh streak cannot restart on it.
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("reload workspace")
+        .expect("workspace exists");
+    assert_eq!(
+        workspace.last_blocked_pr_health_fingerprint.as_deref(),
+        Some(fingerprint.as_str())
+    );
+}
+
+/// Binds an existing run to the current attempt as its durable reservation.
+async fn bind_reserved_run_to_attempt(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    run_id: &AgentRunId,
+) {
+    let mut attempt = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(conversation_id)
+        .await
+        .expect("load attempt to bind")
+        .expect("attempt exists to bind");
+    let expected_phase = attempt.phase;
+    let expected_updated_at = attempt.updated_at;
+    attempt.reserved_agent_run_id = Some(run_id.clone());
+    attempt.updated_at += chrono::Duration::microseconds(1);
+    let outcome = state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase,
+            expected_updated_at,
+            next_phase: expected_phase,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("bind reserved run");
+    assert!(matches!(
+        outcome,
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_)
+    ));
+}
+
+#[tokio::test]
+async fn blocked_pr_autofix_without_provable_health_withholds_the_successor() {
+    let state = AppState::new_test();
+    let conversation_id = conversation_id(123);
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(needs_agent_workspace(conversation_id.clone()))
+        .await
+        .expect("seed unprovable-health workspace");
+    start_blocked_pr_autofix_generation(&state, &conversation_id).await;
+    block_pr_autofix_attempt_with_fingerprint(
+        &state,
+        &conversation_id,
+        Some("github_pr_autofix:684:checks:rust".to_string()),
+    )
+    .await;
+
+    // No GitHub service: the current failure identity cannot be proven, so no agent may be spent.
+    assert!(state.github_service.is_none());
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("withhold successor without provable health"),
+        0
+    );
+    let unchanged = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load withheld attempt")
+        .expect("withheld attempt remains current");
+    assert_eq!(unchanged.phase, AgentWorkspaceRepairPhase::Blocked);
+    assert!(state
+        .agent_run_repo
+        .get_by_conversation(&conversation_id)
+        .await
+        .expect("list runs")
+        .is_empty());
+}
+
+async fn start_blocked_pr_autofix_generation(state: &AppState, conversation_id: &ChatConversationId) {
+    let started = state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                conversation_id.clone(),
+                AgentWorkspaceRepairSource::PrAutofix,
+                AgentWorkspaceRepairContinuation::ResumePrSupervision,
+                "main",
+                false,
+                true,
+                false,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: "pr autofix generation".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("start PR autofix generation");
+    assert!(matches!(
+        started,
+        StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(_)
+    ));
+}
+
+/// A PR autofix generation that was dispatched against an exact observed failure, with a base that
+/// has not moved. This is the only shape the successor gate applies to.
+fn blocked_pr_autofix_attempt(
+    conversation_id: &ChatConversationId,
+    fingerprint: &str,
+) -> AgentWorkspaceRepairAttempt {
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        conversation_id.clone(),
+        AgentWorkspaceRepairSource::PrAutofix,
+        AgentWorkspaceRepairContinuation::ResumePrSupervision,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    attempt.phase = AgentWorkspaceRepairPhase::Blocked;
+    attempt.pr_autofix_health_fingerprint = Some(fingerprint.to_string());
+    attempt
+}
+
+#[tokio::test]
+async fn pr_autofix_successor_withholds_when_github_cannot_be_read_at_all() {
+    let state = AppState::new_test();
+    let conversation_id = conversation_id(70);
+    let workspace = needs_agent_workspace(conversation_id.clone());
+    // No target base commit means the base cannot have advanced, so nothing but GitHub could
+    // authorize another generation — and there is no GitHub service to ask.
+    let attempt = blocked_pr_autofix_attempt(&conversation_id, "ci:Clippy:failure");
+    assert!(attempt.target_base_commit.is_none());
+    assert!(state.github_service.is_none());
+
+    assert_eq!(
+        evaluate_pr_autofix_successor(&state, &attempt, &workspace).await,
+        PrAutofixSuccessorDecision::Withhold("github_service_unavailable")
+    );
+}
+
+#[tokio::test]
+async fn pr_autofix_successor_proceeds_when_the_repair_base_moved() {
+    let state = AppState::new_test();
+    let conversation_id = conversation_id(71);
+    let mut workspace = needs_agent_workspace(conversation_id.clone());
+    workspace.base_commit = Some("base-b".to_string());
+    let mut attempt = blocked_pr_autofix_attempt(&conversation_id, "ci:Clippy:failure");
+    attempt.target_base_commit = Some("base-a".to_string());
+
+    // A moved base is new input independent of the PR, so it authorizes a successor before the
+    // gate ever reaches GitHub.
+    assert_eq!(
+        evaluate_pr_autofix_successor(&state, &attempt, &workspace).await,
+        PrAutofixSuccessorDecision::Proceed(None)
+    );
+}
+
+#[tokio::test]
+async fn pr_autofix_successor_withholds_when_no_pr_owns_the_workspace() {
+    let mut state = AppState::new_test();
+    state.github_service = Some(Arc::new(MockGithubService::new()));
+    let conversation_id = conversation_id(72);
+    let mut workspace = needs_agent_workspace(conversation_id.clone());
+    workspace.publication_pr_number = None;
+    workspace.linked_plan_branch_id = None;
+    let attempt = blocked_pr_autofix_attempt(&conversation_id, "ci:Clippy:failure");
+
+    assert_eq!(
+        evaluate_pr_autofix_successor(&state, &attempt, &workspace).await,
+        PrAutofixSuccessorDecision::Withhold("pr_number_unresolved")
+    );
+}
+
+#[tokio::test]
+async fn pr_autofix_successor_borrows_the_linked_plan_branch_pr_only_for_its_own_session() {
+    let mut state = AppState::new_test();
+    state.github_service = Some(Arc::new(MockGithubService::new()));
+    let conversation_id = conversation_id(73);
+    let session_id = IdeationSessionId::from_string("session-pr-autofix-successor");
+    let mut plan_branch = PlanBranch::new(
+        ArtifactId::from_string("plan-artifact-pr-autofix"),
+        session_id.clone(),
+        project_id(),
+        "ralphx/plan/pr-autofix".to_string(),
+        "main".to_string(),
+    );
+    plan_branch.pr_number = Some(910);
+    state
+        .plan_branch_repo
+        .create(plan_branch.clone())
+        .await
+        .expect("seed linked plan branch");
+
+    let mut workspace = needs_agent_workspace(conversation_id.clone());
+    workspace.publication_pr_number = None;
+    workspace.linked_plan_branch_id = Some(plan_branch.id.clone());
+    workspace.linked_ideation_session_id = Some(session_id);
+    let attempt = blocked_pr_autofix_attempt(&conversation_id, "ci:Clippy:failure");
+
+    // The borrowed PR resolves, so evaluation advances past PR identity and fails on the missing
+    // project instead of on an unresolved PR number.
+    assert_eq!(
+        evaluate_pr_autofix_successor(&state, &attempt, &workspace).await,
+        PrAutofixSuccessorDecision::Withhold("project_missing")
+    );
+
+    // A workspace bound to a different ideation session must not borrow this plan branch's PR.
+    let mut foreign = workspace.clone();
+    foreign.linked_ideation_session_id =
+        Some(IdeationSessionId::from_string("session-someone-else"));
+    assert_eq!(
+        evaluate_pr_autofix_successor(&state, &attempt, &foreign).await,
+        PrAutofixSuccessorDecision::Withhold("pr_number_unresolved")
+    );
+}
+
+#[tokio::test]
+async fn pr_autofix_successor_withholds_when_the_workspace_path_cannot_be_resolved() {
+    let mut state = AppState::new_test();
+    state.github_service = Some(Arc::new(MockGithubService::new()));
+    let conversation_id = conversation_id(74);
+    let mut project = Project::new(
+        "pr autofix successor project".to_string(),
+        "/tmp/ralphx-pr-autofix-successor-missing-project".to_string(),
+    );
+    project.id = project_id();
+    state
+        .project_repo
+        .create(project)
+        .await
+        .expect("seed project");
+    let workspace = needs_agent_workspace(conversation_id.clone());
+    let attempt = blocked_pr_autofix_attempt(&conversation_id, "ci:Clippy:failure");
+
+    // An unreadable workspace is not evidence that the PR changed; it must never look like
+    // "health changed", which is the one answer that spends another agent.
+    assert_eq!(
+        evaluate_pr_autofix_successor(&state, &attempt, &workspace).await,
+        PrAutofixSuccessorDecision::Withhold("workspace_path_unresolved")
+    );
 }

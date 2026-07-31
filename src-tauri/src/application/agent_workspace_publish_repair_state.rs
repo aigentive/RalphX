@@ -64,6 +64,11 @@ pub(crate) const MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES: u32 = 3;
 pub(crate) const MAX_AGENT_WORKSPACE_CI_RERUN_RETRIES: u32 = 3;
 pub(crate) const NEEDS_HUMAN_REPAIR_REASON: &str = "pr_autofix_needs_human";
 pub(crate) const PRE_EXISTING_ON_BASE_REPAIR_REASON: &str = "pr_autofix_pre_existing_on_base";
+/// Held because GitHub still reports the exact failure the previous generation was dispatched for.
+/// Distinct from `PRE_EXISTING_ON_BASE_REPAIR_REASON`: RalphX has not proven anything about the
+/// base branch, only that spending another agent generation on identical evidence is waste.
+pub(crate) const UNCHANGED_HEALTH_REPAIR_REASON: &str = "pr_autofix_unchanged_health";
+pub(crate) const REPAIR_FINGERPRINT_HOLD_STEP: &str = "repair_fingerprint_hold";
 pub(crate) const ORPHANED_REPAIR_DISPATCH_RESCUE_GRACE_SECS: i64 = 60;
 const AGENT_WORKSPACE_REPAIR_DISPATCH_INITIAL_BACKOFF_SECS: i64 = 5;
 const AGENT_WORKSPACE_REPAIR_DISPATCH_MAX_BACKOFF_SECS: i64 = 60;
@@ -93,6 +98,19 @@ pub(crate) struct AgentWorkspaceRepairStartRequest {
     pub summary: String,
     pub auto_merge_current: Option<bool>,
     pub retry_blocked: bool,
+    /// Backend-observed PR evidence carried onto a successor generation. Without it a successor
+    /// starts with no failure identity, and every fingerprint-based suppression downstream
+    /// silently disengages.
+    pub carryover_pr_autofix_evidence: Option<PrAutofixCarryover>,
+}
+
+/// Exact PR evidence observed by the backend immediately before starting a successor generation.
+/// Never model supplied and never copied blindly from the predecessor: a stale head or fingerprint
+/// would make the successor look like it had already been evaluated against current GitHub state.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct PrAutofixCarryover {
+    pub dispatch_head_commit: Option<String>,
+    pub health_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -271,6 +289,10 @@ fn start_attempt_from_workspace(
     );
     attempt.target_base_commit = request.target_base_commit.clone();
     attempt.summary = Some(request.summary.clone());
+    if let Some(carryover) = request.carryover_pr_autofix_evidence.as_ref() {
+        attempt.pr_autofix_dispatch_head_commit = carryover.dispatch_head_commit.clone();
+        attempt.pr_autofix_health_fingerprint = carryover.health_fingerprint.clone();
+    }
     attempt
 }
 
@@ -528,14 +550,73 @@ pub(crate) async fn block_agent_workspace_repair_needs_human(
     .await
 }
 
+/// True while a PR autofix generation is parked against a backend-derived health fingerprint.
+/// Only the poller may end such a hold, and only after GitHub reports different health; no other
+/// retry path may consume the hold's budget or settle it on a timer.
+pub(crate) fn agent_workspace_repair_is_health_held(
+    attempt: &AgentWorkspaceRepairAttempt,
+) -> bool {
+    attempt.pending_reasons.iter().any(|reason| {
+        reason == PRE_EXISTING_ON_BASE_REPAIR_REASON || reason == UNCHANGED_HEALTH_REPAIR_REASON
+    })
+}
+
 /// Holds a PR autofix generation at a backend-derived health fingerprint without pretending the
 /// failing state was repaired. The poller settles it only after health changes.
 pub(crate) async fn reserve_agent_workspace_pre_existing_on_base(
     repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
-    mut attempt: AgentWorkspaceRepairAttempt,
+    attempt: AgentWorkspaceRepairAttempt,
     summary: &str,
     auto_merge_current: Option<bool>,
 ) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    reserve_agent_workspace_repair_health_hold(
+        repair_repo,
+        attempt,
+        PRE_EXISTING_ON_BASE_REPAIR_REASON,
+        summary,
+        auto_merge_current,
+        Vec::new(),
+    )
+    .await
+}
+
+/// Parks the current PR autofix generation because GitHub still reports the exact failure it was
+/// dispatched for. Spending another agent generation on unchanged evidence cannot produce new
+/// information, so the hold replaces the successor rather than delaying it.
+pub(crate) async fn reserve_agent_workspace_unchanged_health_hold(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    attempt: AgentWorkspaceRepairAttempt,
+    summary: &str,
+    auto_merge_current: Option<bool>,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    let event = AgentConversationWorkspacePublicationEvent::new(
+        attempt.conversation_id.clone(),
+        REPAIR_FINGERPRINT_HOLD_STEP,
+        "blocked",
+        summary,
+        attempt.pr_autofix_health_fingerprint.clone(),
+    );
+    reserve_agent_workspace_repair_health_hold(
+        repair_repo,
+        attempt,
+        UNCHANGED_HEALTH_REPAIR_REASON,
+        summary,
+        auto_merge_current,
+        vec![event],
+    )
+    .await
+}
+
+async fn reserve_agent_workspace_repair_health_hold(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    mut attempt: AgentWorkspaceRepairAttempt,
+    hold_reason: &str,
+    summary: &str,
+    auto_merge_current: Option<bool>,
+    events: Vec<AgentConversationWorkspacePublicationEvent>,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    // A hold is only meaningful against an exact observed failure identity. Without one there is
+    // nothing for the poller to compare later, so refuse rather than park indefinitely.
     let Some(_) = attempt.pr_autofix_health_fingerprint.as_deref() else {
         return Ok(AgentWorkspaceRepairTransitionOutcome::Stale(attempt));
     };
@@ -544,11 +625,9 @@ pub(crate) async fn reserve_agent_workspace_pre_existing_on_base(
     if !attempt
         .pending_reasons
         .iter()
-        .any(|reason| reason == PRE_EXISTING_ON_BASE_REPAIR_REASON)
+        .any(|reason| reason == hold_reason)
     {
-        attempt
-            .pending_reasons
-            .push(PRE_EXISTING_ON_BASE_REPAIR_REASON.to_string());
+        attempt.pending_reasons.push(hold_reason.to_string());
     }
     attempt.phase = AgentWorkspaceRepairPhase::Ready;
     attempt.summary = Some(summary.to_string());
@@ -562,7 +641,7 @@ pub(crate) async fn reserve_agent_workspace_pre_existing_on_base(
             expected_updated_at,
             next_phase: AgentWorkspaceRepairPhase::Ready,
             compatibility_projection: Some(projection),
-            events: Vec::new(),
+            events,
         })
         .await
         .map(repair_attempt_transition_outcome)

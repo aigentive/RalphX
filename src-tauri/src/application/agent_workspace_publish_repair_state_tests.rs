@@ -24,10 +24,10 @@ use crate::application::agent_workspace_publish_repair_state::{
     AgentWorkspaceRepairDispatchSettlement, AgentWorkspaceRepairPublishResumeOutcome,
     AgentWorkspaceRepairStartOutcome, AgentWorkspaceRepairStartRequest,
     AgentWorkspaceRepairTransitionOutcome, DurableRepairWorkspaceReviewStartFuture,
-    DurableRepairWorkspaceReviewStarter, AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION,
-    DEFERRED_REPAIR_WAIT_TIMEOUT_SECS, MAX_AGENT_WORKSPACE_CI_RERUN_RETRIES,
-    MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES, NEEDS_HUMAN_REPAIR_REASON,
-    PRE_EXISTING_ON_BASE_REPAIR_REASON, REPAIR_SENT_STEP,
+    DurableRepairWorkspaceReviewStarter, PrAutofixCarryover,
+    AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION, DEFERRED_REPAIR_WAIT_TIMEOUT_SECS,
+    MAX_AGENT_WORKSPACE_CI_RERUN_RETRIES, MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES,
+    NEEDS_HUMAN_REPAIR_REASON, PRE_EXISTING_ON_BASE_REPAIR_REASON, REPAIR_SENT_STEP,
 };
 use crate::application::agent_workspace_review::{
     load_agent_workspace_review_context, AgentWorkspaceReviewStart,
@@ -469,7 +469,53 @@ fn repair_start_request(
         summary: "Repair requested.".to_string(),
         auto_merge_current: None,
         retry_blocked: false,
+        carryover_pr_autofix_evidence: None,
     }
+}
+
+#[tokio::test]
+async fn started_repair_carries_forward_observed_pr_autofix_evidence() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let repair_repo = Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>;
+    let conversation_id = ChatConversationId::from_string("repair-attempt-carryover");
+    workspace_repo
+        .create_or_update(repair_workspace(conversation_id.clone()))
+        .await
+        .unwrap();
+
+    // Without the carryover, the successor starts with no failure identity and the next poll can
+    // no longer tell an unchanged failure from a new one.
+    let mut request = repair_start_request(
+        conversation_id.clone(),
+        AgentWorkspaceRepairSource::PrAutofix,
+        AgentWorkspaceRepairContinuation::Publish,
+        "pr autofix successor",
+    );
+    request.carryover_pr_autofix_evidence = Some(PrAutofixCarryover {
+        dispatch_head_commit: Some("head-observed".to_string()),
+        health_fingerprint: Some("ci:Clippy:failure".to_string()),
+    });
+
+    let attempt = match start_or_join_agent_workspace_repair(
+        Arc::clone(&repair_repo),
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        request,
+    )
+    .await
+    .unwrap()
+    {
+        AgentWorkspaceRepairStartOutcome::Started(attempt) => attempt,
+        outcome => panic!("expected a started attempt, got {outcome:?}"),
+    };
+
+    assert_eq!(
+        attempt.pr_autofix_dispatch_head_commit.as_deref(),
+        Some("head-observed")
+    );
+    assert_eq!(
+        attempt.pr_autofix_health_fingerprint.as_deref(),
+        Some("ci:Clippy:failure")
+    );
 }
 
 #[tokio::test]
