@@ -17,6 +17,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+env:
+  # Coverage instrumentation inflates unoptimized async poll-chain stack frames
+  # past the 2 MiB std default test-thread stack; match ci.yml headroom.
+  RUST_MIN_STACK: "8388608"
+
 jobs:
   changes:
     name: Detect coverage scope

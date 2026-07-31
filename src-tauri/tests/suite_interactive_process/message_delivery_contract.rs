@@ -498,10 +498,12 @@ async fn stopping_exact_interactive_owner_requeues_pending_turn_and_publishes_ba
         recovered[1].persisted_message_id.as_deref(),
         Some(second_message_id.as_str())
     );
-    let queued_events = queued_events.lock().unwrap();
-    assert_eq!(queued_events.len(), 2);
-    assert!(queued_events[0].contains("recover after stop"));
-    assert!(queued_events[1].contains("recover second after stop"));
+    {
+        let queued_events = queued_events.lock().unwrap();
+        assert_eq!(queued_events.len(), 2);
+        assert!(queued_events[0].contains("recover after stop"));
+        assert!(queued_events[1].contains("recover second after stop"));
+    }
 
     let _ = child.kill().await;
     let _ = child.wait().await;
