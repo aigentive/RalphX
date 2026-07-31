@@ -55,6 +55,7 @@ import { useAppKeyboardShortcuts } from "@/hooks/useAppKeyboardShortcuts";
 import { useFeatureFlags, isViewEnabled } from "@/hooks/useFeatureFlags";
 import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
+import { useRemoteProviderReadiness } from "@/hooks/useRemoteProviderReadiness";
 import { useTicketingCacheEvents } from "@/hooks/useTicketingEvents";
 import { useAutomationEvents } from "@/hooks/useAutomations";
 import { cn } from "@/lib/utils";
@@ -307,7 +308,11 @@ function AppContent({ backgroundSettled }: { backgroundSettled: boolean }) {
   const shouldHydrateExecutionSettings = activeModal === "settings";
 
   // Fetch projects from backend
-  const { data: fetchedProjects, isLoading: isLoadingProjects } = useProjects();
+  const {
+    data: fetchedProjects,
+    isLoading: isLoadingProjects,
+    isError: isProjectsError,
+  } = useProjects();
   const activeProject = useMemo(
     () => fetchedProjects?.find((project) => project.id === currentProjectId) ?? null,
     [currentProjectId, fetchedProjects],
@@ -317,6 +322,9 @@ function AppContent({ backgroundSettled }: { backgroundSettled: boolean }) {
     isLoading: isLoadingProviderSettings,
     isPlaceholderData: isPlaceholderProviderSettings,
   } = useHarnessProviders();
+  // Only the remote gate consumes this; on the local environment the query stays disabled.
+  const { data: remoteProviderReadiness } =
+    useRemoteProviderReadiness(isRemoteEnvironment);
 
   // Project creation wizard state
   const [isProjectWizardOpen, setIsProjectWizardOpen] = useState(false);
@@ -343,11 +351,23 @@ function AppContent({ backgroundSettled }: { backgroundSettled: boolean }) {
   // Use TanStack Query data directly — the Zustand store sync via useEffect
   // can lag behind, causing a brief flash where store.projects is {} while
   // fetchedProjects already has data.
-  const hasNoProjects = !isLoadingProjects && (!fetchedProjects || fetchedProjects.length === 0);
-  const providerSetupRequired =
-    !isLoadingProviderSettings &&
-    !isPlaceholderProviderSettings &&
-    providerSettings.requiresOnboarding;
+  // A FAILED read is not an empty workspace. Under a remote environment an unavailable or
+  // erroring project read would otherwise render first-run onboarding over a populated host —
+  // the shape that made a connected client look unconfigured. Emptiness must be a successful
+  // answer, never the absence of one.
+  const hasNoProjects =
+    !isLoadingProjects &&
+    !isProjectsError &&
+    (!fetchedProjects || fetchedProjects.length === 0);
+  // `get_agent_provider_settings` is Denied on the facade, so a remote environment answers the
+  // onboarding question from the readiness projection instead. Fail closed the same way: an
+  // unresolved or failed readiness read never asserts that setup is required.
+  const providerSetupRequired = isRemoteEnvironment
+    ? remoteProviderReadiness !== undefined &&
+      !remoteProviderReadiness.onboardingComplete
+    : !isLoadingProviderSettings &&
+      !isPlaceholderProviderSettings &&
+      providerSettings.requiresOnboarding;
   const agentIssueReportContext = useMemo(() => {
     if (
       currentView !== "agents" ||

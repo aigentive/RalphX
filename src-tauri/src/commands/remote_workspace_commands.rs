@@ -62,8 +62,10 @@ use crate::application::AppState;
 ///
 /// Deliberately NOT `ProjectResponse`: that type carries `repository_capability`, whose
 /// computation is the spawn carrier this module exists to drop (see the module docs).
+/// Field casing is snake_case to match `ProjectResponse`, which carries no `rename_all`.
+/// The client parses both with the same Zod schema and transform, so the projection differs
+/// from the local answer only by the fields it drops — never by their names.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
 pub struct RemoteProjectView {
     pub id: String,
     pub name: String,

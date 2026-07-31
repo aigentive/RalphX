@@ -20,11 +20,31 @@ import {
 } from "@/types/workflow";
 import { TauriVoidSchema, typedInvoke, typedInvokeWithTransform } from "@/lib/tauri";
 import {
+  getTransportEnvironmentId,
+  isRemoteEnvironmentId,
+} from "@/lib/remote/active-environment";
+import {
   CreateWorkflowInputSchema,
   UpdateWorkflowInputSchema,
   type CreateWorkflowInput,
   type UpdateWorkflowInput,
 } from "@/lib/api/workflows";
+
+/**
+ * True while the active environment is remote, so the shell's boot reads must use the
+ * spawn-free twins rather than their Elevated/Denied local counterparts.
+ */
+function remoteShellReadsEnabled(): boolean {
+  return isRemoteEnvironmentId(getTransportEnvironmentId());
+}
+
+/** Two scalars — deliberately not the provider settings surface. */
+export const RemoteProviderReadinessSchema = z.object({
+  onboardingComplete: z.boolean(),
+  enabledProviderCount: z.number(),
+});
+
+export type RemoteProviderReadiness = z.infer<typeof RemoteProviderReadinessSchema>;
 
 /**
  * Project list schema for array responses (snake_case from backend)
@@ -121,15 +141,48 @@ export async function searchGithubPullRequests(
  */
 export const projectsApi = {
   /**
-   * List all projects
+   * List all projects.
+   *
+   * Under a remote environment this must call the spawn-free twin: `list_projects` runs
+   * `inspect_repository_capability` per project, which is why it is ledgered Elevated and
+   * left unregistered on the facade. Calling it remotely answers REMOTE_COMMAND_UNAVAILABLE,
+   * which the shell reads as an empty workspace and renders as first-run onboarding.
+   *
+   * Both answers parse with the SAME schema and transform — the host's projection carries
+   * snake_case field names identical to `ProjectResponse` and differs only by dropping
+   * `repository_capability` (which the schema already marks optional).
+   *
    * @returns Array of projects
    */
-  list: () =>
-    typedInvokeWithTransform(
-      "list_projects",
+  list: (): Promise<Project[]> =>
+    // Two literal call sites, not a computed name: the P-11 drift scan requires every
+    // production command name to be a literal so the census can classify it.
+    remoteShellReadsEnabled()
+      ? typedInvokeWithTransform(
+          "list_remote_projects",
+          {},
+          ProjectListResponseSchema,
+          transformProjectList
+        )
+      : typedInvokeWithTransform(
+          "list_projects",
+          {},
+          ProjectListResponseSchema,
+          transformProjectList
+        ),
+
+  /**
+   * Whether the ACTIVE environment's host has a usable provider.
+   *
+   * Remote-only by construction: locally the shell reads the full provider settings, which
+   * are `Denied` on the facade (CLI probes, provider identities, credential surface). The
+   * onboarding gate only ever asked a boolean, so the remote answer is a boolean.
+   */
+  remoteProviderReadiness: () =>
+    typedInvoke(
+      "get_remote_provider_readiness",
       {},
-      ProjectListResponseSchema,
-      transformProjectList
+      RemoteProviderReadinessSchema
     ),
 
   /**
