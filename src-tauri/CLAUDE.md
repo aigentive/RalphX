@@ -2,7 +2,7 @@
 
 # src-tauri/CLAUDE.md — Backend
 
-Quality standards: `../.claude/rules/code-quality-standards.md` | Rust API safety: `../.claude/rules/rust-stable-apis.md`
+Quality standards: `../.claude/rules/code-quality-standards.md` | Rust API safety: `../.claude/rules/rust-stable-apis.md` | Thinking capture: `../.claude/rules/agent-thinking-capture.md`
 
 ## Stack
 Rust 2021 | Tauri 2.0 | rusqlite 0.32 | statig 0.3 (async state machine)

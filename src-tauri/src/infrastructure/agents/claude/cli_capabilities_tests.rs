@@ -3,7 +3,7 @@ use crate::infrastructure::agents::claude::cli_capabilities::{
     clear_claude_cli_capability_cache, is_claude_fable_model, is_claude_opus_4_7_model,
     is_claude_opus_4_8_model, is_claude_opus_5_model, is_claude_sonnet_5_model,
     normalize_claude_effort_for_capabilities, normalize_claude_effort_for_cli_path,
-    parse_claude_cli_capabilities, parse_claude_version, probe_claude_cli_cached,
+    parse_claude_cli_capabilities, parse_claude_version, probe_claude_cli, probe_claude_cli_cached,
     validate_claude_model_for_cli_path, ClaudeCliCapabilities, CLAUDE_OPUS_4_7_API_MODEL_ID,
     CLAUDE_OPUS_4_8_API_MODEL_ID, CLAUDE_OPUS_5_API_MODEL_ID,
 };
@@ -58,6 +58,44 @@ fn parse_capabilities_detects_modern_effort_surface_from_help() {
             LogicalEffort::Max,
         ]
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn thinking_display_is_unsupported_when_help_omits_flag_even_if_version_short_circuits_unknown_args(
+) {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
+    clear_claude_cli_capability_cache();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cli_path = temp.path().join("claude");
+    write_fake_claude_cli(
+        &cli_path,
+        r#"#!/bin/sh
+if [ "$1" = "--help" ]; then
+  printf '%s\n' 'Claude Code' 'Options:' '  --include-partial-messages'
+  exit 0
+fi
+for arg in "$@"; do
+  if [ "$arg" = "--version" ]; then
+    printf 'claude-code 2.1.220\n'
+    exit 0
+  fi
+done
+printf "error: unknown option '%s'\n" "$1" >&2
+exit 1
+"#,
+    );
+
+    let capabilities = probe_claude_cli(&cli_path).expect("capability probe");
+
+    assert!(capabilities.supports_include_partial_messages());
+    assert!(
+        !capabilities.supports_thinking_display(),
+        "help text is authoritative; an unknown flag must not be inferred from a version-short-circuit"
+    );
+    clear_claude_cli_capability_cache();
 }
 
 #[test]

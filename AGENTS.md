@@ -18,6 +18,7 @@ Primary project docs:
 - `.claude/rules/production-cli-resolution.md` for Finder/Homebrew-safe CLI binary resolution in installed app runtime paths
 - `.claude/rules/codeql-path-safety.md` for CodeQL-safe filesystem sink validation when paths are influenced by env vars, settings, HTTP/MCP payloads, DB state, agent metadata, or repo contents
 - `.claude/rules/multi-harness.md` for provider-neutral runtime/config/event rules and documentation sync requirements
+- `.claude/rules/agent-thinking-capture.md` and `docs/architecture/agent-thinking-capture.md` for cross-harness reasoning capture, capability probing, event/persistence ownership, failure edges, and focused proofs
 - `.claude/rules/agent-mcp-tools.md` for multi-layer agent MCP/tool alignment across canonical agent metadata, harness runtime config, prompt contracts, and MCP registration
 - `.claude/rules/agent-workspace-review-modes.md` for the non-interchangeable local Workspace Review gate and remote GitHub Review PR workflow
 - `.claude/rules/merge-recovery-consistency.md` for the coupled merge-failure behavior across merge outcome handling, manual retry, reconciliation, startup recovery, and MergeIncomplete UI
@@ -40,6 +41,7 @@ Primary project docs:
 - When touching ideation verification, read `.claude/rules/ideation-verification-architecture.md` first.
 - When touching plugin/root resolution, canonical agent loading, generated plugin bundles, or runtime log placement, read `.claude/rules/runtime-root-vs-target-project.md` first.
 - When touching production subprocess launches or CLI discovery, read `.claude/rules/production-cli-resolution.md` first.
+- When touching provider thinking/reasoning flags, native event parsing, `agent:thinking`, thinking persistence, or thinking UI lifecycle, read `.claude/rules/agent-thinking-capture.md` first.
 - When touching filesystem sinks or any path influenced by external/runtime state, read `.claude/rules/codeql-path-safety.md` first.
 - CodeQL path findings block PRs: tests are scanned too; use process-owned runtime roots, fixed entry lists, pure test builders, and suppress `rust/path-injection` only after containment validation.
 - When touching merge failure recovery, merge retry/resolve actions, merge reconciliation, or startup merge remediation, read `.claude/rules/merge-recovery-consistency.md` first.
