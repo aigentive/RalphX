@@ -5,6 +5,7 @@ import {
   chatApi,
   type AgentConversationBaseSelection,
   type AgentConversationWorkspace,
+  type AgentConversationWorkspaceFreshness,
 } from "@/api/chat";
 
 import {
@@ -254,6 +255,30 @@ export function useAgentWorkspaceBaseUpdate({
           if (result.workspace.maintenanceOperation) {
             syncMaintenanceOperation(result.workspace, true);
             return;
+          }
+          for (const scope of ["full", "local"] as const) {
+            queryClient.setQueryData<AgentConversationWorkspaceFreshness>(
+              agentWorkspaceKeys.scopedFreshness(
+                result.workspace.conversationId,
+                scope,
+              ),
+              (previous) => {
+                if (
+                  !previous ||
+                  previous.conversationId !== result.workspace.conversationId
+                ) {
+                  return previous;
+                }
+                return {
+                  ...previous,
+                  isBaseAhead: false,
+                  capturedBaseCommit: result.baseCommit,
+                  targetBaseCommit: result.baseCommit,
+                  targetRef: result.targetRef,
+                  baseStatus: result.baseStatus,
+                };
+              },
+            );
           }
           settleProgressToast(
             progressToast,

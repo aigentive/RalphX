@@ -4295,6 +4295,28 @@ async fn setup_publish_command_state(
     ChatConversationId,
     Arc<MockGithubService>,
 ) {
+    setup_publish_command_state_with_mode(
+        suffix,
+        capture_base_commit,
+        publication_pr_number,
+        github,
+        AgentConversationWorkspaceMode::Edit,
+    )
+    .await
+}
+
+async fn setup_publish_command_state_with_mode(
+    suffix: &str,
+    capture_base_commit: bool,
+    publication_pr_number: Option<i64>,
+    github: Arc<MockGithubService>,
+    workspace_mode: AgentConversationWorkspaceMode,
+) -> (
+    tempfile::TempDir,
+    AppState,
+    ChatConversationId,
+    Arc<MockGithubService>,
+) {
     let temp = tempfile::tempdir().expect("tempdir should be created");
     let repo_path = temp.path().join("repo");
     let worktree_parent = temp.path().join("worktrees");
@@ -4310,7 +4332,7 @@ async fn setup_publish_command_state(
     let mut workspace = prepare_agent_conversation_workspace(
         &project,
         &conversation_id,
-        AgentConversationWorkspaceMode::Edit,
+        workspace_mode,
         AgentConversationWorkspaceBaseSelection {
             kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
             branch_mode: None,
@@ -5389,6 +5411,131 @@ async fn workspace_freshness_command_reports_retargeted_base() {
     );
     assert_eq!(response.target_ref, "main");
     assert!(!response.is_base_ahead);
+}
+
+#[tokio::test]
+async fn plan_workspace_full_freshness_reports_current_and_behind_base() {
+    let (temp, state, conversation_id, _github) = setup_publish_command_state_with_mode(
+        "plan-freshness",
+        true,
+        None,
+        Arc::new(MockGithubService::new()),
+        AgentConversationWorkspaceMode::Plan,
+    )
+    .await;
+
+    let current = super::get_agent_conversation_workspace_freshness_for_app_state(
+        &conversation_id,
+        Some("full"),
+        &state,
+    )
+    .await
+    .expect("Plan workspace freshness should load when current");
+    assert!(!current.is_base_ahead);
+
+    let repo_path = temp.path().join("repo");
+    commit_file(
+        &repo_path,
+        "base-change.txt",
+        "base change\n",
+        "advance base branch",
+    );
+    invalidate_agent_workspace_freshness_cache(&conversation_id);
+
+    let behind = super::get_agent_conversation_workspace_freshness_for_app_state(
+        &conversation_id,
+        Some("full"),
+        &state,
+    )
+    .await
+    .expect("Plan workspace freshness should load when behind");
+    assert!(behind.is_base_ahead);
+}
+
+#[tokio::test]
+async fn workspace_freshness_rejects_chat_mode() {
+    let (_temp, state, conversation_id, _github) = setup_publish_command_state(
+        "freshness-chat-mode",
+        true,
+        None,
+        Arc::new(MockGithubService::new()),
+    )
+    .await;
+    let mut workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    workspace.mode = AgentConversationWorkspaceMode::Chat;
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("Chat workspace should persist");
+
+    let error = super::get_agent_conversation_workspace_freshness_for_app_state(
+        &conversation_id,
+        Some("full"),
+        &state,
+    )
+    .await
+    .expect_err("Chat workspaces must not support freshness");
+
+    assert!(error.contains("Only edit and plan workspaces"));
+}
+
+#[tokio::test]
+async fn plan_workspace_base_update_refreshes_full_freshness() {
+    let (temp, state, conversation_id, _github) = setup_publish_command_state_with_mode(
+        "plan-freshness-update",
+        true,
+        None,
+        Arc::new(MockGithubService::new()),
+        AgentConversationWorkspaceMode::Plan,
+    )
+    .await;
+    let repo_path = temp.path().join("repo");
+    commit_file(
+        &repo_path,
+        "base-change.txt",
+        "base change\n",
+        "advance base branch",
+    );
+
+    let behind = super::get_agent_conversation_workspace_freshness_for_app_state(
+        &conversation_id,
+        Some("full"),
+        &state,
+    )
+    .await
+    .expect("Plan workspace freshness should load before updating");
+    assert!(behind.is_base_ahead);
+
+    let response = update_agent_conversation_workspace_from_base_for_app_state(
+        &state,
+        &Arc::new(ExecutionState::new()),
+        conversation_id.clone(),
+        AgentConversationWorkspaceBaseSelection {
+            kind: None,
+            branch_mode: None,
+            base_ref: None,
+            display_name: None,
+            source_pull_request: None,
+        },
+    )
+    .await
+    .expect("Plan workspace base update should succeed");
+    assert!(response.updated);
+
+    let current = super::get_agent_conversation_workspace_freshness_for_app_state(
+        &conversation_id,
+        Some("full"),
+        &state,
+    )
+    .await
+    .expect("Plan workspace freshness should load after updating");
+    assert!(!current.is_base_ahead);
 }
 
 #[tokio::test]
