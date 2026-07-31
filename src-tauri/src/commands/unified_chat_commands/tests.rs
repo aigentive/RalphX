@@ -10,7 +10,7 @@ use super::{
     ensure_plan_workspace_planning_session_link_for_send, existing_pr_retarget_block_reason,
     filter_agent_list_visible_conversations, fork_agent_conversation,
     fork_agent_conversation_response_for_state, fork_terminal_agent_conversation_for_send,
-    get_agent_conversation_runtime_index_for_app_state,
+    get_agent_conversation_runtime_index_for_app_state, get_agent_run_attribution,
     get_agent_conversation_runtime_statuses_for_app_state,
     get_agent_conversation_summary_for_app_state,
     get_agent_conversation_timeline_page_for_app_state, get_agent_conversation_workspace_freshness,
@@ -757,6 +757,33 @@ fn build_send_now_command_app(state: AppState) -> tauri::App<tauri::test::MockRu
         .manage(Arc::new(ExecutionState::new()))
         .build(mock_context(noop_assets()))
         .expect("mock app should build")
+}
+
+#[tokio::test]
+async fn get_agent_run_attribution_returns_persisted_run_and_rejects_missing_id() {
+    let state = AppState::new_test();
+    let mut run = AgentRun::new(ChatConversationId::new());
+    let run_id = run.id.as_str().to_string();
+    run.agent_name = Some("ralphx-workspace-reviewer".to_string());
+    run.launch_role = Some("workspace_reviewer".to_string());
+    run.runtime_source = Some("role_default".to_string());
+    state.agent_run_repo.create(run).await.unwrap();
+    let app = build_send_now_command_app(state);
+
+    let found = get_agent_run_attribution(run_id, app.state())
+        .await
+        .expect("persisted run should be returned");
+    assert_eq!(
+        found.agent_name.as_deref(),
+        Some("ralphx-workspace-reviewer")
+    );
+    assert_eq!(found.launch_role.as_deref(), Some("workspace_reviewer"));
+    assert_eq!(found.runtime_source.as_deref(), Some("role_default"));
+
+    let error = get_agent_run_attribution("missing-run".to_string(), app.state())
+        .await
+        .expect_err("missing run must return a typed not-found error");
+    assert!(matches!(error, AppError::NotFound(_)));
 }
 
 fn enable_team_capability_for_test(state: &AppState) {
@@ -10247,6 +10274,98 @@ fn timeline_item_response_builds_text_message_block() {
         json!([{ "type": "text", "text": "final answer" }])
     );
     assert_eq!(response.metadata.as_deref(), Some(r#"{"source":"test"}"#));
+}
+
+#[test]
+fn timeline_item_response_builds_thinking_block_with_duration() {
+    let conversation_id = ChatConversationId::new();
+    let message_id = ChatMessageId::from_string("assistant-message-thinking");
+    let mut item = ChatTimelineItem::for_message_block(
+        message_id,
+        conversation_id,
+        0,
+        MessageRole::Orchestrator,
+        ChatTimelineItemKind::Thinking,
+    );
+    item.text = Some("Considering the request".to_string());
+    item.metadata = Some(r#"{"duration_ms":1234}"#.to_string());
+
+    let response = AgentTimelineItemResponse::from(item);
+
+    assert!(response.tool_call.is_none());
+    assert_eq!(
+        response.content_blocks,
+        json!([{
+            "type": "thinking",
+            "text": "Considering the request",
+            "duration_ms": 1234
+        }])
+    );
+}
+
+#[test]
+fn timeline_item_response_builds_thinking_block_without_duration_or_tool_use() {
+    let conversation_id = ChatConversationId::new();
+    let message_id = ChatMessageId::from_string("assistant-message-thinking-no-duration");
+    let mut item = ChatTimelineItem::for_message_block(
+        message_id,
+        conversation_id,
+        0,
+        MessageRole::Orchestrator,
+        ChatTimelineItemKind::Thinking,
+    );
+    item.text = Some("Still considering".to_string());
+
+    let response = AgentTimelineItemResponse::from(item);
+    let block = &response.content_blocks[0];
+
+    assert!(response.tool_call.is_none());
+    assert_eq!(
+        block,
+        &json!({ "type": "thinking", "text": "Still considering" })
+    );
+    assert!(block.get("duration_ms").is_none());
+    assert_ne!(block["type"], "tool_use");
+}
+
+#[tokio::test]
+async fn conversation_timeline_page_hydrates_persisted_thinking_item() {
+    let state = AppState::new_test();
+    let conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(ProjectId::new()))
+        .await
+        .expect("create conversation");
+    let mut item = ChatTimelineItem::for_message_block(
+        ChatMessageId::from_string("assistant-message-thinking-page"),
+        conversation.id,
+        0,
+        MessageRole::Orchestrator,
+        ChatTimelineItemKind::Thinking,
+    );
+    item.text = Some("Persisted reasoning".to_string());
+    item.metadata = Some(r#"{"duration_ms":1234}"#.to_string());
+    state
+        .chat_timeline_repo
+        .upsert_item(item)
+        .await
+        .expect("upsert thinking timeline item");
+
+    let page =
+        get_agent_conversation_timeline_page_for_app_state(&state, conversation.id, 10, None)
+            .await
+            .expect("timeline page")
+            .expect("conversation exists");
+
+    assert_eq!(
+        page.items[0].content_blocks,
+        json!([{
+            "type": "thinking",
+            "text": "Persisted reasoning",
+            "duration_ms": 1234
+        }])
+    );
+    assert!(page.items[0].tool_call.is_none());
 }
 
 #[test]

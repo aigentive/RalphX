@@ -2390,6 +2390,26 @@ fn timeline_item_content_block(
         });
     }
 
+    if item.kind.to_string() == "thinking" {
+        let duration_ms = item
+            .metadata
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+            .and_then(|metadata| {
+                metadata
+                    .get("duration_ms")
+                    .and_then(serde_json::Value::as_u64)
+            });
+        let mut block = serde_json::json!({
+            "type": "thinking",
+            "text": item.text.clone().unwrap_or_default(),
+        });
+        if let Some(duration_ms) = duration_ms {
+            block["duration_ms"] = serde_json::json!(duration_ms);
+        }
+        return block;
+    }
+
     let arguments = item
         .input_json
         .as_deref()
@@ -10164,6 +10184,19 @@ pub async fn get_agent_run_status_unified(
         persona_injected: run.persona_injected,
         persona_skipped_reason: run.persona_skipped_reason,
     }))
+}
+
+/// Return persisted attribution for one agent run.
+#[tauri::command]
+pub async fn get_agent_run_attribution(
+    run_id: String,
+    state: State<'_, AppState>,
+) -> crate::AppResult<crate::domain::entities::AgentRun> {
+    state
+        .agent_run_repo
+        .get_by_id(&AgentRunId::from_string(run_id.clone()))
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Agent run not found: {run_id}")))
 }
 
 /// Check if the chat service is available

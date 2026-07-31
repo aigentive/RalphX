@@ -152,6 +152,21 @@ pub const AGENT_QA_REFINER: &str = "ralphx:qa-refiner";
 /// Note: No dedicated plugin agent file — uses default Claude behavior
 pub const AGENT_QA_TESTER: &str = "ralphx:qa-tester";
 
+/// Classify feedback-loop launch roles from a canonical agent name.
+///
+/// Accepts both qualified ("ralphx:ralphx-workspace-reviewer") and short forms.
+/// Returns `None` for ordinary conversation agents so their runs carry no
+/// launch role. Values align with the frontend `LaunchRuntimeRoleKey` contract.
+pub fn launch_role_for_agent_name(agent_name: &str) -> Option<&'static str> {
+    let short = agent_name.rsplit(':').next().unwrap_or(agent_name);
+    match short {
+        SHORT_WORKSPACE_REVIEWER => Some("workspace_reviewer"),
+        SHORT_AGENT_WORKSPACE_REPAIR => Some("workspace_repair"),
+        SHORT_AGENT_WORKSPACE_PR_FIXER => Some("pr_fixer"),
+        _ => None,
+    }
+}
+
 /// Map a state-machine spawner agent type string to the correct FQ agent name.
 ///
 /// The state machine uses short identifiers ("qa-prep", "qa-refiner", "qa-tester")
@@ -178,3 +193,7 @@ pub fn spawner_agent_name(agent_type: &str) -> &'static str {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "agent_names_tests.rs"]
+mod tests;

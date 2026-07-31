@@ -74,7 +74,10 @@ import { useConfirmation } from "@/hooks/useConfirmation";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
 import { useManagedTeamStatus } from "@/hooks/useManagedTeam";
-import { useConversationRoleDefault } from "@/hooks/useManualRoleDefaults";
+import {
+  useConversationRoleDefault,
+  useManualRoleDefaults,
+} from "@/hooks/useManualRoleDefaults";
 import {
   agentModelSupportsCodexUltra,
 } from "@/lib/agent-models";
@@ -87,11 +90,16 @@ import { ideationKeys } from "@/hooks/useIdeation";
 import { useIdeationSettings } from "@/hooks/useIdeationSettings";
 import { useVerificationStatus, verificationStatusKey } from "@/hooks/useVerificationStatus";
 import { useEventBus } from "@/providers/EventProvider";
-import { selectQueuedMessages, useChatStore } from "@/stores/chatStore";
+import {
+  selectActiveAgentRunMeta,
+  selectQueuedMessages,
+  useChatStore,
+} from "@/stores/chatStore";
 import { useUiStore } from "@/stores/uiStore";
 import type {
   AgentArtifactTab,
   AgentProvider,
+  LaunchRuntimeRoleKey,
   AgentRuntimeSelection,
 } from "@/stores/agentSessionStore";
 import type {
@@ -126,6 +134,7 @@ import {
   buildAgentConversationModeOptions,
   isConversationModeLocked,
 } from "./agentConversationMode";
+import { runtimeFromManualRoleDefault } from "./agentConversationRuntime";
 import type { DiffFilterMode } from "./AgentsPublishDiffFilter";
 import {
   AGENT_PROVIDER_OPTIONS,
@@ -1305,6 +1314,51 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   );
   const activeConversationAgentStatus = useChatStore(
     (state) => state.agentStatus[activeConversationStoreKey] ?? "idle",
+  );
+  const activeRoleRunMeta = useChatStore(
+    selectActiveAgentRunMeta(activeConversationStoreKey),
+  );
+  const activeRole =
+    activeRoleRunMeta?.launchRole === "workspace_reviewer" ||
+    activeRoleRunMeta?.launchRole === "workspace_repair" ||
+    activeRoleRunMeta?.launchRole === "pr_fixer"
+      ? (activeRoleRunMeta.launchRole as LaunchRuntimeRoleKey)
+      : null;
+  const roleDefaultsQuery = useManualRoleDefaults(activeProjectId);
+  const activeRoleDefault = activeRole
+    ? roleDefaultsQuery.catalog?.roles.find((entry) => entry.role === activeRole)
+        ?.effective ?? null
+    : null;
+  const activeRoleOverride = useAgentSessionStore((state) =>
+    activeRole
+      ? state.roleRuntimeOverridesByConversationId[selectedConversationId]?.[activeRole] ?? null
+      : null,
+  );
+  const activeRoleSelection = activeRoleOverride ?? activeRoleDefault;
+  const activeRoleRuntime = activeRoleSelection
+    ? runtimeFromManualRoleDefault(
+        { ...activeRoleSelection, approvalPolicy: null, sandboxMode: null },
+        modelRegistry,
+      )
+    : null;
+  const activeRoleLabel =
+    activeRole === "workspace_reviewer"
+      ? "Reviewer"
+      : activeRole === "workspace_repair" || activeRole === "pr_fixer"
+        ? "Fixer"
+        : null;
+  const activeRoleTag = activeRole === "workspace_reviewer" ? "REV" : "FIX";
+  const composerRuntime = activeRoleRuntime ?? normalizedActiveRuntime;
+  const updateActiveRoleRuntime = useCallback(
+    (changes: Partial<ManualRoleRuntimeSelection>) => {
+      if (!activeRole || !activeRoleSelection) return;
+      useAgentSessionStore.getState().setRoleRuntimeOverride(
+        selectedConversationId,
+        activeRole,
+        { ...activeRoleSelection, ...changes },
+      );
+    },
+    [activeRole, activeRoleSelection, selectedConversationId],
   );
   const activeConversationIsSending = useChatStore(
     (state) => state.isSending[activeConversationStoreKey] ?? false,
@@ -2969,6 +3023,31 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                       </button>
                     </div>
                   )}
+                  {activeRole && activeRoleLabel && (
+                    <div
+                      className="mx-2 mb-2 flex items-center gap-2 rounded-md border px-3 py-2 text-[0.75rem]"
+                      style={{
+                        backgroundColor: "var(--status-warning-muted)",
+                        borderColor: "var(--status-warning-border)",
+                        borderStyle: "solid",
+                        borderWidth: "1px",
+                        color: "var(--text-secondary)",
+                      }}
+                      data-testid="agents-role-runtime-banner"
+                    >
+                      <span
+                        className="h-2 w-2 shrink-0 animate-pulse rounded-full"
+                        style={{ backgroundColor: "var(--status-warning)" }}
+                        aria-hidden="true"
+                      />
+                      <span>
+                        {activeRoleLabel} run active — composer targets {activeRoleLabel}
+                        {activeRoleRunMeta?.agentName
+                          ? ` › ${activeRoleRunMeta.agentName}`
+                          : ""}
+                      </span>
+                    </div>
+                  )}
                   <AgentComposerSurface
                     dataTestId="agents-conversation-composer"
                     actionTestId="agents-conversation-submit"
@@ -3111,13 +3190,28 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                       placeholder: "Current project",
                       disabled: true,
                     }}
+                    {...(activeRole ? { runtimeTag: activeRoleTag } : {})}
                     {...(chatFocus.type === "workspace"
                       ? {
                           runtimeDefault: {
-                            source: roleDefaultQuery.data?.source ?? null,
+                            source: activeRole
+                              ? `${activeRoleLabel} scope`
+                              : roleDefaultQuery.data?.source ?? null,
                             isResetting: isResettingRoleDefault,
                             disabled: isResettingRoleDefault,
-                            onReset: handleResetRoleDefault,
+                            onReset: activeRole
+                              ? () => {
+                                  useAgentSessionStore
+                                    .getState()
+                                    .clearRoleRuntimeOverride(
+                                      selectedConversationId,
+                                      activeRole,
+                                    );
+                                }
+                              : handleResetRoleDefault,
+                            ...(activeRole
+                              ? { scopeLabel: `${activeRoleLabel} runtime` }
+                              : {}),
                           },
                         }
                       : {})}
@@ -3125,9 +3219,11 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                       if (usesWorkspaceRuntimeControls) {
                         return {
                           provider: {
-                            value: normalizedActiveRuntime.provider,
+                            value: composerRuntime.provider,
                             onValueChange: (provider) =>
-                              onActiveProviderChange(
+                              activeRole
+                                ? updateActiveRoleRuntime({ provider })
+                                : onActiveProviderChange(
                                 provider,
                                 supportedEffortsForProvider(
                                   providerOptions,
@@ -3158,9 +3254,13 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                             ),
                           },
                           model: {
-                            value: selectableWorkspaceRuntime.modelId,
+                            value: activeRole
+                              ? composerRuntime.modelId
+                              : selectableWorkspaceRuntime.modelId,
                             onValueChange: (modelId) =>
-                              onActiveModelChange(
+                              activeRole
+                                ? updateActiveRoleRuntime({ model: modelId })
+                                : onActiveModelChange(
                                 modelId,
                                 workspaceProviderSupportedEfforts,
                                 workspaceProviderSupportedModelAliases,
@@ -3168,11 +3268,16 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                             options: workspaceModelOptions,
                             disabled: Boolean(workspaceProviderStatusMessage),
                             fastMode: {
-                              visible:
-                                normalizedActiveRuntime.provider === "codex",
-                              value: activeServiceTier === "fast",
+                              visible: composerRuntime.provider === "codex",
+                              value: (activeRole
+                                ? activeRoleSelection?.serviceTier
+                                : activeServiceTier) === "fast",
                               onValueChange: (value) =>
-                                handleActiveServiceTierChange(
+                                activeRole
+                                  ? updateActiveRoleRuntime({
+                                      serviceTier: value ? "fast" : "standard",
+                                    })
+                                  : handleActiveServiceTierChange(
                                   value ? "fast" : "standard",
                                 ),
                               disabled:
@@ -3188,7 +3293,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                           effort: {
                             value: selectableWorkspaceRuntime.effort,
                             onValueChange: (effort) =>
-                              onActiveEffortChange(
+                              activeRole
+                                ? updateActiveRoleRuntime({ effort })
+                                : onActiveEffortChange(
                                 effort,
                                 workspaceProviderSupportedEfforts,
                                 workspaceProviderSupportedModelAliases,
@@ -3197,11 +3304,18 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                             disabled: Boolean(workspaceProviderStatusMessage),
                             testId: "agents-conversation-effort",
                           },
-                          ...(normalizedActiveRuntime.provider === "codex"
+                          ...(composerRuntime.provider === "codex"
                             ? {
                                 speed: {
-                                  value: activeServiceTier,
-                                  onValueChange: handleActiveServiceTierChange,
+                                  value: activeRole
+                                    ? activeRoleSelection?.serviceTier ?? "provider_default"
+                                    : activeServiceTier,
+                                  onValueChange: activeRole
+                                    ? (serviceTier) =>
+                                        updateActiveRoleRuntime({
+                                          serviceTier: serviceTier as ManualServiceTier,
+                                        })
+                                    : handleActiveServiceTierChange,
                                   options: [
                                     {
                                       id: "provider_default",
