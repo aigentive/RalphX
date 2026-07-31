@@ -524,6 +524,7 @@ async fn replay_queued_message_via_fresh_session<R: Runtime + 'static>(
     message_queue: &Arc<MessageQueue>,
     queued_message_repo: Option<&Arc<dyn QueuedMessageRepository>>,
     queue_key: &QueueKey,
+    persona_feature_enabled: bool,
 ) -> ReplayOutcome {
     let Some(handle) = app_handle else {
         restore_queue_front(
@@ -544,7 +545,8 @@ async fn replay_queued_message_via_fresh_session<R: Runtime + 'static>(
 
     let app_state = handle.state::<AppState>();
     let service = app_state
-        .build_chat_service_for_runtime(execution_state.map(Arc::clone), Some(handle.clone()));
+        .build_chat_service_for_runtime(execution_state.map(Arc::clone), Some(handle.clone()))
+        .with_persona_feature_enabled(persona_feature_enabled);
     let send_result = service
         .send_message(
             context_type,
@@ -1467,6 +1469,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     message_queue,
                     queued_message_repo.as_ref(),
                     &queue_key,
+                    persona_feature_enabled,
                 )
                 .await
                 {
@@ -1567,6 +1570,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                             message_queue,
                             queued_message_repo.as_ref(),
                             &queue_key,
+                            persona_feature_enabled,
                         )
                         .await
                         {
