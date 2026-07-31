@@ -94,7 +94,7 @@ fn write_fake_claude_cli_with_partial_messages_support(
     std::fs::write(
         path,
         format!(
-            "#!/bin/sh\nif [ \"$1\" = \"--help\" ]; then\n  printf '%s\\n' 'Claude Code' 'Options:' '{partial_messages_flag}' '{thinking_display_flag}'\n  exit 0\nfi\nfor arg in \"$@\"; do\n  if [ \"$arg\" = \"--version\" ]; then\n    printf 'claude-code 2.1.219\\n'\n    exit 0\n  fi\ndone\nprintf \"error: unknown option '%s'\\n\" \"$1\" >&2\nexit 1\n"
+            "#!/bin/sh\nif [ \"$1\" = \"--help\" ]; then\n  printf '%s\\n' 'Claude Code' 'Options:' '{partial_messages_flag}' '{thinking_display_flag}'\n  exit 0\nfi\nfor arg in \"$@\"; do\n  if [ \"$arg\" = \"--version\" ]; then\n    printf 'claude-code 2.1.219\\n'\n    exit 0\n  fi\ndone\nexit 0\n"
         ),
     )
     .expect("write fake claude");

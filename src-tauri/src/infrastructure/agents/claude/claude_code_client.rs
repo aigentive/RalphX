@@ -23,9 +23,7 @@ use crate::domain::agents::{
     ClientCapabilities, ClientType, ResponseChunk,
 };
 
-use super::cli_capabilities::{
-    claude_cli_supports_partial_messages, claude_cli_supports_thinking_display,
-};
+use super::spawn_args::shared_streaming_cli_args;
 use super::{
     append_claude_permission_args, apply_common_spawn_env,
     build_spawnable_command_with_mcp_runtime_context_and_profile, claude_runtime_config,
@@ -464,22 +462,7 @@ impl ClaudeCodeClient {
             args.extend(["-p".to_string(), config.prompt.clone()]);
         }
 
-        // Output format for streaming
-        args.extend(["--output-format".to_string(), "stream-json".to_string()]);
-        args.push("--verbose".to_string()); // Required for stream-json with -p
-        if claude_cli_supports_partial_messages(cli_path) {
-            args.push("--include-partial-messages".to_string());
-        }
-        if claude_cli_supports_thinking_display(cli_path) {
-            args.extend(["--thinking-display".to_string(), "summarized".to_string()]);
-        }
-        if let Some(sources) = &claude_runtime_config().setting_sources {
-            if !sources.is_empty() {
-                args.extend(["--setting-sources".to_string(), sources.join(",")]);
-            }
-        }
-        // Avoid startup parser crashes in slash-command/skills loading path.
-        args.push("--disable-slash-commands".to_string());
+        args.extend(shared_streaming_cli_args(cli_path));
 
         // Plugin directory for agent/skill discovery
         if let Some(plugin_dir) = &config.plugin_dir {

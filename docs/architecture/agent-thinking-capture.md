@@ -45,11 +45,11 @@ The harness parsers remain native because Claude and Codex do not expose the sam
 
 ### Claude
 
-`ClaudeCodeClient::build_cli_args` always requests stream JSON. Optional flags are gated through cached `ClaudeCliCapabilities`:
+Every Claude spawn path requests stream JSON through one shared seam: `spawn_args::shared_streaming_cli_args` is consumed by both `ClaudeCodeClient::build_cli_args` (agentic client spawns) and `build_base_cli_command_inner_with_runtime_context_and_profile` (chat-service launch plans). Optional flags are gated through cached `ClaudeCliCapabilities`:
 
 - `--include-partial-messages` enables native delta delivery when supported.
 - `--thinking-display summarized` asks the CLI for its summarized thinking presentation when supported.
-- If either flag is unavailable or probing fails, RalphX omits it. The CLI may still expose complete thinking in verbose assistant messages.
+- If either flag is unavailable or probing fails, RalphX omits it. Claude 4.x CLIs may still expose complete thinking text in verbose assistant messages; the Claude 5 family (Fable/Opus 5) withholds thinking text entirely (`"thinking": ""` plus signature) unless `--thinking-display summarized` is passed, so omitting that flag leaves only `thinking_tokens` progress.
 
 `StreamProcessor` owns the block lifecycle:
 
@@ -82,6 +82,8 @@ Claude's real CLI may exit successfully when `--version` appears anywhere, even 
 claude --unknown-optional-flag --version -> exit 0 -> “supported”  ❌
 ```
 
+Unknown flags combined with `--help` also exit zero on 2.1.220, so `--help` exit status is equally invalid as acceptance evidence.
+
 The supported flow is:
 
 ```text
@@ -89,13 +91,14 @@ resolve production CLI path
   -> claude --version
   -> claude --help
   -> parse help for exact optional flag
+  -> if --thinking-display absent from help: value-rejection acceptance probe
   -> cache by resolved CLI path
   -> include only proven flags
 ```
 
-`parse_claude_cli_capabilities` uses exact help markers for `--include-partial-messages` and `--thinking-display`. A version floor is acceptable only when established from vendor evidence and representative versions; unknown support must omit the optional flag rather than risk breaking every spawn.
+`parse_claude_cli_capabilities` uses exact help markers for `--include-partial-messages` and `--thinking-display`. Claude CLI 2.1.220 removed `--thinking-display` from `--help` while still accepting it, so when the help marker is absent `probe_claude_cli` runs a value-rejection acceptance probe: `claude --thinking-display <bogus-value> --help`. The flag counts as supported only when the command exits non-zero AND stderr contains both the `option '--thinking-display` marker and the echoed bogus probe value — a CLI that rejects unknown options mentions the flag but never echoes the value, so that shape stays unsupported. `--include-partial-messages` is a boolean flag with no value to reject, so it remains help-marker-only. Spawn failures during the probe fail closed. A version floor is acceptable only when established from vendor evidence and representative versions; unknown support must omit the optional flag rather than risk breaking every spawn.
 
-Capability tests must model the real short-circuit behavior: an unknown argument combined with `--version` can exit zero while help still omits the flag.
+Capability tests must model the real short-circuit behavior: an unknown argument combined with `--version` or `--help` can exit zero while help still omits the flag.
 
 ## Shared event contract
 
@@ -159,9 +162,10 @@ Presentation ownership:
 
 | Edge | Expected behavior |
 |---|---|
-| Claude help omits optional flag | Omit it; spawn remains usable with whatever native thinking shape the CLI exposes. |
+| Claude help omits optional flag | For `--thinking-display`, run the value-rejection acceptance probe before omitting; otherwise omit it and spawn remains usable with whatever native thinking shape the CLI exposes. |
 | Capability probe fails | Fail closed for optional flags; never guess support from an unrelated successful command. |
 | Claude has no partial-message support | Verbose complete thinking emits one `Thinking` + one immediate settle, without duration. |
+| Claude 5 family without `--thinking-display` | Thinking text is withheld (`"thinking": ""` + signature); only `thinking_tokens` progress renders, as a token-count pill with no text. |
 | Empty provider thinking | No durable/live settled pill; non-thinking content remains. |
 | Settle arrives without its delta/block | Frontend ignores the empty settle. |
 | Stale run emits late thinking | Frontend rejects it by active `run_id`. |
