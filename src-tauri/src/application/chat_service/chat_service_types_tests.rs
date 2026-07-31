@@ -86,6 +86,9 @@ fn agent_run_started_payload_serde_snake_case() {
         context_id: "task-1".to_string(),
         run_chain_id: None,
         parent_run_id: None,
+        agent_name: Some("ralphx-workspace-reviewer".to_string()),
+        launch_role: Some("workspace_reviewer".to_string()),
+        started_at: Some("2026-07-31T00:00:00Z".to_string()),
         effective_model_id: Some("claude-sonnet-4-6".to_string()),
         effective_model_label: Some("Sonnet 4.6".to_string()),
         provider_harness: Some("claude".to_string()),
@@ -99,6 +102,9 @@ fn agent_run_started_payload_serde_snake_case() {
     assert_eq!(value["effective_model_label"], "Sonnet 4.6");
     assert_eq!(value["provider_harness"], "claude");
     assert_eq!(value["provider_session_id"], "session-123");
+    assert_eq!(value["agent_name"], "ralphx-workspace-reviewer");
+    assert_eq!(value["launch_role"], "workspace_reviewer");
+    assert_eq!(value["started_at"], "2026-07-31T00:00:00Z");
 
     assert_eq!(value["run_id"], "run-1");
     assert_eq!(value["conversation_id"], "conv-1");
@@ -119,6 +125,9 @@ fn agent_run_started_payload_serde_skips_none_fields() {
         context_id: "task-1".to_string(),
         run_chain_id: None,
         parent_run_id: None,
+        agent_name: None,
+        launch_role: None,
+        started_at: None,
         effective_model_id: None,
         effective_model_label: None,
         provider_harness: None,
@@ -135,6 +144,9 @@ fn agent_run_started_payload_serde_skips_none_fields() {
     assert!(value.get("provider_session_id").is_none());
     assert!(value.get("run_chain_id").is_none());
     assert!(value.get("parent_run_id").is_none());
+    assert!(value.get("agent_name").is_none());
+    assert!(value.get("launch_role").is_none());
+    assert!(value.get("started_at").is_none());
 }
 
 #[test]

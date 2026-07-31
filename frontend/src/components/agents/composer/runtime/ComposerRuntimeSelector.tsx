@@ -44,10 +44,12 @@ interface ComposerRuntimeSelectorProps {
   speed?: ComposerRuntimeSpeedField;
   runtimeDefault?: {
     source?: string | null;
+    scopeLabel?: string;
     isResetting?: boolean;
     disabled?: boolean;
     onReset: () => Promise<unknown> | void;
   };
+  runtimeTag?: string;
   compact?: boolean;
   className?: string;
   surfaceRef: RefObject<HTMLDivElement | null>;
@@ -61,6 +63,7 @@ export function ComposerRuntimeSelector({
   persona,
   speed,
   runtimeDefault,
+  runtimeTag,
   compact = false,
   className,
   surfaceRef,
@@ -220,6 +223,7 @@ export function ComposerRuntimeSelector({
               fastMode={Boolean(
                 effectiveSpeed?.value === "fast",
               )}
+              {...(runtimeTag ? { scopeTag: runtimeTag } : {})}
               includesCapabilities={Boolean(capability)}
               {...(modelText.length === 0
                 ? { visibleLabel: "Runtime settings" }

@@ -577,6 +577,7 @@ vi.mock("@/stores/chatStore", () => {
   type ChatStoreMockState = {
     activeConversationIds: Record<string, string | null>;
     activeAgentRunIds: Record<string, string>;
+    activeAgentRunMeta: Record<string, { launchRole: string | null; agentName: string | null }>;
     agentStatus: Record<string, string>;
     agentActivityLabels: Record<string, string>;
     isSending: Record<string, boolean>;
@@ -591,6 +592,7 @@ vi.mock("@/stores/chatStore", () => {
   const chatState: ChatStoreMockState = {
     activeConversationIds: {},
     activeAgentRunIds: {},
+    activeAgentRunMeta: {},
     agentStatus: {},
     agentActivityLabels: {},
     isSending: {},
@@ -633,6 +635,8 @@ vi.mock("@/stores/chatStore", () => {
   );
 
   return {
+    selectActiveAgentRunMeta: (storeKey: string) =>
+      (state: ChatStoreMockState) => state.activeAgentRunMeta[storeKey],
     selectQueuedMessages: () => () => [],
     useChatStore,
   };

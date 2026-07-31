@@ -188,6 +188,16 @@ function renderList(overrides: Partial<React.ComponentProps<typeof ChatMessageLi
   return render(<ChatMessageList {...defaultProps} {...overrides} />);
 }
 
+it("rehydrates one completed-run widget at the end of persisted run rows", () => {
+  renderList({ messages: [
+    { id: "run-row-1", role: "assistant", content: "first", createdAt: "2026-01-01T12:00:00Z", finalizedAt: "2026-01-01T12:00:10Z", runId: "run-1" },
+    { id: "run-row-2", role: "assistant", content: "last", createdAt: "2026-01-01T12:00:02Z", finalizedAt: "2026-01-01T12:00:42Z", runId: "run-1" },
+  ] });
+
+  expect(screen.getAllByTestId("run-attribution-widget")).toHaveLength(1);
+  expect(screen.getByTestId("run-attribution-toggle")).toHaveTextContent("Agent worked for 42s");
+});
+
 function getScroller(): HTMLElement {
   return screen.getByTestId("mock-virtuoso");
 }
