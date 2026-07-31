@@ -54,7 +54,7 @@ use crate::domain::agents::{
     AgentProviderSettings, AgenticClient, LogicalEffort, RoutingRole,
     WorkspaceReviewRuntimeSettings, DEFAULT_AGENT_HARNESS,
 };
-use crate::domain::entities::ProjectId;
+use crate::domain::entities::{ProjectId, RuntimeSource};
 use crate::domain::ideation::{IdeationSettings, TasksFeatureState};
 use crate::domain::qa::QASettings;
 use crate::domain::repositories::{
@@ -171,6 +171,7 @@ pub(crate) struct ResolvedBackgroundAgentRuntime {
     pub approval_policy: Option<String>,
     pub sandbox_mode: Option<String>,
     pub service_tier: Option<String>,
+    pub runtime_source: RuntimeSource,
     pub env: HashMap<String, String>,
 }
 
@@ -952,6 +953,7 @@ impl AppState {
             sandbox_mode: sandbox_mode
                 .or_else(|| default_sandbox_mode_for_harness(harness).map(str::to_string)),
             service_tier,
+            runtime_source: RuntimeSource::HarnessFallback,
             env,
         }
     }
@@ -1141,7 +1143,7 @@ impl AppState {
         )
         .map_err(AppError::Infrastructure)?;
 
-        Ok(self.background_agent_runtime_for_harness(
+        let mut runtime = self.background_agent_runtime_for_harness(
             client,
             resolved.effective_harness,
             Some(resolved.model),
@@ -1151,7 +1153,9 @@ impl AppState {
             resolved.sandbox_mode,
             resolved.service_tier.or(provider_settings.service_tier),
             provider_env,
-        ))
+        );
+        runtime.runtime_source = resolved.runtime_source;
+        Ok(runtime)
     }
 
     pub fn build_chat_service(&self) -> AppChatService {
@@ -1348,13 +1352,15 @@ impl AppState {
             return Ok(runtime);
         }
 
-        Ok(Self::apply_workspace_review_runtime_settings(
+        let mut runtime = Self::apply_workspace_review_runtime_settings(
             runtime,
             WorkspaceReviewRuntimeSettings {
                 model: role_default.value.model,
                 effort: role_default.value.effort,
             },
-        ))
+        );
+        runtime.runtime_source = RuntimeSource::RoleDefault;
+        Ok(runtime)
     }
 
     /// Create AppState for production use with SQLite repositories.

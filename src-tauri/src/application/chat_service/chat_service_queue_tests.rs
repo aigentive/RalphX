@@ -108,7 +108,7 @@ fn queued_agent_run_inherits_identity_from_parent_run_with_name_fallback() {
     let mut parent = crate::domain::entities::AgentRun::new(ChatConversationId::new());
     parent.agent_name = Some("ralphx-agent-workspace-repair".to_string());
     parent.launch_role = Some("workspace_repair".to_string());
-    parent.runtime_source = Some("role_default".to_string());
+    parent.runtime_source = Some(crate::domain::entities::RuntimeSource::RoleDefault);
 
     let run = build_queued_agent_run(
         ChatConversationId::new(),
@@ -128,7 +128,10 @@ fn queued_agent_run_inherits_identity_from_parent_run_with_name_fallback() {
         Some("ralphx-agent-workspace-repair")
     );
     assert_eq!(run.launch_role.as_deref(), Some("workspace_repair"));
-    assert_eq!(run.runtime_source.as_deref(), Some("role_default"));
+    assert_eq!(
+        run.runtime_source,
+        Some(crate::domain::entities::RuntimeSource::RoleDefault)
+    );
 
     let orphan_run = build_queued_agent_run(
         ChatConversationId::new(),

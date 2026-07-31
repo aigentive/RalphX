@@ -94,8 +94,8 @@ use crate::domain::entities::{
     AgentWorkspaceReviewOutcome, ChatAttachment, ChatAttachmentId, ChatContextType,
     ChatConversation, ChatConversationId, ChatMessage, ChatMessageAttribution, ChatMessageId,
     CoordinationMode, IdeationSessionId, InternalStatus, MessageRole, Persona, PersonaDirective,
-    PersonaId, PersonaStatus, ProjectId, TaskId, TeamIntent, TeamMessageKind, TeamMessageTarget,
-    TeamMessageTargetKind,
+    PersonaId, PersonaStatus, ProjectId, RuntimeSource, TaskId, TeamIntent, TeamMessageKind,
+    TeamMessageTarget, TeamMessageTargetKind,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentConversationGranolaNoteRepository,
@@ -1155,6 +1155,27 @@ fn apply_send_message_overrides(
     }
 }
 
+fn runtime_source_for_send(
+    options: &SendMessageOptions,
+    resolved: &crate::application::agent_lane_resolution::ResolvedAgentSpawnSettings,
+) -> RuntimeSource {
+    if let Some(runtime_source) = options.runtime_source_override {
+        runtime_source
+    } else if options.manual_role_runtime_override.is_some() {
+        RuntimeSource::ConversationOverride
+    } else if options.harness_override.is_some()
+        || options.model_override.is_some()
+        || options.logical_effort_override.is_some()
+        || options.approval_policy_override.is_some()
+        || options.sandbox_mode_override.is_some()
+        || options.service_tier_override.is_some()
+    {
+        RuntimeSource::ComposerSelection
+    } else {
+        resolved.runtime_source
+    }
+}
+
 fn normalize_service_tier_override(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("standard") {
@@ -1227,6 +1248,9 @@ pub struct SendMessageOptions {
     pub routing_role_override: Option<RoutingRole>,
     /// Complete permission-free runtime tuple for the backend-derived role.
     pub manual_role_runtime_override: Option<ManualRoleRuntimeOverride>,
+    /// Typed runtime provenance set by the launch seam that owns caller intent.
+    /// This keeps materialized role defaults distinct from user composer selections.
+    pub runtime_source_override: Option<RuntimeSource>,
     /// Optional JSON metadata string to attach to the user message.
     pub metadata: Option<String>,
     /// Optional timestamp override for the user message. If None, uses Utc::now().
@@ -7185,6 +7209,8 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         agent_run.service_tier = resolved_spawn_settings.service_tier.clone();
         agent_run.approval_policy = resolved_spawn_settings.approval_policy.clone();
         agent_run.sandbox_mode = resolved_spawn_settings.sandbox_mode.clone();
+        agent_run.runtime_source =
+            Some(runtime_source_for_send(&options, &resolved_spawn_settings));
 
         let assistant_message_attribution = ChatMessageAttribution {
             attribution_source: Some("native_runtime".to_string()),

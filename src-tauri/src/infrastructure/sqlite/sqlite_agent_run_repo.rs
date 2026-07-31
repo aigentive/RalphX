@@ -43,7 +43,7 @@ use crate::domain::entities::agent_run::PersonaRunAttribution;
 use crate::domain::entities::{
     AgentRun, AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage, AutomationId,
     AutomationRunId, ChatContextType, ChatConversation, ChatConversationId, CoordinationMode,
-    InterruptedConversation, ProviderUsageSnapshot, UsageCapture, UsageProvenance,
+    InterruptedConversation, ProviderUsageSnapshot, RuntimeSource, UsageCapture, UsageProvenance,
 };
 
 /// Map a SQLite row to an AgentRun (expects columns: id, conversation_id, status,
@@ -96,7 +96,9 @@ fn row_to_agent_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentRun> {
         sandbox_mode: row.get("sandbox_mode")?,
         agent_name: row.get("agent_name")?,
         launch_role: row.get("launch_role")?,
-        runtime_source: row.get("runtime_source")?,
+        runtime_source: row
+            .get::<_, Option<String>>("runtime_source")?
+            .and_then(|value| value.parse::<RuntimeSource>().ok()),
         run_chain_id: row.get("run_chain_id")?,
         parent_run_id: row.get("parent_run_id")?,
         action_kind: row
@@ -192,7 +194,7 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                         run.sandbox_mode,
                         run.agent_name,
                         run.launch_role,
-                        run.runtime_source,
+                        run.runtime_source.map(|value| value.to_string()),
                         run.run_chain_id,
                         run.parent_run_id,
                         run.action_kind.map(|value| value.to_string()),
@@ -470,7 +472,11 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                 conn.execute(
                     "UPDATE agent_runs
                      SET status = ?1,
-                         completed_at = CASE WHEN ?1 = 'running' THEN NULL ELSE completed_at END,
+                         completed_at = CASE
+                             WHEN ?1 = 'running' THEN NULL
+                             WHEN completed_at IS NULL THEN strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now')
+                             ELSE completed_at
+                         END,
                          error_message = CASE WHEN ?1 = 'running' THEN NULL ELSE error_message END
                      WHERE id = ?2",
                     rusqlite::params![status_str, id],
@@ -982,7 +988,9 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                             sandbox_mode: row.get("sandbox_mode")?,
                             agent_name: row.get("agent_name")?,
                             launch_role: row.get("launch_role")?,
-                            runtime_source: row.get("runtime_source")?,
+                            runtime_source: row
+                                .get::<_, Option<String>>("runtime_source")?
+                                .and_then(|value| value.parse::<RuntimeSource>().ok()),
                             run_chain_id: row.get("run_chain_id")?,
                             parent_run_id: row.get("parent_run_id")?,
                             action_kind: row

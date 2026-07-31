@@ -149,7 +149,7 @@ pub use agent_workspace_repair::{
 pub use agent_workspace_pr_metadata::AgentWorkspacePrMetadataDecision;
 pub use agent_run::{
     AgentRun, AgentRunAction, AgentRunActionKind, AgentRunAttribution, AgentRunId, AgentRunStatus,
-    InterruptedConversation,
+    InterruptedConversation, RuntimeSource,
 };
 pub use agent_task::{
     merge_agent_task_metadata, AgentTaskCreate, AgentTaskDetail, AgentTaskId, AgentTaskList,

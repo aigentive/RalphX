@@ -207,6 +207,21 @@ fn test_agent_run_provider_metadata_serialization() {
 }
 
 #[test]
+fn runtime_source_serializes_as_snake_case_and_ignores_unknown_values() {
+    let mut run = AgentRun::new(ChatConversationId::new());
+    run.runtime_source = Some(RuntimeSource::RoleDefault);
+
+    let serialized = serde_json::to_value(&run).expect("serialize agent run");
+    assert_eq!(serialized["runtime_source"], "role_default");
+
+    let mut unknown = serialized;
+    unknown["runtime_source"] = serde_json::Value::String("future_runtime_source".to_string());
+    let hydrated: AgentRun =
+        serde_json::from_value(unknown).expect("unknown source is legacy-safe");
+    assert_eq!(hydrated.runtime_source, None);
+}
+
+#[test]
 fn test_complete_agent_run() {
     let conversation_id = ChatConversationId::new();
     let mut run = AgentRun::new(conversation_id);

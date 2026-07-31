@@ -27,7 +27,7 @@ use crate::domain::agents::{
     AgentHarnessKind, AgentLane, AgentLaneSettings, AgentProviderSettings, LogicalEffort,
     ManualRoleDefault, ManualServiceTier, RoutingRole,
 };
-use crate::domain::entities::{AgentConversationWorkspaceMode, ChatContextType};
+use crate::domain::entities::{AgentConversationWorkspaceMode, ChatContextType, RuntimeSource};
 use crate::domain::repositories::{
     AgentLaneSettingsRepository, AgentProviderSettingsRepository, ManualRoleDefaultRepository,
 };
@@ -147,6 +147,7 @@ async fn lane_row_with_claude_harness_overrides_model_and_effort() {
         Some("haiku")
     );
     assert_eq!(resolved.subagent_model_cap.as_deref(), Some("haiku"));
+    assert_eq!(resolved.runtime_source, RuntimeSource::ProjectDefault);
 }
 
 #[tokio::test]
@@ -208,6 +209,7 @@ async fn codex_lane_selection_uses_codex_lane_settings() {
     assert_eq!(resolved.model, "gpt-5.4");
     assert_eq!(resolved.logical_effort, Some(LogicalEffort::XHigh));
     assert_eq!(resolved.claude_effort.as_deref(), Some("xhigh"));
+    assert_eq!(resolved.runtime_source, RuntimeSource::RoleDefault);
     assert_eq!(resolved.approval_policy.as_deref(), Some("never"));
     assert_eq!(resolved.sandbox_mode.as_deref(), Some("danger-full-access"));
     assert_eq!(
@@ -757,6 +759,7 @@ async fn manual_role_default_preserves_exact_standard_speed_in_spawn_settings() 
     assert_eq!(resolved.service_tier.as_deref(), Some("standard"));
     assert_eq!(resolved.approval_policy.as_deref(), Some("never"));
     assert_eq!(resolved.sandbox_mode.as_deref(), Some("danger-full-access"));
+    assert_eq!(resolved.runtime_source, RuntimeSource::RoleDefault);
 }
 
 #[tokio::test]
@@ -822,6 +825,7 @@ async fn explicit_provider_defaults_ignore_the_roles_configured_runtime() {
     assert_eq!(resolved.model, "gpt-5.6-provider");
     assert_eq!(resolved.logical_effort, Some(LogicalEffort::Medium));
     assert_eq!(resolved.service_tier.as_deref(), Some("standard"));
+    assert_eq!(resolved.runtime_source, RuntimeSource::ConversationOverride);
 }
 
 #[tokio::test]
@@ -897,6 +901,7 @@ async fn delegated_subagent_uses_provider_default_model_and_effort_as_inherited_
     assert_eq!(resolved.configured_harness, None);
     assert_eq!(resolved.configured_model, None);
     assert_eq!(resolved.configured_logical_effort, None);
+    assert_eq!(resolved.runtime_source, RuntimeSource::HarnessFallback);
 }
 
 #[tokio::test]

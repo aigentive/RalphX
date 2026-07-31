@@ -662,6 +662,7 @@ vi.mock("./AgentComposerSurface", () => ({
     dataTestId,
     personaControl,
     runtimeDefault,
+    runtimeTag,
     speed,
   }: {
     provider: {
@@ -704,16 +705,20 @@ vi.mock("./AgentComposerSurface", () => ({
     dataTestId?: string;
     personaControl?: ReactNode;
     runtimeDefault?: {
+      source?: string | null;
+      scopeLabel?: string;
       isResetting?: boolean;
       disabled?: boolean;
       onReset: () => Promise<unknown> | void;
     };
+    runtimeTag?: string;
     speed?: ComposerRuntimeSpeedField;
   }) => (
     <div data-testid={dataTestId}>
       <div data-testid="workspace-provider-value">{provider.value}</div>
       <div data-testid="workspace-model-value">{model.value}</div>
       <div data-testid="workspace-effort-value">{effort.value}</div>
+      <div data-testid="workspace-runtime-tag">{runtimeTag ?? ""}</div>
       {speed ? (
         <div data-testid={speed.testId}>{speed.value}</div>
       ) : null}
@@ -786,14 +791,19 @@ vi.mock("./AgentComposerSurface", () => ({
       )}
       {personaControl}
       {runtimeDefault ? (
-        <button
-          type="button"
-          data-testid="agent-composer-runtime-reset"
-          disabled={runtimeDefault.disabled || runtimeDefault.isResetting}
-          onClick={() => void runtimeDefault.onReset()}
-        >
-          Reset runtime
-        </button>
+        <>
+          <div data-testid="workspace-advanced-popover-header">
+            Advanced · {runtimeDefault.scopeLabel ?? runtimeDefault.source ?? ""}
+          </div>
+          <button
+            type="button"
+            data-testid="agent-composer-runtime-reset"
+            disabled={runtimeDefault.disabled || runtimeDefault.isResetting}
+            onClick={() => void runtimeDefault.onReset()}
+          >
+            Reset runtime {runtimeDefault.scopeLabel ?? runtimeDefault.source ?? ""}
+          </button>
+        </>
       ) : null}
       <button
         type="button"
@@ -1236,6 +1246,8 @@ describe("AgentsActiveConversationPanel", () => {
     vi.mocked(invoke).mockResolvedValue(undefined);
     eventSubscribers.clear();
     useChatStore.setState({ activeConversationIds: {} });
+    useChatStore.setState({ activeAgentRunMeta: {} });
+    useAgentSessionStore.setState({ roleRuntimeOverridesByConversationId: {} });
     useAgentSessionStore.setState({ artifactByConversationId: {} });
     useAgentArtifactUiStore.setState({ artifactByConversationId: {} });
     composerQuestionModeRef.current = undefined;
@@ -1604,6 +1616,65 @@ describe("AgentsActiveConversationPanel", () => {
       "high",
       "max",
     ], null);
+  });
+
+  it("scopes reviewer and fixer runtime controls to the active role and restores the conversation runtime", async () => {
+    vi.mocked(invoke).mockImplementation((command) => {
+      if (command === "get_manual_role_defaults") {
+        return Promise.resolve({ project_id: "project-1", roles: [
+          {
+            role: "workspace_reviewer", display_name: "Reviewer", description: "Review", family: "workspace", family_display_name: "Workspace", requires_tasks: false,
+            configured: null, effective: { provider: "codex", model: "gpt-5.6", effort: "high", service_tier: "fast", coordination_mode: "solo", persona_id: null, approval_policy: null, sandbox_mode: null }, source: "project", diagnostics: [], controls: { capabilities: [], speeds: [], persona: { enabled: true, disabled_reason: null } },
+          },
+          {
+            role: "workspace_repair", display_name: "Fixer", description: "Fix", family: "workspace", family_display_name: "Workspace", requires_tasks: false,
+            configured: null, effective: { provider: "claude", model: "sonnet", effort: "medium", service_tier: "provider_default", coordination_mode: "solo", persona_id: null, approval_policy: null, sandbox_mode: null }, source: "project", diagnostics: [], controls: { capabilities: [], speeds: [], persona: { enabled: true, disabled_reason: null } },
+          },
+        ] });
+      }
+      return Promise.resolve(undefined);
+    });
+    useAgentSessionStore.getState().setRuntimeForConversation(
+      "conversation-1",
+      "project-1",
+      { provider: "claude", modelId: "opus", effort: "xhigh" },
+    );
+    useChatStore.setState({ activeAgentRunMeta: { "project:conversation-1": { launchRole: "workspace_reviewer", agentName: "reviewer" } } });
+    const { rerenderPanel } = renderPanel();
+
+    expect(await screen.findByTestId("agents-role-runtime-banner")).toHaveTextContent("Reviewer run active");
+    expect(screen.getByTestId("workspace-runtime-tag")).toHaveTextContent("REV");
+    expect(screen.getByTestId("workspace-advanced-popover-header")).toHaveTextContent("Advanced · Reviewer runtime");
+    await waitFor(() => expect(screen.getByTestId("workspace-provider-value")).toHaveTextContent("codex"));
+    fireEvent.click(screen.getByTestId("change-workspace-model"));
+    expect(useAgentSessionStore.getState().roleRuntimeOverridesByConversationId["conversation-1"]?.workspace_reviewer?.model).toBe("sonnet");
+    expect(useAgentSessionStore.getState().runtimeByConversationId["conversation-1"]).toEqual({
+      provider: "claude",
+      modelId: "opus",
+      effort: "xhigh",
+    });
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-reset"));
+    expect(useAgentSessionStore.getState().roleRuntimeOverridesByConversationId["conversation-1"]?.workspace_reviewer).toBeUndefined();
+    expect(screen.getByTestId("workspace-provider-value")).toHaveTextContent("codex");
+    expect(screen.getByTestId("workspace-model-value")).toHaveTextContent("gpt-5.6");
+    expect(useAgentSessionStore.getState().runtimeByConversationId["conversation-1"]).toEqual({
+      provider: "claude",
+      modelId: "opus",
+      effort: "xhigh",
+    });
+
+    useChatStore.setState({ activeAgentRunMeta: { "project:conversation-1": { launchRole: "workspace_repair", agentName: "fixer" } } });
+    rerenderPanel({ publishAttemptsByConversationId: { "conversation-1": { conversationId: "conversation-1", startedAtMs: 1 } } });
+    expect(await screen.findByTestId("agents-role-runtime-banner")).toHaveTextContent("Fixer run active");
+    expect(screen.getByTestId("workspace-runtime-tag")).toHaveTextContent("FIX");
+    await waitFor(() => expect(screen.getByTestId("workspace-provider-value")).toHaveTextContent("claude"));
+    expect(screen.getByTestId("workspace-model-value")).toHaveTextContent("sonnet");
+
+    useChatStore.setState({ activeAgentRunMeta: {} });
+    rerenderPanel({ publishAttemptsByConversationId: { "conversation-1": { conversationId: "conversation-1", startedAtMs: 2 } } });
+    expect(screen.queryByTestId("agents-role-runtime-banner")).not.toBeInTheDocument();
+    expect(screen.getByTestId("workspace-provider-value")).toHaveTextContent("claude");
+    expect(screen.getByTestId("workspace-model-value")).toHaveTextContent("opus");
   });
 
   it("keeps local runtime state unchanged when active role reset refetch fails", async () => {
