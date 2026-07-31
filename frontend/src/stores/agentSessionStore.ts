@@ -88,6 +88,7 @@ export type AgentSidebarPublicationState =
 export type LaunchRuntimeRoleKey =
   | "workspace_reviewer"
   | "workspace_repair"
+  | "pr_fixer"
   | "workspace_edit"
   | "ideation_primary";
 
@@ -225,6 +226,7 @@ interface AgentSessionState {
     Partial<Record<LaunchRuntimeRoleKey, ManualRoleRuntimeSelection>>
   >;
   lastRuntimeByProjectId: Record<string, AgentRuntimeSelection>;
+  lastRuntimeByProjectMode: Record<string, AgentRuntimeSelection>;
   branchBaseCacheByProjectId: Record<string, AgentBranchBaseCacheEntry>;
   lastBranchBaseSelectionByProjectId: Record<string, string>;
   lastModelEffortByProvider: Record<AgentProvider, { modelId: string; effort: AgentEffort }>;
@@ -301,6 +303,15 @@ interface AgentSessionActions {
   ) => void;
   setLastRuntimeForProject: (projectId: string, runtime: AgentRuntimeSelection) => void;
   clearLastRuntimeForProject: (projectId: string) => void;
+  setLastRuntimeForProjectMode: (
+    projectId: string,
+    mode: AgentConversationWorkspaceMode,
+    runtime: AgentRuntimeSelection,
+  ) => void;
+  clearLastRuntimeForProjectMode: (
+    projectId: string,
+    mode: AgentConversationWorkspaceMode,
+  ) => void;
   setBranchBaseCacheForProject: (
     projectId: string,
     options: BranchBaseOption[],
@@ -341,7 +352,7 @@ export const DEFAULT_SIDEBAR_PUBLICATION_STATE_FILTERS: AgentSidebarPublicationS
   "uncommitted",
   "unpushed",
 ];
-const AGENT_SESSION_STORE_VERSION = 13;
+const AGENT_SESSION_STORE_VERSION = 14;
 
 type LegacyAgentArtifactTab = AgentArtifactTab | "proposal";
 
@@ -427,6 +438,7 @@ function normalizeRoleRuntimeOverrides(value: unknown): AgentSessionState["roleR
   const roles: LaunchRuntimeRoleKey[] = [
     "workspace_reviewer",
     "workspace_repair",
+    "pr_fixer",
     "workspace_edit",
     "ideation_primary",
   ];
@@ -595,6 +607,12 @@ export function migrateAgentSessionStore(
     );
   }
 
+  if (version < 14 && "lastRuntimeByProjectMode" in nextState) {
+    nextState.lastRuntimeByProjectMode = normalizeRuntimeRecord(
+      nextState.lastRuntimeByProjectMode,
+    );
+  }
+
   return nextState;
 }
 
@@ -615,6 +633,8 @@ export function mergeAgentSessionStore(
     roleRuntimeOverridesByConversationId: normalizeRoleRuntimeOverrides(
       persisted.roleRuntimeOverridesByConversationId,
     ),
+    lastRuntimeByProjectId: normalizeRuntimeRecord(persisted.lastRuntimeByProjectId),
+    lastRuntimeByProjectMode: normalizeRuntimeRecord(persisted.lastRuntimeByProjectMode),
     sidebarInboxActiveLane: normalizeSidebarInboxActiveLane(
       persisted.sidebarInboxActiveLane,
     ),
@@ -702,6 +722,7 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
       serviceTierByConversationId: {},
       roleRuntimeOverridesByConversationId: {},
       lastRuntimeByProjectId: {},
+      lastRuntimeByProjectMode: {},
       branchBaseCacheByProjectId: {},
       lastBranchBaseSelectionByProjectId: {},
       lastModelEffortByProvider: {} as Record<AgentProvider, { modelId: string; effort: AgentEffort }>,
@@ -1021,6 +1042,29 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
           delete state.lastRuntimeByProjectId[projectId];
         }),
 
+      setLastRuntimeForProjectMode: (projectId, mode, runtime) =>
+        set((state) => {
+          const normalizedRuntime = normalizeAgentRuntimeForPersistence(runtime);
+          // Reads prefer the mode-scoped key, so a stale legacy entry is
+          // shadowed; it is removed on clear, not on write, to keep the legacy
+          // record referentially stable for subscribers during composer edits.
+          state.lastRuntimeByProjectMode[`${projectId}:${mode}`] = normalizedRuntime;
+          state.lastModelEffortByProvider[normalizedRuntime.provider] = {
+            modelId: normalizedRuntime.modelId,
+            effort: normalizedRuntime.effort,
+          };
+        }),
+
+      clearLastRuntimeForProjectMode: (projectId, mode) =>
+        set((state) => {
+          delete state.lastRuntimeByProjectMode[`${projectId}:${mode}`];
+          if (mode === "edit") {
+            // A clear means "no remembered override for this scope"; the legacy
+            // edit-scoped entry must not resurrect it through the fallback read.
+            delete state.lastRuntimeByProjectId[projectId];
+          }
+        }),
+
       setBranchBaseCacheForProject: (projectId, options, selectedKey) =>
         set((state) => {
           state.branchBaseCacheByProjectId[projectId] = {
@@ -1065,6 +1109,7 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
         roleRuntimeOverridesByConversationId:
           state.roleRuntimeOverridesByConversationId,
         lastRuntimeByProjectId: state.lastRuntimeByProjectId,
+        lastRuntimeByProjectMode: state.lastRuntimeByProjectMode,
         branchBaseCacheByProjectId: state.branchBaseCacheByProjectId,
         lastBranchBaseSelectionByProjectId: state.lastBranchBaseSelectionByProjectId,
         lastModelEffortByProvider: state.lastModelEffortByProvider,

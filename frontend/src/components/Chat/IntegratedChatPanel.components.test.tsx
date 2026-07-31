@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { render, screen, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import {
@@ -11,11 +11,34 @@ import {
   ContextIndicator,
 } from "./IntegratedChatPanel.components";
 import type { ChatContext } from "@/types/chat";
+import { useChatStore } from "@/stores/chatStore";
+
+afterEach(() => {
+  vi.useRealTimers();
+  useChatStore.setState({ activeAgentRunIds: {}, activeAgentRunHarnesses: {}, activeAgentRunMeta: {} });
+});
 
 describe("IntegratedChatPanel.components", () => {
   it("renders the typing indicator three-dot pattern", () => {
     render(<TypingIndicator />);
     expect(screen.getByTestId("chat-typing-indicator")).toBeInTheDocument();
+  });
+
+  it("shows a role-aware ticking elapsed label from the active run metadata", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-31T00:00:10Z"));
+    useChatStore.getState().setActiveAgentRun("project:c", "run-1", null, {
+      startedAt: Date.parse("2026-07-31T00:00:04Z"), agentName: null, launchRole: "workspace_reviewer",
+    });
+    render(<TypingIndicator label="Agent working" storeKey="project:c" />);
+    expect(screen.getByText("Reviewer working for 6s")).toBeInTheDocument();
+    act(() => { vi.advanceTimersByTime(1000); });
+    expect(screen.getByText("Reviewer working for 7s")).toBeInTheDocument();
+  });
+
+  it("keeps the static label when no active run metadata exists", () => {
+    render(<TypingIndicator label="Starting agent" storeKey="project:missing" />);
+    expect(screen.getByText("Starting agent")).toBeInTheDocument();
   });
 
   it("renders the empty / history empty states", () => {

@@ -379,6 +379,26 @@ async fn test_update_attribution() {
 }
 
 #[tokio::test]
+async fn agent_run_identity_fields_round_trip_in_memory_repo() {
+    let repo = MemoryAgentRunRepository::new();
+    let mut run = AgentRun::new(ChatConversationId::new());
+    let run_id = run.id;
+    run.agent_name = Some("ralphx-workspace-reviewer".to_string());
+    run.launch_role = Some("workspace_reviewer".to_string());
+    run.runtime_source = Some("role_default".to_string());
+
+    repo.create(run).await.unwrap();
+
+    let persisted = repo.get_by_id(&run_id).await.unwrap().unwrap();
+    assert_eq!(
+        persisted.agent_name.as_deref(),
+        Some("ralphx-workspace-reviewer")
+    );
+    assert_eq!(persisted.launch_role.as_deref(), Some("workspace_reviewer"));
+    assert_eq!(persisted.runtime_source.as_deref(), Some("role_default"));
+}
+
+#[tokio::test]
 async fn persona_run_attribution_round_trips_in_memory_repo() {
     let repo = MemoryAgentRunRepository::new();
     let run = AgentRun::new(ChatConversationId::new());

@@ -36,6 +36,7 @@ interface ComposerRuntimeMenuProps {
   speed?: ComposerRuntimeSpeedField;
   runtimeDefault?: {
     source?: string | null;
+    scopeLabel?: string;
     isResetting?: boolean;
     disabled?: boolean;
     onReset: () => Promise<unknown> | void;
