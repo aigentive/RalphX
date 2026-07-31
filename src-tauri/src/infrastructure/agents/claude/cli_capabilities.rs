@@ -108,17 +108,17 @@ pub fn parse_claude_cli_capabilities(
         supported_model_aliases,
         supported_efforts,
         supports_include_partial_messages: help_output.contains("--include-partial-messages"),
-        supports_thinking_display: false,
+        supports_thinking_display: help_output.contains("--thinking-display"),
     }
 }
 
 pub fn probe_claude_cli(cli_path: &Path) -> Result<ClaudeCliCapabilities, String> {
     let version_output = run_claude_command(cli_path, &["--version"])?;
     let help_output = run_claude_command(cli_path, &["--help"])?;
-    let mut capabilities = parse_claude_cli_capabilities(&help_output, Some(&version_output));
-    capabilities.supports_thinking_display =
-        run_claude_command(cli_path, &["--thinking-display", "summarized", "--version"]).is_ok();
-    Ok(capabilities)
+    Ok(parse_claude_cli_capabilities(
+        &help_output,
+        Some(&version_output),
+    ))
 }
 
 pub fn probe_claude_cli_cached(cli_path: &Path) -> Result<ClaudeCliCapabilities, String> {

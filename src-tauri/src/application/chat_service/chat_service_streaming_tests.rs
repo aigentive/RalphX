@@ -1,14 +1,15 @@
 use super::{
     agent_run_usage_from_codex_usage, capture_file_diff_baseline, codex_tool_call_content_block,
-    completion_tool_result_accepted, current_text_block_position, flush_content_before_error,
-    flush_streaming_persistence_if_dirty, format_agent_exit_stderr, is_completion_tool_name,
-    is_user_attended_turn_completion, normalize_codex_cumulative_usage_for_persistence,
-    normalize_codex_stream_usage_for_persistence, persist_assistant_message_snapshot,
-    persist_message_text_timeline_item, persist_timeline_snapshot, persist_usage_capture_run_first,
-    process_codex_stream_background, process_exit_details, process_stream_background,
-    provider_session_ref_for_harness, record_agent_waiting_if_user_attended,
-    resolve_codex_file_change_tool_call_snapshots, stream_mode_for_harness,
-    upsert_codex_tool_call_snapshot, ProcessExitDetails, StreamOutcome, StreamingStateCache,
+    completion_tool_result_accepted, current_text_block_position, events,
+    flush_content_before_error, flush_streaming_persistence_if_dirty, format_agent_exit_stderr,
+    is_completion_tool_name, is_user_attended_turn_completion,
+    normalize_codex_cumulative_usage_for_persistence, normalize_codex_stream_usage_for_persistence,
+    persist_assistant_message_snapshot, persist_message_text_timeline_item,
+    persist_timeline_snapshot, persist_usage_capture_run_first, process_codex_stream_background,
+    process_exit_details, process_stream_background, provider_session_ref_for_harness,
+    record_agent_waiting_if_user_attended, resolve_codex_file_change_tool_call_snapshots,
+    stream_mode_for_harness, upsert_codex_tool_call_snapshot, ProcessExitDetails, StreamOutcome,
+    StreamingStateCache,
 };
 use crate::application::chat_service::chat_service_context::create_assistant_message;
 use crate::application::chat_service::chat_service_errors::{ProviderErrorCategory, StreamError};
@@ -41,8 +42,9 @@ use crate::testing::SqliteTestDb;
 use chrono::{Duration, Utc};
 use std::os::unix::process::ExitStatusExt;
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
+use tauri::Listener;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
@@ -200,6 +202,41 @@ async fn persist_timeline_snapshot_has_no_item_for_empty_thinking_summary() {
     .await;
 
     assert!(persisted.is_empty());
+}
+
+#[tokio::test]
+async fn persist_timeline_snapshot_skips_whitespace_thinking_blocks_without_removing_other_blocks()
+{
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let message_id = Some("assistant-message-empty-thinking-guard".to_string());
+    let blocks = vec![
+        ContentBlockItem::Thinking {
+            text: " \n\t ".to_string(),
+            duration_ms: None,
+        },
+        ContentBlockItem::Thinking {
+            text: "kept reasoning".to_string(),
+            duration_ms: Some(12),
+        },
+        ContentBlockItem::Text {
+            text: String::new(),
+        },
+    ];
+
+    let persisted = persist_timeline_snapshot(
+        &Some(state.chat_timeline_repo.clone()),
+        &conversation_id.as_str(),
+        &message_id,
+        &blocks,
+        ChatTimelineItemStatus::Finalized,
+    )
+    .await;
+
+    assert_eq!(persisted.len(), 1);
+    assert_eq!(persisted[0].kind, ChatTimelineItemKind::Thinking);
+    assert_eq!(persisted[0].text.as_deref(), Some("kept reasoning"));
+    assert_eq!(persisted[0].block_index, 1);
 }
 
 #[test]
@@ -663,6 +700,87 @@ async fn run_claude_stream_lines(lines: &[&str]) -> Result<StreamOutcome, Stream
         None,
     )
     .await
+}
+
+#[tokio::test]
+async fn claude_thinking_stream_emits_settle_payload_through_service_entry() {
+    let child = spawn_jsonl_process(&[
+        r#"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"thinking"}},"session_id":"sess-thinking"}"#,
+        r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"one "}},"session_id":"sess-thinking"}"#,
+        r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"two "}},"session_id":"sess-thinking"}"#,
+        r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"three"}},"session_id":"sess-thinking"}"#,
+        r#"{"type":"stream_event","event":{"type":"content_block_stop","index":0},"session_id":"sess-thinking"}"#,
+        r#"{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"text"}},"session_id":"sess-thinking"}"#,
+        r#"{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"answer"}},"session_id":"sess-thinking"}"#,
+        r#"{"type":"stream_event","event":{"type":"content_block_stop","index":1},"session_id":"sess-thinking"}"#,
+        r#"{"type":"result","session_id":"sess-thinking","is_error":false,"result":"answer","cost_usd":0.0}"#,
+    ])
+    .await;
+    let conversation_id = ChatConversationId::new();
+    let context_id = IdeationSessionId::new();
+    let app = mock_builder()
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let emitted = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+    let emitted_for_listener = Arc::clone(&emitted);
+    let _listener = app.listen(events::AGENT_THINKING, move |event| {
+        emitted_for_listener
+            .lock()
+            .expect("thinking event log lock")
+            .push(serde_json::from_str(event.payload()).expect("valid thinking payload"));
+    });
+
+    process_stream_background::<MockRuntime>(
+        child,
+        AgentHarnessKind::Claude,
+        ChatContextType::Ideation,
+        context_id.as_str(),
+        &conversation_id,
+        Some(app.handle().clone()),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        CancellationToken::new(),
+        StreamingStateCache::new(),
+        None,
+        None,
+        Some("stream-run-id".to_string()),
+        None,
+        None,
+        false,
+        false,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("thinking stream should complete");
+
+    let emitted = emitted.lock().expect("thinking event log lock");
+    assert_eq!(emitted.len(), 4);
+    for (seq, (payload, expected_text)) in emitted[..3]
+        .iter()
+        .zip(["one ", "two ", "three"])
+        .enumerate()
+    {
+        assert_eq!(payload["text"], expected_text);
+        assert_eq!(payload["block_index"], 0);
+        assert_eq!(payload["seq"], seq);
+        assert_eq!(payload["append_to_previous"], true);
+        assert_eq!(payload["is_settled"], false);
+        assert!(payload.get("duration_ms").is_none());
+    }
+
+    let settled = &emitted[3];
+    assert_eq!(settled["text"], "");
+    assert_eq!(settled["block_index"], 0);
+    assert_eq!(settled["seq"], 3);
+    assert_eq!(settled["append_to_previous"], true);
+    assert_eq!(settled["is_settled"], true);
+    assert!(settled["duration_ms"].is_u64());
 }
 
 #[tokio::test]
