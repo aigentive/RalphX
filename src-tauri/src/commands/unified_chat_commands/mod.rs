@@ -8849,7 +8849,7 @@ fn build_agent_workspace_repair_message_for_target(
         post_repair_action.failure_title().to_string(),
         String::new(),
         post_repair_action.repair_instruction().to_string(),
-        "After the repair is committed, call complete_agent_workspace_repair with the conversation ID, repair commit SHA, resolved base ref, resolved base commit, and summary."
+        "After the repair is committed, call complete_agent_workspace_repair with a summary; add a blocker if the repair cannot be completed safely, and use resolution to classify the outcome honestly."
             .to_string(),
         String::new(),
         format!("Error: {error}"),
@@ -9237,6 +9237,7 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
             summary: post_repair_action.repair_requested_summary().to_string(),
             auto_merge_current: workspace.pr_auto_merge_current,
             retry_blocked,
+            carryover_pr_autofix_evidence: None,
         },
     )
     .await;

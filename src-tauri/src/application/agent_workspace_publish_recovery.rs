@@ -43,6 +43,7 @@ pub(super) const STALE_TRANSIENT_RECOVERED_STEP: &str = "stale_transient_recover
 pub(super) const STALE_TRANSIENT_CLASSIFICATION: &str = "stale_transient_status";
 pub const STALE_TRANSIENT_STATUS_STALE_SECS: u64 = 300;
 mod durable_attempt_recovery;
+mod pr_autofix_redelivery;
 
 pub(crate) use durable_attempt_recovery::is_blocked_and_not_auto_retryable;
 #[cfg(any(test, feature = "test-utils"))]

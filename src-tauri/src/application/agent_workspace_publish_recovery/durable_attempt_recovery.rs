@@ -2,21 +2,26 @@ use std::sync::Arc;
 
 use chrono::{Duration, Utc};
 
+use super::pr_autofix_redelivery::{
+    due_pr_autofix_redispatch_message, evaluate_pr_autofix_successor, PrAutofixSuccessorDecision,
+};
 use super::StalePublishRepairRecoveryOutcome;
 use crate::application::agent_conversation_workspace::resolve_effective_agent_conversation_workspace_path;
 use crate::application::agent_workspace_pr_autofix_attempt::load_latest_exact_pr_autofix_run_for_pr;
 use crate::application::agent_workspace_publish_repair_state::{
-    agent_workspace_repair_dispatch_is_due, block_agent_workspace_repair_completion,
-    classify_agent_workspace_repair_delivery, continue_agent_workspace_repair_at_boundary,
-    inspect_agent_workspace_repair_completion, record_agent_workspace_repair_validation,
+    agent_workspace_repair_dispatch_is_due, agent_workspace_repair_is_health_held,
+    block_agent_workspace_repair_completion, classify_agent_workspace_repair_delivery,
+    continue_agent_workspace_repair_at_boundary, inspect_agent_workspace_repair_completion,
+    record_agent_workspace_repair_validation,
     release_and_clear_agent_workspace_repair_target_lease,
     reserve_agent_workspace_repair_completion_validation, reserve_agent_workspace_repair_dispatch,
-    resume_current_agent_workspace_repair_publish, settle_agent_workspace_repair_dispatch_outcome,
-    start_or_join_agent_workspace_repair, transition_agent_workspace_repair_attempt,
-    validate_agent_workspace_repair_target_lease, AgentWorkspaceRepairDispatchOutcome,
-    AgentWorkspaceRepairDispatchSettlement, AgentWorkspaceRepairPublishResumeOutcome,
-    AgentWorkspaceRepairStartOutcome, AgentWorkspaceRepairStartRequest,
-    AgentWorkspaceRepairTransitionOutcome, ORPHANED_REPAIR_DISPATCH_RESCUE_GRACE_SECS,
+    reserve_agent_workspace_unchanged_health_hold, resume_current_agent_workspace_repair_publish,
+    settle_agent_workspace_repair_dispatch_outcome, start_or_join_agent_workspace_repair,
+    transition_agent_workspace_repair_attempt, validate_agent_workspace_repair_target_lease,
+    AgentWorkspaceRepairDispatchOutcome, AgentWorkspaceRepairDispatchSettlement,
+    AgentWorkspaceRepairPublishResumeOutcome, AgentWorkspaceRepairStartOutcome,
+    AgentWorkspaceRepairStartRequest, AgentWorkspaceRepairTransitionOutcome,
+    ORPHANED_REPAIR_DISPATCH_RESCUE_GRACE_SECS,
 };
 use crate::application::chat_service::{ChatService, SendMessageOptions, SendQueuePolicy};
 use crate::application::{AppState, GitService};
@@ -227,20 +232,26 @@ async fn reconcile_agent_workspace_repair_attempt(
 
     match current.phase {
         AgentWorkspaceRepairPhase::Dispatching => {
-            let active = match current.reserved_agent_run_id.as_ref() {
-                Some(run_id) => state
-                    .agent_run_repo
-                    .get_by_id(run_id)
-                    .await?
-                    .is_some_and(|run| {
-                        run.conversation_id == current.conversation_id && run.status.is_active()
-                    }),
-                None => false,
-            };
-            if active {
-                Ok(DurableRepairRecoveryOutcome::Active)
-            } else {
-                schedule_interrupted_dispatch_retry(state, current).await
+            match reserved_dispatch_liveness(state, &current).await? {
+                ReservedDispatchLiveness::Running => Ok(DurableRepairRecoveryOutcome::Active),
+                // The reserved worker ran and ended without completing the repair. That is a real
+                // interrupted delivery and settles immediately, exactly as before.
+                ReservedDispatchLiveness::Ended => {
+                    schedule_interrupted_dispatch_retry(state, current).await
+                }
+                // The reservation is written before the run row exists, so "no run yet" is the
+                // normal state for the first moments of a dispatch. Treating it as interruption
+                // raced a live spawn by milliseconds in production and queued a duplicate
+                // delivery against the same attempt.
+                ReservedDispatchLiveness::Unobserved
+                    if Utc::now() - current.updated_at
+                        < Duration::seconds(ORPHANED_REPAIR_DISPATCH_RESCUE_GRACE_SECS) =>
+                {
+                    Ok(DurableRepairRecoveryOutcome::Noop)
+                }
+                ReservedDispatchLiveness::Unobserved => {
+                    schedule_interrupted_dispatch_retry(state, current).await
+                }
             }
         }
         AgentWorkspaceRepairPhase::Repairing => {
@@ -386,6 +397,13 @@ async fn retry_safe_ready_agent_workspace_repair_publish(
             .await?
             .is_some()
     {
+        return Ok(DurableRepairRecoveryOutcome::Noop);
+    }
+    // A health hold parks at Ready deliberately. Re-driving its publish continuation on a timer
+    // would spend the hold's retry budget against evidence that has not changed and then settle
+    // the generation, freeing the poller to dispatch a fresh one on the identical failure.
+    // Only the poller, comparing live GitHub health, may end a hold.
+    if agent_workspace_repair_is_health_held(&current) {
         return Ok(DurableRepairRecoveryOutcome::Noop);
     }
 
@@ -554,6 +572,28 @@ async fn retry_safe_blocked_agent_workspace_repair(
     else {
         return Ok(DurableRepairRecoveryOutcome::Noop);
     };
+    // Spawning a successor is the most expensive thing this pass can do, so a PR autofix
+    // generation must earn it against live PR health rather than against the streak counter alone.
+    // Blocker text is deliberately not consulted: it is free-form agent prose, not evidence.
+    let carryover_pr_autofix_evidence = if current.source == AgentWorkspaceRepairSource::PrAutofix {
+        match evaluate_pr_autofix_successor(state, &current, &workspace).await {
+            PrAutofixSuccessorDecision::Proceed(carryover) => carryover,
+            PrAutofixSuccessorDecision::HoldUnchanged => {
+                return hold_unchanged_pr_autofix_health(state, current, &workspace).await;
+            }
+            PrAutofixSuccessorDecision::Withhold(reason) => {
+                tracing::info!(
+                    conversation_id = current.conversation_id.as_str(),
+                    attempt_id = current.id.as_str(),
+                    reason,
+                    "Withholding a blocked PR autofix successor; no current failure identity authorizes one"
+                );
+                return Ok(DurableRepairRecoveryOutcome::Noop);
+            }
+        }
+    } else {
+        None
+    };
     let marker = format!("{AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX}{}", streak + 1);
     let start = start_or_join_agent_workspace_repair(
         Arc::clone(&state.agent_workspace_repair_repo),
@@ -569,6 +609,7 @@ async fn retry_safe_blocked_agent_workspace_repair(
             summary: "Automatically retrying the blocked workspace repair.".to_string(),
             auto_merge_current: workspace.pr_auto_merge_current,
             retry_blocked: true,
+            carryover_pr_autofix_evidence,
         },
     )
     .await?;
@@ -584,11 +625,69 @@ async fn retry_safe_blocked_agent_workspace_repair(
     }
 }
 
+/// Parks a blocked PR autofix generation whose failure identity has not moved. The hold is a
+/// visible state, not a silent skip: it appends a publication event and leaves the generation
+/// where the poller can settle it once GitHub reports different health.
+async fn hold_unchanged_pr_autofix_health(
+    state: &AppState,
+    current: AgentWorkspaceRepairAttempt,
+    workspace: &AgentConversationWorkspace,
+) -> AppResult<DurableRepairRecoveryOutcome> {
+    let summary = "GitHub still reports the same failing PR health this repair was dispatched for. RalphX is holding the repair instead of running another fixer generation on identical evidence.";
+    match reserve_agent_workspace_unchanged_health_hold(
+        Arc::clone(&state.agent_workspace_repair_repo),
+        current,
+        summary,
+        workspace.pr_auto_merge_current,
+    )
+    .await?
+    {
+        AgentWorkspaceRepairTransitionOutcome::Applied(attempt) => {
+            release_repair_lease_if_settled_boundary(state, &attempt).await?;
+            Ok(DurableRepairRecoveryOutcome::Noop)
+        }
+        AgentWorkspaceRepairTransitionOutcome::Stale(_)
+        | AgentWorkspaceRepairTransitionOutcome::Missing => Ok(DurableRepairRecoveryOutcome::Stale),
+    }
+}
+
 fn repair_attempt_has_target_lease(attempt: &AgentWorkspaceRepairAttempt) -> bool {
     attempt.git_common_dir.is_some()
         || attempt.target_ref.is_some()
         || attempt.target_identity_version.is_some()
         || attempt.target_lease_epoch.is_some()
+}
+
+/// What the durable reservation's agent run proves about an in-flight dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReservedDispatchLiveness {
+    /// The exact reserved run exists on this conversation and is still running.
+    Running,
+    /// The exact reserved run exists on this conversation and has already terminated.
+    Ended,
+    /// No run row proves anything yet: the reservation has no run id, the row has not been
+    /// written, or the id resolves to a different conversation.
+    Unobserved,
+}
+
+async fn reserved_dispatch_liveness(
+    state: &AppState,
+    attempt: &AgentWorkspaceRepairAttempt,
+) -> AppResult<ReservedDispatchLiveness> {
+    let Some(run_id) = attempt.reserved_agent_run_id.as_ref() else {
+        return Ok(ReservedDispatchLiveness::Unobserved);
+    };
+    let Some(run) = state.agent_run_repo.get_by_id(run_id).await? else {
+        return Ok(ReservedDispatchLiveness::Unobserved);
+    };
+    if run.conversation_id != attempt.conversation_id {
+        return Ok(ReservedDispatchLiveness::Unobserved);
+    }
+    Ok(if run.status.is_active() {
+        ReservedDispatchLiveness::Running
+    } else {
+        ReservedDispatchLiveness::Ended
+    })
 }
 
 /// A delivery that failed before a trusted repair worker ran is recoverable. The exact
@@ -621,6 +720,26 @@ async fn schedule_interrupted_dispatch_retry(
     }
 }
 
+pub(super) const DEFAULT_REPAIR_DISPATCH_CONTEXT: &str =
+    "The current durable workspace repair still needs attention.";
+
+/// `pending_reasons` carries internal scheduling markers (`auto_retry_blocked_repair:2`) alongside
+/// human-authored context. Only the latter belongs in an agent assignment; a marker rendered as
+/// "Context:" tells the recipient nothing about what actually needs repairing.
+pub(super) fn human_repair_dispatch_context(
+    attempt: &AgentWorkspaceRepairAttempt,
+) -> Option<&str> {
+    attempt
+        .pending_reasons
+        .iter()
+        .rev()
+        .map(String::as_str)
+        .find(|reason| {
+            !reason.starts_with(AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX)
+                && !reason.starts_with(AUTO_RETRY_READY_REPAIR_REASON_PREFIX)
+        })
+}
+
 fn due_repair_dispatch_message(
     attempt: &AgentWorkspaceRepairAttempt,
     workspace: &AgentConversationWorkspace,
@@ -634,11 +753,7 @@ fn due_repair_dispatch_message(
             "Resolve the workspace publish problem and commit the repaired workspace so the durable publish continuation can resume."
         }
     };
-    let reason = attempt
-        .pending_reasons
-        .last()
-        .map(String::as_str)
-        .unwrap_or("The current durable workspace repair still needs attention.");
+    let reason = human_repair_dispatch_context(attempt).unwrap_or(DEFAULT_REPAIR_DISPATCH_CONTEXT);
     format!(
         "{continuation}\n\nInspect the current workspace state before changing files. When the repair is committed, use the available repair-completion tool.\n\nContext: {reason}\nWorkspace branch: {}\nBase ref: {}",
         workspace.branch_name, attempt.target_base_ref
@@ -773,6 +888,20 @@ async fn reserve_and_deliver_repair_dispatch(
     settlement_summary: &str,
 ) -> AppResult<DurableRepairRecoveryOutcome> {
     let run_id = AgentRunId::new();
+    // Runtime continuity is resolved before the reservation so a repository failure cannot strand
+    // an attempt in `Dispatching` with no delivery attached to it.
+    let pr_autofix_options = if attempt.source == AgentWorkspaceRepairSource::PrAutofix {
+        Some(
+            crate::application::services::pr_merge_poller::agent_workspace_pr_fixer_send_options(
+                &workspace,
+                &working_directory,
+                Some(&state.agent_run_repo),
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
     let reserved = match reserve_agent_workspace_repair_dispatch(
         Arc::clone(&state.agent_workspace_repair_repo),
         Arc::clone(&state.branch_update_repo),
@@ -790,12 +919,20 @@ async fn reserve_and_deliver_repair_dispatch(
             return Ok(DurableRepairRecoveryOutcome::Stale);
         }
     };
-    let service = state.build_chat_service();
-    let delivery = service
-        .send_message(
-            ChatContextType::Project,
-            workspace.project_id.as_str(),
-            &due_repair_dispatch_message(&reserved, &workspace),
+    // Source, not phase, decides who owns the work. A PR autofix generation is always the PR
+    // fixer's, so retry, rescue, and blocked-successor redelivery cannot hand PR work to the
+    // generic workspace repairer, whose tooling cannot classify a PR failure at all.
+    let (message, options) = match pr_autofix_options {
+        Some(mut options) => {
+            options.preallocated_agent_run_id = Some(run_id.clone());
+            options.queue_policy = SendQueuePolicy::RequireImmediateStart;
+            (
+                due_pr_autofix_redispatch_message(&reserved, &workspace),
+                options,
+            )
+        }
+        None => (
+            due_repair_dispatch_message(&reserved, &workspace),
             SendMessageOptions {
                 preallocated_agent_run_id: Some(run_id.clone()),
                 queue_policy: SendQueuePolicy::RequireImmediateStart,
@@ -806,6 +943,15 @@ async fn reserve_and_deliver_repair_dispatch(
                 preserve_conversation_provider_session_ref: true,
                 ..Default::default()
             },
+        ),
+    };
+    let service = state.build_chat_service();
+    let delivery = service
+        .send_message(
+            ChatContextType::Project,
+            workspace.project_id.as_str(),
+            &message,
+            options,
         )
         .await;
     let settlement = classify_agent_workspace_repair_delivery(

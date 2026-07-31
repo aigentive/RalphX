@@ -1552,6 +1552,7 @@ wait "$stdin_drain_pid" 2>/dev/null || true
             summary: "Retry blocked repair.".to_string(),
             auto_merge_current: None,
             retry_blocked: true,
+            carryover_pr_autofix_evidence: None,
         },
     )
     .await
@@ -4239,4 +4240,371 @@ mod extracted_inline_tests {
         assert_eq!(workspace.publication_push_status.as_deref(), Some("failed"));
         assert_eq!(workspace.pr_supervision_status.as_deref(), Some("blocked"));
     }
+}
+
+// --- Unattended repair loop regressions -------------------------------------------------------
+//
+// Production incident 2026-07-31 (PR #934): four Opus generations re-validated a clean workspace
+// because durable redelivery addressed the generic repairer, successors carried no failure
+// identity, and a live dispatch was settled as "interrupted" 43 ms after spawn.
+
+fn failing_check_pr_health(head: &str, check_name: &str) -> crate::domain::services::PrHealth {
+    crate::domain::services::PrHealth {
+        sync_state: crate::domain::services::PrSyncState {
+            status: crate::domain::services::PrStatus::Open,
+            merge_state_status: None,
+            mergeable: Some(crate::domain::services::github_service::PrMergeableState::Mergeable),
+            is_draft: false,
+            head_ref_name: "ralphx/test/publish-recovery".to_string(),
+            base_ref_name: "main".to_string(),
+            head_ref_oid: Some(head.to_string()),
+            base_ref_oid: Some("base-sha".to_string()),
+        },
+        review_decision: None,
+        checks: vec![crate::domain::services::github_service::PrHealthCheck {
+            name: check_name.to_string(),
+            status: Some("completed".to_string()),
+            conclusion: Some("failure".to_string()),
+            details_url: Some("https://github.com/owner/repo/actions/runs/1".to_string()),
+        }],
+        issue_comments: Vec::new(),
+        auto_merge_request: None,
+    }
+}
+
+fn health_fingerprint(pr_number: i64, health: &crate::domain::services::PrHealth) -> String {
+    crate::application::services::pr_merge_poller::classify_agent_workspace_pr_autofix_issue(
+        pr_number, health,
+    )
+    .expect("failing check classifies as a PR autofix issue")
+    .classification
+}
+
+/// Rewrites the current attempt into a blocked PR autofix generation carrying an exact failure
+/// identity, aged past the automatic blocked-retry backoff.
+async fn block_pr_autofix_attempt_with_fingerprint(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    fingerprint: Option<String>,
+) -> AgentWorkspaceRepairAttempt {
+    let mut attempt = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(conversation_id)
+        .await
+        .expect("load attempt to block")
+        .expect("attempt exists to block");
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await
+        .expect("load workspace for blocked fixture")
+        .expect("workspace exists for blocked fixture");
+    let expected_phase = attempt.phase;
+    let expected_updated_at = attempt.updated_at;
+    attempt.source = AgentWorkspaceRepairSource::PrAutofix;
+    attempt.phase = AgentWorkspaceRepairPhase::Blocked;
+    attempt.pr_autofix_health_fingerprint = fingerprint;
+    attempt.pr_autofix_dispatch_head_commit = Some("dispatch-head".to_string());
+    // Base parity keeps the base-advance escape hatch out of the way; these fixtures exercise the
+    // health comparison itself.
+    attempt.target_base_commit = workspace.base_commit.clone();
+    attempt.blocker = Some("transient_ci".to_string());
+    attempt.updated_at = chrono::Utc::now() - chrono::Duration::seconds(1_000);
+    match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Blocked,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("block PR autofix attempt")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("blocking PR autofix attempt must apply, got {outcome:?}"),
+    }
+}
+
+async fn latest_sent_repair_message(state: &AppState, conversation_id: &ChatConversationId) -> String {
+    let messages = state
+        .chat_message_repo
+        .get_by_conversation(conversation_id)
+        .await
+        .expect("load delivered repair messages");
+    messages
+        .iter()
+        .rev()
+        .find(|message| message.role == crate::domain::entities::MessageRole::User)
+        .map(|message| message.content.clone())
+        .expect("a repair assignment was delivered")
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn pr_autofix_redelivery_addresses_the_pr_fixer_with_pr_context() {
+    let _environment_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("lock test environment");
+    let _spawn_permission = TestEnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let (state, conversation_id, _worktree_parent, _project_dir) = seed_orphaned_repair_dispatch(
+        120,
+        r#"#!/bin/sh
+cat >/dev/null &
+stdin_drain_pid=$!
+printf '%s\n' '{"type":"result","session_id":"pr-fixer-redelivery","is_error":false,"result":"fix started","cost_usd":0.0}'
+sleep 1
+kill "$stdin_drain_pid" 2>/dev/null || true
+wait "$stdin_drain_pid" 2>/dev/null || true
+"#,
+    )
+    .await;
+    let mut attempt = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load seeded attempt")
+        .expect("seeded attempt exists");
+    let expected_updated_at = attempt.updated_at;
+    attempt.source = AgentWorkspaceRepairSource::PrAutofix;
+    attempt.pr_autofix_health_fingerprint = Some("github_pr_autofix:684:checks:rust".to_string());
+    // Internal scheduling markers must never surface to the recipient as repair context.
+    attempt.pending_reasons = vec!["auto_retry_blocked_repair:1".to_string()];
+    attempt.updated_at = chrono::Utc::now() - chrono::Duration::seconds(61);
+    assert!(matches!(
+        state
+            .agent_workspace_repair_repo
+            .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+                attempt,
+                expected_phase: AgentWorkspaceRepairPhase::Requested,
+                expected_updated_at,
+                next_phase: AgentWorkspaceRepairPhase::Requested,
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("age PR autofix orphan"),
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_)
+    ));
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("rescue orphaned PR autofix dispatch"),
+        1
+    );
+
+    let message = latest_sent_repair_message(&state, &conversation_id).await;
+    assert!(
+        message.contains("redelivering an interrupted PR fix"),
+        "PR autofix redelivery must use the PR fixer assignment, got: {message}"
+    );
+    assert!(message.contains("complete_agent_workspace_pr_fix"));
+    assert!(message.contains("get_agent_workspace_pr_fix_context"));
+    assert!(message.contains("PR #684"));
+    assert!(message.contains("github_pr_autofix:684:checks:rust"));
+    assert!(
+        !message.contains("use the available repair-completion tool"),
+        "PR autofix redelivery must not reuse the generic workspace repair assignment"
+    );
+    assert!(
+        !message.contains("auto_retry_blocked_repair"),
+        "internal scheduling markers must not leak into the assignment: {message}"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn non_pr_autofix_redelivery_keeps_the_generic_workspace_repair_assignment() {
+    let _environment_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("lock test environment");
+    let _spawn_permission = TestEnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let (state, conversation_id, _worktree_parent, _project_dir) = seed_orphaned_repair_dispatch(
+        121,
+        r#"#!/bin/sh
+cat >/dev/null &
+stdin_drain_pid=$!
+printf '%s\n' '{"type":"result","session_id":"generic-repair-redelivery","is_error":false,"result":"repair started","cost_usd":0.0}'
+sleep 1
+kill "$stdin_drain_pid" 2>/dev/null || true
+wait "$stdin_drain_pid" 2>/dev/null || true
+"#,
+    )
+    .await;
+    age_requested_repair_attempt(&state, &conversation_id).await;
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("rescue orphaned publish dispatch"),
+        1
+    );
+
+    let message = latest_sent_repair_message(&state, &conversation_id).await;
+    assert!(message.contains("use the available repair-completion tool"));
+    assert!(
+        !message.contains("complete_agent_workspace_pr_fix"),
+        "a publish repair must not be addressed to the PR fixer: {message}"
+    );
+}
+
+#[tokio::test]
+async fn blocked_pr_autofix_with_unchanged_health_parks_without_spawning() {
+    let mut state = AppState::new_test();
+    let conversation_id = conversation_id(122);
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(needs_agent_workspace(conversation_id.clone()))
+        .await
+        .expect("seed unchanged-health workspace");
+    state
+        .project_repo
+        .create({
+            let mut project = Project::new(
+                "unchanged health project".to_string(),
+                "/tmp/ralphx-unchanged-health".to_string(),
+            );
+            project.id = project_id();
+            project
+        })
+        .await
+        .expect("seed unchanged-health project");
+    start_blocked_pr_autofix_generation(&state, &conversation_id).await;
+
+    let health = failing_check_pr_health("head-unchanged", "Rust Tests");
+    let fingerprint = health_fingerprint(684, &health);
+    let github = Arc::new(crate::tests::mock_github_service::MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    state.github_service = Some(github.clone() as Arc<dyn crate::domain::services::GithubServiceTrait>);
+
+    let blocked =
+        block_pr_autofix_attempt_with_fingerprint(&state, &conversation_id, Some(fingerprint.clone()))
+            .await;
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("evaluate blocked PR autofix successor"),
+        0
+    );
+
+    let held = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load held attempt")
+        .expect("held attempt remains current");
+    assert_eq!(held.generation, blocked.generation, "no successor generation");
+    assert_eq!(held.phase, AgentWorkspaceRepairPhase::Ready);
+    assert!(held.pending_reasons.iter().any(|reason| reason
+        == crate::application::agent_workspace_publish_repair_state::UNCHANGED_HEALTH_REPAIR_REASON));
+    assert_eq!(held.pr_autofix_health_fingerprint.as_deref(), Some(fingerprint.as_str()));
+    assert!(
+        state
+            .agent_run_repo
+            .get_by_conversation(&conversation_id)
+            .await
+            .expect("list runs")
+            .is_empty(),
+        "an unchanged failure fingerprint must not spend another agent generation"
+    );
+    let events = state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("list publication events");
+    assert!(
+        events.iter().any(|event| event.step
+            == crate::application::agent_workspace_publish_repair_state::REPAIR_FINGERPRINT_HOLD_STEP),
+        "the hold must be user visible, never a silent skip"
+    );
+
+    // A parked hold must survive the Ready auto-retry lane; only the poller may end it.
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("re-run recovery over the held attempt"),
+        0
+    );
+    let still_held = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload held attempt")
+        .expect("held attempt is still current");
+    assert_eq!(still_held.phase, AgentWorkspaceRepairPhase::Ready);
+    assert!(still_held.settled_at.is_none());
+}
+
+#[tokio::test]
+async fn blocked_pr_autofix_without_provable_health_withholds_the_successor() {
+    let state = AppState::new_test();
+    let conversation_id = conversation_id(123);
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(needs_agent_workspace(conversation_id.clone()))
+        .await
+        .expect("seed unprovable-health workspace");
+    start_blocked_pr_autofix_generation(&state, &conversation_id).await;
+    block_pr_autofix_attempt_with_fingerprint(
+        &state,
+        &conversation_id,
+        Some("github_pr_autofix:684:checks:rust".to_string()),
+    )
+    .await;
+
+    // No GitHub service: the current failure identity cannot be proven, so no agent may be spent.
+    assert!(state.github_service.is_none());
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("withhold successor without provable health"),
+        0
+    );
+    let unchanged = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load withheld attempt")
+        .expect("withheld attempt remains current");
+    assert_eq!(unchanged.phase, AgentWorkspaceRepairPhase::Blocked);
+    assert!(state
+        .agent_run_repo
+        .get_by_conversation(&conversation_id)
+        .await
+        .expect("list runs")
+        .is_empty());
+}
+
+async fn start_blocked_pr_autofix_generation(state: &AppState, conversation_id: &ChatConversationId) {
+    let started = state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                conversation_id.clone(),
+                AgentWorkspaceRepairSource::PrAutofix,
+                AgentWorkspaceRepairContinuation::ResumePrSupervision,
+                "main",
+                false,
+                true,
+                false,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: "pr autofix generation".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("start PR autofix generation");
+    assert!(matches!(
+        started,
+        StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(_)
+    ));
 }

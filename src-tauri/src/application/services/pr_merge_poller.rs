@@ -1968,6 +1968,7 @@ async fn route_agent_workspace_pr_conflict_repair_if_needed_with_repair_repo(
             summary: repair_summary.clone(),
             auto_merge_current: workspace.pr_auto_merge_current,
             retry_blocked: false,
+            carryover_pr_autofix_evidence: None,
         },
     )
     .await?;
@@ -3309,6 +3310,7 @@ async fn dispatch_agent_workspace_pr_autofix(
             summary: dispatch.repair_summary.to_string(),
             auto_merge_current: auto_merge_before_reservation,
             retry_blocked: false,
+            carryover_pr_autofix_evidence: None,
         },
     )
     .await?;
@@ -3763,7 +3765,9 @@ async fn agent_workspace_pr_autofix_repair_in_flight(
         .is_some())
 }
 
-async fn agent_workspace_pr_fixer_send_options(
+/// Shared by the poller's first dispatch and by durable redelivery so a recovered PR autofix keeps
+/// the same recipient agent and the same provider/model/effort continuity as its first generation.
+pub(crate) async fn agent_workspace_pr_fixer_send_options(
     workspace: &AgentConversationWorkspace,
     working_directory: &Path,
     agent_run_repo: Option<&Arc<dyn AgentRunRepository>>,

@@ -469,6 +469,7 @@ fn repair_start_request(
         summary: "Repair requested.".to_string(),
         auto_merge_current: None,
         retry_blocked: false,
+        carryover_pr_autofix_evidence: None,
     }
 }
 
