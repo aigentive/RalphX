@@ -76,6 +76,18 @@ describe("ChatMessageList live transcript rows", () => {
     expect(rows[1]).toMatchObject({ kind: "thinking", block: { text: "Reasoning", blockIndex: 2 } });
   });
 
+  it("hides settled empty thinking rows while keeping running and token-progress rows", () => {
+    const rows = buildLiveTranscriptRows([
+      { type: "thinking", text: "", blockIndex: 0, isSettled: true },
+      { type: "thinking", text: "", blockIndex: 1, isSettled: false },
+      { type: "thinking", text: "", blockIndex: 2, estimatedTokens: 2_000 },
+    ], new Map());
+
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ kind: "thinking", block: { blockIndex: 1 } });
+    expect(rows[1]).toMatchObject({ kind: "thinking", block: { blockIndex: 2, estimatedTokens: 2_000 } });
+  });
+
   it("carries live block receipt timestamps onto visible rows", () => {
     const blocks = [
       { type: "text", text: "Before user send", receivedAt: 1_000 },

@@ -174,14 +174,19 @@ export function buildLiveTranscriptRows(
       continue;
     }
     if (block.type === "thinking") {
-      rows.push({
-        kind: "thinking",
-        key: liveThinkingGroupKey(block, index),
-        block,
-        index,
-        sourceIndex: index,
-        ...(block.receivedAt != null ? { receivedAt: block.receivedAt } : {}),
-      });
+      const hasContent = block.text.trim().length > 0
+        || block.estimatedTokens != null
+        || block.isSettled !== true;
+      if (hasContent) {
+        rows.push({
+          kind: "thinking",
+          key: liveThinkingGroupKey(block, index),
+          block,
+          index,
+          sourceIndex: index,
+          ...(block.receivedAt != null ? { receivedAt: block.receivedAt } : {}),
+        });
+      }
       index += 1;
       continue;
     }
