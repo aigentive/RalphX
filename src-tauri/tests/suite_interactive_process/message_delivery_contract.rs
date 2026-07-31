@@ -319,7 +319,7 @@ async fn recovered_stdin_turn_drains_without_duplicate_user_message_row() {
     let persisted_message_id = ChatMessageId::from_string("stdin-user-row".to_string());
     let mut persisted = ChatMessage::user_in_project(project.id.clone(), "deliver after cancel");
     persisted.id = persisted_message_id.clone();
-    persisted.conversation_id = Some(conversation.id.clone());
+    persisted.conversation_id = Some(conversation.id);
     state
         .chat_message_repo
         .create(persisted)
@@ -335,7 +335,7 @@ async fn recovered_stdin_turn_drains_without_duplicate_user_message_row() {
         conversation.id.as_str(),
         recovered,
     );
-    completed_owner(&state, conversation.id.clone(), "completed-session").await;
+    completed_owner(&state, conversation.id, "completed-session").await;
     let app = tauri::test::mock_builder()
         .manage(state)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
@@ -346,7 +346,7 @@ async fn recovered_stdin_turn_drains_without_duplicate_user_message_row() {
         ChatContextType::Project,
         AgentHarnessKind::Claude,
         project.id.as_str(),
-        conversation.id.clone(),
+        conversation.id,
         "completed-session",
         &cli,
     )
