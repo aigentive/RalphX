@@ -36,6 +36,10 @@ use crate::application::agent_workspace_terminal_cleanup::{
     settle_review_pr_terminal_observation, terminalize_agent_workspace_after_pr,
     TerminalAgentWorkspaceCause,
 };
+use crate::domain::entities::{
+    NewNotification, NotificationCategory, NotificationSeverity, NotificationTarget,
+    NotificationTargetKind,
+};
 use crate::application::chat_service::{ChatService, SendMessageOptions, SendQueuePolicy};
 use crate::application::interactive_notification_producer::pr_review_notification_key;
 use crate::application::services::pr_auto_merge_status::{
@@ -1263,7 +1267,7 @@ async fn agent_workspace_poll_loop(
                     }
                 }
 
-                match route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
+                match route_agent_workspace_pr_autofix_if_needed_with_notifications(
                     Arc::clone(&github),
                     &working_dir,
                     pr_number,
@@ -1273,6 +1277,7 @@ async fn agent_workspace_poll_loop(
                     repair_repo.as_ref().map(Arc::clone),
                     branch_update_repo.as_ref().map(Arc::clone),
                     Arc::clone(&chat_service),
+                    notification_service.as_ref().map(Arc::clone),
                 )
                 .await
                 {
@@ -2737,6 +2742,9 @@ async fn route_agent_workspace_pr_autofix_if_needed(
     .await
 }
 
+/// Compatibility entry point without user notifications. Production polling uses
+/// [`route_agent_workspace_pr_autofix_if_needed_with_notifications`] so hand-offs reach the Inbox.
+#[allow(clippy::too_many_arguments)]
 async fn route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
     github: Arc<dyn GithubServiceTrait>,
     working_dir: &Path,
@@ -2747,6 +2755,34 @@ async fn route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
     repair_repo: Option<Arc<dyn AgentWorkspaceRepairRepository>>,
     branch_update_repo: Option<Arc<dyn BranchUpdateRepository>>,
     chat_service: Arc<dyn ChatService>,
+) -> crate::AppResult<bool> {
+    route_agent_workspace_pr_autofix_if_needed_with_notifications(
+        github,
+        working_dir,
+        pr_number,
+        conversation_id,
+        workspace_repo,
+        agent_run_repo,
+        repair_repo,
+        branch_update_repo,
+        chat_service,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn route_agent_workspace_pr_autofix_if_needed_with_notifications(
+    github: Arc<dyn GithubServiceTrait>,
+    working_dir: &Path,
+    pr_number: i64,
+    conversation_id: &ChatConversationId,
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    agent_run_repo: Option<Arc<dyn AgentRunRepository>>,
+    repair_repo: Option<Arc<dyn AgentWorkspaceRepairRepository>>,
+    branch_update_repo: Option<Arc<dyn BranchUpdateRepository>>,
+    chat_service: Arc<dyn ChatService>,
+    notification_service: Option<Arc<NotificationService>>,
 ) -> crate::AppResult<bool> {
     let workspace = workspace_repo
         .get_by_conversation_id(conversation_id)
@@ -2770,6 +2806,7 @@ async fn route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
         repair_repo,
         branch_update_repo,
         chat_service,
+        notification_service,
     )
     .await
 }
@@ -2823,10 +2860,12 @@ pub(crate) async fn route_ideation_plan_pr_autofix_if_needed(
         None,
         None,
         chat_service,
+        None,
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn route_agent_workspace_pr_autofix_for_target(
     github: Arc<dyn GithubServiceTrait>,
     working_dir: &Path,
@@ -2838,6 +2877,7 @@ async fn route_agent_workspace_pr_autofix_for_target(
     repair_repo: Option<Arc<dyn AgentWorkspaceRepairRepository>>,
     branch_update_repo: Option<Arc<dyn BranchUpdateRepository>>,
     chat_service: Arc<dyn ChatService>,
+    notification_service: Option<Arc<NotificationService>>,
 ) -> crate::AppResult<bool> {
     let target_matches_workspace_mode = matches!(
         (workspace.mode, &target.kind),
@@ -3061,6 +3101,22 @@ async fn route_agent_workspace_pr_autofix_for_target(
     {
         return Ok(false);
     }
+    // Checking the base costs one API call; sending an agent to "fix" a failure the PR did not
+    // cause costs a full generation and cannot succeed.
+    if issue.kind == AgentWorkspacePrAutofixIssueKind::Checks
+        && pr_failures_already_fail_on_base(github.as_ref(), working_dir, &health).await
+    {
+        record_pre_existing_on_base_detection(
+            workspace_repo.as_ref(),
+            conversation_id,
+            &workspace,
+            &issue.classification,
+            &health,
+            notification_service.as_ref(),
+        )
+        .await?;
+        return Ok(false);
+    }
     if authorize_agent_workspace_pr_autofix(workspace_repo.as_ref(), conversation_id, &target)
         .await?
         .is_none()
@@ -3156,6 +3212,149 @@ async fn route_agent_workspace_pr_autofix_for_target(
 
 /// The step recorded when a fresh PR autofix streak is suppressed by cross-streak memory.
 pub(crate) const CROSS_STREAK_FINGERPRINT_HOLD_STEP: &str = "repair_fingerprint_cross_streak_hold";
+/// The step recorded when RalphX proves a PR's failing check already fails on the base branch.
+pub(crate) const PRE_EXISTING_ON_BASE_DETECTED_STEP: &str = "repair_pre_existing_on_base_detected";
+
+/// Records a base-caused failure as a hand-off rather than a repair.
+///
+/// Nothing here spends an agent. The publication event explains why supervision stopped, the
+/// remembered fingerprint makes the cross-streak gate keep it stopped, and the Inbox notification
+/// tells the user the fix belongs on the base branch — work this workspace cannot do.
+async fn record_pre_existing_on_base_detection(
+    workspace_repo: &dyn AgentConversationWorkspaceRepository,
+    conversation_id: &ChatConversationId,
+    workspace: &AgentConversationWorkspace,
+    classification: &str,
+    health: &PrHealth,
+    notification_service: Option<&Arc<NotificationService>>,
+) -> crate::error::AppResult<bool> {
+    let base_ref = health.sync_state.base_ref_name.trim();
+    let summary = format!(
+        "The failing checks on this PR already fail on {base_ref}. RalphX did not start a fixer \
+         because the fix belongs on the base branch, not on this PR."
+    );
+
+    let already_recorded = workspace_repo
+        .list_publication_events(conversation_id)
+        .await?
+        .into_iter()
+        .any(|event| {
+            event.step == PRE_EXISTING_ON_BASE_DETECTED_STEP
+                && event.classification.as_deref() == Some(classification)
+        });
+    if already_recorded {
+        return Ok(false);
+    }
+
+    workspace_repo
+        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+            conversation_id.clone(),
+            PRE_EXISTING_ON_BASE_DETECTED_STEP,
+            "blocked",
+            &summary,
+            Some(classification.to_string()),
+        ))
+        .await?;
+    workspace_repo
+        .set_last_blocked_pr_health_fingerprint(conversation_id, Some(classification))
+        .await?;
+
+    if let Some(notification_service) = notification_service {
+        notification_service
+            .record(NewNotification {
+                project_id: Some(workspace.project_id.to_string()),
+                category: NotificationCategory::TaskBlocked,
+                severity: NotificationSeverity::ActionRequired,
+                title: match workspace.publication_pr_number {
+                    Some(pr_number) => format!("PR #{pr_number} is blocked by {base_ref}"),
+                    None => format!("Workspace is blocked by {base_ref}"),
+                },
+                body: Some(summary),
+                target: NotificationTarget {
+                    kind: NotificationTargetKind::AgentConversation,
+                    project_id: Some(workspace.project_id.to_string()),
+                    task_id: None,
+                    conversation_id: Some(conversation_id.to_string()),
+                    setup_conversation_id: None,
+                    automation_id: None,
+                    run_id: None,
+                },
+                dedupe_key: Some(format!(
+                    "repair_pre_existing_on_base:{}:{classification}",
+                    conversation_id.as_str()
+                )),
+            })
+            .await;
+    }
+
+    tracing::info!(
+        conversation_id = conversation_id.as_str(),
+        base_ref,
+        classification,
+        "PR failure already fails on base; handing off instead of dispatching a fixer"
+    );
+    Ok(true)
+}
+
+/// True only when GitHub proves the PR's failing checks already fail on the base branch tip.
+///
+/// This authorizes skipping an agent entirely, so it is deliberately conservative in one
+/// direction: every ambiguity answers "no". An unreadable base, an unimplemented backend, a check
+/// absent from the base (the scope-gated-CI case), and an in-progress base run all fall through to
+/// the normal dispatch. Being wrong here means a wasted agent generation; being wrong the other
+/// way means silently ignoring a real PR failure.
+async fn pr_failures_already_fail_on_base(
+    github: &dyn GithubServiceTrait,
+    working_dir: &Path,
+    health: &PrHealth,
+) -> bool {
+    let failing_pr_checks = health
+        .checks
+        .iter()
+        .filter(|check| {
+            check.conclusion.as_deref().is_some_and(|value| {
+                matches!(value.to_ascii_uppercase().as_str(), "FAILURE" | "TIMED_OUT")
+            })
+        })
+        .collect::<Vec<_>>();
+    if failing_pr_checks.is_empty() {
+        return false;
+    }
+
+    let base_ref = health.sync_state.base_ref_name.trim();
+    if base_ref.is_empty() {
+        return false;
+    }
+    let base_checks = match github
+        .list_branch_check_conclusions(working_dir, base_ref)
+        .await
+    {
+        Ok(Some(checks)) => checks,
+        Ok(None) => return false,
+        Err(error) => {
+            tracing::warn!(
+                base_ref,
+                %error,
+                "Could not read base branch check conclusions; dispatching PR autofix as usual"
+            );
+            return false;
+        }
+    };
+    if base_checks.is_empty() {
+        return false;
+    }
+
+    // Every failing check must be proven failing on base. One PR-caused failure means the PR does
+    // own work, even if another check is broken upstream.
+    failing_pr_checks.iter().all(|pr_check| {
+        base_checks.iter().any(|base_check| {
+            base_check.name.eq_ignore_ascii_case(pr_check.name.trim())
+                && base_check.conclusion.as_deref().is_some_and(|value| {
+                    matches!(value.to_ascii_uppercase().as_str(), "FAILURE" | "TIMED_OUT")
+                })
+        })
+    })
+}
 
 /// A repair attempt's fingerprint hold dies with its streak. Once a streak exhausts its retries,
 /// the next poll would otherwise start a brand new streak against the exact same failing check —
