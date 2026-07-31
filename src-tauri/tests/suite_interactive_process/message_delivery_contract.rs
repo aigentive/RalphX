@@ -30,7 +30,7 @@ fn old_message(id: &str, content: &str, metadata: Option<&str>) -> QueuedMessage
 fn fixture(temp: &Path) -> (PathBuf, PathBuf) {
     let cli = temp.join("delivery-claude");
     let calls = temp.join("calls.log");
-    fs::write(&cli, format!("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo '2.1.0 (Claude Code)'; exit; fi\nif [ \"$1\" = \"--help\" ]; then echo '--resume --output-format'; exit; fi\necho call >> '{}'\ncat >/dev/null\necho '{{\"type\":\"result\",\"session_id\":\"delivery-session\",\"is_error\":false,\"result\":\"ok\",\"cost_usd\":0.0}}'\n", calls.display())).expect("write fixture");
+    fs::write(&cli, format!("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo '2.1.0 (Claude Code)'; exit; fi\nif [ \"$1\" = \"--help\" ]; then echo '--resume --output-format'; exit; fi\nif [ \"$1\" = \"--thinking-display\" ]; then echo '2.1.0 (Claude Code)'; exit; fi\necho call >> '{}'\ncat >/dev/null\necho '{{\"type\":\"result\",\"session_id\":\"delivery-session\",\"is_error\":false,\"result\":\"ok\",\"cost_usd\":0.0}}'\n", calls.display())).expect("write fixture");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
