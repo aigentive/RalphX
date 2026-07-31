@@ -36,6 +36,10 @@ use crate::application::agent_workspace_terminal_cleanup::{
     settle_review_pr_terminal_observation, terminalize_agent_workspace_after_pr,
     TerminalAgentWorkspaceCause,
 };
+use crate::domain::entities::{
+    NewNotification, NotificationCategory, NotificationSeverity, NotificationTarget,
+    NotificationTargetKind,
+};
 use crate::application::chat_service::{ChatService, SendMessageOptions, SendQueuePolicy};
 use crate::application::interactive_notification_producer::pr_review_notification_key;
 use crate::application::services::pr_auto_merge_status::{

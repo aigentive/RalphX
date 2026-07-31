@@ -879,7 +879,7 @@ async fn create_agent_conversation_persists_team_intent_coordination_mode() {
 /// never observe another test's "flag on".
 fn standalone_conversations_flag_override_guard(
 ) -> crate::infrastructure::agents::LiveFlagOverrideTestGuard {
-    crate::infrastructure::agents::LiveFlagOverrideTestGuard::new()
+    crate::infrastructure::agents::LiveFlagOverrideTestGuard::default()
 }
 
 #[tokio::test]

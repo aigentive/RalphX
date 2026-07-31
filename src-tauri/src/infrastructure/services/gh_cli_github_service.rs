@@ -1835,7 +1835,7 @@ fn parse_status_check_rollup(view_value: &Value) -> Vec<PrHealthCheck> {
 /// Reduces `gh run list --json ...` output to the newest completed conclusion per check name.
 /// Older runs for the same check are historical noise; only the current state of the branch tip
 /// can tell us whether a failure already exists on the base.
-fn parse_branch_check_conclusions(json_str: &str) -> Vec<PrHealthCheck> {
+pub(crate) fn parse_branch_check_conclusions(json_str: &str) -> Vec<PrHealthCheck> {
     let Ok(runs) = serde_json::from_str::<Value>(json_str) else {
         return Vec::new();
     };
