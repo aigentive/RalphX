@@ -43,6 +43,13 @@ const TONE_STYLES: Record<NoticeBannerTone, NoticeBannerToneStyle> = {
   },
 };
 
+/**
+ * `card` is the default inline banner. `strip` is the full-bleed variant that sits flush
+ * under a dialog/page header: square corners, and a bottom rule instead of a box, so it
+ * reads as part of the chrome rather than as content inside the pane.
+ */
+export type NoticeBannerLayout = "card" | "strip";
+
 export interface NoticeBannerProps {
   tone: NoticeBannerTone;
   icon?: ReactNode;
@@ -51,6 +58,7 @@ export interface NoticeBannerProps {
   action?: ReactNode;
   testId?: string;
   className?: string;
+  layout?: NoticeBannerLayout;
 }
 
 export function NoticeBanner({
@@ -61,17 +69,25 @@ export function NoticeBanner({
   action,
   testId,
   className,
+  layout = "card",
 }: NoticeBannerProps) {
   const style = TONE_STYLES[tone];
+  const isStrip = layout === "strip";
 
   return (
     <div
-      className={cn("flex items-start gap-2 rounded-md px-3 py-2.5", className)}
+      className={cn(
+        "flex items-start gap-2 px-3 py-2.5",
+        isStrip ? "rounded-none" : "rounded-md",
+        className
+      )}
       style={{
         backgroundColor: style.backgroundColor,
         borderColor: style.borderColor,
         borderStyle: "solid",
-        borderWidth: "1px",
+        // Explicit longhands rather than a shorthand: WKWebView can render a shorthand
+        // border as default-styled after theme-token changes (wkwebview-css-vars rule 6).
+        borderWidth: isStrip ? "0 0 1px 0" : "1px",
       }}
       data-tone={tone}
       {...(testId ? { "data-testid": testId } : {})}

@@ -24,6 +24,7 @@ import {
   sectionMeta,
 } from "./settings-registry";
 import { sectionModuleLoaders } from "./SettingsDialog.performance";
+import { LOCAL_ENVIRONMENT_ID, useEnvironmentStore } from "@/stores/environmentStore";
 
 const featureFlags = vi.hoisted(() => ({ agentPersonas: false }));
 const settingsTasksEnabledRef = vi.hoisted(() => ({ current: true }));
@@ -686,6 +687,50 @@ describe("SettingsDialog", () => {
         ),
       );
     });
+  });
+
+  // --------------------------------------------------------------------------
+  // Remote environment notice
+  // --------------------------------------------------------------------------
+
+  describe("remote environment notice", () => {
+    /**
+     * Dialog-level, so it holds for EVERY section. The panes whose commands the facade
+     * refuses (providers, ticketing, GitHub) used to sit on their loading state forever with
+     * nothing saying why; the strip is the one place that answers "whose settings are these".
+     */
+    function activateRemote(): void {
+      useEnvironmentStore.setState({
+        activeEnvironmentId: "env-remote",
+        environments: [
+          { id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" },
+          { id: "env-remote", name: "100.95.136.117:3849", kind: "remote" },
+        ],
+      });
+    }
+
+    it("shows the notice on the local environment never", () => {
+      uiState.activeModal = "settings";
+      render(<SettingsDialog {...defaultProps} />);
+      expect(
+        screen.queryByTestId("settings-remote-environment-notice"),
+      ).not.toBeInTheDocument();
+    });
+
+    it.each(["integrations-hub", "updates", "accessibility", "notifications"])(
+      "shows the notice on %s under a remote environment",
+      (section) => {
+        activateRemote();
+        uiState.activeModal = "settings";
+        uiState.modalContext = { section };
+        render(<SettingsDialog {...defaultProps} />);
+
+        const notice = screen.getByTestId("settings-remote-environment-notice");
+        expect(notice).toBeInTheDocument();
+        expect(notice).toHaveAttribute("data-tone", "warning");
+        expect(notice).toHaveTextContent("100.95.136.117:3849");
+      },
+    );
   });
 
   // --------------------------------------------------------------------------
