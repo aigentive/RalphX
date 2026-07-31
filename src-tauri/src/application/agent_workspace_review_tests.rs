@@ -3988,7 +3988,7 @@ async fn assert_blocking_fixer_uses_enabled_default_over_stale_claude_session(
     assert_eq!(options.service_tier_override.as_deref(), Some("standard"));
     assert_eq!(
         options.runtime_source_override,
-        Some(RuntimeSource::HarnessFallback)
+        Some(RuntimeSource::RoleDefault)
     );
     assert!(options.preserve_conversation_provider_session_ref);
     assert!(options.force_new_provider_session);
