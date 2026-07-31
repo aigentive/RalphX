@@ -10,13 +10,14 @@ use super::{
     ensure_plan_workspace_planning_session_link_for_send, existing_pr_retarget_block_reason,
     filter_agent_list_visible_conversations, fork_agent_conversation,
     fork_agent_conversation_response_for_state, fork_terminal_agent_conversation_for_send,
-    get_agent_conversation_runtime_index_for_app_state, get_agent_run_attribution,
+    get_agent_conversation_runtime_index_for_app_state,
     get_agent_conversation_runtime_statuses_for_app_state,
     get_agent_conversation_summary_for_app_state,
     get_agent_conversation_timeline_page_for_app_state, get_agent_conversation_workspace_freshness,
-    get_agent_timeline_item_tool_call_detail_for_app_state, hidden_user_message_metadata,
-    invalidate_agent_workspace_freshness_cache, list_agent_conversations_page,
-    load_delegated_tool_runtime_snapshot, mark_agent_workspace_failure_with_routing_and_action,
+    get_agent_run_attribution, get_agent_timeline_item_tool_call_detail_for_app_state,
+    hidden_user_message_metadata, invalidate_agent_workspace_freshness_cache,
+    list_agent_conversations_page, load_delegated_tool_runtime_snapshot,
+    mark_agent_workspace_failure_with_routing_and_action,
     mark_agent_workspace_publish_failure_with_target,
     mark_agent_workspace_update_failure_with_target, merge_delegated_snapshot_into_result,
     normalize_agent_runtime_selection, normalize_agent_workspace_source_pull_request,
@@ -827,17 +828,18 @@ async fn create_agent_conversation_persists_team_intent_coordination_mode() {
     assert_eq!(stored.coordination_mode, CoordinationMode::RxNativeTeam);
 }
 
-struct StandaloneConversationsFlagOverrideReset;
-
-impl Drop for StandaloneConversationsFlagOverrideReset {
-    fn drop(&mut self) {
-        crate::infrastructure::agents::reset_standalone_conversations_override_for_test();
-    }
+/// The standalone-conversations override is process-global. Acquiring this guard serializes every
+/// test that sets it and restores the ambient value on drop, so a test asserting "flag off" can
+/// never observe another test's "flag on".
+fn standalone_conversations_flag_override_guard(
+) -> crate::infrastructure::agents::LiveFlagOverrideTestGuard {
+    crate::infrastructure::agents::LiveFlagOverrideTestGuard::new()
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn create_agent_conversation_standalone_flag_on_round_trips_self_keyed() {
-    let _reset = StandaloneConversationsFlagOverrideReset;
+    let _flag_guard = standalone_conversations_flag_override_guard();
     crate::infrastructure::agents::set_standalone_conversations_override(Some(true));
     let app = build_send_now_command_app(AppState::new_test());
 
@@ -868,8 +870,9 @@ async fn create_agent_conversation_standalone_flag_on_round_trips_self_keyed() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn create_agent_conversation_standalone_flag_off_is_rejected() {
-    let _reset = StandaloneConversationsFlagOverrideReset;
+    let _flag_guard = standalone_conversations_flag_override_guard();
     crate::infrastructure::agents::set_standalone_conversations_override(Some(false));
     let app = build_send_now_command_app(AppState::new_test());
 
@@ -890,8 +893,9 @@ async fn create_agent_conversation_standalone_flag_off_is_rejected() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn create_agent_conversation_standalone_rejects_supplied_context_id() {
-    let _reset = StandaloneConversationsFlagOverrideReset;
+    let _flag_guard = standalone_conversations_flag_override_guard();
     crate::infrastructure::agents::set_standalone_conversations_override(Some(true));
     let app = build_send_now_command_app(AppState::new_test());
 
@@ -912,8 +916,9 @@ async fn create_agent_conversation_standalone_rejects_supplied_context_id() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn create_agent_conversation_standalone_rejects_team_intent() {
-    let _reset = StandaloneConversationsFlagOverrideReset;
+    let _flag_guard = standalone_conversations_flag_override_guard();
     crate::infrastructure::agents::set_standalone_conversations_override(Some(true));
     let app = build_send_now_command_app(AppState::new_test());
 
@@ -3716,9 +3721,8 @@ async fn base_update_retry_returns_successful_repair_started_response() {
 async fn workspace_response_does_not_recover_a_stranded_repair_inline() {
     let state = AppState::new_test();
     let mut workspace = command_test_workspace();
-    workspace.last_blocked_pr_health_fingerprint = Some(
-        "github_pr_autofix:42:checks:rust-tests".to_string(),
-    );
+    workspace.last_blocked_pr_health_fingerprint =
+        Some("github_pr_autofix:42:checks:rust-tests".to_string());
     state
         .agent_conversation_workspace_repo
         .create_or_update(workspace.clone())
