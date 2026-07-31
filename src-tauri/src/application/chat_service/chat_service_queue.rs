@@ -363,7 +363,7 @@ pub(crate) async fn requeue_pending_stdin_turns<R: Runtime>(
         );
 
         let durable_result = match queued_message_repo {
-            Some(repo) => repo.enqueue_front(&key, &queued).await,
+            Some(repo) => repo.enqueue_front(&key, queued).await,
             None => Ok(()),
         };
         match durable_result {
