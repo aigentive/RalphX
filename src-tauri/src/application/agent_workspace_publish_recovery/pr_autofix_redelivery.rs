@@ -40,8 +40,8 @@ pub(crate) async fn pr_autofix_fingerprint_spend(
     conversation_id: &crate::domain::entities::ChatConversationId,
     fingerprint: &str,
 ) -> crate::error::AppResult<PrAutofixFingerprintSpend> {
-    let budget_minutes = crate::infrastructure::agents::limits_config()
-        .repair_fingerprint_budget_minutes;
+    let budget_minutes =
+        crate::infrastructure::agents::limits_config().repair_fingerprint_budget_minutes;
     let attempts = state
         .agent_workspace_repair_repo
         .list_repair_attempts_for_conversation(conversation_id)
@@ -267,7 +267,9 @@ pub(crate) fn due_pr_autofix_redispatch_message(
         out.push_str(&format!("Pull request: {pr_url}\n"));
     }
     if let Some(fingerprint) = attempt.pr_autofix_health_fingerprint.as_deref() {
-        out.push_str(&format!("Last observed failure fingerprint: {fingerprint}\n"));
+        out.push_str(&format!(
+            "Last observed failure fingerprint: {fingerprint}\n"
+        ));
     }
     out.push_str(&format!(
         "Context: {}\n",

@@ -107,6 +107,7 @@ import {
   getAgentWorkspaceTerminalPublicationStatus,
   getAgentWorkspaceEffectiveBaseLabel,
   getAgentWorkspaceMaintenancePresentation,
+  getAgentWorkspacePrAutofixFingerprintSpendPresentation,
   hasPublishedWorkspacePr,
   isAgentWorkspacePublishActive,
   isAgentWorkspaceMaintenanceActive,
@@ -344,6 +345,7 @@ export function AgentPublishPanel({
     );
   }, [conversationId]);
   const maintenancePresentation = getAgentWorkspaceMaintenancePresentation(workspace);
+  const fingerprintSpend = getAgentWorkspacePrAutofixFingerprintSpendPresentation(workspace);
   const isMaintenanceActive = isAgentWorkspaceMaintenanceActive(workspace);
   const blocksGitInspection = blocksAgentWorkspaceGitInspection(workspace);
   const isPublishingWorkspace =
@@ -2128,6 +2130,7 @@ export function AgentPublishPanel({
         branch={branch}
         base={base}
         targetPullRequestLabel={publishTargetPullRequestLabel}
+        fingerprintSpend={fingerprintSpend}
         prSupervisionStatus={prSupervisionStatus}
         status={pipelineStatus}
         isPublishing={isPublishingThisWorkspace}

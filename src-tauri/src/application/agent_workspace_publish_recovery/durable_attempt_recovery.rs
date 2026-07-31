@@ -3,9 +3,8 @@ use std::sync::Arc;
 use chrono::{Duration, Utc};
 
 use super::pr_autofix_redelivery::{
-    due_pr_autofix_redispatch_message, evaluate_pr_autofix_successor,
-    pr_autofix_fingerprint_spend, remember_blocked_pr_autofix_fingerprint,
-    PrAutofixFingerprintSpend, PrAutofixSuccessorDecision,
+    due_pr_autofix_redispatch_message, evaluate_pr_autofix_successor, pr_autofix_fingerprint_spend,
+    remember_blocked_pr_autofix_fingerprint, PrAutofixFingerprintSpend, PrAutofixSuccessorDecision,
 };
 use super::StalePublishRepairRecoveryOutcome;
 use crate::application::agent_conversation_workspace::resolve_effective_agent_conversation_workspace_path;
@@ -13,9 +12,8 @@ use crate::application::agent_workspace_pr_autofix_attempt::load_latest_exact_pr
 use crate::application::agent_workspace_publish_repair_state::{
     agent_workspace_repair_dispatch_is_due, agent_workspace_repair_is_health_held,
     block_agent_workspace_repair_completion, block_agent_workspace_repair_needs_human,
-    classify_agent_workspace_repair_delivery,
-    continue_agent_workspace_repair_at_boundary, inspect_agent_workspace_repair_completion,
-    record_agent_workspace_repair_validation,
+    classify_agent_workspace_repair_delivery, continue_agent_workspace_repair_at_boundary,
+    inspect_agent_workspace_repair_completion, record_agent_workspace_repair_validation,
     release_and_clear_agent_workspace_repair_target_lease,
     reserve_agent_workspace_repair_completion_validation, reserve_agent_workspace_repair_dispatch,
     reserve_agent_workspace_unchanged_health_hold, resume_current_agent_workspace_repair_publish,
@@ -29,14 +27,14 @@ use crate::application::agent_workspace_publish_repair_state::{
 use crate::application::chat_service::{ChatService, SendMessageOptions, SendQueuePolicy};
 use crate::application::{AppState, GitService};
 use crate::domain::entities::{
-    NewNotification, NotificationCategory, NotificationSeverity, NotificationTarget,
-    NotificationTargetKind,
-};
-use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspacePublicationEvent, AgentRunId,
     AgentRunStatus, AgentWorkspaceRepairAttempt, AgentWorkspaceRepairAttemptId,
     AgentWorkspaceRepairContinuation, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
     ChatContextType, GitTargetLeaseOwner,
+};
+use crate::domain::entities::{
+    NewNotification, NotificationCategory, NotificationSeverity, NotificationTarget,
+    NotificationTargetKind,
 };
 use crate::domain::repositories::{
     AgentRunRepository, AgentWorkspaceRepairAttemptTransition,
@@ -661,6 +659,9 @@ async fn park_exhausted_pr_autofix_budget(
     spend: PrAutofixFingerprintSpend,
 ) -> AppResult<DurableRepairRecoveryOutcome> {
     let conversation_id = current.conversation_id.clone();
+    // Captured before `current` is consumed below. The dedupe key must be the identity this
+    // generation actually exhausted, so a later, different failure still reaches the user.
+    let fingerprint = current.pr_autofix_health_fingerprint.clone();
     let summary = format!(
         "RalphX has spent {} minutes across {} repair generations on this same PR failure without \
          resolving it, which is the configured limit. Automatic repair has stopped so it does not \
@@ -712,10 +713,7 @@ async fn park_exhausted_pr_autofix_budget(
             dedupe_key: Some(format!(
                 "repair_budget:{}:{}",
                 conversation_id.as_str(),
-                workspace
-                    .last_blocked_pr_health_fingerprint
-                    .as_deref()
-                    .unwrap_or("unknown")
+                fingerprint.as_deref().unwrap_or("unknown")
             )),
         })
         .await;
@@ -831,9 +829,7 @@ pub(super) const DEFAULT_REPAIR_DISPATCH_CONTEXT: &str =
 /// `pending_reasons` carries internal scheduling markers (`auto_retry_blocked_repair:2`) alongside
 /// human-authored context. Only the latter belongs in an agent assignment; a marker rendered as
 /// "Context:" tells the recipient nothing about what actually needs repairing.
-pub(super) fn human_repair_dispatch_context(
-    attempt: &AgentWorkspaceRepairAttempt,
-) -> Option<&str> {
+pub(super) fn human_repair_dispatch_context(attempt: &AgentWorkspaceRepairAttempt) -> Option<&str> {
     attempt
         .pending_reasons
         .iter()

@@ -3361,8 +3361,9 @@ async fn pr_failures_already_fail_on_base(
 /// the outer loop that turned one unchanged failure into four Opus generations on 2026-07-31.
 ///
 /// Returns `true` when this dispatch must be suppressed. Different health clears the memory so a
-/// genuinely new failure is never held by a stale one. A read failure never suppresses: a broken
-/// query must not silently disable PR autofix.
+/// genuinely new failure is never held by a stale one. Repository errors propagate rather than
+/// resolving to "not suppressed": an unreadable workspace cannot authorize spending an agent, and
+/// the poll loop surfaces the failure instead of quietly starting another generation.
 async fn cross_streak_fingerprint_suppresses_dispatch(
     workspace_repo: &dyn AgentConversationWorkspaceRepository,
     conversation_id: &ChatConversationId,

@@ -1625,6 +1625,12 @@ describe("chat api", () => {
         publication_metadata_attempt_id: "attempt-plan-1",
         publication_metadata_phase: "reconciling",
         publication_metadata_state: "unknown",
+        pr_autofix_fingerprint_spend: {
+          generations: 3,
+          minutes: 92,
+          budget_minutes: 45,
+          is_exhausted: true,
+        },
         auto_publish_enabled: true,
         auto_publish_paused_pr_autofix_enabled: null,
         auto_publish_paused_pr_auto_merge_desired: null,
@@ -1651,6 +1657,12 @@ describe("chat api", () => {
         stage: "repairing",
         status: "active",
         automaticContinuation: true,
+      },
+      prAutofixFingerprintSpend: {
+        generations: 3,
+        minutes: 92,
+        budgetMinutes: 45,
+        isExhausted: true,
       },
     });
   });

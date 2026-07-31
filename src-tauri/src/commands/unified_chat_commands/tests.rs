@@ -1252,6 +1252,7 @@ fn linked_plan_branch_publication_is_projected_into_workspace_response() {
         mode_switch_locked: false,
         mode_switch_lock_reason: None,
         maintenance_operation: None,
+        pr_autofix_fingerprint_spend: None,
     };
     let mut plan_branch = PlanBranch::new(
         ArtifactId::from_string("artifact-1"),
@@ -1322,6 +1323,7 @@ fn linked_plan_branch_publication_overrides_stale_workspace_publication_response
         mode_switch_locked: true,
         mode_switch_lock_reason: Some("Plan execution is still active".to_string()),
         maintenance_operation: None,
+        pr_autofix_fingerprint_spend: None,
     };
     let mut plan_branch = PlanBranch::new(
         ArtifactId::from_string("artifact-1"),
@@ -3713,7 +3715,10 @@ async fn base_update_retry_returns_successful_repair_started_response() {
 #[tokio::test]
 async fn workspace_response_does_not_recover_a_stranded_repair_inline() {
     let state = AppState::new_test();
-    let workspace = command_test_workspace();
+    let mut workspace = command_test_workspace();
+    workspace.last_blocked_pr_health_fingerprint = Some(
+        "github_pr_autofix:42:checks:rust-tests".to_string(),
+    );
     state
         .agent_conversation_workspace_repo
         .create_or_update(workspace.clone())
@@ -3773,6 +3778,16 @@ async fn workspace_response_does_not_recover_a_stranded_repair_inline() {
     .expect("workspace response should succeed");
 
     assert_eq!(response.conversation_id, workspace.conversation_id.as_str());
+    assert_eq!(
+        response.pr_autofix_fingerprint_spend,
+        Some(super::PrAutofixFingerprintSpendResponse {
+            generations: 0,
+            minutes: 0,
+            budget_minutes: crate::infrastructure::agents::limits_config()
+                .repair_fingerprint_budget_minutes,
+            is_exhausted: false,
+        })
+    );
     assert_eq!(
         state
             .agent_workspace_repair_repo
