@@ -29,6 +29,19 @@ describe("ThinkingGroupToggle", () => {
     expect(screen.getByText(/Agent thought for 12s/)).toBeInTheDocument();
   });
 
+  it("renders active estimated token progress in its accessible label", () => {
+    render(
+      <ThinkingGroupToggle
+        groupKey="blk-progress"
+        isExpanded={false}
+        isSettled={false}
+        estimatedTokens={2_000}
+        onToggle={() => {}}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /Agent thinking… · ~2,000 tokens/ })).toBeInTheDocument();
+  });
+
   it("renders settled label without duration", () => {
     render(
       <ThinkingGroupToggle
