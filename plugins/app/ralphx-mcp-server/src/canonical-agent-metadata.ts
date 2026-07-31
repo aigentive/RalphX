@@ -23,7 +23,7 @@ type CanonicalAgentDefinition = {
 
 const canonicalAgentDefinitionCache = new Map<string, CanonicalAgentDefinition | null>();
 const SAFE_CANONICAL_AGENT_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-const SAFE_CANONICAL_PROFILE_NAME = /^[a-z0-9]+(?:[_-][a-z0-9]+)*$/;
+export const SAFE_CANONICAL_PROFILE_NAME = /^[a-z0-9]+(?:[_-][a-z0-9]+)*$/;
 
 export function resolveRepoRoot(): string {
   let current = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../");
