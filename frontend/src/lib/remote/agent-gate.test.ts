@@ -239,12 +239,36 @@ describe("affordance mapping", () => {
     );
   });
 
+  /**
+   * Affordances whose backing op is a BRAKE, and therefore deliberately reachable from the
+   * default pairing. This is a deliberate carve-out, not a hole: `request_remote_agent_stop` is
+   * `class: operate` (authority-REDUCING, with a recorded `AUTHORITY_REDUCING_EXEMPTIONS` row),
+   * so gating it would take the brake away from exactly the devices the viewer-with-brakes
+   * boundary exists to give it to. Adding a row here is a boundary change — the op's class is
+   * asserted below so a reclassified op cannot ride in on this list.
+   */
+  const DEFAULT_PAIRING_BRAKES = ["agentStop"] as const;
+
   it("resolves every affordance to a defined state under a default pairing", () => {
     for (const affordance of Object.keys(
       AGENT_GATED_AFFORDANCES
     ) as Array<keyof typeof AGENT_GATED_AFFORDANCES>) {
       const state = resolveAffordanceGate(affordance, true, DEFAULT_PAIRED);
-      expect(["gated", "unavailable"], affordance).toContain(state.status);
+      const expected = (DEFAULT_PAIRING_BRAKES as readonly string[]).includes(
+        affordance
+      )
+        ? ["enabled", "unavailable"]
+        : ["gated", "unavailable"];
+      expect(expected, affordance).toContain(state.status);
+    }
+  });
+
+  it("every default-pairing brake is backed by a read/operate op, never agentControl", () => {
+    for (const affordance of DEFAULT_PAIRING_BRAKES) {
+      const op = REMOTE_FACADE_OPS[AGENT_GATED_AFFORDANCES[affordance]];
+      // Absent is fine (older host → `unavailable`); present-and-escalated is not.
+      if (op === undefined) continue;
+      expect(["read", "operate"], affordance).toContain(op.opClass);
     }
   });
 });

@@ -5314,6 +5314,138 @@ export async function isChatServiceAvailable(): Promise<boolean> {
 }
 
 /**
+ * The remote spawn-free STOP seam (WP2).
+ *
+ * `stop_agent` reaches `Command::new(resolve_pkill_cli_path())` on the host and stays
+ * unregistered by the absolute process floor, so a paired device never calls it. It persists a
+ * STOP INTENT through `request_remote_agent_stop` — registered at `ui:operate`, i.e. reachable
+ * from the DEFAULT "viewer with brakes" pairing — and polls `get_remote_agent_stop_request`
+ * until the host-owned dispatcher settles it.
+ *
+ * Status values are the host enum serialized camelCase (`RemoteAgentStopStatus`).
+ */
+export const RemoteAgentStopStatusSchema = z.enum([
+  "pending",
+  "stopping",
+  "stopped",
+  "noLiveRun",
+  "failed",
+  "cancelled",
+  "failedStale",
+]);
+export type RemoteAgentStopStatus = z.infer<typeof RemoteAgentStopStatusSchema>;
+
+/**
+ * Terminal states. `noLiveRun` is BENIGN — the brake was pulled and nothing was running — and
+ * is deliberately grouped with `stopped` rather than with the failures: showing "couldn't stop
+ * the agent" for the ordinary finished-between-tap-and-drain race would train users to ignore
+ * the error.
+ */
+const REMOTE_AGENT_STOP_SUCCESS_STATUSES = ["stopped", "noLiveRun"] as const;
+const REMOTE_AGENT_STOP_TERMINAL_STATUSES = [
+  ...REMOTE_AGENT_STOP_SUCCESS_STATUSES,
+  "failed",
+  "cancelled",
+  "failedStale",
+] as const;
+
+const RequestRemoteAgentStopResponseSchema = z
+  .object({
+    stopRequestId: z.string(),
+    conversationId: z.string(),
+    status: RemoteAgentStopStatusSchema,
+    deduplicated: z.boolean(),
+    createdAt: z.string(),
+  })
+  .strict();
+
+const GetRemoteAgentStopRequestResponseSchema = z
+  .object({
+    id: z.string(),
+    conversationId: z.string(),
+    status: RemoteAgentStopStatusSchema,
+    errorCode: z.string().nullable(),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+  })
+  .strict();
+
+/**
+ * A remote stop intent that reached a non-success terminal state. Typed (rather than a plain
+ * `Error`) so callers can branch on `status` — the brake failing is exactly the class of
+ * failure that used to be swallowed at both call sites.
+ */
+export class RemoteAgentStopError extends Error {
+  readonly status: RemoteAgentStopStatus;
+  readonly errorCode: string | null;
+  constructor(status: RemoteAgentStopStatus, errorCode: string | null) {
+    super(errorCode ?? `Stop request ${status}`);
+    this.name = "RemoteAgentStopError";
+    this.status = status;
+    this.errorCode = errorCode;
+  }
+}
+
+const REMOTE_AGENT_STOP_POLL_INTERVAL_MS = 400;
+/** ~24s at the poll interval. A brake that has not bitten by then is surfaced, not hidden. */
+const REMOTE_AGENT_STOP_MAX_POLLS = 60;
+
+function isTerminalRemoteAgentStopStatus(status: RemoteAgentStopStatus): boolean {
+  return (REMOTE_AGENT_STOP_TERMINAL_STATUSES as readonly string[]).includes(
+    status,
+  );
+}
+
+function remoteAgentStopPollDelay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * The remote half of {@link stopAgent}. Persists a stop-intent and polls it to a terminal
+ * state. Fail-closed: a read error propagates rather than reading as "not stopped yet" forever,
+ * and a non-success terminal throws {@link RemoteAgentStopError} so the caller can surface it.
+ */
+async function stopRemoteAgent(conversationId: string): Promise<boolean> {
+  // Literal command name (P-11): persists a stop-intent — no client-side process sink.
+  const requested = await typedInvoke(
+    "request_remote_agent_stop",
+    { input: { conversationId } },
+    RequestRemoteAgentStopResponseSchema,
+  );
+
+  let request = {
+    status: requested.status as RemoteAgentStopStatus,
+    errorCode: null as string | null,
+  };
+  for (let attempt = 0; attempt < REMOTE_AGENT_STOP_MAX_POLLS; attempt += 1) {
+    if (isTerminalRemoteAgentStopStatus(request.status)) break;
+    await remoteAgentStopPollDelay(REMOTE_AGENT_STOP_POLL_INTERVAL_MS);
+    // Literal command name (P-11): the status read is a pure host-side repository read.
+    const polled = await typedInvoke(
+      "get_remote_agent_stop_request",
+      { stopRequestId: requested.stopRequestId },
+      GetRemoteAgentStopRequestResponseSchema,
+    );
+    request = { status: polled.status, errorCode: polled.errorCode };
+  }
+
+  if (!isTerminalRemoteAgentStopStatus(request.status)) {
+    throw new Error(
+      "Timed out waiting for the host to stop the agent. It may still be stopping — reopen the conversation to check.",
+    );
+  }
+  if (
+    !(REMOTE_AGENT_STOP_SUCCESS_STATUSES as readonly string[]).includes(
+      request.status,
+    )
+  ) {
+    throw new RemoteAgentStopError(request.status, request.errorCode);
+  }
+  // `stopped` terminated a run; `noLiveRun` found none. Same shape the local command returns.
+  return request.status === "stopped";
+}
+
+/**
  * Stop a running agent for a context
  * Sends SIGTERM to the running agent process.
  *
@@ -5325,6 +5457,14 @@ export async function stopAgent(
   contextType: ContextType,
   contextId: string,
 ): Promise<boolean> {
+  // Two literal `typedInvoke` sites live in `stopRemoteAgent` (P-11): a remote environment
+  // persists a stop-intent and polls the host, which owns the terminating path. Only `project`
+  // conversations exist on the remote Agents surface, and for those the backend queue context
+  // id IS the conversation id — the intent takes no `contextType`, so any other context must
+  // keep the local command rather than be silently re-aimed at a conversation.
+  if (isRemoteEnvironmentId(getTransportEnvironmentId()) && contextType === "project") {
+    return stopRemoteAgent(contextId);
+  }
   return typedInvoke("stop_agent", { contextType, contextId }, z.boolean());
 }
 

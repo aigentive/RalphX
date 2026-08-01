@@ -96,6 +96,15 @@ export const AGENT_GATED_AFFORDANCES = {
   // spawn-free command it is absent from `REMOTE_FACADE_OPS` and Start resolves
   // `unavailable` (older-host row) — derived from absence, never hardcoded.
   startConversation: "request_remote_agent_conversation_start",
+  // Stopping routes through the spawn-free facade command, NOT `stop_agent` — that command
+  // reaches `Command::new(resolve_pkill_cli_path())` and stays unregistered by the absolute
+  // process floor, so pointing the gate at it would render Stop permanently `unavailable`.
+  // The intent is `class: operate`, so `resolveAffordanceGate` returns `enabled` for the
+  // DEFAULT pairing: brakes must not need `ui:agent`. Against an older host that predates the
+  // registration the op is simply absent from `REMOTE_FACADE_OPS` and Stop renders the
+  // unavailable hint instead of an enabled button that answers `REMOTE_COMMAND_UNAVAILABLE` —
+  // derived from absence, never hardcoded.
+  agentStop: "request_remote_agent_stop",
   permissionApprove: "approve_permission_request",
   questionAnswer: "answer_user_question",
   taskMove: "move_task",
