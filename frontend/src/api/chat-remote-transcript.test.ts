@@ -420,4 +420,54 @@ describe("agent sidebar inbox read routing", () => {
       primitiveInvoke.mock.calls.some((call) => call[0] === "remote_invoke"),
     ).toBe(false);
   });
+
+  it("omits the client's local pins/priorities on a remote environment so the host order is preserved", async () => {
+    useRemoteEnvironment();
+    remoteOk({ groups: [] });
+
+    await listAgentSidebarConversations({
+      ...SIDEBAR_INPUT,
+      pinnedConversationIds: ["client-pin-1"],
+      priorityConversationIds: ["client-priority-1"],
+    });
+
+    const input = wireInput();
+    expect(input.cmd).toBe("list_remote_agent_sidebar_conversations");
+    // The remote host must not reorder its conversations by a remote viewer's local pins.
+    expect(input.args).toEqual({
+      input: {
+        projectIds: [PROJECT_ID],
+        includeArchived: false,
+        archivedOnly: false,
+        groupBy: "publication",
+      },
+    });
+    const remoteArgs = (input.args as { input: Record<string, unknown> }).input;
+    expect(remoteArgs).not.toHaveProperty("pinnedConversationIds");
+    expect(remoteArgs).not.toHaveProperty("priorityConversationIds");
+  });
+
+  it("still sends the local pins/priorities to the local command off a remote environment", async () => {
+    primitiveInvoke.mockResolvedValue({ groups: [] });
+
+    await listAgentSidebarConversations({
+      ...SIDEBAR_INPUT,
+      pinnedConversationIds: ["local-pin-1"],
+      priorityConversationIds: ["local-priority-1"],
+    });
+
+    expect(primitiveInvoke.mock.calls[0]?.[0]).toBe(
+      "list_agent_sidebar_conversations",
+    );
+    expect(primitiveInvoke.mock.calls[0]?.[1]).toEqual({
+      input: {
+        projectIds: [PROJECT_ID],
+        includeArchived: false,
+        archivedOnly: false,
+        groupBy: "publication",
+        pinnedConversationIds: ["local-pin-1"],
+        priorityConversationIds: ["local-priority-1"],
+      },
+    });
+  });
 });
