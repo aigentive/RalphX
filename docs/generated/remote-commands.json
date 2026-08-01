@@ -2789,6 +2789,15 @@
       "argumentSensitive": false,
       "capabilities": [],
       "class": "read",
+      "command": "list_remote_agent_providers",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::remote_workspace_commands::list_remote_agent_providers"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
       "command": "list_remote_agent_conversations",
       "pins": [],
       "scopeConfined": false,
@@ -8555,6 +8564,15 @@
       "command": "get_remote_provider_readiness",
       "module": "remote_workspace_commands",
       "reason": "pure repository read reduced to two scalars; no CLI probe, no provider identity, model, path, or credential surface",
+      "registered": true,
+      "v1Resolution": "registerable"
+    },
+    {
+      "capabilities": [],
+      "class": "read",
+      "command": "list_remote_agent_providers",
+      "module": "remote_workspace_commands",
+      "reason": "pure repository read projecting stored provider enablement, default flag, and default model/effort names; no CLI probe, no path, no credential, no process-configuration surface",
       "registered": true,
       "v1Resolution": "registerable"
     },

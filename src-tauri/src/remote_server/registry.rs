@@ -1545,6 +1545,21 @@ crate::remote_commands! {
         result: fallible,
     },
 
+    // The composer's provider feed: identity + stored selection (enabled/default/model/effort
+    // names), never the `Denied` provider-settings surface (paths, probes, credentials,
+    // process-config). Same spawn-free module and the same Read class as the two boot reads
+    // above; a hand-written projection, never `AgentProviderSettings::into()`.
+    "list_remote_agent_providers"
+        => crate::commands::remote_workspace_commands::list_remote_agent_providers {
+        class: Read,
+        caps: [],
+        params: [
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+
     "list_remote_agent_conversations"
         => crate::commands::remote_transcript_commands::list_remote_agent_conversations {
         class: Read,

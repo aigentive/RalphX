@@ -988,7 +988,11 @@ fn detector_b_is_calibrated_and_floor_enforced() {
         // 551 -> 552: the spawn-free Agents-sidebar inbox read `list_remote_agent_sidebar_conversations`.
         // Detector-silent by construction (recovery-free hydrator seam);
         // `remote_agent_sidebar_read_carries_no_spawn_authority` is the proof.
-        552,
+        // 552 -> 553: the spawn-free remote provider projection `list_remote_agent_providers`.
+        // A pure `agent_provider_settings_repo.list()` read + struct mapping; carries no
+        // AppHandle/ExecutionState/ChatService, so it is detector-silent by construction, the
+        // same clearance class as the two `remote_workspace_commands` reads it sits beside.
+        553,
         "review the detector against the full command census"
     );
     let flagged = spawn_triggering_writers(

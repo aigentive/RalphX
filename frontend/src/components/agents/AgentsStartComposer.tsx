@@ -23,6 +23,7 @@ import type { AutomationAuthoringMode } from "@/api/automations";
 import type { ComposerRoleDefault } from "@/api/manual-role-defaults.types";
 import type { Project } from "@/types/project";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
+import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
 import { useStartComposerRoleDefault } from "@/hooks/useManualRoleDefaults";
 import { useConfirmation } from "@/hooks/useConfirmation";
@@ -347,6 +348,7 @@ export function AgentsStartComposer({
     isLoading: isLoadingProviderSettings,
     isPlaceholderData: isPlaceholderProviderSettings,
   } = useHarnessProviders({ refreshRuntime: true });
+  const isRemoteEnvironment = useIsRemoteEnvironment();
   const lastBranchBaseSelectionByProjectId = useAgentSessionStore(
     (s) => s.lastBranchBaseSelectionByProjectId
   );
@@ -408,8 +410,11 @@ export function AgentsStartComposer({
       buildAgentProviderAvailabilityOptions({
         providers: configuredProviders,
         isReady: providerSettingsReady,
+        // Remote hosts serve stored config only; availability is decided from `enabled`, and
+        // the copy claims configuration rather than CLI validation (which is unavailable).
+        mode: isRemoteEnvironment ? "remote" : "local",
       }),
-    [configuredProviders, providerSettingsReady]
+    [configuredProviders, providerSettingsReady, isRemoteEnvironment]
   );
   const normalizedRuntime = useMemo(() => {
     const runtime = normalizeRuntimeForPersistence(

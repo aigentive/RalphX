@@ -174,3 +174,79 @@ pub async fn provider_readiness_for_app_state(
         enabled_provider_count,
     })
 }
+
+/// One configured provider, projected for a remote composer.
+///
+/// Deliberately NOT `AgentProviderSettingsResponse`: that 30-field type carries the exact
+/// surface the `harness_provider_commands` module is `Denied` for — host filesystem/env-file
+/// paths, `status`/`error` strings that embed the binary path verbatim, future-process
+/// configuration (`approval_policy`, `sandbox_mode`, `claude_*`, `cli_management_mode`,
+/// `auto_update_enabled`), probe-derived readiness (`available`, `binary_found`,
+/// `cli_version`, `supported_*`, `fast_mode_*`), and the account `service_tier`. Every one of
+/// those is absent here by construction, not merely omitted. The projection is hand-written,
+/// never `AgentProviderSettings::into()`, so a future field added to the entity cannot leak
+/// through a derived conversion.
+///
+/// What remains is identity plus stored selection: which providers the host enabled, which is
+/// default, and each provider's stored default model id and effort NAME. The model id is a
+/// name resolvable against the already-registered `list_agent_models`, not a path or a probe.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteAgentProviderView {
+    /// Harness name ("claude"/"codex") — identity only.
+    pub provider: String,
+    /// Stored enablement bit.
+    pub enabled: bool,
+    /// Stored default bit.
+    pub is_default: bool,
+    /// The host's stored default model id for this provider. A name, never a path.
+    pub model: Option<String>,
+    /// Logical effort name ("low"/"medium"/…).
+    pub effort: Option<String>,
+}
+
+/// Lists the host's configured providers as identity + stored selection, without probing.
+///
+/// The composer needs to know which providers are enabled, which is default, and each
+/// provider's default model/effort — the one projection the two-scalar readiness read cannot
+/// answer. `get_agent_provider_settings` answers it locally but is `Denied` remotely because
+/// its refresh path probes provider CLIs and its response carries paths, credentials, and
+/// process-authority configuration. This read touches none of that surface.
+///
+/// # Errors
+///
+/// Propagates the provider-settings repository error. A read failure must never collapse into
+/// an empty list: the composer reads emptiness as "host not onboarded" and would hide the
+/// providers of a configured host. There is no `refresh_runtime`-like argument — the read is
+/// stored config only, never a live probe.
+#[tauri::command]
+pub async fn list_remote_agent_providers(
+    state: State<'_, AppState>,
+) -> Result<Vec<RemoteAgentProviderView>, String> {
+    list_remote_agent_providers_for_app_state(state.inner()).await
+}
+
+#[doc(hidden)]
+pub async fn list_remote_agent_providers_for_app_state(
+    state: &AppState,
+) -> Result<Vec<RemoteAgentProviderView>, String> {
+    let stored = state
+        .agent_provider_settings_repo
+        .list()
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(stored
+        .into_iter()
+        .map(|row| RemoteAgentProviderView {
+            provider: row.provider.to_string(),
+            enabled: row.enabled,
+            is_default: row.is_default,
+            model: row.model,
+            effort: row.effort.map(|effort| effort.to_string()),
+        })
+        .collect())
+}
+
+#[cfg(test)]
+#[path = "remote_workspace_commands_tests.rs"]
+mod tests;

@@ -914,6 +914,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: [],
     pins: [],
   },
+  "list_remote_agent_providers": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
   "list_remote_agent_sidebar_conversations": {
     opClass: "read",
     argumentSensitive: false,

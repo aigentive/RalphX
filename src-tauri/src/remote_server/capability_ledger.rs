@@ -1139,6 +1139,14 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
         ),
     },
     CommandOverride {
+        command: "list_remote_agent_providers",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "pure repository read projecting stored provider enablement, default flag, and default model/effort names; no CLI probe, no path, no credential, no process-configuration surface",
+        ),
+    },
+    CommandOverride {
         command: "list_remote_agent_conversations",
         policy: policy(
             RiskClass::Read,
