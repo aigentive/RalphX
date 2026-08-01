@@ -287,6 +287,56 @@ fn migration_ignores_preexisting_unrelated_foreign_key_violations() {
     );
 }
 
+/// The counterpart to the test above: damage the rebuild *does* own must still
+/// abort it, and the message has to name every constraint so the failure is
+/// diagnosable from a startup log alone.
+#[test]
+fn refuses_when_the_rebuild_introduces_violations_and_names_each_constraint() {
+    let baseline =
+        violation_counts(&[("external_issue_sync_records", "external_issue_links", 0, 4)]);
+    let after = violation_counts(&[
+        // Excess over a constraint that already had orphans.
+        ("external_issue_sync_records", "external_issue_links", 0, 7),
+        // A constraint the baseline had never seen violated.
+        ("chat_message_blocks", "chat_messages", 1, 2),
+    ]);
+
+    let error = v20260730025727_chat_message_blocks_thinking_kind::check_introduced_violations(
+        &baseline, &after,
+    )
+    .expect_err("the rebuild must refuse to commit violations it introduced");
+
+    let AppError::Database(message) = &error else {
+        panic!("unexpected error: {error:?}");
+    };
+    // 3 excess + 2 new, not the 9 raw violations present after the rebuild.
+    assert!(
+        message.contains("left 5 foreign-key violations"),
+        "message must count only introduced violations: {message}"
+    );
+    assert!(
+        message.contains("chat_message_blocks -> chat_messages (2)"),
+        "message must name the new constraint: {message}"
+    );
+    assert!(
+        message.contains("external_issue_sync_records -> external_issue_links (3)"),
+        "message must name the worsened constraint: {message}"
+    );
+}
+
+#[test]
+fn accepts_a_rebuild_that_leaves_the_baseline_violations_unchanged() {
+    let baseline = violation_counts(&[
+        ("external_issue_sync_records", "external_issue_links", 0, 4),
+        ("chat_message_blocks", "chat_messages", 1, 2),
+    ]);
+
+    v20260730025727_chat_message_blocks_thinking_kind::check_introduced_violations(
+        &baseline, &baseline,
+    )
+    .expect("carrying pre-existing violations across the rebuild must not refuse");
+}
+
 #[test]
 fn introduced_violations_reports_only_the_excess_over_the_baseline() {
     let baseline =
