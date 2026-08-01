@@ -35,6 +35,10 @@ use crate::infrastructure::agents::claude::delegation_config;
 pub use job_source::{DelegationJobSource, ParkJobSnapshot};
 pub use reconcile::DelegationParkReconcileSummary;
 
+/// Upper bound on watched jobs per park. The job list arrives from an MCP caller, so it is
+/// validated before any per-job work is done and the watch vector is never sized from it.
+pub const MAX_PARK_JOB_IDS: usize = 64;
+
 /// Request to durably park a coordinator until delegated jobs require a wake.
 #[derive(Debug, Clone)]
 pub struct ArmParkRequest {
@@ -91,8 +95,13 @@ impl DelegationParkService {
                 "delegation park requires at least one running job".to_string(),
             ));
         }
+        if request.job_ids.len() > MAX_PARK_JOB_IDS {
+            return Err(AppError::Validation(format!(
+                "delegation park accepts at most {MAX_PARK_JOB_IDS} jobs"
+            )));
+        }
 
-        let mut jobs = Vec::with_capacity(request.job_ids.len());
+        let mut jobs: Vec<DelegationParkJob> = Vec::new();
         for job_id in &request.job_ids {
             let snapshot = delegation_jobs
                 .park_job_snapshot(job_id)

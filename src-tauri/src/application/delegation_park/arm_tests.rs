@@ -4,7 +4,34 @@ use crate::domain::entities::{AgentRunId, ChatConversationId, DelegationWakePoli
 use crate::infrastructure::agents::claude::delegation_config;
 
 use super::delegation_park_test_support::{harness, park, FakeDelegationJobs};
-use super::ArmParkRequest;
+use super::{ArmParkRequest, MAX_PARK_JOB_IDS};
+
+#[tokio::test]
+async fn arm_rejects_more_job_ids_than_the_park_bound() {
+    let harness = harness();
+    let service = harness.service();
+    let conversation = ChatConversationId::new();
+    let run = AgentRunId::new();
+    let delegation =
+        FakeDelegationJobs::running("job", &conversation, &run, Some(&AgentRunId::new()));
+
+    let error = service
+        .arm(
+            ArmParkRequest {
+                parent_conversation_id: conversation,
+                parent_agent_run_id: run,
+                job_ids: vec!["job".to_string(); MAX_PARK_JOB_IDS + 1],
+                wake_policy: DelegationWakePolicy::AllSettled,
+                wake_on_failure: false,
+                max_wait_secs: None,
+            },
+            &delegation,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, crate::error::AppError::Validation(_)));
+    assert_eq!(*harness.parks.supersede_count.lock().await, 0);
+}
 
 #[tokio::test]
 async fn arm_rejects_a_job_owned_by_a_different_parent() {
