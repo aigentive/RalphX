@@ -7,9 +7,6 @@ use async_trait::async_trait;
 use axum::{extract::State, http::HeaderMap, Json};
 use chrono::{DateTime, Utc};
 use ralphx_lib::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
-use ralphx_lib::http_server::native_delegation_launcher::{
-    NativeDelegationLaunchParent, NativeDelegationLaunchRequest, NativeDelegationLauncher,
-};
 use ralphx_lib::application::AppState;
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::agents::{
@@ -37,6 +34,9 @@ use ralphx_lib::http_server::handlers::{
     build_delegated_task_completed_payload, build_delegated_task_started_payload, cancel_delegate,
     complete_delegate_assignment, get_delegate_assignment, get_delegated_session_status,
     start_delegate, start_delegate_with_runtime_context, wait_delegate,
+};
+use ralphx_lib::http_server::native_delegation_launcher::{
+    NativeDelegationLaunchParent, NativeDelegationLaunchRequest, NativeDelegationLauncher,
 };
 use ralphx_lib::http_server::types::{
     CompleteDelegateAssignmentRequest, DelegateCancelRequest, DelegateStartRequest,
@@ -3704,6 +3704,165 @@ async fn delegate_start_fails_closed_when_trusted_caller_conversation_is_missing
     .unwrap_err();
 
     assert_eq!(error.0, axum::http::StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn delegate_start_rejects_trusted_caller_conversation_from_another_project() {
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let foreign_worktree_parent = TempDir::new().expect("foreign worktree parent");
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let (project, anchor_conversation, _workspace) =
+        create_project_agent_workspace(state.app_state.as_ref(), worktree_parent.path()).await;
+
+    // A real child runtime, but of a workspace in a different project: the project guard must
+    // reject it before ancestry is even considered.
+    let (foreign_project, foreign_anchor, _foreign_workspace) =
+        create_project_agent_workspace(state.app_state.as_ref(), foreign_worktree_parent.path())
+            .await;
+    assert_ne!(foreign_project.id, project.id);
+    let foreign_child = create_child_project_conversation(
+        state.app_state.as_ref(),
+        &foreign_project,
+        &foreign_anchor.id.as_str(),
+    )
+    .await;
+    let foreign_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(foreign_child.id))
+        .await
+        .expect("create foreign child run");
+
+    let error = start_delegate_with_runtime_context(
+        State(state),
+        runtime_identity_headers(&foreign_child.id.as_str(), &foreign_run.id.as_str()),
+        Json(child_runtime_delegate_start_request(
+            &project,
+            &anchor_conversation.id.as_str(),
+        )),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.0, axum::http::StatusCode::BAD_REQUEST);
+    assert_eq!(
+        error.1 .0["error"].as_str().unwrap_or_default(),
+        ralphx_lib::http_server::handlers::DELEGATION_CALLER_LINEAGE_ERROR,
+    );
+}
+
+#[tokio::test]
+async fn delegate_start_rejects_trusted_caller_adoption_without_a_lineage_anchor() {
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let (project, anchor_conversation, _workspace) =
+        create_project_agent_workspace(state.app_state.as_ref(), worktree_parent.path()).await;
+
+    // A genuine descendant of the workspace conversation — but the request omits the anchor, so
+    // nothing vouches for the trusted conversation. Adoption must fail closed rather than trust
+    // the transport header alone and attribute the delegation to an unproven conversation.
+    let child_conversation = create_child_project_conversation(
+        state.app_state.as_ref(),
+        &project,
+        &anchor_conversation.id.as_str(),
+    )
+    .await;
+    let child_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(child_conversation.id))
+        .await
+        .expect("create child run");
+
+    let mut request =
+        child_runtime_delegate_start_request(&project, &anchor_conversation.id.as_str());
+    request.parent_conversation_id = None;
+
+    let error = start_delegate_with_runtime_context(
+        State(state.clone()),
+        runtime_identity_headers(&child_conversation.id.as_str(), &child_run.id.as_str()),
+        Json(request),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.0, axum::http::StatusCode::BAD_REQUEST);
+    assert_eq!(
+        error.1 .0["error"].as_str().unwrap_or_default(),
+        ralphx_lib::http_server::handlers::DELEGATION_CALLER_LINEAGE_ERROR,
+    );
+    assert!(
+        state
+            .app_state
+            .delegated_session_repo
+            .get_by_parent_context("project", project.id.as_str().as_ref())
+            .await
+            .expect("load delegated sessions")
+            .is_empty(),
+        "a rejected adoption must not create a delegated session"
+    );
+}
+
+#[tokio::test]
+async fn delegate_start_climbs_past_a_workspaceless_anchor_to_the_nearest_ancestor_worktree() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let captured_cwd_path = fake_codex_dir.path().join("grandchild-cwd.txt");
+    let _captured_cwd_guard = crate::support::env::EnvVarGuard::set(
+        "RALPHX_TEST_CODEX_CWD_PATH",
+        captured_cwd_path.clone(),
+    );
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    seed_codex_provider_default(state.app_state.as_ref(), "gpt-5.5", LogicalEffort::XHigh).await;
+    let (project, workspace_conversation, workspace) =
+        create_project_agent_workspace(state.app_state.as_ref(), worktree_parent.path()).await;
+
+    // Two hops: an intermediate conversation that owns no workspace, then the runtime below it.
+    // The MCP transport sends the immediate parent as the anchor, so the anchor itself has no
+    // worktree and resolution must keep climbing instead of falling back to the project checkout
+    // — the behavior change this PR introduces for multi-hop lineages.
+    let intermediate_conversation = create_child_project_conversation(
+        state.app_state.as_ref(),
+        &project,
+        &workspace_conversation.id.as_str(),
+    )
+    .await;
+    let grandchild_conversation = create_child_project_conversation(
+        state.app_state.as_ref(),
+        &project,
+        &intermediate_conversation.id.as_str(),
+    )
+    .await;
+    let grandchild_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(grandchild_conversation.id))
+        .await
+        .expect("create grandchild runtime run");
+
+    let _ = start_delegate_with_runtime_context(
+        State(state.clone()),
+        runtime_identity_headers(
+            &grandchild_conversation.id.as_str(),
+            &grandchild_run.id.as_str(),
+        ),
+        Json(child_runtime_delegate_start_request(
+            &project,
+            &intermediate_conversation.id.as_str(),
+        )),
+    )
+    .await
+    .expect("delegation must be available from a multi-hop child runtime");
+
+    let captured_cwds = wait_for_captured_cwds(&captured_cwd_path, 1).await;
+    assert_eq!(
+        captured_cwds,
+        vec![canonicalized_worktree(&workspace.worktree_path)],
+        "a workspaceless anchor must resolve to the nearest ancestor worktree"
+    );
+    assert_ne!(captured_cwds[0], PathBuf::from(&project.working_directory));
 }
 
 #[tokio::test]

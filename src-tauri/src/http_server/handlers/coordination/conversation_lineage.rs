@@ -83,6 +83,16 @@ async fn load_conversation_lineage(
         let next_id = conversation.parent_conversation_id.clone();
         lineage.push(conversation);
         if lineage.len() >= MAX_CONVERSATION_LINEAGE_DEPTH {
+            // Truncation makes the caller fail closed further up; name depth explicitly so the
+            // resulting lineage rejection is not mistaken for a genuine ancestry mismatch.
+            tracing::warn!(
+                start_conversation_id = lineage
+                    .first()
+                    .map(|conversation| conversation.id.as_str())
+                    .unwrap_or_default(),
+                max_depth = MAX_CONVERSATION_LINEAGE_DEPTH,
+                "Conversation lineage truncated at the depth bound; ancestors beyond it are not considered"
+            );
             break;
         }
         current = match next_id {
@@ -191,20 +201,27 @@ pub(super) async fn apply_trusted_caller_conversation(
     .into_iter()
     .flatten()
     .collect();
-    if !anchors.is_empty() {
-        // Downward-only: the trusted conversation must sit strictly below an anchor, so a
-        // sibling or an ancestor impersonating a child is still rejected.
-        let ancestor_ids: HashSet<String> = lineage
-            .iter()
-            .skip(1)
-            .map(|conversation| conversation.id.as_str())
-            .collect();
-        if !anchors.iter().any(|anchor| ancestor_ids.contains(*anchor)) {
-            return Err(json_error(
-                StatusCode::BAD_REQUEST,
-                DELEGATION_CALLER_LINEAGE_ERROR,
-            ));
-        }
+    // Fail closed without an anchor: there is nothing to prove descent from, so adopting the
+    // trusted conversation would attribute the delegation — and its `parent_conversation_id`
+    // write — to a conversation no resolver vouched for.
+    if anchors.is_empty() {
+        return Err(json_error(
+            StatusCode::BAD_REQUEST,
+            DELEGATION_CALLER_LINEAGE_ERROR,
+        ));
+    }
+    // Downward-only: the trusted conversation must sit strictly below an anchor, so a
+    // sibling or an ancestor impersonating a child is still rejected.
+    let ancestor_ids: HashSet<String> = lineage
+        .iter()
+        .skip(1)
+        .map(|conversation| conversation.id.as_str())
+        .collect();
+    if !anchors.iter().any(|anchor| ancestor_ids.contains(*anchor)) {
+        return Err(json_error(
+            StatusCode::BAD_REQUEST,
+            DELEGATION_CALLER_LINEAGE_ERROR,
+        ));
     }
 
     parent.caller_conversation_id = Some(trusted_id.to_string());
