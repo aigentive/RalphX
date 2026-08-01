@@ -128,6 +128,16 @@ export const GATE_CALLSITE_INDIRECTIONS: readonly {
     reason: "Answer submission is the injected `submitAnswer` param (supplied by useAskUserQuestion).",
   },
   {
+    file: "src/components/Chat/QueuedMessage.tsx",
+    affordance: "queuedMessageDelete",
+    reason: "Chip renders the gate; the delete invoke lives in useChatActions and arrives as the `onDelete` prop.",
+  },
+  {
+    file: "src/components/Chat/QueuedMessage.tsx",
+    affordance: "queuedMessageEdit",
+    reason: "Chip renders the gate; the edit invoke lives in useChatActions and arrives as the `onEdit` prop.",
+  },
+  {
     file: "src/components/tasks/TaskContextMenuItems.tsx",
     affordance: "taskMove",
     reason: "Menu items dispatch through the `handlers` prop map; no command is invoked in this file.",
@@ -246,12 +256,11 @@ export const KNOWN_GATE_GAPS: readonly KnownGateGap[] = [
   },
 
   // --- op↔callsite mismatches ----------------------------------------------
-  {
-    kind: "op-mismatch",
-    id: "op-mismatch:src/components/PermissionDialog.tsx::permissionApprove",
-    owner: 1,
-    why: "Gate resolves the pinned approve_permission_request while the dialog invokes the raw resolve_permission_request twin.",
-  },
+  // RETIRED by the Phase 1 merge: `op-mismatch:src/components/PermissionDialog.tsx::permissionApprove`.
+  // `api/permission.ts` now routes approve → `approve_permission_request` and deny →
+  // `deny_permission_request` under a remote environment, so the gate and the callsite agree.
+  // The ratchet turned red on the stale entry, which is exactly what it is for — the row is
+  // deleted rather than the assertion relaxed.
   {
     kind: "op-mismatch",
     id: "op-mismatch:src/components/Ideation/PlanEditor.tsx::artifactEdit",

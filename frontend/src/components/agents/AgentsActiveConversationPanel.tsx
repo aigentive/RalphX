@@ -69,6 +69,7 @@ import {
 } from "@/lib/codex-fast-mode";
 import { formatQueuedMessageExcerpt } from "@/lib/queuedMessageExcerpt";
 import { useAgentModels } from "@/hooks/useAgentModels";
+import { useAgentGate } from "@/hooks/useAgentGate";
 import { useConfirmation } from "@/hooks/useConfirmation";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
@@ -855,6 +856,11 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     activeWorkspace,
   );
   const queryClient = useQueryClient();
+  // Switching a conversation's mode reaches `ensure_git_worktree` on the host, so remotely it
+  // travels as the WP5a spawn-free intent. The gate is resolved from the intent's presence on
+  // the facade: a host that predates it, or a device without `ui:agent`, gets a disabled picker
+  // carrying the reason instead of a control whose every click ends in a refusal.
+  const modeSwitchGate = useAgentGate("conversationModeSwitch");
   const ideationSettingsQuery = useIdeationSettings();
   const tasksEnabled =
     !ideationSettingsQuery.isLoading &&
@@ -3057,6 +3063,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                               Boolean(activeAutomationRunId) ||
                               composerProps.isSending ||
                               composerProps.agentStatus === "generating" ||
+                              modeSwitchGate.gated ||
                               switchingConversationModeId ===
                                 selectedConversationId,
                           },
