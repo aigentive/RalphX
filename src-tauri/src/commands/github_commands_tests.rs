@@ -205,6 +205,8 @@ async fn get_github_branch_overview_lists_pr_rx_and_ticket_indicators() {
             head_ref_oid: None,
             base_ref_name: "main".to_string(),
             is_draft: false,
+            state: Some("OPEN".to_string()),
+            merged_at: None,
             updated_at: Some("2026-06-28T08:00:00Z".to_string()),
             author_login: Some("reefagent".to_string()),
             assignee_logins: vec!["lazabogdan".to_string()],
@@ -215,12 +217,32 @@ async fn get_github_branch_overview_lists_pr_rx_and_ticket_indicators() {
         },
         PrSearchResult {
             number: 10,
-            title: "Remote-only PR".to_string(),
+            title: "Closed remote-only PR".to_string(),
             url: "https://github.com/aigentive/ralphx.app/pull/10".to_string(),
             head_ref_name: "feature/pr-only".to_string(),
             head_ref_oid: None,
             base_ref_name: "main".to_string(),
             is_draft: true,
+            state: Some("CLOSED".to_string()),
+            merged_at: None,
+            updated_at: None,
+            author_login: None,
+            assignee_logins: Vec::new(),
+            review_decision: None,
+            latest_review_author_logins: Vec::new(),
+            review_request_logins: Vec::new(),
+            is_cross_repository: false,
+        },
+        PrSearchResult {
+            number: 11,
+            title: "Merged remote-only PR".to_string(),
+            url: "https://github.com/aigentive/ralphx.app/pull/11".to_string(),
+            head_ref_name: "feature/merged-pr-only".to_string(),
+            head_ref_oid: None,
+            base_ref_name: "main".to_string(),
+            is_draft: false,
+            state: Some("MERGED".to_string()),
+            merged_at: Some("2026-06-27T08:00:00Z".to_string()),
             updated_at: None,
             author_login: None,
             assignee_logins: Vec::new(),
@@ -393,24 +415,9 @@ async fn get_github_branch_overview_lists_pr_rx_and_ticket_indicators() {
         Some("https://example.atlassian.net/browse/RX-77")
     );
 
-    let pr_only = overview
-        .branches
-        .iter()
-        .find(|branch| branch.branch_name == "feature/pr-only")
-        .expect("GitHub-only PR branch row should exist");
-    assert!(!pr_only.is_current);
-    assert_eq!(pr_only.pr_number, Some(10));
-    assert_eq!(pr_only.pr_status.as_deref(), Some("draft"));
-    assert!(pr_only.pr_is_draft);
-    assert_eq!(
-        pr_only.pr_url.as_deref(),
-        Some("https://github.com/aigentive/ralphx.app/pull/10")
-    );
-    assert_eq!(pr_only.pr_updated_at, None);
-    assert_eq!(pr_only.pr_author_login, None);
-    assert_eq!(pr_only.pr_base_ref_name.as_deref(), Some("main"));
-    assert_eq!(pr_only.rx_conversation_count, 0);
-    assert_eq!(pr_only.ticket_count, 0);
+    assert!(overview.branches.iter().all(|branch| {
+        branch.branch_name != "feature/pr-only" && branch.branch_name != "feature/merged-pr-only"
+    }));
 
     let merged = overview
         .branches

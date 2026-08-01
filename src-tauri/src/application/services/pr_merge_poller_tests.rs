@@ -3266,7 +3266,7 @@ async fn review_pr_monitor_terminal_state_also_persists_cleanup_authority() {
         .await
         .expect("monitor should persist");
 
-    super::mark_agent_workspace_pr_open(Arc::clone(&workspace_repo), &conversation_id)
+    super::mark_agent_workspace_pr_open(Arc::clone(&workspace_repo), &conversation_id, 101)
         .await
         .expect("review PR open marker should skip publication mutation");
     let unchanged = workspace_repo
@@ -3280,6 +3280,7 @@ async fn review_pr_monitor_terminal_state_also_persists_cleanup_authority() {
     super::mark_agent_workspace_pr_terminal(
         Arc::clone(&workspace_repo),
         &conversation_id,
+        101,
         "closed",
         "Pull request closed without merging",
     )
@@ -3339,6 +3340,7 @@ async fn review_pr_monitor_merged_terminal_outcome_has_no_error() {
     super::mark_agent_workspace_pr_terminal(
         Arc::clone(&workspace_repo),
         &conversation_id,
+        101,
         "merged",
         "Pull request merged",
     )
@@ -3361,6 +3363,72 @@ async fn review_pr_monitor_merged_terminal_outcome_has_no_error() {
         .await
         .expect("events should list");
     assert!(events.iter().any(|event| event.step == "pr_merged"));
+}
+
+#[tokio::test]
+async fn mismatched_polled_pr_does_not_mutate_non_review_publication_state() {
+    for publication_pr_number in [None, Some(942)] {
+        let worktree = tempfile::tempdir().expect("worktree path");
+        let mut workspace = supervised_workspace(
+            "mismatched-poller-publication-conversation",
+            "project-mismatched-poller-publication",
+            worktree.path(),
+        );
+        workspace.publication_pr_number = publication_pr_number;
+        workspace.publication_pr_url = publication_pr_number
+            .map(|number| format!("https://github.com/owner/repo/pull/{number}"));
+        workspace.publication_pr_status = None;
+        workspace.publication_push_status = Some("failed".to_string());
+        let conversation_id = workspace.conversation_id.clone();
+        let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+            Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+        workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("workspace should persist");
+        let baseline = workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+
+        assert!(!super::mark_agent_workspace_pr_open(
+            Arc::clone(&workspace_repo),
+            &conversation_id,
+            941,
+        )
+        .await
+        .expect("mismatched open marker should stop cleanly"));
+        assert_eq!(
+            workspace_repo
+                .get_by_conversation_id(&conversation_id)
+                .await
+                .expect("workspace lookup should succeed"),
+            Some(baseline.clone())
+        );
+        assert!(!super::mark_agent_workspace_pr_terminal(
+            Arc::clone(&workspace_repo),
+            &conversation_id,
+            941,
+            "merged",
+            "Pull request merged",
+        )
+        .await
+        .expect("mismatched terminal marker should stop cleanly"));
+
+        assert_eq!(
+            workspace_repo
+                .get_by_conversation_id(&conversation_id)
+                .await
+                .expect("workspace lookup should succeed"),
+            Some(baseline)
+        );
+        assert!(workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("events should list")
+            .is_empty());
+    }
 }
 
 #[tokio::test]
@@ -6156,7 +6224,10 @@ async fn exhausted_streak_fingerprint_suppresses_a_fresh_streak_until_health_cha
     .await
     .expect("an exhausted fingerprint should suppress a fresh streak");
 
-    assert!(!routed, "a fresh streak on identical evidence must not start");
+    assert!(
+        !routed,
+        "a fresh streak on identical evidence must not start"
+    );
     assert!(chat.get_sent_messages().await.is_empty());
     assert!(
         repair_repo
@@ -6226,7 +6297,10 @@ async fn exhausted_streak_fingerprint_suppresses_a_fresh_streak_until_health_cha
     .await
     .expect("changed health should clear the memory and dispatch");
 
-    assert!(routed, "a genuinely new failure must not be held by a stale one");
+    assert!(
+        routed,
+        "a genuinely new failure must not be held by a stale one"
+    );
     let refreshed = workspace_repo
         .get_by_conversation_id(&conversation_id)
         .await
@@ -6299,7 +6373,10 @@ async fn live_pr_autofix_unchanged_health_hold_suppresses_same_fingerprint_then_
     .await
     .expect("unchanged health should be suppressed");
 
-    assert!(!routed, "unchanged health must not start another generation");
+    assert!(
+        !routed,
+        "unchanged health must not start another generation"
+    );
     assert!(chat.get_sent_messages().await.is_empty());
     let current = repair_repo
         .get_current_repair_attempt(&conversation_id)
@@ -7234,6 +7311,7 @@ async fn terminal_agent_workspace_pr_poller_retries_runtime_shutdown_before_retu
         &stopping,
         &conversation_id,
         &project,
+        101,
         TerminalAgentWorkspaceCause::MergedPr,
         "merged",
         "Pull request merged",
@@ -7281,6 +7359,7 @@ async fn terminal_agent_workspace_pr_poller_retries_authority_persistence_before
         &stopping,
         &conversation_id,
         &project,
+        101,
         TerminalAgentWorkspaceCause::MergedPr,
         "merged",
         "Pull request merged",
@@ -7299,6 +7378,68 @@ async fn terminal_agent_workspace_pr_poller_retries_authority_persistence_before
         1,
         "runtime shutdown must begin only after terminal authority persists"
     );
+}
+
+#[tokio::test]
+async fn mismatched_polled_pr_terminalization_skips_publication_and_runtime_cleanup() {
+    let repo = init_cleanup_repo();
+    let worktrees = tempfile::tempdir().expect("worktree parent");
+    let project = cleanup_project(repo.path(), worktrees.path());
+    let conversation_id_str = "mismatched-poller-terminal-conversation";
+    let branch = expected_workspace_branch(&project, conversation_id_str);
+    let mut workspace = cleanup_workspace_with_conversation(&project, &branch, conversation_id_str);
+    workspace.publication_pr_number = Some(942);
+    workspace.publication_pr_url = Some("https://github.com/owner/repo/pull/942".to_string());
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("pushed".to_string());
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    let baseline = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    let agent_run_repo: Arc<dyn AgentRunRepository> = Arc::new(MemoryAgentRunRepository::new());
+    let plan_branch_repo: Arc<dyn crate::domain::repositories::PlanBranchRepository> =
+        Arc::new(MemoryPlanBranchRepository::new());
+    let chat = Arc::new(MockChatService::new());
+    let chat_dyn: Arc<dyn crate::application::chat_service::ChatService> = chat.clone();
+    let stopping = Arc::new(dashmap::DashMap::new());
+
+    super::terminalize_polled_agent_workspace(
+        &workspace_repo,
+        &agent_run_repo,
+        &plan_branch_repo,
+        &chat_dyn,
+        &stopping,
+        &conversation_id,
+        &project,
+        941,
+        TerminalAgentWorkspaceCause::MergedPr,
+        "merged",
+        "Pull request merged",
+        Duration::from_millis(1),
+    )
+    .await;
+
+    assert_eq!(
+        workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed"),
+        Some(baseline)
+    );
+    assert!(workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("events should list")
+        .is_empty());
+    assert!(chat.get_stop_agent_calls().await.is_empty());
 }
 
 #[tokio::test]

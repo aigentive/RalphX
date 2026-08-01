@@ -50,6 +50,12 @@ pub struct AgentWorkspacePrPublishOutcome {
     pub pr_status: &'static str,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentWorkspacePrPublishResult {
+    Published(AgentWorkspacePrPublishOutcome),
+    TerminalPublicationIdentity,
+}
+
 pub struct AgentWorkspacePrPublisher<'a> {
     github: &'a Arc<dyn GithubServiceTrait>,
     plan_markdown: Option<String>,
@@ -97,7 +103,7 @@ impl<'a> AgentWorkspacePrPublisher<'a> {
         conversation: &ChatConversation,
         workspace: &AgentConversationWorkspace,
         description: &AgentWorkspacePrDescription,
-    ) -> AppResult<AgentWorkspacePrPublishOutcome> {
+    ) -> AppResult<AgentWorkspacePrPublishResult> {
         self.publish_draft_pr_inner(working_dir, conversation, workspace, description, true)
             .await
     }
@@ -109,7 +115,7 @@ impl<'a> AgentWorkspacePrPublisher<'a> {
         conversation: &ChatConversation,
         workspace: &AgentConversationWorkspace,
         description: &AgentWorkspacePrDescription,
-    ) -> AppResult<AgentWorkspacePrPublishOutcome> {
+    ) -> AppResult<AgentWorkspacePrPublishResult> {
         self.publish_draft_pr_inner(working_dir, conversation, workspace, description, false)
             .await
     }
@@ -121,7 +127,11 @@ impl<'a> AgentWorkspacePrPublisher<'a> {
         workspace: &AgentConversationWorkspace,
         description: &AgentWorkspacePrDescription,
         recover_duplicate: bool,
-    ) -> AppResult<AgentWorkspacePrPublishOutcome> {
+    ) -> AppResult<AgentWorkspacePrPublishResult> {
+        if workspace.has_terminal_publication_pr_status() {
+            return Ok(AgentWorkspacePrPublishResult::TerminalPublicationIdentity);
+        }
+
         let mut title = description
             .title
             .as_deref()
@@ -146,12 +156,14 @@ impl<'a> AgentWorkspacePrPublisher<'a> {
                 .publication_pr_url
                 .clone()
                 .unwrap_or_else(|| format!("#{pr_number}"));
-            return Ok(AgentWorkspacePrPublishOutcome {
-                pr_number,
-                pr_url,
-                created_pr: false,
-                pr_status: "open",
-            });
+            return Ok(AgentWorkspacePrPublishResult::Published(
+                AgentWorkspacePrPublishOutcome {
+                    pr_number,
+                    pr_url,
+                    created_pr: false,
+                    pr_status: "open",
+                },
+            ));
         }
 
         match self
@@ -165,12 +177,14 @@ impl<'a> AgentWorkspacePrPublisher<'a> {
             )
             .await
         {
-            Ok((pr_number, pr_url)) => Ok(AgentWorkspacePrPublishOutcome {
-                pr_number,
-                pr_url,
-                created_pr: true,
-                pr_status: "draft",
-            }),
+            Ok((pr_number, pr_url)) => Ok(AgentWorkspacePrPublishResult::Published(
+                AgentWorkspacePrPublishOutcome {
+                    pr_number,
+                    pr_url,
+                    created_pr: true,
+                    pr_status: "draft",
+                },
+            )),
             Err(AppError::DuplicatePr) if recover_duplicate => {
                 let Some((pr_number, pr_url)) = self
                     .github
@@ -182,12 +196,14 @@ impl<'a> AgentWorkspacePrPublisher<'a> {
                 self.github
                     .update_pr_details(working_dir, pr_number, &title, body_file.path())
                     .await?;
-                Ok(AgentWorkspacePrPublishOutcome {
-                    pr_number,
-                    pr_url,
-                    created_pr: false,
-                    pr_status: "open",
-                })
+                Ok(AgentWorkspacePrPublishResult::Published(
+                    AgentWorkspacePrPublishOutcome {
+                        pr_number,
+                        pr_url,
+                        created_pr: false,
+                        pr_status: "open",
+                    },
+                ))
             }
             Err(AppError::DuplicatePr) => Err(AppError::DuplicatePr),
             Err(error) => Err(error),

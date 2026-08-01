@@ -928,6 +928,8 @@ fn pr_search_result(
         head_ref_oid: Some(format!("sha-{number}")),
         base_ref_name: base_ref_name.to_string(),
         is_draft: false,
+        state: Some("OPEN".to_string()),
+        merged_at: None,
         updated_at: None,
         author_login: Some("dev".to_string()),
         assignee_logins: Vec::new(),
@@ -978,6 +980,62 @@ async fn linked_branch_pr_hydration_uses_matching_same_repo_pull_request() {
         state.last_search_pull_requests_args,
         Some((Some("feature/shared".to_string()), 20))
     );
+}
+
+#[tokio::test]
+async fn linked_branch_pr_hydration_ignores_closed_unmerged_match() {
+    let github = Arc::new(MockGithubService::new());
+    github.will_return_pull_request_search(vec![PrSearchResult {
+        state: Some("CLOSED".to_string()),
+        ..pr_search_result(7, "feature/shared", "main", false)
+    }]);
+
+    let mut state = AppState::new_test();
+    state.github_service = Some(github);
+    let project = Project::new("Demo".to_string(), "/tmp/demo".to_string());
+
+    let hydrated = hydrate_linked_branch_source_pull_request(
+        &state,
+        &project,
+        Some(AgentConversationWorkspaceBranchMode::Linked),
+        Some("feature/shared"),
+        None,
+    )
+    .await
+    .expect("PR hydration should not fail");
+
+    assert!(hydrated.is_none());
+}
+
+#[tokio::test]
+async fn linked_branch_pr_hydration_prefers_open_match_over_merged_match() {
+    let github = Arc::new(MockGithubService::new());
+    github.will_return_pull_request_search(vec![
+        PrSearchResult {
+            state: Some("MERGED".to_string()),
+            merged_at: Some("2026-08-01T10:00:00Z".to_string()),
+            ..pr_search_result(7, "feature/shared", "main", false)
+        },
+        pr_search_result(8, "feature/shared", "release", false),
+    ]);
+
+    let mut state = AppState::new_test();
+    state.github_service = Some(github);
+    let project = Project::new("Demo".to_string(), "/tmp/demo".to_string());
+
+    let hydrated = hydrate_linked_branch_source_pull_request(
+        &state,
+        &project,
+        Some(AgentConversationWorkspaceBranchMode::Linked),
+        Some("feature/shared"),
+        None,
+    )
+    .await
+    .expect("PR hydration should not fail")
+    .expect("open match should be hydrated");
+
+    assert_eq!(hydrated.number, 8);
+    assert_eq!(hydrated.base_ref_name.as_deref(), Some("release"));
 }
 
 // ── normalized_effort_for_supported ──────────────────────────────────────────

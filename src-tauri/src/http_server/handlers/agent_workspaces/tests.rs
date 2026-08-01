@@ -1195,6 +1195,7 @@ fn test_freshness(
         effective_base_display_name: Some("main".to_string()),
         base_block_reason: (base_status == "blocked")
             .then_some("Workspace base is blocked".to_string()),
+        recommended_actions: None,
     }
 }
 
@@ -4961,6 +4962,20 @@ fn readiness_treats_base_ahead_as_recommended_action_not_blocker() {
     assert_eq!(
         publish_readiness_recommended_actions(&freshness),
         vec!["update_from_base".to_string()]
+    );
+}
+
+#[test]
+fn readiness_preserves_merged_base_pr_marker() {
+    let mut freshness = test_freshness(false, true, Some(1), "retargeted");
+    freshness.recommended_actions = Some(vec![
+        "update_from_base".to_string(),
+        "base_pr_merged".to_string(),
+    ]);
+
+    assert_eq!(
+        publish_readiness_recommended_actions(&freshness),
+        vec!["update_from_base".to_string(), "base_pr_merged".to_string(),]
     );
 }
 

@@ -42,6 +42,7 @@ pub mod agent_workspace_local_commit;
 mod agent_workspace_local_commit_tests;
 pub mod agent_workspace_continuation;
 pub mod agent_workspace_external_pr_reconciliation;
+pub mod agent_workspace_publication_reconciliation;
 pub(crate) mod agent_workspace_pr_autofix_attempt;
 #[cfg(test)]
 mod agent_workspace_pr_autofix_attempt_tests;
@@ -425,6 +426,8 @@ mod agent_terminal_tests;
 mod agent_workspace_continuation_tests;
 #[cfg(test)]
 mod agent_workspace_external_pr_reconciliation_tests;
+#[cfg(test)]
+mod agent_workspace_publication_reconciliation_tests;
 #[cfg(test)]
 mod agent_workspace_pr_metadata_reconciliation_tests;
 #[cfg(test)]

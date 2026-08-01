@@ -960,6 +960,99 @@ describe("AgentsView publish", () => {
     expect(within(actionbar).queryByTestId("agents-publish-confirm")).not.toBeInTheDocument();
   });
 
+  it("rebases directly onto a merged pull request's resolved base", async () => {
+    configurePublishPane({
+      workspace: {
+        sourcePullRequest: {
+          number: 88,
+          url: "https://github.com/mock/project/pull/88",
+          title: "Merged dependency",
+          headRefName: "feature/merged-dependency",
+          baseRefName: "release/next",
+          headRefOid: null,
+        },
+      },
+      freshness: {
+        baseStatus: "retargeted",
+        baseRef: "feature/merged-dependency",
+        baseDisplayName: "PR #88: Merged dependency",
+        effectiveBaseRef: "release/next",
+        effectiveBaseDisplayName: "release/next",
+      },
+    });
+
+    const actionbar = await openPublishPane();
+    const rebaseButton = await within(actionbar).findByTestId(
+      "agents-rebase-merged-pr-base",
+    );
+
+    expect(rebaseButton).toHaveTextContent("Rebase onto release/next");
+    fireEvent.click(rebaseButton);
+
+    await waitFor(() =>
+      expect(updateWorkspaceFromBaseMock).toHaveBeenCalledWith("conversation-1", {
+        kind: "local_branch",
+        ref: "release/next",
+        displayName: "release/next",
+        retargetedFromPullRequest: 88,
+      }),
+    );
+  });
+
+  it("offers the merged-base rebase action from freshness recommendations", async () => {
+    configurePublishPane({
+      workspace: {
+        sourcePullRequest: null,
+      },
+      freshness: {
+        baseStatus: "retargeted",
+        baseRef: "feature/merged-dependency",
+        baseDisplayName: "PR #88: Merged dependency",
+        effectiveBaseRef: "release/next",
+        effectiveBaseDisplayName: "release/next",
+        recommendedActions: ["update_from_base", "base_pr_merged"],
+      },
+    });
+
+    const actionbar = await openPublishPane();
+
+    expect(
+      await within(actionbar).findByTestId("agents-rebase-merged-pr-base"),
+    ).toHaveTextContent("Rebase onto release/next");
+  });
+
+  it("names the retargeted base in the retry repair action", async () => {
+    configurePublishPane({
+      workspace: {
+        maintenanceOperation: {
+          operationId: "maintenance-retarget",
+          generation: 3,
+          source: "base_update",
+          stage: "blocked",
+          status: "blocked",
+          summary: "Repair needs a new base.",
+          blocker: "base_ref_drift: original pull request was merged",
+          automaticContinuation: false,
+          startedAt: "2026-08-01T10:00:00Z",
+          updatedAt: "2026-08-01T10:01:00Z",
+        },
+      },
+      freshness: {
+        baseStatus: "retargeted",
+        effectiveBaseRef: "release/next",
+        effectiveBaseDisplayName: "release/next",
+      },
+    });
+
+    const actionbar = await openPublishPane();
+
+    await waitFor(() =>
+      expect(
+        within(actionbar).getByTestId("agents-publish-retry-maintenance"),
+      ).toHaveTextContent("Retry (retargets repair to release/next)"),
+    );
+  });
+
   it("keeps the actionable Commit & Publish button as the accent CTA", async () => {
     configurePublishPane({ changes: [reviewFile] });
 
