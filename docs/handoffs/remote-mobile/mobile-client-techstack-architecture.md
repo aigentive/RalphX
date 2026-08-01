@@ -185,8 +185,8 @@ Legend for the specs: **Manages** = what the screen owns; **Data** = commands/ev
 │ ‹ Board            #495       ⋯  │
 │ Remote stop lane                 │
 │ ⟳ Running · worker · 12m         │
-│ [ Overview | Steps | Activity |  │
-│   Review ]                       │
+│ [ Overview | Agent | Steps |     │
+│   Activity | Review ]            │
 │ ────────────────────────────────│
 │ Overview                         │
 │  Priority  ▲ High   (editable)   │
@@ -200,7 +200,27 @@ Legend for the specs: **Manages** = what the screen owns; **Data** = commands/ev
 └──────────────────────────────────┘
 ```
 
-**Manages**: full task lifecycle view. Tabs: **Overview** (metadata; `category`/`priority` editable at operate — the only inert edits; title/description editable only at agent tier because they're agent-consumed), **Steps** (step list + status; start/complete/skip at agent), **Activity** (full-timestamp state history), **Review** (links into S11 when review artifacts exist).
+**Manages**: full task lifecycle view. Tabs: **Overview** (metadata; `category`/`priority` editable at operate — the only inert edits; title/description editable only at agent tier because they're agent-consumed), **Agent** (see below), **Steps** (step list + status; start/complete/skip at agent), **Activity** (full-timestamp state history), **Review** (links into S11 when review artifacts exist).
+
+**Agent tab — the task↔conversation bridge** (parity gap on desktop too; mobile specs it first):
+
+```
+│ Agent                            │
+│ ⟳ worker · claude · turn 4       │
+│ ┌──────────────────────────────┐ │
+│ │ Latest activity              │ │
+│ │ ✓ step 2/5 validate entity   │ │
+│ │ 🔧 cargo test (running…)     │ │
+│ │ ◉ Question pending        ▸  │ │  → S9 gate sheet
+│ ├──────────────────────────────┤ │
+│ │ ▸ Open conversation          │ │  → S7 (linked agent
+│ │ ▸ Open workspace             │ │     conversation/workspace)
+│ ├──────────────────────────────┤ │
+│ │ Task chat (3 messages)     ▸ │ │  ← task-scoped messages
+│ └──────────────────────────────┘ │
+```
+
+Shows who is working the task (role, provider, run age), a compact live-activity feed (recent steps/tool events, not a full transcript — the full transcript lives in S7 via "Open conversation"), pending gates for THIS task's run, and the task-scoped chat thread. **Data**: run/status reads + `agent:*`/`step:*` events scoped to the task's current run; task→conversation/workspace resolution read (needs a small facade read if no registered command maps task → owning conversation — flag for WP4/Wave 2); `get_task_messages` (registerable, WP4). When no agent has ever run the task, the tab collapses to "No agent activity yet".
 **Data**: task read + state history + steps + `task:*`/`step:*` events; brakes `stop_task`/`pause_task` (operate); `update_task`, step ops, `resume_task` intent (agent).
 **States**: running (live header pulse), paused, blocked (banner with unblock — agent-gated), failed (terminal banner: "Failed steps are terminal on the host"), offline.
 **Scopes**: as annotated; every locked control renders with the lock reason, never hidden — the user should learn what flipping `ui:agent` on the host unlocks.
