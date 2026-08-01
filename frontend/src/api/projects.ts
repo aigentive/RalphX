@@ -186,17 +186,39 @@ export const projectsApi = {
     ),
 
   /**
-   * Get a single project by ID
+   * Get a single project by ID.
+   *
+   * Same split as `list` above: `get_project` shares `list_projects`' single spawn carrier
+   * (`project_response` → `inspect_repository_capability`), so it is ledgered Elevated and
+   * unregistered on the facade. Calling it remotely answers REMOTE_COMMAND_UNAVAILABLE, which
+   * every project-scoped route reads as "this project does not exist".
+   *
+   * Two literal call sites, not a computed name (P-11 drift scan). Both answers parse with the
+   * SAME schema and transform — the host's projection carries snake_case names identical to
+   * `ProjectResponse` and differs only by dropping `repository_capability`, which the schema
+   * already marks optional.
+   *
    * @param projectId The project ID
    * @returns The project
    */
   get: (projectId: string) =>
-    typedInvokeWithTransform(
-      "get_project",
-      { projectId },
-      ProjectResponseSchema,
-      transformProject
-    ),
+    remoteShellReadsEnabled()
+      ? typedInvokeWithTransform(
+          "get_remote_project",
+          { id: projectId },
+          ProjectResponseSchema,
+          transformProject
+        )
+      : // `id`, not `projectId`: the local command's param is `id: String`, and Tauri binds a
+        // flat param by its exact name or its camelCase form — `projectId` matches neither and
+        // deserializes from `null`. Pre-existing and unnoticed because `useProject` has no
+        // production consumer; fixed here rather than mirrored into the remote branch.
+        typedInvokeWithTransform(
+          "get_project",
+          { id: projectId },
+          ProjectResponseSchema,
+          transformProject
+        ),
 
   /**
    * Create a new project

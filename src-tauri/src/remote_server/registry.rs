@@ -1568,6 +1568,20 @@ crate::remote_commands! {
         result: fallible,
     },
 
+    // The single-project read behind every project-scoped route. Without it a paired client
+    // that lands on a project URL has a list but cannot load the project itself.
+    "get_remote_project"
+        => crate::commands::remote_workspace_commands::get_remote_project {
+        class: Read,
+        caps: [],
+        params: [
+            (arg id: String),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+
     "get_remote_provider_readiness"
         => crate::commands::remote_workspace_commands::get_remote_provider_readiness {
         class: Read,

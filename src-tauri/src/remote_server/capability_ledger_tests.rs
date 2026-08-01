@@ -995,7 +995,12 @@ fn detector_b_is_calibrated_and_floor_enforced() {
         // 553 -> 555: the spawn-free conversation-start pair. `request_remote_agent_conversation_start`
         // persists a start intent (detector (b) flags it via the `remote-conversation-start`
         // surface row; silent on (a)/(c)); `get_remote_conversation_start_request` is a pure read.
-        555,
+        // 555 -> 556: WP4 (d)'s `get_remote_project` — the single-project half of the spawn-free
+        // project read. Shares `project_view` with `list_remote_projects`, carries no
+        // AppHandle/ExecutionState/ChatService and never reaches `inspect_repository_capability`,
+        // so it is detector-silent by construction;
+        // `the_spawn_free_remote_workspace_module_carries_no_authority_carriers` is the proof.
+        556,
         "review the detector against the full command census"
     );
     let flagged = spawn_triggering_writers(
@@ -1529,6 +1534,76 @@ fn spawning_project_getters_are_elevated_and_not_registered() {
         assert!(
             find_spec(command).is_none(),
             "{command} must not remain on the Read registry"
+        );
+    }
+}
+
+/// The other half of the pin above: the SPAWNING getters stay off the facade, and the
+/// spawn-free twins are what answers in their place.
+///
+/// Asserting only the refusal would be satisfied by a client that cannot read projects at all —
+/// which is the state that shipped, and the reason a connected device rendered first-run
+/// onboarding over a populated host.
+#[test]
+fn the_spawn_free_project_read_twins_are_registered_read_rows() {
+    let rows = census().into_iter().collect::<BTreeMap<_, _>>();
+
+    for command in ["list_remote_projects", "get_remote_project"] {
+        let module = rows
+            .get(command)
+            .unwrap_or_else(|| panic!("`{command}` must be a live Tauri command"));
+        assert_eq!(module, "remote_workspace_commands");
+        let row = policy_for(command, module).expect("ledgered");
+        assert_eq!(row.class, RiskClass::Read);
+        assert!(
+            row.capabilities.is_empty(),
+            "`{command}` is a pure read; a Read row with capabilities is a mislabel"
+        );
+        assert!(
+            !row.reason.contains("conservative-module-default"),
+            "`{command}` still carries the module-default reason; it was not reviewed"
+        );
+        let spec = find_spec(command)
+            .unwrap_or_else(|| panic!("`{command}` must be registered on the facade"));
+        assert_eq!(spec.class, RiskClass::Read);
+    }
+}
+
+/// CALIBRATION for the workspace-shell split, matching the transcript module's assertion.
+///
+/// The module doc has NAMED this test since the split landed; it did not exist, so the
+/// contract "no `AppHandle`, no `ExecutionState`, no chat service" was prose only.
+#[test]
+fn the_spawn_free_remote_workspace_module_carries_no_authority_carriers() {
+    let sources = load_production_sources();
+    let (_, module) = sources
+        .iter()
+        .find(|(file, _)| file == "commands/remote_workspace_commands.rs")
+        .expect("the spawn-free remote workspace module must exist");
+
+    // Comments are stripped: the module doc NAMES the carriers to explain why they are absent.
+    let code = module
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        code.contains("pub async fn list_remote_projects"),
+        "comment stripping ate the module body; this assertion would be vacuous"
+    );
+
+    for carrier in [
+        "AppHandle",
+        "ExecutionState",
+        "create_chat_service",
+        "build_chat_service",
+        "inspect_repository_capability",
+    ] {
+        assert!(
+            !code.contains(carrier),
+            "`remote_workspace_commands` mentions `{carrier}`. The whole contract of this \
+             module is that the spawn/steer authority carriers are absent by construction, \
+             which is what lets its commands sit at `ui:read` with no capability."
         );
     }
 }

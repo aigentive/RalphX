@@ -25,6 +25,11 @@
 //! `inspect_repository_capability` alone: `project_repo.get_all()` underneath it is a plain
 //! SQLite read. [`list_remote_projects`] drops the inspection and returns the stored row.
 //!
+//! `get_project` is the same story with `get_by_id` in place of `get_all` — its ONLY carrier is
+//! the same `project_response` → `inspect_repository_capability` edge. [`get_remote_project`]
+//! shares [`project_view`] with the list twin, so the single-project answer cannot drift from
+//! the list answer's field set.
+//!
 //! `repositoryCapability` is therefore **absent by construction**, not merely omitted: it is
 //! the field whose computation was the carrier. A client that needs it is asking to run a git
 //! inspection on the host, which is a different request than reading the project list.
@@ -57,6 +62,7 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::application::AppState;
+use crate::domain::entities::{Project, ProjectId};
 
 /// One project, projected for a remote client's shell.
 ///
@@ -120,26 +126,58 @@ pub async fn list_remote_projects_for_app_state(
         .get_all()
         .await
         .map_err(|error| error.to_string())?;
-    Ok(projects
-        .into_iter()
-        .map(|project| RemoteProjectView {
-            id: project.id.to_string(),
-            name: project.name,
-            working_directory: project.working_directory,
-            git_mode: project.git_mode.to_string(),
-            base_branch: project.base_branch,
-            use_feature_branches: project.use_feature_branches,
-            merge_validation_mode: project.merge_validation_mode.to_string(),
-            merge_strategy: project.merge_strategy.to_string(),
-            github_pr_enabled: project.github_pr_enabled,
-            detected_analysis: project.detected_analysis,
-            custom_analysis: project.custom_analysis,
-            // Already RFC3339 text on the entity, unlike the two timestamps below.
-            analyzed_at: project.analyzed_at,
-            created_at: project.created_at.to_rfc3339(),
-            updated_at: project.updated_at.to_rfc3339(),
-        })
-        .collect())
+    Ok(projects.into_iter().map(project_view).collect())
+}
+
+/// The single projection both project twins return.
+///
+/// Shared rather than duplicated so the one-project answer can never carry a field the list
+/// answer drops (or vice versa) — the field set IS the security boundary here.
+fn project_view(project: Project) -> RemoteProjectView {
+    RemoteProjectView {
+        id: project.id.to_string(),
+        name: project.name,
+        working_directory: project.working_directory,
+        git_mode: project.git_mode.to_string(),
+        base_branch: project.base_branch,
+        use_feature_branches: project.use_feature_branches,
+        merge_validation_mode: project.merge_validation_mode.to_string(),
+        merge_strategy: project.merge_strategy.to_string(),
+        github_pr_enabled: project.github_pr_enabled,
+        detected_analysis: project.detected_analysis,
+        custom_analysis: project.custom_analysis,
+        // Already RFC3339 text on the entity, unlike the two timestamps below.
+        analyzed_at: project.analyzed_at,
+        created_at: project.created_at.to_rfc3339(),
+        updated_at: project.updated_at.to_rfc3339(),
+    }
+}
+
+/// Reads one project without inspecting its repository.
+///
+/// `Ok(None)` means the row does not exist, and it is the ONLY way that answer is produced: a
+/// repository error propagates. The distinction matters because the client's project loader
+/// treats a missing project as "pick another project", which would be the wrong response to an
+/// outage.
+#[tauri::command]
+pub async fn get_remote_project(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<Option<RemoteProjectView>, String> {
+    get_remote_project_for_app_state(state.inner(), &id).await
+}
+
+#[doc(hidden)]
+pub async fn get_remote_project_for_app_state(
+    state: &AppState,
+    id: &str,
+) -> Result<Option<RemoteProjectView>, String> {
+    let project = state
+        .project_repo
+        .get_by_id(&ProjectId::from_string(id.to_string()))
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(project.map(project_view))
 }
 
 /// Reports whether the host has a usable provider, without probing one.

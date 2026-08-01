@@ -1164,6 +1164,14 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
         ),
     },
     CommandOverride {
+        command: "get_remote_project",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "pure repository read of one project row through the same projection as `list_remote_projects`; the repository-capability inspection that classes `get_project` Elevated is absent by construction; propagates read errors",
+        ),
+    },
+    CommandOverride {
         command: "get_remote_provider_readiness",
         policy: policy(
             RiskClass::Read,

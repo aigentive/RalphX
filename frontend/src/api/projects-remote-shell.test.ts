@@ -121,6 +121,28 @@ describe("workspace shell read routing", () => {
     expect(primitiveInvoke.mock.calls[0]?.[0]).toBe("list_projects");
   });
 
+  it("reads one project via get_remote_project, never the unregistered local one", async () => {
+    useRemoteEnvironment();
+    remoteOk(RAW_PROJECT);
+
+    const project = await projectsApi.get("project-1");
+
+    expect(primitiveInvoke.mock.calls[0]?.[0]).toBe("remote_invoke");
+    expect(wireInput().cmd).toBe("get_remote_project");
+    // The twin's param is `id`, matching the host fn's own signature.
+    expect(wireInput().args).toEqual({ id: "project-1" });
+    expect(project.name).toBe("RalphX");
+  });
+
+  it("keeps calling the local get_project on the local environment", async () => {
+    primitiveInvoke.mockResolvedValue(RAW_PROJECT);
+
+    await projectsApi.get("project-1");
+
+    expect(primitiveInvoke.mock.calls[0]?.[0]).toBe("get_project");
+    expect(primitiveInvoke.mock.calls[0]?.[1]).toEqual({ id: "project-1" });
+  });
+
   it("reads provider readiness via the projection, never the Denied settings command", async () => {
     useRemoteEnvironment();
     remoteOk({ onboardingComplete: true, enabledProviderCount: 2 });

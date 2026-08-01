@@ -7,12 +7,18 @@
 
 use std::sync::Arc;
 
-use super::{list_remote_agent_providers_for_app_state, RemoteAgentProviderView};
+use super::{
+    get_remote_project_for_app_state, list_remote_agent_providers_for_app_state,
+    list_remote_projects_for_app_state, RemoteAgentProviderView,
+};
 use crate::application::AppState;
 use crate::domain::agents::{
     AgentHarnessKind, AgentProviderCliManagementMode, AgentProviderSettings, LogicalEffort,
 };
-use crate::infrastructure::memory::MemoryAgentProviderSettingsRepository;
+use crate::domain::entities::Project;
+use crate::infrastructure::memory::{
+    MemoryAgentProviderSettingsRepository, MemoryProjectRepository,
+};
 
 const SENTINEL_BINARY_PATH: &str = "/host/secret/bin/claude-SENTINEL";
 const SENTINEL_ENV_FILE_PATH: &str = "/host/secret/env/claude-SENTINEL.env";
@@ -158,4 +164,54 @@ async fn provider_projection_is_empty_when_no_providers_configured() {
         .await
         .expect("list providers");
     assert!(views.is_empty());
+}
+
+// ---------------------------------------------------------------------------------------
+// The project projections (WP4 (d) — the single-project twin).
+// ---------------------------------------------------------------------------------------
+
+fn state_with_projects(projects: Vec<Project>) -> AppState {
+    let mut state = AppState::new_test();
+    state.project_repo = Arc::new(MemoryProjectRepository::with_projects(projects));
+    state
+}
+
+fn sentinel_project() -> Project {
+    let mut project = Project::new("RalphX".to_string(), "/host/code/ralphx".to_string());
+    project.base_branch = Some("main".to_string());
+    project
+}
+
+#[tokio::test]
+async fn single_project_projection_matches_the_list_projection_field_for_field() {
+    let project = sentinel_project();
+    let id = project.id.to_string();
+    let state = state_with_projects(vec![project]);
+
+    let listed = list_remote_projects_for_app_state(&state)
+        .await
+        .expect("list projects");
+    let fetched = get_remote_project_for_app_state(&state, &id)
+        .await
+        .expect("get project")
+        .expect("project exists");
+
+    assert_eq!(listed, vec![fetched.clone()]);
+    // Absent BY CONSTRUCTION: `repository_capability` is the field whose computation is the
+    // spawn carrier the twin exists to drop.
+    let value = serde_json::to_value(&fetched).expect("serializes");
+    let object = value.as_object().expect("object");
+    assert!(!object.contains_key("repository_capability"));
+    assert!(!object.contains_key("repositoryCapability"));
+    assert_eq!(object["working_directory"], "/host/code/ralphx");
+}
+
+#[tokio::test]
+async fn single_project_projection_is_none_for_an_unknown_id() {
+    let state = state_with_projects(vec![]);
+
+    let fetched = get_remote_project_for_app_state(&state, "project-does-not-exist")
+        .await
+        .expect("missing project is Ok(None), never an error");
+    assert!(fetched.is_none());
 }

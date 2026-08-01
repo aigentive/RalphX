@@ -2822,6 +2822,15 @@
       "argumentSensitive": false,
       "capabilities": [],
       "class": "read",
+      "command": "get_remote_project",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::remote_workspace_commands::get_remote_project"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
       "command": "get_remote_provider_readiness",
       "pins": [],
       "scopeConfined": false,
@@ -8597,6 +8606,15 @@
       "command": "list_remote_projects",
       "module": "remote_workspace_commands",
       "reason": "pure repository read of project rows; the repository-capability inspection that classes `list_projects` Elevated is absent by construction",
+      "registered": true,
+      "v1Resolution": "registerable"
+    },
+    {
+      "capabilities": [],
+      "class": "read",
+      "command": "get_remote_project",
+      "module": "remote_workspace_commands",
+      "reason": "pure repository read of one project row through the same projection as `list_remote_projects`; the repository-capability inspection that classes `get_project` Elevated is absent by construction; propagates read errors",
       "registered": true,
       "v1Resolution": "registerable"
     },
