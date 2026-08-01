@@ -849,7 +849,11 @@ pub(crate) async fn start_delegate_impl_with_parent_run(
             "delegate_start requires caller_agent_name from the MCP transport",
         )
     })?;
-    let parent = resolve_delegate_parent(state, &req).await?;
+    let mut parent = resolve_delegate_parent(state, &req).await?;
+    // Child runtimes (Workspace Review, forks, started child conversations) call from a
+    // descendant of the resolved parent conversation; adopt that runtime as the caller before
+    // run identity is resolved so the run/task scope belong to the delegating agent.
+    apply_trusted_caller_conversation(state, &mut parent, trusted_caller_conversation_id).await?;
     let parent_agent_run_id = resolve_trusted_caller_agent_run_id(
         state,
         &parent,
@@ -875,6 +879,7 @@ pub(crate) async fn start_delegate_impl_with_parent_run(
                 project_id: parent.project_id,
                 working_directory: parent.working_directory,
                 caller_conversation_id: parent.caller_conversation_id,
+                workspace_anchor_conversation_id: parent.workspace_anchor_conversation_id,
                 parent_conversation_id: parent.parent_conversation_id,
                 ideation_verification: parent.ideation_verification,
             },
