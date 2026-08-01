@@ -1225,6 +1225,7 @@ export function IntegratedChatPanel({
 
   // Question UI state — chip selection, input sync, question-aware send
   const {
+    agentGate: questionAnswerGate,
     selectedOptions,
     questionInputValue,
     setQuestionInputValue,
@@ -1878,6 +1879,7 @@ export function IntegratedChatPanel({
                       onDismiss={dismissQuestion}
                       answeredValue={answeredQuestion}
                       onDismissAnswered={clearAnswered}
+                      disabledReason={questionAnswerGate.reason}
                       {...(questionBannerAction !== undefined && {
                         planApprovalAction: questionBannerAction,
                       })}

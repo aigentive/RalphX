@@ -16,6 +16,8 @@ import { useEnvironmentStore } from "@/stores/environmentStore";
 import {
   onPendingGateReconcile,
 } from "@/lib/remote/pending-gate-reconcile";
+import { remoteErrorBannerProps } from "@/lib/remote/agent-gate";
+import { isRemoteTransportError } from "@/lib/remote/transport-errors";
 import {
   AskUserQuestionPayloadSchema,
   type AskUserQuestionResponse,
@@ -309,14 +311,39 @@ export function useAskUserQuestion(currentSessionId: string | undefined) {
           }, 3500);
         }
         return { success: true, deliveredToWaitingAgent, planModeProposalHandled };
-      } catch {
-        // Check if the question was already cleaned up (e.g., by useAgentEvents on agent death).
+      } catch (error: unknown) {
         const currentQuestion = useUiStore.getState().activeQuestions[currentSessionId];
-        if (currentQuestion?.requestId === submittedRequestId) {
-          // Stale question still showing — dismiss it with feedback.
-          toast.error("Agent session expired — question is no longer active", { duration: 5000 });
-          clearActiveQuestion(currentSessionId);
+        if (currentQuestion?.requestId !== submittedRequestId) {
+          // Already replaced or cleared by an authoritative path — nothing of ours to write.
+          return { success: false, deliveredToWaitingAgent: false };
         }
+
+        // FAIL CLOSED (stateful-workflow-review): a TRANSPORT failure is not evidence about
+        // the gate. `RemoteTransportError` is raised by the wrapper itself — a registered
+        // command that ran on the host and returned `Err` rejects with that `Err`, never with
+        // this type — so it says the request did not reach a verdict, and says nothing at all
+        // about whether the agent is still blocked. Clearing the banner on it was a
+        // false-terminal write: the host agent keeps waiting on an answer nobody can see it
+        // needs, and the user is told a session expired that did not. Keep the banner up, keep
+        // the requestId out of `answeredRequestIds` so reconcile can still restore it, surface
+        // the failure, and leave retry possible.
+        if (isRemoteTransportError(error)) {
+          const banner = remoteErrorBannerProps(error);
+          if (banner) {
+            toast.error(banner.title, { description: banner.body, duration: 8000 });
+          } else {
+            toast.error("Couldn't send your answer", {
+              description: "The question is still waiting — try again.",
+              duration: 8000,
+            });
+          }
+          return { success: false, deliveredToWaitingAgent: false };
+        }
+
+        // A host-produced `Err` IS authoritative about this gate (the host read its own
+        // question state to answer). Preserve the existing local behaviour.
+        toast.error("Agent session expired — question is no longer active", { duration: 5000 });
+        clearActiveQuestion(currentSessionId);
         return { success: false, deliveredToWaitingAgent: false };
       } finally {
         setIsLoading(false);
@@ -340,19 +367,47 @@ export function useAskUserQuestion(currentSessionId: string | undefined) {
 
     // If there's an active question with a requestId, send dismiss to backend
     if (question?.requestId) {
-      answeredRequestIds.set(question.requestId, Date.now());
-      pruneAnsweredRequestIds();
       try {
         await api.askUserQuestion.resolveQuestion({
           requestId: question.requestId,
           selectedOptions: [],
           customResponse: "[dismissed]",
         });
-      } catch {
-        // Best-effort dismiss — don't block UI
+        // Suppress re-hydration only AFTER the host confirmed the dismissal. Recording it
+        // up front was a false-terminal write with a 5-minute blast radius: a transport
+        // refusal left the gate live on the host while this client suppressed every
+        // rehydration and reconcile of it for `ANSWERED_TTL_MS`, so the banner could not
+        // come back and the agent waited on an answer nobody could see it needed.
+        answeredRequestIds.set(question.requestId, Date.now());
+        pruneAnsweredRequestIds();
+      } catch (error: unknown) {
+        if (!isRemoteTransportError(error)) {
+          // A host-produced `Err` is authoritative about this gate — it is gone either way.
+          answeredRequestIds.set(question.requestId, Date.now());
+          pruneAnsweredRequestIds();
+          return;
+        }
+        // Transport failure: the gate is untouched on the host. Put the banner back rather
+        // than leaving a still-blocked agent invisible, and say why.
+        setActiveQuestion(currentSessionId, question);
+        const banner = remoteErrorBannerProps(error);
+        if (banner) {
+          toast.error(banner.title, { description: banner.body, duration: 8000 });
+        } else {
+          toast.error("Couldn't dismiss the question", {
+            description: "The question is still waiting — try again.",
+            duration: 8000,
+          });
+        }
       }
     }
-  }, [currentSessionId, activeQuestion, dismissQuestionAction, cancelAutoDismissTimer]);
+  }, [
+    currentSessionId,
+    activeQuestion,
+    dismissQuestionAction,
+    cancelAutoDismissTimer,
+    setActiveQuestion,
+  ]);
 
   /**
    * Clear just the answered summary for this session
