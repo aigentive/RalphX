@@ -7,9 +7,6 @@ use async_trait::async_trait;
 use axum::{extract::State, http::HeaderMap, Json};
 use chrono::{DateTime, Utc};
 use ralphx_lib::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
-use ralphx_lib::http_server::native_delegation_launcher::{
-    NativeDelegationLaunchParent, NativeDelegationLaunchRequest, NativeDelegationLauncher,
-};
 use ralphx_lib::application::AppState;
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::agents::{
@@ -37,6 +34,9 @@ use ralphx_lib::http_server::handlers::{
     build_delegated_task_completed_payload, build_delegated_task_started_payload, cancel_delegate,
     complete_delegate_assignment, get_delegate_assignment, get_delegated_session_status,
     start_delegate, start_delegate_with_runtime_context, wait_delegate,
+};
+use ralphx_lib::http_server::native_delegation_launcher::{
+    NativeDelegationLaunchParent, NativeDelegationLaunchRequest, NativeDelegationLauncher,
 };
 use ralphx_lib::http_server::types::{
     CompleteDelegateAssignmentRequest, DelegateCancelRequest, DelegateStartRequest,
@@ -888,6 +888,102 @@ async fn create_project_agent_workspace_with_harness(
     (project, conversation, workspace)
 }
 
+/// Creates a project conversation parented to `parent_conversation_id`, the shape used by
+/// Workspace Review runtimes and forked agent conversations.
+async fn create_child_project_conversation(
+    app_state: &AppState,
+    project: &Project,
+    parent_conversation_id: &str,
+) -> ChatConversation {
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.parent_conversation_id = Some(parent_conversation_id.to_string());
+    conversation.provider_harness = Some(AgentHarnessKind::Codex);
+    app_state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("create child project conversation")
+}
+
+/// Attaches an agent workspace row (and a fake worktree) to an existing conversation.
+async fn attach_agent_workspace(
+    app_state: &AppState,
+    project: &Project,
+    conversation_id: &ChatConversationId,
+) -> AgentConversationWorkspace {
+    let worktree_path =
+        resolve_agent_conversation_workspace_path(project, conversation_id).unwrap();
+    let safe_worktree_path = ralphx_lib::utils::path_safety::validate_absolute_non_root_path(
+        &worktree_path,
+        "test agent workspace",
+    )
+    .unwrap();
+    fs::create_dir_all(safe_worktree_path.join(".git")).expect("create fake workspace git marker");
+    let workspace = AgentConversationWorkspace::new(
+        *conversation_id,
+        project.id.clone(),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("Project default (main)".to_string()),
+        None,
+        "ralphx/agent-workspace-delegation-child".to_string(),
+        worktree_path.to_string_lossy().to_string(),
+    );
+    app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap()
+}
+
+fn child_runtime_delegate_start_request(
+    project: &Project,
+    anchor_conversation_id: &str,
+) -> DelegateStartRequest {
+    DelegateStartRequest {
+        caller_agent_name: Some("ralphx-workspace-reviewer".to_string()),
+        caller_agent_profile: None,
+        caller_context_type: Some("project".to_string()),
+        caller_context_id: Some(project.id.as_str().to_string()),
+        parent_session_id: None,
+        parent_turn_id: None,
+        parent_message_id: None,
+        // The MCP server sends RALPHX_PARENT_CONVERSATION_ID, the workspace anchor.
+        parent_conversation_id: Some(anchor_conversation_id.to_string()),
+        parent_tool_use_id: None,
+        delegated_session_id: None,
+        child_session_id: None,
+        task_ref: None,
+        agent_name: "ralphx-general-explorer".to_string(),
+        prompt: "Inspect the reviewed surface and report findings.".to_string(),
+        title: Some("Child runtime exploration".to_string()),
+        inherit_context: true,
+        harness: Some(AgentHarnessKind::Codex),
+        model: None,
+        logical_effort: None,
+        approval_policy: None,
+        sandbox_mode: None,
+    }
+}
+
+fn runtime_identity_headers(conversation_id: &str, agent_run_id: &str) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert("x-ralphx-conversation-id", conversation_id.parse().unwrap());
+    headers.insert("x-ralphx-agent-run-id", agent_run_id.parse().unwrap());
+    headers
+}
+
+fn canonicalized_worktree(worktree_path: &str) -> PathBuf {
+    ralphx_lib::utils::path_safety::validate_absolute_non_root_path(
+        Path::new(worktree_path),
+        "expected test agent workspace",
+    )
+    .unwrap()
+    .canonicalize()
+    .expect("canonicalize expected test agent workspace")
+}
+
 fn install_runtime_plugin_dir() -> (TempDir, PathBuf) {
     let tempdir = TempDir::new().expect("tempdir");
     let plugin_dir = tempdir.path().join("plugins/app");
@@ -1090,6 +1186,7 @@ async fn native_delegation_launcher_does_not_create_http_delegation_job_state() 
                 project_id: project.id.as_str().to_string(),
                 working_directory: PathBuf::from(workspace.worktree_path),
                 caller_conversation_id: Some(parent_conversation.id.as_str()),
+                workspace_anchor_conversation_id: Some(parent_conversation.id.as_str()),
                 parent_conversation_id: Some(parent_conversation.id.as_str()),
                 ideation_verification: false,
             },
@@ -3291,6 +3388,481 @@ async fn test_delegate_start_enforces_workspace_reviewer_allowed_targets() {
         .as_str()
         .unwrap_or_default()
         .contains("may not delegate"));
+}
+
+#[tokio::test]
+async fn delegate_start_from_workspace_review_child_conversation_launches_in_workspace_worktree() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let captured_cwd_path = fake_codex_dir.path().join("review-child-cwd.txt");
+    let _captured_cwd_guard = crate::support::env::EnvVarGuard::set(
+        "RALPHX_TEST_CODEX_CWD_PATH",
+        captured_cwd_path.clone(),
+    );
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    seed_codex_provider_default(state.app_state.as_ref(), "gpt-5.5", LogicalEffort::XHigh).await;
+    let (project, anchor_conversation, workspace) =
+        create_project_agent_workspace(state.app_state.as_ref(), worktree_parent.path()).await;
+
+    // The Workspace Review runtime is a child project conversation with no workspace row of
+    // its own; its worktree authority is the anchor workspace one hop up the lineage.
+    let review_conversation = create_child_project_conversation(
+        state.app_state.as_ref(),
+        &project,
+        &anchor_conversation.id.as_str(),
+    )
+    .await;
+    let review_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(review_conversation.id))
+        .await
+        .expect("create review runtime run");
+
+    let started = start_delegate_with_runtime_context(
+        State(state.clone()),
+        runtime_identity_headers(&review_conversation.id.as_str(), &review_run.id.as_str()),
+        Json(child_runtime_delegate_start_request(
+            &project,
+            &anchor_conversation.id.as_str(),
+        )),
+    )
+    .await
+    .expect("delegation must be available from a workspace review child runtime")
+    .0;
+
+    assert_eq!(started.agent_name, "ralphx-general-explorer");
+    assert_eq!(started.status, "running");
+    assert_eq!(started.parent_agent_run_id, Some(review_run.id.as_str()));
+
+    let captured_cwds = wait_for_captured_cwds(&captured_cwd_path, 1).await;
+    assert_eq!(
+        captured_cwds,
+        vec![canonicalized_worktree(&workspace.worktree_path)],
+        "delegate must launch in the reviewed workspace worktree"
+    );
+    assert_ne!(captured_cwds[0], PathBuf::from(&project.working_directory));
+}
+
+#[tokio::test]
+async fn delegate_start_from_forked_child_conversation_uses_its_own_workspace() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let captured_cwd_path = fake_codex_dir.path().join("fork-child-cwd.txt");
+    let _captured_cwd_guard = crate::support::env::EnvVarGuard::set(
+        "RALPHX_TEST_CODEX_CWD_PATH",
+        captured_cwd_path.clone(),
+    );
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    seed_codex_provider_default(state.app_state.as_ref(), "gpt-5.5", LogicalEffort::XHigh).await;
+    let (project, anchor_conversation, anchor_workspace) =
+        create_project_agent_workspace(state.app_state.as_ref(), worktree_parent.path()).await;
+
+    // A forked conversation owns its own workspace; lineage resolution must stop at self.
+    let fork_conversation = create_child_project_conversation(
+        state.app_state.as_ref(),
+        &project,
+        &anchor_conversation.id.as_str(),
+    )
+    .await;
+    let fork_workspace =
+        attach_agent_workspace(state.app_state.as_ref(), &project, &fork_conversation.id).await;
+    assert_ne!(fork_workspace.worktree_path, anchor_workspace.worktree_path);
+    let fork_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(fork_conversation.id))
+        .await
+        .expect("create fork runtime run");
+
+    let _ = start_delegate_with_runtime_context(
+        State(state.clone()),
+        runtime_identity_headers(&fork_conversation.id.as_str(), &fork_run.id.as_str()),
+        Json(child_runtime_delegate_start_request(
+            &project,
+            &anchor_conversation.id.as_str(),
+        )),
+    )
+    .await
+    .expect("delegation must be available from a forked child runtime");
+
+    let captured_cwds = wait_for_captured_cwds(&captured_cwd_path, 1).await;
+    assert_eq!(
+        captured_cwds,
+        vec![canonicalized_worktree(&fork_workspace.worktree_path)],
+        "a fork with its own workspace must not inherit the parent worktree"
+    );
+}
+
+#[tokio::test]
+async fn delegate_start_from_child_runtime_attaches_delegation_to_the_calling_conversation() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (_fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    seed_codex_provider_default(state.app_state.as_ref(), "gpt-5.5", LogicalEffort::XHigh).await;
+    let (project, anchor_conversation, _workspace) =
+        create_project_agent_workspace(state.app_state.as_ref(), worktree_parent.path()).await;
+    let review_conversation = create_child_project_conversation(
+        state.app_state.as_ref(),
+        &project,
+        &anchor_conversation.id.as_str(),
+    )
+    .await;
+    let review_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(review_conversation.id))
+        .await
+        .expect("create review runtime run");
+
+    let started = start_delegate_with_runtime_context(
+        State(state.clone()),
+        runtime_identity_headers(&review_conversation.id.as_str(), &review_run.id.as_str()),
+        Json(child_runtime_delegate_start_request(
+            &project,
+            &anchor_conversation.id.as_str(),
+        )),
+    )
+    .await
+    .expect("child runtime delegation must succeed")
+    .0;
+
+    assert_eq!(
+        started.parent_conversation_id,
+        Some(review_conversation.id.as_str()),
+        "the delegation job must belong to the calling runtime"
+    );
+
+    let delegated_conversation = state
+        .app_state
+        .chat_conversation_repo
+        .get_active_for_context(ChatContextType::Delegation, &started.delegated_session_id)
+        .await
+        .expect("load delegated conversation")
+        .expect("delegated conversation exists");
+    assert_eq!(
+        delegated_conversation.parent_conversation_id,
+        Some(review_conversation.id.as_str()),
+        "delegated conversation lineage must point at the calling runtime"
+    );
+
+    let caller_state = state
+        .app_state
+        .streaming_state_cache
+        .get(&review_conversation.id.as_str())
+        .await
+        .expect("caller streaming state exists");
+    assert_eq!(caller_state.run_id, Some(review_run.id.as_str()));
+    assert_eq!(caller_state.streaming_tasks.len(), 1);
+
+    // Forbidden effect: the workspace anchor conversation must not receive the child's run id
+    // or Delegate widget.
+    let anchor_state = state
+        .app_state
+        .streaming_state_cache
+        .get(&anchor_conversation.id.as_str())
+        .await;
+    assert!(
+        anchor_state
+            .as_ref()
+            .and_then(|cached| cached.run_id.clone())
+            .is_none()
+            && anchor_state
+                .as_ref()
+                .map(|cached| cached.streaming_tasks.is_empty())
+                .unwrap_or(true),
+        "anchor conversation streaming state must be untouched: {anchor_state:?}"
+    );
+}
+
+#[tokio::test]
+async fn delegate_start_reuses_delegated_session_created_under_the_legacy_anchor_parent() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (_fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    seed_codex_provider_default(state.app_state.as_ref(), "gpt-5.5", LogicalEffort::XHigh).await;
+    let (project, anchor_conversation, _workspace) =
+        create_project_agent_workspace(state.app_state.as_ref(), worktree_parent.path()).await;
+    let review_conversation = create_child_project_conversation(
+        state.app_state.as_ref(),
+        &project,
+        &anchor_conversation.id.as_str(),
+    )
+    .await;
+    let review_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(review_conversation.id))
+        .await
+        .expect("create review runtime run");
+
+    // Delegated sessions created before delegation was attributed to the calling runtime store
+    // the workspace anchor as their conversation parent.
+    let legacy_delegated = state
+        .app_state
+        .delegated_session_repo
+        .create(DelegatedSession::new(
+            project.id.clone(),
+            "project",
+            project.id.as_str(),
+            "ralphx-general-explorer",
+            AgentHarnessKind::Codex,
+        ))
+        .await
+        .expect("create legacy delegated session");
+    let mut legacy_conversation = ChatConversation::new_delegation(legacy_delegated.id.clone());
+    legacy_conversation.parent_conversation_id = Some(anchor_conversation.id.as_str());
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(legacy_conversation)
+        .await
+        .expect("create legacy delegated conversation");
+
+    let mut request =
+        child_runtime_delegate_start_request(&project, &anchor_conversation.id.as_str());
+    request.delegated_session_id = Some(legacy_delegated.id.as_str().to_string());
+
+    let started = start_delegate_with_runtime_context(
+        State(state.clone()),
+        runtime_identity_headers(&review_conversation.id.as_str(), &review_run.id.as_str()),
+        Json(request),
+    )
+    .await
+    .expect("reusing a legacy anchor-parented delegated session must not fail closed")
+    .0;
+
+    assert_eq!(started.delegated_session_id, legacy_delegated.id.as_str());
+}
+
+#[tokio::test]
+async fn delegate_start_rejects_conversation_outside_caller_lineage() {
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let (project, anchor_conversation, _workspace) =
+        create_project_agent_workspace(state.app_state.as_ref(), worktree_parent.path()).await;
+
+    // Same project, but not a descendant of the resolved anchor.
+    let sibling_conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project.id.clone()))
+        .await
+        .expect("create sibling conversation");
+    let sibling_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(sibling_conversation.id))
+        .await
+        .expect("create sibling run");
+
+    let error = start_delegate_with_runtime_context(
+        State(state),
+        runtime_identity_headers(&sibling_conversation.id.as_str(), &sibling_run.id.as_str()),
+        Json(child_runtime_delegate_start_request(
+            &project,
+            &anchor_conversation.id.as_str(),
+        )),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.0, axum::http::StatusCode::BAD_REQUEST);
+    assert_eq!(
+        error.1 .0["error"].as_str().unwrap_or_default(),
+        ralphx_lib::http_server::handlers::DELEGATION_CALLER_LINEAGE_ERROR,
+    );
+}
+
+#[tokio::test]
+async fn delegate_start_fails_closed_when_trusted_caller_conversation_is_missing() {
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let (project, anchor_conversation, _workspace) =
+        create_project_agent_workspace(state.app_state.as_ref(), worktree_parent.path()).await;
+
+    let error = start_delegate_with_runtime_context(
+        State(state),
+        runtime_identity_headers(
+            &ChatConversationId::new().as_str(),
+            &AgentRunId::new().as_str(),
+        ),
+        Json(child_runtime_delegate_start_request(
+            &project,
+            &anchor_conversation.id.as_str(),
+        )),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.0, axum::http::StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn delegate_start_rejects_trusted_caller_conversation_from_another_project() {
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let foreign_worktree_parent = TempDir::new().expect("foreign worktree parent");
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let (project, anchor_conversation, _workspace) =
+        create_project_agent_workspace(state.app_state.as_ref(), worktree_parent.path()).await;
+
+    // A real child runtime, but of a workspace in a different project: the project guard must
+    // reject it before ancestry is even considered.
+    let (foreign_project, foreign_anchor, _foreign_workspace) =
+        create_project_agent_workspace(state.app_state.as_ref(), foreign_worktree_parent.path())
+            .await;
+    assert_ne!(foreign_project.id, project.id);
+    let foreign_child = create_child_project_conversation(
+        state.app_state.as_ref(),
+        &foreign_project,
+        &foreign_anchor.id.as_str(),
+    )
+    .await;
+    let foreign_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(foreign_child.id))
+        .await
+        .expect("create foreign child run");
+
+    let error = start_delegate_with_runtime_context(
+        State(state),
+        runtime_identity_headers(&foreign_child.id.as_str(), &foreign_run.id.as_str()),
+        Json(child_runtime_delegate_start_request(
+            &project,
+            &anchor_conversation.id.as_str(),
+        )),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.0, axum::http::StatusCode::BAD_REQUEST);
+    assert_eq!(
+        error.1 .0["error"].as_str().unwrap_or_default(),
+        ralphx_lib::http_server::handlers::DELEGATION_CALLER_LINEAGE_ERROR,
+    );
+}
+
+#[tokio::test]
+async fn delegate_start_rejects_trusted_caller_adoption_without_a_lineage_anchor() {
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let (project, anchor_conversation, _workspace) =
+        create_project_agent_workspace(state.app_state.as_ref(), worktree_parent.path()).await;
+
+    // A genuine descendant of the workspace conversation — but the request omits the anchor, so
+    // nothing vouches for the trusted conversation. Adoption must fail closed rather than trust
+    // the transport header alone and attribute the delegation to an unproven conversation.
+    let child_conversation = create_child_project_conversation(
+        state.app_state.as_ref(),
+        &project,
+        &anchor_conversation.id.as_str(),
+    )
+    .await;
+    let child_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(child_conversation.id))
+        .await
+        .expect("create child run");
+
+    let mut request =
+        child_runtime_delegate_start_request(&project, &anchor_conversation.id.as_str());
+    request.parent_conversation_id = None;
+
+    let error = start_delegate_with_runtime_context(
+        State(state.clone()),
+        runtime_identity_headers(&child_conversation.id.as_str(), &child_run.id.as_str()),
+        Json(request),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.0, axum::http::StatusCode::BAD_REQUEST);
+    assert_eq!(
+        error.1 .0["error"].as_str().unwrap_or_default(),
+        ralphx_lib::http_server::handlers::DELEGATION_CALLER_LINEAGE_ERROR,
+    );
+    assert!(
+        state
+            .app_state
+            .delegated_session_repo
+            .get_by_parent_context("project", project.id.as_str().as_ref())
+            .await
+            .expect("load delegated sessions")
+            .is_empty(),
+        "a rejected adoption must not create a delegated session"
+    );
+}
+
+#[tokio::test]
+async fn delegate_start_climbs_past_a_workspaceless_anchor_to_the_nearest_ancestor_worktree() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let captured_cwd_path = fake_codex_dir.path().join("grandchild-cwd.txt");
+    let _captured_cwd_guard = crate::support::env::EnvVarGuard::set(
+        "RALPHX_TEST_CODEX_CWD_PATH",
+        captured_cwd_path.clone(),
+    );
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    seed_codex_provider_default(state.app_state.as_ref(), "gpt-5.5", LogicalEffort::XHigh).await;
+    let (project, workspace_conversation, workspace) =
+        create_project_agent_workspace(state.app_state.as_ref(), worktree_parent.path()).await;
+
+    // Two hops: an intermediate conversation that owns no workspace, then the runtime below it.
+    // The MCP transport sends the immediate parent as the anchor, so the anchor itself has no
+    // worktree and resolution must keep climbing instead of falling back to the project checkout
+    // — the behavior change this PR introduces for multi-hop lineages.
+    let intermediate_conversation = create_child_project_conversation(
+        state.app_state.as_ref(),
+        &project,
+        &workspace_conversation.id.as_str(),
+    )
+    .await;
+    let grandchild_conversation = create_child_project_conversation(
+        state.app_state.as_ref(),
+        &project,
+        &intermediate_conversation.id.as_str(),
+    )
+    .await;
+    let grandchild_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(grandchild_conversation.id))
+        .await
+        .expect("create grandchild runtime run");
+
+    let _ = start_delegate_with_runtime_context(
+        State(state.clone()),
+        runtime_identity_headers(
+            &grandchild_conversation.id.as_str(),
+            &grandchild_run.id.as_str(),
+        ),
+        Json(child_runtime_delegate_start_request(
+            &project,
+            &intermediate_conversation.id.as_str(),
+        )),
+    )
+    .await
+    .expect("delegation must be available from a multi-hop child runtime");
+
+    let captured_cwds = wait_for_captured_cwds(&captured_cwd_path, 1).await;
+    assert_eq!(
+        captured_cwds,
+        vec![canonicalized_worktree(&workspace.worktree_path)],
+        "a workspaceless anchor must resolve to the nearest ancestor worktree"
+    );
+    assert_ne!(captured_cwds[0], PathBuf::from(&project.working_directory));
 }
 
 #[tokio::test]

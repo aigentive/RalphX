@@ -51,6 +51,9 @@ pub struct NativeDelegationLaunchParent {
     pub project_id: String,
     pub working_directory: std::path::PathBuf,
     pub caller_conversation_id: Option<String>,
+    /// Conversation whose agent workspace anchored `working_directory`. Differs from
+    /// `caller_conversation_id` when a child runtime delegates from a descendant conversation.
+    pub workspace_anchor_conversation_id: Option<String>,
     pub parent_conversation_id: Option<String>,
     pub ideation_verification: bool,
 }
