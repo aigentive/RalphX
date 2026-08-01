@@ -694,6 +694,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         let deps =
             crate::application::agent_workspace_external_pr_reconciliation::AgentWorkspaceExternalPrReconciliationDeps {
                 workspace_repo: Arc::clone(&agent_conversation_workspace_repo),
+                chat_conversation_repo: Arc::clone(&app_state.chat_conversation_repo),
                 project_repo: Arc::clone(&project_repo),
                 github: github_service,
                 clickup_integration_service: Some(Arc::clone(
@@ -1008,9 +1009,8 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         };
 
     let recovery_ok = if recovery_ok {
-        let task_service = crate::application::AgentTaskService::new(Arc::clone(
-            &app_state.agent_task_repo,
-        ));
+        let task_service =
+            crate::application::AgentTaskService::new(Arc::clone(&app_state.agent_task_repo));
         match app_state
             .managed_team
             .recover_pending_exits(&task_service)

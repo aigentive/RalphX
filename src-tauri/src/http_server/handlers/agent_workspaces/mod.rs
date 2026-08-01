@@ -5069,8 +5069,11 @@ fn publish_readiness_blockers(
 fn publish_readiness_recommended_actions(
     freshness: &AgentConversationWorkspaceFreshnessResponse,
 ) -> Vec<String> {
-    let mut actions = Vec::new();
-    if freshness.base_status != "blocked" && freshness.is_base_ahead {
+    let mut actions = freshness.recommended_actions.clone().unwrap_or_default();
+    if freshness.base_status != "blocked"
+        && freshness.is_base_ahead
+        && !actions.iter().any(|action| action == "update_from_base")
+    {
         actions.push("update_from_base".to_string());
     }
     actions

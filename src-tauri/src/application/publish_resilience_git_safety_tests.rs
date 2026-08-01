@@ -13,10 +13,11 @@ use super::publish_resilience::{
     prepare_agent_workspace_repair_push_attempt, push_agent_workspace_repair_branch,
     reconcile_agent_workspace_repair_pr_handoff,
     reconcile_linked_plan_agent_workspace_repair_pr_handoff, repair_pr_handoff_from_observed_push,
+    retarget_agent_workspace_repair_pr_handoff,
     try_acquire_agent_workspace_repair_publish_continuation_guard,
     verify_agent_workspace_repair_pr_handoff, verify_workspace_repair_push_remote_precondition,
     AgentWorkspaceRepairPrHandoff, AgentWorkspaceRepairPushOutcome,
-    AgentWorkspaceRepairPushRequest,
+    AgentWorkspaceRepairPushRequest, RepairPrHandoffVerification,
 };
 use super::{AppState, GitService};
 use chrono::{Duration, Utc};
@@ -717,6 +718,9 @@ async fn stale_attempt_snapshots_cannot_complete_pr_or_push_effect_receipts() {
 async fn pr_handoff_verification_rejects_ref_remote_and_head_drift() {
     let fixture = setup_workspace_push(RepairPushRemoteHistory::FastForward).await;
     let workspace_path = Path::new(&fixture.workspace.worktree_path);
+    // Materialize the exact push receipt: the repaired head must match local, branch,
+    // and remote OIDs before base drift may classify as retargetable.
+    git(workspace_path, &["push", "origin", &fixture.branch]);
     let base_commit = git(workspace_path, &["rev-parse", "main"]);
     let handoff = AgentWorkspaceRepairPrHandoff {
         target_base_ref: "main".to_string(),
@@ -724,15 +728,18 @@ async fn pr_handoff_verification_rejects_ref_remote_and_head_drift() {
         expected_head_oid: fixture.local_head.clone(),
     };
 
-    let ref_error = verify_agent_workspace_repair_pr_handoff(
+    let ref_result = verify_agent_workspace_repair_pr_handoff(
         workspace_path,
         &fixture.branch,
         "release",
         &handoff,
     )
     .await
-    .expect_err("a changed base ref must invalidate the repair receipt");
-    assert!(ref_error.to_string().contains("base ref changed"));
+    .expect("a changed base ref should be classified after proving the exact push receipt");
+    assert!(matches!(
+        ref_result,
+        RepairPrHandoffVerification::Retargetable { ref reason } if reason.contains("base ref changed")
+    ));
 
     git(
         &fixture.remote_path,
@@ -745,8 +752,11 @@ async fn pr_handoff_verification_rejects_ref_remote_and_head_drift() {
     let missing_remote =
         verify_agent_workspace_repair_pr_handoff(workspace_path, &fixture.branch, "main", &handoff)
             .await
-            .expect_err("a deleted remote branch must invalidate the repair receipt");
-    assert!(missing_remote.to_string().contains("remote ref"));
+            .expect("a deleted remote branch should be classified as fatal");
+    assert!(matches!(
+        missing_remote,
+        RepairPrHandoffVerification::Fatal(ref reason) if reason.contains("remote ref")
+    ));
 
     git(workspace_path, &["push", "-u", "origin", &fixture.branch]);
     let mismatched = AgentWorkspaceRepairPrHandoff {
@@ -760,8 +770,42 @@ async fn pr_handoff_verification_rejects_ref_remote_and_head_drift() {
         &mismatched,
     )
     .await
-    .expect_err("a changed exact head receipt must fail closed");
-    assert!(head_error.to_string().contains("head no longer matches"));
+    .expect("a changed exact head receipt should be classified as fatal");
+    assert!(matches!(
+        head_error,
+        RepairPrHandoffVerification::Fatal(ref reason) if reason.contains("head no longer matches")
+    ));
+}
+
+#[tokio::test]
+async fn retargetable_receipt_blocks_with_raw_reason_when_workspace_is_missing() {
+    let fixture = setup_workspace_push(RepairPushRemoteHistory::FastForward).await;
+    let mut state = AppState::new_test();
+    // The workspace repo is intentionally left empty: without a workspace row the
+    // retarget fallback cannot name the current base and must persist the raw
+    // verification reason as the durable blocker.
+    state.agent_workspace_repair_repo = fixture.state.agent_workspace_repair_repo.clone();
+    state.branch_update_repo = fixture.state.branch_update_repo.clone();
+
+    retarget_agent_workspace_repair_pr_handoff(
+        &state,
+        Path::new(&fixture.workspace.worktree_path),
+        fixture.attempt.clone(),
+        "workspace repair push handoff base advanced from 'old' to 'new'",
+    )
+    .await
+    .expect("a missing workspace still blocks the drifted receipt durably");
+
+    let blocked = state
+        .agent_workspace_repair_repo
+        .get_repair_attempt(&fixture.attempt.id)
+        .await
+        .expect("read blocked repair")
+        .expect("repair attempt persists");
+    assert_eq!(blocked.phase, AgentWorkspaceRepairPhase::Blocked);
+    let blocker = blocked.blocker.as_deref().expect("blocker recorded");
+    assert!(blocker.contains("base advanced from 'old' to 'new'"));
+    assert!(!blocker.contains("Base changed to"));
 }
 
 #[tokio::test]
