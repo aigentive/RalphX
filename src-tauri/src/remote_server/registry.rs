@@ -1525,6 +1525,47 @@ crate::remote_commands! {
     },
 
     // -----------------------------------------------------------------------------------
+    // WP3 — the un-truncated tool-call detail pair, at `ui:read`.
+    //
+    // The transcript reads above truncate tool payloads exactly as the local UI does, so a
+    // remote client can SEE a delegate tool call but never expand it. These two are the
+    // expansion, and they were refused by batch 4 only because
+    // `load_delegated_tool_runtime_snapshot` swallowed five repository reads and could serve a
+    // stale delegated snapshot as live. That fail-open is fixed at its source (one `AppResult`
+    // seam, `Ok(None)` reserved for genuine absence), which is also what makes the transcript
+    // trio's "propagates read errors" ledger reason true (follow-up A3/L2).
+    //
+    // Both take `&AppState` and repository reads only — no `AppHandle`, no `ExecutionState`,
+    // no `ChatService` — the same three-carrier absence that licensed the transcript twins.
+    // -----------------------------------------------------------------------------------
+    "get_agent_message_tool_call_detail"
+        => crate::commands::unified_chat_commands::get_agent_message_tool_call_detail {
+        class: Read,
+        caps: [],
+        params: [
+            (arg conversation_id: String),
+            (arg message_id: String),
+            (arg tool_call_id: Option<String>),
+            (arg content_block_index: Option<u32>),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "get_agent_timeline_item_tool_call_detail"
+        => crate::commands::unified_chat_commands::get_agent_timeline_item_tool_call_detail {
+        class: Read,
+        caps: [],
+        params: [
+            (arg conversation_id: String),
+            (arg timeline_item_id: String),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+
+    // -----------------------------------------------------------------------------------
     // The conversation-LIST seam split (batch 5). These complete PR 3.2's read surface: the
     // transcript reads above are useless without a list to pick a conversation from.
     //
@@ -2006,9 +2047,8 @@ crate::remote_commands! {
     // `map_err(...)?`, no `AppHandle`/`ExecutionState`/chat service, and no route through
     // `agent_workspace_response_for_state`.
     //
-    // Deliberately NOT here, each on its own finding: `list_agent_composer_skills`,
-    // `get_agent_message_tool_call_detail` and `get_agent_timeline_item_tool_call_detail`
-    // are fail-open; `get_agent_run_status_unified` and `get_queued_agent_messages` build a
+    // Deliberately NOT here, each on its own finding: `list_agent_composer_skills` is
+    // fail-open; `get_agent_run_status_unified` and `get_queued_agent_messages` build a
     // spawn-capable chat service to serve a read; `list_conversation_folder_references`
     // returns `AppError`, which is not `Serialize`; and `list_agent_conversations` /
     // `list_agent_conversations_page` stay refused because batch 5 already answered them
