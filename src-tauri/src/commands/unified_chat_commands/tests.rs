@@ -3420,6 +3420,7 @@ fn retargeted_base_resolution() -> BaseResolutionResult {
         effective_base_commit: Some("main-sha".to_string()),
         display_name: Some("Project default (main)".to_string()),
         block_reason: None,
+        merged_source_pull_request_number: None,
     }
 }
 
@@ -3432,6 +3433,7 @@ fn blocked_base_resolution(reason: &str) -> BaseResolutionResult {
         effective_base_commit: None,
         display_name: None,
         block_reason: Some(reason.to_string()),
+        merged_source_pull_request_number: None,
     }
 }
 
@@ -5034,6 +5036,28 @@ async fn retargeting_workspace_without_existing_pr_is_a_noop() {
     .expect("workspace without PR should not require GitHub");
 }
 
+#[tokio::test]
+async fn retargeting_terminal_publication_pr_is_a_noop() {
+    let mut state = AppState::new_test();
+    let github = Arc::new(MockGithubService::new());
+    let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+    state.github_service = Some(github_trait);
+    let mut workspace = command_test_workspace();
+    workspace.publication_pr_number = Some(123);
+    workspace.publication_pr_status = Some("merged".to_string());
+
+    retarget_existing_workspace_pr_base_if_needed(
+        &state,
+        &command_publish_target(),
+        &workspace,
+        &retargeted_base_resolution(),
+    )
+    .await
+    .expect("terminal publication PR must not be retargeted");
+
+    assert_eq!(github.state().update_pr_base_calls, 0);
+}
+
 #[test]
 fn freshness_response_includes_effective_and_blocked_base_state() {
     let status = PublishBranchFreshnessStatus {
@@ -5065,6 +5089,34 @@ fn freshness_response_includes_effective_and_blocked_base_state() {
     assert_eq!(response.base_block_reason, None);
     assert!(response.has_uncommitted_changes);
     assert_eq!(response.unpublished_commit_count, Some(2));
+    assert_eq!(response.recommended_actions, None);
+
+    let merged_source_pr = BaseResolutionResult::retargeted_merged_source_pull_request(
+        "feature/source-pr".to_string(),
+        "main".to_string(),
+        "origin/main".to_string(),
+        "main-sha".to_string(),
+        42,
+    );
+    let merged_response = AgentConversationWorkspaceFreshnessResponse::from_target_status(
+        "conversation-command-base".to_string(),
+        AgentWorkspaceFreshnessScope::Full,
+        "feature/source-pr".to_string(),
+        Some("feature/source-pr".to_string()),
+        Some(&merged_source_pr),
+        status.clone(),
+        true,
+        Some(2),
+        true,
+        true,
+    );
+    assert_eq!(
+        merged_response.recommended_actions,
+        Some(vec![
+            "update_from_base".to_string(),
+            "base_pr_merged".to_string(),
+        ])
+    );
 
     let fallback = AgentConversationWorkspaceFreshnessResponse::from_target_status(
         "conversation-command-base".to_string(),
@@ -6306,7 +6358,9 @@ async fn update_workspace_from_explicit_base_blocks_when_pr_retarget_fails() {
         .await
         .expect("workspace lookup should succeed")
         .expect("workspace should exist");
-    assert_eq!(stored.base_ref, "feature/deleted-base");
+    // The explicit selection persists before the PR retarget so a later failure routes
+    // repair at the user's chosen base instead of silently dropping the selection.
+    assert_eq!(stored.base_ref, "release/0.8");
     assert_eq!(stored.publication_push_status.as_deref(), Some("failed"));
 }
 
@@ -6603,15 +6657,68 @@ async fn existing_pr_publish_bypasses_new_pr_origin_preflight() {
 }
 
 #[tokio::test]
-async fn publish_workspace_rejects_terminal_pr_without_mutating_status() {
-    let (_temp, state, conversation_id, github) = setup_publish_command_state(
-        "terminal-pr",
-        true,
-        Some(333),
-        Arc::new(MockGithubService::new()),
+async fn publish_workspace_clears_terminal_pr_identity_and_creates_a_fresh_draft() {
+    let github = Arc::new(MockGithubService::new());
+    let (temp, state, conversation_id, github) =
+        setup_publish_command_state("terminal-pr", true, Some(333), github).await;
+    let mut project = state
+        .project_repo
+        .get_all()
+        .await
+        .expect("projects load")
+        .into_iter()
+        .next()
+        .expect("project exists");
+    project.github_pr_enabled = true;
+    state
+        .project_repo
+        .update(&project)
+        .await
+        .expect("GitHub-enabled project should persist");
+    let fake_remote = temp.path().join("github-remote.git");
+    git(
+        Path::new(&project.working_directory),
+        &[
+            "clone",
+            "--bare",
+            &project.working_directory,
+            fake_remote.to_str().expect("remote path should be UTF-8"),
+        ],
+    );
+    let fake_ssh = temp.path().join("fake-github-ssh");
+    std::fs::write(
+        &fake_ssh,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = \"-G\" ]; then exit 0; fi\ncase \"$*\" in\n  *git-upload-pack*) exec git-upload-pack '{}' ;;\n  *git-receive-pack*) exec git-receive-pack '{}' ;;\nesac\nexit 2\n",
+            fake_remote.display(),
+            fake_remote.display(),
+        ),
     )
-    .await;
-    let execution_state = Arc::new(ExecutionState::new());
+    .expect("fake GitHub SSH transport should be written");
+    use std::os::unix::fs::PermissionsExt;
+    let mut permissions = std::fs::metadata(&fake_ssh)
+        .expect("fake GitHub SSH transport should exist")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&fake_ssh, permissions)
+        .expect("fake GitHub SSH transport should be executable");
+    git(
+        Path::new(&project.working_directory),
+        &[
+            "config",
+            "core.sshCommand",
+            fake_ssh.to_str().expect("SSH path should be UTF-8"),
+        ],
+    );
+    git(
+        Path::new(&project.working_directory),
+        &[
+            "remote",
+            "add",
+            "origin",
+            "git@github.com:ralphx/test-repository.git",
+        ],
+    );
     let mut workspace = state
         .agent_conversation_workspace_repo
         .get_by_conversation_id(&conversation_id)
@@ -6619,36 +6726,66 @@ async fn publish_workspace_rejects_terminal_pr_without_mutating_status() {
         .expect("workspace lookup should succeed")
         .expect("workspace should exist");
     workspace.publication_pr_status = Some("merged".to_string());
-    workspace.publication_push_status = Some("needs_agent".to_string());
+    workspace.publication_push_status = Some("pushed".to_string());
     state
         .agent_conversation_workspace_repo
-        .create_or_update(workspace)
+        .create_or_update(workspace.clone())
         .await
         .expect("workspace update should persist");
+    std::fs::write(
+        Path::new(&workspace.worktree_path).join("fresh-draft.txt"),
+        "new work after the old PR merged\n",
+    )
+    .expect("workspace change should be written");
+    seed_current_passing_workspace_review(&state, &conversation_id).await;
+    let client = Arc::new(SubmittingPrDescriptionClient::new(
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        conversation_id.clone(),
+    ));
+    let state = state.with_agent_client(client);
+    let execution_state = Arc::new(ExecutionState::new());
 
-    let error = publish_agent_conversation_workspace_for_app_state(
+    let response = publish_agent_conversation_workspace_for_app_state(
         &state,
         &execution_state,
         conversation_id.clone(),
         false,
     )
     .await
-    .expect_err("terminal PR should block publish");
+    .expect("publish over a terminal identity should create a fresh draft PR");
+    state
+        .pr_poller_registry
+        .stop_agent_workspace_polling(&conversation_id);
 
-    assert!(error.contains("closed or merged"));
-    assert_eq!(github.state().update_pr_base_calls, 0);
-    assert_eq!(github.state().push_branch_calls, 0);
+    assert_eq!(github.state().create_draft_pr_calls, 1);
     let stored = state
         .agent_conversation_workspace_repo
         .get_by_conversation_id(&conversation_id)
         .await
         .expect("workspace lookup should succeed")
         .expect("workspace should exist");
-    assert_eq!(stored.publication_pr_status.as_deref(), Some("merged"));
-    assert_eq!(
-        stored.publication_push_status.as_deref(),
-        Some("needs_agent")
+    assert_ne!(
+        stored.publication_pr_number,
+        Some(333),
+        "the terminal identity must be replaced, not reused"
     );
+    assert_ne!(
+        stored.publication_pr_status.as_deref(),
+        Some("merged"),
+        "the fresh draft must not inherit the terminal status"
+    );
+    let events = state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("events should list");
+    assert!(
+        events
+            .iter()
+            .any(|event| event.step == "terminal_publication_identity_cleared"),
+        "clearing the terminal identity must leave a durable event"
+    );
+    assert_eq!(response.workspace.publication_pr_number, stored.publication_pr_number);
 }
 
 #[tokio::test]

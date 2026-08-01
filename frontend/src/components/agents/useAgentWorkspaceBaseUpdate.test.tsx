@@ -231,6 +231,48 @@ describe("useAgentWorkspaceBaseUpdate", () => {
     ).toEqual(expect.objectContaining({ isBaseAhead: true }));
   });
 
+  it("adds merged pull-request retarget context to the rebase progress toast", async () => {
+    const queryClient = createTestQueryClient();
+    const workspace = conversationWorkspaceFixture();
+    updateAgentConversationWorkspaceFromBaseMock.mockResolvedValue({
+      workspace,
+      updated: true,
+      repairStarted: false,
+      targetRef: "release/next",
+      baseCommit: "base-sha",
+      baseStatus: "retargeted",
+      effectiveBaseDisplayName: "release/next",
+    });
+    const { result } = renderHook(
+      () => useAgentWorkspaceBaseUpdate({ conversationTitle: "Checkout flow fix" }),
+      { wrapper: wrapper(queryClient) },
+    );
+
+    act(() => {
+      result.current.runUpdateFromBase({
+        baseSelection: {
+          kind: "local_branch",
+          ref: "release/next",
+          displayName: "release/next",
+          retargetedFromPullRequest: 88,
+        },
+        conversationId: "conversation-1",
+        detail: "From release/next",
+        kind: "rebase",
+        title: "Rebasing onto release/next",
+      });
+    });
+
+    expect(toastLoadingMock).toHaveBeenCalledWith(
+      "Rebasing onto release/next",
+      expect.objectContaining({
+        description: expect.stringContaining(
+          "PR #88 merged — rebasing onto release/next",
+        ),
+      }),
+    );
+  });
+
   it("dismisses live maintenance progress when the hook unmounts", () => {
     vi.useFakeTimers();
     const queryClient = createTestQueryClient();

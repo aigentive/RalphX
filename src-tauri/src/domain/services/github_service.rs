@@ -144,6 +144,8 @@ pub struct PrSearchResult {
     pub head_ref_oid: Option<String>,
     pub base_ref_name: String,
     pub is_draft: bool,
+    pub state: Option<String>,
+    pub merged_at: Option<String>,
     pub updated_at: Option<String>,
     pub author_login: Option<String>,
     #[serde(default)]
@@ -154,6 +156,26 @@ pub struct PrSearchResult {
     #[serde(default)]
     pub review_request_logins: Vec<String>,
     pub is_cross_repository: bool,
+}
+
+impl PrSearchResult {
+    pub fn is_open(&self) -> bool {
+        self.state
+            .as_deref()
+            .is_none_or(|state| state.eq_ignore_ascii_case("OPEN"))
+    }
+
+    pub fn is_merged(&self) -> bool {
+        self.state
+            .as_deref()
+            .is_some_and(|state| state.eq_ignore_ascii_case("MERGED"))
+    }
+
+    pub fn is_closed_unmerged(&self) -> bool {
+        self.state
+            .as_deref()
+            .is_some_and(|state| state.eq_ignore_ascii_case("CLOSED"))
+    }
 }
 
 /// Inline review comment attached to a GitHub pull request review.
@@ -648,7 +670,7 @@ pub trait GithubServiceTrait: Send + Sync {
         head: &str,
     ) -> AppResult<Option<(i64, String)>>;
 
-    /// Search open pull requests for base-picker selection.
+    /// Search pull requests across all states for base-picker selection.
     async fn search_pull_requests(
         &self,
         _working_dir: &Path,

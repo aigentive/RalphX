@@ -41,6 +41,8 @@ async fn search_github_pull_requests_trims_query_clamps_limit_and_maps_results()
         head_ref_oid: Some("abc123".to_string()),
         base_ref_name: "main".to_string(),
         is_draft: true,
+        state: Some("MERGED".to_string()),
+        merged_at: Some("2026-05-22T10:00:00Z".to_string()),
         updated_at: Some("2026-05-21T10:00:00Z".to_string()),
         author_login: Some("dev".to_string()),
         assignee_logins: vec!["ops".to_string()],
@@ -87,6 +89,11 @@ async fn search_github_pull_requests_trims_query_clamps_limit_and_maps_results()
     assert_eq!(results[0].head_ref_oid.as_deref(), Some("abc123"));
     assert_eq!(results[0].base_ref_name, "main");
     assert!(results[0].is_draft);
+    assert_eq!(results[0].state.as_deref(), Some("MERGED"));
+    assert_eq!(
+        results[0].merged_at.as_deref(),
+        Some("2026-05-22T10:00:00Z")
+    );
     assert_eq!(results[0].author_login.as_deref(), Some("dev"));
     assert_eq!(results[0].assignee_logins, vec!["ops"]);
     assert_eq!(results[0].review_decision.as_deref(), Some("APPROVED"));
