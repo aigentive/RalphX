@@ -325,13 +325,15 @@ describe("api.projects", () => {
   });
 
   describe("get", () => {
-    it("should call get_project with projectId", async () => {
+    it("should call get_project with the command's own `id` param", async () => {
       mockInvoke.mockResolvedValue(createMockProject());
 
       await api.projects.get("project-1");
 
+      // `project_commands::get_project(id: String)` — Tauri binds a flat param by its exact
+      // name or its camelCase form, so `projectId` would deserialize from `null`.
       expect(mockInvoke).toHaveBeenCalledWith("get_project", {
-        projectId: "project-1",
+        id: "project-1",
       });
     });
 

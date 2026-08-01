@@ -429,6 +429,7 @@ macro_rules! register_tauri_commands {
             commands::remote_transcript_commands::list_remote_agent_conversations,
             commands::remote_execution_settings_commands::update_remote_execution_settings,
             commands::remote_workspace_commands::list_remote_projects,
+            commands::remote_workspace_commands::get_remote_project,
             commands::remote_workspace_commands::get_remote_provider_readiness,
             commands::remote_workspace_commands::list_remote_agent_providers,
             commands::remote_conversation_start_commands::request_remote_agent_conversation_start,

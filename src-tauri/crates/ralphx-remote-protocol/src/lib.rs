@@ -165,7 +165,7 @@ pub enum V1Resolution {
     /// already serves 16 `agentControl` ops, three of which carry `SeedsSpawnTriggeringState`,
     /// so "detector (a)/(b) fires" is a reason a batch declined to register a command — never a
     /// reason the host denies it. Refusals of that shape stay `Registerable` and stay on the
-    /// ratchet. See [`AuditRefusalReason`] for the four findings that do qualify.
+    /// ratchet. See [`AuditRefusalReason`] for the findings that do qualify.
     V1AuditRefused,
 }
 
@@ -184,6 +184,13 @@ pub const V1_RESOLUTIONS: &[V1Resolution] = &[
 /// that bar — `ui:operate` and `ui:agent` are live v1 scopes with registered ops carrying
 /// exactly those capabilities — and there is deliberately no variant for them, so a later batch
 /// cannot reach for one.
+///
+/// A `TransportShapeDeferred` variant existed here until WP4 (a) and was retired rather than
+/// left unused: its eight rows all cited "AppError is not Serialize, so the `fallible` dispatch
+/// arm cannot render it", and `AppError` has carried a hand-written `impl Serialize` since
+/// `96ce527a9` — Tauri requires one on every command error type. A reason code whose only
+/// recorded instances rested on a false reading of the code is not a vocabulary gap to keep
+/// open; re-minting it needs a real, falsifiable transport limitation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum AuditRefusalReason {
@@ -195,10 +202,6 @@ pub enum AuditRefusalReason {
     /// steer surface. The unlocking fix is a read-only seam, as already done for the
     /// `list_remote_*` reads.
     ConstructsSpawnCapableService,
-    /// The success or error payload cannot cross the facade at all — e.g. an error type that is
-    /// not `Serialize`, so the `fallible` dispatch arm cannot render it. An error-contract
-    /// change unlocks it; it is not an authority finding.
-    TransportShapeDeferred,
     /// A registered remote twin already answers this query through a deliberately split seam.
     /// Registering the local name would put two facade paths on one query for no new
     /// capability, so the refusal is architectural rather than pending anything.
@@ -225,7 +228,6 @@ pub enum AuditRefusalReason {
 pub const AUDIT_REFUSAL_REASONS: &[AuditRefusalReason] = &[
     AuditRefusalReason::FailOpenUntilFixed,
     AuditRefusalReason::ConstructsSpawnCapableService,
-    AuditRefusalReason::TransportShapeDeferred,
     AuditRefusalReason::SeamResolvedViaRemoteTwin,
     AuditRefusalReason::ReachesCorrectiveTransition,
 ];

@@ -125,6 +125,14 @@ export const AGENT_GATED_AFFORDANCES = {
   stepSkip: "skip_step",
   proposalEdit: "update_task_proposal",
   artifactEdit: "update_artifact",
+  // Attaching a folder to a conversation. Unavailable remotely for TWO independent reasons
+  // and derived, as always, from absence: the host keeps `add_conversation_folder_reference`
+  // off the facade (the stored path becomes an MCP filesystem root for every later spawn, with
+  // no project-root allowlist), and the picker that produces the path is a native dialog on
+  // THIS Mac, so the path would not exist on the host anyway. Its `list`/`remove` siblings ARE
+  // registered, so an existing reference still renders and can still be detached.
+  folderReferenceAdd: "add_conversation_folder_reference",
+  folderReferenceRemove: "remove_conversation_folder_reference",
   automationResume: "resume_automation",
   automationRunNow: "trigger_automation_run_now",
   automationRestart: "restart_automation",

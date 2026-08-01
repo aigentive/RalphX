@@ -384,6 +384,47 @@ describe("resolveAffordanceGate", () => {
     expect(resolveAffordanceGate("taskMove", true, []).status).toBe("gated");
   });
 
+  it("splits the folder-reference pair: add is unavailable, remove is merely gated", () => {
+    // WP4 (a) registered the reducing half and left the widening half off the facade. The two
+    // states are different answers to the user: `remove` says "enable it on the host",
+    // `add` says nothing will.
+    expect(REMOTE_FACADE_OPS["add_conversation_folder_reference"]).toBeUndefined();
+    expect(REMOTE_FACADE_OPS["remove_conversation_folder_reference"]?.opClass).toBe(
+      "agentControl"
+    );
+    // The read half is what keeps existing references rendering remotely.
+    expect(REMOTE_FACADE_OPS["list_conversation_folder_references"]?.opClass).toBe("read");
+
+    for (const scopes of [null, DEFAULT_PAIRED, GRANTED]) {
+      const add = resolveAffordanceGate("folderReferenceAdd", true, scopes);
+      expect(add.status).toBe("unavailable");
+      expect(add.reason).toBe(REMOTE_UNAVAILABLE_HINT);
+    }
+    expect(resolveAffordanceGate("folderReferenceRemove", true, DEFAULT_PAIRED).status).toBe(
+      "gated"
+    );
+    expect(resolveAffordanceGate("folderReferenceRemove", true, GRANTED).status).toBe(
+      "enabled"
+    );
+    expect(resolveAffordanceGate("folderReferenceAdd", false, null).status).toBe("enabled");
+  });
+
+  it("exposes the task-step write ops the transport-shape deferral used to hide", () => {
+    // These were unregistered on a finding that was never true, so `stepSkip` rendered
+    // `unavailable` on every paired device even with ui:agent granted.
+    for (const command of [
+      "start_step",
+      "complete_step",
+      "skip_step",
+      "fail_step",
+      "reorder_task_steps",
+    ]) {
+      expect(REMOTE_FACADE_OPS[command]?.opClass).toBe("agentControl");
+    }
+    expect(resolveAffordanceGate("stepSkip", true, DEFAULT_PAIRED).status).toBe("gated");
+    expect(resolveAffordanceGate("stepSkip", true, GRANTED).status).toBe("enabled");
+  });
+
   it("gates the content half of update_task while the op itself is operate", () => {
     expect(REMOTE_FACADE_OPS["update_task"]?.opClass).toBe("operate");
     expect(resolveAffordanceGate("taskEditContent", true, DEFAULT_PAIRED).status).toBe(
