@@ -88,6 +88,124 @@ fn init_repo(repo: &Path, branch: &str) -> String {
     git(repo, &["rev-parse", "HEAD"])
 }
 
+fn init_repo_with_remote_tracking(repo: &Path, branch: &str) -> String {
+    let remote = repo
+        .parent()
+        .expect("workspace repository should have a parent")
+        .join("origin.git");
+    init_repo(repo, branch);
+    git(
+        repo,
+        &[
+            "init",
+            "--bare",
+            remote.to_str().expect("remote path should be UTF-8"),
+        ],
+    );
+    git(
+        repo,
+        &[
+            "remote",
+            "add",
+            "origin",
+            remote.to_str().expect("remote path should be UTF-8"),
+        ],
+    );
+    git(repo, &["push", "-u", "origin", branch]);
+    git(repo, &["rev-parse", "HEAD"])
+}
+
+async fn passing_workspace_delta_context(
+    root: &Path,
+    conversation_name: &str,
+    add_unpublished_commit: bool,
+) -> (
+    AppState,
+    Arc<MockGithubService>,
+    AgentConversationWorkspace,
+    String,
+) {
+    let mut state = AppState::new_test();
+    let github = Arc::new(MockGithubService::new());
+    state.github_service = Some(github.clone());
+    let project = Project::new(
+        "Workspace Review".to_string(),
+        root.to_string_lossy().to_string(),
+    );
+    state
+        .project_repo
+        .create(project.clone())
+        .await
+        .expect("project should persist");
+    let conversation_id = ChatConversationId::from_string(conversation_name);
+    let worktree_path = resolve_agent_conversation_workspace_path(&project, &conversation_id)
+        .expect("workspace path should resolve");
+    let branch_name = "ralphx/test/workspace-review";
+    init_repo_with_remote_tracking(&worktree_path, branch_name);
+    if add_unpublished_commit {
+        std::fs::write(worktree_path.join("unpublished.md"), "not yet pushed\n")
+            .expect("unpublished workspace file should be written");
+        git(&worktree_path, &["add", "unpublished.md"]);
+        git(
+            &worktree_path,
+            &["commit", "-m", "unpublished workspace change"],
+        );
+    }
+    let head = git(&worktree_path, &["rev-parse", "HEAD"]);
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation_id.clone(),
+        project.id.clone(),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::CurrentBranch,
+        "main".to_string(),
+        None,
+        None,
+        branch_name.to_string(),
+        worktree_path.to_string_lossy().to_string(),
+    );
+    workspace.pr_auto_merge_desired = true;
+    workspace.publication_pr_number = Some(42);
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("pushed".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    let target = resolve_review_target(&workspace, &project)
+        .await
+        .expect("workspace target should resolve")
+        .expect("workspace delta should exist");
+
+    let mut monitor = AgentWorkspaceReviewMonitor::new(conversation_id, project.id);
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
+    monitor.review_artifact_id = Some(ArtifactId::from_string("review-artifact"));
+    monitor.review_artifact_version = Some(1);
+    monitor.review_requested_changes_artifact_id =
+        Some(ArtifactId::from_string("requested-changes-artifact"));
+    monitor.review_requested_changes_artifact_version = Some(1);
+    monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+    monitor.reviewed_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+    monitor.current_diff_fingerprint = Some(target.diff_fingerprint.clone());
+    monitor.reviewed_diff_fingerprint = Some(target.diff_fingerprint.clone());
+    monitor.last_run_id = Some("review-run".to_string());
+    monitor.auto_merge_guard = Some(AgentWorkspaceReviewAutoMergeGuard {
+        status: AgentWorkspaceReviewAutoMergeGuardStatus::PausedForReview,
+        pr_number: 42,
+        merge_method: "squash".to_string(),
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: target.diff_fingerprint,
+        head_sha: target.head_sha,
+        last_error: None,
+    });
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("monitor should persist");
+    (state, github, workspace, head)
+}
+
 async fn awaiting_workspace_delta_restore_context(
     state: &AppState,
     conversation_id: ChatConversationId,
@@ -1203,6 +1321,254 @@ async fn passing_workspace_delta_review_defers_restore_until_publish_proof() {
     assert!(events.iter().any(|event| {
         event.classification.as_deref() == Some(expected_classification.as_str())
     }));
+}
+
+#[tokio::test]
+async fn passing_review_restores_auto_merge_when_workspace_delta_already_published() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let (state, github, workspace, head) =
+        passing_workspace_delta_context(temp.path(), "workspace-review-already-published", false)
+            .await;
+    append_successful_workspace_publish_event(&state, workspace.conversation_id.clone()).await;
+    github.state().fetch_pr_health_result =
+        Some(Ok(auto_merge_health("ralphx/test/workspace-review", &head)));
+    github.state().enable_pr_auto_merge_delay_ms = 50;
+    let monitor = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("monitor should exist");
+    let state = Arc::new(state);
+    let restore_state = Arc::clone(&state);
+    let restore_workspace = workspace.clone();
+    let restore = tokio::spawn(async move {
+        handle_passing_workspace_review_auto_merge_guard(
+            restore_state.as_ref(),
+            &restore_workspace,
+            &monitor,
+        )
+        .await
+    });
+    for _ in 0..1_000 {
+        if github.state().enable_pr_auto_merge_calls == 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    assert_eq!(github.state().enable_pr_auto_merge_calls, 1);
+    github.state().fetch_pr_health_result =
+        Some(Ok(auto_merge_health("ralphx/test/workspace-review", &head)));
+    let restored = restore
+        .await
+        .expect("already-published restoration task should join")
+        .expect("already-published workspace delta should restore");
+
+    assert!(restored.auto_merge_guard.is_none());
+    assert_eq!(github.state().enable_pr_auto_merge_calls, 1);
+    let events = state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&workspace.conversation_id)
+        .await
+        .expect("publication events should load");
+    assert!(!events.iter().any(|event| {
+        event
+            .classification
+            .as_deref()
+            .is_some_and(|classification| {
+                classification.starts_with("workspace_review_auto_merge:restore_deferred:")
+            })
+    }));
+}
+
+#[tokio::test]
+async fn reconcile_restores_stuck_awaiting_publish_guard_with_pre_marker_publish_event() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let (state, github, workspace, head) =
+        passing_workspace_delta_context(temp.path(), "workspace-review-pre-marker-publish", false)
+            .await;
+    append_successful_workspace_publish_event(&state, workspace.conversation_id.clone()).await;
+    let mut monitor = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("monitor should exist");
+    monitor
+        .auto_merge_guard
+        .as_mut()
+        .expect("guard should exist")
+        .status = AgentWorkspaceReviewAutoMergeGuardStatus::AwaitingPublish;
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("awaiting-publish guard should persist");
+    append_workspace_delta_review_deferred_event(&state, workspace.conversation_id.clone()).await;
+    github.state().fetch_pr_health_result =
+        Some(Ok(auto_merge_health("ralphx/test/workspace-review", &head)));
+    github.state().enable_pr_auto_merge_delay_ms = 50;
+    let state = Arc::new(state);
+    let reconcile_state = Arc::clone(&state);
+    let reconcile = tokio::spawn(async move {
+        reconcile_workspace_review_auto_merge_guards(reconcile_state.as_ref()).await
+    });
+    for _ in 0..1_000 {
+        if github.state().enable_pr_auto_merge_calls == 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    assert_eq!(github.state().enable_pr_auto_merge_calls, 1);
+    github.state().fetch_pr_health_result =
+        Some(Ok(auto_merge_health("ralphx/test/workspace-review", &head)));
+
+    assert_eq!(
+        reconcile
+            .await
+            .expect("reconciliation task should join")
+            .expect("reconciliation should restore the stuck guard"),
+        1
+    );
+    assert_eq!(github.state().enable_pr_auto_merge_calls, 1);
+    assert!(state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("monitor should exist")
+        .auto_merge_guard
+        .is_none());
+}
+
+#[tokio::test]
+async fn passing_review_still_defers_when_unpublished_commits_exist() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let (state, github, workspace, head) =
+        passing_workspace_delta_context(temp.path(), "workspace-review-unpublished-commit", true)
+            .await;
+    append_successful_workspace_publish_event(&state, workspace.conversation_id.clone()).await;
+    github.state().fetch_pr_health_result =
+        Some(Ok(auto_merge_health("ralphx/test/workspace-review", &head)));
+    let monitor = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("monitor should exist");
+
+    let deferred = handle_passing_workspace_review_auto_merge_guard(&state, &workspace, &monitor)
+        .await
+        .expect("unpublished workspace delta should defer");
+
+    assert_eq!(github.state().enable_pr_auto_merge_calls, 0);
+    assert_eq!(
+        deferred
+            .auto_merge_guard
+            .expect("guard should remain")
+            .status,
+        AgentWorkspaceReviewAutoMergeGuardStatus::AwaitingPublish
+    );
+    let events = state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&workspace.conversation_id)
+        .await
+        .expect("publication events should load");
+    assert!(events.iter().any(|event| {
+        event
+            .classification
+            .as_deref()
+            .is_some_and(|classification| {
+                classification.starts_with("workspace_review_auto_merge:restore_deferred:")
+            })
+    }));
+}
+
+#[tokio::test]
+async fn already_published_proof_fails_closed_on_github_error() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let (state, github, workspace, _) = passing_workspace_delta_context(
+        temp.path(),
+        "workspace-review-already-published-github-error",
+        false,
+    )
+    .await;
+    append_successful_workspace_publish_event(&state, workspace.conversation_id.clone()).await;
+    github.state().fetch_pr_health_result = Some(Err(AppError::Infrastructure(
+        "GitHub unavailable".to_string(),
+    )));
+    let monitor = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("monitor should exist");
+
+    handle_passing_workspace_review_auto_merge_guard(&state, &workspace, &monitor)
+        .await
+        .expect("GitHub proof errors should defer rather than fail the pass handler");
+    let awaiting = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("monitor should exist");
+    assert_eq!(
+        awaiting
+            .auto_merge_guard
+            .as_ref()
+            .expect("guard should remain")
+            .status,
+        AgentWorkspaceReviewAutoMergeGuardStatus::AwaitingPublish
+    );
+
+    github.state().fetch_pr_health_result = Some(Err(AppError::Infrastructure(
+        "GitHub unavailable".to_string(),
+    )));
+    assert_eq!(
+        reconcile_workspace_review_auto_merge_guards(&state)
+            .await
+            .expect("GitHub proof errors should not fail reconciliation"),
+        0
+    );
+    assert_eq!(github.state().fetch_pr_health_calls, 2);
+    assert_eq!(github.state().enable_pr_auto_merge_calls, 0);
+}
+
+#[tokio::test]
+async fn already_published_proof_rejects_remote_head_mismatch() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let (state, github, workspace, _) = passing_workspace_delta_context(
+        temp.path(),
+        "workspace-review-already-published-head-mismatch",
+        false,
+    )
+    .await;
+    append_successful_workspace_publish_event(&state, workspace.conversation_id.clone()).await;
+    github.state().fetch_pr_health_result = Some(Ok(auto_merge_health(
+        "ralphx/test/workspace-review",
+        "0000000000000000000000000000000000000000",
+    )));
+    let monitor = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("monitor should exist");
+
+    let deferred = handle_passing_workspace_review_auto_merge_guard(&state, &workspace, &monitor)
+        .await
+        .expect("mismatched PR head should defer restoration");
+
+    assert_eq!(github.state().enable_pr_auto_merge_calls, 0);
+    assert_eq!(github.state().fetch_pr_health_calls, 1);
+    assert_eq!(
+        deferred
+            .auto_merge_guard
+            .expect("guard should remain")
+            .status,
+        AgentWorkspaceReviewAutoMergeGuardStatus::AwaitingPublish
+    );
 }
 
 #[tokio::test]

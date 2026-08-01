@@ -195,6 +195,13 @@ pub(crate) fn pr_fix_publish_can_resume_after_workspace_review(
                 pr_supervision_block_is_workspace_review_gate(workspace)
                     || has_pending_pr_fix_workspace_review_publish_handoff(publication_events)
             }
+            Some("review_paused") => {
+                workspace.pr_supervision_summary.as_deref()
+                    == Some(
+                        crate::application::agent_workspace_review_auto_merge::REVIEW_AUTO_MERGE_PAUSED_SUMMARY,
+                    )
+                    || has_pending_pr_fix_workspace_review_publish_handoff(publication_events)
+            }
             _ => false,
         }
 }
