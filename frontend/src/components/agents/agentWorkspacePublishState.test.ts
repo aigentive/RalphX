@@ -877,7 +877,7 @@ describe("canInspectAgentWorkspaceBaseFreshness", () => {
     ).toBe(true);
   });
 
-  it("keeps plan publish and diff surfaces without base freshness inspection", () => {
+  it("keeps plan publish, diff, and base freshness surfaces inspectable", () => {
     const planWorkspace = workspace({
       mode: "plan",
       linkedIdeationSessionId: "planning-session-1",
@@ -885,7 +885,7 @@ describe("canInspectAgentWorkspaceBaseFreshness", () => {
       publicationPrStatus: "open",
     });
 
-    expect(canInspectAgentWorkspaceBaseFreshness(planWorkspace)).toBe(false);
+    expect(canInspectAgentWorkspaceBaseFreshness(planWorkspace)).toBe(true);
     expect(shouldShowAgentWorkspacePublishSurface(planWorkspace)).toBe(true);
     expect(canInspectAgentWorkspacePublishDiffs(planWorkspace)).toBe(true);
   });
@@ -907,7 +907,7 @@ describe("canInspectAgentWorkspaceBaseFreshness", () => {
     ).toBe(false);
   });
 
-  it("rejects missing plan workspaces for live base freshness inspection", () => {
+  it("keeps missing plan workspaces eligible for base freshness inspection", () => {
     expect(
       canInspectAgentWorkspaceBaseFreshness(
         workspace({
@@ -916,7 +916,7 @@ describe("canInspectAgentWorkspaceBaseFreshness", () => {
           status: "missing",
         }),
       ),
-    ).toBe(false);
+    ).toBe(true);
   });
 });
 

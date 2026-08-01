@@ -5781,15 +5781,17 @@ async fn get_agent_conversation_workspace_local_freshness(
 fn ensure_agent_workspace_supports_freshness(
     workspace: &AgentConversationWorkspace,
 ) -> Result<(), String> {
-    if workspace.mode == AgentConversationWorkspaceMode::Edit
-        || (workspace.mode == AgentConversationWorkspaceMode::Ideation
-            && workspace.linked_plan_branch_id.is_some())
+    if matches!(
+        workspace.mode,
+        AgentConversationWorkspaceMode::Edit | AgentConversationWorkspaceMode::Plan
+    ) || (workspace.mode == AgentConversationWorkspaceMode::Ideation
+        && workspace.linked_plan_branch_id.is_some())
     {
         return Ok(());
     }
 
     Err(
-        "Only edit workspaces and ideation workspaces with linked plan branches can be inspected for freshness"
+        "Only edit and plan workspaces, and ideation workspaces with linked plan branches, can be inspected for freshness"
             .to_string(),
     )
 }

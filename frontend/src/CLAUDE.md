@@ -133,6 +133,7 @@ Example: "View Registry Pattern" — see @../../.claude/rules/task-detail-views.
 - **Shared Persona Menu** — `src/components/personas/PersonaMenuList.tsx` is the single writer for persona choose-menus (picker + chip); it owns the scoped `globalAndProject` query, grouping, and inspect preview. ❌ New flat/unscoped persona lists.
 - **StatusPill** — `src/components/ui/status-pill.tsx` is the single pill surface for status/stage/judge badges (tone-based, WKWebView-safe longhands). ❌ New ad-hoc `rounded-full px-2 py-0.5` status spans; automation run-card badge dedupe lives in `automations/automationRunBadges.ts`.
 - **Plan Bundle Tabs** — Agents Plan uses `PlanBundleTabs` for persistent Overview/Blueprint selection and conditional Proposals; lifecycle controls remain bundle-level while edit/history/export operate on the selected document.
+- **Freshness Gate Parity** — freshness verdicts render only under the predicate that enables their query (fetch-gate = render-gate).
 
 ### Composition Over Props
 ```tsx
