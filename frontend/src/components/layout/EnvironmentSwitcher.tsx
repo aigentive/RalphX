@@ -32,25 +32,35 @@ import {
   parseRemoteTransportErrorCode,
 } from "@/lib/remote/transport-errors";
 
+import { RemoteConnectionJournalDialog } from "@/components/remote/RemoteConnectionJournalDialog";
+
 import {
-  ENVIRONMENT_STATUS_DOT,
+  environmentDotConfig,
   environmentStatusReason,
 } from "./environment-switcher-status";
 import type { AttemptFailure } from "@/lib/remote/supervisor";
+import type { SupervisorPresentation } from "@/lib/remote/supervisor-transition-table";
 
 interface EnvironmentDotProps {
   environmentId: string;
   state: EnvironmentConnectionState;
+  presentation?: SupervisorPresentation | undefined;
+  isActive?: boolean;
 }
 
-function EnvironmentDot({ environmentId, state }: EnvironmentDotProps) {
-  const config = ENVIRONMENT_STATUS_DOT[state];
+function EnvironmentDot({
+  environmentId,
+  state,
+  presentation,
+  isActive = false,
+}: EnvironmentDotProps) {
+  const config = environmentDotConfig(state, presentation, isActive);
   return (
     <span
       aria-hidden="true"
-      className="inline-flex h-4 w-4 shrink-0 items-center justify-center text-[0.75rem] leading-none"
+      className={`inline-flex h-4 w-4 shrink-0 items-center justify-center text-[0.75rem] leading-none${config.pulseClass ? ` ${config.pulseClass}` : ""}`}
       style={{ color: config.color }}
-      data-status={state}
+      data-status={config.pulseClass ? "syncing" : state}
       data-testid={`environment-dot-${environmentId}`}
     >
       {config.glyph}
@@ -103,6 +113,7 @@ function NotificationBadge({
 interface EnvironmentRowProps {
   environment: EnvironmentEntry;
   state: EnvironmentConnectionState;
+  presentation: SupervisorPresentation | undefined;
   blockedFailure: AttemptFailure | null;
   badgeCount: number;
   selected: boolean;
@@ -114,6 +125,7 @@ interface EnvironmentRowProps {
 const EnvironmentRow = memo(function EnvironmentRow({
   environment,
   state,
+  presentation,
   blockedFailure,
   badgeCount,
   selected,
@@ -134,7 +146,12 @@ const EnvironmentRow = memo(function EnvironmentRow({
       onKeyDown={(event) => onKeyDown(event, environment.id)}
       data-testid={`environment-option-${environment.id}`}
     >
-      <EnvironmentDot environmentId={environment.id} state={state} />
+      <EnvironmentDot
+        environmentId={environment.id}
+        state={state}
+        presentation={presentation}
+        isActive={selected}
+      />
       <span className="min-w-0 flex-1 truncate">{environment.name}</span>
       <NotificationBadge
         count={badgeCount}
@@ -151,7 +168,7 @@ const EnvironmentRow = memo(function EnvironmentRow({
   );
   const reason =
     environment.kind === "remote"
-      ? environmentStatusReason(state, blockedFailure)
+      ? environmentStatusReason(state, blockedFailure, presentation, selected)
       : null;
 
   if (!reason) return row;
@@ -195,6 +212,7 @@ export const EnvironmentSwitcher = memo(function EnvironmentSwitcher({
     [onOpenChange, open],
   );
   const enabled = useUiStore((state) => state.featureFlags.remoteEnvironments);
+  const [journalOpen, setJournalOpen] = useState(false);
   const environments = useEnvironmentStore((state) => state.environments);
   const activeEnvironmentId = useEnvironmentStore((state) => state.activeEnvironmentId);
   const connectionStates = useEnvironmentStore((state) => state.connectionStates);
@@ -216,6 +234,11 @@ export const EnvironmentSwitcher = memo(function EnvironmentSwitcher({
     activeEnvironment?.kind === "local"
       ? "connected"
       : (connectionStates[activeEnvironment?.id ?? LOCAL_ENVIRONMENT_ID] ?? "idle");
+  const activePresentation =
+    activeEnvironment?.kind === "remote"
+      ? connectionPresentations[activeEnvironment.id]?.presentation
+      : undefined;
+  const activeSyncing = activePresentation === "syncing";
 
   /**
    * The collapsed trigger cannot show a per-environment badge, so it carries the SUM
@@ -308,11 +331,14 @@ export const EnvironmentSwitcher = memo(function EnvironmentSwitcher({
             <button
               ref={triggerRef}
               type="button"
-              aria-label={
-                backgroundBadgeTotal > 0
-                  ? `Switch environment, ${badgeLabel(backgroundBadgeTotal)} in other environments`
-                  : "Switch environment"
-              }
+              aria-label={[
+                activeSyncing
+                  ? `Switch environment, syncing with "${activeEnvironment.name}"`
+                  : "Switch environment",
+                ...(backgroundBadgeTotal > 0
+                  ? [`${badgeLabel(backgroundBadgeTotal)} in other environments`]
+                  : []),
+              ].join(", ")}
               aria-haspopup="listbox"
               aria-expanded={resolvedOpen}
               className="inline-flex h-8 max-w-[220px] items-center gap-1.5 rounded-[6px] border px-2.5 text-[0.8125rem] font-medium outline-none transition-colors hover:bg-[var(--bg-elevated)] focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]"
@@ -331,8 +357,22 @@ export const EnvironmentSwitcher = memo(function EnvironmentSwitcher({
               }}
               data-testid="environment-switcher-trigger"
             >
-              <EnvironmentDot environmentId={activeEnvironment.id} state={activeState} />
+              <EnvironmentDot
+                environmentId={activeEnvironment.id}
+                state={activeState}
+                presentation={activePresentation}
+                isActive
+              />
               <span className="min-w-0 truncate">{activeEnvironment.name}</span>
+              {activeSyncing ? (
+                <span
+                  className="shrink-0"
+                  style={{ color: "var(--text-muted)" }}
+                  data-testid="environment-switcher-syncing-label"
+                >
+                  Syncing…
+                </span>
+              ) : null}
               <NotificationBadge
                 count={backgroundBadgeTotal}
                 testId="environment-switcher-badge"
@@ -345,7 +385,11 @@ export const EnvironmentSwitcher = memo(function EnvironmentSwitcher({
             </button>
           </PopoverTrigger>
         </TooltipTrigger>
-        <TooltipContent side="bottom">Switch environment</TooltipContent>
+        <TooltipContent side="bottom">
+          {activeSyncing
+            ? "Syncing with the host — read-only until it finishes."
+            : "Switch environment"}
+        </TooltipContent>
       </Tooltip>
       <PopoverContent
         align="end"
@@ -383,6 +427,7 @@ export const EnvironmentSwitcher = memo(function EnvironmentSwitcher({
                 key={environment.id}
                 environment={environment}
                 state={state}
+                presentation={connectionPresentations[environment.id]?.presentation}
                 blockedFailure={
                   connectionPresentations[environment.id]?.blockedFailure ?? null
                 }
@@ -398,7 +443,34 @@ export const EnvironmentSwitcher = memo(function EnvironmentSwitcher({
             );
           })}
         </div>
+        {activeEnvironment.kind === "remote" ? (
+          <div
+            className="mt-1 border-t pt-1"
+            style={{ borderColor: "var(--border-subtle)" }}
+          >
+            <button
+              type="button"
+              className="flex h-8 w-full items-center rounded-[5px] px-2 text-left text-[0.8125rem] outline-none transition-colors hover:bg-[var(--bg-hover)] focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]"
+              style={{ color: "var(--text-secondary)" }}
+              onClick={() => {
+                setOpen(false);
+                setJournalOpen(true);
+              }}
+              data-testid="environment-switcher-connection-log"
+            >
+              Connection log…
+            </button>
+          </div>
+        ) : null}
       </PopoverContent>
+      {activeEnvironment.kind === "remote" ? (
+        <RemoteConnectionJournalDialog
+          environmentId={activeEnvironment.id}
+          environmentName={activeEnvironment.name}
+          open={journalOpen}
+          onOpenChange={setJournalOpen}
+        />
+      ) : null}
     </Popover>
   );
 });

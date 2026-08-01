@@ -59,11 +59,15 @@
  */
 
 import {
+  SYNCING_GRACE_MS,
+  presentationFor,
+  type SyncingHint,
+} from "./supervisor-presentation";
+import {
   CONNECT_BUDGET_MS,
   FRAME_SILENCE_TIMEOUT_MS,
   STABLE_PERIOD_MS,
   lookupTransition,
-  presentationFor,
   retryDelayMs,
   type SupervisorEffect,
   type SupervisorEvent,
@@ -162,6 +166,12 @@ interface TimerHandles {
   stable: ReturnType<typeof setTimeout> | null;
   silence: ReturnType<typeof setTimeout> | null;
   suspend: ReturnType<typeof setTimeout> | null;
+  /**
+   * Fires when the `syncing` grace elapses so the T escalation repaints without an
+   * FSM event. It DISPATCHES NOTHING — A-5 (sole retry owner) is intact because it
+   * schedules no connect attempt; its only action is re-running the presentation.
+   */
+  escalate: ReturnType<typeof setTimeout> | null;
 }
 
 export class ConnectionSupervisor {
@@ -184,12 +194,25 @@ export class ConnectionSupervisor {
    */
   private lastBlockedForegroundAt: number | null = null;
 
+  // --- `syncing` bookkeeping (see supervisor-presentation.ts) -------------------
+  /** The socket completed `hello` during this disconnect episode. */
+  private streamOpen = false;
+  /** Consecutive failed hydration barriers within this episode. */
+  private barrierFailures = 0;
+  /** When the current disconnect episode began; `null` outside one. */
+  private episodeStartedAt: number | null = null;
+  /** The silence watchdog / an undecodable frame said the host is gone, not slow. */
+  private deadHostSuspected = false;
+  /** Dedupe for `publishPresentation`: presentation can move without an FSM edge. */
+  private lastPublishedPresentation: SupervisorPresentation | null = null;
+
   private readonly timers: TimerHandles = {
     retry: null,
     budget: null,
     stable: null,
     silence: null,
     suspend: null,
+    escalate: null,
   };
 
   constructor(deps: SupervisorDeps) {
@@ -340,7 +363,18 @@ export class ConnectionSupervisor {
   }
 
   presentation(): SupervisorPresentation {
-    return presentationFor(this.state, this.hasEverConnected);
+    return presentationFor(this.state, this.hasEverConnected, this.syncingHint());
+  }
+
+  private syncingHint(): SyncingHint {
+    return {
+      streamOpen: this.streamOpen,
+      attempts: this.attempts,
+      barrierFailures: this.barrierFailures,
+      episodeElapsedMs:
+        this.episodeStartedAt === null ? null : Date.now() - this.episodeStartedAt,
+      deadHostSuspected: this.deadHostSuspected,
+    };
   }
 
   /** Populated only while `blocked`; drives the actionable UI (P-10). */
@@ -367,6 +401,22 @@ export class ConnectionSupervisor {
     const transition = lookupTransition(from, event);
     this.state = transition.next;
 
+    // Episode tracking for the `syncing` grace: an episode spans the whole
+    // disconnect band and ends only on `connected` (success) or `idle` (stop).
+    if (
+      (this.state === "connecting" || this.state === "backoff") &&
+      this.episodeStartedAt === null
+    ) {
+      this.episodeStartedAt = Date.now();
+    }
+    if (this.state === "connected" || this.state === "idle") {
+      this.episodeStartedAt = null;
+      this.streamOpen = false;
+      if (this.state === "idle") {
+        this.barrierFailures = 0;
+        this.deadHostSuspected = false;
+      }
+    }
     if (this.state === "connected" && from !== "connected") {
       // The block genuinely cleared, so the floor has nothing left to protect against.
       //
@@ -375,6 +425,8 @@ export class ConnectionSupervisor {
       // `blocked -> connecting -> blocked`, and re-entry would wipe the stamp the
       // attempt just set, letting the very next app switch spend another attempt.
       this.lastBlockedForegroundAt = null;
+      this.barrierFailures = 0;
+      this.deadHostSuspected = false;
     }
 
     for (const effect of transition.effects) {
@@ -384,9 +436,45 @@ export class ConnectionSupervisor {
     if (this.state !== "blocked") {
       this.blockedReason = null;
     }
-    if (from !== this.state) {
-      this.deps.onStateChange?.(this.state, this.presentation());
+    this.publishPresentation(from);
+  }
+
+  /**
+   * The ONE notification path. Presentation can move without an FSM edge (the socket
+   * opening mid-attempt, the T-grace escalation tick), so the notify condition is the
+   * (state, presentation) PAIR — a `connecting → backoff` inside the grace keeps one
+   * presentation but flips the switcher's dot config, and readers must still see it.
+   */
+  private publishPresentation(from?: SupervisorState): void {
+    const presentation = this.presentation();
+    const stateChanged = from !== undefined && from !== this.state;
+    if (!stateChanged && presentation === this.lastPublishedPresentation) {
+      return;
     }
+    this.lastPublishedPresentation = presentation;
+    this.manageEscalateTimer(presentation);
+    this.deps.onStateChange?.(this.state, presentation);
+  }
+
+  /**
+   * Arms the T-ceiling repaint while `syncing` is shown; disarms it otherwise. The
+   * callback only re-runs the projection — past the grace it yields `reconnecting`
+   * and the pair-dedupe publishes exactly one escalation.
+   */
+  private manageEscalateTimer(presentation: SupervisorPresentation): void {
+    if (presentation !== "syncing" || this.episodeStartedAt === null) {
+      this.clearTimer("escalate");
+      return;
+    }
+    if (this.timers.escalate !== null) {
+      return;
+    }
+    const remaining =
+      Math.max(0, SYNCING_GRACE_MS - (Date.now() - this.episodeStartedAt)) + 1;
+    this.timers.escalate = setTimeout(() => {
+      this.timers.escalate = null;
+      this.publishPresentation();
+    }, remaining);
   }
 
   private runEffect(effect: SupervisorEffect): void {
@@ -394,6 +482,7 @@ export class ConnectionSupervisor {
       case "cancelAttempt":
         this.attemptGeneration += 1;
         this.clearTimer("budget");
+        this.clearTimer("escalate");
         return;
       case "releaseSocket":
         this.clearTimer("silence");
@@ -407,6 +496,7 @@ export class ConnectionSupervisor {
         this.clearTimer("budget");
         this.clearTimer("stable");
         this.clearTimer("silence");
+        this.clearTimer("escalate");
         return;
       case "resetAttempts":
         this.attempts = 0;
@@ -482,6 +572,10 @@ export class ConnectionSupervisor {
           `host identity ${outcome.hostEnvironmentId} is not the paired environment ${this.deps.expectedHostEnvironmentId}`
         );
       }
+      // The socket is up and the host authenticated: from here the user is SYNCING,
+      // not reconnecting. The single emission point for the calm presentation.
+      this.streamOpen = true;
+      this.publishPresentation();
 
       // 4. P-28: refresh the EFFECTIVE grant on every (re)connect, never by re-pairing.
       //    Fail closed — an unverified refresh must not widen gating, and must not be
@@ -580,6 +674,12 @@ export class ConnectionSupervisor {
   }
 
   private failAttempt(error: unknown): void {
+    if (this.streamOpen) {
+      // A failure past `hello` is a failed hydration barrier (or probe) on a live
+      // socket — the K-escalation counter. A socket-less failure is not counted:
+      // an unreachable host already presents as reconnecting via the other gates.
+      this.barrierFailures += 1;
+    }
     const failure = classifyFailure(error);
     const message = error instanceof Error ? error.message : String(error);
     if (failure !== "transient") {
@@ -627,6 +727,9 @@ export class ConnectionSupervisor {
     this.clearTimer("silence");
     this.timers.silence = setTimeout(() => {
       this.timers.silence = null;
+      // 50 s of total silence means the host is GONE, not slow — the reconnect that
+      // follows must present as `reconnecting`, never as calm `syncing` chrome.
+      this.deadHostSuspected = true;
       this.dispatch("socket_lost");
     }, FRAME_SILENCE_TIMEOUT_MS);
   }

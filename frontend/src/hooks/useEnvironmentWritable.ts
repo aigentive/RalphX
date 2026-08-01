@@ -36,6 +36,10 @@ export function environmentWritableReason(
       return `"${environmentName}" needs attention before changes can be made.`;
     case "connecting":
       return `Still connecting to "${environmentName}" — changes can't be made yet.`;
+    case "syncing":
+      // Still read-only — a live socket mid-hydration is not a confirmed connection —
+      // but the copy must match the calm chip, not claim a dropped connection.
+      return `Syncing "${environmentName}" with the host — changes can't be made until it finishes.`;
     case "suspended":
       return `"${environmentName}" is paused in the background — changes can't be made right now.`;
     default:

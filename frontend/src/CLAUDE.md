@@ -132,6 +132,7 @@ Example: "View Registry Pattern" — see @../../.claude/rules/task-detail-views.
 - **StatusPill** — `src/components/ui/status-pill.tsx` is the single pill surface for status/stage/judge badges (tone-based, WKWebView-safe longhands). ❌ New ad-hoc `rounded-full px-2 py-0.5` status spans; automation run-card badge dedupe lives in `automations/automationRunBadges.ts`.
 - **Plan Bundle Tabs** — Agents Plan uses `PlanBundleTabs` for persistent Overview/Blueprint selection and conditional Proposals; lifecycle controls remain bundle-level while edit/history/export operate on the selected document.
 - **Remote Connection Journal** — `stores/remoteConnectionJournalStore.ts` is the per-environment connection diagnostics ring buffer; `lib/remote/environment-runtime.ts` is its single writer, the banner Details dialog its reader. Remote HTTP reads must lift the host's `REMOTE_COMMAND_UNAVAILABLE` envelope into `RemoteTransportError` (capability boundary, tolerated by the hydration barrier) — ❌ flattening it into generic HTTP errors.
+- **Syncing Presentation** — `lib/remote/supervisor-presentation.ts` owns the `syncing` projection (live socket mid-hydration → chip-only accent pulse in `EnvironmentSwitcher`, no banner) with K=2 barrier-failure / T=12s one-way escalation back to `reconnecting`; still read-only. ❌ New surfaces reading FSM state directly to infer "connection dropped".
 
 ### Composition Over Props
 ```tsx

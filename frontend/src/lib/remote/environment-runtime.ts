@@ -450,6 +450,7 @@ export function initializeEnvironmentRuntime(): () => void {
     // eslint-disable-next-line prefer-const
     let runtime: RuntimeEntry;
     const environmentId = entry.id;
+    let lastJournaledPair: string | null = null;
     const supervisor = new ConnectionSupervisor({
       environmentId,
       expectedHostEnvironmentId: entry.remote?.environmentId ?? environmentId,
@@ -587,14 +588,20 @@ export function initializeEnvironmentRuntime(): () => void {
         // (`onBlocked` fires BEFORE the transition) would let a reader observe a
         // blocked message under a still-connecting presentation.
         const blocked = supervisor.blocked();
-        recordConnectionEvent(
-          environmentId,
-          "state",
-          `Connection state: ${state} (shown as ${presentation}).`,
-          blocked === null
-            ? undefined
-            : `${blocked.failure}: ${blocked.message}`
-        );
+        // Presentation can now repaint without an FSM edge (syncing escalation), so
+        // dedupe journal lines on the pair — a repaint of the same pair is not news.
+        const journalPair = `${state}|${presentation}`;
+        if (journalPair !== lastJournaledPair) {
+          lastJournaledPair = journalPair;
+          recordConnectionEvent(
+            environmentId,
+            "state",
+            `Connection state: ${state} (shown as ${presentation}).`,
+            blocked === null
+              ? undefined
+              : `${blocked.failure}: ${blocked.message}`
+          );
+        }
         useEnvironmentStore.getState().setConnectionPresentation(environmentId, {
           presentation,
           blockedFailure: blocked?.failure ?? null,

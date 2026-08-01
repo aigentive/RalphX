@@ -87,6 +87,9 @@ describe("useEnvironmentWritable", () => {
     ["reconnecting", /reconnecting/i],
     ["offline", /offline/i],
     ["connecting", /still connecting/i],
+    // Still read-only — calm chrome is not a confirmed connection — but the copy must
+    // match the syncing chip, never claim a dropped connection.
+    ["syncing", /syncing/i],
     ["suspended", /paused in the background/i],
     ["error", /needs attention/i],
   ])("locks writes while %s and says why", (presentation, expected) => {

@@ -389,40 +389,13 @@ export function lookupTransition(
 // Presentation projection (§6.5)
 // ---------------------------------------------------------------------------
 
-/** The six presentation states the UI renders (§6.5, §6.7). */
-export type SupervisorPresentation =
-  | "connecting"
-  | "reconnecting"
-  | "connected"
-  | "offline"
-  | "error"
-  | "suspended";
-
-/**
- * `connecting` presents as `reconnecting` once the environment has ever been connected,
- * so P-9's "lands in reconnecting, never connected" holds across the whole
- * backoff→connecting→backoff cycle rather than flickering back to first-run copy.
- */
-export function presentationFor(
-  state: SupervisorState,
-  hasEverConnected: boolean
-): SupervisorPresentation {
-  switch (state) {
-    case "connected":
-      return "connected";
-    case "offline":
-      return "offline";
-    case "blocked":
-      return "error";
-    case "suspended":
-      return "suspended";
-    case "backoff":
-      return "reconnecting";
-    case "idle":
-    case "connecting":
-      return hasEverConnected ? "reconnecting" : "connecting";
-  }
-}
+// The projection lives in `supervisor-presentation.ts` (it grew the `syncing`
+// distinction and its escalation constants); re-exported here so no import site
+// changes and the table stays the single FSM artifact.
+export {
+  presentationFor,
+  type SupervisorPresentation,
+} from "./supervisor-presentation";
 
 // ---------------------------------------------------------------------------
 // Retry ladder (§6.5)
