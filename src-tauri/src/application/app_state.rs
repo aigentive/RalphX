@@ -76,10 +76,11 @@ use crate::domain::repositories::{
     NotificationSettingsRepository, OrphanWorktreeCleanupMarkerRepository, PersonaRepository,
     PlanArtifactApprovalRepository, PlanBranchRepository, PlanSelectionStatsRepository,
     ProcessRepository, ProjectRepository, ProposalDependencyRepository, QueuedMessageRepository,
-    ReviewRepository, ReviewSettingsRepository, SessionLinkRepository, TaskDependencyRepository,
-    TaskProposalRepository, TaskQARepository, TaskRepository, TaskStepRepository,
-    TicketCanonicalBranchRepository, UiFeatureFlagOverridesRepository, ValidationRunRepository,
-    WebhookRegistrationRepository, WorkflowRepository, WorkspaceReviewRuntimeSettingsRepository,
+    RemoteConversationStartRequestRepository, ReviewRepository, ReviewSettingsRepository,
+    SessionLinkRepository, TaskDependencyRepository, TaskProposalRepository, TaskQARepository,
+    TaskRepository, TaskStepRepository, TicketCanonicalBranchRepository,
+    UiFeatureFlagOverridesRepository, ValidationRunRepository, WebhookRegistrationRepository,
+    WorkflowRepository, WorkspaceReviewRuntimeSettingsRepository,
 };
 use crate::domain::services::{
     GithubServiceTrait, MemoryRunningAgentRegistry, MessageQueue, RunningAgentRegistry,
@@ -111,12 +112,13 @@ use crate::infrastructure::memory::{
     MemoryPersonaRepository, MemoryPlanArtifactApprovalRepository, MemoryPlanBranchRepository,
     MemoryPlanSelectionStatsRepository, MemoryProcessRepository, MemoryProjectRepository,
     MemoryProposalDependencyRepository, MemoryQuestionRepository, MemoryQueuedMessageRepository,
-    MemoryReviewIssueRepository, MemoryReviewRepository, MemoryReviewSettingsRepository,
-    MemorySecretStore, MemorySessionLinkRepository, MemoryTaskDependencyRepository,
-    MemoryTaskProposalRepository, MemoryTaskQARepository, MemoryTaskRepository,
-    MemoryTaskStepRepository, MemoryTicketCanonicalBranchRepository,
-    MemoryTicketingStatusCatalogRepository, MemoryUiFeatureFlagOverridesRepository,
-    MemoryValidationRunRepository, MemoryWebhookRegistrationRepository, MemoryWorkflowRepository,
+    MemoryRemoteConversationStartRequestRepository, MemoryReviewIssueRepository,
+    MemoryReviewRepository, MemoryReviewSettingsRepository, MemorySecretStore,
+    MemorySessionLinkRepository, MemoryTaskDependencyRepository, MemoryTaskProposalRepository,
+    MemoryTaskQARepository, MemoryTaskRepository, MemoryTaskStepRepository,
+    MemoryTicketCanonicalBranchRepository, MemoryTicketingStatusCatalogRepository,
+    MemoryUiFeatureFlagOverridesRepository, MemoryValidationRunRepository,
+    MemoryWebhookRegistrationRepository, MemoryWorkflowRepository,
     MemoryWorkspaceReviewRuntimeSettingsRepository,
 };
 use crate::infrastructure::secret_store::MacosKeychainSecretStore;
@@ -148,10 +150,11 @@ use crate::infrastructure::sqlite::{
     SqlitePermissionRepository, SqlitePersonaRepository, SqlitePlanArtifactApprovalRepository,
     SqlitePlanBranchRepository, SqlitePlanSelectionStatsRepository, SqliteProcessRepository,
     SqliteProjectRepository, SqliteProposalDependencyRepository, SqliteQuestionRepository,
-    SqliteQueuedMessageRepository, SqliteReviewIssueRepository, SqliteReviewRepository,
-    SqliteReviewSettingsRepository, SqliteRunningAgentRegistry, SqliteSessionLinkRepository,
-    SqliteTaskDependencyRepository, SqliteTaskProposalRepository, SqliteTaskQARepository,
-    SqliteTaskRepository, SqliteTaskStepRepository, SqliteTicketCanonicalBranchRepository,
+    SqliteQueuedMessageRepository, SqliteRemoteConversationStartRequestRepository,
+    SqliteReviewIssueRepository, SqliteReviewRepository, SqliteReviewSettingsRepository,
+    SqliteRunningAgentRegistry, SqliteSessionLinkRepository, SqliteTaskDependencyRepository,
+    SqliteTaskProposalRepository, SqliteTaskQARepository, SqliteTaskRepository,
+    SqliteTaskStepRepository, SqliteTicketCanonicalBranchRepository,
     SqliteTicketingStatusCatalogRepository, SqliteUiFeatureFlagOverridesRepository,
     SqliteValidationRunRepository, SqliteWebhookRegistrationRepository, SqliteWorkflowRepository,
     SqliteWorkspaceReviewRuntimeSettingsRepository,
@@ -315,6 +318,8 @@ pub struct AppState {
     pub agent_conversation_granola_note_repo: Arc<dyn AgentConversationGranolaNoteRepository>,
     /// Derived attention-state mute repository for agent conversations
     pub agent_conversation_mute_repo: Arc<dyn AgentConversationMuteRepository>,
+    /// Remote-initiated conversation start requests (device-queued, backend-claimed)
+    pub remote_conversation_start_request_repo: Arc<dyn RemoteConversationStartRequestRepository>,
     /// Per-ticket canonical branch that all conversations for a ticket base off of
     pub ticket_canonical_branch_repo: Arc<dyn TicketCanonicalBranchRepository>,
     /// Startup orphan agent-worktree cleanup backoff markers
@@ -1614,6 +1619,11 @@ impl AppState {
             agent_conversation_mute_repo: Arc::new(
                 SqliteAgentConversationMuteRepository::from_shared(Arc::clone(&shared_conn)),
             ),
+            remote_conversation_start_request_repo: Arc::new(
+                SqliteRemoteConversationStartRequestRepository::from_shared(Arc::clone(
+                    &shared_conn,
+                )),
+            ),
             ticket_canonical_branch_repo: Arc::new(
                 SqliteTicketCanonicalBranchRepository::from_shared(Arc::clone(&shared_conn)),
             ),
@@ -1893,6 +1903,9 @@ impl AppState {
                 MemoryAgentConversationGranolaNoteRepository::new(),
             ),
             agent_conversation_mute_repo: Arc::new(MemoryAgentConversationMuteRepository::new()),
+            remote_conversation_start_request_repo: Arc::new(
+                MemoryRemoteConversationStartRequestRepository::new(),
+            ),
             ticket_canonical_branch_repo: Arc::new(MemoryTicketCanonicalBranchRepository::new()),
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 MemoryOrphanWorktreeCleanupMarkerRepository::new(),
@@ -2091,6 +2104,9 @@ impl AppState {
                 MemoryAgentConversationGranolaNoteRepository::new(),
             ),
             agent_conversation_mute_repo: Arc::new(MemoryAgentConversationMuteRepository::new()),
+            remote_conversation_start_request_repo: Arc::new(
+                MemoryRemoteConversationStartRequestRepository::new(),
+            ),
             ticket_canonical_branch_repo: Arc::new(MemoryTicketCanonicalBranchRepository::new()),
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 MemoryOrphanWorktreeCleanupMarkerRepository::new(),
@@ -2303,6 +2319,11 @@ impl AppState {
             agent_conversation_mute_repo: Arc::new(
                 SqliteAgentConversationMuteRepository::from_shared(Arc::clone(&shared_conn)),
             ),
+            remote_conversation_start_request_repo: Arc::new(
+                SqliteRemoteConversationStartRequestRepository::from_shared(Arc::clone(
+                    &shared_conn,
+                )),
+            ),
             ticket_canonical_branch_repo: Arc::new(
                 SqliteTicketCanonicalBranchRepository::from_shared(Arc::clone(&shared_conn)),
             ),
@@ -2486,6 +2507,9 @@ impl AppState {
                 MemoryAgentConversationGranolaNoteRepository::new(),
             ),
             agent_conversation_mute_repo: Arc::new(MemoryAgentConversationMuteRepository::new()),
+            remote_conversation_start_request_repo: Arc::new(
+                MemoryRemoteConversationStartRequestRepository::new(),
+            ),
             ticket_canonical_branch_repo: Arc::new(MemoryTicketCanonicalBranchRepository::new()),
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 MemoryOrphanWorktreeCleanupMarkerRepository::new(),

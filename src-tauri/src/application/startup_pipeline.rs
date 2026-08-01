@@ -1039,7 +1039,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
 
         let phase_started_at = startup_phase_started("automation_scheduler_spawn");
         startup_background::spawn_automation_scheduler(
-            app_state,
+            app_state.clone(),
             Arc::clone(&execution_state),
             app_handle.clone(),
         );
@@ -1067,6 +1067,22 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
             app_handle.clone(),
         );
         startup_phase_completed("agent_workspace_bridge_dispatcher_spawn", phase_started_at);
+    }
+
+    {
+        // The host-owned driver for spawn-free remote conversation starts. Independent of the
+        // Git preflight above: seeding + starting a chat-mode conversation needs no repository
+        // Git authority, and the loop re-validates provider/model/project at claim time.
+        let phase_started_at = startup_phase_started("remote_conversation_start_dispatcher_spawn");
+        startup_background::spawn_remote_conversation_start_dispatcher(
+            app_state.clone(),
+            Arc::clone(&execution_state),
+            app_handle.clone(),
+        );
+        startup_phase_completed(
+            "remote_conversation_start_dispatcher_spawn",
+            phase_started_at,
+        );
     }
 
     if mode == StartupPipelineMode::Full {

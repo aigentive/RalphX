@@ -10,7 +10,7 @@ use crate::application::agent_conversation_mode_switch::{
     system_switch_automation_run_to_edit, system_switch_automation_run_to_ideation,
 };
 use crate::application::agent_conversation_start_service::{
-    AgentConversationStartDeps, AgentConversationStartService,
+    AgentConversationStartDeps, AgentConversationStartService, StartAgentConversationInput,
 };
 use crate::application::agent_workspace_bridge::{
     dispatch_agent_workspace_bridge_events_once_with_deps, AgentWorkspaceBridgeDeps,
@@ -668,6 +668,220 @@ pub(crate) fn spawn_agent_workspace_bridge_dispatcher(
     });
 }
 
+/// How often the host drains one pending remote conversation-start intent.
+const REMOTE_CONVERSATION_START_DISPATCH_INTERVAL: Duration = Duration::from_secs(2);
+/// `Starting` rows older than this at boot are swept to `FailedStale` and NEVER auto-respawned:
+/// a lost race between a dead claim and a re-spawn is a double-conversation factory, so we fail
+/// closed and let the user retry explicitly.
+const REMOTE_CONVERSATION_START_STALE_LEASE_SECS: i64 = 300;
+
+/// The host-owned driver for spawn-free remote conversation starts (contract §2.3).
+///
+/// This loop is the SOLE holder of spawn authority for the feature: the registered
+/// `request_remote_agent_conversation_start` command only persists an intent, and only this
+/// loop ever calls `AgentConversationStartService::start`. Per tick it CAS-claims one `Pending`
+/// intent (`Pending -> Starting`), RE-VALIDATES provider/model/project at spawn time (any failure
+/// -> `Failed`, never a silent substitution), starts the seeded conversation on the host, and
+/// records `Started` + run id or `Failed` + error code.
+pub(crate) fn spawn_remote_conversation_start_dispatcher(
+    state: AppState,
+    execution_state: Arc<ExecutionState>,
+    app_handle: tauri::AppHandle,
+) {
+    if !try_start_recurring_service("remote_conversation_start_dispatcher") {
+        tracing::debug!(
+            "Remote conversation start dispatcher already started; skipping duplicate spawn"
+        );
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        // Startup reconciliation: crashed `Starting` claims are terminalised, never respawned.
+        let now = chrono::Utc::now();
+        let stale_cutoff =
+            now - chrono::Duration::seconds(REMOTE_CONVERSATION_START_STALE_LEASE_SECS);
+        match state
+            .remote_conversation_start_request_repo
+            .fail_stale_starting_start_requests(stale_cutoff, now)
+            .await
+        {
+            Ok(count) if count > 0 => {
+                tracing::warn!(
+                    count,
+                    "swept stale remote conversation-start claims to FailedStale"
+                )
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::error!(%error, "remote conversation start stale sweep failed")
+            }
+        }
+
+        let mut interval = tokio::time::interval(REMOTE_CONVERSATION_START_DISPATCH_INTERVAL);
+        interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            if let Err(error) =
+                dispatch_one_remote_conversation_start(&state, &execution_state, &app_handle).await
+            {
+                tracing::warn!(%error, "remote conversation start dispatcher tick failed");
+            }
+        }
+    });
+}
+
+/// Claim + start at most one pending intent. Extracted (and generic over the runtime) so a test
+/// can drive one tick with a mock handle and prove the re-validation-failure path never spawns.
+pub(crate) async fn dispatch_one_remote_conversation_start<R: tauri::Runtime + 'static>(
+    state: &AppState,
+    execution_state: &Arc<ExecutionState>,
+    app_handle: &tauri::AppHandle<R>,
+) -> AppResult<()> {
+    let claim_at = chrono::Utc::now();
+    let Some(claimed) = state
+        .remote_conversation_start_request_repo
+        .claim_pending_start_request(claim_at)
+        .await?
+    else {
+        return Ok(());
+    };
+
+    // Re-prove authority at spawn time (settings may have changed since persist).
+    if let Err(error_code) = revalidate_remote_conversation_start(state, &claimed).await {
+        if let Err(error) = state
+            .remote_conversation_start_request_repo
+            .fail_start_request(&claimed.id, &error_code, chrono::Utc::now())
+            .await
+        {
+            tracing::error!(%error, request_id = %claimed.id, "failed to record remote conversation start revalidation failure");
+        }
+        return Ok(());
+    }
+
+    let input = build_remote_conversation_start_input(&claimed);
+    let result = AgentConversationStartService::new(AgentConversationStartDeps {
+        state,
+        execution_state,
+        app_handle: app_handle.clone(),
+    })
+    .start(input)
+    .await;
+
+    match result {
+        Ok(started) => {
+            let run_id = started.send_result.agent_run_id;
+            if let Err(error) = state
+                .remote_conversation_start_request_repo
+                .complete_start_request(&claimed.id, &run_id, chrono::Utc::now())
+                .await
+            {
+                tracing::error!(%error, request_id = %claimed.id, "failed to record remote conversation start completion");
+            }
+        }
+        Err(error) => {
+            // Setup/MCP-preflight/start failures land in `Failed` VISIBLY — they must not
+            // masquerade as a hung `Starting`.
+            if let Err(persist_error) = state
+                .remote_conversation_start_request_repo
+                .fail_start_request(
+                    &claimed.id,
+                    "REMOTE_CONV_START_HOST_START_FAILED",
+                    chrono::Utc::now(),
+                )
+                .await
+            {
+                tracing::error!(%persist_error, request_id = %claimed.id, "failed to record remote conversation start failure");
+            }
+            tracing::warn!(%error, request_id = %claimed.id, "remote conversation start failed on host");
+        }
+    }
+
+    Ok(())
+}
+
+/// Build the host-forced start input: the seeded draft conversation, `chat` mode, and the
+/// re-validated provider/model/effort. Everything else (persona, base/branch, team, attachments)
+/// is a host-forced default — none of it is client-expressible in v1.5.
+fn build_remote_conversation_start_input(
+    claimed: &crate::domain::entities::RemoteConversationStartRequest,
+) -> StartAgentConversationInput {
+    StartAgentConversationInput {
+        project_id: Some(claimed.project_id.as_str().to_string()),
+        content: claimed.content.clone(),
+        persona_id: None,
+        source_persona_id: None,
+        conversation_id: Some(claimed.conversation_id.as_str()),
+        parent_conversation_id: None,
+        title: None,
+        provider_harness: Some(claimed.provider.clone()),
+        model_override: claimed.model.clone(),
+        logical_effort: claimed
+            .effort
+            .as_deref()
+            .and_then(|effort| effort.parse::<crate::domain::agents::LogicalEffort>().ok()),
+        codex_fast_mode: None,
+        mode: Some("chat".to_string()),
+        base_ref_kind: None,
+        base_branch_mode: None,
+        base_ref: None,
+        base_display_name: None,
+        base_source_pull_request: None,
+        composer_project_references: Vec::new(),
+        composer_integration_references: Vec::new(),
+        composer_artifact_references: Vec::new(),
+        composer_selection_snapshot: None,
+        team_intent: None,
+    }
+}
+
+/// Re-validate a claimed intent at spawn time. Returns the client-facing error code on failure.
+async fn revalidate_remote_conversation_start(
+    state: &AppState,
+    claimed: &crate::domain::entities::RemoteConversationStartRequest,
+) -> Result<(), String> {
+    use crate::commands::remote_conversation_start_commands::{
+        REMOTE_CONV_START_LOOKUP_FAILED, REMOTE_CONV_START_MODEL_NOT_ENABLED,
+        REMOTE_CONV_START_PROJECT_NOT_FOUND, REMOTE_CONV_START_PROVIDER_NOT_ENABLED,
+    };
+
+    let provider = claimed
+        .provider
+        .parse::<crate::domain::agents::AgentHarnessKind>()
+        .map_err(|_| REMOTE_CONV_START_PROVIDER_NOT_ENABLED.to_string())?;
+
+    let stored = state
+        .agent_provider_settings_repo
+        .list()
+        .await
+        .map_err(|_| REMOTE_CONV_START_LOOKUP_FAILED.to_string())?;
+    if !stored
+        .iter()
+        .any(|row| row.provider == provider && row.enabled)
+    {
+        return Err(REMOTE_CONV_START_PROVIDER_NOT_ENABLED.to_string());
+    }
+
+    if state
+        .project_repo
+        .get_by_id(&claimed.project_id)
+        .await
+        .map_err(|_| REMOTE_CONV_START_LOOKUP_FAILED.to_string())?
+        .is_none()
+    {
+        return Err(REMOTE_CONV_START_PROJECT_NOT_FOUND.to_string());
+    }
+
+    if let Some(model_id) = claimed.model.as_deref() {
+        let snapshot = crate::commands::agent_model_commands::load_agent_model_registry(state)
+            .await
+            .map_err(|_| REMOTE_CONV_START_LOOKUP_FAILED.to_string())?;
+        if snapshot.find_enabled(provider, model_id).is_none() {
+            return Err(REMOTE_CONV_START_MODEL_NOT_ENABLED.to_string());
+        }
+    }
+
+    Ok(())
+}
+
 pub async fn maybe_start_external_mcp(
     app_handle: tauri::AppHandle,
     wait_for_backend_ready: impl Fn(
@@ -751,5 +965,83 @@ pub async fn maybe_start_external_mcp(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod remote_conversation_start_dispatcher_tests {
+    use std::sync::Arc;
+
+    use super::dispatch_one_remote_conversation_start;
+    use crate::application::AppState;
+    use crate::commands::remote_conversation_start_commands::REMOTE_CONV_START_PROVIDER_NOT_ENABLED;
+    use crate::commands::ExecutionState;
+    use crate::domain::entities::{
+        ChatConversationId, ProjectId, RemoteConversationStartRequest,
+        RemoteConversationStartStatus,
+    };
+    use crate::infrastructure::memory::MemoryAgentProviderSettingsRepository;
+
+    /// Claim-time re-validation failure (a provider disabled since persist) must terminalise the
+    /// intent as `Failed` and NEVER spawn — authority-before-effects, fail-closed.
+    #[tokio::test]
+    async fn revalidation_failure_marks_failed_and_never_spawns() {
+        let mut state = AppState::new_test();
+        // Empty provider repo => "codex" is not enabled => re-validation fails before any spawn.
+        state.agent_provider_settings_repo = Arc::new(MemoryAgentProviderSettingsRepository::new());
+
+        let conversation_id = ChatConversationId::new();
+        let now = chrono::Utc::now();
+        state
+            .remote_conversation_start_request_repo
+            .create_start_request(RemoteConversationStartRequest {
+                id: "intent-1".to_string(),
+                conversation_id: conversation_id.clone(),
+                project_id: ProjectId::from_string("proj-1".to_string()),
+                content: "explore".to_string(),
+                provider: "codex".to_string(),
+                model: None,
+                effort: None,
+                mode: "chat".to_string(),
+                status: RemoteConversationStartStatus::Pending,
+                error_code: None,
+                requested_by_device_id: String::new(),
+                agent_run_id: None,
+                claimed_at: None,
+                created_at: now,
+                updated_at: now,
+            })
+            .await
+            .expect("seed intent");
+
+        let execution_state = Arc::new(ExecutionState::new());
+        let app_handle = crate::testing::create_mock_app_handle();
+
+        dispatch_one_remote_conversation_start(&state, &execution_state, &app_handle)
+            .await
+            .expect("dispatcher tick");
+
+        let stored = state
+            .remote_conversation_start_request_repo
+            .get_start_request("intent-1")
+            .await
+            .expect("read intent")
+            .expect("intent exists");
+        assert_eq!(stored.status, RemoteConversationStartStatus::Failed);
+        assert_eq!(
+            stored.error_code.as_deref(),
+            Some(REMOTE_CONV_START_PROVIDER_NOT_ENABLED)
+        );
+        assert!(stored.agent_run_id.is_none());
+        // Absence: re-validation failure spawns nothing.
+        let active = state
+            .agent_run_repo
+            .get_active_for_conversation(&conversation_id)
+            .await
+            .expect("run read");
+        assert!(
+            active.is_none(),
+            "re-validation failure must not spawn a run"
+        );
     }
 }
