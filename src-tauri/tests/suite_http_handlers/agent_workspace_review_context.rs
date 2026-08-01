@@ -1,4 +1,4 @@
-use axum::extract::{Path, Query, State};
+use axum::extract::{Json, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use ralphx_lib::application::AppState;
 use ralphx_lib::commands::unified_chat_commands::AgentConversationWorkspaceResponse;
@@ -6,12 +6,13 @@ use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun,
     AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
-    AgentWorkspaceReviewOutcome, AgentWorkspaceReviewTargetScope, ArtifactId, ChatConversation,
-    ChatConversationId, IdeationAnalysisBaseRefKind, Project,
+    AgentWorkspaceReviewOutcome, AgentWorkspaceReviewTargetScope, ArtifactContent, ArtifactId,
+    ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind, Project,
 };
 use ralphx_lib::http_server::handlers::agent_workspaces::{
     get_agent_workspace_review_context, get_agent_workspace_review_start_preview,
-    AgentWorkspaceReviewContextQuery, CommitAgentWorkspaceLocallyResponse,
+    write_agent_workspace_review_artifact, AgentWorkspaceReviewContextQuery,
+    CommitAgentWorkspaceLocallyResponse, WriteAgentWorkspaceReviewArtifactRequest,
 };
 use ralphx_lib::http_server::types::HttpServerState;
 use std::path::Path as StdPath;
@@ -324,6 +325,244 @@ async fn outdated_artifact_does_not_revoke_exact_active_reviewer_authority() {
     assert!(!context.review_artifact_is_current);
     assert!(context.can_mutate_review_state);
     assert_eq!(context.review_runtime_state, "active_owned");
+}
+
+#[tokio::test]
+async fn workspace_review_artifact_write_versions_pair_and_keeps_second_content() {
+    let repo = tempfile::TempDir::new().expect("repo tempdir");
+    let worktrees = tempfile::TempDir::new().expect("worktree tempdir");
+    git(repo.path(), &["init", "-b", "main"]);
+    git(repo.path(), &["config", "user.email", "test@example.com"]);
+    git(repo.path(), &["config", "user.name", "RalphX Test"]);
+    std::fs::write(repo.path().join("README.md"), "base\n").expect("write base file");
+    git(repo.path(), &["add", "README.md"]);
+    git(repo.path(), &["commit", "-m", "base"]);
+    let base_sha = git(repo.path(), &["rev-parse", "HEAD"]);
+
+    let state = test_state();
+    let conversation_id = ChatConversationId::new();
+    let mut project = Project::new(
+        "Repeated Review Artifact Write".to_string(),
+        repo.path().to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    state
+        .app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .expect("seed project");
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.id = conversation_id;
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("seed conversation");
+
+    let workspace_path = worktrees.path().join("workspace");
+    let branch_name = "ralphx/test/repeated-review-artifact-write";
+    git(
+        repo.path(),
+        &[
+            "worktree",
+            "add",
+            "-b",
+            branch_name,
+            workspace_path.to_str().expect("workspace path"),
+            "main",
+        ],
+    );
+    std::fs::write(
+        workspace_path.join("implementation.txt"),
+        "current change\n",
+    )
+    .expect("write workspace change");
+    let workspace = AgentConversationWorkspace::new(
+        conversation_id,
+        project.id.clone(),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("Project default (main)".to_string()),
+        Some(base_sha),
+        branch_name.to_string(),
+        workspace_path.to_string_lossy().to_string(),
+    );
+    state
+        .app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("seed workspace");
+
+    let axum::Json(initial) = get_agent_workspace_review_context(
+        State(state.clone()),
+        Path(conversation_id.to_string()),
+        HeaderMap::new(),
+        Query(AgentWorkspaceReviewContextQuery::default()),
+    )
+    .await
+    .expect("load initial context");
+    let target = initial.target.expect("review target");
+    let review_conversation_id = ChatConversationId::new();
+    let run = AgentRun::new(review_conversation_id);
+    let run_id = run.id;
+    let target_scope: AgentWorkspaceReviewTargetScope =
+        target.scope.parse().expect("valid target scope");
+    let mut monitor = AgentWorkspaceReviewMonitor::new(conversation_id, project.id.clone());
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::None;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Reviewing;
+    monitor.current_target_scope = Some(target_scope);
+    monitor.current_diff_fingerprint = Some(target.diff_fingerprint.clone());
+    match target_scope {
+        AgentWorkspaceReviewTargetScope::WorkspaceDelta => {
+            monitor.workspace_base_ref = Some(target.base_ref.clone());
+            monitor.workspace_base_sha = target.base_sha.clone();
+            monitor.workspace_head_ref = Some(target.head_ref.clone());
+            monitor.workspace_head_sha = target.head_sha.clone();
+        }
+        AgentWorkspaceReviewTargetScope::SelectedSource => {
+            monitor.selected_source_base_ref = Some(target.base_ref.clone());
+            monitor.selected_source_base_sha = target.base_sha.clone();
+            monitor.selected_source_head_ref = Some(target.head_ref.clone());
+            monitor.selected_source_head_sha = target.head_sha.clone();
+            monitor.selected_source_pull_request_number = target.source_pull_request_number;
+        }
+    }
+    monitor.review_conversation_id = Some(review_conversation_id);
+    monitor.last_run_id = Some(run_id.to_string());
+    state
+        .app_state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("bind active review");
+    state
+        .app_state
+        .agent_run_repo
+        .create(run)
+        .await
+        .expect("seed active run");
+
+    let axum::Json(first) = write_agent_workspace_review_artifact(
+        State(state.clone()),
+        Path(conversation_id.to_string()),
+        Json(WriteAgentWorkspaceReviewArtifactRequest {
+            title: Some("Workspace Review".to_string()),
+            content: "Provisional overview".to_string(),
+            requested_changes_title: Some("Workspace Review — Requested Changes".to_string()),
+            requested_changes_content: "Provisional requested changes".to_string(),
+            target_scope: Some(target.scope.clone()),
+            head_sha: target.head_sha.clone(),
+            diff_fingerprint: Some(target.diff_fingerprint.clone()),
+            created_by_run_id: Some(run_id.to_string()),
+        }),
+    )
+    .await
+    .expect("write provisional artifact pair");
+    assert!(first.success);
+    assert_eq!(first.artifact.version, 1);
+    assert_eq!(first.requested_changes_artifact.version, 1);
+
+    let axum::Json(second) = write_agent_workspace_review_artifact(
+        State(state.clone()),
+        Path(conversation_id.to_string()),
+        Json(WriteAgentWorkspaceReviewArtifactRequest {
+            title: Some("Workspace Review".to_string()),
+            content: "Final overview".to_string(),
+            requested_changes_title: Some("Workspace Review — Requested Changes".to_string()),
+            requested_changes_content: "Final requested changes".to_string(),
+            target_scope: Some(target.scope),
+            head_sha: target.head_sha,
+            diff_fingerprint: Some(target.diff_fingerprint),
+            created_by_run_id: Some(run_id.to_string()),
+        }),
+    )
+    .await
+    .expect("write final artifact pair");
+    assert!(second.success);
+    assert_eq!(second.artifact.version, 2);
+    assert_eq!(second.requested_changes_artifact.version, 2);
+    assert_eq!(
+        second.previous_artifact_id.as_deref(),
+        Some(first.artifact.id.as_str())
+    );
+    assert_eq!(
+        second.previous_requested_changes_artifact_id.as_deref(),
+        Some(first.requested_changes_artifact.id.as_str())
+    );
+
+    let monitor = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&conversation_id)
+        .await
+        .expect("read monitor")
+        .expect("persisted monitor");
+    let monitor_artifact_id = monitor
+        .review_artifact_id
+        .clone()
+        .expect("monitor overview artifact id");
+    let monitor_requested_changes_artifact_id = monitor
+        .review_requested_changes_artifact_id
+        .clone()
+        .expect("monitor requested changes artifact id");
+    assert_eq!(monitor_artifact_id.as_str(), second.artifact.id);
+    assert_eq!(
+        monitor_requested_changes_artifact_id.as_str(),
+        second.requested_changes_artifact.id
+    );
+    assert_eq!(monitor.review_artifact_version, Some(2));
+    assert_eq!(monitor.review_requested_changes_artifact_version, Some(2));
+    assert_eq!(
+        monitor.previous_version_id.as_ref().map(|id| id.as_str()),
+        Some(first.artifact.id.as_str())
+    );
+    assert_eq!(
+        monitor
+            .review_requested_changes_previous_version_id
+            .as_ref()
+            .map(|id| id.as_str()),
+        Some(first.requested_changes_artifact.id.as_str())
+    );
+
+    let latest_artifact = state
+        .app_state
+        .artifact_repo
+        .get_by_id(&monitor_artifact_id)
+        .await
+        .expect("load latest overview artifact")
+        .expect("latest overview artifact");
+    let latest_requested_changes_artifact = state
+        .app_state
+        .artifact_repo
+        .get_by_id(&monitor_requested_changes_artifact_id)
+        .await
+        .expect("load latest requested changes artifact")
+        .expect("latest requested changes artifact");
+    assert!(matches!(
+        latest_artifact.content,
+        ArtifactContent::Inline { text } if text == "Final overview"
+    ));
+    assert!(matches!(
+        latest_requested_changes_artifact.content,
+        ArtifactContent::Inline { text } if text == "Final requested changes"
+    ));
+
+    let provisional_artifact = state
+        .app_state
+        .artifact_repo
+        .get_by_id(&ArtifactId::from_string(first.artifact.id))
+        .await
+        .expect("load provisional overview artifact")
+        .expect("provisional overview artifact");
+    assert!(matches!(
+        provisional_artifact.content,
+        ArtifactContent::Inline { text } if text == "Provisional overview"
+    ));
 }
 
 #[tokio::test]
