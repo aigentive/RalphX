@@ -147,6 +147,22 @@ export const AGENT_GATED_AFFORDANCES = {
   // registered, so an existing reference still renders and can still be detached.
   folderReferenceAdd: "add_conversation_folder_reference",
   folderReferenceRemove: "remove_conversation_folder_reference",
+  // Dropping and rewriting a turn that is already sitting in the host's queue. Both name
+  // `delete_queued_agent_message`, which the host does NOT expose remotely, so both resolve
+  // `unavailable` — derived from absence, as always.
+  //
+  // Edit shares the delete row because delete is the step that decides it: the edit path is
+  // delete-then-send, and its send half (`send_remote_chat_message`) IS registered. That
+  // asymmetry was the bug — the delete failed, was swallowed, the local chip vanished anyway,
+  // and the send went out regardless, so the agent received BOTH the original queued turn and
+  // the rewritten one. An affordance whose first step cannot land is unavailable as a whole,
+  // whatever its second step can do.
+  //
+  // Unavailable rather than gated: no `ui:agent` grant reaches an unregistered op, so pointing
+  // the user at a host switch would point at nothing. Spawn-free queue twins
+  // (`get/delete/update_queued_agent_message`) are the real fix and need host registrations.
+  queuedMessageDelete: "delete_queued_agent_message",
+  queuedMessageEdit: "delete_queued_agent_message",
   automationResume: "resume_automation",
   automationRunNow: "trigger_automation_run_now",
   automationRestart: "restart_automation",
