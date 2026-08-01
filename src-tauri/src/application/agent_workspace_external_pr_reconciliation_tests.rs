@@ -912,6 +912,224 @@ async fn reconciliation_rejects_external_pr_with_a_different_head_branch() {
     assert_eq!(github.state().find_latest_pr_by_head_branch_calls, 1);
 }
 
+fn archived_workspace_with_publication(project: &Project) -> AgentConversationWorkspace {
+    let mut workspace = test_workspace(project);
+    workspace.status = AgentConversationWorkspaceStatus::Archived;
+    workspace.publication_pr_number = Some(913);
+    workspace.publication_pr_url = Some("https://github.com/owner/repo/pull/913".to_string());
+    workspace.publication_pr_status = Some("merged".to_string());
+    workspace
+}
+
+#[tokio::test]
+async fn reconciliation_corrects_foreign_publication_on_archived_workspace() {
+    let project = test_project();
+    let workspace = archived_workspace_with_publication(&project);
+    let conversation_id = workspace.conversation_id.clone();
+    let github = Arc::new(MockGithubService::new());
+    let (deps, workspace_repo) = deps_with_workspace(project, workspace, github.clone()).await;
+    github.will_return_pr_detail(pr_detail(
+        913,
+        "another-team-branch",
+        "Foreign pull request",
+        None,
+    ));
+
+    let outcome = reconcile_agent_workspace_external_pr(
+        deps,
+        conversation_id.clone(),
+        AgentWorkspaceExternalPrReconciliationTrigger::WorkspaceLoad,
+    )
+    .await
+    .expect("archived foreign publication should be correctable");
+
+    assert_eq!(
+        outcome,
+        AgentWorkspaceExternalPrReconciliationOutcome::Skipped("foreign_publication_corrected")
+    );
+    let updated = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+    assert_eq!(updated.publication_pr_number, None);
+    assert_eq!(updated.publication_pr_status, None);
+    let events = workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].step, "publication_association_corrected");
+    assert_eq!(github.state().check_pr_status_calls, 0);
+}
+
+#[tokio::test]
+async fn reconciliation_reports_unverified_archived_foreign_publication_on_pr_detail_error() {
+    let project = test_project();
+    let workspace = archived_workspace_with_publication(&project);
+    let conversation_id = workspace.conversation_id.clone();
+    let github = Arc::new(MockGithubService::new());
+    let (deps, workspace_repo) = deps_with_workspace(project, workspace, github.clone()).await;
+    github.will_fail_pr_detail("gh unavailable");
+
+    let outcome = reconcile_agent_workspace_external_pr(
+        deps,
+        conversation_id.clone(),
+        AgentWorkspaceExternalPrReconciliationTrigger::WorkspaceLoad,
+    )
+    .await
+    .expect("an unreadable PR detail should degrade to unverified");
+
+    assert_eq!(
+        outcome,
+        AgentWorkspaceExternalPrReconciliationOutcome::Skipped("foreign_publication_unverified")
+    );
+    let updated = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+    assert_eq!(updated.publication_pr_number, Some(913));
+    assert!(workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn reconciliation_keeps_archived_workspace_with_owned_publication_untouched() {
+    let project = test_project();
+    let workspace = archived_workspace_with_publication(&project);
+    let conversation_id = workspace.conversation_id.clone();
+    let github = Arc::new(MockGithubService::new());
+    // deps_with_workspace configures the owned PR detail: the PR head matches the
+    // workspace branch, so the correction must classify it as owned and skip.
+    let (deps, workspace_repo) = deps_with_workspace(project, workspace, github.clone()).await;
+
+    let outcome = reconcile_agent_workspace_external_pr(
+        deps,
+        conversation_id.clone(),
+        AgentWorkspaceExternalPrReconciliationTrigger::WorkspaceLoad,
+    )
+    .await
+    .expect("owned archived publication should stay skipped");
+
+    assert_eq!(
+        outcome,
+        AgentWorkspaceExternalPrReconciliationOutcome::Skipped("workspace_not_active")
+    );
+    let updated = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+    assert_eq!(updated.publication_pr_number, Some(913));
+    assert_eq!(updated.status, AgentConversationWorkspaceStatus::Archived);
+    assert!(workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(github.state().check_pr_status_calls, 0);
+}
+
+#[tokio::test]
+async fn reconciliation_skips_archived_foreign_publication_when_project_is_missing() {
+    let stored_project = test_project();
+    let missing_project = Project::new(
+        "Missing".to_string(),
+        "/tmp/ralphx-missing-project".to_string(),
+    );
+    let workspace = archived_workspace_with_publication(&missing_project);
+    let conversation_id = workspace.conversation_id.clone();
+    let github = Arc::new(MockGithubService::new());
+    let (deps, _workspace_repo) =
+        deps_with_workspace(stored_project, workspace, github.clone()).await;
+
+    let outcome = reconcile_agent_workspace_external_pr(
+        deps,
+        conversation_id,
+        AgentWorkspaceExternalPrReconciliationTrigger::WorkspaceLoad,
+    )
+    .await
+    .expect("missing project should skip the correction");
+
+    assert_eq!(
+        outcome,
+        AgentWorkspaceExternalPrReconciliationOutcome::Skipped("project_missing")
+    );
+    assert_eq!(github.state().fetch_pr_detail_calls, 0);
+}
+
+#[tokio::test]
+async fn reconciliation_skips_archived_foreign_publication_when_project_is_archived() {
+    let mut project = test_project();
+    project.archived_at = Some(chrono::Utc::now());
+    let workspace = archived_workspace_with_publication(&project);
+    let conversation_id = workspace.conversation_id.clone();
+    let github = Arc::new(MockGithubService::new());
+    let (deps, _workspace_repo) = deps_with_workspace(project, workspace, github.clone()).await;
+
+    let outcome = reconcile_agent_workspace_external_pr(
+        deps,
+        conversation_id,
+        AgentWorkspaceExternalPrReconciliationTrigger::WorkspaceLoad,
+    )
+    .await
+    .expect("archived project should skip the correction");
+
+    assert_eq!(
+        outcome,
+        AgentWorkspaceExternalPrReconciliationOutcome::Skipped("project_archived")
+    );
+    assert_eq!(github.state().fetch_pr_detail_calls, 0);
+}
+
+#[tokio::test]
+async fn reconciliation_corrects_foreign_publication_on_active_linked_workspace() {
+    let project = test_project();
+    let mut workspace = test_workspace(&project);
+    workspace.publication_pr_number = Some(99);
+    workspace.publication_pr_url = Some("https://github.com/owner/repo/pull/99".to_string());
+    workspace.publication_pr_status = Some("open".to_string());
+    let conversation_id = workspace.conversation_id.clone();
+    let github = Arc::new(MockGithubService::new());
+    let (deps, workspace_repo) = deps_with_workspace(project, workspace, github.clone()).await;
+    github.will_return_pr_detail(pr_detail(
+        99,
+        "another-team-branch",
+        "Foreign pull request",
+        None,
+    ));
+
+    let outcome = reconcile_agent_workspace_external_pr(
+        deps,
+        conversation_id.clone(),
+        AgentWorkspaceExternalPrReconciliationTrigger::WorkspaceLoad,
+    )
+    .await
+    .expect("linked foreign publication should be correctable");
+
+    assert_eq!(
+        outcome,
+        AgentWorkspaceExternalPrReconciliationOutcome::Skipped("foreign_publication_corrected")
+    );
+    let updated = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+    assert_eq!(updated.publication_pr_number, None);
+    let events = workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].step, "publication_association_corrected");
+    assert_eq!(github.state().check_pr_status_calls, 0);
+}
+
 #[tokio::test]
 async fn reconciliation_leaves_linked_open_pr_repair_state_unchanged() {
     let project = test_project();

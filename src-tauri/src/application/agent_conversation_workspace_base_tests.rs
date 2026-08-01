@@ -308,6 +308,34 @@ async fn resolve_workspace_base_retargets_merged_source_pull_request_to_merge_ta
 }
 
 #[tokio::test]
+async fn resolve_workspace_base_keeps_source_base_when_merge_target_has_no_checkout_ref() {
+    let (_temp, project, main_sha) = setup_remote_repo();
+    let repo = Path::new(&project.working_directory);
+    git(repo, &["checkout", "-b", "feature/source-pr"]);
+    git(repo, &["push", "-u", "origin", "feature/source-pr"]);
+    git(repo, &["checkout", "main"]);
+    let mut target = workspace("feature/source-pr", Some(main_sha));
+    target.project_id = project.id.clone();
+    target.source_pull_request = Some(source_pull_request(42, "feature/source-pr", "gone/target"));
+    let github = MockGithubService::new();
+    github.will_return_status(PrStatus::Merged {
+        merge_commit_sha: Some("merge-sha".to_string()),
+        merged_at: Some("2026-08-01T00:00:00Z".to_string()),
+    });
+
+    let resolution = resolve_workspace_base_with_github(&project, &target, Some(&github))
+        .await
+        .expect("an unresolvable merge target should keep the selected base");
+
+    assert_eq!(resolution.status, BaseStatus::Valid);
+    assert_eq!(
+        resolution.effective_base_ref.as_deref(),
+        Some("feature/source-pr")
+    );
+    assert!(!resolution.retargeted_from_merged_source_pull_request());
+}
+
+#[tokio::test]
 async fn resolve_workspace_base_keeps_open_source_pull_request_unchanged() {
     let (_temp, project, main_sha) = setup_remote_repo();
     let repo = Path::new(&project.working_directory);

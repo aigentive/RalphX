@@ -369,6 +369,27 @@ describe("branchBaseOptions", () => {
     ]);
   });
 
+  it("drops merged pull requests without a resolvable merge target", async () => {
+    searchGithubPullRequestsMock.mockResolvedValue([
+      {
+        number: 53,
+        title: "Merged without base",
+        url: "https://github.com/owner/repo/pull/53",
+        headRefName: "feature/deleted-after-merge",
+        headRefOid: "abc123",
+        baseRefName: "",
+        isDraft: false,
+        isCrossRepository: false,
+        state: "merged",
+        mergedAt: "2026-08-01T10:00:00Z",
+      },
+    ]);
+
+    await expect(
+      loadPullRequestBaseOptions({ projectId: "project-1" }),
+    ).resolves.toEqual([]);
+  });
+
   it("retargets merged pull-request selections to their merge target", async () => {
     searchGithubPullRequestsMock.mockResolvedValue([
       {

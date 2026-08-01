@@ -217,6 +217,56 @@ async fn owned_publication_and_read_failures_leave_workspace_untouched() {
 }
 
 #[tokio::test]
+async fn conversation_read_failure_degrades_to_unverified_without_clearing_publication() {
+    let project = project();
+    let workspace = workspace(&project);
+    let (project, workspace, workspace_repo, conversation_repo, github) =
+        setup(project, workspace).await;
+    github.will_return_pr_detail(PrDetail {
+        number: 41,
+        title: "Foreign PR".to_string(),
+        body: None,
+        author: None,
+        created_at: None,
+        url: None,
+        state: PrStatus::Closed,
+        is_draft: false,
+        head_ref_name: "main".to_string(),
+        base_ref_name: "develop".to_string(),
+    });
+    conversation_repo
+        .fail_get_by_id(workspace.conversation_id.clone())
+        .await;
+
+    assert_eq!(
+        correct_foreign_agent_workspace_publication(
+            workspace_repo.clone(),
+            conversation_repo,
+            github,
+            &project,
+            &workspace,
+        )
+        .await
+        .unwrap(),
+        PublicationCorrectionOutcome::Unverified
+    );
+    assert_eq!(
+        workspace_repo
+            .get_by_conversation_id(&workspace.conversation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .publication_pr_number,
+        Some(41)
+    );
+    assert!(workspace_repo
+        .list_publication_events(&workspace.conversation_id)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
 async fn archived_conversation_prevents_status_restoration_and_inapplicable_workspaces_skip() {
     let project = project();
     let mut workspace = workspace(&project);
