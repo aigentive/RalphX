@@ -389,7 +389,16 @@ async fn start_or_join_agent_workspace_repair_with_projection(
             }
         }
         StartOrJoinAgentWorkspaceRepairAttemptOutcome::BlockedByCurrent(current) => {
-            Ok(AgentWorkspaceRepairStartOutcome::BlockedByCurrent(current))
+            // A current attempt with a different target base ref refuses joins, but a blocked
+            // generation must still be retryable when the caller explicitly retargets it —
+            // otherwise a workspace whose base moved (for example its base PR merged) can never
+            // supersede the drifted blocked repair.
+            if request.retry_blocked && current.phase == AgentWorkspaceRepairPhase::Blocked {
+                retry_blocked_agent_workspace_repair(repair_repo, workspace_repo, request, current)
+                    .await
+            } else {
+                Ok(AgentWorkspaceRepairStartOutcome::BlockedByCurrent(current))
+            }
         }
     }
 }

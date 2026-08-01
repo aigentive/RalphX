@@ -127,7 +127,7 @@ use crate::application::publish_resilience::{
     verify_agent_workspace_repair_pr_handoff, AgentWorkspaceRepairPrHandoff,
     AgentWorkspaceRepairPrHandoffResult, AgentWorkspaceRepairPublishContinuation,
     AgentWorkspaceRepairPushOutcome, PublishAfterRepairPushError, PublishBranchFreshnessOutcome,
-    PublishBranchFreshnessStatus, PublishFailureClass,
+    PublishBranchFreshnessStatus, PublishFailureClass, RepairPrHandoffVerification,
 };
 use crate::application::services::pr_auto_merge_status::{
     auto_merge_disable_failure_summary, auto_merge_enable_failure_summary,
@@ -6119,9 +6119,13 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
         false
     };
 
+    // Parse the user selection before the blocked-repair gate. An explicit selection is an
+    // instruction to supersede the old repair target, not a request to replay it unchanged.
+    let explicit_base = normalize_explicit_publish_base_selection(selection)?;
     let repair_service = state.build_chat_service_with_execution_state(Arc::clone(execution_state));
 
     if created_by_run_id.is_none()
+        && explicit_base.is_none()
         && retry_blocked_agent_workspace_repair_for_explicit_user_action(
             state,
             &workspace,
@@ -6146,8 +6150,6 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
             effective_base_display_name: None,
         });
     }
-
-    let explicit_base = normalize_explicit_publish_base_selection(selection)?;
 
     let project = state
         .project_repo
@@ -6188,20 +6190,18 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
     let base_resolution = if let Some(explicit_base) = explicit_base.as_ref() {
         publish_target.base_ref = explicit_base.base_ref.clone();
         publish_target.base_display_name = Some(explicit_base.display_name.clone());
-        if explicit_base.source_pull_request.is_some() {
-            if let Err(error) = GitService::fetch_origin(&publish_target.worktree_path).await {
-                let message = format!("Failed to refresh selected pull request branch: {error}");
-                mark_agent_workspace_update_failure_with_target(
-                    state,
-                    &workspace,
-                    &message,
-                    None,
-                    &repair_service,
-                    &publish_target.repair_target(),
-                )
-                .await;
-                return Err(message);
-            }
+        if let Err(error) = GitService::fetch_origin(&publish_target.worktree_path).await {
+            let message = format!("Failed to refresh selected base branch: {error}");
+            mark_agent_workspace_update_failure_with_target(
+                state,
+                &workspace,
+                &message,
+                None,
+                &repair_service,
+                &publish_target.repair_target(),
+            )
+            .await;
+            return Err(message);
         }
         if let Err(message) = validate_explicit_publish_base_ref(
             &publish_target.worktree_path,
@@ -6220,9 +6220,62 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
             .await;
             return Err(message);
         }
+        let selected_base_commit = match GitService::get_branch_sha(
+            &publish_target.worktree_path,
+            &remote_tracking_ref_for_publish(&explicit_base.base_ref),
+        )
+        .await
+        {
+            Ok(commit) => commit,
+            Err(error) => {
+                let message = format!("Failed to resolve selected base branch: {error}");
+                mark_agent_workspace_update_failure_with_target(
+                    state,
+                    &workspace,
+                    &message,
+                    None,
+                    &repair_service,
+                    &publish_target.repair_target(),
+                )
+                .await;
+                return Err(message);
+            }
+        };
+        let previous_base_ref = workspace.base_ref.clone();
+        // Persist before any retry so start_attempt_from_workspace captures the new target.
+        workspace.base_ref_kind = explicit_base.kind;
+        workspace.base_ref = explicit_base.base_ref.clone();
+        workspace.base_display_name = Some(explicit_base.display_name.clone());
+        workspace.source_pull_request = explicit_base.source_pull_request.clone();
+        workspace.base_commit = Some(selected_base_commit);
+        workspace.updated_at = chrono::Utc::now();
+        workspace = state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .map_err(|e| e.to_string())?;
+        if created_by_run_id.is_none()
+            && retry_blocked_agent_workspace_repair_for_explicit_user_action(
+                state,
+                &workspace,
+                &repair_service,
+                AgentWorkspacePostRepairAction::UpdateOnly,
+            )
+            .await
+        {
+            return Ok(UpdateAgentConversationWorkspaceFromBaseResponse {
+                target_ref: workspace.base_ref.clone(),
+                base_commit: workspace.base_commit.clone().unwrap_or_default(),
+                workspace: agent_workspace_response_for_state(state, workspace).await?,
+                updated: false,
+                repair_started: true,
+                base_status: BaseStatus::Valid.as_str().to_string(),
+                effective_base_display_name: None,
+            });
+        }
         let retargeted_base = BaseResolutionResult {
             status: BaseStatus::Retargeted,
-            old_base_ref: workspace.base_ref.clone(),
+            old_base_ref: previous_base_ref,
             effective_base_ref: Some(explicit_base.base_ref.clone()),
             effective_checkout_ref: Some(explicit_base.base_ref.clone()),
             effective_base_commit: None,
@@ -7248,6 +7301,8 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
             handoff,
         )
         .await
+        .map_err(|error| error.to_string())
+        .and_then(repair_handoff_verification_result)
         {
             let error = error.to_string();
             mark_agent_workspace_publish_failure_with_routing(
@@ -7410,6 +7465,8 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
             handoff,
         )
         .await
+        .map_err(|error| error.to_string())
+        .and_then(repair_handoff_verification_result)
         {
             let error = error.to_string();
             mark_agent_workspace_publish_failure_with_routing(
@@ -7950,6 +8007,8 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
             handoff,
         )
         .await
+        .map_err(|error| error.to_string())
+        .and_then(repair_handoff_verification_result)
         {
             let error = error.to_string();
             mark_agent_workspace_publish_failure_with_routing(
@@ -8115,10 +8174,14 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
         )
         .await
         {
-            Ok(freshness) => PublishBranchFreshnessOutcome::AlreadyFresh {
+            Ok(RepairPrHandoffVerification::Ok(freshness)) => PublishBranchFreshnessOutcome::AlreadyFresh {
                 base_commit: freshness.target_base_commit,
                 target_ref: freshness.target_ref,
             },
+            Ok(RepairPrHandoffVerification::Retargetable { reason })
+            | Ok(RepairPrHandoffVerification::Fatal(reason)) => {
+                PublishBranchFreshnessOutcome::OperationalError { message: reason }
+            }
             Err(error) => PublishBranchFreshnessOutcome::OperationalError {
                 message: error.to_string(),
             },
@@ -8516,6 +8579,8 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
             handoff,
         )
         .await
+        .map_err(|error| error.to_string())
+        .and_then(repair_handoff_verification_result)
         {
             let error = error.to_string();
             mark_agent_workspace_publish_failure_with_routing(
@@ -9228,17 +9293,38 @@ where
                 return false;
             }
         };
+    let mut retry_workspace = workspace.clone();
+    if let Some(base_commit) = resolve_current_base_commit(&resolved.path, &workspace.base_ref).await {
+        if retry_workspace.base_commit.as_deref() != Some(base_commit.as_str()) {
+            retry_workspace.base_commit = Some(base_commit);
+            retry_workspace.updated_at = chrono::Utc::now();
+            match state
+                .agent_conversation_workspace_repo
+                .create_or_update(retry_workspace.clone())
+                .await
+            {
+                Ok(persisted) => retry_workspace = persisted,
+                Err(error) => {
+                    tracing::warn!(
+                        conversation_id = %workspace.conversation_id,
+                        error = %error,
+                        "Could not persist refreshed base commit before blocked workspace repair retry"
+                    );
+                }
+            }
+        }
+    }
     let target = AgentConversationWorkspaceRepairTarget {
-        branch_name: workspace.branch_name.clone(),
-        base_ref: workspace.base_ref.clone(),
-        base_display_name: workspace.base_display_name.clone(),
+        branch_name: retry_workspace.branch_name.clone(),
+        base_ref: retry_workspace.base_ref.clone(),
+        base_display_name: retry_workspace.base_display_name.clone(),
         worktree_path: Some(resolved.path),
     };
 
     let error = last_meaningful_agent_workspace_repair_reason(&attempt);
     mark_agent_workspace_failure_with_routing_and_action_classified(
         state,
-        workspace,
+        &retry_workspace,
         error,
         None,
         repair_service,
@@ -9250,6 +9336,25 @@ where
     )
     .await;
     true
+}
+
+/// Best-effort origin refresh for a user-directed repair successor. Retrying a durable blocked
+/// generation is still allowed when origin cannot be read; it retains its persisted base commit.
+async fn resolve_current_base_commit(worktree_path: &Path, base_ref: &str) -> Option<String> {
+    GitService::fetch_origin(worktree_path).await.ok()?;
+    GitService::get_branch_sha(worktree_path, &remote_tracking_ref_for_publish(base_ref))
+        .await
+        .ok()
+}
+
+fn repair_handoff_verification_result(
+    verification: RepairPrHandoffVerification,
+) -> Result<(), String> {
+    match verification {
+        RepairPrHandoffVerification::Ok(_) => Ok(()),
+        RepairPrHandoffVerification::Retargetable { reason }
+        | RepairPrHandoffVerification::Fatal(reason) => Err(reason),
+    }
 }
 
 /// Delivery retries append `auto_retry_*` streak markers to the durable reason history. Those
