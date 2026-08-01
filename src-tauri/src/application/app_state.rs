@@ -122,7 +122,7 @@ use crate::infrastructure::memory::{
     MemoryTicketCanonicalBranchRepository, MemoryTicketingStatusCatalogRepository,
     MemoryUiFeatureFlagOverridesRepository, MemoryValidationRunRepository,
     MemoryWebhookRegistrationRepository, MemoryWorkflowRepository,
-    MemoryRemoteAgentStopRequestRepository, MemoryRemoteConversationStartRequestRepository,
+    MemoryRemoteAgentStopRequestRepository,
     MemoryWorkspaceReviewRuntimeSettingsRepository,
 };
 use crate::infrastructure::secret_store::MacosKeychainSecretStore;
