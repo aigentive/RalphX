@@ -195,8 +195,16 @@ async fn preflight_requested_delegated_session(
     let stored_parent_conversation_id = delegated_conversation
         .as_ref()
         .and_then(|conversation| conversation.parent_conversation_id.as_deref());
+    // One-way compatibility allowance: delegated conversations created before delegation was
+    // attributed to the calling runtime store the workspace anchor as their parent. Accept the
+    // current caller lineage or that legacy anchor; any other stored parent is still rejected.
     let lineage_matches = match parent.parent_conversation_id.as_deref() {
-        Some(expected) => stored_parent_conversation_id == Some(expected),
+        Some(expected) => {
+            stored_parent_conversation_id == Some(expected)
+                || (parent.workspace_anchor_conversation_id.is_some()
+                    && stored_parent_conversation_id
+                        == parent.workspace_anchor_conversation_id.as_deref())
+        }
         None => stored_parent_conversation_id.is_none(),
     };
     if !lineage_matches {

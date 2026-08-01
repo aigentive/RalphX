@@ -208,6 +208,10 @@ pub(super) async fn apply_trusted_caller_conversation(
     }
 
     parent.caller_conversation_id = Some(trusted_id.to_string());
+    // The delegation belongs to the runtime that requested it: its Delegate widget, streaming
+    // run binding, and delegated-conversation lineage all target the caller instead of the
+    // workspace anchor, which would otherwise receive another conversation's writes.
+    parent.parent_conversation_id = Some(trusted_id.to_string());
     if parent.context_type == ChatContextType::Project {
         let project =
             load_project_by_id(state, &ProjectId::from_string(parent.project_id.clone())).await?;
