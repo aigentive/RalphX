@@ -3945,6 +3945,12 @@ export async function listAgentSidebarConversations(
   input: AgentSidebarConversationsInput,
 ): Promise<AgentSidebarConversationGroupsResponse> {
   const normalizedSearch = input.search?.trim();
+  // Pins and priorities are client-local, env-scoped UI state (agentSessionStore). Sending a
+  // remote viewer's own pins to the host reorders the host's conversations away from the order the
+  // host itself renders — same data, different within-group boosting. On a remote environment we
+  // omit them so the host's native sort/grouping is preserved verbatim. (Mirroring the host's
+  // pinned-to-top items would require host-persisted pin state; that is a separate follow-up.)
+  const isRemote = remoteTranscriptReadsEnabled();
   const args = {
     input: {
       projectIds: input.projectIds,
@@ -3960,10 +3966,10 @@ export async function listAgentSidebarConversations(
         ? { limitPerGroup: input.limitPerGroup }
         : {}),
       ...(input.offsets ? { offsets: input.offsets } : {}),
-      ...(input.pinnedConversationIds
+      ...(!isRemote && input.pinnedConversationIds
         ? { pinnedConversationIds: input.pinnedConversationIds }
         : {}),
-      ...(input.priorityConversationIds
+      ...(!isRemote && input.priorityConversationIds
         ? { priorityConversationIds: input.priorityConversationIds }
         : {}),
     },
@@ -3975,7 +3981,7 @@ export async function listAgentSidebarConversations(
   // `worktree_path` is blanked, which the sidebar UI does not render, so the schema and transform
   // below are shared verbatim. Duplicating the invoke keeps every command name statically
   // enumerable for the P-11 transport-drift scan (see `remoteTranscriptReadsEnabled`).
-  const raw = remoteTranscriptReadsEnabled()
+  const raw = isRemote
     ? await typedInvoke(
         "list_remote_agent_sidebar_conversations",
         args,
