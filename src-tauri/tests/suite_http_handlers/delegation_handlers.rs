@@ -3479,7 +3479,7 @@ async fn delegate_start_from_forked_child_conversation_uses_its_own_workspace() 
         .await
         .expect("create fork runtime run");
 
-    start_delegate_with_runtime_context(
+    let _ = start_delegate_with_runtime_context(
         State(state.clone()),
         runtime_identity_headers(&fork_conversation.id.as_str(), &fork_run.id.as_str()),
         Json(child_runtime_delegate_start_request(
@@ -3488,8 +3488,7 @@ async fn delegate_start_from_forked_child_conversation_uses_its_own_workspace() 
         )),
     )
     .await
-    .expect("delegation must be available from a forked child runtime")
-    .0;
+    .expect("delegation must be available from a forked child runtime");
 
     let captured_cwds = wait_for_captured_cwds(&captured_cwd_path, 1).await;
     assert_eq!(
