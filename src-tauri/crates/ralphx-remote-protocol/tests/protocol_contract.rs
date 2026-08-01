@@ -374,7 +374,6 @@ fn audit_refusal_overlays_registerable_and_never_masks_a_mechanical_refusal() {
         vec![
             json!("fail-open-until-fixed"),
             json!("constructs-spawn-capable-service"),
-            json!("transport-shape-deferred"),
             json!("seam-resolved-via-remote-twin"),
             json!("reaches-corrective-transition"),
         ]
@@ -389,6 +388,10 @@ fn audit_refusal_overlays_registerable_and_never_masks_a_mechanical_refusal() {
     // authority. Extending a closed vocabulary with a reviewed, specific, falsifiable code is
     // the sanctioned move when the alternative is filing a false reason; minting a generic
     // arming/steering code would not be.
-    assert_eq!(AUDIT_REFUSAL_REASONS.len(), 5);
+    // 5 -> 4: WP4 (a) retired `transport-shape-deferred`. Every row that ever used it cited a
+    // non-`Serialize` `AppError` that has been `Serialize` since `96ce527a9`, so the code
+    // recorded a misreading rather than a limitation. Shrinking a closed vocabulary when its
+    // only evidence is disproven is the same discipline as refusing to widen it without any.
+    assert_eq!(AUDIT_REFUSAL_REASONS.len(), 4);
     assert!(AUDIT_REFUSAL_REASONS.contains(&AuditRefusalReason::FailOpenUntilFixed));
 }

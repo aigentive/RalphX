@@ -1136,6 +1136,45 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
     // action, so a write whose only effect is a database row is still AgentControl when a
     // loop consumes that row. Requires `ui:agent`, which is off by default per device.
     // -----------------------------------------------------------------------------------
+    // -----------------------------------------------------------------------------------
+    // WP4 (a) — the rows batch 14 refused on a transport shape that does not exist.
+    //
+    // Each was left inheriting a conservative module default because the batch never got past
+    // the (false) error-contract blocker to audit the body. These four are the reviewed rows;
+    // the four `task_step_commands` status writes already carried their own detector-d rows.
+    // -----------------------------------------------------------------------------------
+    CommandOverride {
+        command: "list_conversation_folder_references",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "pure `SELECT ... WHERE removed_at IS NULL` over the folder-reference repository; takes no path, writes nothing, propagates read errors. Discloses the stored host folder_path, on the same owner ruling that lets `list_remote_projects` carry working_directory: the paired device is the user's own machine holding ui:read on their own host",
+        ),
+    },
+    CommandOverride {
+        command: "remove_conversation_folder_reference",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "soft-deletes ONE folder reference, scoped by both folder_reference_id and conversation_id, and fails closed with NotFound on a missing row; takes no path and reaches no spawn sink. AgentControl because the reference list is read at spawn time to build the MCP filesystem roots, so removing one narrows a future agent's reach — the authority-REDUCING half of the pair whose adding half stays deferred on the missing project-root allowlist",
+        ),
+    },
+    CommandOverride {
+        command: "reorder_task_steps",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "reorders a task's steps in one transaction scoped `WHERE id = ?2 AND task_id = ?3`, so a foreign step id is a no-op rather than a cross-task write; propagates every repository error. Not a content writer — it moves sort_order and no step body — so it does not carry MutatesAgentConsumedContent the way its four status siblings do",
+        ),
+    },
+    CommandOverride {
+        command: "abort_seeded_agent_conversation",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "cancels a NEVER-STARTED seeded conversation and the resources minted while preparing its first send. Guarded fail-closed: it refuses with SeededAgentConversationAlreadyStarted if the conversation has any message, any run, or any provider/claude session id, so it can never reach a conversation with history; every step propagates by `?` and it launches nothing",
+        ),
+    },
     CommandOverride {
         command: "update_remote_execution_settings",
         policy: policy(
@@ -3292,15 +3331,6 @@ pub const AUDIT_REFUSALS: &[AuditRefusal] = &[
         finding: "same create_chat_service shape at unified_chat_commands/mod.rs:4263",
         batch: "8",
     },
-    // --- Transport shape, explicitly not an authority finding.
-    AuditRefusal {
-        command: "list_conversation_folder_references",
-        reason: AuditRefusalReason::TransportShapeDeferred,
-        finding: "a pure SELECT ... WHERE removed_at IS NULL that audits cleaner than rows \
-                  already registered, but it returns Result<_, AppError> and AppError is not \
-                  Serialize, so the fallible dispatch arm cannot render its error",
-        batch: "8",
-    },
     // --- Answered by a registered remote twin through a deliberately split seam.
     AuditRefusal {
         command: "list_agent_conversations",
@@ -3507,69 +3537,17 @@ pub const AUDIT_REFUSALS: &[AuditRefusal] = &[
                   checks); the loss is entirely on the write side",
         batch: "audited and classified 11",
     },
-    // --- PR 3.1-b batch 14, the final batch.
+    // --- PR 3.1-b batch 14's seven `TransportShapeDeferred` rows are GONE (WP4 (a)).
     //
-    // Seven TransportShapeDeferred rows below are ONE mechanism, not seven judgements, and it
-    // is the mechanism batch 8 already recorded for `list_conversation_folder_references`:
-    // the target returns `Result<_, AppError>` (directly or as `AppResult<T>`), `AppError`
-    // derives only `Error, Debug`, and the macro's `fallible` arm renders the error through
-    // `serialize_ok(error)`. The payload cannot cross the facade at all. These are explicitly
-    // NOT authority findings — several are among the cleanest bodies in the whole census — and
-    // an error-contract change unlocks every one of them at once.
-    AuditRefusal {
-        command: "start_step",
-        reason: AuditRefusalReason::TransportShapeDeferred,
-        finding: "returns AppResult<TaskStepResponse>; AppError is not Serialize, so the \
-                  fallible dispatch arm cannot render its error. The body audits CLEAN — a \
-                  guarded task_steps status write behind the fail-closed tasks-feature policy \
-                  gate, whose only `let _ =` is the post-write app.emit",
-        batch: "14",
-    },
-    AuditRefusal {
-        command: "complete_step",
-        reason: AuditRefusalReason::TransportShapeDeferred,
-        finding: "same AppResult<TaskStepResponse> error contract as start_step, same clean body",
-        batch: "14",
-    },
-    AuditRefusal {
-        command: "skip_step",
-        reason: AuditRefusalReason::TransportShapeDeferred,
-        finding: "same AppResult<TaskStepResponse> error contract as start_step, same clean body",
-        batch: "14",
-    },
-    AuditRefusal {
-        command: "fail_step",
-        reason: AuditRefusalReason::TransportShapeDeferred,
-        finding: "same AppResult<TaskStepResponse> error contract as start_step, same clean body",
-        batch: "14",
-    },
-    AuditRefusal {
-        command: "reorder_task_steps",
-        reason: AuditRefusalReason::TransportShapeDeferred,
-        finding: "returns AppResult<Vec<TaskStepResponse>>, same non-Serialize error contract. \
-                  Body is a single transaction scoped `WHERE id = ?2 AND task_id = ?3`, so \
-                  foreign step ids are no-ops rather than cross-task writes",
-        batch: "14",
-    },
-    AuditRefusal {
-        command: "remove_conversation_folder_reference",
-        reason: AuditRefusalReason::TransportShapeDeferred,
-        finding: "returns Result<(), AppError> — the identical contract that refused its \
-                  sibling list_conversation_folder_references in batch 8. Body is the SAFE \
-                  half of the folder-reference pair: a soft delete scoped by both \
-                  folder_reference_id and conversation_id, taking no path and failing closed \
-                  with NotFound on a missing row",
-        batch: "14",
-    },
-    AuditRefusal {
-        command: "abort_seeded_agent_conversation",
-        reason: AuditRefusalReason::TransportShapeDeferred,
-        finding: "returns Result<(), AppError>, same non-Serialize contract. Body audits clean \
-                  and launches nothing: it deletes attachments, folder references, the persona \
-                  draft, the private workspace directory and the conversation row, with every \
-                  error propagated by `?`",
-        batch: "14",
-    },
+    // They recorded one shared mechanism — "AppError derives only `Error, Debug`, so the
+    // macro's `fallible` arm cannot render it" — and the mechanism never existed.
+    // `ralphx_domain::error` has carried a hand-written `impl Serialize for AppError` since
+    // `96ce527a9`; it has to, because Tauri itself requires `Serialize` on a command's error
+    // type. The facade was already dispatching two `AppResult`-returning commands from the very
+    // module the block cited (`create_task_step`, `update_task_step`). All eight rows (the seven
+    // here plus batch 8's `list_conversation_folder_references`) are registered instead, and
+    // `the_transport_shape_refusal_premise_stays_disproven` pins the disproof so the class
+    // cannot be reconstituted on the same false finding.
     // --- The one fail-open in the final batch, in the shape `list_agent_composer_skills` set.
     AuditRefusal {
         command: "get_manual_role_defaults",

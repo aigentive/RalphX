@@ -26,6 +26,12 @@ export interface RemoteFacadeOp {
  * not reachable remotely at all — no scope grant changes that.
  */
 export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
+  "abort_seeded_agent_conversation": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl"],
+    pins: [],
+  },
   "activate_methodology": {
     opClass: "agentControl",
     argumentSensitive: false,
@@ -146,6 +152,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: ["agentControl"],
     pins: [],
   },
+  "complete_step": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl","mutatesAgentConsumedContent"],
+    pins: [],
+  },
   "count_session_activity_events": {
     opClass: "read",
     argumentSensitive: false,
@@ -211,6 +223,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     argumentSensitive: false,
     capabilities: [],
     pins: [{"param":"args","field":"decision","value":"deny"}],
+  },
+  "fail_step": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl","mutatesAgentConsumedContent"],
+    pins: [],
   },
   "finalize_automation": {
     opClass: "agentControl",
@@ -866,6 +884,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: [],
     pins: [],
   },
+  "list_conversation_folder_references": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
   "list_ideation_sessions": {
     opClass: "read",
     argumentSensitive: false,
@@ -1064,6 +1088,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: ["mutatesAgentConsumedContent"],
     pins: [],
   },
+  "remove_conversation_folder_reference": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl"],
+    pins: [],
+  },
   "remove_proposal_dependency": {
     opClass: "agentControl",
     argumentSensitive: false,
@@ -1077,6 +1107,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     pins: [],
   },
   "reorder_proposals": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl"],
+    pins: [],
+  },
+  "reorder_task_steps": {
     opClass: "agentControl",
     argumentSensitive: false,
     capabilities: ["agentControl"],
@@ -1214,10 +1250,22 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: ["agentControl"],
     pins: [],
   },
+  "skip_step": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl","mutatesAgentConsumedContent"],
+    pins: [],
+  },
   "start_research": {
     opClass: "agentControl",
     argumentSensitive: false,
     capabilities: ["agentControl"],
+    pins: [],
+  },
+  "start_step": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl","mutatesAgentConsumedContent"],
     pins: [],
   },
   "stop_automation": {

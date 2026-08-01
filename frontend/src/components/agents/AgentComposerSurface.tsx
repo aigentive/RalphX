@@ -496,6 +496,16 @@ export function AgentComposerSurface({
   const folderReferencesSupported =
     (mode?.value === "persona_builder" && featureFlags.agentPersonas === true) ||
     (mode?.value !== "persona_builder" && Boolean(project.value?.trim()));
+  // The picker behind Add folder is a native dialog on THIS Mac, and the host does not expose
+  // `add_conversation_folder_reference` remotely, so under a remote environment the control can
+  // only ever produce a path the host cannot see. Hidden rather than disabled: there is no host
+  // setting that turns it on, which is exactly what `unavailable` means.
+  //
+  // Deliberately NOT folded into `folderReferencesSupported` — that flag also enables the
+  // conversation's folder-reference READ, which the host does serve remotely
+  // (`list_conversation_folder_references`), so existing references must keep rendering.
+  const folderReferenceAddGate = useAgentGate("folderReferenceAdd");
+  const canAddFolderReference = folderReferencesSupported && !folderReferenceAddGate.gated;
   const effectivePlaceholder = isReadOnly
     ? "Viewing historical state (read-only)"
     : questionMode
@@ -2126,7 +2136,7 @@ export function AgentComposerSurface({
               enableAttachments={enableAttachments}
               attachmentDisabled={attachmentDisabled}
               onOpenAttachmentPicker={handleOpenAttachmentPicker}
-              showAddFolder={folderReferencesSupported}
+              showAddFolder={canAddFolderReference}
               onAddFolder={handleAddFolder}
               {...(onForkSession
                 ? {

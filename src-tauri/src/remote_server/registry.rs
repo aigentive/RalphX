@@ -1735,6 +1735,85 @@ crate::remote_commands! {
         call: async,
         result: fallible,
     },
+    // -----------------------------------------------------------------------------------
+    // WP4 (a) — the eight rows batch 8/14 deferred on "AppError is not Serialize".
+    //
+    // It always was. `ralphx_domain::error` carries a hand-written `impl Serialize for
+    // AppError`, and it has to: Tauri requires `Serialize` on a command's error type, which is
+    // why the two `AppResult`-returning `task_step_commands` rows directly above this block
+    // have been dispatching through the same `fallible` arm since they were registered. The
+    // deferral was a false finding, not a shipped limitation, so these register at the class
+    // their bodies earn with no transport change.
+    //
+    // The four status writes keep the detector-d capability pair; `reorder_task_steps` moves
+    // sort_order only and does not.
+    // -----------------------------------------------------------------------------------
+    "start_step" => crate::commands::task_step_commands::start_step {
+        class: AgentControl,
+        caps: [AgentControl, MutatesAgentConsumedContent],
+        params: [(arg step_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "complete_step" => crate::commands::task_step_commands::complete_step {
+        class: AgentControl,
+        caps: [AgentControl, MutatesAgentConsumedContent],
+        params: [(arg step_id: String), (arg note: Option<String>), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "skip_step" => crate::commands::task_step_commands::skip_step {
+        class: AgentControl,
+        caps: [AgentControl, MutatesAgentConsumedContent],
+        params: [(arg step_id: String), (arg reason: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "fail_step" => crate::commands::task_step_commands::fail_step {
+        class: AgentControl,
+        caps: [AgentControl, MutatesAgentConsumedContent],
+        params: [(arg step_id: String), (arg error: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "reorder_task_steps" => crate::commands::task_step_commands::reorder_task_steps {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [(arg task_id: String), (arg step_ids: Vec<String>), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "list_conversation_folder_references"
+        => crate::commands::conversation_folder_reference_commands::list_conversation_folder_references {
+        class: Read,
+        caps: [],
+        params: [(arg conversation_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    // The authority-REDUCING half of the folder-reference pair. `add_…` stays deferred: its
+    // stored path becomes an MCP filesystem root for every later spawn and has no project-root
+    // allowlist, so adding widens a future agent's reach while removing only narrows it.
+    "remove_conversation_folder_reference"
+        => crate::commands::conversation_folder_reference_commands::remove_conversation_folder_reference {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [
+            (arg input: crate::commands::conversation_folder_reference_commands::RemoveConversationFolderReferenceInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "abort_seeded_agent_conversation"
+        => crate::commands::unified_chat_commands::abort_seeded_agent_conversation {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [(arg conversation_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
+
     "create_artifact" => crate::commands::artifact_commands::create_artifact {
         class: AgentControl,
         caps: [MutatesAgentConsumedContent],

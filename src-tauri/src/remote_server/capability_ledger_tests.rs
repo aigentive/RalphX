@@ -13,7 +13,7 @@ use super::capability_ledger::{
     COMMAND_OVERRIDES, CONDITIONAL_CAPABILITIES, DECLARED_MEMBERSHIPS, MODULE_DEFAULTS,
     SCOPE_CONFINEMENTS,
 };
-use super::registry::{find_spec, REMOTE_COMMANDS};
+use super::registry::{find_spec, serialize_ok, REMOTE_COMMANDS};
 
 fn registry_source() -> &'static str {
     include_str!("../commands/registry.rs")
@@ -3827,8 +3827,11 @@ fn the_b2_getter_refusals_are_pinned() {
         "get_queued_agent_messages",
         "get_agent_message_tool_call_detail",
         "get_agent_timeline_item_tool_call_detail",
-        // Host path disclosure: returns absolute directories from the operator's machine.
-        "list_conversation_folder_references",
+        // `list_conversation_folder_references` sat here on "host path disclosure: returns
+        // absolute directories from the operator's machine". WP4 (a) registered it at `ui:read`
+        // on the SAME owner ruling that lets `list_remote_projects` carry `working_directory`:
+        // a stored host path shown to the user's own paired device is display, not disclosure.
+        // Its pin now lives in `the_transport_shape_refusal_premise_stays_disproven`.
         // Fail-open on enrichment: model fields go silently null when the lookup errors, so
         // the cluster's "propagates read errors" invariant does not hold.
         "get_agent_run_status_unified",
@@ -4579,27 +4582,23 @@ fn b2_detector_clean_members_refused_on_their_own_findings() {
         );
     }
 
-    // --- A transport-shape refusal, not an authority one.
+    // --- The transport-shape refusal that batch 8 recorded here is GONE (WP4 (a)).
     //
     // `list_conversation_folder_references` is a pure `SELECT ... WHERE removed_at IS NULL`
-    // with no fail-open and no spawn authority — it audits cleaner than the rows registered
-    // above. It returns `Result<_, AppError>`, and `AppError` is not `Serialize`, so the
-    // `fallible` dispatch arm cannot render its error. Changing the command's error contract
-    // is an implementation change, not a census decision, so it is deferred rather than
-    // registered or ledgered as though it had authority it does not have.
+    // with no fail-open and no spawn authority — batch 8 said so, and then deferred it anyway
+    // on "it returns `Result<_, AppError>` and `AppError` is not `Serialize`". It always was.
+    // The row is registered at `ui:read`; the disproof is pinned by
+    // `the_transport_shape_refusal_premise_stays_disproven`.
     let folder = policy_for(
         "list_conversation_folder_references",
         "conversation_folder_reference_commands",
     )
     .expect("ledgered");
+    assert_eq!(folder.class, RiskClass::Read);
+    assert!(folder.capabilities.is_empty());
     assert!(
-        find_spec("list_conversation_folder_references").is_none(),
-        "list_conversation_folder_references is deferred on its error type, not registered"
-    );
-    assert_ne!(
-        folder.class,
-        RiskClass::Denied,
-        "the deferral is a transport-shape gap; recording it as Denied would misstate the finding"
+        find_spec("list_conversation_folder_references").is_some(),
+        "the deferral was a transport-shape claim that never held; the row belongs on the facade"
     );
 }
 
@@ -5232,12 +5231,13 @@ fn batch9_audit_refusals_are_tied_to_a_live_pin() {
     }
     assert_eq!(
         AUDIT_REFUSALS.len(),
-        34,
+        26,
         "batch 9 recorded eleven audit refusals, batch 10 added seven, batch 11 added seven more \
-         (the B4 fail-opens), and batch 14 added the final NINE that closed the ratchet: seven \
-         `TransportShapeDeferred` rows sharing ONE non-Serialize `AppError` contract, \
-         `get_manual_role_defaults` on a fail-open, and `reject_fix_task` on the newly minted \
-         `ReachesCorrectiveTransition`. Changing that count is a census decision"
+         (the B4 fail-opens), and batch 14 added nine. WP4 (a) then REMOVED the eight \
+         `TransportShapeDeferred` rows — batch 8's plus batch 14's seven — because the finding \
+         they shared (`AppError` is not `Serialize`) was false when it was written; all eight \
+         are registered and `the_transport_shape_refusal_premise_stays_disproven` holds the \
+         disproof. Changing that count is a census decision"
     );
 }
 
@@ -6844,17 +6844,13 @@ fn batch14_closes_the_ratchet_at_zero() {
         ("add_conversation_folder_reference", DeferredFutureAuthority),
         ("update_manual_role_default", DeferredFutureAuthority),
         ("clear_manual_role_default", DeferredFutureAuthority),
-        // --- audit-refused (9)
-        ("start_step", AuditRefused),
-        ("complete_step", AuditRefused),
-        ("skip_step", AuditRefused),
-        ("fail_step", AuditRefused),
-        ("reorder_task_steps", AuditRefused),
-        ("remove_conversation_folder_reference", AuditRefused),
-        ("abort_seeded_agent_conversation", AuditRefused),
+        // --- audit-refused (2)
+        //
+        // Batch 14 recorded NINE here. WP4 (a) re-dispositioned seven of them: their shared
+        // finding ("AppError is not Serialize") was false, and they are registered below.
         ("get_manual_role_defaults", AuditRefused),
         ("reject_fix_task", AuditRefused),
-        // --- registered (11)
+        // --- registered (18)
         ("get_start_composer_role_default", Read),
         ("get_agent_conversation_role_default", Read),
         ("get_workspace_review_runtime_settings", Read),
@@ -6866,6 +6862,14 @@ fn batch14_closes_the_ratchet_at_zero() {
         ("update_workspace_review_runtime_settings", Agent),
         ("upsert_custom_agent_model", Agent),
         ("approve_fix_task", Agent),
+        // WP4 (a) — released from the false transport-shape refusal.
+        ("start_step", Agent),
+        ("complete_step", Agent),
+        ("skip_step", Agent),
+        ("fail_step", Agent),
+        ("reorder_task_steps", Agent),
+        ("remove_conversation_folder_reference", Agent),
+        ("abort_seeded_agent_conversation", Agent),
     ];
 
     assert_eq!(
@@ -7033,42 +7037,124 @@ fn batch14_held_pair_splits_on_the_corrective_reach() {
     }
 }
 
-/// PR 3.1-b batch 14 — the seven transport-shape refusals are ONE mechanism, not seven calls.
+/// WP4 (a) — the transport-shape refusal premise, disproven and pinned so it cannot return.
+///
+/// Batch 8 and batch 14 recorded EIGHT refusals on one finding: "the target returns
+/// `Result<_, AppError>`, `AppError` derives only `Error, Debug`, and the macro's `fallible`
+/// arm renders the error through `serialize_ok(error)` — the payload cannot cross the facade at
+/// all". Every clause after the first is false, and this test asserts each half mechanically
+/// rather than in a comment, because the eight rows are now REGISTERED on the strength of the
+/// disproof.
 #[test]
-fn batch14_transport_shape_refusals_share_one_error_contract() {
-    const SHARED: &[&str] = &[
+fn the_transport_shape_refusal_premise_stays_disproven() {
+    // (1) `AppError` is `Serialize`, and its rendering is the Display string — the same text
+    // Tauri's own IPC layer produces for a local caller.
+    let rendered = serialize_ok(ralphx_domain::error::AppError::TaskNotFound("t-1".into()))
+        .expect("AppError renders through the facade's own success serializer");
+    assert_eq!(rendered, serde_json::json!("Task not found: t-1"));
+
+    // (2) The rendering carries a code-shaped message and no host internals — the property that
+    // makes it safe to hand a paired device.
+    let rendered = serialize_ok(
+        ralphx_domain::error::AppError::SeededAgentConversationAlreadyStarted {
+            conversation_id: "c-1".into(),
+        },
+    )
+    .expect("renders");
+    let text = rendered.as_str().expect("string rendering");
+    assert!(text.starts_with("SEEDED_AGENT_CONVERSATION_ALREADY_STARTED"));
+
+    // (3) The eight rows are registered, and no audit refusal survives for any of them.
+    for command in [
         "start_step",
         "complete_step",
         "skip_step",
         "fail_step",
         "reorder_task_steps",
+        "list_conversation_folder_references",
         "remove_conversation_folder_reference",
         "abort_seeded_agent_conversation",
-    ];
-    for command in SHARED {
-        let refusal =
-            audit_refusal_for(command).unwrap_or_else(|| panic!("`{command}` has a refusal row"));
-        assert_eq!(
-            refusal.reason,
-            AuditRefusalReason::TransportShapeDeferred,
-            "`{command}` is refused on the shared non-Serialize AppError contract; a different \
-             reason here means the finding changed and the row needs re-auditing"
+    ] {
+        assert!(
+            find_spec(command).is_some(),
+            "`{command}` was deferred on a transport shape that does not exist; it must be \
+             registered, not silently left off"
         );
         assert!(
-            find_spec(command).is_none(),
-            "`{command}` is registered despite an error type the fallible dispatch arm cannot \
-             render"
+            audit_refusal_for(command).is_none(),
+            "`{command}` carries an audit refusal again. The only finding ever recorded for it \
+             was the disproven non-Serialize claim; a new refusal needs a new mechanism"
         );
     }
-    // The unlocking fix is shared too: making `AppError` Serialize releases all seven at once.
-    // Batch 8 recorded the same mechanism for this sibling, which is why it is not a new finding.
-    assert_eq!(
-        audit_refusal_for("list_conversation_folder_references")
-            .expect("batch 8's row")
-            .reason,
-        AuditRefusalReason::TransportShapeDeferred,
-        "batch 8's row is the precedent these seven cite; if it moved, re-argue them"
+
+    // (4) The precedent that should have prevented the whole block: two `AppResult`-returning
+    // commands from the very module batch 14 cited were already dispatching through the
+    // `fallible` arm when it was written.
+    for command in ["create_task_step", "update_task_step"] {
+        assert!(
+            find_spec(command).is_some(),
+            "`{command}` is the standing counter-example to the transport-shape finding; if it \
+             is unregistered the disproof above needs a different witness"
+        );
+    }
+}
+
+/// The unlock did NOT widen the folder-reference pair: only the reducing half moved.
+#[test]
+fn the_folder_reference_add_half_stays_deferred_while_remove_is_registered() {
+    assert!(
+        find_spec("add_conversation_folder_reference").is_none(),
+        "`add_conversation_folder_reference` stores a path that becomes an MCP filesystem root \
+         for every later spawn and has no project-root allowlist; the transport-shape unlock \
+         says nothing about that finding"
     );
+    let add = policy_for(
+        "add_conversation_folder_reference",
+        "conversation_folder_reference_commands",
+    )
+    .expect("ledgered");
+    assert_eq!(add.class, RiskClass::Elevated);
+    assert!(add
+        .capabilities
+        .contains(&Capability::ConfiguresFutureProcessAuthority));
+
+    let remove = policy_for(
+        "remove_conversation_folder_reference",
+        "conversation_folder_reference_commands",
+    )
+    .expect("ledgered");
+    assert_eq!(remove.class, RiskClass::AgentControl);
+    assert!(find_spec("remove_conversation_folder_reference").is_some());
+}
+
+/// `abort_seeded_agent_conversation` may only ever reach a conversation with no history.
+///
+/// It is registered despite deleting a conversation row, and the ONLY thing that makes that
+/// defensible is the guard: message, run, or provider/claude session ⇒ refusal. The guard is
+/// asserted over the application seam's source so a refactor that drops a clause fails here
+/// rather than quietly turning a cancel button into a remote delete.
+#[test]
+fn the_seeded_abort_guard_is_what_licenses_its_registration() {
+    let sources = load_production_sources();
+    let (_, body) = sources
+        .iter()
+        .find(|(file, _)| file == "application/seeded_agent_conversation_abort.rs")
+        .expect("the seeded-abort seam must exist");
+
+    for clause in [
+        "has_messages",
+        "has_runs",
+        "provider_session_id.is_some()",
+        "claude_session_id.is_some()",
+        "SeededAgentConversationAlreadyStarted",
+    ] {
+        assert!(
+            body.contains(clause),
+            "the seeded-abort guard lost `{clause}`. The command is registered ONLY because it \
+             cannot reach a started conversation"
+        );
+    }
+    assert!(find_spec("abort_seeded_agent_conversation").is_some());
 }
 
 #[test]

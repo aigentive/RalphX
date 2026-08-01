@@ -2942,6 +2942,96 @@
     {
       "argumentSensitive": false,
       "capabilities": [
+        "agentControl",
+        "mutatesAgentConsumedContent"
+      ],
+      "class": "agentControl",
+      "command": "start_step",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::task_step_commands::start_step"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl",
+        "mutatesAgentConsumedContent"
+      ],
+      "class": "agentControl",
+      "command": "complete_step",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::task_step_commands::complete_step"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl",
+        "mutatesAgentConsumedContent"
+      ],
+      "class": "agentControl",
+      "command": "skip_step",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::task_step_commands::skip_step"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl",
+        "mutatesAgentConsumedContent"
+      ],
+      "class": "agentControl",
+      "command": "fail_step",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::task_step_commands::fail_step"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "reorder_task_steps",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::task_step_commands::reorder_task_steps"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "list_conversation_folder_references",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::conversation_folder_reference_commands::list_conversation_folder_references"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "remove_conversation_folder_reference",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::conversation_folder_reference_commands::remove_conversation_folder_reference"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "abort_seeded_agent_conversation",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::unified_chat_commands::abort_seeded_agent_conversation"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
         "mutatesAgentConsumedContent"
       ],
       "class": "agentControl",
@@ -5836,20 +5926,15 @@
       "v1Resolution": "registerable"
     },
     {
-      "auditRefusal": {
-        "batch": "14",
-        "finding": "returns AppResult<Vec<TaskStepResponse>>, same non-Serialize error contract. Body is a single transaction scoped `WHERE id = ?2 AND task_id = ?3`, so foreign step ids are no-ops rather than cross-task writes",
-        "reason": "transport-shape-deferred"
-      },
       "capabilities": [
         "agentControl"
       ],
       "class": "agentControl",
       "command": "reorder_task_steps",
       "module": "task_step_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
-      "v1Resolution": "v1-audit-refused"
+      "reason": "reorders a task's steps in one transaction scoped `WHERE id = ?2 AND task_id = ?3`, so a foreign step id is a no-op rather than a cross-task write; propagates every repository error. Not a content writer — it moves sort_order and no step body — so it does not carry MutatesAgentConsumedContent the way its four status siblings do",
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
@@ -5861,11 +5946,6 @@
       "v1Resolution": "registerable"
     },
     {
-      "auditRefusal": {
-        "batch": "14",
-        "finding": "returns AppResult<TaskStepResponse>; AppError is not Serialize, so the fallible dispatch arm cannot render its error. The body audits CLEAN — a guarded task_steps status write behind the fail-closed tasks-feature policy gate, whose only `let _ =` is the post-write app.emit",
-        "reason": "transport-shape-deferred"
-      },
       "capabilities": [
         "agentControl",
         "mutatesAgentConsumedContent"
@@ -5874,15 +5954,10 @@
       "command": "start_step",
       "module": "task_step_commands",
       "reason": "detector-d: writes worker-consumed task step status",
-      "registered": false,
-      "v1Resolution": "v1-audit-refused"
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
-      "auditRefusal": {
-        "batch": "14",
-        "finding": "same AppResult<TaskStepResponse> error contract as start_step, same clean body",
-        "reason": "transport-shape-deferred"
-      },
       "capabilities": [
         "agentControl",
         "mutatesAgentConsumedContent"
@@ -5891,15 +5966,10 @@
       "command": "complete_step",
       "module": "task_step_commands",
       "reason": "detector-d: writes worker-consumed task step status",
-      "registered": false,
-      "v1Resolution": "v1-audit-refused"
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
-      "auditRefusal": {
-        "batch": "14",
-        "finding": "same AppResult<TaskStepResponse> error contract as start_step, same clean body",
-        "reason": "transport-shape-deferred"
-      },
       "capabilities": [
         "agentControl",
         "mutatesAgentConsumedContent"
@@ -5908,15 +5978,10 @@
       "command": "skip_step",
       "module": "task_step_commands",
       "reason": "detector-d: writes worker-consumed task step status",
-      "registered": false,
-      "v1Resolution": "v1-audit-refused"
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
-      "auditRefusal": {
-        "batch": "14",
-        "finding": "same AppResult<TaskStepResponse> error contract as start_step, same clean body",
-        "reason": "transport-shape-deferred"
-      },
       "capabilities": [
         "agentControl",
         "mutatesAgentConsumedContent"
@@ -5925,8 +5990,8 @@
       "command": "fail_step",
       "module": "task_step_commands",
       "reason": "detector-d: writes worker-consumed task step status",
-      "registered": false,
-      "v1Resolution": "v1-audit-refused"
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -8741,20 +8806,15 @@
       "v1Resolution": "host-denied-spawns-process"
     },
     {
-      "auditRefusal": {
-        "batch": "14",
-        "finding": "returns Result<(), AppError>, same non-Serialize contract. Body audits clean and launches nothing: it deletes attachments, folder references, the persona draft, the private workspace directory and the conversation row, with every error propagated by `?`",
-        "reason": "transport-shape-deferred"
-      },
       "capabilities": [
         "agentControl"
       ],
       "class": "agentControl",
       "command": "abort_seeded_agent_conversation",
       "module": "unified_chat_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
-      "v1Resolution": "v1-audit-refused"
+      "reason": "cancels a NEVER-STARTED seeded conversation and the resources minted while preparing its first send. Guarded fail-closed: it refuses with SeededAgentConversationAlreadyStarted if the conversation has any message, any run, or any provider/claude session id, so it can never reach a conversation with history; every step propagates by `?` and it launches nothing",
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [
@@ -9400,36 +9460,24 @@
       "v1Resolution": "v1-deferred"
     },
     {
-      "auditRefusal": {
-        "batch": "14",
-        "finding": "returns Result<(), AppError> — the identical contract that refused its sibling list_conversation_folder_references in batch 8. Body is the SAFE half of the folder-reference pair: a soft delete scoped by both folder_reference_id and conversation_id, taking no path and failing closed with NotFound on a missing row",
-        "reason": "transport-shape-deferred"
-      },
       "capabilities": [
         "agentControl"
       ],
       "class": "agentControl",
       "command": "remove_conversation_folder_reference",
       "module": "conversation_folder_reference_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
-      "v1Resolution": "v1-audit-refused"
+      "reason": "soft-deletes ONE folder reference, scoped by both folder_reference_id and conversation_id, and fails closed with NotFound on a missing row; takes no path and reaches no spawn sink. AgentControl because the reference list is read at spawn time to build the MCP filesystem roots, so removing one narrows a future agent's reach — the authority-REDUCING half of the pair whose adding half stays deferred on the missing project-root allowlist",
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
-      "auditRefusal": {
-        "batch": "8",
-        "finding": "a pure SELECT ... WHERE removed_at IS NULL that audits cleaner than rows already registered, but it returns Result<_, AppError> and AppError is not Serialize, so the fallible dispatch arm cannot render its error",
-        "reason": "transport-shape-deferred"
-      },
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "list_conversation_folder_references",
       "module": "conversation_folder_reference_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
-      "v1Resolution": "v1-audit-refused"
+      "reason": "pure `SELECT ... WHERE removed_at IS NULL` over the folder-reference repository; takes no path, writes nothing, propagates read errors. Discloses the stored host folder_path, on the same owner ruling that lets `list_remote_projects` carry working_directory: the paired device is the user's own machine holding ui:read on their own host",
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [],
