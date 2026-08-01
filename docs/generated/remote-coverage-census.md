@@ -3,25 +3,25 @@
 > GENERATED — do not edit by hand. Regenerate: `node scripts/generate-remote-coverage-census.mjs`. Staleness gate: `--check`.
 > This is the PR 3.1-a planning artifact. It registers nothing. Every class here is the ledger's CURRENT value; the per-command hand audit (§3.3) and the P-17 detector run own the final one.
 
-> **P-11 is COMPLETE.** All 515 production invoke command names across `frontend/src` carry a reviewed disposition: remote-registered, reason-coded local-only, or manifest-classified (host-denied / v1-deferred / v1-audit-refused). **0 unclassified, 0 dynamic expressions, 0 suppressions.**
+> **P-11 is COMPLETE.** All 518 production invoke command names across `frontend/src` carry a reviewed disposition: remote-registered, reason-coded local-only, or manifest-classified (host-denied / v1-deferred / v1-audit-refused). **0 unclassified, 0 dynamic expressions, 0 suppressions.**
 > The ratchet baseline `scripts/remote-transport-drift-baseline.json` is now a PERMANENT ZERO — `check-remote-transport-drift.mjs` fails if it is non-empty and refuses `--update-baseline` when unclassified names exist, so the list cannot quietly regrow. The work-batch sections below are kept as the audit record of how the 499 were resolved.
 
 ## 1. Scan state
 
 ```
-PASS: remote transport drift — 515 invoke command name(s), 0 dynamic, 0 seam bypasses; 287 manifest-classified; 0 unclassified (P-11 COMPLETE — permanent zero).
-      P-11 census: all 515 names have a reviewed disposition — 227 remote-registered, 33 reason-coded local-only, 255 manifest-classified only, 0 unclassified, 0 suppressions.
+PASS: remote transport drift — 518 invoke command name(s), 0 dynamic, 0 seam bypasses; 277 manifest-classified; 0 unclassified (P-11 COMPLETE — permanent zero).
+      P-11 census: all 518 names have a reviewed disposition — 240 remote-registered, 33 reason-coded local-only, 245 manifest-classified only, 0 unclassified, 0 suppressions.
 ```
 
 | Measure | Count | Source |
 |---|---|---|
-| Invoke command names in `frontend/src` | 515 | drift scan (AST) |
+| Invoke command names in `frontend/src` | 518 | drift scan (AST) |
 | Dynamic / unresolvable expressions | 0 | drift scan — must stay 0 |
 | Transport seam bypasses | 0 | drift scan — must stay 0 |
-| Remote-registered (`remote_commands!`) | 228 | `docs/generated/remote-commands.json` |
+| Remote-registered (`remote_commands!`) | 241 | `docs/generated/remote-commands.json` |
 | Reason-coded local-only rows | 34 | `frontend/src/lib/remote/local-only-commands.ts` |
-| Ledger rows (exhaustive over `generate_handler!`) | 557 | `docs/generated/remote-commands.json` |
-| Manifest-classified (host-denied / v1-deferred) | 287 | `v1Resolution` in `docs/generated/remote-commands.json` |
+| Ledger rows (exhaustive over `generate_handler!`) | 560 | `docs/generated/remote-commands.json` |
+| Manifest-classified (host-denied / v1-deferred) | 277 | `v1Resolution` in `docs/generated/remote-commands.json` |
 | **Unclassified — the 3.1 gap** | **0** | `scripts/remote-transport-drift-baseline.json` |
 
 ## 2. What the gap is made of
@@ -37,7 +37,7 @@ Routing each name mechanically through the ledger splits it into very different 
 | v1-audit-refused (per-command finding) | 0 | the class/capability pair would admit a v1 scope, but a recorded audit found a property of the command AS IT STANDS that no v1 scope can accommodate — fail-open, spawn-capable machinery built to serve a read, an unrenderable transport shape, or a registered remote twin that already answers the query. Never used for arming/steering/write refusals: the facade serves 16 `agentControl` ops, so those stay register-candidates |
 | orphan invoke (no local handler) | 0 | invoked by the frontend but absent from `generate_handler!` and from the ledger — it cannot be registered remotely because it does not exist locally either |
 
-**287 invoked names now resolve through the manifest** — host-side commands the facade denies or defers, classified by their ledger row's `v1Resolution` rather than by a registration or a client-local reason (phase-doc key point 6). B0 landed that mechanism and the gap fell 419 → 0 with zero registrations. **The baseline is now empty**: batches B1–B7, D1–D3, R1, A1 and the 3.1-b registration batches resolved every remaining name.
+**277 invoked names now resolve through the manifest** — host-side commands the facade denies or defers, classified by their ledger row's `v1Resolution` rather than by a registration or a client-local reason (phase-doc key point 6). B0 landed that mechanism and the gap fell 419 → 0 with zero registrations. **The baseline is now empty**: batches B1–B7, D1–D3, R1, A1 and the 3.1-b registration batches resolved every remaining name.
 
 **0 names are registration candidates** — the gap is closed. The rejection subset this section predicted was real and large: detector (c) refused ledgered-`AgentControl` commands whose process authority the manifest could not see (`resume_task`, `apply_proposals_to_kanban`, `set_agent_conversation_workspace_auto_publish`), and PR 3.1-b batch 14 additionally hand-traced THIRTEEN launches detector (c) could not see at all — `Command::new(<resolved path>)` names no resolver, which is how every agent launch in the codebase is written. Detector silence was never sufficient evidence to register.
 
