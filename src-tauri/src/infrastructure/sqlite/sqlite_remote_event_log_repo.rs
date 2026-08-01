@@ -20,6 +20,12 @@ use crate::error::{AppError, AppResult};
 /// Settings row that carries the durable seq high-water.
 const SETTINGS_ROW_ID: i64 = 1;
 
+/// Rows deleted per prune transaction. Retention is a background reclaim; it must never hold one
+/// `BEGIN IMMEDIATE` for an unbounded delete, or a single long transaction parks every other
+/// caller (auth reads, audit writes) for the full `busy_timeout` window on a large log. Each chunk
+/// is its own transaction, releasing the connection between chunks so contended callers interleave.
+const PRUNE_CHUNK_SIZE: u64 = 2_000;
+
 /// A durable event row exactly as the sequencer commits and replays it.
 ///
 /// `payload` is the **raw** JSON text Tauri delivered. It is never re-serialized on the way in
@@ -232,40 +238,97 @@ impl RemoteEventLogStore for SqliteRemoteEventLogRepository {
     }
 
     async fn prune(&self, request: RemotePruneRequest) -> AppResult<RemotePruneOutcome> {
-        self.db
-            .run_transaction(move |conn| {
-                let cutoff = age_cutoff(request.retain_days);
-                let age_ceiling: i64 = conn
-                    .query_row(
-                        "SELECT COALESCE(MAX(seq), 0) FROM remote_event_log WHERE created_at < ?1",
-                        rusqlite::params![cutoff],
-                        |row| row.get(0),
-                    )
-                    .map_err(|error| AppError::Database(error.to_string()))?;
-                let ceiling = prune_ceiling(
-                    retention_ceiling(
-                        request.max_seq,
-                        request.retain_rows,
-                        seq_from_sql(age_ceiling)?,
-                    ),
-                    request.epoch_floor_seq,
-                    request.lease_floor,
-                );
-                // ONE predicate, and it is the whole safety argument: `seq <= ceiling`, where
-                // `ceiling <= lease_floor` by construction.
-                let deleted = conn
-                    .execute(
-                        "DELETE FROM remote_event_log WHERE seq <= ?1",
-                        rusqlite::params![seq_to_sql(ceiling)?],
-                    )
-                    .map_err(|error| AppError::Database(error.to_string()))?;
-                Ok(RemotePruneOutcome {
-                    deleted: deleted as u64,
-                    pruned_floor: ceiling,
+        // Compute the ceiling once in a plain autocommit read. It is deterministic given the
+        // request plus the current log, and deleting rows below it can only *lower* the count of
+        // eligible rows, never change which rows are eligible: appended rows carry seqs above
+        // `max_seq`, and `created_at`-based aging only ever admits more rows, so recomputing per
+        // chunk could not move the ceiling. Holding no write lock here is the point — the ceiling
+        // read must not itself become the long transaction this method exists to avoid.
+        let retention = RetentionParams {
+            max_seq: request.max_seq,
+            epoch_floor_seq: request.epoch_floor_seq,
+            lease_floor: request.lease_floor,
+            retain_rows: request.retain_rows,
+            retain_days: request.retain_days,
+        };
+        let ceiling = self
+            .db
+            .run(move |conn| compute_prune_ceiling(conn, retention))
+            .await?;
+        let ceiling_sql = seq_to_sql(ceiling)?;
+
+        // Chunked delete: each chunk is its own `BEGIN IMMEDIATE`/`COMMIT`, so the connection is
+        // released between chunks and contended callers (auth reads, audit writes) interleave. The
+        // safety predicate is unchanged — `seq <= ceiling`, where `ceiling <= lease_floor` by
+        // construction — only the delete is bounded to `PRUNE_CHUNK_SIZE` rows per transaction.
+        // Bundled SQLite is not built with `SQLITE_ENABLE_UPDATE_DELETE_LIMIT`, so `DELETE … LIMIT`
+        // is unavailable; the portable bound is a `seq IN (SELECT … LIMIT)` sub-select over the
+        // seq primary-key index.
+        let mut deleted_total: u64 = 0;
+        loop {
+            let deleted = self
+                .db
+                .run_transaction(move |conn| {
+                    let deleted = conn
+                        .execute(
+                            "DELETE FROM remote_event_log
+                             WHERE seq IN (
+                                 SELECT seq FROM remote_event_log
+                                 WHERE seq <= ?1
+                                 ORDER BY seq
+                                 LIMIT ?2
+                             )",
+                            rusqlite::params![ceiling_sql, PRUNE_CHUNK_SIZE as i64],
+                        )
+                        .map_err(|error| AppError::Database(error.to_string()))?;
+                    Ok(deleted as u64)
                 })
-            })
-            .await
+                .await?;
+            deleted_total += deleted;
+            // A short chunk means the eligible span is exhausted; stop looping.
+            if deleted < PRUNE_CHUNK_SIZE {
+                break;
+            }
+        }
+
+        Ok(RemotePruneOutcome {
+            deleted: deleted_total,
+            pruned_floor: ceiling,
+        })
     }
+}
+
+/// The inputs to the ceiling computation, lifted out of [`RemotePruneRequest`] so the read closure
+/// can own them by value without moving the whole request (whose `current_epoch` the ceiling does
+/// not need).
+#[derive(Debug, Clone, Copy)]
+struct RetentionParams {
+    max_seq: u64,
+    epoch_floor_seq: u64,
+    lease_floor: u64,
+    retain_rows: u64,
+    retain_days: i64,
+}
+
+/// Computes the highest seq the pruner may delete, reading only the age ceiling from the log.
+fn compute_prune_ceiling(conn: &Connection, params: RetentionParams) -> AppResult<u64> {
+    let cutoff = age_cutoff(params.retain_days);
+    let age_ceiling: i64 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(seq), 0) FROM remote_event_log WHERE created_at < ?1",
+            rusqlite::params![cutoff],
+            |row| row.get(0),
+        )
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    Ok(prune_ceiling(
+        retention_ceiling(
+            params.max_seq,
+            params.retain_rows,
+            seq_from_sql(age_ceiling)?,
+        ),
+        params.epoch_floor_seq,
+        params.lease_floor,
+    ))
 }
 
 fn map_event_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RemoteEventRow> {

@@ -311,6 +311,91 @@ async fn prior_epoch_rows_are_prune_eligible_immediately_but_never_past_a_lease(
         .any(|row| row.seq == 4));
 }
 
+/// The prune must never hold one write transaction for the whole delete: a single unbounded
+/// `DELETE` parks every other caller (auth reads, audit writes) for the busy-timeout window on a
+/// large log. Each chunk is its own `BEGIN IMMEDIATE`/`COMMIT`, so the connection is released
+/// between chunks. Asserted at the seam because a live interleave race is timing-flaky.
+#[test]
+fn the_prune_deletes_in_bounded_chunks_not_one_unbounded_transaction() {
+    let source = include_str!("sqlite_remote_event_log_repo.rs");
+    let implementation = source
+        .split("impl RemoteEventLogStore for SqliteRemoteEventLogRepository")
+        .nth(1)
+        .expect("the store impl block should exist");
+    let prune: &str = implementation
+        .split("async fn prune")
+        .nth(1)
+        .expect("prune body should be locatable");
+    assert!(
+        !prune.contains("DELETE FROM remote_event_log WHERE seq <= ?1"),
+        "prune must not issue a single unbounded DELETE"
+    );
+    assert!(
+        prune.contains("LIMIT ?2"),
+        "prune must bound each DELETE to a chunk"
+    );
+    assert!(
+        prune.contains("run_transaction"),
+        "each chunk must run inside its own BEGIN IMMEDIATE transaction"
+    );
+}
+
+/// Behavioural proof that chunking preserves the old unbounded-delete semantics exactly: every
+/// eligible row (`seq <= ceiling`) is deleted across many chunks, and nothing above the ceiling is
+/// touched. Seeds well past `2 × PRUNE_CHUNK_SIZE` so the loop runs at least three chunks.
+#[tokio::test]
+async fn prune_deletes_all_eligible_rows_across_multiple_chunks() {
+    let db = SqliteTestDb::new("remote-event-log");
+    seed_settings_row(&db);
+    let repo = repo(&db);
+
+    // Eligible span (1..=ceiling) is strictly greater than two chunks, forcing multiple loops.
+    let ceiling = 2 * PRUNE_CHUNK_SIZE + 1;
+    let survivors = 499_u64;
+    let total = ceiling + survivors;
+    let rows = (1..=total)
+        .map(|seq| row(seq, EPOCH, "task:created"))
+        .collect::<Vec<_>>();
+    repo.append_batch(&rows).await.unwrap();
+
+    let outcome = repo
+        .prune(RemotePruneRequest {
+            current_epoch: EPOCH.to_string(),
+            epoch_floor_seq: 0,
+            max_seq: total,
+            // Clamp the ceiling exactly to `ceiling`; retention alone would drop everything.
+            lease_floor: ceiling,
+            retain_rows: 0,
+            retain_days: -1,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.pruned_floor, ceiling);
+    assert_eq!(
+        outcome.deleted, ceiling,
+        "every eligible row must be deleted, identical to the old unbounded delete"
+    );
+    assert_eq!(
+        repo.oldest_seq().await.unwrap(),
+        Some(ceiling + 1),
+        "the lowest surviving row is the first one above the ceiling"
+    );
+    let surviving = repo
+        .read_range(EPOCH, ceiling, total, 10_000)
+        .await
+        .unwrap();
+    assert_eq!(
+        surviving.len() as u64,
+        survivors,
+        "no row above the ceiling may be touched"
+    );
+    assert!(
+        surviving.iter().all(|row| row.seq > ceiling),
+        "every surviving row sits strictly above the ceiling"
+    );
+}
+
 #[tokio::test]
 async fn oldest_seq_reports_the_surviving_floor() {
     let db = SqliteTestDb::new("remote-event-log");
