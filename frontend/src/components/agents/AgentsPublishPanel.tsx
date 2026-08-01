@@ -505,7 +505,7 @@ export function AgentPublishPanel({
     isOperationActive:
       isPublishingWorkspace || isMaintenanceActive || isUpdatingFromBase,
   });
-  const freshness = freshnessQuery.data;
+  const freshness = canInspectBaseFreshness ? freshnessQuery.data : undefined;
   const shouldAutoRefreshFromBase = shouldAutoRefreshCleanAgentWorkspaceFromBase(
     workspace,
     freshness,
