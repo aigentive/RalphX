@@ -664,3 +664,139 @@ describe("environment runtime composition", () => {
     expect(networkFetch).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * The connection journal exists for exactly the failure this branch shipped: a host
+ * that accepts the socket but fails hydration loops "Reconnecting…" forever with no
+ * user-visible reason. Every verdict the runtime reaches must leave a readable trace.
+ */
+describe("connection journal instrumentation", () => {
+  async function journalOf(environmentId: string) {
+    const { useRemoteConnectionJournalStore } = await import(
+      "@/stores/remoteConnectionJournalStore"
+    );
+    return useRemoteConnectionJournalStore.getState().journals[environmentId] ?? [];
+  }
+
+  beforeEach(async () => {
+    const { useRemoteConnectionJournalStore } = await import(
+      "@/stores/remoteConnectionJournalStore"
+    );
+    useRemoteConnectionJournalStore.setState({ journals: {} });
+  });
+
+  it("records the offending query key when the hydration barrier fails", async () => {
+    const { initializeEnvironmentRuntime } = await import("./environment-runtime");
+    useEnvironmentStore.getState().setEnvironments([summary("env-b")]);
+    setFlag(true);
+    teardown = initializeEnvironmentRuntime();
+    useEnvironmentStore.setState({ activeEnvironmentId: "env-b" });
+
+    const client = getQueryClient("env-b");
+    await client.prefetchQuery({
+      queryKey: ["projects", "list"],
+      queryFn: () => Promise.reject(new Error("host answered 500")),
+      retry: false,
+    });
+    vi.spyOn(client, "invalidateQueries").mockResolvedValue(undefined);
+    await expect(
+      supervisors[supervisors.length - 1]?.deps.beginStream(OUTCOME)
+    ).rejects.toThrow(/500/);
+
+    const entries = (await journalOf("env-b")).filter(
+      (entry) => entry.kind === "barrier"
+    );
+    expect(entries.length).toBeGreaterThan(0);
+    expect(entries[0]?.message).toContain('["projects","list"]');
+    expect(entries[0]?.detail).toContain("host answered 500");
+  });
+
+  it("records tolerated command-unavailable queries without failing the barrier", async () => {
+    const { initializeEnvironmentRuntime } = await import("./environment-runtime");
+    useEnvironmentStore.getState().setEnvironments([summary("env-b")]);
+    setFlag(true);
+    teardown = initializeEnvironmentRuntime();
+    useEnvironmentStore.setState({ activeEnvironmentId: "env-b" });
+
+    const client = getQueryClient("env-b");
+    await client.prefetchQuery({
+      queryKey: ["ticketing", "providers"],
+      queryFn: () =>
+        Promise.reject(
+          new RemoteTransportError({
+            code: "REMOTE_COMMAND_UNAVAILABLE",
+            message: "Command `list_ticketing_providers` is not available remotely.",
+            environmentId: "env-b",
+            cmd: "list_ticketing_providers",
+          })
+        ),
+      retry: false,
+    });
+    vi.spyOn(client, "invalidateQueries").mockResolvedValue(undefined);
+
+    await expect(
+      supervisors[supervisors.length - 1]?.deps.beginStream(OUTCOME)
+    ).resolves.toBeUndefined();
+
+    const entries = await journalOf("env-b");
+    expect(entries.some((entry) => entry.kind === "barrier")).toBe(false);
+    const tolerated = entries.find((entry) => entry.kind === "info");
+    expect(tolerated?.message).toContain("not supported by this host");
+    expect(tolerated?.detail).toContain('["ticketing","providers"]');
+  });
+
+  it("records supervisor state changes together with the blocked cause", async () => {
+    const { initializeEnvironmentRuntime } = await import("./environment-runtime");
+    useEnvironmentStore.getState().setEnvironments([summary("env-b")]);
+    setFlag(true);
+    teardown = initializeEnvironmentRuntime();
+    useEnvironmentStore.setState({ activeEnvironmentId: "env-b" });
+    const b = supervisors.filter((item) => item.deps.environmentId === "env-b").at(-1)!;
+
+    b.setState("blocked");
+    b.setBlocked({ failure: "unauthorized", message: "host refused this device" });
+    b.deps.onStateChange("blocked", "error");
+
+    const entries = (await journalOf("env-b")).filter(
+      (entry) => entry.kind === "state"
+    );
+    expect(entries.length).toBeGreaterThan(0);
+    const last = entries[entries.length - 1];
+    expect(last?.message).toContain("blocked");
+    expect(last?.detail).toContain("host refused this device");
+  });
+
+  it("records a host stream withdrawal as a stream event", async () => {
+    const { initializeEnvironmentRuntime } = await import("./environment-runtime");
+    useEnvironmentStore.getState().setEnvironments([summary("env-b")]);
+    setFlag(true);
+    teardown = initializeEnvironmentRuntime();
+    useEnvironmentStore.setState({ activeEnvironmentId: "env-b" });
+    const bus = createEventBus("env-b") as EventBus & {
+      handleFrame: (frame: { type: "reset"; reason: string }) => void;
+    };
+
+    bus.handleFrame({ type: "reset", reason: "revoked" });
+
+    const entries = (await journalOf("env-b")).filter(
+      (entry) => entry.kind === "stream"
+    );
+    expect(entries.length).toBeGreaterThan(0);
+    expect(entries[0]?.message).toContain("revoked");
+  });
+
+  it("drops the journal when the registry row is removed", async () => {
+    const { initializeEnvironmentRuntime } = await import("./environment-runtime");
+    const { recordConnectionEvent } = await import(
+      "@/stores/remoteConnectionJournalStore"
+    );
+    useEnvironmentStore.getState().setEnvironments([summary("env-b")]);
+    setFlag(true);
+    teardown = initializeEnvironmentRuntime();
+    recordConnectionEvent("env-b", "state", "seed");
+
+    useEnvironmentStore.getState().setEnvironments([]);
+
+    expect(await journalOf("env-b")).toEqual([]);
+  });
+});

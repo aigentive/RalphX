@@ -17,6 +17,10 @@ import {
   LOCAL_ENVIRONMENT_ID,
   useEnvironmentStore,
 } from "@/stores/environmentStore";
+import {
+  recordConnectionEvent,
+  useRemoteConnectionJournalStore,
+} from "@/stores/remoteConnectionJournalStore";
 import { useUiStore } from "@/stores/uiStore";
 
 const { retryActiveEnvironmentNow } = vi.hoisted(() => ({
@@ -236,5 +240,71 @@ describe("blocked triple", () => {
     expect(openModal).toHaveBeenCalledWith("settings", {
       section: "connections",
     });
+  });
+});
+
+describe("connection log details", () => {
+  beforeEach(() => {
+    useRemoteConnectionJournalStore.setState({ journals: {} });
+  });
+
+  it.each<SupervisorPresentation>([
+    "connecting",
+    "reconnecting",
+    "offline",
+    "error",
+  ])("offers Details on the %s banner", (presentation) => {
+    seed(
+      presentation === "error"
+        ? { presentation, blockedFailure: "unauthorized" }
+        : { presentation }
+    );
+    renderBanner();
+
+    expect(
+      screen.getByTestId("remote-connection-banner-details")
+    ).toBeInTheDocument();
+  });
+
+  it("opens the journal dialog listing the environment's recorded events", () => {
+    recordConnectionEvent(
+      REMOTE_ID,
+      "barrier",
+      'Hydration failed for ["projects","list"] — the connection stays read-only until this read succeeds.',
+      "REMOTE_FORBIDDEN: nope"
+    );
+    // Another environment's entry must NOT leak into this dialog.
+    recordConnectionEvent("env-other", "state", "other-env entry");
+    seed({ presentation: "reconnecting" });
+    renderBanner();
+
+    fireEvent.click(screen.getByTestId("remote-connection-banner-details"));
+
+    const dialog = screen.getByTestId("remote-connection-journal-dialog");
+    expect(dialog).toHaveTextContent(`Connection log — ${REMOTE_NAME}`);
+    expect(dialog).toHaveTextContent('Hydration failed for ["projects","list"]');
+    expect(dialog).toHaveTextContent("REMOTE_FORBIDDEN: nope");
+    expect(dialog).not.toHaveTextContent("other-env entry");
+
+    // Radix Dialog schedules focus/presence timers on open; they are UI plumbing, not
+    // the A-5 retry timers the afterEach guard exists for. The non-dialog tests keep
+    // guarding that invariant.
+    cleanup();
+    vi.clearAllTimers();
+  });
+
+  it("shows an honest empty state when nothing was recorded yet", () => {
+    seed({ presentation: "connecting" });
+    renderBanner();
+
+    fireEvent.click(screen.getByTestId("remote-connection-banner-details"));
+
+    expect(
+      screen.getByTestId("remote-connection-journal-dialog")
+    ).toHaveTextContent(/no connection events recorded yet/i);
+
+    // See the sibling test: Radix dialog timers, not A-5 retry timers.
+    cleanup();
+    vi.clearAllTimers();
   });
 });

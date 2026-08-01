@@ -20,6 +20,10 @@ import {
   useEnvironmentStore,
   type EnvironmentEntry,
 } from "@/stores/environmentStore";
+import {
+  clearConnectionJournal,
+  recordConnectionEvent,
+} from "@/stores/remoteConnectionJournalStore";
 import { useUiStore } from "@/stores/uiStore";
 
 import { countsTowardBadge } from "./badge-observation";
@@ -161,6 +165,17 @@ function parseConnectOutcome(value: unknown): RemoteConnectOutcome {
     heartbeatSecs: record.heartbeatSecs,
     protocolVersion: record.protocolVersion,
   };
+}
+
+/** One-line rendering of an unknown throw for the journal's `detail` column. */
+function describeError(reason: unknown): string {
+  if (reason instanceof RemoteTransportError) {
+    return `${reason.code}: ${reason.message}`;
+  }
+  if (reason instanceof Error) {
+    return reason.message;
+  }
+  return String(reason);
 }
 
 async function sendFrame(
@@ -308,21 +323,57 @@ export function initializeEnvironmentRuntime(): () => void {
         // `throwOnError`, then read the settled cache and fail the barrier on any
         // error EXCEPT that one code.
         const client = getQueryClient(environmentId);
-        await client.invalidateQueries({ refetchType: "all" });
-        const fatal = client
+        try {
+          await client.invalidateQueries({ refetchType: "all" });
+        } catch (reason: unknown) {
+          recordConnectionEvent(
+            environmentId,
+            "barrier",
+            "Hydration refetch sweep failed before any query settled.",
+            describeError(reason)
+          );
+          throw reason;
+        }
+        const errored = client
           .getQueryCache()
           .getAll()
-          .map((query) => query.state.error)
-          .filter((error) => error !== null)
-          .filter(
-            (error) =>
-              !(
-                error instanceof RemoteTransportError &&
-                error.code === "REMOTE_COMMAND_UNAVAILABLE"
-              )
+          .filter((query) => query.state.error !== null);
+        const isTolerated = (query: (typeof errored)[number]): boolean =>
+          query.state.error instanceof RemoteTransportError &&
+          query.state.error.code === "REMOTE_COMMAND_UNAVAILABLE";
+        const tolerated = errored.filter(isTolerated);
+        const fatal = errored.filter((query) => !isTolerated(query));
+        if (tolerated.length > 0) {
+          recordConnectionEvent(
+            environmentId,
+            "info",
+            `${tolerated.length} data source${tolerated.length === 1 ? " is" : "s are"} not supported by this host (tolerated).`,
+            tolerated
+              .slice(0, 5)
+              .map((query) => JSON.stringify(query.queryKey))
+              .join(", ")
           );
-        if (fatal.length > 0) {
-          throw fatal[0];
+        }
+        const [firstFatal] = fatal;
+        if (firstFatal !== undefined) {
+          // Name every blocker (bounded): "which query keeps this environment amber"
+          // is exactly the question the journal exists to answer.
+          for (const query of fatal.slice(0, 5)) {
+            recordConnectionEvent(
+              environmentId,
+              "barrier",
+              `Hydration failed for ${JSON.stringify(query.queryKey)} — the connection stays read-only until this read succeeds.`,
+              describeError(query.state.error)
+            );
+          }
+          if (fatal.length > 5) {
+            recordConnectionEvent(
+              environmentId,
+              "barrier",
+              `…and ${fatal.length - 5} more failing queries.`
+            );
+          }
+          throw firstFatal.state.error;
         }
       },
       sweep: () => {
@@ -338,6 +389,19 @@ export function initializeEnvironmentRuntime(): () => void {
         if (runtime === undefined) {
           return;
         }
+        recordConnectionEvent(
+          environmentId,
+          "stream",
+          cause.kind === "reset"
+            ? `Host reset the event stream (${cause.reason}).`
+            : cause.kind === "stream_error"
+              ? `Host answered the event stream with an error (${cause.code}).`
+              : cause.kind === "sequence_hole"
+                ? `Event stream skipped ahead (expected ${cause.expected}, received ${cause.received}); resynchronizing.`
+                : cause.kind === "protocol_error"
+                  ? `Event stream protocol error: ${cause.detail}`
+                  : `Event stream needs a restart (${cause.kind}).`
+        );
         // `revoked` / `host_disabled` are the host WITHDRAWING the session. Routing
         // them to `streamLost` would redial the 16 s ladder forever against a host
         // that already refused this device, instead of showing the re-pair state.
@@ -392,11 +456,21 @@ export function initializeEnvironmentRuntime(): () => void {
       clientProtocolVersion: CLIENT_PROTOCOL_VERSION,
       clientMinProtocol: CLIENT_MIN_PROTOCOL,
       fetchDescriptor: async () => {
-        const response = await networkFetch(environmentId, DESCRIPTOR_PATH);
-        if (!response.ok) {
-          throw new Error(`Descriptor request failed with HTTP ${response.status}.`);
+        try {
+          const response = await networkFetch(environmentId, DESCRIPTOR_PATH);
+          if (!response.ok) {
+            throw new Error(`Descriptor request failed with HTTP ${response.status}.`);
+          }
+          return parseDescriptor(await response.json());
+        } catch (reason: unknown) {
+          recordConnectionEvent(
+            environmentId,
+            "attempt",
+            "Identity check failed — the host did not answer its descriptor.",
+            describeError(reason)
+          );
+          throw reason;
         }
-        return parseDescriptor(await response.json());
       },
       openStream: async () => {
         let raw: unknown;
@@ -407,10 +481,22 @@ export function initializeEnvironmentRuntime(): () => void {
         } catch (reason: unknown) {
           // A revoked credential must reach `classifyFailure` as REMOTE_UNAUTHORIZED,
           // not as an untyped string the ladder retries forever.
-          throw toRemoteTransportError(reason, environmentId, "remote_connect");
+          const typed = toRemoteTransportError(reason, environmentId, "remote_connect");
+          recordConnectionEvent(
+            environmentId,
+            "attempt",
+            "Opening the event stream failed.",
+            describeError(typed)
+          );
+          throw typed;
         }
         const outcome = parseConnectOutcome(raw);
         runtime.socketLive = true;
+        recordConnectionEvent(
+          environmentId,
+          "info",
+          "Event stream socket opened; hydrating from the host."
+        );
         return outcome;
       },
       releaseStream: async () => {
@@ -422,9 +508,19 @@ export function initializeEnvironmentRuntime(): () => void {
         }
       },
       probe: async () => {
-        const response = await networkFetch(environmentId, HEALTH_PATH);
-        if (!response.ok) {
-          throw new Error(`Health probe failed with HTTP ${response.status}.`);
+        try {
+          const response = await networkFetch(environmentId, HEALTH_PATH);
+          if (!response.ok) {
+            throw new Error(`Health probe failed with HTTP ${response.status}.`);
+          }
+        } catch (reason: unknown) {
+          recordConnectionEvent(
+            environmentId,
+            "attempt",
+            "Health probe failed.",
+            describeError(reason)
+          );
+          throw reason;
         }
       },
       refreshScopes: async () => {
@@ -447,13 +543,32 @@ export function initializeEnvironmentRuntime(): () => void {
           // grant is re-confirmed by the full attempt that activation forces.
           return getConfirmedScopes(environmentId) ?? [];
         }
-        const response = await networkFetch(environmentId, SESSION_PATH);
-        if (!response.ok) {
-          throw new Error(`Session introspection failed with HTTP ${response.status}.`);
+        try {
+          const response = await networkFetch(environmentId, SESSION_PATH);
+          if (!response.ok) {
+            throw new Error(
+              `Session introspection failed with HTTP ${response.status}.`
+            );
+          }
+          return parseScopes(await response.json());
+        } catch (reason: unknown) {
+          recordConnectionEvent(
+            environmentId,
+            "attempt",
+            "Reading this device's granted permissions failed.",
+            describeError(reason)
+          );
+          throw reason;
         }
-        return parseScopes(await response.json());
       },
       applyScopes: (scopes) => {
+        recordConnectionEvent(
+          environmentId,
+          "info",
+          scopes.length > 0
+            ? `Host confirmed this device's permissions: ${scopes.join(", ")}.`
+            : "Host confirmed no permissions for this device yet."
+        );
         useEnvironmentStore.getState().setEffectiveScopes(environmentId, scopes);
       },
       beginStream: async (outcome) => {
@@ -472,6 +587,14 @@ export function initializeEnvironmentRuntime(): () => void {
         // (`onBlocked` fires BEFORE the transition) would let a reader observe a
         // blocked message under a still-connecting presentation.
         const blocked = supervisor.blocked();
+        recordConnectionEvent(
+          environmentId,
+          "state",
+          `Connection state: ${state} (shown as ${presentation}).`,
+          blocked === null
+            ? undefined
+            : `${blocked.failure}: ${blocked.message}`
+        );
         useEnvironmentStore.getState().setConnectionPresentation(environmentId, {
           presentation,
           blockedFailure: blocked?.failure ?? null,
@@ -560,6 +683,7 @@ export function initializeEnvironmentRuntime(): () => void {
         // (`env-scoped-storage.ts`). The staged-remove command clears them on the path it
         // owns; a removal completed by the Rust startup reconciler arrives only here.
         clearEnvScopedStorage(environmentId);
+        clearConnectionJournal(environmentId);
       }
     }
     for (const entry of remoteEntries) {
@@ -664,7 +788,12 @@ export function initializeEnvironmentRuntime(): () => void {
   };
   runtimeActions = {
     retryNow: (environmentId) => {
-      runtimes.get(environmentId)?.supervisor.retryNow();
+      const runtime = runtimes.get(environmentId);
+      if (runtime === undefined) {
+        return;
+      }
+      recordConnectionEvent(environmentId, "action", "Retry requested by the user.");
+      runtime.supervisor.retryNow();
     },
   };
 

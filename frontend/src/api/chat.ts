@@ -4087,15 +4087,36 @@ async function fetchAgentWorkspaceJson<T>(
   const response = await backendFetch(path, init);
   if (!response.ok) {
     let detail: string | null = null;
+    let envelopeCode: string | null = null;
     try {
       const raw = (await response.json()) as {
         error?: string;
         message?: string;
         detail?: string;
+        code?: string;
       };
       detail = raw.detail ?? raw.message ?? raw.error ?? null;
+      envelopeCode = typeof raw.code === "string" ? raw.code : null;
     } catch {
       detail = null;
+    }
+    // A remote host answers routes it does not mount with the typed
+    // `REMOTE_COMMAND_UNAVAILABLE` envelope (`remote_server/mod.rs`). Surface it as
+    // the typed transport error so the hydration barrier and the remote gates read
+    // it as a capability boundary — flattening it into the generic HTTP error made
+    // the barrier treat "this host doesn't expose that route" as host unhealth and
+    // loop "Reconnecting…" forever.
+    const environmentId = getTransportEnvironmentId();
+    if (
+      isRemoteEnvironmentId(environmentId) &&
+      envelopeCode === "REMOTE_COMMAND_UNAVAILABLE"
+    ) {
+      throw new RemoteTransportError({
+        code: "REMOTE_COMMAND_UNAVAILABLE",
+        message: detail ?? "This remote route is not available.",
+        environmentId,
+        cmd: path,
+      });
     }
     throw new AgentWorkspaceHttpError(
       response.status,

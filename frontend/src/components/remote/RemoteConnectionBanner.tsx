@@ -13,6 +13,8 @@
  * because there is no cached data to be read-only about yet.
  */
 
+import { useState } from "react";
+
 import { AlertTriangle, RefreshCw, WifiOff } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -21,6 +23,8 @@ import { retryActiveEnvironmentNow } from "@/lib/remote/environment-runtime";
 import { LOCAL_ENVIRONMENT_ID } from "@/lib/remote/active-environment";
 import { useEnvironmentStore } from "@/stores/environmentStore";
 import { useUiStore } from "@/stores/uiStore";
+
+import { RemoteConnectionJournalDialog } from "./RemoteConnectionJournalDialog";
 
 function blockedCopy(
   failure: string | null,
@@ -78,6 +82,7 @@ function blockedCopy(
 export function RemoteConnectionBanner() {
   const enabled = useUiStore((state) => state.featureFlags.remoteEnvironments);
   const openModal = useUiStore((state) => state.openModal);
+  const [journalOpen, setJournalOpen] = useState(false);
   const activeEnvironmentId = useEnvironmentStore(
     (state) => state.activeEnvironmentId
   );
@@ -121,88 +126,127 @@ export function RemoteConnectionBanner() {
     return null;
   }
 
+  // Every degraded presentation carries the same escape hatch: the connection log.
+  // "Reconnecting…" without a WHY is a dead end; the journal names the failing step.
+  const detailsButton = (
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      className="h-7 px-2 text-xs"
+      data-testid="remote-connection-banner-details"
+      onClick={() => setJournalOpen(true)}
+    >
+      Details
+    </Button>
+  );
+  const journalDialog = (
+    <RemoteConnectionJournalDialog
+      environmentId={activeEnvironmentId}
+      environmentName={name}
+      open={journalOpen}
+      onOpenChange={setJournalOpen}
+    />
+  );
+
   if (presentation === "connecting") {
     return (
-      <BannerFrame
-        tone="neutral"
-        icon={<RefreshCw size={14} aria-hidden="true" />}
-        title={`Connecting to "${name}"…`}
-        testId="remote-connection-banner"
-        presentation={presentation}
-      >
-        Setting up this environment for the first time.
-      </BannerFrame>
+      <>
+        <BannerFrame
+          tone="neutral"
+          icon={<RefreshCw size={14} aria-hidden="true" />}
+          title={`Connecting to "${name}"…`}
+          testId="remote-connection-banner"
+          presentation={presentation}
+          action={detailsButton}
+        >
+          Setting up this environment for the first time.
+        </BannerFrame>
+        {journalDialog}
+      </>
     );
   }
 
   if (presentation === "reconnecting") {
     return (
-      <BannerFrame
-        tone="warning"
-        icon={<RefreshCw size={14} aria-hidden="true" />}
-        title={`Reconnecting to "${name}"…`}
-        testId="remote-connection-banner"
-        presentation={presentation}
-      >
-        Viewing cached data (read-only until the connection returns).
-      </BannerFrame>
+      <>
+        <BannerFrame
+          tone="warning"
+          icon={<RefreshCw size={14} aria-hidden="true" />}
+          title={`Reconnecting to "${name}"…`}
+          testId="remote-connection-banner"
+          presentation={presentation}
+          action={detailsButton}
+        >
+          Viewing cached data (read-only until the connection returns).
+        </BannerFrame>
+        {journalDialog}
+      </>
     );
   }
 
   if (presentation === "offline") {
     return (
-      <BannerFrame
-        tone="neutral"
-        icon={<WifiOff size={14} aria-hidden="true" />}
-        title="You're offline"
-        testId="remote-connection-banner"
-        presentation={presentation}
-      >
-        {`"${name}" will reconnect when the network returns. Cached data shown read-only.`}
-      </BannerFrame>
+      <>
+        <BannerFrame
+          tone="neutral"
+          icon={<WifiOff size={14} aria-hidden="true" />}
+          title="You're offline"
+          testId="remote-connection-banner"
+          presentation={presentation}
+          action={detailsButton}
+        >
+          {`"${name}" will reconnect when the network returns. Cached data shown read-only.`}
+        </BannerFrame>
+        {journalDialog}
+      </>
     );
   }
 
   const copy = blockedCopy(blockedFailure, name, blockedMessage);
   return (
-    <BannerFrame
-      tone="error"
-      icon={<AlertTriangle size={14} aria-hidden="true" />}
-      title={copy.title}
-      testId="remote-connection-banner"
-      presentation={presentation}
-      blockedFailure={blockedFailure}
-      action={
-        <span className="flex shrink-0 items-center gap-1.5">
-          {copy.showRetry ? (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="h-7 px-2 text-xs"
-              data-testid="remote-connection-banner-retry"
-              onClick={() => retryActiveEnvironmentNow(activeEnvironmentId)}
-            >
-              Try again
-            </Button>
-          ) : null}
-          {copy.showRePair ? (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="h-7 px-2 text-xs"
-              data-testid="remote-connection-banner-repair"
-              onClick={() => openModal("settings", { section: "connections" })}
-            >
-              Re-pair…
-            </Button>
-          ) : null}
-        </span>
-      }
-    >
-      {copy.body}
-    </BannerFrame>
+    <>
+      <BannerFrame
+        tone="error"
+        icon={<AlertTriangle size={14} aria-hidden="true" />}
+        title={copy.title}
+        testId="remote-connection-banner"
+        presentation={presentation}
+        blockedFailure={blockedFailure}
+        action={
+          <span className="flex shrink-0 items-center gap-1.5">
+            {detailsButton}
+            {copy.showRetry ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 px-2 text-xs"
+                data-testid="remote-connection-banner-retry"
+                onClick={() => retryActiveEnvironmentNow(activeEnvironmentId)}
+              >
+                Try again
+              </Button>
+            ) : null}
+            {copy.showRePair ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 px-2 text-xs"
+                data-testid="remote-connection-banner-repair"
+                onClick={() => openModal("settings", { section: "connections" })}
+              >
+                Re-pair…
+              </Button>
+            ) : null}
+          </span>
+        }
+      >
+        {copy.body}
+      </BannerFrame>
+      {journalDialog}
+    </>
   );
 }
 

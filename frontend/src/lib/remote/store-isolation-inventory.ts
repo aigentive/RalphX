@@ -51,6 +51,7 @@ export const STORE_ISOLATION_INVENTORY: readonly StoreInventoryEntry[] = [
   },
   { storeName: "useProposalStore", modulePath: "src/stores/proposalStore.ts", classification: "env-owned", persisted: null, reset: full, rationale: "Contains backend task proposals and proposal identifiers." },
   { storeName: "useQAStore", modulePath: "src/stores/qaStore.ts", classification: "env-owned", persisted: null, reset: full, rationale: "Contains backend QA settings and task-keyed results." },
+  { storeName: "useRemoteConnectionJournalStore", modulePath: "src/stores/remoteConnectionJournalStore.ts", classification: "infrastructure", persisted: null, reset: none, rationale: "Client-side connection diagnostics keyed explicitly by environment id; rows are cleared by the runtime when an environment is removed." },
   { storeName: "useReviewStore", modulePath: "src/stores/reviewStore.ts", classification: "env-owned", persisted: null, reset: full, rationale: "Contains backend reviews and selected review identifiers." },
   { storeName: "useTaskStore", modulePath: "src/stores/taskStore.ts", classification: "env-owned", persisted: null, reset: full, rationale: "Contains the active host's backend tasks." },
   { storeName: "useThemeStore", modulePath: "src/stores/themeStore.ts", classification: "global", persisted: null, reset: none, rationale: "Theme, motion, and font scale are client presentation preferences." },
