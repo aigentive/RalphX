@@ -3212,6 +3212,88 @@ async fn test_delegate_start_allows_team_coordinator_profile_declared_targets() 
 }
 
 #[tokio::test]
+async fn test_delegate_start_enforces_workspace_reviewer_allowed_targets() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (_fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let app_state = Arc::new(AppState::new_sqlite_test());
+    let state = build_state(app_state);
+    seed_codex_provider_default(state.app_state.as_ref(), "gpt-5.5", LogicalEffort::XHigh).await;
+    let (project, parent_conversation, _workspace) =
+        create_project_agent_workspace(state.app_state.as_ref(), worktree_parent.path()).await;
+    let parent_conversation_id = parent_conversation.id.as_str();
+
+    let start = start_delegate(
+        State(state.clone()),
+        Json(DelegateStartRequest {
+            caller_agent_name: Some("ralphx-workspace-reviewer".to_string()),
+            caller_agent_profile: None,
+            caller_context_type: Some("project".to_string()),
+            caller_context_id: Some(project.id.as_str().to_string()),
+            parent_session_id: None,
+            parent_turn_id: None,
+            parent_message_id: None,
+            parent_conversation_id: Some(parent_conversation_id.clone()),
+            parent_tool_use_id: None,
+            delegated_session_id: None,
+            child_session_id: None,
+            task_ref: None,
+            agent_name: "ralphx-general-explorer".to_string(),
+            prompt: "Inspect the assigned surface and report findings.".to_string(),
+            title: Some("Workspace review exploration".to_string()),
+            inherit_context: true,
+            harness: None,
+            model: None,
+            logical_effort: None,
+            approval_policy: None,
+            sandbox_mode: None,
+        }),
+    )
+    .await
+    .expect("workspace reviewer must be allowed to delegate to the general explorer")
+    .0;
+
+    assert_eq!(start.agent_name, "ralphx-general-explorer");
+    assert_eq!(start.status, "running");
+
+    let error = start_delegate(
+        State(state),
+        Json(DelegateStartRequest {
+            caller_agent_name: Some("ralphx-workspace-reviewer".to_string()),
+            caller_agent_profile: None,
+            caller_context_type: Some("project".to_string()),
+            caller_context_id: Some(project.id.as_str().to_string()),
+            parent_session_id: None,
+            parent_turn_id: None,
+            parent_message_id: None,
+            parent_conversation_id: Some(parent_conversation_id),
+            parent_tool_use_id: None,
+            delegated_session_id: None,
+            child_session_id: None,
+            task_ref: None,
+            agent_name: "ralphx-general-worker".to_string(),
+            prompt: "Inspect the assigned surface and report findings.".to_string(),
+            title: Some("Workspace review implementation".to_string()),
+            inherit_context: true,
+            harness: None,
+            model: None,
+            logical_effort: None,
+            approval_policy: None,
+            sandbox_mode: None,
+        }),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.0, axum::http::StatusCode::FORBIDDEN);
+    assert!(error.1 .0["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("may not delegate"));
+}
+
+#[tokio::test]
 async fn test_delegate_start_infers_parent_session_from_verification_child_context() {
     let _env_lock = codex_cli_env_lock().lock().await;
     let (_fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
