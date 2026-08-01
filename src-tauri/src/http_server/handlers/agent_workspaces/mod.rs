@@ -10,7 +10,9 @@ mod workspace_review_context;
 #[cfg(test)]
 use pr_review::ensure_review_artifact_for_head;
 pub use pr_review::*;
-pub use workspace_review_context::get_agent_workspace_review_context;
+pub use workspace_review_context::{
+    get_agent_workspace_review_context, get_agent_workspace_review_context_remote_snapshot,
+};
 
 use std::{
     collections::{BTreeMap, BTreeSet},

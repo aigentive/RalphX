@@ -259,7 +259,19 @@ async fn every_allowlisted_route_is_reachable_with_the_required_scope() {
     let token = read_device(&auth).await;
     let shared = shared_state();
 
-    for route in REMOUNT_ALLOWLIST {
+    // Same per-device bucket rotation as the negative sweep: the allowlist is long enough that a
+    // single device would start 429-ing and prove nothing about mounting.
+    let mut token = token;
+    for (index, route) in REMOUNT_ALLOWLIST.iter().enumerate() {
+        if index != 0 && index % REQUESTS_PER_DEVICE == 0 {
+            token = pair_device_with_scopes(
+                &auth,
+                &format!("allowlist-reader-{index}"),
+                RemoteScopeSet::from_scopes([Scope::UiRead]),
+            )
+            .await
+            .0;
+        }
         let response = router_with_remount(&auth, Arc::clone(&shared))
             .oneshot(request_for(route.path, route.method, Some(&token)))
             .await
@@ -359,7 +371,17 @@ async fn a_device_without_the_required_scope_is_refused_on_every_mounted_route()
     let token = operate_only_device(&auth).await;
     let shared = shared_state();
 
-    for route in REMOUNT_ALLOWLIST {
+    let mut token = token;
+    for (index, route) in REMOUNT_ALLOWLIST.iter().enumerate() {
+        if index != 0 && index % REQUESTS_PER_DEVICE == 0 {
+            token = pair_device_with_scopes(
+                &auth,
+                &format!("operator-{index}"),
+                RemoteScopeSet::from_scopes([Scope::UiOperate, Scope::UiAgent]),
+            )
+            .await
+            .0;
+        }
         let response = router_with_remount(&auth, Arc::clone(&shared))
             .oneshot(request_for(route.path, route.method, Some(&token)))
             .await
@@ -668,7 +690,72 @@ const MOUNTED_HANDLERS: &[(&str, &str)] = &[
         "agent_workflows.rs",
         "get_latest_agent_workflow_run_for_script",
     ),
+    (
+        "agent_workspaces/workspace_review_context.rs",
+        "get_agent_workspace_review_context_remote_snapshot",
+    ),
 ];
+
+// ---------------------------------------------------------------------------------------
+// WP3 — the workspace-review remount is a persisted-snapshot SUBSET of its :3847 twin
+// ---------------------------------------------------------------------------------------
+
+/// The remounted handler must not be the local one.
+///
+/// The local `get_agent_workspace_review_context` accepts `Query<AgentWorkspaceReviewContextQuery>`
+/// and selects `FullTarget` on `?refresh_target=true`, which recomputes the review target through
+/// `resolve_review_target` — a `git` command lane, and the reason the 29 `diff_commands` sit
+/// denied. Mounting it would put a spawn behind a proxied GET the client fully controls.
+#[test]
+fn the_remounted_workspace_review_handler_cannot_honour_refresh_target() {
+    let body = handler_body(
+        "agent_workspaces/workspace_review_context.rs",
+        "get_agent_workspace_review_context_remote_snapshot",
+    );
+    assert!(
+        !body.contains("Query"),
+        "the remounted workspace-review handler must take no query extractor, so \
+         `?refresh_target=true` / `?include_review_packet=true` cannot select a recomputing mode"
+    );
+    assert!(
+        !body.contains("load_agent_workspace_review_presentation_context"),
+        "the remounted handler must use the persisted-snapshot loader, never the one that \
+         falls through to the git-spawning target calculation"
+    );
+    assert!(
+        body.contains("load_persisted_workspace_review_snapshot_context"),
+        "the remounted handler must serve the persisted monitor snapshot"
+    );
+    assert!(
+        !body.contains("agent_workspace_response_for_state("),
+        "the remounted handler must not schedule PR supervision recovery, which can fetch, \
+         enqueue an agent, or continue publication"
+    );
+    assert!(
+        !body.contains("workspace_review_runtime_header"),
+        "the remounted handler must not read agent-run trust headers a paired device can forge"
+    );
+}
+
+/// The Review PR context read stays off the allowlist, and the denial carries its evidence.
+#[test]
+fn the_pr_review_context_read_is_named_denied_with_its_audit_reason() {
+    let expected = "GET /api/agent-workspaces/:conversation_id/pr-review-context";
+    let row = REMOUNT_DENIED_SINKS
+        .iter()
+        .find(|(name, _)| *name == expected)
+        .unwrap_or_else(|| panic!("`{expected}` must be named in REMOUNT_DENIED_SINKS"));
+    assert_eq!(
+        row.1, "spawns-gh-and-writes-terminal-settlement",
+        "the Review PR context denial must record the audit finding, not a class restatement"
+    );
+    assert!(
+        !REMOUNT_ALLOWLIST
+            .iter()
+            .any(|route| route.path.ends_with("pr-review-context")),
+        "pr-review-context spawns `gh` and settles terminal PR state; it is not a read"
+    );
+}
 
 /// The allowlist and the handler inventory must describe the same surface.
 #[test]
