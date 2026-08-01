@@ -785,6 +785,29 @@ describe("connection journal instrumentation", () => {
     expect(entries[0]?.message).toContain("revoked");
   });
 
+  it("journals one line per (state, presentation) pair, not per repaint", async () => {
+    const { initializeEnvironmentRuntime } = await import("./environment-runtime");
+    useEnvironmentStore.getState().setEnvironments([summary("env-b")]);
+    setFlag(true);
+    teardown = initializeEnvironmentRuntime();
+    useEnvironmentStore.setState({ activeEnvironmentId: "env-b" });
+    const b = supervisors.filter((item) => item.deps.environmentId === "env-b").at(-1)!;
+    const before = (await journalOf("env-b")).length;
+
+    // A presentation-only repaint of the SAME pair (the syncing escalation tick can
+    // re-notify) must not spam the journal.
+    b.setState("connecting");
+    b.deps.onStateChange("connecting", "syncing");
+    b.deps.onStateChange("connecting", "syncing");
+    b.deps.onStateChange("connecting", "reconnecting");
+
+    const entries = (await journalOf("env-b")).slice(before);
+    expect(entries.map((entry) => entry.message)).toEqual([
+      "Connection state: connecting (shown as syncing).",
+      "Connection state: connecting (shown as reconnecting).",
+    ]);
+  });
+
   it("drops the journal when the registry row is removed", async () => {
     const { initializeEnvironmentRuntime } = await import("./environment-runtime");
     const { recordConnectionEvent } = await import(

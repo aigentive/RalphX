@@ -126,6 +126,7 @@ describe("presentation variants", () => {
   it.each<[SupervisorPresentation | undefined, string]>([
     ["connected", "a healthy connection"],
     ["suspended", "a backgrounded app"],
+    ["syncing", "a live socket mid-hydration — chip-only chrome, never a banner"],
     [undefined, "an environment no supervisor has reported on"],
   ])("renders nothing for %s (%s)", (presentation) => {
     seed(presentation === undefined ? {} : { presentation });

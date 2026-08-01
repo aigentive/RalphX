@@ -204,7 +204,10 @@ export function withReadOnly(
   return {
     status: "read_only",
     gated: true,
-    reason: reason ?? "This environment is reconnecting — changes can't be made right now.",
+    // Presentation-neutral: this fallback is reached only when the caller supplied no
+    // reason, and asserting "reconnecting" over a syncing environment would contradict
+    // the calm chip. The specific copy comes from `useEnvironmentWritable`.
+    reason: reason ?? "This environment isn't connected — changes can't be made right now.",
   };
 }
 

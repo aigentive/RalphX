@@ -121,7 +121,12 @@ export function RemoteConnectionBanner() {
     !isRemote ||
     presentation === undefined ||
     presentation === "connected" ||
-    presentation === "suspended"
+    presentation === "suspended" ||
+    // `syncing` is chip-only chrome: the transport is provably live and the client is
+    // reading data, so a full-width banner (and its app-body reflow) would present a
+    // routine hydration as an outage. The environment switcher shows the pulse; the
+    // supervisor escalates to `reconnecting` if the sync misbehaves.
+    presentation === "syncing"
   ) {
     return null;
   }

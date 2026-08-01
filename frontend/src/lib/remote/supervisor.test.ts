@@ -1148,3 +1148,155 @@ describe("typed failure classification (rule 5)", () => {
     expect(r.supervisor.blocked()?.failure).toBe("version");
   });
 });
+
+// ===========================================================================
+// The `syncing` presentation — calm chrome for a live socket mid-hydration
+// ===========================================================================
+
+describe("syncing presentation", () => {
+  function pairsRig(overrides: Partial<SupervisorDeps> = {}): {
+    r: Rig;
+    pairs: string[];
+  } {
+    const pairs: string[] = [];
+    const r = rig({
+      ...overrides,
+      onStateChange: (state, presentation) => {
+        pairs.push(`${state}|${presentation}`);
+      },
+    });
+    return { r, pairs };
+  }
+
+  it("presents the resume dial as syncing, never as an amber flash", async () => {
+    const { r, pairs } = pairsRig();
+    await connect(r);
+    r.supervisor.visibilityChanged(true);
+    await vi.advanceTimersByTimeAsync(SUSPEND_DEBOUNCE_MS);
+    pairs.length = 0;
+
+    r.supervisor.visibilityChanged(false);
+
+    // The dial after a healthy period is syncing end-to-end — no reconnecting flash.
+    expect(pairs).toContain("connecting|syncing");
+    expect(pairs.some((pair) => pair.endsWith("|reconnecting"))).toBe(false);
+    await settle();
+    expect(r.supervisor.currentState()).toBe("connected");
+  });
+
+  it("emits syncing mid-attempt once hello lands after a socket loss", async () => {
+    let hang = false;
+    const { r, pairs } = pairsRig({
+      beginStream: async () => {
+        if (hang) {
+          return new Promise<void>(() => {});
+        }
+      },
+    });
+    await connect(r);
+    hang = true;
+    pairs.length = 0;
+
+    r.supervisor.handleEvent("socket_lost");
+    expect(pairs).toContain("backoff|syncing");
+    await vi.advanceTimersByTimeAsync(RETRY_LADDER_MS[0]);
+    await settle();
+
+    expect(r.supervisor.currentState()).toBe("connecting");
+    expect(r.supervisor.presentation()).toBe("syncing");
+    expect(pairs.some((pair) => pair.endsWith("|reconnecting"))).toBe(false);
+  });
+
+  it("escalates after two consecutive failed hydration barriers (K)", async () => {
+    let failBarrier = false;
+    const { r, pairs } = pairsRig({
+      beginStream: async () => {
+        if (failBarrier) {
+          throw new Error("hydration failed");
+        }
+      },
+    });
+    await connect(r);
+    failBarrier = true;
+    pairs.length = 0;
+
+    r.supervisor.handleEvent("socket_lost");
+    await vi.advanceTimersByTimeAsync(RETRY_LADDER_MS[0]);
+    await settle();
+    // First barrier failure: still calm.
+    expect(pairs).toContain("backoff|syncing");
+    expect(pairs.some((pair) => pair.endsWith("|reconnecting"))).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(RETRY_LADDER_MS[1]);
+    await settle();
+    // Second consecutive failure: the pathology the journal exists for. Escalate.
+    expect(pairs[pairs.length - 1]).toBe("backoff|reconnecting");
+  });
+
+  it("escalates on the 12 s grace with no FSM event (T), one-way per episode", async () => {
+    let hang = false;
+    const { r, pairs } = pairsRig({
+      beginStream: async () => {
+        if (hang) {
+          return new Promise<void>(() => {});
+        }
+      },
+    });
+    await connect(r);
+    hang = true;
+    pairs.length = 0;
+
+    r.supervisor.handleEvent("socket_lost");
+    await vi.advanceTimersByTimeAsync(RETRY_LADDER_MS[0]);
+    await settle();
+    expect(r.supervisor.presentation()).toBe("syncing");
+
+    // The escalation tick fires with the state unchanged — presentation-only repaint.
+    await vi.advanceTimersByTimeAsync(11_200);
+    expect(r.supervisor.currentState()).toBe("connecting");
+    expect(pairs[pairs.length - 1]).toBe("connecting|reconnecting");
+
+    // One-way: later hellos inside the same episode must not return to syncing.
+    const escalationIndex = pairs.length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    await settle();
+    expect(
+      pairs.slice(escalationIndex).some((pair) => pair.endsWith("|syncing"))
+    ).toBe(false);
+  });
+
+  it("never presents syncing after the silence watchdog declared the host dead", async () => {
+    const { r, pairs } = pairsRig();
+    await connect(r);
+    pairs.length = 0;
+
+    // 50 s of total frame silence: the host is gone, not slow.
+    await vi.advanceTimersByTimeAsync(50_000);
+
+    expect(pairs.some((pair) => pair.endsWith("|syncing"))).toBe(false);
+    expect(pairs.some((pair) => pair.endsWith("|reconnecting"))).toBe(true);
+  });
+
+  it("keeps blocked timer-free with the escalate timer in play", async () => {
+    let hang = false;
+    const { r } = pairsRig({
+      beginStream: async () => {
+        if (hang) {
+          return new Promise<void>(() => {});
+        }
+      },
+    });
+    await connect(r);
+    hang = true;
+    r.supervisor.handleEvent("socket_lost");
+    await vi.advanceTimersByTimeAsync(RETRY_LADDER_MS[0]);
+    await settle();
+    expect(r.supervisor.presentation()).toBe("syncing");
+
+    // Escalate is armed while syncing; entering blocked must clear it with the rest.
+    r.supervisor.handleEvent("connect_failed_unauthorized");
+
+    expect(r.supervisor.currentState()).toBe("blocked");
+    expect(r.supervisor.armedTimers()).toEqual([]);
+  });
+});

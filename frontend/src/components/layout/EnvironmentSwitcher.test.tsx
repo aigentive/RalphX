@@ -313,4 +313,79 @@ describe("EnvironmentSwitcher", () => {
       expect(screen.getByTestId("environment-switcher-badge")).toHaveTextContent("1");
     });
   });
+
+  describe("syncing chip", () => {
+    function seedSyncing(activeId = "env-0"): void {
+      seed(["connecting", "connected"]);
+      act(() => {
+        useEnvironmentStore.setState({ activeEnvironmentId: activeId });
+        useEnvironmentStore.getState().setConnectionPresentation("env-0", {
+          presentation: "syncing",
+          blockedFailure: null,
+          blockedMessage: null,
+        });
+      });
+    }
+
+    it("shows the pulsing accent dot, the label, and the syncing tooltip", async () => {
+      seedSyncing();
+      renderSwitcher();
+
+      expect(
+        screen.getByTestId("environment-switcher-syncing-label")
+      ).toHaveTextContent("Syncing…");
+      const dot = screen.getByTestId("environment-dot-env-0");
+      expect(dot).toHaveAttribute("data-status", "syncing");
+      expect(dot.className).toContain("remote-syncing-dot");
+      const trigger = screen.getByRole("button", { name: /syncing with "Remote 0"/ });
+      await userEvent.hover(trigger);
+      expect(await screen.findByRole("tooltip")).toHaveTextContent(
+        /Syncing with the host — read-only until it finishes/
+      );
+    });
+
+    it("shows no label or syncing dot when connected", () => {
+      seed(["connected"]);
+      act(() => {
+        useEnvironmentStore.setState({ activeEnvironmentId: "env-0" });
+        useEnvironmentStore.getState().clearConnectionPresentation("env-0");
+      });
+      renderSwitcher();
+
+      expect(
+        screen.queryByTestId("environment-switcher-syncing-label")
+      ).toBeNull();
+      expect(screen.getByTestId("environment-dot-env-0")).toHaveAttribute(
+        "data-status",
+        "connected"
+      );
+    });
+
+    it("never puts the syncing dot on a background environment", async () => {
+      // env-1 is active; env-0 (background) reports syncing — its row must keep the
+      // state-keyed dot, because a background environment has no stream to sync.
+      seedSyncing("env-1");
+      renderSwitcher();
+      await openSwitcher();
+
+      const backgroundDot = screen
+        .getByRole("option", { name: /Remote 0/ })
+        .querySelector('[data-testid="environment-dot-env-0"]');
+      expect(backgroundDot).toHaveAttribute("data-status", "connecting");
+    });
+
+    it("opens the connection log from the dropdown footer", async () => {
+      seedSyncing();
+      renderSwitcher();
+      await openSwitcher();
+
+      await userEvent.click(
+        screen.getByTestId("environment-switcher-connection-log")
+      );
+
+      expect(
+        screen.getByTestId("remote-connection-journal-dialog")
+      ).toHaveTextContent("Connection log — Remote 0");
+    });
+  });
 });
