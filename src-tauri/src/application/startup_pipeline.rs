@@ -234,6 +234,19 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         );
     }
 
+    // The remote agent-STOP dispatcher is a brake driver, and the same always-run reasoning
+    // applies with more force: a host with `RALPHX_DISABLE_STARTUP_RECOVERY` set that never
+    // drains stop intents leaves a paired device unable to halt a runaway agent at all.
+    {
+        let phase_started_at = startup_phase_started("remote_agent_stop_dispatcher_spawn");
+        startup_background::spawn_remote_agent_stop_dispatcher(
+            deps.app_state.clone(),
+            Arc::clone(&deps.execution_state),
+            deps.app_handle.clone(),
+        );
+        startup_phase_completed("remote_agent_stop_dispatcher_spawn", phase_started_at);
+    }
+
     if startup_jobs::is_startup_recovery_disabled() {
         info!(
             env_var = startup_jobs::RALPHX_DISABLE_STARTUP_RECOVERY_ENV,

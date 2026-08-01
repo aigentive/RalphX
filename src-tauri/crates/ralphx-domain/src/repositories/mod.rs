@@ -59,6 +59,7 @@ pub mod process_repo;
 pub mod project_repository;
 pub mod proposal_dependency_repository;
 pub mod remote_access_repository;
+pub mod remote_agent_stop_request_repository;
 pub mod remote_conversation_message_request_repository;
 pub mod remote_conversation_start_request_repository;
 pub mod remote_request_dedup_repository;
@@ -174,6 +175,7 @@ pub use remote_access_repository::{
     RemotePairingCodeRepository, RemotePairingOutcome, RemotePairingRedemption,
     RemoteSessionRepository, RemoteWsTicketOutcome, RemoteWsTicketRepository,
 };
+pub use remote_agent_stop_request_repository::RemoteAgentStopRequestRepository;
 pub use remote_conversation_message_request_repository::RemoteConversationMessageRequestRepository;
 pub use remote_conversation_start_request_repository::RemoteConversationStartRequestRepository;
 pub use remote_request_dedup_repository::{

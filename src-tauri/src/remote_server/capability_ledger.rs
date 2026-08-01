@@ -225,6 +225,10 @@ pub const MODULE_DEFAULTS: &[ModuleDefault] = &[
     agent_default("qa_commands"),
     agent_default("question_commands"),
     agent_default("release_notes_commands"),
+    // Same construction and the same conservative default as `remote_chat_commands` below: the
+    // module takes no AppHandle/ExecutionState/ChatService, so it cannot terminate anything, but
+    // a future member must still earn its own row rather than inherit the stop pair's.
+    agent_default("remote_agent_stop_commands"),
     // The module is spawn-free by construction (no AppHandle, no ExecutionState, no
     // ChatService), but the default stays conservative: a future member must earn a
     // narrower row rather than inherit one.
@@ -492,6 +496,40 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
             RiskClass::Read,
             NONE,
             "pure repository read of one message-intent row; no spawn carrier; propagates read errors",
+        ),
+    },
+    // --- WP2: the spawn-free STOP pair.
+    //
+    // `stop_agent` itself is `host-denied-spawns-process` (AppChatService::stop_agent reaches
+    // `Command::new(resolve_pkill_cli_path())`), and the process floor is absolute. But that is a
+    // HYGIENE refusal, not a risk one: stopping is authority-REDUCING, the same direction as
+    // `pause_execution`/`stop_execution`. So the brake is redesigned rather than relaxed — this
+    // command persists an intent and a host-owned dispatcher holds the pkill path — and it is
+    // classified `Operate` so the DEFAULT "viewer with brakes" pairing can halt a runaway agent
+    // without ever being granted `ui:agent`. The gap between this row and its `stop_agent`
+    // sibling is recorded in AUTHORITY_REDUCING_EXEMPTIONS, not asserted in a comment.
+    //
+    // It carries NO capability, and that is checkable rather than claimed: `class_permits`
+    // admits none at `Operate`. It seeds no spawn-triggering state (the loop that reads the row
+    // TERMINATES processes; it starts nothing), so it takes no `SeedsSpawnTriggeringState` and
+    // no `SPAWN_TRIGGERING_STATE_SURFACE` row — see the module doc for why the surface table
+    // would have been a false entry.
+    CommandOverride {
+        command: "request_remote_agent_stop",
+        policy: policy(
+            RiskClass::Operate,
+            NONE,
+            "authority-reducing brake: persists a conversation-scoped stop intent a host-owned \
+             dispatcher drains; names no pid/run/process, resolves no CLI path, arms nothing, and \
+             dedupes per conversation so a second tap joins the in-flight brake",
+        ),
+    },
+    CommandOverride {
+        command: "get_remote_agent_stop_request",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "pure repository read of one stop-intent row; no spawn carrier; propagates read errors",
         ),
     },
     CommandOverride {
@@ -3672,6 +3710,15 @@ pub const AUTHORITY_REDUCING_EXEMPTIONS: &[AuthorityReducingExemption] = &[
         direction: "authority-reducing",
         scope: "ui:operate",
         rationale: "commands/execution_commands/lifecycle.rs sets the pause flag and transitions agent-active tasks only to Stopped; the only production caller of ExecutionState::resume is resume_execution, which re-syncs the quota first",
+    },
+    // WP2 — the remote agent brake. Appended after the batch-3 rows; the exactness test
+    // filters by `kind`/`subject` rather than by index, so appending is safe.
+    AuthorityReducingExemption {
+        subject: "request_remote_agent_stop",
+        kind: "command",
+        direction: "authority-reducing",
+        scope: "ui:operate",
+        rationale: "commands/remote_agent_stop_commands.rs persists one conversation-scoped stop intent and nothing else; the only reader is application/startup_background.rs::drain_one_remote_agent_stop, which calls ChatService::stop_agent and can therefore only END an agent run — there is no path from the row to a start, resume, or content write, and the row names no process",
     },
     AuthorityReducingExemption {
         subject: "deny_permission_request",

@@ -82,6 +82,7 @@ use crate::domain::repositories::{
     TaskRepository, TaskStepRepository, TicketCanonicalBranchRepository,
     UiFeatureFlagOverridesRepository, ValidationRunRepository, WebhookRegistrationRepository,
     WorkflowRepository, WorkspaceReviewRuntimeSettingsRepository,
+    RemoteAgentStopRequestRepository, RemoteConversationStartRequestRepository, ReviewRepository,
 };
 use crate::domain::services::{
     GithubServiceTrait, MemoryRunningAgentRegistry, MessageQueue, RunningAgentRegistry,
@@ -121,6 +122,7 @@ use crate::infrastructure::memory::{
     MemoryTicketCanonicalBranchRepository, MemoryTicketingStatusCatalogRepository,
     MemoryUiFeatureFlagOverridesRepository, MemoryValidationRunRepository,
     MemoryWebhookRegistrationRepository, MemoryWorkflowRepository,
+    MemoryRemoteAgentStopRequestRepository, MemoryRemoteConversationStartRequestRepository,
     MemoryWorkspaceReviewRuntimeSettingsRepository,
 };
 use crate::infrastructure::secret_store::MacosKeychainSecretStore;
@@ -160,6 +162,7 @@ use crate::infrastructure::sqlite::{
     SqliteTaskStepRepository, SqliteTicketCanonicalBranchRepository,
     SqliteTicketingStatusCatalogRepository, SqliteUiFeatureFlagOverridesRepository,
     SqliteValidationRunRepository, SqliteWebhookRegistrationRepository, SqliteWorkflowRepository,
+    SqliteRemoteAgentStopRequestRepository,
     SqliteWorkspaceReviewRuntimeSettingsRepository,
 };
 use crate::infrastructure::HyperAtlassianApiClient;
@@ -325,6 +328,7 @@ pub struct AppState {
     pub remote_conversation_start_request_repo: Arc<dyn RemoteConversationStartRequestRepository>,
     pub remote_conversation_message_request_repo:
         Arc<dyn RemoteConversationMessageRequestRepository>,
+    pub remote_agent_stop_request_repo: Arc<dyn RemoteAgentStopRequestRepository>,
     /// Per-ticket canonical branch that all conversations for a ticket base off of
     pub ticket_canonical_branch_repo: Arc<dyn TicketCanonicalBranchRepository>,
     /// Startup orphan agent-worktree cleanup backoff markers
@@ -1634,6 +1638,9 @@ impl AppState {
                     &shared_conn,
                 )),
             ),
+            remote_agent_stop_request_repo: Arc::new(
+                SqliteRemoteAgentStopRequestRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
             ticket_canonical_branch_repo: Arc::new(
                 SqliteTicketCanonicalBranchRepository::from_shared(Arc::clone(&shared_conn)),
             ),
@@ -1919,6 +1926,7 @@ impl AppState {
             remote_conversation_message_request_repo: Arc::new(
                 MemoryRemoteConversationMessageRequestRepository::new(),
             ),
+            remote_agent_stop_request_repo: Arc::new(MemoryRemoteAgentStopRequestRepository::new()),
             ticket_canonical_branch_repo: Arc::new(MemoryTicketCanonicalBranchRepository::new()),
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 MemoryOrphanWorktreeCleanupMarkerRepository::new(),
@@ -2123,6 +2131,7 @@ impl AppState {
             remote_conversation_message_request_repo: Arc::new(
                 MemoryRemoteConversationMessageRequestRepository::new(),
             ),
+            remote_agent_stop_request_repo: Arc::new(MemoryRemoteAgentStopRequestRepository::new()),
             ticket_canonical_branch_repo: Arc::new(MemoryTicketCanonicalBranchRepository::new()),
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 MemoryOrphanWorktreeCleanupMarkerRepository::new(),
@@ -2345,6 +2354,9 @@ impl AppState {
                     &shared_conn,
                 )),
             ),
+            remote_agent_stop_request_repo: Arc::new(
+                SqliteRemoteAgentStopRequestRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
             ticket_canonical_branch_repo: Arc::new(
                 SqliteTicketCanonicalBranchRepository::from_shared(Arc::clone(&shared_conn)),
             ),
@@ -2534,6 +2546,7 @@ impl AppState {
             remote_conversation_message_request_repo: Arc::new(
                 MemoryRemoteConversationMessageRequestRepository::new(),
             ),
+            remote_agent_stop_request_repo: Arc::new(MemoryRemoteAgentStopRequestRepository::new()),
             ticket_canonical_branch_repo: Arc::new(MemoryTicketCanonicalBranchRepository::new()),
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 MemoryOrphanWorktreeCleanupMarkerRepository::new(),

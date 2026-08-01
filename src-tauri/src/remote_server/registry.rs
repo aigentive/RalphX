@@ -1268,6 +1268,45 @@ crate::remote_commands! {
         result: fallible,
     },
 
+    // Spawn-free agent STOP, at `ui:operate` — a brake on the DEFAULT pairing.
+    //
+    // `stop_agent` reaches `Command::new(resolve_pkill_cli_path())` and stays unregistered by
+    // the absolute process floor. Registering the BRAKE anyway is not a relaxation of that
+    // floor: this closure persists one conversation-scoped intent row and returns, and the
+    // host-owned `spawn_remote_agent_stop_dispatcher` loop is the sole holder of the
+    // terminating path. The `Operate` class is the honest one because the intent is
+    // authority-REDUCING — the loop that consumes it can only end a run, never start, resume or
+    // steer one — which is exactly the `pause_execution`/`stop_execution` shape, and it carries
+    // an `AUTHORITY_REDUCING_EXEMPTIONS` row for the gap to its `stop_agent` sibling.
+    //
+    // There is deliberately NO `contextType`, run id, or pid on the wire: the host resolves what
+    // to terminate from the conversation row at drain time, so a client cannot aim the brake
+    // outside the Agents surface. Field absence, not a pin.
+    "request_remote_agent_stop"
+        => crate::commands::remote_agent_stop_commands::request_remote_agent_stop {
+        class: Operate,
+        caps: [],
+        params: [
+            (arg input: crate::commands::remote_agent_stop_commands::RequestRemoteAgentStopInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+
+    // The client's post-submit poll target for the stop intent. Pure repository read.
+    "get_remote_agent_stop_request"
+        => crate::commands::remote_agent_stop_commands::get_remote_agent_stop_request {
+        class: Read,
+        caps: [],
+        params: [
+            (arg stop_request_id: String),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+
     // -----------------------------------------------------------------------------------
     // PR 3.1-b batch 10 — the `ui:agent` registration decisions.
     //

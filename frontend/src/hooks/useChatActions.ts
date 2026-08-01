@@ -446,7 +446,13 @@ export function useChatActions({
 
   // ── Stop Agent ───────────────────────────────────────────────────
   const handleStopAgent = useCallback(async () => {
-    // Always attempt immediate run cancellation
+    // Always attempt immediate run cancellation.
+    //
+    // A failed BRAKE is the one failure a user must never miss: they asked for the agent to
+    // stop, the host refused or could not, and the run is still burning tokens. This used to
+    // `logger.warn` and return, which made a remote `REMOTE_COMMAND_UNAVAILABLE` — and every
+    // other stop failure — completely invisible. It surfaces through the same toast channel
+    // the rest of this hook's chat failures use.
     try {
       await stopAgent(contextType, backendQueueContextId);
     } catch (err) {
@@ -455,6 +461,13 @@ export function useChatActions({
         contextId,
         queueContextId: backendQueueContextId,
         error: err,
+      });
+      toast.error("Couldn't stop the agent", {
+        description: extractErrorMessage(
+          err,
+          "The agent is still running. Try again, or stop it on the host.",
+        ),
+        duration: 10000,
       });
     }
 

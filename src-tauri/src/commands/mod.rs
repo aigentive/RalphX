@@ -83,6 +83,7 @@ pub mod question_commands;
 mod question_commands_tests;
 pub mod registry;
 pub mod release_notes_commands;
+pub mod remote_agent_stop_commands;
 pub mod remote_chat_commands;
 #[cfg(test)]
 mod remote_chat_commands_tests;

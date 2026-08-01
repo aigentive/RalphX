@@ -53,6 +53,7 @@ pub mod plan_branch;
 pub mod plan_selection_stats;
 pub mod project;
 pub mod remote_access;
+pub mod remote_agent_stop_request;
 pub mod remote_conversation_message_request;
 pub mod remote_conversation_start_request;
 pub mod remote_request_dedup;
@@ -233,6 +234,7 @@ pub use remote_access::{
     RemoteDevice, RemoteDeviceId, RemotePairingCode, RemotePairingCodeId, RemoteScopeError,
     RemoteScopeSet, RemoteSession, RemoteSessionId, RemoteWsTicket,
 };
+pub use remote_agent_stop_request::{RemoteAgentStopRequest, RemoteAgentStopStatus};
 pub use remote_conversation_message_request::{
     RemoteConversationMessageRequest, RemoteConversationMessageStatus,
 };

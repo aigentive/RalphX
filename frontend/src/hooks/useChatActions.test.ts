@@ -651,6 +651,46 @@ describe("useChatActions", () => {
       expect(mockRecoverTaskExecution).not.toHaveBeenCalled();
     });
 
+    /**
+     * The brake failing is the one failure a user must never miss. This used to `logger.warn`
+     * and return, so a remote `REMOTE_COMMAND_UNAVAILABLE` — and every other stop failure —
+     * was completely invisible while the agent kept burning tokens.
+     */
+    it("surfaces a stop failure to the user instead of swallowing it", async () => {
+      mockStopAgent.mockRejectedValueOnce(
+        new Error("This action runs only on the host — it is not available remotely."),
+      );
+      const { result } = setup({
+        contextType: "ideation",
+        contextId: "session-1",
+      });
+
+      await act(async () => {
+        await result.current.handleStopAgent();
+      });
+
+      expect(mockToastError).toHaveBeenCalledWith(
+        "Couldn't stop the agent",
+        expect.objectContaining({
+          description:
+            "This action runs only on the host — it is not available remotely.",
+        }),
+      );
+    });
+
+    it("does not toast when the stop succeeds", async () => {
+      const { result } = setup({
+        contextType: "ideation",
+        contextId: "session-1",
+      });
+
+      await act(async () => {
+        await result.current.handleStopAgent();
+      });
+
+      expect(mockToastError).not.toHaveBeenCalled();
+    });
+
     it("task_execution mode also calls recoverTaskExecution", async () => {
       const { result } = setup({
         contextType: "task_execution",

@@ -581,6 +581,9 @@ mod v20260728183000_workspace_review_plan_context_tests;
 mod v20260801120000_remote_conversation_start_requests;
 #[cfg(test)]
 mod v20260801120000_remote_conversation_start_requests_tests;
+mod v20260801120200_remote_agent_stop_requests;
+#[cfg(test)]
+mod v20260801120200_remote_agent_stop_requests_tests;
 mod v20260801130000_remote_conversation_message_requests;
 #[cfg(test)]
 mod v20260801130000_remote_conversation_message_requests_tests;
@@ -1858,6 +1861,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260801120000,
         name: "remote_conversation_start_requests",
         migrate: v20260801120000_remote_conversation_start_requests::migrate,
+    },
+    Migration {
+        version: 20260801120200,
+        name: "remote_agent_stop_requests",
+        migrate: v20260801120200_remote_agent_stop_requests::migrate,
     },
     Migration {
         version: 20260801130000,

@@ -1133,6 +1133,189 @@ pub(crate) async fn revalidate_remote_conversation_message(
     })
 }
 
+/// How often the host drains one pending remote STOP intent.
+///
+/// Deliberately much shorter than the conversation-start interval: a brake that takes seconds
+/// to bite reads as broken, and the user's next move is to tap Stop again. The tick is a
+/// repository read against an indexed status column, so a 1s cadence is cheap.
+const REMOTE_AGENT_STOP_DISPATCH_INTERVAL: Duration = Duration::from_secs(1);
+/// `Stopping` rows older than this at boot are swept to `FailedStale` and NEVER re-driven: a
+/// lost race between a dead claim and a re-drain could terminate a run the user has since
+/// restarted, so we fail closed and let the client retry explicitly.
+const REMOTE_AGENT_STOP_STALE_LEASE_SECS: i64 = 120;
+
+/// The host-owned driver for spawn-free remote agent stops (WP2).
+///
+/// This loop is the SOLE holder of the process-terminating stop path for the feature: the
+/// registered `request_remote_agent_stop` command only persists an intent, and only this loop
+/// ever reaches `ChatService::stop_agent` (which resolves `pkill`). Per tick it CAS-claims one
+/// `Pending` intent (`Pending -> Stopping`), re-resolves the conversation at drain time, calls
+/// the host-local stop, and records `Stopped`, the benign `NoLiveRun` terminal, or `Failed`.
+pub(crate) fn spawn_remote_agent_stop_dispatcher(
+    state: AppState,
+    execution_state: Arc<ExecutionState>,
+    app_handle: tauri::AppHandle,
+) {
+    if !try_start_recurring_service("remote_agent_stop_dispatcher") {
+        tracing::debug!("Remote agent stop dispatcher already started; skipping duplicate spawn");
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        // Startup reconciliation: crashed `Stopping` claims are terminalised, never re-driven.
+        let now = chrono::Utc::now();
+        let stale_cutoff = now - chrono::Duration::seconds(REMOTE_AGENT_STOP_STALE_LEASE_SECS);
+        match state
+            .remote_agent_stop_request_repo
+            .fail_stale_stopping_stop_requests(stale_cutoff, now)
+            .await
+        {
+            Ok(count) if count > 0 => {
+                tracing::warn!(count, "swept stale remote agent-stop claims to FailedStale")
+            }
+            Ok(_) => {}
+            Err(error) => tracing::error!(%error, "remote agent stop stale sweep failed"),
+        }
+
+        let mut interval = tokio::time::interval(REMOTE_AGENT_STOP_DISPATCH_INTERVAL);
+        interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            // Drain opportunistically: a burst of intents (one per conversation) should not be
+            // spread across one tick each. The loop stops as soon as nothing is claimable.
+            loop {
+                match drain_one_remote_agent_stop(&state, &execution_state, &app_handle).await {
+                    Ok(RemoteAgentStopDrain::Idle) => break,
+                    Ok(RemoteAgentStopDrain::Drained) => continue,
+                    Err(error) => {
+                        tracing::warn!(%error, "remote agent stop dispatcher tick failed");
+                        break;
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// Whether a dispatcher pass found work. Distinguishing "nothing claimable" from "drained one"
+/// is what lets the opportunistic drain terminate instead of spinning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RemoteAgentStopDrain {
+    Idle,
+    Drained,
+}
+
+/// Claim + stop at most one pending intent. Extracted (and generic over the runtime) so a test
+/// can drive one pass with a mock handle and prove each terminal is reached for the right reason.
+pub(crate) async fn drain_one_remote_agent_stop<R: tauri::Runtime + 'static>(
+    state: &AppState,
+    execution_state: &Arc<ExecutionState>,
+    app_handle: &tauri::AppHandle<R>,
+) -> AppResult<RemoteAgentStopDrain> {
+    let claim_at = chrono::Utc::now();
+    let Some(claimed) = state
+        .remote_agent_stop_request_repo
+        .claim_pending_stop_request(claim_at)
+        .await?
+    else {
+        return Ok(RemoteAgentStopDrain::Idle);
+    };
+
+    // Re-resolve the target at drain time: the intent is a conversation id, and the row it
+    // named may have been archived or deleted since. Fail-closed — an errored read terminalises
+    // as Failed rather than proceeding to kill something we could not identify.
+    let conversation = match state
+        .chat_conversation_repo
+        .get_by_id(&claimed.conversation_id)
+        .await
+    {
+        Ok(Some(conversation)) => conversation,
+        Ok(None) => {
+            settle_stop_failure(
+                state,
+                &claimed.id,
+                crate::commands::remote_agent_stop_commands::REMOTE_AGENT_STOP_CONVERSATION_GONE,
+            )
+            .await;
+            return Ok(RemoteAgentStopDrain::Drained);
+        }
+        Err(error) => {
+            tracing::warn!(%error, request_id = %claimed.id, "remote agent stop could not re-resolve its conversation");
+            settle_stop_failure(
+                state,
+                &claimed.id,
+                crate::commands::remote_agent_stop_commands::REMOTE_AGENT_STOP_LOOKUP_FAILED,
+            )
+            .await;
+            return Ok(RemoteAgentStopDrain::Drained);
+        }
+    };
+
+    // The host-local stop path, host-owned end to end: `AppChatService::stop_agent` drops the
+    // interactive process and reaches `running_agent_registry` -> `kill_process` ->
+    // `Command::new(resolve_pkill_cli_path())`. That sink lives HERE, in a loop no client can
+    // reach, which is the entire point of the intent redesign.
+    //
+    // The runtime context id mirrors `resolve_agent_run_model_fields`: a Project conversation
+    // is keyed by its own id, every other context by its context id.
+    let context_type = conversation.context_type;
+    let context_id = if context_type == ChatContextType::Project {
+        conversation.id.as_str()
+    } else {
+        conversation.context_id.clone()
+    };
+    let service = crate::commands::unified_chat_commands::create_chat_service(
+        state,
+        app_handle.clone(),
+        execution_state,
+    );
+
+    match service.stop_agent(context_type, &context_id).await {
+        // `false` is not a failure: there was simply nothing running. Recording it as `Failed`
+        // would make the ordinary finished-between-tap-and-drain race look like a broken host.
+        Ok(false) => {
+            if let Err(error) = state
+                .remote_agent_stop_request_repo
+                .resolve_stop_request_no_live_run(&claimed.id, chrono::Utc::now())
+                .await
+            {
+                tracing::error!(%error, request_id = %claimed.id, "failed to record remote agent stop no-live-run");
+            }
+        }
+        Ok(true) => {
+            if let Err(error) = state
+                .remote_agent_stop_request_repo
+                .complete_stop_request(&claimed.id, chrono::Utc::now())
+                .await
+            {
+                tracing::error!(%error, request_id = %claimed.id, "failed to record remote agent stop completion");
+            }
+        }
+        Err(error) => {
+            // Stop failures land in `Failed` VISIBLY — they must not masquerade as a hung
+            // `Stopping` the client polls forever.
+            tracing::warn!(%error, request_id = %claimed.id, "remote agent stop failed on host");
+            settle_stop_failure(
+                state,
+                &claimed.id,
+                crate::commands::remote_agent_stop_commands::REMOTE_AGENT_STOP_HOST_STOP_FAILED,
+            )
+            .await;
+        }
+    }
+
+    Ok(RemoteAgentStopDrain::Drained)
+}
+
+async fn settle_stop_failure(state: &AppState, request_id: &str, error_code: &str) {
+    if let Err(error) = state
+        .remote_agent_stop_request_repo
+        .fail_stop_request(request_id, error_code, chrono::Utc::now())
+        .await
+    {
+        tracing::error!(%error, %request_id, "failed to record remote agent stop failure");
+    }
+}
+
 pub async fn maybe_start_external_mcp(
     app_handle: tauri::AppHandle,
     wait_for_backend_ready: impl Fn(
@@ -1568,6 +1751,203 @@ mod remote_conversation_start_dispatcher_tests {
         assert!(
             active.is_none(),
             "re-validation failure must not spawn a run"
+        );
+    }
+}
+
+#[cfg(test)]
+mod remote_agent_stop_dispatcher_tests {
+    use std::sync::Arc;
+
+    use super::{drain_one_remote_agent_stop, RemoteAgentStopDrain};
+    use crate::application::AppState;
+    use crate::commands::remote_agent_stop_commands::REMOTE_AGENT_STOP_CONVERSATION_GONE;
+    use crate::commands::ExecutionState;
+    use crate::domain::entities::{
+        ChatContextType, ChatConversation, ChatConversationId, ProjectId, RemoteAgentStopRequest,
+        RemoteAgentStopStatus,
+    };
+    use crate::domain::services::running_agent_registry::RunningAgentKey;
+
+    async fn seed_conversation(state: &AppState) -> ChatConversationId {
+        let conversation =
+            ChatConversation::new_project(ProjectId::from_string("project-1".to_string()));
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("seed conversation")
+            .id
+    }
+
+    async fn seed_pending_stop(state: &AppState, id: &str, conversation_id: &ChatConversationId) {
+        let now = chrono::Utc::now();
+        state
+            .remote_agent_stop_request_repo
+            .create_stop_request(RemoteAgentStopRequest {
+                id: id.to_string(),
+                conversation_id: conversation_id.clone(),
+                status: RemoteAgentStopStatus::Pending,
+                error_code: None,
+                requested_by_device_id: String::new(),
+                claimed_at: None,
+                created_at: now,
+                updated_at: now,
+            })
+            .await
+            .expect("seed intent");
+    }
+
+    async fn status(state: &AppState, id: &str) -> RemoteAgentStopStatus {
+        state
+            .remote_agent_stop_request_repo
+            .get_stop_request(id)
+            .await
+            .expect("read intent")
+            .expect("intent exists")
+            .status
+    }
+
+    /// A live run is terminated and the intent settles `Stopped`.
+    ///
+    /// The registry entry carries `pid = 0`, which `kill_process` refuses by its own safety
+    /// guard — so this exercises the production drain path end to end without the test ever
+    /// resolving `pkill` or signalling a real process.
+    #[tokio::test]
+    async fn a_live_run_is_stopped_and_the_intent_settles_stopped() {
+        let state = AppState::new_test();
+        let conversation_id = seed_conversation(&state).await;
+        state
+            .running_agent_registry
+            .register(
+                RunningAgentKey::new(
+                    ChatContextType::Project.to_string(),
+                    conversation_id.as_str(),
+                ),
+                0,
+                conversation_id.as_str(),
+                "run-1".to_string(),
+                None,
+                None,
+            )
+            .await;
+        seed_pending_stop(&state, "stop-1", &conversation_id).await;
+
+        let execution_state = Arc::new(ExecutionState::new());
+        let app_handle = crate::testing::create_mock_app_handle();
+        let outcome = drain_one_remote_agent_stop(&state, &execution_state, &app_handle)
+            .await
+            .expect("drain pass");
+
+        assert_eq!(outcome, RemoteAgentStopDrain::Drained);
+        assert_eq!(
+            status(&state, "stop-1").await,
+            RemoteAgentStopStatus::Stopped
+        );
+        assert!(
+            state
+                .running_agent_registry
+                .get(&RunningAgentKey::new(
+                    ChatContextType::Project.to_string(),
+                    conversation_id.as_str(),
+                ))
+                .await
+                .is_none(),
+            "the run must be gone from the registry after the brake bites"
+        );
+    }
+
+    /// Nothing running is a BENIGN terminal. Spelling it `Failed` would make the ordinary
+    /// finished-between-tap-and-drain race look like a broken host and push the client into a
+    /// retry loop against an idle conversation.
+    #[tokio::test]
+    async fn an_idle_conversation_settles_no_live_run_without_an_error_code() {
+        let state = AppState::new_test();
+        let conversation_id = seed_conversation(&state).await;
+        seed_pending_stop(&state, "stop-1", &conversation_id).await;
+
+        let execution_state = Arc::new(ExecutionState::new());
+        let app_handle = crate::testing::create_mock_app_handle();
+        drain_one_remote_agent_stop(&state, &execution_state, &app_handle)
+            .await
+            .expect("drain pass");
+
+        let stored = state
+            .remote_agent_stop_request_repo
+            .get_stop_request("stop-1")
+            .await
+            .expect("read intent")
+            .expect("intent exists");
+        assert_eq!(stored.status, RemoteAgentStopStatus::NoLiveRun);
+        assert!(stored.error_code.is_none());
+    }
+
+    /// The conversation the intent named is gone at drain time: terminalise VISIBLY as `Failed`
+    /// rather than leaving a `Stopping` row the client polls forever.
+    #[tokio::test]
+    async fn a_vanished_conversation_settles_failed_with_a_code() {
+        let state = AppState::new_test();
+        seed_pending_stop(
+            &state,
+            "stop-1",
+            &ChatConversationId::from_string("never-existed".to_string()),
+        )
+        .await;
+
+        let execution_state = Arc::new(ExecutionState::new());
+        let app_handle = crate::testing::create_mock_app_handle();
+        drain_one_remote_agent_stop(&state, &execution_state, &app_handle)
+            .await
+            .expect("drain pass");
+
+        let stored = state
+            .remote_agent_stop_request_repo
+            .get_stop_request("stop-1")
+            .await
+            .expect("read intent")
+            .expect("intent exists");
+        assert_eq!(stored.status, RemoteAgentStopStatus::Failed);
+        assert_eq!(
+            stored.error_code.as_deref(),
+            Some(REMOTE_AGENT_STOP_CONVERSATION_GONE)
+        );
+    }
+
+    /// Nothing claimable reports `Idle`, which is what terminates the opportunistic drain loop.
+    /// If this ever reported `Drained`, the dispatcher would spin at 100% CPU.
+    #[tokio::test]
+    async fn an_empty_queue_reports_idle() {
+        let state = AppState::new_test();
+        let execution_state = Arc::new(ExecutionState::new());
+        let app_handle = crate::testing::create_mock_app_handle();
+
+        let outcome = drain_one_remote_agent_stop(&state, &execution_state, &app_handle)
+            .await
+            .expect("drain pass");
+        assert_eq!(outcome, RemoteAgentStopDrain::Idle);
+    }
+
+    /// A claim that already settled cannot be re-driven: the second pass must find nothing
+    /// pending, so a restarted run is never killed by a stale intent.
+    #[tokio::test]
+    async fn a_settled_intent_is_not_re_drained() {
+        let state = AppState::new_test();
+        let conversation_id = seed_conversation(&state).await;
+        seed_pending_stop(&state, "stop-1", &conversation_id).await;
+
+        let execution_state = Arc::new(ExecutionState::new());
+        let app_handle = crate::testing::create_mock_app_handle();
+        drain_one_remote_agent_stop(&state, &execution_state, &app_handle)
+            .await
+            .expect("first pass");
+        let second = drain_one_remote_agent_stop(&state, &execution_state, &app_handle)
+            .await
+            .expect("second pass");
+
+        assert_eq!(second, RemoteAgentStopDrain::Idle);
+        assert_eq!(
+            status(&state, "stop-1").await,
+            RemoteAgentStopStatus::NoLiveRun
         );
     }
 }
