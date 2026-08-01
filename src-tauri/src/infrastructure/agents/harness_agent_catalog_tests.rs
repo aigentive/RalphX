@@ -73,8 +73,10 @@ const CODEX_DELEGATION_GUIDE_AGENTS: &[&str] = &[
     "ralphx-qa-prep",
     "ralphx-qa-executor",
     "ralphx-research-deep-researcher",
+    "ralphx-workspace-reviewer",
 ];
-const CLAUDE_DELEGATION_GUIDE_AGENTS: &[&str] = &["ralphx-pr-reviewer"];
+const CLAUDE_DELEGATION_GUIDE_AGENTS: &[&str] =
+    &["ralphx-pr-reviewer", "ralphx-workspace-reviewer"];
 const CLAUDE_ONLY_CANONICAL_AGENTS: &[(&str, &str, &str)] =
     &[("ralphx-pr-reviewer", "pr_reviewer", "ralphx-pr-reviewer")];
 const CLAUDE_ONLY_SHARED_PROMPT_AGENTS: &[&str] = &["ralphx-pr-reviewer"];
@@ -1442,6 +1444,9 @@ fn workspace_reviewer_codex_surface_uses_shared_prompt_and_review_tools() {
         "write_workspace_review_artifact",
         "write_workspace_review_hunk_annotations",
         "complete_workspace_review_run",
+        "delegate_start",
+        "delegate_wait",
+        "delegate_cancel",
     ] {
         assert!(
             definition
@@ -2383,6 +2388,7 @@ fn generated_delegation_appendix_describes_general_explorer_usage_for_general_ex
         "ralphx-qa-prep",
         "ralphx-qa-executor",
         "ralphx-research-deep-researcher",
+        "ralphx-workspace-reviewer",
     ] {
         let prompt = load_harness_agent_prompt(&root, agent_name, AgentPromptHarness::Codex)
             .unwrap_or_else(|| panic!("missing codex prompt for {agent_name}"));
@@ -2409,6 +2415,23 @@ fn generated_delegation_appendix_describes_general_explorer_usage_for_general_ex
         pr_reviewer_prompt
             .contains("bounded file inspection, pattern search, or evidence gathering without edits"),
         "delegation appendix for ralphx-pr-reviewer should explain when to use the general explorer"
+    );
+
+    let workspace_reviewer_prompt = load_harness_agent_prompt(
+        &root,
+        "ralphx-workspace-reviewer",
+        AgentPromptHarness::Claude,
+    )
+    .expect("missing claude prompt for ralphx-workspace-reviewer");
+    assert!(
+        workspace_reviewer_prompt
+            .contains("`ralphx-general-explorer`: read-only exploration delegate"),
+        "delegation appendix for ralphx-workspace-reviewer should describe the general explorer target"
+    );
+    assert!(
+        workspace_reviewer_prompt
+            .contains("bounded file inspection, pattern search, or evidence gathering without edits"),
+        "delegation appendix for ralphx-workspace-reviewer should explain when to use the general explorer"
     );
 
     let general_worker_prompt =
