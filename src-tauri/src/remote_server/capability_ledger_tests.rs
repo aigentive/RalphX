@@ -3274,54 +3274,17 @@ fn the_local_transcript_reads_stay_unregistered() {
         );
     }
 
-    // The un-truncated tool-payload escape hatches were deliberately NOT part of batch 4, which
-    // asked a later batch to argue for them explicitly. WP3 is that argument: the fail-open they
-    // were refused over is fixed at its source and both are registered at `ui:read`. See
-    // `wp3_tool_call_detail_reads_are_registered_reviewed_read_rows` for the positive pin.
-}
-
-/// WP3 — the tool-call-detail pair, registered on a fixed fail-open plus a per-command audit.
-///
-/// The batch-4 refusal was `FailOpenUntilFixed`: `load_delegated_tool_runtime_snapshot` applied
-/// `.ok().flatten()` to five repository reads, so an outage served the STALE persisted tool
-/// result as current. The manifest's standing rule is that a repaired error path is not by
-/// itself a registration decision, so this pin asserts BOTH halves: a reviewed `Read` row (not
-/// module-default inheritance, which is `AgentControl` for `unified_chat_commands`) and an
-/// actual registration.
-#[test]
-fn wp3_tool_call_detail_reads_are_registered_reviewed_read_rows() {
+    // The un-truncated tool-payload escape hatches are deliberately NOT part of this batch:
+    // they return raw tool arguments and results (file contents, command output) and their
+    // reconciliation crosses the conversation boundary. Pinned so a later batch has to argue
+    // for them explicitly.
     for command in [
         "get_agent_message_tool_call_detail",
         "get_agent_timeline_item_tool_call_detail",
     ] {
-        let row = policy_for(command, "unified_chat_commands").expect("ledgered");
-        assert_eq!(
-            row.class,
-            RiskClass::Read,
-            "`{command}` is a pure repository read once the delegated-run reads propagate"
-        );
         assert!(
-            row.capabilities.is_empty(),
-            "`{command}` carries no capability; it reads and returns"
-        );
-        assert!(
-            COMMAND_OVERRIDES
-                .iter()
-                .any(|entry| entry.command == command),
-            "`{command}` must carry its own audited row, not inherit the module default"
-        );
-        assert!(
-            !AUDIT_REFUSALS
-                .iter()
-                .any(|refusal| refusal.command == command),
-            "`{command}` cannot be both registered and audit-refused"
-        );
-        let spec = find_spec(command)
-            .unwrap_or_else(|| panic!("`{command}` must be registered on the facade"));
-        assert_eq!(
-            spec.class,
-            RiskClass::Read,
-            "`{command}` must be served at the read tier, matching its transcript-twin sibling"
+            find_spec(command).is_none(),
+            "`{command}` returns un-truncated tool payloads and must stay unregistered"
         );
     }
 }
@@ -3537,22 +3500,6 @@ fn the_spawn_free_remote_read_module_carries_no_authority_carriers() {
              which is what lets its commands sit at `ui:read` with no capability."
         );
     }
-}
-
-/// The WP1 continuation module holds none of the three authority carriers, asserted over SOURCE.
-///
-/// This is the whole reason `request_remote_agent_conversation_message` can sit on the facade at
-/// all: the command that persists the intent must be unable to spawn, and the host dispatcher —
-/// which DOES build a `ChatService` — must live elsewhere. If a future edit pulls the send back
-/// into the command module to "save a hop", this fails instead of quietly putting a process
-/// launch on the request path and defeating the detector-(c) floor.
-#[test]
-fn the_spawn_free_remote_conversation_message_module_carries_no_authority_carriers() {
-    let sources = load_production_sources();
-    let (_, module) = sources
-        .iter()
-        .find(|(file, _)| file == "commands/remote_conversation_message_commands.rs")
-        .expect("the spawn-free remote continuation module must exist");
 /// WP2 — the spawn-free STOP module's contract, checked mechanically rather than in prose.
 ///
 /// `stop_agent` is unregistered because `AppChatService::stop_agent` reaches
@@ -3579,7 +3526,6 @@ fn the_spawn_free_remote_agent_stop_module_carries_no_authority_carriers() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
-        code.contains("pub async fn request_remote_agent_conversation_message"),
         code.contains("pub async fn request_remote_agent_stop"),
         "comment stripping ate the module body; this assertion would be vacuous"
     );
@@ -3589,12 +3535,6 @@ fn the_spawn_free_remote_agent_stop_module_carries_no_authority_carriers() {
         "ExecutionState",
         "create_chat_service",
         "build_chat_service",
-    ] {
-        assert!(
-            !code.contains(carrier),
-            "`remote_conversation_message_commands` mentions `{carrier}`. The whole contract of \
-             this module is that the spawn/steer authority carriers are absent by construction, \
-             which is what lets the host dispatcher — not the request path — own the send."
         "stop_agent(",
         "kill_process",
         "resolve_pkill_cli_path",
@@ -3608,29 +3548,6 @@ fn the_spawn_free_remote_agent_stop_module_carries_no_authority_carriers() {
     }
 }
 
-/// The continuation command reaches no arming sink, no process-launch sink, no transition sink.
-///
-/// The module-source check above proves the carriers are textually absent; this proves the same
-/// thing over the CALL GRAPH, so a carrier smuggled in through a helper in another file still
-/// fails.
-#[test]
-fn remote_conversation_message_request_carries_no_spawn_authority() {
-    let graph = CallGraph::build(&load_production_sources());
-
-    let closure = graph.closure(["request_remote_agent_conversation_message".to_string()]);
-    assert!(
-        !closure.visited.is_empty(),
-        "`request_remote_agent_conversation_message` resolved to an empty closure; the graph did \
-         not find its body and this assertion would be vacuous"
-    );
-    assert!(
-        !tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS),
-        "`request_remote_agent_conversation_message` reaches a process-launch sink; the \
-         detector-(c) floor admits no exceptions"
-    );
-    assert!(
-        !tokens_reach_any(&closure.tokens, TRANSITION_SINKS),
-        "`request_remote_agent_conversation_message` reaches a transition sink"
 /// The brake is registered at `Operate` and the sibling it replaces stays unregistered.
 ///
 /// Both halves matter. Registering the intent while `stop_agent` also became reachable would
@@ -3676,6 +3593,76 @@ fn the_remote_agent_stop_intent_is_an_operate_brake_and_stop_agent_stays_denied(
         }),
         "the remote stop brake is registered below its `stop_agent` sibling with no \
          authority-reducing exemption to justify the gap"
+    );
+}
+
+}
+
+/// The WP1 continuation module holds none of the three authority carriers, asserted over SOURCE.
+///
+/// This is the whole reason `request_remote_agent_conversation_message` can sit on the facade at
+/// all: the command that persists the intent must be unable to spawn, and the host dispatcher —
+/// which DOES build a `ChatService` — must live elsewhere. If a future edit pulls the send back
+/// into the command module to "save a hop", this fails instead of quietly putting a process
+/// launch on the request path and defeating the detector-(c) floor.
+#[test]
+fn the_spawn_free_remote_conversation_message_module_carries_no_authority_carriers() {
+    let sources = load_production_sources();
+    let (_, module) = sources
+        .iter()
+        .find(|(file, _)| file == "commands/remote_conversation_message_commands.rs")
+        .expect("the spawn-free remote continuation module must exist");
+
+    // Comments are stripped: the module doc NAMES the carriers in order to explain why they are
+    // absent, and the contract is about code, not prose.
+    let code = module
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        code.contains("pub async fn request_remote_agent_conversation_message"),
+        "comment stripping ate the module body; this assertion would be vacuous"
+    );
+
+    for carrier in [
+        "AppHandle",
+        "ExecutionState",
+        "create_chat_service",
+        "build_chat_service",
+    ] {
+        assert!(
+            !code.contains(carrier),
+            "`remote_conversation_message_commands` mentions `{carrier}`. The whole contract of \
+             this module is that the spawn/steer authority carriers are absent by construction, \
+             which is what lets the host dispatcher — not the request path — own the send."
+        );
+    }
+}
+
+/// The continuation command reaches no arming sink, no process-launch sink, no transition sink.
+///
+/// The module-source check above proves the carriers are textually absent; this proves the same
+/// thing over the CALL GRAPH, so a carrier smuggled in through a helper in another file still
+/// fails.
+#[test]
+fn remote_conversation_message_request_carries_no_spawn_authority() {
+    let graph = CallGraph::build(&load_production_sources());
+
+    let closure = graph.closure(["request_remote_agent_conversation_message".to_string()]);
+    assert!(
+        !closure.visited.is_empty(),
+        "`request_remote_agent_conversation_message` resolved to an empty closure; the graph did \
+         not find its body and this assertion would be vacuous"
+    );
+    assert!(
+        !tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS),
+        "`request_remote_agent_conversation_message` reaches a process-launch sink; the \
+         detector-(c) floor admits no exceptions"
+    );
+    assert!(
+        !tokens_reach_any(&closure.tokens, TRANSITION_SINKS),
+        "`request_remote_agent_conversation_message` reaches a transition sink"
     );
 }
 
@@ -3934,16 +3921,10 @@ fn the_b2_getter_refusals_are_pinned() {
         "list_agent_composer_skills",
         // In-memory registry WRITE from a nominally read-only command.
         "is_agent_running",
-        // Raw un-truncated content: pending prompt text.
-        //
-        // WP3: `get_agent_message_tool_call_detail` and `get_agent_timeline_item_tool_call_detail`
-        // LEFT this list. Their refusal was the fail-open, and the fail-open is fixed at its
-        // source (`load_delegated_tool_runtime_snapshot` now returns `AppResult`, with `Ok(None)`
-        // reserved for genuine absence) plus the per-command audit this comment demands. The
-        // content argument does not hold them back on its own: the registered
-        // `get_remote_agent_conversation` twin already serves the same tool blocks at `ui:read`,
-        // truncated. Pinned by `wp3_tool_call_detail_reads_are_registered_reviewed_read_rows`.
+        // Raw un-truncated content: pending prompt text, or full tool arguments/results.
         "get_queued_agent_messages",
+        "get_agent_message_tool_call_detail",
+        "get_agent_timeline_item_tool_call_detail",
         // Host path disclosure: returns absolute directories from the operator's machine.
         "list_conversation_folder_references",
         // Fail-open on enrichment: model fields go silently null when the lookup errors, so
@@ -4616,13 +4597,22 @@ fn b2_detector_clean_members_refused_on_their_own_findings() {
     // and `:766`, where losing the Codex disabled-skill list reports DISABLED skills as
     // enabled. That is a fail-open that changes the answer, not just its completeness.
     //
-    // WP3: `get_agent_message_tool_call_detail` and `get_agent_timeline_item_tool_call_detail`
-    // used to be here for sharing `load_delegated_tool_runtime_snapshot`, whose `.ok().flatten()`
-    // on every repository read made an outage return the STALE persisted tool result as though
-    // it were current. The helper now returns `AppResult` and every read propagates, so the
-    // finding that held them no longer describes the code; they are registered and pinned by
-    // `wp3_tool_call_detail_reads_are_registered_reviewed_read_rows`.
-    for (command, module) in [("list_agent_composer_skills", "agent_composer_commands")] {
+    // `get_agent_message_tool_call_detail` and `get_agent_timeline_item_tool_call_detail`
+    // share `load_delegated_tool_runtime_snapshot`
+    // (`unified_chat_commands/mod.rs:2496/2504/2511/2525/2536`), whose `.ok().flatten()` on
+    // every repository read makes an outage return the STALE persisted tool result as though
+    // it were current.
+    for (command, module) in [
+        ("list_agent_composer_skills", "agent_composer_commands"),
+        (
+            "get_agent_message_tool_call_detail",
+            "unified_chat_commands",
+        ),
+        (
+            "get_agent_timeline_item_tool_call_detail",
+            "unified_chat_commands",
+        ),
+    ] {
         let row = policy_for(command, module).expect("ledgered");
         assert_ne!(
             row.class,
@@ -5340,14 +5330,12 @@ fn batch9_audit_refusals_are_tied_to_a_live_pin() {
     }
     assert_eq!(
         AUDIT_REFUSALS.len(),
-        32,
+        34,
         "batch 9 recorded eleven audit refusals, batch 10 added seven, batch 11 added seven more \
          (the B4 fail-opens), and batch 14 added the final NINE that closed the ratchet: seven \
          `TransportShapeDeferred` rows sharing ONE non-Serialize `AppError` contract, \
          `get_manual_role_defaults` on a fail-open, and `reject_fix_task` on the newly minted \
-         `ReachesCorrectiveTransition`. WP3 then REMOVED two — the tool-call-detail pair, whose \
-         `FailOpenUntilFixed` finding was fixed at its source and cleared by a per-command \
-         audit. Changing that count is a census decision"
+         `ReachesCorrectiveTransition`. Changing that count is a census decision"
     );
 }
 
