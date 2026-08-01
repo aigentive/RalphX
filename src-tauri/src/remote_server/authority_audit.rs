@@ -378,6 +378,21 @@ pub const SPAWN_TRIGGERING_STATE_SURFACE: &[StateSurfaceEntry] = &[
     // host-owned dispatcher loop (authority-bearing: reaches `send_message`/`write_message`) is
     // the sole reader/spawner. This row is what makes detector (b) flag the registered command
     // MECHANICALLY (write marker + armed enum variant) rather than via a declared-writer fallback.
+    // Spawn-free remote conversation CONTINUATION (WP1).
+    // `request_remote_agent_conversation_message` seeds a `Pending` intent through the
+    // DISTINCTIVE `create_message_request` write marker; the host-owned dispatcher loop
+    // (authority-bearing: builds a ChatService and reaches `send_message`) is the sole
+    // reader/sender. The marker name is deliberately distinct from `create_start_request` so
+    // detector (b) can tell the two intent surfaces apart mechanically.
+    StateSurfaceEntry {
+        id: "remote-conversation-message",
+        surface: "remote_conversation_message_requests.status",
+        armed_value: "Pending",
+        read_by_loops: &["application/startup_background.rs::application/startup_background.rs:::::spawn_remote_conversation_message_dispatcher@419d74969e41afba"],
+        write_markers: &["create_message_request"],
+        armed_markers: &["RemoteConversationMessageStatus::Pending"],
+        declared_writers: &[],
+    },
     StateSurfaceEntry {
         id: "remote-conversation-start",
         surface: "remote_conversation_start_requests.status",

@@ -89,6 +89,13 @@ export const AGENT_GATED_AFFORDANCES = {
   // permanently `unavailable` on every paired device.
   agentComposerSend: "send_remote_chat_message",
   chatSend: "send_remote_chat_message",
+  // The IDLE half of remote send (WP1). `send_remote_chat_message` above only reaches a
+  // conversation a run is already serving; continuing an idle one goes through the
+  // continuation-intent command instead. Both are `agentControl`, so the two rows never
+  // disagree on scope — the split exists so a host that predates WP1 resolves the
+  // continuation affordance `unavailable` (absence, never hardcoded) while live sends keep
+  // working, rather than presenting one control whose behaviour silently halved.
+  chatContinueIdle: "request_remote_agent_conversation_message",
   // Starting a conversation routes through the spawn-free facade command, NOT
   // `start_agent_conversation` — that command fires the process-spawn detectors and
   // stays unregistered by ruling, so pointing the gate at it would render Start

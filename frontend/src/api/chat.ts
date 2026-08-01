@@ -3243,6 +3243,68 @@ type RemoteConversationStartRequest = z.infer<
   typeof GetRemoteConversationStartRequestResponseSchema
 >;
 
+/**
+ * Remote CONTINUATION of an existing conversation (WP1).
+ *
+ * `send_remote_chat_message` only reaches a conversation a run is already serving; once the
+ * agent finished its turn the remote surface used to dead-end on
+ * `REMOTE_CHAT_SEND_NOT_STEERABLE`. The idle case now persists a continuation intent through
+ * `request_remote_agent_conversation_message` and polls
+ * `get_remote_conversation_message_request` to a terminal state — the host owns the send.
+ *
+ * Status values are the host enum serialized camelCase (`RemoteConversationMessageStatus`).
+ */
+export const RemoteConversationMessageStatusSchema = z.enum([
+  "pending",
+  "dispatching",
+  "dispatched",
+  "failed",
+  "cancelled",
+  "failedStale",
+]);
+export type RemoteConversationMessageStatus = z.infer<
+  typeof RemoteConversationMessageStatusSchema
+>;
+
+/**
+ * Terminal states. `dispatched` is the only success; every other terminal state is a VISIBLE
+ * failure the composer must surface, because a persisted-but-never-delivered turn shown as a
+ * sent message is precisely the hazard this intent table exists to prevent.
+ */
+const REMOTE_CONVERSATION_MESSAGE_TERMINAL_STATUSES = [
+  "dispatched",
+  "failed",
+  "cancelled",
+  "failedStale",
+] as const;
+
+/** Response of `request_remote_agent_conversation_message` — the persisted-intent handle. */
+const RequestRemoteAgentConversationMessageResponseSchema = z
+  .object({
+    messageRequestId: z.string(),
+    conversationId: z.string(),
+    status: RemoteConversationMessageStatusSchema,
+    createdAt: z.string(),
+  })
+  .strict();
+
+/** Response of `get_remote_conversation_message_request` — the post-submit poll target. */
+const GetRemoteConversationMessageRequestResponseSchema = z
+  .object({
+    id: z.string(),
+    conversationId: z.string(),
+    status: RemoteConversationMessageStatusSchema,
+    errorCode: z.string().nullable(),
+    agentRunId: z.string().nullable(),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+  })
+  .strict();
+
+type RemoteConversationMessageRequest = z.infer<
+  typeof GetRemoteConversationMessageRequestResponseSchema
+>;
+
 const ForkAgentConversationResponseSchema = z.object({
   parent_conversation: ChatConversationResponseSchema,
   conversation: ChatConversationResponseSchema,
@@ -5098,28 +5160,204 @@ function remoteChatSendRefusal(error: unknown): Error | null {
 }
 
 /**
+ * A remote continuation intent that reached a non-`dispatched` terminal state. The host
+ * classifies the failure as `errorCode`; the type (rather than a plain `Error`) is kept so the
+ * composer can branch on `status` and offer a retry.
+ */
+export class RemoteConversationMessageError extends Error {
+  readonly status: RemoteConversationMessageStatus;
+  readonly errorCode: string | null;
+  constructor(status: RemoteConversationMessageStatus, errorCode: string | null) {
+    super(
+      REMOTE_CONV_MESSAGE_MESSAGES[errorCode ?? ""] ??
+        REMOTE_CONV_MESSAGE_STATUS_MESSAGES[status] ??
+        errorCode ??
+        `Message ${status}`,
+    );
+    this.name = "RemoteConversationMessageError";
+    this.status = status;
+    this.errorCode = errorCode;
+  }
+}
+
+/**
+ * Human copy for the host's continuation refusals, whether they arrive as a synchronous
+ * command error or as a terminal `errorCode` on the polled intent. Unrecognised codes pass
+ * through untouched — inventing prose for an error we do not understand would hide it.
+ */
+const REMOTE_CONV_MESSAGE_MESSAGES: Readonly<Record<string, string>> = {
+  REMOTE_CONV_MESSAGE_EMPTY_CONTENT: "Type a message before sending.",
+  REMOTE_CONV_MESSAGE_CONVERSATION_NOT_FOUND:
+    "That conversation no longer exists on the host.",
+  REMOTE_CONV_MESSAGE_CONVERSATION_ARCHIVED:
+    "This conversation is archived. Restore it on the host to keep talking.",
+  REMOTE_CONV_MESSAGE_PROJECT_MISMATCH:
+    "That conversation belongs to a different project on the host.",
+  REMOTE_CONV_MESSAGE_PROVIDER_NOT_ENABLED:
+    "The provider this conversation uses is turned off on the host.",
+  REMOTE_CONV_MESSAGE_MODEL_NOT_ENABLED:
+    "That model is not enabled on the host. Pick another one and send again.",
+  REMOTE_CONV_MESSAGE_LOOKUP_FAILED:
+    "The host couldn't check this conversation, so nothing was sent.",
+  REMOTE_CONV_MESSAGE_ENQUEUE_FAILED:
+    "The host couldn't accept that message. Try again.",
+  REMOTE_CONV_MESSAGE_RUN_WENT_LIVE:
+    "The agent started working before your message went out. Send it again to reach the live run.",
+  REMOTE_CONV_MESSAGE_HOST_SEND_FAILED:
+    "The host couldn't start the agent for that message, so it was never delivered. Try again.",
+};
+
+/**
+ * Fallback copy per terminal status, for a failure the host settled without an `errorCode`.
+ * Nothing here may read as success: the whole point of surfacing terminal states is that a
+ * message no agent ever saw must not look sent.
+ */
+const REMOTE_CONV_MESSAGE_STATUS_MESSAGES: Readonly<
+  Partial<Record<RemoteConversationMessageStatus, string>>
+> = {
+  failed: "The host couldn't deliver that message. Try again.",
+  cancelled: "That message was cancelled on the host and never delivered.",
+  failedStale:
+    "The host restarted before delivering that message, so it was never sent. Send it again.",
+};
+
+const REMOTE_CONVERSATION_MESSAGE_POLL_INTERVAL_MS = 750;
+/** ~3 minutes at the poll interval — a host that has not settled by then is surfaced as a timeout. */
+const REMOTE_CONVERSATION_MESSAGE_MAX_POLLS = 240;
+
+function isTerminalRemoteConversationMessageStatus(
+  status: RemoteConversationMessageStatus,
+): boolean {
+  return (
+    REMOTE_CONVERSATION_MESSAGE_TERMINAL_STATUSES as readonly string[]
+  ).includes(status);
+}
+
+function remoteConversationMessagePollDelay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Polls a continuation intent to a terminal state. The first read is immediate; subsequent
+ * reads back off by a fixed interval. Fail-closed: a read error propagates rather than reading
+ * as "not dispatched yet" forever.
+ */
+async function pollRemoteConversationMessage(
+  messageRequestId: string,
+): Promise<RemoteConversationMessageRequest> {
+  for (
+    let attempt = 0;
+    attempt < REMOTE_CONVERSATION_MESSAGE_MAX_POLLS;
+    attempt += 1
+  ) {
+    // Literal command name (P-11): the status read is a pure host-side repository read.
+    const request = await typedInvoke(
+      "get_remote_conversation_message_request",
+      { messageRequestId },
+      GetRemoteConversationMessageRequestResponseSchema,
+    );
+    if (isTerminalRemoteConversationMessageStatus(request.status)) {
+      return request;
+    }
+    await remoteConversationMessagePollDelay(
+      REMOTE_CONVERSATION_MESSAGE_POLL_INTERVAL_MS,
+    );
+  }
+  throw new Error(
+    "Timed out waiting for the host to deliver that message. Check the conversation before sending again.",
+  );
+}
+
+/** The readable refusal for a known continuation code, or `null` to leave the error alone. */
+function remoteConversationMessageRefusal(error: unknown): Error | null {
+  if (error instanceof RemoteTransportError) return null;
+  const raw = error instanceof Error ? error.message : String(error);
+  const copy = REMOTE_CONV_MESSAGE_MESSAGES[raw.trim()];
+  return copy === undefined ? null : new Error(copy);
+}
+
+/**
+ * The idle half of the remote send: persist a continuation intent, then poll it to a terminal
+ * state before reporting anything to the composer.
+ *
+ * The poll is not optional politeness. Returning as soon as the intent is persisted would show
+ * the user a sent message whose delivery is still unproven — the exact false-success the
+ * chat-send design (§7) names as this queue's main hazard.
+ */
+async function continueRemoteConversation(
+  content: string,
+  conversationId: string,
+  projectId: string,
+  options?: SendAgentMessageOptions,
+): Promise<SendAgentMessageResult> {
+  // Literal command name (P-11): persists a continuation intent — no client-side spawn sink.
+  // UX-5: the composer's model/effort selections TRAVEL here instead of being dropped.
+  const requested = await typedInvoke(
+    "request_remote_agent_conversation_message",
+    {
+      input: {
+        conversationId,
+        projectId,
+        content,
+        ...(options?.modelId ? { modelOverride: options.modelId } : {}),
+        ...(options?.logicalEffort
+          ? { logicalEffort: options.logicalEffort }
+          : {}),
+      },
+    },
+    RequestRemoteAgentConversationMessageResponseSchema,
+  ).catch((error: unknown) => {
+    throw remoteConversationMessageRefusal(error) ?? error;
+  });
+
+  const request = await pollRemoteConversationMessage(requested.messageRequestId);
+  if (request.status !== "dispatched") {
+    throw new RemoteConversationMessageError(
+      request.status,
+      request.errorCode ?? null,
+    );
+  }
+
+  return {
+    conversationId: request.conversationId,
+    agentRunId: request.agentRunId ?? "",
+    isNewConversation: false,
+    wasQueued: false,
+    queuedAsPending: false,
+  };
+}
+
+/**
  * The remote half of {@link sendAgentMessage}.
  *
  * `send_agent_message` is not, and will not be, registered on the remote facade — it
  * reaches a process-launch sink, and the facade's detector-(c) floor admits no
- * exceptions. A paired device therefore steers a conversation the host already started,
- * via the spawn-free `send_remote_chat_message`.
+ * exceptions. A paired device therefore uses two spawn-free host commands, chosen by the
+ * HOST rather than by client-side liveness inference:
  *
- * Two consequences are deliberate and surfaced rather than papered over:
+ * - a run is live ⇒ `send_remote_chat_message` queues the turn into the queue that run drains;
+ * - the conversation is idle ⇒ `request_remote_agent_conversation_message` persists a
+ *   continuation intent a host dispatcher sends through the provider-session resume seam.
  *
- * - Starting a conversation stays host-only, so a send with no conversation id is
- *   refused here rather than silently creating one.
- * - The host queues the turn for a live run instead of dispatching it inline, so the
- *   result reports `wasQueued`. Nothing about the composer's optimistic path depends on
- *   the difference, but reporting it as a plain send would overstate what happened.
+ * The live path is attempted FIRST and its `REMOTE_CHAT_SEND_NOT_STEERABLE` refusal is the
+ * branch condition. That ordering is deliberate: the host is the only authority on run
+ * liveness, and a client that guessed would either double a turn (guessing idle while a run
+ * drains the queue) or strand one (guessing live with nothing to drain it). The idle command
+ * independently refuses with `REMOTE_CONV_MESSAGE_RUN_ALREADY_LIVE` if a run goes live inside
+ * the race window, so both directions fail closed.
  *
- * Options that only a host-side send can honour — model/effort overrides, attachments,
- * team intent, composer references — are not forwarded, because the facade command does
- * not accept them. They are dropped rather than sent and ignored.
+ * Starting a conversation stays host-only, so a send with no conversation id is refused here
+ * rather than silently creating one.
+ *
+ * Options that only a host-side send can honour — attachments, team intent, composer
+ * references — are still not forwarded, because neither facade command accepts them. Model and
+ * effort DO travel on the idle path (UX-5).
  */
 async function sendRemoteChatMessage(
   content: string,
   conversationId: string | null | undefined,
+  projectId: string,
+  options?: SendAgentMessageOptions,
 ): Promise<SendAgentMessageResult> {
   if (!conversationId) {
     throw new RemoteTransportError({
@@ -5131,25 +5369,39 @@ async function sendRemoteChatMessage(
     });
   }
 
-  const raw = await typedInvoke(
-    "send_remote_chat_message",
-    {
-      input: {
-        conversationId,
-        content,
-        // Server-pinned to "user" at dispatch. Sent explicitly so the wire shape is
-        // self-describing; the host overwrites whatever arrives here.
-        role: "user",
+  let raw: z.infer<typeof SendRemoteChatMessageResponseSchema>;
+  try {
+    raw = await typedInvoke(
+      "send_remote_chat_message",
+      {
+        input: {
+          conversationId,
+          content,
+          // Server-pinned to "user" at dispatch. Sent explicitly so the wire shape is
+          // self-describing; the host overwrites whatever arrives here.
+          role: "user",
+        },
       },
-    },
-    SendRemoteChatMessageResponseSchema,
-  ).catch((error: unknown) => {
-    // Only plain command errors are remapped. A RemoteTransportError must reach the
-    // caller INTACT — the composer's unknown-outcome reconcile and the remote error
-    // banner both discriminate on its type, and rewrapping it here would silently
-    // convert a "did that go through?" into an ordinary failure.
+      SendRemoteChatMessageResponseSchema,
+    );
+  } catch (error: unknown) {
+    // A RemoteTransportError must reach the caller INTACT — the composer's unknown-outcome
+    // reconcile and the remote error banner both discriminate on its type, and rewrapping it
+    // here would silently convert a "did that go through?" into an ordinary failure. It also
+    // must NOT fall through to the idle path: an unknown outcome may already have queued the
+    // turn, and continuing would risk sending it twice.
+    if (error instanceof RemoteTransportError) throw error;
+    const code = (error instanceof Error ? error.message : String(error)).trim();
+    if (code === "REMOTE_CHAT_SEND_NOT_STEERABLE") {
+      return continueRemoteConversation(
+        content,
+        conversationId,
+        projectId,
+        options,
+      );
+    }
     throw remoteChatSendRefusal(error) ?? error;
-  });
+  }
 
   return {
     conversationId: raw.conversationId,
@@ -5179,7 +5431,15 @@ export async function sendAgentMessage(
   options?: SendAgentMessageOptions,
 ): Promise<SendAgentMessageResult> {
   if (isRemoteEnvironmentId(getTransportEnvironmentId())) {
-    return sendRemoteChatMessage(content, options?.conversationId);
+    // `contextId` IS the project id for the Project context, which is the only context the
+    // remote Agents surface exposes. It is passed explicitly so the host can prove the named
+    // conversation belongs to it rather than trusting the conversation id alone.
+    return sendRemoteChatMessage(
+      content,
+      options?.conversationId,
+      contextId,
+      options,
+    );
   }
 
   const raw = await typedInvoke(

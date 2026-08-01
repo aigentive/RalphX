@@ -581,6 +581,9 @@ mod v20260728183000_workspace_review_plan_context_tests;
 mod v20260801120000_remote_conversation_start_requests;
 #[cfg(test)]
 mod v20260801120000_remote_conversation_start_requests_tests;
+mod v20260801130000_remote_conversation_message_requests;
+#[cfg(test)]
+mod v20260801130000_remote_conversation_message_requests_tests;
 #[cfg(test)]
 pub(super) fn migrate_scripted_agent_workflows_for_test(conn: &Connection) -> AppResult<()> {
     v20260715194617_scripted_agent_workflows::migrate(conn)
@@ -1855,6 +1858,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260801120000,
         name: "remote_conversation_start_requests",
         migrate: v20260801120000_remote_conversation_start_requests::migrate,
+    },
+    Migration {
+        version: 20260801130000,
+        name: "remote_conversation_message_requests",
+        migrate: v20260801130000_remote_conversation_message_requests::migrate,
     },
 ];
 

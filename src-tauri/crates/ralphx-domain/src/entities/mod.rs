@@ -53,6 +53,7 @@ pub mod plan_branch;
 pub mod plan_selection_stats;
 pub mod project;
 pub mod remote_access;
+pub mod remote_conversation_message_request;
 pub mod remote_conversation_start_request;
 pub mod remote_request_dedup;
 pub mod research;
@@ -231,6 +232,9 @@ pub use remote_access::{
     effective_pairing_scopes, validate_pairing_grant, RemoteAuditAction, RemoteAuditEntry,
     RemoteDevice, RemoteDeviceId, RemotePairingCode, RemotePairingCodeId, RemoteScopeError,
     RemoteScopeSet, RemoteSession, RemoteSessionId, RemoteWsTicket,
+};
+pub use remote_conversation_message_request::{
+    RemoteConversationMessageRequest, RemoteConversationMessageStatus,
 };
 pub use remote_conversation_start_request::{
     RemoteConversationStartRequest, RemoteConversationStartStatus,
