@@ -1294,6 +1294,53 @@ crate::remote_commands! {
         result: fallible,
     },
 
+    // Spawn-free conversation MODE SWITCH (WP5a) — the fix for a remote surface stuck in chat.
+    //
+    // `switch_agent_conversation_mode` is `host-denied-spawns-process` (its body reaches
+    // `GitService::ref_exists` and `inspect_repository_capability` -> `ensure_git_worktree`), and
+    // the process floor is absolute. Because the conversation-start intent host-pins `mode` to
+    // "chat", that left a paired device able to reach chat and NOTHING else — Edit, Plan and
+    // Ideation were unreachable, not merely slower. This closure only PERSISTS a switch intent;
+    // the host-owned `spawn_remote_conversation_mode_switch_dispatcher` loop is the sole holder
+    // of the worktree-preparing path, and its terminal call is
+    // `switch_agent_conversation_mode_for_state` (the REJECT-on-running-agent variant), NOT the
+    // `..._stopping_running_agent` one the local command uses — stopping stays WP2's separate,
+    // explicitly user-initiated intent rather than a side effect of moving a dropdown.
+    //
+    // Detector-silent on (a) and (c); detector (b) flags it MECHANICALLY through the
+    // `remote-conversation-mode-switch` state-surface row, which is what
+    // `SeedsSpawnTriggeringState` expresses honestly: the row this command writes causes the host
+    // to prepare a workspace a later agent process runs in.
+    //
+    // There is NO base/branch/runtime-override field to pin: every one of them steers real
+    // workspace preparation, and they are ABSENT from the wire rather than pinned, which is
+    // stronger because there is nothing to forge. The command additionally REFUSES when a run is
+    // live, so a switch can never race a running agent's workspace.
+    "request_remote_agent_conversation_mode_switch"
+        => crate::commands::remote_conversation_mode_switch_commands::request_remote_agent_conversation_mode_switch {
+        class: AgentControl,
+        caps: [SeedsSpawnTriggeringState],
+        params: [
+            (arg input: crate::commands::remote_conversation_mode_switch_commands::RequestRemoteAgentConversationModeSwitchInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+
+    // The client's post-submit poll target for the mode-switch intent. Pure repository read.
+    "get_remote_conversation_mode_switch_request"
+        => crate::commands::remote_conversation_mode_switch_commands::get_remote_conversation_mode_switch_request {
+        class: Read,
+        caps: [],
+        params: [
+            (arg mode_switch_request_id: String),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+
     // The client's post-submit poll target for the stop intent. Pure repository read.
     "get_remote_agent_stop_request"
         => crate::commands::remote_agent_stop_commands::get_remote_agent_stop_request {

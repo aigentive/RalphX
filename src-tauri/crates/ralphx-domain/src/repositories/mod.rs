@@ -61,6 +61,7 @@ pub mod proposal_dependency_repository;
 pub mod remote_access_repository;
 pub mod remote_agent_stop_request_repository;
 pub mod remote_conversation_message_request_repository;
+pub mod remote_conversation_mode_switch_request_repository;
 pub mod remote_conversation_start_request_repository;
 pub mod remote_request_dedup_repository;
 pub mod review_repository;
@@ -177,6 +178,7 @@ pub use remote_access_repository::{
 };
 pub use remote_agent_stop_request_repository::RemoteAgentStopRequestRepository;
 pub use remote_conversation_message_request_repository::RemoteConversationMessageRequestRepository;
+pub use remote_conversation_mode_switch_request_repository::RemoteConversationModeSwitchRequestRepository;
 pub use remote_conversation_start_request_repository::RemoteConversationStartRequestRepository;
 pub use remote_request_dedup_repository::{
     RemoteAttachmentRepository, RemoteRequestDedupLookup, RemoteRequestDedupRepository,

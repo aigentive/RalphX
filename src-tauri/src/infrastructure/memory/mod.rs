@@ -15,6 +15,7 @@ pub mod memory_agent_profile_repo;
 pub mod memory_agent_provider_settings_repo;
 pub mod memory_agent_remote_agent_stop_request_repo;
 pub mod memory_agent_remote_conversation_message_request_repo;
+pub mod memory_agent_remote_conversation_mode_switch_request_repo;
 pub mod memory_agent_remote_conversation_start_request_repo;
 pub mod memory_agent_run_repo;
 pub mod memory_agent_task_repo;
@@ -103,6 +104,7 @@ pub use memory_agent_conversation_workspace_repo::MemoryAgentConversationWorkspa
 pub use memory_agent_lane_settings_repo::MemoryAgentLaneSettingsRepository;
 pub use memory_agent_remote_agent_stop_request_repo::MemoryRemoteAgentStopRequestRepository;
 pub use memory_agent_remote_conversation_message_request_repo::MemoryRemoteConversationMessageRequestRepository;
+pub use memory_agent_remote_conversation_mode_switch_request_repo::MemoryRemoteConversationModeSwitchRequestRepository;
 pub use memory_agent_remote_conversation_start_request_repo::MemoryRemoteConversationStartRequestRepository;
 pub use memory_manual_role_default_repo::MemoryManualRoleDefaultRepository;
 pub use memory_mcp_policy_repo::MemoryMcpPolicyRepository;

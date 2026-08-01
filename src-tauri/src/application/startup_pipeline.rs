@@ -248,6 +248,24 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         startup_phase_completed("remote_agent_stop_dispatcher_spawn", phase_started_at);
     }
 
+    // The remote MODE SWITCH dispatcher (WP5a), same always-run placement and the same reason.
+    // Remote conversations START pinned to mode "chat", so a host that never drains switch
+    // intents leaves every paired device permanently stuck in chat — not degraded, but unable to
+    // reach Edit/Plan/Ideation at all. Note it takes neither the execution state nor the app
+    // handle: its switch seam is AppState-only, which is what keeps the process-terminating path
+    // out of this loop.
+    {
+        let phase_started_at =
+            startup_phase_started("remote_conversation_mode_switch_dispatcher_spawn");
+        startup_background::spawn_remote_conversation_mode_switch_dispatcher(
+            deps.app_state.clone(),
+        );
+        startup_phase_completed(
+            "remote_conversation_mode_switch_dispatcher_spawn",
+            phase_started_at,
+        );
+    }
+
     if startup_jobs::is_startup_recovery_disabled() {
         info!(
             env_var = startup_jobs::RALPHX_DISABLE_STARTUP_RECOVERY_ENV,

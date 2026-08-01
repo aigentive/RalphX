@@ -393,6 +393,24 @@ pub const SPAWN_TRIGGERING_STATE_SURFACE: &[StateSurfaceEntry] = &[
         armed_markers: &["RemoteConversationMessageStatus::Pending"],
         declared_writers: &[],
     },
+    // Spawn-free remote conversation MODE SWITCH (WP5a).
+    // `request_remote_agent_conversation_mode_switch` seeds a `Pending` intent through the
+    // DISTINCTIVE `create_mode_switch_request` write marker; the host-owned dispatcher loop is
+    // the sole reader/applier and is authority-bearing for a different reason than its three
+    // siblings: it reaches `switch_agent_conversation_mode_for_state`, which prepares a git
+    // worktree (`GitService::ref_exists`, `ensure_git_worktree`) a later agent process runs in.
+    // The marker name is deliberately distinct from `create_start_request` /
+    // `create_message_request` / `create_stop_request` so detector (b) can tell all four intent
+    // surfaces apart mechanically.
+    StateSurfaceEntry {
+        id: "remote-conversation-mode-switch",
+        surface: "remote_conversation_mode_switch_requests.status",
+        armed_value: "Pending",
+        read_by_loops: &["application/startup_background.rs::application/startup_background.rs:::::spawn_remote_conversation_mode_switch_dispatcher@af26b90d13c69a8c"],
+        write_markers: &["create_mode_switch_request"],
+        armed_markers: &["RemoteConversationModeSwitchStatus::Pending"],
+        declared_writers: &[],
+    },
     StateSurfaceEntry {
         id: "remote-conversation-start",
         surface: "remote_conversation_start_requests.status",

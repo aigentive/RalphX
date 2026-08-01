@@ -20,6 +20,7 @@ pub mod sqlite_agent_profile_repo;
 pub mod sqlite_agent_provider_settings_repo;
 pub mod sqlite_agent_remote_agent_stop_request_repo;
 pub mod sqlite_agent_remote_conversation_message_request_repo;
+pub mod sqlite_agent_remote_conversation_mode_switch_request_repo;
 pub mod sqlite_agent_remote_conversation_start_request_repo;
 pub mod sqlite_agent_run_repo;
 #[cfg(test)]
@@ -158,6 +159,7 @@ pub use sqlite_agent_conversation_workspace_repo::SqliteAgentConversationWorkspa
 pub use sqlite_agent_lane_settings_repo::SqliteAgentLaneSettingsRepository;
 pub use sqlite_agent_remote_agent_stop_request_repo::SqliteRemoteAgentStopRequestRepository;
 pub use sqlite_agent_remote_conversation_message_request_repo::SqliteRemoteConversationMessageRequestRepository;
+pub use sqlite_agent_remote_conversation_mode_switch_request_repo::SqliteRemoteConversationModeSwitchRequestRepository;
 pub use sqlite_agent_remote_conversation_start_request_repo::SqliteRemoteConversationStartRequestRepository;
 pub use sqlite_manual_role_default_repo::SqliteManualRoleDefaultRepository;
 pub use sqlite_mcp_policy_repo::SqliteMcpPolicyRepository;

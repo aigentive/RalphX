@@ -55,6 +55,7 @@ pub mod project;
 pub mod remote_access;
 pub mod remote_agent_stop_request;
 pub mod remote_conversation_message_request;
+pub mod remote_conversation_mode_switch_request;
 pub mod remote_conversation_start_request;
 pub mod remote_request_dedup;
 pub mod research;
@@ -237,6 +238,9 @@ pub use remote_access::{
 pub use remote_agent_stop_request::{RemoteAgentStopRequest, RemoteAgentStopStatus};
 pub use remote_conversation_message_request::{
     RemoteConversationMessageRequest, RemoteConversationMessageStatus,
+};
+pub use remote_conversation_mode_switch_request::{
+    RemoteConversationModeSwitchRequest, RemoteConversationModeSwitchStatus,
 };
 pub use remote_conversation_start_request::{
     RemoteConversationStartRequest, RemoteConversationStartStatus,

@@ -438,6 +438,8 @@ macro_rules! register_tauri_commands {
             commands::remote_conversation_message_commands::get_remote_conversation_message_request,
             commands::remote_agent_stop_commands::request_remote_agent_stop,
             commands::remote_agent_stop_commands::get_remote_agent_stop_request,
+            commands::remote_conversation_mode_switch_commands::request_remote_agent_conversation_mode_switch,
+            commands::remote_conversation_mode_switch_commands::get_remote_conversation_mode_switch_request,
             commands::remote_transcript_commands::list_remote_agent_conversations_page,
             commands::remote_transcript_commands::list_remote_agent_sidebar_conversations,
             // Task context commands
