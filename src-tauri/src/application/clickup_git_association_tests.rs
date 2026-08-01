@@ -48,6 +48,8 @@ fn pull_request(number: i64, branch: &str, title: &str) -> PrSearchResult {
         head_ref_oid: Some(format!("sha-{number}")),
         base_ref_name: "main".to_string(),
         is_draft: false,
+        state: Some("OPEN".to_string()),
+        merged_at: None,
         updated_at: None,
         author_login: None,
         assignee_logins: Vec::new(),

@@ -928,6 +928,8 @@ fn pr_search_result(
         head_ref_oid: Some(format!("sha-{number}")),
         base_ref_name: base_ref_name.to_string(),
         is_draft: false,
+        state: Some("OPEN".to_string()),
+        merged_at: None,
         updated_at: None,
         author_login: Some("dev".to_string()),
         assignee_logins: Vec::new(),

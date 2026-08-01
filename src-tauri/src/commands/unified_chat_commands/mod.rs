@@ -51,7 +51,8 @@ use crate::application::agent_conversation_workspace::{
 };
 use crate::application::agent_conversation_workspace_base::{
     apply_workspace_base_resolution, resolve_workspace_base,
-    resolve_workspace_base_from_local_snapshot, BaseResolutionResult, BaseStatus,
+    resolve_workspace_base_from_local_snapshot, resolve_workspace_base_with_github,
+    BaseResolutionResult, BaseStatus,
 };
 use crate::application::agent_plan_context::{
     admit_linked_edit_plan_references, linked_workspace_planning_session_is_reusable,
@@ -860,12 +861,27 @@ async fn retarget_existing_workspace_pr_base_if_needed(
         return Ok(());
     }
 
-    let pr_number = target
+    // Only a live PR may be retargeted on GitHub: linked plan PRs that are not terminal,
+    // then the workspace's own non-terminal publication PR. Terminal or absent PRs skip.
+    let plan_pr_number = target
         .plan_branch
         .as_ref()
-        .and_then(|branch| branch.pr_number)
-        .or(workspace.publication_pr_number);
-    let Some(pr_number) = pr_number else {
+        .filter(|branch| {
+            !matches!(
+                branch.pr_status,
+                Some(
+                    crate::domain::entities::plan_branch::PrStatus::Merged
+                        | crate::domain::entities::plan_branch::PrStatus::Closed
+                )
+            )
+        })
+        .and_then(|branch| branch.pr_number);
+    let workspace_pr_number = if workspace.has_terminal_publication_pr_status() {
+        None
+    } else {
+        workspace.publication_pr_number
+    };
+    let Some(pr_number) = plan_pr_number.or(workspace_pr_number) else {
         return Ok(());
     };
     let Some(github) = state.github_service.as_ref() else {
@@ -1391,6 +1407,8 @@ pub struct AgentConversationWorkspaceFreshnessResponse {
     pub effective_base_ref: Option<String>,
     pub effective_base_display_name: Option<String>,
     pub base_block_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recommended_actions: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1448,6 +1466,9 @@ impl AgentConversationWorkspaceFreshnessResponse {
             .or_else(|| base_display_name.clone());
         let base_block_reason =
             base_resolution.and_then(|resolution| resolution.block_reason.clone());
+        let recommended_actions = base_resolution
+            .filter(|resolution| resolution.retargeted_from_merged_source_pull_request())
+            .map(|_| vec!["update_from_base".to_string(), "base_pr_merged".to_string()]);
         Self {
             conversation_id,
             freshness_scope: freshness_scope.as_str().to_string(),
@@ -1465,6 +1486,7 @@ impl AgentConversationWorkspaceFreshnessResponse {
             effective_base_ref,
             effective_base_display_name,
             base_block_reason,
+            recommended_actions,
         }
     }
 
@@ -1495,6 +1517,7 @@ impl AgentConversationWorkspaceFreshnessResponse {
             effective_base_ref: None,
             effective_base_display_name: None,
             base_block_reason: base_resolution.block_reason.clone(),
+            recommended_actions: None,
         }
     }
 
@@ -1523,6 +1546,7 @@ impl AgentConversationWorkspaceFreshnessResponse {
             effective_base_ref: Some(base_ref),
             effective_base_display_name: base_display_name,
             base_block_reason: None,
+            recommended_actions: None,
         }
     }
 
@@ -1549,6 +1573,7 @@ impl AgentConversationWorkspaceFreshnessResponse {
             effective_base_ref: Some(workspace.base_ref.clone()),
             effective_base_display_name: workspace.base_display_name.clone(),
             base_block_reason: None,
+            recommended_actions: None,
         }
     }
 }
@@ -5874,9 +5899,13 @@ async fn get_agent_conversation_workspace_freshness_for_state(
     if workspace.mode == AgentConversationWorkspaceMode::Ideation {
         let mut target =
             resolve_agent_workspace_publish_target(state, &project, &workspace).await?;
-        let base_resolution = resolve_workspace_base(&project, &workspace)
-            .await
-            .map_err(|e| e.to_string())?;
+        let base_resolution = resolve_workspace_base_with_github(
+            &project,
+            &workspace,
+            state.github_service.as_deref(),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
         if base_resolution.status == BaseStatus::Blocked {
             return Ok(AgentConversationWorkspaceFreshnessResponse::blocked(
                 workspace.conversation_id.as_str(),
@@ -5916,7 +5945,7 @@ async fn get_agent_conversation_workspace_freshness_for_state(
     }
     let (worktree_path, base_resolution) = tokio::join!(
         resolve_valid_agent_conversation_workspace_path(&project, &workspace),
-        resolve_workspace_base(&project, &workspace),
+        resolve_workspace_base_with_github(&project, &workspace, state.github_service.as_deref()),
     );
     let worktree_path = worktree_path.map_err(|e| e.to_string())?;
     let base_resolution = base_resolution.map_err(|e| e.to_string())?;
@@ -6220,9 +6249,15 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
             .await;
             return Err(message);
         }
+        let selected_base_target =
+            crate::application::publish_resilience::resolve_publish_freshness_target(
+                &publish_target.worktree_path,
+                &explicit_base.base_ref,
+            )
+            .await;
         let selected_base_commit = match GitService::get_branch_sha(
             &publish_target.worktree_path,
-            &remote_tracking_ref_for_publish(&explicit_base.base_ref),
+            &selected_base_target,
         )
         .await
         {
@@ -6281,6 +6316,7 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
             effective_base_commit: None,
             display_name: Some(explicit_base.display_name.clone()),
             block_reason: None,
+            merged_source_pull_request_number: None,
         };
         if let Err(message) = retarget_existing_workspace_pr_base_if_needed(
             state,
@@ -6303,9 +6339,13 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
         }
         None
     } else {
-        let base_resolution = resolve_workspace_base(&project, &workspace)
-            .await
-            .map_err(|e| e.to_string())?;
+        let base_resolution = resolve_workspace_base_with_github(
+            &project,
+            &workspace,
+            state.github_service.as_deref(),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
         if base_resolution.status == BaseStatus::Blocked {
             let message = base_resolution
                 .block_reason
@@ -8043,9 +8083,10 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
         }
     };
 
-    let base_resolution = resolve_workspace_base(&project, &workspace)
-        .await
-        .map_err(|e| e.to_string())?;
+    let base_resolution =
+        resolve_workspace_base_with_github(&project, &workspace, state.github_service.as_deref())
+            .await
+            .map_err(|e| e.to_string())?;
     if base_resolution.status == BaseStatus::Blocked {
         let error = base_resolution
             .block_reason
@@ -9341,10 +9382,14 @@ where
 /// Best-effort origin refresh for a user-directed repair successor. Retrying a durable blocked
 /// generation is still allowed when origin cannot be read; it retains its persisted base commit.
 async fn resolve_current_base_commit(worktree_path: &Path, base_ref: &str) -> Option<String> {
-    GitService::fetch_origin(worktree_path).await.ok()?;
-    GitService::get_branch_sha(worktree_path, &remote_tracking_ref_for_publish(base_ref))
-        .await
-        .ok()
+    let _ = GitService::fetch_origin(worktree_path).await;
+    let target =
+        crate::application::publish_resilience::resolve_publish_freshness_target(
+            worktree_path,
+            base_ref,
+        )
+        .await;
+    GitService::get_branch_sha(worktree_path, &target).await.ok()
 }
 
 fn repair_handoff_verification_result(

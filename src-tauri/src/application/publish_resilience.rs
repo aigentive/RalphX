@@ -1846,7 +1846,7 @@ pub fn remote_tracking_ref_for_publish(base_ref: &str) -> String {
     }
 }
 
-async fn resolve_publish_freshness_target(repo_path: &Path, base_ref: &str) -> String {
+pub(crate) async fn resolve_publish_freshness_target(repo_path: &Path, base_ref: &str) -> String {
     let remote_ref = remote_tracking_ref_for_publish(base_ref);
     if remote_ref != base_ref
         && GitService::ref_exists(repo_path, &remote_ref)

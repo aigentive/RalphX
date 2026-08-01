@@ -144,6 +144,8 @@ pub struct PrSearchResult {
     pub head_ref_oid: Option<String>,
     pub base_ref_name: String,
     pub is_draft: bool,
+    pub state: Option<String>,
+    pub merged_at: Option<String>,
     pub updated_at: Option<String>,
     pub author_login: Option<String>,
     #[serde(default)]
@@ -648,7 +650,7 @@ pub trait GithubServiceTrait: Send + Sync {
         head: &str,
     ) -> AppResult<Option<(i64, String)>>;
 
-    /// Search open pull requests for base-picker selection.
+    /// Search pull requests across all states for base-picker selection.
     async fn search_pull_requests(
         &self,
         _working_dir: &Path,
