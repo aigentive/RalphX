@@ -1219,11 +1219,11 @@ impl GithubServiceTrait for GhCliGithubService {
             "pr".to_string(),
             "list".to_string(),
             "--state".to_string(),
-            "open".to_string(),
+            "all".to_string(),
             "--limit".to_string(),
             limit.to_string(),
             "--json".to_string(),
-            "number,title,url,headRefName,headRefOid,baseRefName,isDraft,updatedAt,author,assignees,reviewDecision,latestReviews,reviewRequests,isCrossRepository".to_string(),
+            "number,title,url,headRefName,headRefOid,baseRefName,isDraft,state,mergedAt,updatedAt,author,assignees,reviewDecision,latestReviews,reviewRequests,isCrossRepository".to_string(),
         ];
         if let Some(query) = query.map(str::trim).filter(|value| !value.is_empty()) {
             args.push("--search".to_string());
@@ -1535,6 +1535,14 @@ fn parse_pr_search_item(item: &Value) -> AppResult<PrSearchResult> {
             .get("isDraft")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        state: item
+            .get("state")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        merged_at: item
+            .get("mergedAt")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         updated_at: item
             .get("updatedAt")
             .and_then(Value::as_str)
@@ -1852,7 +1860,10 @@ pub(crate) fn parse_branch_check_conclusions(json_str: &str) -> Vec<PrHealthChec
         if name.is_empty() {
             continue;
         }
-        let status = run.get("status").and_then(Value::as_str).map(str::to_string);
+        let status = run
+            .get("status")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         // An in-progress run proves nothing about the base yet.
         if !status
             .as_deref()

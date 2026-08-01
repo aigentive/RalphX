@@ -89,6 +89,8 @@ const GithubPullRequestSearchResultSchema = z.object({
   headRefName: z.string(),
   headRefOid: z.string().nullable().optional(),
   baseRefName: z.string(),
+  state: z.string().nullable().optional(),
+  mergedAt: z.string().nullable().optional(),
   isDraft: z.boolean(),
   updatedAt: z.string().nullable().optional(),
   authorLogin: z.string().nullable().optional(),

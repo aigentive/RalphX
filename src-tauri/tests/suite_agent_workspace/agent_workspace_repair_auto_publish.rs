@@ -6,6 +6,7 @@ use crate::common::{MockGithubService, SubmittingPlanPrAgentClient};
 use axum::{extract::Path, http::HeaderMap, Json};
 use ralphx_lib::application::agent_conversation_workspace::{
     resolve_agent_conversation_workspace_path, resolve_linked_plan_branch_agent_worktree_path,
+    AgentConversationWorkspaceBaseSelection,
 };
 use ralphx_lib::application::agent_workspace_publish_recovery::{
     recover_agent_workspace_repair_after_terminal_run,
@@ -20,6 +21,7 @@ use ralphx_lib::commands::{
         install_agent_workspace_repair_publish_continuation,
         publish_agent_conversation_workspace_for_app_state_with_repair_intent,
         set_agent_conversation_workspace_auto_publish_for_state,
+        update_agent_conversation_workspace_from_base_for_app_state_with_caller,
         AgentConversationWorkspaceAutoPublishInput,
     },
     ExecutionState,
@@ -3353,5 +3355,214 @@ async fn complete_repair_uses_linked_plan_branch_for_ideation_workspace() {
         mock_github.push_calls(),
         1,
         "restart recovery must not issue another linked-plan push"
+    );
+}
+
+/// Regression for the PR-as-base deadlock: a workspace based on another PR's head branch has a
+/// blocked repair whose durable target still names the drifted base. An explicit user base
+/// selection must persist the new base (ref + freshly resolved commit) BEFORE retrying, so the
+/// superseding generation targets the user's base instead of recapturing the stale one.
+#[tokio::test]
+async fn explicit_base_update_supersedes_blocked_repair_with_the_new_base() {
+    let temp = tempfile::tempdir().expect("fixture root");
+    let repo_path = temp.path().join("repo");
+    let remote_path = temp.path().join("remote.git");
+    let worktree_parent = temp.path().join("worktrees");
+    git(
+        temp.path(),
+        &["init", "--bare", remote_path.to_str().expect("remote path")],
+    );
+    git(
+        temp.path(),
+        &["init", "-b", "main", repo_path.to_str().expect("repo path")],
+    );
+    git(&repo_path, &["config", "user.email", "test@example.com"]);
+    git(&repo_path, &["config", "user.name", "RalphX Test"]);
+    std::fs::write(repo_path.join("README.md"), "base\n").expect("write base file");
+    git(&repo_path, &["add", "."]);
+    git(&repo_path, &["commit", "-m", "base"]);
+    git(
+        &repo_path,
+        &["remote", "add", "origin", remote_path.to_str().expect("remote path")],
+    );
+    git(&repo_path, &["push", "-u", "origin", "main"]);
+
+    // The sibling PR head branch used as the workspace base, later merged into main.
+    git(&repo_path, &["checkout", "-b", "ralphx/pr-base"]);
+    std::fs::write(repo_path.join("pr.txt"), "pr\n").expect("write pr file");
+    git(&repo_path, &["add", "."]);
+    git(&repo_path, &["commit", "-m", "pr work"]);
+    git(&repo_path, &["push", "-u", "origin", "ralphx/pr-base"]);
+    let pr_base_sha = git(&repo_path, &["rev-parse", "HEAD"]);
+    git(&repo_path, &["checkout", "main"]);
+    git(
+        &repo_path,
+        &["merge", "--no-ff", "ralphx/pr-base", "-m", "merge pr"],
+    );
+    git(&repo_path, &["push", "origin", "main"]);
+    let merged_main_sha = git(&repo_path, &["rev-parse", "main"]);
+
+    let mut project = Project::new(
+        "Explicit blocked-repair retarget".to_string(),
+        repo_path.to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+
+    let state = AppState::new_test();
+    let project = state
+        .project_repo
+        .create(project)
+        .await
+        .expect("project persists");
+    let conversation_id = ChatConversationId::new();
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.id = conversation_id;
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("conversation persists");
+
+    let worktree_path = resolve_agent_conversation_workspace_path(&project, &conversation_id)
+        .expect("workspace path resolves");
+    let branch = format!("ralphx/test/agent-{}", &conversation_id.as_str()[..8]);
+    GitService::create_worktree(&repo_path, &worktree_path, &branch, "ralphx/pr-base")
+        .await
+        .expect("create workspace worktree from the PR base branch");
+
+    let workspace = AgentConversationWorkspace::new(
+        conversation_id,
+        project.id.clone(),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::LocalBranch,
+        "ralphx/pr-base".to_string(),
+        Some("PR #941: base".to_string()),
+        Some(pr_base_sha.clone()),
+        branch.clone(),
+        worktree_path.to_string_lossy().to_string(),
+    );
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace persists");
+
+    let attempt = AgentWorkspaceRepairAttempt::new(
+        conversation_id,
+        AgentWorkspaceRepairSource::BaseUpdate,
+        AgentWorkspaceRepairContinuation::UpdateOnly,
+        "ralphx/pr-base",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    let started = match state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt,
+            reason: "merge in existing worktree failed".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("start blocked repair attempt")
+    {
+        StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(started) => started,
+        outcome => panic!("expected a new repair attempt, got {outcome:?}"),
+    };
+    let mut blocked = started.clone();
+    blocked.phase = AgentWorkspaceRepairPhase::Blocked;
+    blocked.blocker = Some(
+        "workspace repair push handoff base ref changed from 'main' to 'ralphx/pr-base'"
+            .to_string(),
+    );
+    blocked.updated_at += chrono::Duration::microseconds(1);
+    match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: blocked,
+            expected_phase: started.phase,
+            expected_updated_at: started.updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Blocked,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("block the seeded repair attempt")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_) => {}
+        outcome => panic!("expected the seeded attempt to block, got {outcome:?}"),
+    }
+
+    let execution_state = Arc::new(ExecutionState::new());
+    execution_state.pause();
+
+    let response = update_agent_conversation_workspace_from_base_for_app_state_with_caller(
+        &state,
+        &execution_state,
+        conversation_id,
+        AgentConversationWorkspaceBaseSelection {
+            kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+            branch_mode: None,
+            base_ref: Some("main".to_string()),
+            display_name: Some("Project default (main)".to_string()),
+            source_pull_request: None,
+        },
+        None,
+    )
+    .await
+    .expect("explicit base update supersedes the blocked repair");
+
+    assert!(
+        response.repair_started,
+        "the explicit selection must route into a repair retry, not a silent no-op"
+    );
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("read workspace")
+        .expect("workspace exists");
+    assert_eq!(
+        workspace.base_ref, "main",
+        "the explicit selection must persist before the blocked-repair retry"
+    );
+    assert_eq!(
+        workspace.base_commit.as_deref(),
+        Some(merged_main_sha.as_str()),
+        "the persisted base commit must be freshly resolved from origin, not the stale PR base"
+    );
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("read current repair attempt")
+        .expect("a successor repair attempt exists");
+    assert_ne!(
+        current.id, started.id,
+        "the blocked generation must be superseded, not replayed"
+    );
+    assert_eq!(
+        current.target_base_ref, "main",
+        "the successor must target the user's explicit base"
+    );
+    assert_eq!(
+        current.target_base_commit.as_deref(),
+        Some(merged_main_sha.as_str()),
+        "the successor must capture the fresh base commit"
+    );
+    let predecessor = state
+        .agent_workspace_repair_repo
+        .get_repair_attempt(&started.id)
+        .await
+        .expect("read predecessor")
+        .expect("predecessor remains for audit");
+    assert!(
+        predecessor.settled_at.is_some(),
+        "the drifted generation must be durably settled"
     );
 }

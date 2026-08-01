@@ -233,7 +233,9 @@ pub(crate) async fn hydrate_linked_branch_source_pull_request(
     Ok(matches
         .into_iter()
         .find(|pull_request| {
-            !pull_request.is_cross_repository && pull_request.head_ref_name == branch_name
+            pull_request.is_open()
+                && !pull_request.is_cross_repository
+                && pull_request.head_ref_name == branch_name
         })
         .map(|pull_request| AgentWorkspaceSourcePullRequest {
             number: pull_request.number,

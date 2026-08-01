@@ -146,9 +146,20 @@ impl AutomationIntegrationPrPublisher for GithubAutomationIntegrationPrPublisher
                 workspace.branch_name
             ),
         };
-        let outcome = AgentWorkspacePrPublisher::new(github)
+        let result = AgentWorkspacePrPublisher::new(github)
             .publish_draft_pr(&working_dir, &conversation, &workspace, &description)
             .await?;
+        let outcome = match result {
+            crate::domain::services::pr_publish_service::AgentWorkspacePrPublishResult::Published(
+                outcome,
+            ) => outcome,
+            crate::domain::services::pr_publish_service::AgentWorkspacePrPublishResult::TerminalPublicationIdentity => {
+                return Err(integration_pr_validation(
+                    automation,
+                    "workspace publication identity is terminal",
+                ));
+            }
+        };
         self.workspace_repo
             .update_publication(
                 setup_conversation_id,

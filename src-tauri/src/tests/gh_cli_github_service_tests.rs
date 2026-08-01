@@ -97,6 +97,8 @@ fn parse_pr_search_output_returns_base_picker_fields() {
             "headRefOid": "abc123",
             "baseRefName": "main",
             "isDraft": true,
+            "state": "MERGED",
+            "mergedAt": "2026-05-21T10:00:00Z",
             "updatedAt": "2026-05-20T10:00:00Z",
             "author": {"login": "dev"},
             "assignees": [{"login": "ops"}, {"login": "qa"}],
@@ -122,12 +124,38 @@ fn parse_pr_search_output_returns_base_picker_fields() {
     assert_eq!(result.head_ref_oid.as_deref(), Some("abc123"));
     assert_eq!(result.base_ref_name, "main");
     assert!(result.is_draft);
+    assert_eq!(result.state.as_deref(), Some("MERGED"));
+    assert_eq!(result.merged_at.as_deref(), Some("2026-05-21T10:00:00Z"));
     assert_eq!(result.author_login.as_deref(), Some("dev"));
     assert_eq!(result.assignee_logins, vec!["ops", "qa"]);
     assert_eq!(result.review_decision.as_deref(), Some("CHANGES_REQUESTED"));
     assert_eq!(result.latest_review_author_logins, vec!["dev", "reviewer"]);
     assert_eq!(result.review_request_logins, vec!["lazabogdan", "platform"]);
     assert!(!result.is_cross_repository);
+}
+
+#[test]
+fn parse_pr_search_output_preserves_all_states_and_absent_state() {
+    let json = r#"[
+        {"number":1,"title":"Open","url":"https://example.test/1","headRefName":"open","baseRefName":"main","state":"OPEN","mergedAt":null},
+        {"number":2,"title":"Merged","url":"https://example.test/2","headRefName":"merged","baseRefName":"main","state":"MERGED","mergedAt":"2026-08-01T10:00:00Z"},
+        {"number":3,"title":"Closed","url":"https://example.test/3","headRefName":"closed","baseRefName":"main","state":"CLOSED","mergedAt":null},
+        {"number":4,"title":"Legacy","url":"https://example.test/4","headRefName":"legacy","baseRefName":"main"}
+    ]"#;
+
+    let results = parse_pr_search_output(json).expect("all PR states should parse");
+
+    assert_eq!(results[0].state.as_deref(), Some("OPEN"));
+    assert_eq!(results[0].merged_at, None);
+    assert_eq!(results[1].state.as_deref(), Some("MERGED"));
+    assert_eq!(
+        results[1].merged_at.as_deref(),
+        Some("2026-08-01T10:00:00Z")
+    );
+    assert_eq!(results[2].state.as_deref(), Some("CLOSED"));
+    assert_eq!(results[2].merged_at, None);
+    assert_eq!(results[3].state, None);
+    assert_eq!(results[3].merged_at, None);
 }
 
 #[test]
@@ -1872,6 +1900,39 @@ mod mock_roundtrip {
                 "20",
                 "--json",
                 "number,url,state,isDraft,headRefName,updatedAt",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()]
+        );
+    }
+
+    #[tokio::test]
+    async fn search_pull_requests_uses_all_state_lookup_with_state_fields() {
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![Ok(vec![
+            "[]".to_string()
+        ])]));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        let results = service
+            .search_pull_requests(Path::new("/tmp"), Some(" base picker "), 30)
+            .await
+            .unwrap();
+
+        assert!(results.is_empty());
+        assert_eq!(
+            runner.gh_calls(),
+            vec![vec![
+                "pr",
+                "list",
+                "--state",
+                "all",
+                "--limit",
+                "30",
+                "--json",
+                "number,title,url,headRefName,headRefOid,baseRefName,isDraft,state,mergedAt,updatedAt,author,assignees,reviewDecision,latestReviews,reviewRequests,isCrossRepository",
+                "--search",
+                "base picker",
             ]
             .into_iter()
             .map(str::to_string)

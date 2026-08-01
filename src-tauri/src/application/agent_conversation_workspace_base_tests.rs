@@ -1,12 +1,15 @@
 use super::agent_conversation_workspace_base::{
     apply_workspace_base_resolution, resolve_workspace_base,
-    resolve_workspace_base_from_local_snapshot, BaseResolutionResult, BaseStatus,
-    BLOCK_REASON_MISSING_BASE_COMMIT, BLOCK_REASON_NOT_CONTAINED,
+    resolve_workspace_base_from_local_snapshot, resolve_workspace_base_with_github,
+    BaseResolutionResult, BaseStatus, BLOCK_REASON_MISSING_BASE_COMMIT, BLOCK_REASON_NOT_CONTAINED,
 };
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversationId,
-    IdeationAnalysisBaseRefKind, Project,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentWorkspaceSourcePullRequest,
+    ChatConversationId, IdeationAnalysisBaseRefKind, Project,
 };
+use crate::domain::services::PrStatus;
+use crate::error::AppError;
+use crate::tests::mock_github_service::MockGithubService;
 use std::path::Path;
 use std::process::Command;
 
@@ -70,6 +73,21 @@ fn workspace(base_ref: &str, base_commit: Option<String>) -> AgentConversationWo
     )
 }
 
+fn source_pull_request(
+    number: i64,
+    head_ref_name: &str,
+    base_ref_name: &str,
+) -> AgentWorkspaceSourcePullRequest {
+    AgentWorkspaceSourcePullRequest {
+        number,
+        url: Some(format!("https://github.com/acme/demo/pull/{number}")),
+        title: Some(format!("PR {number}")),
+        head_ref_name: head_ref_name.to_string(),
+        base_ref_name: Some(base_ref_name.to_string()),
+        head_ref_oid: None,
+    }
+}
+
 #[test]
 fn base_status_strings_match_api_contract() {
     assert_eq!(BaseStatus::Valid.as_str(), "valid");
@@ -87,6 +105,7 @@ fn blocked_base_resolution_accessors_return_validation_errors() {
         effective_base_commit: None,
         display_name: None,
         block_reason: Some("custom block reason".to_string()),
+        merged_source_pull_request_number: None,
     };
 
     assert!(blocked
@@ -127,6 +146,7 @@ fn apply_workspace_base_resolution_updates_retargeted_metadata() {
         effective_base_commit: Some("new-main-sha".to_string()),
         display_name: Some("Project default (main)".to_string()),
         block_reason: None,
+        merged_source_pull_request_number: None,
     };
 
     let changed = apply_workspace_base_resolution(&mut target, &resolution)
@@ -143,6 +163,24 @@ fn apply_workspace_base_resolution_updates_retargeted_metadata() {
         Some("Project default (main)")
     );
     assert_eq!(target.base_commit.as_deref(), Some("new-main-sha"));
+}
+
+#[test]
+fn apply_workspace_base_resolution_clears_merged_source_pull_request() {
+    let mut target = workspace("feature/source-pr", Some("old-base".to_string()));
+    target.source_pull_request = Some(source_pull_request(42, "feature/source-pr", "main"));
+    let resolution = BaseResolutionResult::retargeted_merged_source_pull_request(
+        "feature/source-pr".to_string(),
+        "main".to_string(),
+        "origin/main".to_string(),
+        "new-main-sha".to_string(),
+        42,
+    );
+
+    apply_workspace_base_resolution(&mut target, &resolution)
+        .expect("merged source PR retarget should apply");
+
+    assert!(target.source_pull_request.is_none());
 }
 
 #[test]
@@ -167,6 +205,7 @@ fn apply_workspace_base_resolution_keeps_valid_and_rejects_blocked() {
         effective_base_commit: None,
         display_name: None,
         block_reason: Some("cannot verify base".to_string()),
+        merged_source_pull_request_number: None,
     };
     let error = apply_workspace_base_resolution(&mut target, &blocked)
         .expect_err("blocked metadata should not apply");
@@ -231,6 +270,140 @@ async fn resolve_workspace_base_keeps_existing_remote_base_valid() {
     assert_eq!(
         resolution.effective_checkout_ref.as_deref(),
         Some("origin/feature/existing-base")
+    );
+}
+
+#[tokio::test]
+async fn resolve_workspace_base_retargets_merged_source_pull_request_to_merge_target() {
+    let (_temp, project, main_sha) = setup_remote_repo();
+    let repo = Path::new(&project.working_directory);
+    git(repo, &["checkout", "-b", "feature/source-pr"]);
+    git(repo, &["push", "-u", "origin", "feature/source-pr"]);
+    git(repo, &["checkout", "main"]);
+    let mut target = workspace("origin/feature/source-pr", Some(main_sha));
+    target.project_id = project.id.clone();
+    target.source_pull_request = Some(source_pull_request(42, "feature/source-pr", "main"));
+    let github = MockGithubService::new();
+    github.will_return_status(PrStatus::Merged {
+        merge_commit_sha: Some("merge-sha".to_string()),
+        merged_at: Some("2026-08-01T00:00:00Z".to_string()),
+    });
+
+    let resolution = resolve_workspace_base_with_github(&project, &target, Some(&github))
+        .await
+        .expect("merged source PR should retarget");
+
+    assert_eq!(resolution.status, BaseStatus::Retargeted);
+    assert_eq!(resolution.old_base_ref, "feature/source-pr");
+    assert_eq!(resolution.effective_base_ref.as_deref(), Some("main"));
+    assert_eq!(
+        resolution.effective_checkout_ref.as_deref(),
+        Some("origin/main")
+    );
+    assert_eq!(
+        resolution.display_name.as_deref(),
+        Some("main (PR #42 merged)")
+    );
+    assert!(resolution.retargeted_from_merged_source_pull_request());
+}
+
+#[tokio::test]
+async fn resolve_workspace_base_keeps_source_base_when_merge_target_has_no_checkout_ref() {
+    let (_temp, project, main_sha) = setup_remote_repo();
+    let repo = Path::new(&project.working_directory);
+    git(repo, &["checkout", "-b", "feature/source-pr"]);
+    git(repo, &["push", "-u", "origin", "feature/source-pr"]);
+    git(repo, &["checkout", "main"]);
+    let mut target = workspace("feature/source-pr", Some(main_sha));
+    target.project_id = project.id.clone();
+    target.source_pull_request = Some(source_pull_request(42, "feature/source-pr", "gone/target"));
+    let github = MockGithubService::new();
+    github.will_return_status(PrStatus::Merged {
+        merge_commit_sha: Some("merge-sha".to_string()),
+        merged_at: Some("2026-08-01T00:00:00Z".to_string()),
+    });
+
+    let resolution = resolve_workspace_base_with_github(&project, &target, Some(&github))
+        .await
+        .expect("an unresolvable merge target should keep the selected base");
+
+    assert_eq!(resolution.status, BaseStatus::Valid);
+    assert_eq!(
+        resolution.effective_base_ref.as_deref(),
+        Some("feature/source-pr")
+    );
+    assert!(!resolution.retargeted_from_merged_source_pull_request());
+}
+
+#[tokio::test]
+async fn resolve_workspace_base_keeps_open_source_pull_request_unchanged() {
+    let (_temp, project, main_sha) = setup_remote_repo();
+    let repo = Path::new(&project.working_directory);
+    git(repo, &["checkout", "-b", "feature/source-pr"]);
+    git(repo, &["push", "-u", "origin", "feature/source-pr"]);
+    git(repo, &["checkout", "main"]);
+    let mut target = workspace("feature/source-pr", Some(main_sha));
+    target.project_id = project.id.clone();
+    target.source_pull_request = Some(source_pull_request(42, "feature/source-pr", "main"));
+    let github = MockGithubService::new();
+    github.will_return_status(PrStatus::Open);
+
+    let resolution = resolve_workspace_base_with_github(&project, &target, Some(&github))
+        .await
+        .expect("open source PR should keep its selected base");
+
+    assert_eq!(resolution.status, BaseStatus::Valid);
+    assert_eq!(
+        resolution.effective_base_ref.as_deref(),
+        Some("feature/source-pr")
+    );
+    assert_eq!(github.state().check_pr_status_calls, 1);
+}
+
+#[tokio::test]
+async fn resolve_workspace_base_keeps_source_pull_request_unchanged_when_status_read_fails() {
+    let (_temp, project, main_sha) = setup_remote_repo();
+    let repo = Path::new(&project.working_directory);
+    git(repo, &["checkout", "-b", "feature/source-pr"]);
+    git(repo, &["push", "-u", "origin", "feature/source-pr"]);
+    git(repo, &["checkout", "main"]);
+    let mut target = workspace("feature/source-pr", Some(main_sha));
+    target.project_id = project.id.clone();
+    target.source_pull_request = Some(source_pull_request(42, "feature/source-pr", "main"));
+    let github = MockGithubService::new();
+    github.state().check_pr_status_result =
+        Some(Err(AppError::Infrastructure("offline".to_string())));
+
+    let resolution = resolve_workspace_base_with_github(&project, &target, Some(&github))
+        .await
+        .expect("GitHub status errors must fail open");
+
+    assert_eq!(resolution.status, BaseStatus::Valid);
+    assert_eq!(
+        resolution.effective_base_ref.as_deref(),
+        Some("feature/source-pr")
+    );
+}
+
+#[tokio::test]
+async fn resolve_workspace_base_keeps_source_pull_request_unchanged_without_github_service() {
+    let (_temp, project, main_sha) = setup_remote_repo();
+    let repo = Path::new(&project.working_directory);
+    git(repo, &["checkout", "-b", "feature/source-pr"]);
+    git(repo, &["push", "-u", "origin", "feature/source-pr"]);
+    git(repo, &["checkout", "main"]);
+    let mut target = workspace("feature/source-pr", Some(main_sha));
+    target.project_id = project.id.clone();
+    target.source_pull_request = Some(source_pull_request(42, "feature/source-pr", "main"));
+
+    let resolution = resolve_workspace_base_with_github(&project, &target, None)
+        .await
+        .expect("missing GitHub service must fail open");
+
+    assert_eq!(resolution.status, BaseStatus::Valid);
+    assert_eq!(
+        resolution.effective_base_ref.as_deref(),
+        Some("feature/source-pr")
     );
 }
 

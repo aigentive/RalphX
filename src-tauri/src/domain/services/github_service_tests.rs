@@ -1,5 +1,51 @@
 use super::*;
 
+fn pr_search_result_with_state(state: Option<&str>) -> PrSearchResult {
+    PrSearchResult {
+        number: 42,
+        title: "PR state helper".to_string(),
+        url: "https://github.com/owner/repo/pull/42".to_string(),
+        head_ref_name: "feature/state-helper".to_string(),
+        head_ref_oid: Some("abc123".to_string()),
+        base_ref_name: "main".to_string(),
+        is_draft: false,
+        state: state.map(str::to_string),
+        merged_at: None,
+        updated_at: None,
+        author_login: None,
+        assignee_logins: Vec::new(),
+        review_decision: None,
+        latest_review_author_logins: Vec::new(),
+        review_request_logins: Vec::new(),
+        is_cross_repository: false,
+    }
+}
+
+#[test]
+fn pr_search_result_state_predicates_are_case_insensitive_and_keep_unknown_open() {
+    let open = pr_search_result_with_state(Some("OPEN"));
+    let lowercase_open = pr_search_result_with_state(Some("open"));
+    let merged = pr_search_result_with_state(Some("MERGED"));
+    let closed = pr_search_result_with_state(Some("CLOSED"));
+    let unknown = pr_search_result_with_state(None);
+
+    assert!(open.is_open());
+    assert!(lowercase_open.is_open());
+    assert!(unknown.is_open());
+    assert!(!merged.is_open());
+    assert!(!closed.is_open());
+
+    assert!(merged.is_merged());
+    assert!(!open.is_merged());
+    assert!(!closed.is_merged());
+    assert!(!unknown.is_merged());
+
+    assert!(closed.is_closed_unmerged());
+    assert!(!open.is_closed_unmerged());
+    assert!(!merged.is_closed_unmerged());
+    assert!(!unknown.is_closed_unmerged());
+}
+
 struct DefaultOnlyGithubService;
 
 #[async_trait]
