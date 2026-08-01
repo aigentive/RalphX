@@ -18,6 +18,10 @@ import {
   AGENT_CONTROL_DISABLED_HINT,
   resolveAffordanceGate,
 } from "@/lib/remote/agent-gate";
+import {
+  GATE_WIRED_FILES,
+  quarantinedIds,
+} from "./agent-gate-guard-manifest";
 
 const REMOTE_ID = "env-remote";
 
@@ -368,35 +372,42 @@ describe("group context menu gated action", () => {
  * columns above prove the wiring produces the right outcome.
  */
 describe("gated surfaces stay wired to the gate hook", () => {
-  const files = [
-    "src/components/agents/AgentComposerSurface.tsx",
-    "src/components/Chat/ChatInput.tsx",
-    "src/components/PermissionDialog.tsx",
-    "src/hooks/useQuestionInput.ts",
-    "src/components/tasks/TaskBoard/TaskBoard.tsx",
-    "src/components/tasks/TaskBoard/Column.tsx",
-    "src/components/tasks/TaskContextMenuItems.tsx",
-    "src/components/tasks/GroupContextMenuItems.tsx",
-    "src/components/tasks/detail-views/HumanReviewTaskDetail.tsx",
-    "src/components/tasks/detail-views/EscalatedTaskDetail.tsx",
-    "src/components/tasks/detail-views/BasicTaskDetail.tsx",
-    "src/components/tasks/TaskEditForm.tsx",
-    "src/components/agents/task-details/TaskEditForm.tsx",
-    "src/components/agents/task-details/StepList.tsx",
-    "src/components/Ideation/PlanEditor.tsx",
-    "src/components/Ideation/ProposalCard.tsx",
-    "src/components/Ideation/ProposalDetailSheet.tsx",
-    "src/components/agents/AgentsAutomationPanel.tsx",
-    "src/hooks/useIdeation.ts",
-  ];
-
-  it.each(files)("%s consults useAgentGate", async (file) => {
+  async function readSource(file: string): Promise<string> {
     const { readFileSync } = await import("node:fs");
     const { resolve } = await import("node:path");
-    const source = readFileSync(resolve(__dirname, "../../..", file), "utf8");
+    return readFileSync(resolve(__dirname, "../../..", file), "utf8");
+  }
+
+  function isWired(source: string): boolean {
+    return (
+      source.includes('from "@/hooks/useAgentGate"') &&
+      /use(?:Agent|Field)Gate\(/.test(source)
+    );
+  }
+
+  const quarantined = quarantinedIds("wiring");
+  const enforced = GATE_WIRED_FILES.filter((file) => !quarantined.has(`wiring:${file}`));
+  const expectedUngated = GATE_WIRED_FILES.filter((file) =>
+    quarantined.has(`wiring:${file}`)
+  );
+
+  it.each(enforced)("%s consults useAgentGate", async (file) => {
+    const source = await readSource(file);
     expect(source).toContain('from "@/hooks/useAgentGate"');
     // Named affordance or the scope-only fallback — both are the one hook.
     expect(source).toMatch(/use(?:Agent|Field)Gate\(/);
+  });
+
+  // The ratchet half. These are the Agents-pane detail-view fork — the surface the
+  // remote-primary Agents pane actually renders, which shipped with no gate at all. They
+  // are listed above so the file list can never silently omit the fork again, and pinned
+  // as failing here so Phase 4 cannot fix one without deleting its KNOWN_GATE_GAPS row.
+  it.each(expectedUngated)("%s is still ungated (ratchet)", async (file) => {
+    const source = await readSource(file);
+    expect(
+      isWired(source),
+      `${file} is now gated — delete wiring:${file} from KNOWN_GATE_GAPS`
+    ).toBe(false);
   });
 
   it("keeps the inert brake surfaces free of the gate", async () => {
