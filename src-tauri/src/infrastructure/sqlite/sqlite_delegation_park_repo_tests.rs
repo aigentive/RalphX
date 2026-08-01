@@ -367,3 +367,160 @@ async fn enum_columns_round_trip_as_text_and_reject_invalid_values() {
 
     assert!(repo.get(&park.id).await.is_err());
 }
+
+#[tokio::test]
+async fn memory_repository_enforces_identity_and_orders_active_queries() {
+    let repo = MemoryDelegationParkRepo::default();
+    let conversation_id = ChatConversationId::new();
+    let delegated_run_id = AgentRunId::new();
+    let now = Utc::now();
+    let mut late = park(conversation_id.clone(), 2, now + Duration::hours(2));
+    late.created_at = now + Duration::seconds(2);
+    late.updated_at = late.created_at;
+    late.jobs[0].delegated_agent_run_id = delegated_run_id;
+    let mut early = park(conversation_id.clone(), 1, now + Duration::hours(1));
+    early.created_at = now + Duration::seconds(1);
+    early.updated_at = early.created_at;
+    early.jobs[0].delegated_agent_run_id = delegated_run_id;
+
+    repo.arm(late.clone()).await.unwrap();
+    repo.arm(early.clone()).await.unwrap();
+    assert!(matches!(
+        repo.arm(early.clone()).await.unwrap_err(),
+        crate::error::AppError::Database(_)
+    ));
+    assert!(repo.get(&DelegationParkId::new()).await.unwrap().is_none());
+    assert_eq!(repo.get(&early.id).await.unwrap().unwrap().jobs, early.jobs);
+    assert_eq!(
+        repo.get_armed_for_conversation(&conversation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .id,
+        early.id
+    );
+    assert!(repo
+        .get_armed_for_conversation(&ChatConversationId::new())
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        repo.list_armed()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|value| value.id)
+            .collect::<Vec<_>>(),
+        vec![early.id, late.id]
+    );
+    assert_eq!(
+        repo.list_armed_for_delegated_run(&delegated_run_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|value| value.id)
+            .collect::<Vec<_>>(),
+        vec![early.id, late.id]
+    );
+    assert!(repo
+        .list_armed_for_delegated_run(&AgentRunId::new())
+        .await
+        .unwrap()
+        .is_empty());
+
+    repo.record_job_settled(&early.id, &AgentRunId::new(), "completed")
+        .await
+        .unwrap();
+    assert!(repo.get(&early.id).await.unwrap().unwrap().jobs[0]
+        .settled_status
+        .is_none());
+    repo.record_job_settled(&early.id, &delegated_run_id, "completed")
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.get(&early.id).await.unwrap().unwrap().jobs[0]
+            .settled_status
+            .as_deref(),
+        Some("completed")
+    );
+}
+
+#[tokio::test]
+async fn memory_repository_guards_wake_transitions_and_terminal_queries() {
+    let repo = MemoryDelegationParkRepo::new();
+    let missing = DelegationParkId::new();
+    assert!(!repo.claim_wake(&missing, 1).await.unwrap());
+    assert!(!repo.reset_wake_claim(&missing).await.unwrap());
+    assert!(matches!(
+        repo.record_wake_failure(&missing, "missing")
+            .await
+            .unwrap_err(),
+        crate::error::AppError::NotFound(_)
+    ));
+    repo.settle(&missing, DelegationParkState::Failed, Some("ignored"))
+        .await
+        .unwrap();
+    assert!(repo.get(&missing).await.unwrap().is_none());
+
+    let now = Utc::now();
+    let conversation_id = ChatConversationId::new();
+    let expired = park(conversation_id.clone(), 7, now - Duration::minutes(2));
+    let pending = park(conversation_id.clone(), 8, now + Duration::minutes(2));
+    let other = park(ChatConversationId::new(), 9, now - Duration::minutes(1));
+    for value in [&expired, &pending, &other] {
+        repo.arm((*value).clone()).await.unwrap();
+    }
+
+    assert!(!repo.claim_wake(&expired.id, 6).await.unwrap());
+    assert!(repo.claim_wake(&expired.id, 7).await.unwrap());
+    assert!(!repo.claim_wake(&expired.id, 7).await.unwrap());
+    assert_eq!(
+        repo.list_wake_stalled(Utc::now() + Duration::seconds(1))
+            .await
+            .unwrap()[0]
+            .id,
+        expired.id
+    );
+    assert!(repo.reset_wake_claim(&expired.id).await.unwrap());
+    assert!(!repo.reset_wake_claim(&expired.id).await.unwrap());
+    assert_eq!(
+        repo.list_expired(now)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|value| value.id)
+            .collect::<Vec<_>>(),
+        vec![expired.id, other.id]
+    );
+    assert_eq!(
+        repo.supersede_for_conversation(&conversation_id)
+            .await
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        repo.supersede_for_conversation(&conversation_id)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(repo.list_armed().await.unwrap().len(), 1);
+
+    assert!(repo.claim_wake(&other.id, other.generation).await.unwrap());
+    assert_eq!(
+        repo.record_wake_failure(&other.id, "retry").await.unwrap(),
+        1
+    );
+    repo.settle(
+        &other.id,
+        DelegationParkState::Failed,
+        Some("dispatch failed"),
+    )
+    .await
+    .unwrap();
+    let failed = repo.get(&other.id).await.unwrap().unwrap();
+    assert_eq!(failed.state, DelegationParkState::Failed);
+    assert_eq!(failed.wake_attempts, 1);
+    assert_eq!(failed.last_error.as_deref(), Some("dispatch failed"));
+    assert!(repo.list_wake_stalled(Utc::now()).await.unwrap().is_empty());
+}

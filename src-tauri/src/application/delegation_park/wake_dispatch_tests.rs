@@ -181,3 +181,99 @@ async fn reconciliation_recovers_a_stale_waking_park() {
     );
     assert!(!harness.chat.get_sent_messages().await.is_empty());
 }
+
+#[tokio::test]
+async fn missing_parent_conversation_fails_the_wake_and_emits_attention() {
+    let harness = harness();
+    let park = park(
+        ChatConversationId::new(),
+        AgentRunId::new(),
+        AgentRunId::new(),
+    );
+    harness.parks.insert(park.clone()).await;
+
+    let error = harness
+        .service()
+        .dispatch_wake(&park, DelegationWakeReason::AllSettled)
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, crate::error::AppError::NotFound(_)));
+    assert_eq!(
+        harness.parks.get(&park.id).await.unwrap().unwrap().state,
+        DelegationParkState::Failed
+    );
+    assert_eq!(harness.events.events().len(), 1);
+    assert!(harness.chat.get_sent_messages().await.is_empty());
+}
+
+#[tokio::test]
+async fn missing_delegate_run_fails_closed_before_wake_delivery() {
+    let harness = harness();
+    let (conversation, parent, _) = insert_parent_and_delegate(&harness).await;
+    let park = park(conversation, parent.id, AgentRunId::new());
+    harness.parks.insert(park.clone()).await;
+
+    let error = harness
+        .service()
+        .dispatch_wake(&park, DelegationWakeReason::AllSettled)
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, crate::error::AppError::NotFound(_)));
+    assert_eq!(
+        harness.parks.get(&park.id).await.unwrap().unwrap().state,
+        DelegationParkState::Failed
+    );
+    assert_eq!(harness.events.events().len(), 1);
+    assert!(harness.chat.get_sent_messages().await.is_empty());
+}
+
+#[tokio::test]
+async fn deadline_wake_names_delegates_that_are_still_running() {
+    let harness = harness();
+    let (conversation, parent, delegate) = insert_parent_and_delegate(&harness).await;
+    harness
+        .runs
+        .update_status(&delegate.id, AgentRunStatus::Running)
+        .await
+        .unwrap();
+    let mut park = park(conversation, parent.id, delegate.id);
+    park.deadline_at = Utc::now() - Duration::seconds(1);
+    park.jobs[0].settled_status = None;
+    harness.parks.insert(park).await;
+
+    harness
+        .service()
+        .reconcile_all(harness.runs.as_ref())
+        .await
+        .unwrap();
+
+    let message = &harness.chat.get_sent_messages().await[0];
+    assert!(message.contains("Timeout notice: these jobs never settled: researcher."));
+    assert_eq!(
+        harness.parks.settled.lock().await.as_slice(),
+        &[DelegationParkState::Expired]
+    );
+}
+
+#[tokio::test]
+async fn wake_preview_truncates_long_delegate_errors_at_a_character_boundary() {
+    let harness = harness();
+    let (conversation, parent, delegate) = insert_parent_and_delegate(&harness).await;
+    let long_error = "é".repeat(260);
+    harness.runs.fail(&delegate.id, &long_error).await.unwrap();
+    let mut park = park(conversation, parent.id, delegate.id);
+    park.jobs[0].settled_status = Some("failed".to_string());
+    harness.parks.insert(park.clone()).await;
+
+    harness
+        .service()
+        .dispatch_wake(&park, DelegationWakeReason::DelegateFailed)
+        .await
+        .unwrap();
+
+    let message = &harness.chat.get_sent_messages().await[0];
+    assert!(message.contains(&format!("{}…", "é".repeat(240))));
+    assert!(!message.contains(&"é".repeat(241)));
+}

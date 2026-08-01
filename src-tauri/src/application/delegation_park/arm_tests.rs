@@ -1,10 +1,103 @@
+use async_trait::async_trait;
 use chrono::Duration;
 
-use crate::domain::entities::{AgentRunId, ChatConversationId, DelegationWakePolicy};
+use crate::domain::entities::{
+    AgentRunId, ChatConversationId, DelegationParkJob, DelegationParkState, DelegationWakePolicy,
+};
+use crate::domain::repositories::DelegationParkRepository;
 use crate::infrastructure::agents::claude::delegation_config;
 
-use super::delegation_park_test_support::{harness, park, FakeDelegationJobs};
-use super::{ArmParkRequest, MAX_PARK_JOB_IDS};
+use super::delegation_park_test_support::{
+    harness, insert_parent_and_delegate, park, FakeDelegationJobs,
+};
+use super::{ArmParkRequest, DelegationJobSource, ParkJobSnapshot, MAX_PARK_JOB_IDS};
+
+struct StaticDelegationJobSource(ParkJobSnapshot);
+
+#[async_trait]
+impl DelegationJobSource for StaticDelegationJobSource {
+    async fn park_job_snapshot(&self, _job_id: &str) -> Option<ParkJobSnapshot> {
+        Some(self.0.clone())
+    }
+}
+
+fn request(
+    parent_conversation_id: ChatConversationId,
+    parent_agent_run_id: AgentRunId,
+    job_ids: Vec<String>,
+) -> ArmParkRequest {
+    ArmParkRequest {
+        parent_conversation_id,
+        parent_agent_run_id,
+        job_ids,
+        wake_policy: DelegationWakePolicy::AllSettled,
+        wake_on_failure: false,
+        max_wait_secs: None,
+    }
+}
+
+#[tokio::test]
+async fn arm_rejects_an_empty_job_set_before_repository_work() {
+    let harness = harness();
+    let error = harness
+        .service()
+        .arm(
+            request(ChatConversationId::new(), AgentRunId::new(), Vec::new()),
+            &StaticDelegationJobSource(ParkJobSnapshot {
+                status: "running".to_string(),
+                parent_conversation_id: None,
+                parent_agent_run_id: None,
+                delegated_session_id: "unused".to_string(),
+                delegated_agent_run_id: None,
+            }),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, crate::error::AppError::Validation(_)));
+    assert_eq!(*harness.parks.supersede_count.lock().await, 0);
+}
+
+#[tokio::test]
+async fn arm_rejects_non_running_and_invalid_durable_runs() {
+    let harness = harness();
+    let conversation = ChatConversationId::new();
+    let parent = AgentRunId::new();
+    let non_running = StaticDelegationJobSource(ParkJobSnapshot {
+        status: "completed".to_string(),
+        parent_conversation_id: Some(conversation.as_str()),
+        parent_agent_run_id: Some(parent.as_str()),
+        delegated_session_id: "delegate".to_string(),
+        delegated_agent_run_id: Some(AgentRunId::new().as_str()),
+    });
+    let error = harness
+        .service()
+        .arm(
+            request(conversation.clone(), parent, vec!["job".to_string()]),
+            &non_running,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, crate::error::AppError::Validation(_)));
+
+    let invalid_run = StaticDelegationJobSource(ParkJobSnapshot {
+        status: "running".to_string(),
+        parent_conversation_id: Some(conversation.as_str()),
+        parent_agent_run_id: Some(parent.as_str()),
+        delegated_session_id: "delegate".to_string(),
+        delegated_agent_run_id: Some("not-a-run-id".to_string()),
+    });
+    let error = harness
+        .service()
+        .arm(
+            request(conversation, parent, vec!["job".to_string()]),
+            &invalid_run,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, crate::error::AppError::Validation(_)));
+    assert_eq!(*harness.parks.supersede_count.lock().await, 0);
+}
 
 #[tokio::test]
 async fn arm_rejects_more_job_ids_than_the_park_bound() {
@@ -150,4 +243,52 @@ async fn arm_clamps_wait_and_supersedes_an_armed_park() {
         harness.parks.parks.lock().await[0].state,
         crate::domain::entities::DelegationParkState::Superseded
     );
+}
+
+#[tokio::test]
+async fn settled_job_wakes_the_park_through_the_service_entry_point() {
+    let harness = harness();
+    let (conversation, parent, delegate) = insert_parent_and_delegate(&harness).await;
+    let mut armed = park(conversation, parent.id, delegate.id);
+    armed.jobs[0].settled_status = None;
+    harness.parks.insert(armed.clone()).await;
+
+    harness
+        .service()
+        .note_job_settled(&delegate.id, "completed")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        harness.parks.get(&armed.id).await.unwrap().unwrap().state,
+        DelegationParkState::Woken
+    );
+    assert_eq!(harness.chat.get_sent_messages().await.len(), 1);
+}
+
+#[tokio::test]
+async fn partial_settlement_keeps_an_all_settled_park_armed() {
+    let harness = harness();
+    let (conversation, parent, delegate) = insert_parent_and_delegate(&harness).await;
+    let mut armed = park(conversation, parent.id, delegate.id);
+    armed.jobs[0].settled_status = None;
+    armed.jobs.push(DelegationParkJob {
+        job_id: "other-job".to_string(),
+        delegated_session_id: "other-session".to_string(),
+        delegated_agent_run_id: AgentRunId::new(),
+        settled_status: None,
+    });
+    harness.parks.insert(armed.clone()).await;
+
+    harness
+        .service()
+        .note_job_settled(&delegate.id, "completed")
+        .await
+        .unwrap();
+
+    let updated = harness.parks.get(&armed.id).await.unwrap().unwrap();
+    assert_eq!(updated.state, DelegationParkState::Armed);
+    assert_eq!(updated.jobs[0].settled_status.as_deref(), Some("completed"));
+    assert!(updated.jobs[1].settled_status.is_none());
+    assert!(harness.chat.get_sent_messages().await.is_empty());
 }
