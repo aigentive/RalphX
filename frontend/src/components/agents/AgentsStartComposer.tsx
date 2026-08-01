@@ -24,6 +24,7 @@ import type { ComposerRoleDefault } from "@/api/manual-role-defaults.types";
 import type { Project } from "@/types/project";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
+import { useAgentGate } from "@/hooks/useAgentGate";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
 import { useStartComposerRoleDefault } from "@/hooks/useManualRoleDefaults";
 import { useConfirmation } from "@/hooks/useConfirmation";
@@ -349,6 +350,12 @@ export function AgentsStartComposer({
     isPlaceholderData: isPlaceholderProviderSettings,
   } = useHarnessProviders({ refreshRuntime: true });
   const isRemoteEnvironment = useIsRemoteEnvironment();
+  // Starting a conversation steers an agent, so it needs `ui:agent` remotely and is
+  // `unavailable` on a host that has not registered the spawn-free start command (older
+  // host row, §3.2). `useAgentGate` resolves both from the live confirmed scopes; the reason
+  // rides the existing `sendDisabledReason` seam so the Start button and its keyboard submit
+  // are gated by one value. Local environments always resolve `enabled`.
+  const startGate = useAgentGate("startConversation");
   const lastBranchBaseSelectionByProjectId = useAgentSessionStore(
     (s) => s.lastBranchBaseSelectionByProjectId
   );
@@ -648,6 +655,16 @@ export function AgentsStartComposer({
       );
     }
   }, [featureFlags.standaloneConversations, mode, projectId]);
+
+  // Remote starts are pinned to `chat` on the host (§2.5 `mode` pin). The composer keeps the
+  // client honest: force chat and hide the mode picker so no edit/plan request is composed
+  // that the host would only reject. Local composition is untouched.
+  useEffect(() => {
+    if (isRemoteEnvironment && mode !== "chat") {
+      setMode("chat");
+      setAutomationAuthoringMode(null);
+    }
+  }, [isRemoteEnvironment, mode]);
 
   useEffect(() => {
     if (mode !== "persona_builder") return;
@@ -1690,41 +1707,49 @@ export function AgentsStartComposer({
             {...(reviewPrDefaultPrompt
               ? { emptySubmitMessage: reviewPrDefaultPrompt }
               : {})}
-            mode={{
-              value: mode,
-              onValueChange: (value) => {
-                clearStartError();
-                const nextMode = value as AgentConversationWorkspaceMode;
-                if (nextMode !== mode) {
-                  if (projectId) {
-                    clearLastRuntimeForProject(projectId);
-                  }
-                  setRoleOverrideKey(null);
-                }
-                setMode(nextMode);
-                if (nextMode !== "automation") {
-                  setAutomationAuthoringMode(null);
-                }
-              },
-              options: startModeOptions.filter(
-                (option) => option.id !== "persona_builder" || featureFlags.agentPersonas,
-              ).map((option) => ({
-                ...option,
-                ...(projectId === null && option.requiresProject
-                  ? {
-                      disabled: true,
-                      disabledReason: "Requires a project",
-                    }
-                  : {}),
-              })),
-              secondaryOptionIds: startModeOptions
-                .filter(
-                  (option) =>
-                    !PRIMARY_AGENT_START_MODE_IDS.includes(option.id),
-                )
-                .map((option) => option.id),
-              testId: "agents-start-mode",
-            }}
+            {...(isRemoteEnvironment
+              ? {}
+              : {
+                  mode: {
+                    value: mode,
+                    onValueChange: (value) => {
+                      clearStartError();
+                      const nextMode = value as AgentConversationWorkspaceMode;
+                      if (nextMode !== mode) {
+                        if (projectId) {
+                          clearLastRuntimeForProject(projectId);
+                        }
+                        setRoleOverrideKey(null);
+                      }
+                      setMode(nextMode);
+                      if (nextMode !== "automation") {
+                        setAutomationAuthoringMode(null);
+                      }
+                    },
+                    options: startModeOptions
+                      .filter(
+                        (option) =>
+                          option.id !== "persona_builder" ||
+                          featureFlags.agentPersonas,
+                      )
+                      .map((option) => ({
+                        ...option,
+                        ...(projectId === null && option.requiresProject
+                          ? {
+                              disabled: true,
+                              disabledReason: "Requires a project",
+                            }
+                          : {}),
+                      })),
+                    secondaryOptionIds: startModeOptions
+                      .filter(
+                        (option) =>
+                          !PRIMARY_AGENT_START_MODE_IDS.includes(option.id),
+                      )
+                      .map((option) => option.id),
+                    testId: "agents-start-mode",
+                  },
+                })}
             {...(mode !== "persona_builder" && projectId && capabilityOptions.length > 1
               ? {
                   capability: {
@@ -1811,7 +1836,7 @@ export function AgentsStartComposer({
               testId: "agents-start-effort",
               className: "max-w-[148px] flex-none",
             }}
-            {...(provider === "codex"
+            {...(provider === "codex" && !isRemoteEnvironment
               ? {
                   speed: {
                     value:
@@ -1865,9 +1890,12 @@ export function AgentsStartComposer({
               onReset: handleResetRoleDefault,
             }}
             sendDisabledReason={
-              isResettingRoleDefault
+              // The remote Start gate wins: an `unavailable`/`gated` host means the action
+              // cannot run at all, which is more actionable than a provider-status note.
+              startGate.reason ??
+              (isResettingRoleDefault
                 ? "Resetting the current role default"
-                : providerStatusMessage
+                : providerStatusMessage)
             }
           />
 

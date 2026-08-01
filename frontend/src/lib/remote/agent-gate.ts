@@ -89,7 +89,13 @@ export const AGENT_GATED_AFFORDANCES = {
   // permanently `unavailable` on every paired device.
   agentComposerSend: "send_remote_chat_message",
   chatSend: "send_remote_chat_message",
-  startConversation: "start_agent_conversation",
+  // Starting a conversation routes through the spawn-free facade command, NOT
+  // `start_agent_conversation` — that command fires the process-spawn detectors and
+  // stays unregistered by ruling, so pointing the gate at it would render Start
+  // permanently `unavailable` on every paired host. Until the host registers the
+  // spawn-free command it is absent from `REMOTE_FACADE_OPS` and Start resolves
+  // `unavailable` (older-host row) — derived from absence, never hardcoded.
+  startConversation: "request_remote_agent_conversation_start",
   permissionApprove: "approve_permission_request",
   questionAnswer: "answer_user_question",
   taskMove: "move_task",

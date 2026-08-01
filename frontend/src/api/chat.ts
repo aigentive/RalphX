@@ -3184,6 +3184,65 @@ export const StartAgentConversationResponseSchema = z.object({
   send_result: SendAgentMessageResponseSchema,
 });
 
+/**
+ * The remote spawn-free conversation-start seam (contract §2).
+ *
+ * A paired remote client cannot reach the local process-spawn sink, so it never calls
+ * `start_agent_conversation`. Instead it PERSISTS a start-intent through
+ * `request_remote_agent_conversation_start` (the host seeds its own conversation and a
+ * host-owned dispatcher does the actual spawn), then POLLS
+ * `get_remote_conversation_start_request` until the intent reaches a terminal state.
+ *
+ * Status values are the host enum serialized camelCase
+ * (`RemoteConversationStartStatus`, `serde(rename_all = "camelCase")`).
+ */
+export const RemoteConversationStartStatusSchema = z.enum([
+  "pending",
+  "starting",
+  "started",
+  "failed",
+  "cancelled",
+  "failedStale",
+]);
+export type RemoteConversationStartStatus = z.infer<
+  typeof RemoteConversationStartStatusSchema
+>;
+
+/** Non-`started` terminal states — each carries an `errorCode` the composer can retry from. */
+const REMOTE_CONVERSATION_START_TERMINAL_STATUSES = [
+  "started",
+  "failed",
+  "cancelled",
+  "failedStale",
+] as const;
+
+/** Response of `request_remote_agent_conversation_start` — the persisted-intent handle. */
+const RequestRemoteAgentConversationStartResponseSchema = z
+  .object({
+    startRequestId: z.string(),
+    conversationId: z.string(),
+    status: RemoteConversationStartStatusSchema,
+    createdAt: z.string(),
+  })
+  .strict();
+
+/** Response of `get_remote_conversation_start_request` — the post-submit poll target (§2.7). */
+const GetRemoteConversationStartRequestResponseSchema = z
+  .object({
+    id: z.string(),
+    conversationId: z.string(),
+    status: RemoteConversationStartStatusSchema,
+    errorCode: z.string().nullable(),
+    agentRunId: z.string().nullable(),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+  })
+  .strict();
+
+type RemoteConversationStartRequest = z.infer<
+  typeof GetRemoteConversationStartRequestResponseSchema
+>;
+
 const ForkAgentConversationResponseSchema = z.object({
   parent_conversation: ChatConversationResponseSchema,
   conversation: ChatConversationResponseSchema,
@@ -4627,9 +4686,138 @@ export async function closeAgentWorkspacePr(
   return transformAgentConversationWorkspace(raw);
 }
 
+/**
+ * A remote conversation-start intent that reached a non-`started` terminal state. The host
+ * classifies the failure as `errorCode`; the composer shows it with a retry affordance and
+ * keeps the type (rather than a plain `Error`) so callers can branch on `status`.
+ */
+export class RemoteConversationStartError extends Error {
+  readonly status: RemoteConversationStartStatus;
+  readonly errorCode: string | null;
+  constructor(status: RemoteConversationStartStatus, errorCode: string | null) {
+    super(errorCode ?? `Conversation start ${status}`);
+    this.name = "RemoteConversationStartError";
+    this.status = status;
+    this.errorCode = errorCode;
+  }
+}
+
+/**
+ * Projects a start request onto the spawn-free remote input (contract §2.1/§2.5). Only
+ * client-settable fields cross: project, content, title, and the provider/model/effort
+ * NAMES the host re-validates before spawn. `mode` is pinned `"chat"`; first-turn role,
+ * team intent, base/branch, persona, attachments, and `refreshRuntime` are host-forced or
+ * absent by design and MUST NOT be forwarded.
+ */
+function remoteConversationStartInvokeInput(input: StartAgentConversationInput) {
+  if (!input.projectId) {
+    throw new Error("A project is required to start a conversation remotely.");
+  }
+  return {
+    projectId: input.projectId,
+    content: input.content,
+    ...(input.title ? { title: input.title } : {}),
+    ...(input.providerHarness ? { provider: input.providerHarness } : {}),
+    ...(input.modelId ? { modelOverride: input.modelId } : {}),
+    ...(input.logicalEffort ? { logicalEffort: input.logicalEffort } : {}),
+    mode: "chat" as const,
+  };
+}
+
+const REMOTE_CONVERSATION_START_POLL_INTERVAL_MS = 750;
+/** ~3 minutes at the poll interval — a host that has not settled by then is surfaced as a timeout. */
+const REMOTE_CONVERSATION_START_MAX_POLLS = 240;
+
+function isTerminalRemoteConversationStartStatus(
+  status: RemoteConversationStartStatus,
+): boolean {
+  return (
+    REMOTE_CONVERSATION_START_TERMINAL_STATUSES as readonly string[]
+  ).includes(status);
+}
+
+function remoteConversationStartPollDelay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Polls the host-side start intent to a terminal state. The first read is immediate (so a
+ * host that started synchronously returns without a delay); subsequent reads back off by a
+ * fixed interval. Fail-closed: a repo/read error propagates rather than reading as "not
+ * started yet" forever.
+ */
+async function pollRemoteConversationStart(
+  startRequestId: string,
+): Promise<RemoteConversationStartRequest> {
+  for (
+    let attempt = 0;
+    attempt < REMOTE_CONVERSATION_START_MAX_POLLS;
+    attempt += 1
+  ) {
+    // Literal command name (P-11): the status read is a pure host-side repository read.
+    const request = await typedInvoke(
+      "get_remote_conversation_start_request",
+      { startRequestId },
+      GetRemoteConversationStartRequestResponseSchema,
+    );
+    if (isTerminalRemoteConversationStartStatus(request.status)) {
+      return request;
+    }
+    await remoteConversationStartPollDelay(
+      REMOTE_CONVERSATION_START_POLL_INTERVAL_MS,
+    );
+  }
+  throw new Error(
+    "Timed out waiting for the host to start the conversation. It may still be starting — reopen it from the sidebar.",
+  );
+}
+
+/**
+ * The remote half of `startAgentConversation` (contract §3.1). Persists a start-intent on
+ * the host, polls it to completion, then navigates into the seeded conversation through the
+ * SAME remote transcript read the rest of the Agents surface uses. No local seeded-create
+ * runs — the host command seeds its own conversation.
+ */
+async function startRemoteAgentConversation(
+  input: StartAgentConversationInput,
+): Promise<StartAgentConversationResult> {
+  // Literal command name (P-11): persists a start-intent — no client-side spawn sink.
+  const started = await typedInvoke(
+    "request_remote_agent_conversation_start",
+    { input: remoteConversationStartInvokeInput(input) },
+    RequestRemoteAgentConversationStartResponseSchema,
+  );
+  const request = await pollRemoteConversationStart(started.startRequestId);
+  if (request.status !== "started") {
+    throw new RemoteConversationStartError(
+      request.status,
+      request.errorCode ?? null,
+    );
+  }
+  const { conversation } = await getConversation(request.conversationId);
+  return {
+    conversation,
+    workspace: null,
+    sendResult: {
+      conversationId: request.conversationId,
+      agentRunId: request.agentRunId ?? "",
+      isNewConversation: true,
+      wasQueued: false,
+      queuedAsPending: false,
+    },
+  };
+}
+
 export async function startAgentConversation(
   input: StartAgentConversationInput,
 ): Promise<StartAgentConversationResult> {
+  // Two literal `typedInvoke` sites (P-11): a remote environment persists a start-intent and
+  // polls the host to completion (the host owns the spawn); local starts inline. The remote
+  // branch deliberately skips `startAgentConversationInvokeInput` — its base/persona/team/
+  // attachment fields are host-forced or absent under the spawn-free contract.
+  if (isRemoteEnvironmentId(getTransportEnvironmentId())) {
+    return startRemoteAgentConversation(input);
+  }
   const raw = await typedInvoke(
     "start_agent_conversation",
     {
