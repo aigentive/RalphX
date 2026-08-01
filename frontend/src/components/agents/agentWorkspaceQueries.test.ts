@@ -18,6 +18,19 @@ import {
 } from "./agentWorkspaceQueries";
 
 describe("canInspectAgentWorkspaceFreshness", () => {
+  it("inspects active plan workspaces but keeps missing workspaces ineligible", () => {
+    expect(
+      canInspectAgentWorkspaceFreshness(
+        conversationWorkspaceFixture({ mode: "plan" }),
+      ),
+    ).toBe(true);
+    expect(
+      canInspectAgentWorkspaceFreshness(
+        conversationWorkspaceFixture({ mode: "plan", status: "missing" }),
+      ),
+    ).toBe(false);
+  });
+
   it("does not inspect Git freshness while a durable mutation is active", () => {
     expect(
       canInspectAgentWorkspaceFreshness(

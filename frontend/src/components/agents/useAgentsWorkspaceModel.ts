@@ -128,7 +128,9 @@ export function useAgentsWorkspaceModel({
     activeWorkspace,
     activeWorkspaceFreshnessQuery.data,
   );
-  const activeWorkspaceFreshness = activeWorkspaceFreshnessQuery.data;
+  const activeWorkspaceFreshness = canInspectActiveWorkspaceFreshness
+    ? activeWorkspaceFreshnessQuery.data
+    : undefined;
   const publishShortcutLabel = terminalPublicationLabel
     ? terminalPublicationLabel
     : workspacePublishMode.kind === "unavailable"

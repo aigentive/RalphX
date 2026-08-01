@@ -183,6 +183,20 @@ async function openPublishPane() {
   );
 }
 
+function publishPanelProps(workspace: AgentConversationWorkspace) {
+  return {
+    workspace,
+    conversationTitle: workspace.conversationId,
+    projectBaseBranch: "main",
+    onPublishWorkspace: undefined,
+    publishAttempt: null,
+    activeSubTab: "changes" as const,
+    showReviewTab: false,
+    onSubTabChange: () => undefined,
+    reviewContent: null,
+  };
+}
+
 describe("AgentsView publish", () => {
   beforeEach(() => {
     setupAgentsViewTest();
@@ -209,6 +223,70 @@ describe("AgentsView publish", () => {
       ).toBeInTheDocument();
       expect(actionbar).toHaveTextContent("1 changed file published for review.");
     });
+  });
+
+  it("refetches invalidated plan-mode freshness instead of retaining a cached base-ahead verdict", async () => {
+    configurePublishPane({
+      workspace: {
+        mode: "plan",
+        linkedIdeationSessionId: "planning-session-1",
+      },
+      freshness: { isBaseAhead: false },
+    });
+    const { queryClient } = renderAgentsView();
+    selectSidebarConversationRow();
+    await waitFor(() =>
+      expect(getAgentConversationWorkspaceMock).toHaveBeenCalledWith("conversation-1"),
+    );
+    queryClient.setQueryData(
+      agentWorkspaceKeys.scopedFreshness("conversation-1", "full"),
+      fullFreshness({ isBaseAhead: true }),
+    );
+    await act(async () => {
+      await queryClient.invalidateQueries({
+        queryKey: agentWorkspaceKeys.scopedFreshness("conversation-1", "full"),
+      });
+    });
+
+    fireEvent.click(await screen.findByTestId("agents-publish-workspace"));
+    const actionbar = await screen.findByTestId(
+      "agents-publish-actionbar",
+      undefined,
+      deferredHydrationTimeout,
+    );
+    await waitFor(() =>
+      expect(getAgentConversationWorkspaceFreshnessMock).toHaveBeenCalledWith(
+        "conversation-1",
+        { scope: "full" },
+      ),
+    );
+    await waitFor(() =>
+      expect(
+        within(actionbar).queryByRole("heading", { name: "Update from base required" }),
+      ).not.toBeInTheDocument(),
+    );
+  });
+
+  it("does not render a cached base-ahead banner for a fetch-ineligible workspace", () => {
+    const reviewWorkspace = conversationWorkspace({ mode: "review_pr" });
+    const { queryClient, rerender } = renderWithAgentProviders(
+      <AgentPublishPanel {...publishPanelProps(reviewWorkspace)} />,
+    );
+    queryClient.setQueryData(
+      agentWorkspaceKeys.scopedFreshness(reviewWorkspace.conversationId, "full"),
+      fullFreshness({ isBaseAhead: true }),
+    );
+    rerender(
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>
+          <AgentPublishPanel {...publishPanelProps(reviewWorkspace)} />
+        </TooltipProvider>
+      </QueryClientProvider>,
+    );
+
+    expect(
+      screen.queryByRole("heading", { name: "Update from base required" }),
+    ).not.toBeInTheDocument();
   });
 
   it("uses local commit for local-only and GitHub-opt-out projects, but keeps a persisted PR authoritative", async () => {
