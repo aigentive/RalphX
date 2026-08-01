@@ -149,6 +149,33 @@ describe("remote routing", () => {
     expect(primitiveInvoke).not.toHaveBeenCalled();
   });
 
+  // Phase 2: the Tauri-plugin side door. The `@tauri-apps/api/core` alias covers
+  // node_modules, so these names arrive here from inside the plugin packages themselves.
+  // Before the `plugin:` prefix rule they were proxied to the host, where nothing serves
+  // them — links opened on the host operator's Mac and the notification permission probe
+  // rejected, silently short-circuiting a registered settings write.
+  it.each([
+    "plugin:opener|open_url",
+    "plugin:updater|check",
+    "plugin:global-shortcut|register",
+    "plugin:notification|is_permission_granted",
+    "plugin:dialog|open",
+    "plugin:process|restart",
+  ])("keeps %s on local IPC under a remote environment", async (cmd) => {
+    await wrapper.invoke(cmd, { url: "https://example.test" });
+
+    expect(primitiveInvoke).toHaveBeenCalledTimes(1);
+    expect(primitiveInvoke).toHaveBeenCalledWith(
+      cmd,
+      { url: "https://example.test" },
+      undefined
+    );
+    // The absence assertion is the real one: nothing about this call may reach the host.
+    expect(
+      primitiveInvoke.mock.calls.some(([name]) => name === "remote_invoke")
+    ).toBe(false);
+  });
+
   it("routes locally again as soon as the environment switches back", async () => {
     resetTransportEnvironmentId();
     await wrapper.invoke("list_tasks", { projectId: "p1" });

@@ -3,23 +3,27 @@
 > GENERATED — do not edit by hand. Regenerate: `node scripts/generate-remote-coverage-census.mjs`. Staleness gate: `--check`.
 > This is the PR 3.1-a planning artifact. It registers nothing. Every class here is the ledger's CURRENT value; the per-command hand audit (§3.3) and the P-17 detector run own the final one.
 
-> **P-11 is COMPLETE.** All 518 production invoke command names across `frontend/src` carry a reviewed disposition: remote-registered, reason-coded local-only, or manifest-classified (host-denied / v1-deferred / v1-audit-refused). **0 unclassified, 0 dynamic expressions, 0 suppressions.**
+> **P-11 is COMPLETE.** All 569 production invoke command names carry a reviewed disposition: remote-registered, reason-coded local-only, plugin-local by the `plugin:` prefix rule, or manifest-classified (host-denied / v1-deferred / v1-audit-refused). **0 unclassified, 0 dynamic expressions, 0 suppressions.**
+> The inventory spans two source sets: `frontend/src`, plus the 7 `@tauri-apps/plugin-*` packages it imports. The Vite alias redirects `@tauri-apps/api/core` for the whole module graph, node_modules included, so those packages' own 51 `plugin:` command names ride the same transport — see §7.
 > The ratchet baseline `scripts/remote-transport-drift-baseline.json` is now a PERMANENT ZERO — `check-remote-transport-drift.mjs` fails if it is non-empty and refuses `--update-baseline` when unclassified names exist, so the list cannot quietly regrow. The work-batch sections below are kept as the audit record of how the 499 were resolved.
 
 ## 1. Scan state
 
 ```
-PASS: remote transport drift — 518 invoke command name(s), 0 dynamic, 0 seam bypasses; 277 manifest-classified; 0 unclassified (P-11 COMPLETE — permanent zero).
-      P-11 census: all 518 names have a reviewed disposition — 240 remote-registered, 33 reason-coded local-only, 245 manifest-classified only, 0 unclassified, 0 suppressions.
+PASS: remote transport drift — 569 invoke command name(s), 0 dynamic, 0 seam bypasses; 277 manifest-classified; 0 unclassified (P-11 COMPLETE — permanent zero).
+      P-11 census: all 569 names have a reviewed disposition — 240 remote-registered, 33 reason-coded local-only, 51 plugin-local (prefix rule), 245 manifest-classified only, 0 unclassified, 0 suppressions.
+      Tauri plugin surface: 51 plugin: command name(s) across 7 imported @tauri-apps/plugin-* package(s), 0 reviewed host-targeted exception(s).
 ```
 
 | Measure | Count | Source |
 |---|---|---|
-| Invoke command names in `frontend/src` | 518 | drift scan (AST) |
+| Invoke command names on the transport | 569 | drift scan (AST over `frontend/src` + imported `@tauri-apps/plugin-*`) |
 | Dynamic / unresolvable expressions | 0 | drift scan — must stay 0 |
 | Transport seam bypasses | 0 | drift scan — must stay 0 |
 | Remote-registered (`remote_commands!`) | 241 | `docs/generated/remote-commands.json` |
 | Reason-coded local-only rows | 34 | `frontend/src/lib/remote/local-only-commands.ts` |
+| `plugin:` names classified by the prefix rule | 51 | `PLUGIN_COMMAND_PREFIX` in `local-only-commands.ts` |
+| `plugin:` host-targeted exceptions | 0 | `HOST_TARGETED_PLUGIN_COMMANDS` — reviewed, currently empty |
 | Ledger rows (exhaustive over `generate_handler!`) | 560 | `docs/generated/remote-commands.json` |
 | Manifest-classified (host-denied / v1-deferred) | 277 | `v1Resolution` in `docs/generated/remote-commands.json` |
 | **Unclassified — the 3.1 gap** | **0** | `scripts/remote-transport-drift-baseline.json` |
@@ -366,5 +370,26 @@ Ordering logic: **B0 first** (nothing is measurable without the third dispositio
 | Every gap command in exactly one batch | 0 / 0 |
 | Disposition totals sum to the gap | 0 == 0 |
 | Batch plan claims no empty module and pins no absent command | enforced by the generator |
+| Every discovered `plugin:` name is dispositioned | 51 prefix-rule + 0 exception(s) == 51 |
+
+## 7. The Tauri plugin surface
+
+**51 `plugin:` command names across 7 packages — all routed to the LOCAL device by one prefix rule.**
+
+`frontend/vite.config.ts` aliases `@tauri-apps/api/core` for the whole module graph, node_modules included, so every `@tauri-apps/plugin-*` package invokes through `src/lib/remote/invoke.ts` exactly like an app call site does. None of these names can ever be registered on the host facade — the facade is exhaustive over `generate_handler!`, which plugin commands bypass by construction — so before the prefix rule every one of them travelled to the host and answered `REMOTE_COMMAND_UNAVAILABLE`.
+
+That was not merely unavailable, it was aimed at the wrong machine: `plugin:opener|open_url` opened the host operator's browser, `plugin:updater|check` asked the host whether *this* app binary had an update, global shortcuts bound the host's keyboard, and `plugin:notification|is_permission_granted` rejected — silently short-circuiting a settings write the facade *does* register. Each plugin's subject is the device showing the UI, so the whole namespace is `run-locally`.
+
+Earlier revisions of this census could not see any of it: the drift scan walked `frontend/src` only, and these invoke literals live in node_modules. The headline "0 unclassified" was therefore blind over the namespace rather than true of it. The scan now parses each imported package's shipped ESM bundle with the same AST machinery, folds the names into the same inventory, and classifies them through the prefix rule read out of `local-only-commands.ts` — so the claim covers them.
+
+| Property | Value | Why it is falsifiable |
+|---|---|---|
+| Classification | `plugin:` prefix → `run-locally` | One rule, not 77 call-site edits and not 51 table rows — a plugin added tomorrow inherits it |
+| Host-targeted exceptions | 0 (`HOST_TARGETED_PLUGIN_COMMANDS`) | Reviewed and empty, not absent. An excepted name leaves local-only classification and must earn a registration or a ledger row, or the scan reports it unclassified |
+| Missing prefix rule | fails closed | `parsePluginPrefixRule` returns `null` and classifies nothing, so every plugin name goes unclassified and CI goes red |
+| Dynamic name inside a plugin package | hard failure | An unenumerable name is the blindness itself; a dependency upgrade that introduces one fails the scan instead of under-reporting |
+| Uninstalled imported plugin package | hard failure | An uncomputable census must not pass as an empty one |
+
+Host-path affordances are handled at a different seam and are unaffected: `openPath` / `revealItemInDir` against host-side workspace paths are suppressed by host-affordance gating (`lib/remote/host-affordances.ts`) and degrade to `HostPathCopyButton`, so the prefix rule never opens a host path on the client.
 
 Machine-readable companion for 3.1-b/c: [`remote-coverage-census.json`](./remote-coverage-census.json) — same batches, plus per-command `{batch, module, ledgerClass, capabilities, disposition}` rows.

@@ -39,8 +39,9 @@ export * from "#tauri-core-primitive";
  * Routes one command to the active environment's transport.
  *
  * Local environment → the Tauri IPC primitive, byte-identical to no wrapper at all.
- * Remote environment → `NetworkInvoke`, except for commands pinned in
- * `local-only-commands.ts`.
+ * Remote environment → `NetworkInvoke`, except for commands classified local-only by
+ * `local-only-commands.ts` — either an explicit reason-coded row or the `plugin:`
+ * prefix rule, which keeps the seven Tauri plugin namespaces on THIS device.
  *
  * Signature-compatible with `@tauri-apps/api/core`'s `invoke` by construction — the
  * alias makes every existing caller depend on that.

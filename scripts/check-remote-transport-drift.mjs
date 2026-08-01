@@ -30,10 +30,22 @@
  *      that caller on local IPC while a remote environment is active.
  *
  * Plus a RATCHET on the command inventory: every literal command name resolves through
- * one of THREE sources — remote-registered (host facade), listed in
- * `local-only-commands.ts` with a reason, or carrying a host-denied/deferred
+ * one of FOUR sources — remote-registered (host facade), listed in
+ * `local-only-commands.ts` with a reason, matched by that file's `plugin:` PREFIX RULE
+ * (Phase 2: the seven Tauri plugin namespaces act on THIS device and route locally), or
+ * carrying a host-denied/deferred
  * `v1Resolution` in `docs/generated/remote-commands.json` (P-11 batch B0: commands
  * the facade denies or defers are not client-local and must not claim to be).
+ *
+ * The inventory itself spans TWO source sets, because the transport does:
+ *
+ *   - `frontend/src`, walked above; and
+ *   - the `@tauri-apps/plugin-*` packages `frontend/src` imports. The Vite alias
+ *     redirects `@tauri-apps/api/core` for the WHOLE module graph, node_modules
+ *     included, so those packages' own `invoke("plugin:…")` calls ride this transport
+ *     too — 77 import sites the scan used to be structurally unable to see, which made
+ *     the census's "0 unclassified" claim blind rather than true. Their command literals
+ *     are collected with the same AST machinery and classified by the prefix rule.
  * Anything else is "unclassified". P-11 COMPLETED in PR 3.1-b batch 14: the count is now ZERO
  * and the gate is permanent. The scan fails if any unclassified name appears, AND if the
  * checked-in baseline is non-empty — a recorded entry is a suppression, and the phase doc's
@@ -582,6 +594,99 @@ export function parseLocalOnlyCommands(localOnlySource) {
 }
 
 /**
+ * The `plugin:` PREFIX RULE, read out of `local-only-commands.ts` (Phase 2).
+ *
+ * The policy lives in the seam, not here: this parses `PLUGIN_COMMAND_PREFIX` and the
+ * reviewed `HOST_TARGETED_PLUGIN_COMMANDS` exception list rather than re-declaring either,
+ * so the scan can never certify a routing rule the app does not actually apply.
+ *
+ * Fail-closed: an absent or restructured prefix declaration returns `null`, which classifies
+ * NOTHING — every `plugin:` name then lands in the unclassified list and CI goes red. A
+ * silently-stopped classifier would put the census straight back into the blind state this
+ * whole rule exists to end.
+ *
+ * @returns `{ prefix, exceptions: Set<string> }`, or `null` when the rule is not present
+ */
+export function parsePluginPrefixRule(localOnlySource) {
+  const prefixMatch = localOnlySource.match(
+    /export const PLUGIN_COMMAND_PREFIX\s*=\s*"([^"]+)"/
+  );
+  if (!prefixMatch) return null;
+
+  const listMatch = localOnlySource.match(
+    /export const HOST_TARGETED_PLUGIN_COMMANDS[^=]*=\s*\[([\s\S]*?)\]/
+  );
+  // The list must EXIST even when empty — an exception mechanism that can vanish is not a
+  // mechanism. Its absence is the same fail-closed case as a missing prefix.
+  if (!listMatch) return null;
+
+  return {
+    prefix: prefixMatch[1],
+    exceptions: new Set([...listMatch[1].matchAll(/"([^"]+)"/g)].map((m) => m[1])),
+  };
+}
+
+/**
+ * Does the prefix rule classify this name as client-local?
+ *
+ * An EXCEPTED name answers false on purpose: it leaves local-only classification entirely
+ * and must then earn a registration or a ledger disposition, exactly like any other host
+ * command. That is what makes an exception cost something instead of being a quiet hole.
+ */
+export function pluginRuleClassifies(cmd, rule) {
+  if (rule === null) return false;
+  return cmd.startsWith(rule.prefix) && !rule.exceptions.has(cmd);
+}
+
+/**
+ * `@tauri-apps/plugin-*` packages imported anywhere in `frontend/src`.
+ *
+ * Static imports, `export … from`, and dynamic `import("…")` all count — `lib/open-external.ts`
+ * reaches the opener plugin through a dynamic import, and missing it would leave the single
+ * highest-traffic plugin family (29 sites) out of the census.
+ */
+export function collectPluginPackageSpecifiers(parsedFiles) {
+  const specifiers = new Set();
+  for (const sourceFile of parsedFiles) {
+    walk(sourceFile, (node) => {
+      if (!ts.isStringLiteral(node) && !ts.isNoSubstitutionTemplateLiteral(node)) return;
+      if (!PLUGIN_PACKAGE_SPECIFIER.test(node.text)) return;
+      const parent = node.parent;
+      const isModuleSpecifier =
+        (ts.isImportDeclaration(parent) && parent.moduleSpecifier === node) ||
+        (ts.isExportDeclaration(parent) && parent.moduleSpecifier === node) ||
+        (ts.isCallExpression(parent) &&
+          parent.expression.kind === ts.SyntaxKind.ImportKeyword);
+      if (isModuleSpecifier) specifiers.add(node.text);
+    });
+  }
+  return specifiers;
+}
+
+/** `@tauri-apps/plugin-opener`, but not `@tauri-apps/plugin-opener/something`. */
+const PLUGIN_PACKAGE_SPECIFIER = /^@tauri-apps\/plugin-[a-z0-9-]+$/;
+
+/**
+ * The ESM bundle a plugin package ships — the file the Vite alias rewrites `invoke` inside.
+ *
+ * `dist-js/index.js` only: `index.cjs` is the same source in another module format and parsing
+ * both would double-report a dynamic command expression as two findings for one defect.
+ *
+ * Returns `null` when the package is not installed, which the caller treats as fail-closed
+ * (blind is the state Phase 2 exists to end, so an uncomputable census is an error, not a pass).
+ */
+export function pluginPackageEntryFile(frontendRoot, specifier) {
+  const entry = path.join(
+    frontendRoot,
+    "node_modules",
+    ...specifier.split("/"),
+    "dist-js",
+    "index.js"
+  );
+  return fs.existsSync(entry) ? entry : null;
+}
+
+/**
  * The third classification source (P-11 batch B0).
  *
  * A large block of the gap is neither remote-registered nor client-local: they are host
@@ -924,6 +1029,115 @@ function runSelfTest() {
     }).size === 0
   );
 
+  // --- Phase 2: the Tauri plugin surface -----------------------------------
+  const pluginRuleSource = `
+    export const PLUGIN_COMMAND_PREFIX = "plugin:";
+    export const HOST_TARGETED_PLUGIN_COMMANDS: readonly string[] = [];
+    export const LOCAL_ONLY_COMMANDS = [
+      { command: "remote_invoke", disposition: "run-locally", reason: "…" },
+    ];
+  `;
+  const pluginRule = parsePluginPrefixRule(pluginRuleSource);
+  check("parses the plugin: prefix rule out of local-only-commands.ts", pluginRule?.prefix === "plugin:");
+  check("reads an empty exception list as empty, not as absent", pluginRule?.exceptions.size === 0);
+  check(
+    "classifies a plugin command by prefix",
+    pluginRuleClassifies("plugin:opener|open_url", pluginRule) &&
+      pluginRuleClassifies("plugin:updater|check", pluginRule)
+  );
+  check(
+    "classifies a plugin the app has not installed yet — it is a PREFIX rule, not a list",
+    pluginRuleClassifies("plugin:some-future-plugin|do_thing", pluginRule)
+  );
+  check(
+    "does not classify an ordinary host command",
+    !pluginRuleClassifies("list_tasks", pluginRule) &&
+      !pluginRuleClassifies("install_plugin:opener", pluginRule)
+  );
+  check(
+    "leaves a REVIEWED EXCEPTION unclassified, so it must earn a registration or a ledger row",
+    !pluginRuleClassifies(
+      "plugin:opener|open_url",
+      parsePluginPrefixRule(`
+        export const PLUGIN_COMMAND_PREFIX = "plugin:";
+        export const HOST_TARGETED_PLUGIN_COMMANDS: readonly string[] = ["plugin:opener|open_url"];
+      `)
+    )
+  );
+  check(
+    "fails closed when the prefix declaration is gone — classifies NOTHING rather than silently stopping",
+    parsePluginPrefixRule(`export const LOCAL_ONLY_COMMANDS = [];`) === null &&
+      !pluginRuleClassifies("plugin:opener|open_url", null)
+  );
+  check(
+    "fails closed when the exception LIST is gone — the mechanism may not vanish",
+    parsePluginPrefixRule(`export const PLUGIN_COMMAND_PREFIX = "plugin:";`) === null
+  );
+  check(
+    "notices plugin package specifiers behind static, dynamic, and re-export imports",
+    (() => {
+      const found = collectPluginPackageSpecifiers([
+        parse(
+          "frontend/src/lib/plugins.ts",
+          `import { openUrl } from "@tauri-apps/plugin-opener";
+           export { check } from "@tauri-apps/plugin-updater";
+           const later = await import("@tauri-apps/plugin-dialog");
+           import { invoke } from "@tauri-apps/api/core";
+           const label = "@tauri-apps/plugin-opener";`
+        ),
+      ]);
+      return (
+        found.size === 3 &&
+        found.has("@tauri-apps/plugin-opener") &&
+        found.has("@tauri-apps/plugin-updater") &&
+        found.has("@tauri-apps/plugin-dialog")
+      );
+    })()
+  );
+  check(
+    "inventories a plugin package's own invoke literals with the same AST machinery",
+    (() => {
+      // The shape the real packages ship: a bare `invoke` import from the ALIASED core, then
+      // literal `plugin:<ns>|<cmd>` names. This is why they ride our transport at all.
+      const pluginFixture = parse(
+        "frontend/node_modules/@tauri-apps/plugin-opener/dist-js/index.js",
+        `import { invoke } from "@tauri-apps/api/core";
+         async function openUrl(url) { await invoke("plugin:opener|open_url", { url }); }
+         async function openPath(p) { await invoke("plugin:opener|open_path", { path: p }); }`
+      );
+      const names = collectInvokeCallSites(
+        [pluginFixture],
+        collectForwarders([pluginFixture])
+      ).map((site) => site.command);
+      return (
+        names.length === 2 &&
+        names.includes("plugin:opener|open_url") &&
+        names.includes("plugin:opener|open_path")
+      );
+    })()
+  );
+  check(
+    "still flags a DYNAMIC command inside a plugin package — an unenumerable name is the blindness itself",
+    (() => {
+      const dynamicPlugin = parse(
+        "frontend/node_modules/@tauri-apps/plugin-x/dist-js/index.js",
+        `import { invoke } from "@tauri-apps/api/core";
+         async function go(op) { await invoke(\`plugin:x|\${op}\`, {}); }`
+      );
+      return collectInvokeCallSites(
+        [dynamicPlugin],
+        collectForwarders([dynamicPlugin])
+      ).some((site) => site.command === null);
+    })()
+  );
+  check(
+    "reports an uninstalled plugin package rather than treating it as zero commands",
+    pluginPackageEntryFile(
+      path.join(repoRoot, "frontend"),
+      "@tauri-apps/plugin-does-not-exist"
+    ) === null
+  );
+
   // --- P-11 exit criterion (batch 14): the permanent zero -------------------
   check(
     "P-11 passes only when BOTH the live count and the baseline are empty",
@@ -947,7 +1161,7 @@ function runSelfTest() {
     failures.forEach((failure) => console.error(`  ${failure}`));
     process.exit(1);
   }
-  console.log("PASS: drift-scan self-test (35 detector cases)");
+  console.log("PASS: drift-scan self-test (46 detector cases)");
   process.exit(0);
 }
 
@@ -971,6 +1185,43 @@ const parsedFiles = sourceFiles(sourceRoot).map((filePath) =>
 const forwarders = collectForwarders(parsedFiles);
 const callSites = collectInvokeCallSites(parsedFiles, forwarders);
 
+// --- The Tauri plugin surface (Phase 2) ------------------------------------
+//
+// These files are NOT ours, but their invokes are on our transport: the `@tauri-apps/api/core`
+// alias covers node_modules, so `@tauri-apps/plugin-opener`'s own `invoke("plugin:opener|open_url")`
+// arrives at `lib/remote/invoke.ts` exactly like an app call site does. Scanning only
+// `frontend/src` is what made the P-11 census structurally unable to see 77 import sites'
+// worth of commands and still report "0 unclassified".
+const pluginSpecifiers = [...collectPluginPackageSpecifiers(parsedFiles)].sort();
+const pluginPackageFailures = [];
+const pluginParsedFiles = [];
+for (const specifier of pluginSpecifiers) {
+  const entry = pluginPackageEntryFile(frontendRoot, specifier);
+  if (entry === null) {
+    pluginPackageFailures.push({
+      file: `frontend/node_modules/${specifier}`,
+      line: 0,
+      detail:
+        `imported by frontend/src but not installed — the plugin: command census cannot be ` +
+        "computed, and an uncomputable census must not pass as an empty one",
+    });
+    continue;
+  }
+  pluginParsedFiles.push(parse(toRepoPath(entry), fs.readFileSync(entry, "utf8")));
+}
+
+const pluginCallSites = collectInvokeCallSites(
+  pluginParsedFiles,
+  collectForwarders(pluginParsedFiles)
+);
+const pluginCommands = [
+  ...new Set(
+    pluginCallSites
+      .filter((site) => site.command !== null)
+      .map((site) => site.command)
+  ),
+].sort();
+
 const hardFailures = [
   ...callSites
     .filter((site) => site.command === null)
@@ -979,6 +1230,20 @@ const hardFailures = [
       line: site.line,
       detail:
         "dynamic invoke command expression — every production command name must be a literal (P-11)",
+    })),
+  ...pluginPackageFailures,
+  // A dynamic command inside a plugin package is not a defect we can fix in this repo, but it
+  // IS a name the census cannot enumerate — which is precisely the blindness Phase 2 closed.
+  // Failing loudly on a dependency upgrade that introduces one beats quietly under-reporting.
+  ...pluginCallSites
+    .filter((site) => site.command === null)
+    .map((site) => ({
+      file: site.file,
+      line: site.line,
+      detail:
+        "dynamic invoke command expression inside a Tauri plugin package — its command name " +
+        "cannot be enumerated, so the plugin: census would silently under-report it. Pin the " +
+        "plugin version, or classify the name explicitly in local-only-commands.ts",
     })),
   ...collectFetchBypasses(parsedFiles),
   ...collectWrapperNetworkEscapes(parsedFiles),
@@ -1004,9 +1269,17 @@ if (registered === null) {
     "WARN: no remote_commands! block found; treating the host facade as empty (PR 1.3 in flight)"
   );
 }
-const localOnly = fs.existsSync(localOnlyPath)
-  ? parseLocalOnlyCommands(fs.readFileSync(localOnlyPath, "utf8"))
-  : new Set();
+const localOnlySource = fs.existsSync(localOnlyPath)
+  ? fs.readFileSync(localOnlyPath, "utf8")
+  : "";
+const localOnly = parseLocalOnlyCommands(localOnlySource);
+const pluginRule = parsePluginPrefixRule(localOnlySource);
+if (pluginRule === null && pluginCommands.length > 0) {
+  console.warn(
+    "WARN: no `plugin:` prefix rule found in local-only-commands.ts; every plugin command " +
+      "name will report as unclassified (Phase 2 routing policy missing or restructured)"
+  );
+}
 
 const manifestClassified = fs.existsSync(manifestPath)
   ? parseManifestClassifications(JSON.parse(fs.readFileSync(manifestPath, "utf8")))
@@ -1018,11 +1291,17 @@ if (manifestClassified.size === 0) {
   );
 }
 
-const commands = [...new Set(callSites.map((site) => site.command))].sort();
+// One inventory over both source sets. Plugin names are first-class members of it — a census
+// that counted them separately could still report "0 unclassified" while a plugin family sat
+// unrouted, which is the exact shape of the bug Phase 2 fixed.
+const commands = [
+  ...new Set([...callSites.map((site) => site.command), ...pluginCommands]),
+].sort();
 const unclassified = commands.filter(
   (command) =>
     !(registered ?? new Set()).has(command) &&
     !localOnly.has(command) &&
+    !pluginRuleClassifies(command, pluginRule) &&
     !manifestClassified.has(command)
 );
 
@@ -1119,26 +1398,32 @@ for (const violation of p11ExitViolations(unclassified, baselineSet)) {
 
 // The census statement: every invoke name the AST scan resolved has a reviewed disposition.
 //
-// Reported as a genuine PARTITION, in the precedence the resolver itself uses. The three source
+// Reported as a genuine PARTITION, in the precedence the resolver itself uses. The source
 // sets overlap — a registered command also carries a ledger row, so it appears in
 // `manifestClassified` too — and adding the raw sizes would exceed the name count and look like
-// a coverage claim nobody made. Each name is counted exactly once, and the four buckets sum to
+// a coverage claim nobody made. Each name is counted exactly once, and the five buckets sum to
 // `commands.length` by construction because `unclassified` is their complement.
 const registeredSet = registered ?? new Set();
 let registeredCount = 0;
 let localOnlyCount = 0;
+let pluginLocalCount = 0;
 let manifestOnlyCount = 0;
 for (const command of commands) {
   if (registeredSet.has(command)) registeredCount += 1;
   else if (localOnly.has(command)) localOnlyCount += 1;
+  else if (pluginRuleClassifies(command, pluginRule)) pluginLocalCount += 1;
   else if (manifestClassified.has(command)) manifestOnlyCount += 1;
 }
 const dispositioned =
-  registeredCount + localOnlyCount + manifestOnlyCount + unclassified.length;
+  registeredCount +
+  localOnlyCount +
+  pluginLocalCount +
+  manifestOnlyCount +
+  unclassified.length;
 if (dispositioned !== commands.length) {
   console.error(
     `FAIL: P-11 census does not partition — ${dispositioned} dispositions for ` +
-      `${commands.length} names. The four buckets must be exhaustive and disjoint.`
+      `${commands.length} names. The five buckets must be exhaustive and disjoint.`
   );
   process.exit(1);
 }
@@ -1151,5 +1436,11 @@ console.log(
 console.log(
   `      P-11 census: all ${commands.length} names have a reviewed disposition — ` +
     `${registeredCount} remote-registered, ${localOnlyCount} reason-coded local-only, ` +
+    `${pluginLocalCount} plugin-local (prefix rule), ` +
     `${manifestOnlyCount} manifest-classified only, 0 unclassified, 0 suppressions.`
+);
+console.log(
+  `      Tauri plugin surface: ${pluginCommands.length} plugin: command name(s) across ` +
+    `${pluginSpecifiers.length} imported @tauri-apps/plugin-* package(s), ` +
+    `${pluginRule?.exceptions.size ?? 0} reviewed host-targeted exception(s).`
 );
