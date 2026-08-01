@@ -47,6 +47,10 @@ const AGENT_AND_CONTENT: &[Capability] = &[
     Capability::AgentControl,
     Capability::MutatesAgentConsumedContent,
 ];
+const CONTENT_AND_SEEDS: &[Capability] = &[
+    Capability::MutatesAgentConsumedContent,
+    Capability::SeedsSpawnTriggeringState,
+];
 const PROCESS: &[Capability] = &[Capability::SpawnsProcess];
 /// The process floor PLUS retained detector-(b) evidence. PR 3.1-b batch 14: a row may be
 /// foreclosed by a launch and still be a proof-class arming writer, and erasing the weaker tag
@@ -225,6 +229,10 @@ pub const MODULE_DEFAULTS: &[ModuleDefault] = &[
     // ChatService), but the default stays conservative: a future member must earn a
     // narrower row rather than inherit one.
     agent_default("remote_chat_commands"),
+    // Same construction and the same conservative default as `remote_chat_commands`: the module
+    // takes no AppHandle/ExecutionState/ChatService, so it cannot spawn, but a future member must
+    // still earn its own row rather than inherit the start command's.
+    agent_default("remote_conversation_start_commands"),
     // Same construction and the same conservative default as `remote_chat_commands`: the
     // module cannot spawn (no AppHandle, no ExecutionState, no ChatService), but a future
     // member must still earn its own row rather than inherit a narrow one.
@@ -426,6 +434,31 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
              and refuses when no live run would drain the row, so a message can never be \
              persisted as sent yet delivered to nobody. The role is pinned to \"user\" at \
              dispatch, so a remote client cannot forge an orchestrator speaker label",
+        ),
+    },
+    // Reviewed, not inherited. Seeds a start-intent row the host-owned dispatcher loop consumes
+    // to spawn — honestly `SeedsSpawnTriggeringState`, the same capability inject_task /
+    // resume_automation / finalize_automation carry — PLUS `MutatesAgentConsumedContent` for the
+    // first-turn content it seeds. Detector-silent on (a)/(c); detector (b) flags it mechanically
+    // via the `remote-conversation-start` surface row, so no declared-membership compensation is
+    // needed. The unknown-model pass-through of the local start path is deliberately NOT reused.
+    CommandOverride {
+        command: "request_remote_agent_conversation_start",
+        policy: policy(
+            RiskClass::AgentControl,
+            CONTENT_AND_SEEDS,
+            "seeds-spawn-triggering-state: persists a mode-pinned chat start intent a host loop \
+             later spawns; validates provider/model/project fail-closed and rejects unknown \
+             models rather than passing them to CLI argv; resolves no CLI path and arms no \
+             scheduler in-band",
+        ),
+    },
+    CommandOverride {
+        command: "get_remote_conversation_start_request",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "pure repository read of one start-intent row; no spawn carrier; propagates read errors",
         ),
     },
     CommandOverride {

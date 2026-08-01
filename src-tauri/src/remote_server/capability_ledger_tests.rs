@@ -992,7 +992,10 @@ fn detector_b_is_calibrated_and_floor_enforced() {
         // A pure `agent_provider_settings_repo.list()` read + struct mapping; carries no
         // AppHandle/ExecutionState/ChatService, so it is detector-silent by construction, the
         // same clearance class as the two `remote_workspace_commands` reads it sits beside.
-        553,
+        // 553 -> 555: the spawn-free conversation-start pair. `request_remote_agent_conversation_start`
+        // persists a start intent (detector (b) flags it via the `remote-conversation-start`
+        // surface row; silent on (a)/(c)); `get_remote_conversation_start_request` is a pure read.
+        555,
         "review the detector against the full command census"
     );
     let flagged = spawn_triggering_writers(
