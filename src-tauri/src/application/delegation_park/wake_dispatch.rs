@@ -1,8 +1,6 @@
 use std::time::Duration;
 
-use crate::application::chat_service::{
-    SendCallerContext, SendMessageOptions, SendQueuePolicy,
-};
+use crate::application::chat_service::{SendCallerContext, SendMessageOptions, SendQueuePolicy};
 use crate::domain::entities::{DelegationPark, DelegationParkState, DelegationWakeReason};
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::delegation_config;
@@ -65,6 +63,12 @@ impl DelegationParkService {
         let config = delegation_config();
         let retry_max = config.park_wake_retry_max.max(1);
         loop {
+            let Some(current_park) = self.park_repo.get(&park.id).await? else {
+                return Ok(());
+            };
+            if current_park.state != DelegationParkState::Waking {
+                return Ok(());
+            }
             match self
                 .chat_service
                 .send_message(

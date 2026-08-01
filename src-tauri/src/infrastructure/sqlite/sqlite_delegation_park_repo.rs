@@ -202,6 +202,31 @@ impl DelegationParkRepository for SqliteDelegationParkRepo {
             .await
     }
 
+    async fn get_settlement_blocking_for_conversation(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<DelegationPark>> {
+        let conversation_id = conversation_id.as_str();
+        self.db
+            .run(move |conn| {
+                let query = format!(
+                    "SELECT {PARK_COLUMNS} FROM delegation_parks
+                     WHERE parent_conversation_id = ?1
+                       AND state IN ('armed', 'waking', 'woken')
+                     ORDER BY updated_at DESC, id DESC LIMIT 1"
+                );
+                let Some(mut park) = conn
+                    .query_row(&query, [conversation_id], park_from_row)
+                    .optional()?
+                else {
+                    return Ok(None);
+                };
+                park.jobs = load_jobs(conn, &park.id)?;
+                Ok(Some(park))
+            })
+            .await
+    }
+
     async fn list_armed(&self) -> AppResult<Vec<DelegationPark>> {
         self.db
             .run(move |conn| {
@@ -353,7 +378,7 @@ impl DelegationParkRepository for SqliteDelegationParkRepo {
             .run(move |conn| {
                 conn.execute(
                     "UPDATE delegation_parks SET state = 'superseded', updated_at = ?1
-                     WHERE parent_conversation_id = ?2 AND state = 'armed'",
+                     WHERE parent_conversation_id = ?2 AND state IN ('armed', 'waking')",
                     params![updated_at, conversation_id],
                 )
                 .map_err(AppError::from)

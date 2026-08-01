@@ -33,6 +33,20 @@ pub trait DelegationParkRepository: Send + Sync {
         conversation_id: &ChatConversationId,
     ) -> AppResult<Option<DelegationPark>>;
 
+    /// Return the newest park that still blocks settlement of this conversation's delegated job.
+    ///
+    /// Armed and waking parks always block. A woken park remains blocking until its resumed run
+    /// exists; the settlement caller performs that run-authority check. `Ok(None)` means there is
+    /// genuinely no blocking park.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the lookup fails so callers cannot mistake it for settlement authority.
+    async fn get_settlement_blocking_for_conversation(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<DelegationPark>>;
+
     /// List every currently armed delegation park.
     ///
     /// # Errors
@@ -102,7 +116,7 @@ pub trait DelegationParkRepository: Send + Sync {
         error: Option<&str>,
     ) -> AppResult<()>;
 
-    /// Supersede all armed parks for a parent conversation.
+    /// Supersede all armed or waking parks for a parent conversation.
     ///
     /// # Errors
     ///

@@ -1,4 +1,5 @@
 use super::*;
+use crate::domain::entities::DelegationParkState;
 
 fn delegated_event_seq() -> u64 {
     u64::try_from(Utc::now().timestamp_millis()).unwrap_or_default()
@@ -366,12 +367,110 @@ fn delegated_run_summary(run: AgentRun) -> DelegatedRunSummary {
     }
 }
 
+async fn resolve_current_delegated_run(
+    state: &HttpServerState,
+    conversation_id: &ChatConversationId,
+    launch_run_id: Option<&str>,
+) -> crate::error::AppResult<Option<AgentRun>> {
+    match state
+        .app_state
+        .agent_run_repo
+        .get_latest_for_conversation(conversation_id)
+        .await?
+    {
+        Some(run) => Ok(Some(run)),
+        None => match launch_run_id {
+            Some(run_id) => {
+                state
+                    .app_state
+                    .agent_run_repo
+                    .get_by_id(&AgentRunId::from_string(run_id.to_string()))
+                    .await
+            }
+            None => Ok(None),
+        },
+    }
+}
+
 async fn settle_delegation_from_run(
     state: &HttpServerState,
     job_id: &str,
-    run: AgentRun,
-    completed_content: Option<String>,
+    mut run: AgentRun,
+    mut completed_content: Option<String>,
 ) -> crate::error::AppResult<Option<DelegationJobSnapshot>> {
+    if run.status == crate::domain::entities::AgentRunStatus::Running {
+        return Ok(None);
+    }
+    let registered = state.delegation_service.snapshot(job_id).await;
+    if let Some(snapshot) = registered.as_ref() {
+        if snapshot.status != "running" {
+            return Ok(Some(snapshot.clone()));
+        }
+    }
+
+    // Nested delegation: a delegate remains unfinished through arm, wake dispatch, and the gap
+    // before its resumed run exists. Fail closed on park/run reads so stale launch output can never
+    // authorize parent settlement.
+    if let Some(delegated_conversation_id) = registered
+        .as_ref()
+        .and_then(|snapshot| snapshot.delegated_conversation_id.as_deref())
+    {
+        let conversation_id =
+            ChatConversationId::from_string(delegated_conversation_id.to_string());
+        if let Some(park) = state
+            .app_state
+            .delegation_park_repo
+            .get_settlement_blocking_for_conversation(&conversation_id)
+            .await?
+        {
+            match park.state {
+                DelegationParkState::Armed | DelegationParkState::Waking => return Ok(None),
+                DelegationParkState::Woken => {
+                    let Some(current_run) = resolve_current_delegated_run(
+                        state,
+                        &conversation_id,
+                        registered
+                            .as_ref()
+                            .and_then(|snapshot| snapshot.delegated_agent_run_id.as_deref()),
+                    )
+                    .await?
+                    else {
+                        return Ok(None);
+                    };
+                    let parked_run_id = park.parent_agent_run_id.as_str();
+                    let is_resumed_run = current_run.id != park.parent_agent_run_id
+                        && (current_run.parent_run_id.as_deref() == Some(parked_run_id.as_str())
+                            || current_run.started_at >= park.updated_at);
+                    if !is_resumed_run
+                        || current_run.status == crate::domain::entities::AgentRunStatus::Running
+                    {
+                        return Ok(None);
+                    }
+                    if current_run.id != run.id {
+                        completed_content = if current_run.status
+                            == crate::domain::entities::AgentRunStatus::Completed
+                        {
+                            state
+                                .app_state
+                                .chat_message_repo
+                                .get_by_conversation(&conversation_id)
+                                .await
+                                .ok()
+                                .and_then(latest_delegated_handoff_message)
+                                .map(|message| message.content)
+                        } else {
+                            None
+                        };
+                        run = current_run;
+                    }
+                }
+                DelegationParkState::Superseded
+                | DelegationParkState::Expired
+                | DelegationParkState::Failed => {}
+            }
+        }
+    }
+
     let (status, error) = match run.status {
         crate::domain::entities::AgentRunStatus::Running => return Ok(None),
         crate::domain::entities::AgentRunStatus::Completed => ("completed", None),
@@ -385,34 +484,6 @@ async fn settle_delegation_from_run(
         ),
         crate::domain::entities::AgentRunStatus::Cancelled => ("cancelled", None),
     };
-    let registered = state.delegation_service.snapshot(job_id).await;
-    if let Some(snapshot) = registered.as_ref() {
-        if snapshot.status != "running" {
-            return Ok(Some(snapshot.clone()));
-        }
-    }
-
-    // Nested delegation: a delegate that ended its turn with an armed park is WAITING on its own
-    // delegates, not finished. Settling its parent's job here would report it complete while it is
-    // still coordinating. Fail closed on read errors — the caller treats `Err` as "settlement
-    // remains pending" and the monitor retries, whereas treating an errored read as "no park"
-    // would let a merely-parked delegate be settled.
-    if let Some(delegated_conversation_id) = registered
-        .as_ref()
-        .and_then(|snapshot| snapshot.delegated_conversation_id.as_deref())
-    {
-        let conversation_id =
-            ChatConversationId::from_string(delegated_conversation_id.to_string());
-        if state
-            .app_state
-            .delegation_park_repo
-            .get_armed_for_conversation(&conversation_id)
-            .await?
-            .is_some()
-        {
-            return Ok(None);
-        }
-    }
 
     let terminal_status = match run.status {
         crate::domain::entities::AgentRunStatus::Completed => {
@@ -1059,31 +1130,15 @@ pub(crate) async fn start_delegate_impl_with_parent_run(
             // A delegate that parks and is later woken resumes on a NEW run; watching the
             // launch run would settle this job on a stale, already-terminal attempt while the
             // delegate is still working.
-            let run = match monitor_state
-                .app_state
-                .agent_run_repo
-                .get_latest_for_conversation(&conversation_id)
-                .await
+            let run = match resolve_current_delegated_run(
+                &monitor_state,
+                &conversation_id,
+                Some(&launch_run_id),
+            )
+            .await
             {
                 Ok(Some(run)) => run,
-                Ok(None) => {
-                    // Fall back to the launch run until the conversation has any run row.
-                    match monitor_state
-                        .app_state
-                        .agent_run_repo
-                        .get_by_id(&crate::domain::entities::AgentRunId::from_string(
-                            launch_run_id.clone(),
-                        ))
-                        .await
-                    {
-                        Ok(Some(run)) => run,
-                        Ok(None) => continue,
-                        Err(error) => {
-                            warn!(job_id, %error, "Delegated run state read failed; settlement remains pending");
-                            continue;
-                        }
-                    }
-                }
+                Ok(None) => continue,
                 Err(error) => {
                     warn!(job_id, %error, "Delegated run state read failed; settlement remains pending");
                     continue;
@@ -1255,12 +1310,22 @@ async fn resolve_or_settle_job(
         .await
         .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Delegation job not found"))?;
     if snapshot.status == "running" {
-        if let Some(run_id) = snapshot.delegated_agent_run_id.as_deref() {
-            let run = state
-                .app_state
-                .agent_run_repo
-                .get_by_id(&AgentRunId::from_string(run_id.to_string()))
-                .await
+        if let Some(launch_run_id) = snapshot.delegated_agent_run_id.as_deref() {
+            let run =
+                if let Some(conversation_id) = snapshot.delegated_conversation_id.as_deref() {
+                    resolve_current_delegated_run(
+                        state,
+                        &ChatConversationId::from_string(conversation_id.to_string()),
+                        Some(launch_run_id),
+                    )
+                    .await
+                } else {
+                    state
+                        .app_state
+                        .agent_run_repo
+                        .get_by_id(&AgentRunId::from_string(launch_run_id.to_string()))
+                        .await
+                }
                 .map_err(|error| {
                     json_error(
                         StatusCode::SERVICE_UNAVAILABLE,

@@ -1,4 +1,7 @@
-use std::sync::{atomic::AtomicBool, Arc};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
@@ -58,6 +61,7 @@ impl DelegationJobSource for FakeDelegationJobs {
 pub(super) struct MemoryParkRepository {
     pub(super) parks: Mutex<Vec<DelegationPark>>,
     pub(super) claim_result: AtomicBool,
+    pub(super) supersede_on_get: AtomicBool,
     pub(super) supersede_count: Mutex<usize>,
     pub(super) settled: Mutex<Vec<DelegationParkState>>,
 }
@@ -76,13 +80,14 @@ impl DelegationParkRepository for MemoryParkRepository {
     }
 
     async fn get(&self, id: &DelegationParkId) -> AppResult<Option<DelegationPark>> {
-        Ok(self
-            .parks
-            .lock()
-            .await
-            .iter()
-            .find(|park| &park.id == id)
-            .cloned())
+        let mut parks = self.parks.lock().await;
+        if self.supersede_on_get.swap(false, Ordering::SeqCst) {
+            if let Some(park) = parks.iter_mut().find(|park| &park.id == id) {
+                park.state = DelegationParkState::Superseded;
+                park.updated_at = Utc::now();
+            }
+        }
+        Ok(parks.iter().find(|park| &park.id == id).cloned())
     }
 
     async fn get_armed_for_conversation(
@@ -98,6 +103,28 @@ impl DelegationParkRepository for MemoryParkRepository {
                 park.parent_conversation_id == *conversation_id
                     && park.state == DelegationParkState::Armed
             })
+            .cloned())
+    }
+
+    async fn get_settlement_blocking_for_conversation(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<DelegationPark>> {
+        Ok(self
+            .parks
+            .lock()
+            .await
+            .iter()
+            .filter(|park| {
+                park.parent_conversation_id == *conversation_id
+                    && matches!(
+                        park.state,
+                        DelegationParkState::Armed
+                            | DelegationParkState::Waking
+                            | DelegationParkState::Woken
+                    )
+            })
+            .max_by_key(|park| park.updated_at)
             .cloned())
     }
 
@@ -243,7 +270,10 @@ impl DelegationParkRepository for MemoryParkRepository {
         let mut count = 0;
         for park in self.parks.lock().await.iter_mut() {
             if park.parent_conversation_id == *conversation_id
-                && park.state == DelegationParkState::Armed
+                && matches!(
+                    park.state,
+                    DelegationParkState::Armed | DelegationParkState::Waking
+                )
             {
                 park.state = DelegationParkState::Superseded;
                 count += 1;

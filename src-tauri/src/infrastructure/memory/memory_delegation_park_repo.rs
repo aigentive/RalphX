@@ -73,6 +73,32 @@ impl DelegationParkRepository for MemoryDelegationParkRepo {
         Ok(parks.into_iter().next())
     }
 
+    async fn get_settlement_blocking_for_conversation(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<DelegationPark>> {
+        Ok(self
+            .parks
+            .read()
+            .await
+            .values()
+            .filter(|park| {
+                park.parent_conversation_id == *conversation_id
+                    && matches!(
+                        park.state,
+                        DelegationParkState::Armed
+                            | DelegationParkState::Waking
+                            | DelegationParkState::Woken
+                    )
+            })
+            .max_by(|left, right| {
+                left.updated_at
+                    .cmp(&right.updated_at)
+                    .then_with(|| left.id.as_str().cmp(&right.id.as_str()))
+            })
+            .cloned())
+    }
+
     async fn list_armed(&self) -> AppResult<Vec<DelegationPark>> {
         let mut parks = self
             .parks
@@ -203,7 +229,10 @@ impl DelegationParkRepository for MemoryDelegationParkRepo {
         let mut count = 0;
         for park in self.parks.write().await.values_mut() {
             if park.parent_conversation_id == *conversation_id
-                && park.state == DelegationParkState::Armed
+                && matches!(
+                    park.state,
+                    DelegationParkState::Armed | DelegationParkState::Waking
+                )
             {
                 park.state = DelegationParkState::Superseded;
                 park.updated_at = Utc::now();

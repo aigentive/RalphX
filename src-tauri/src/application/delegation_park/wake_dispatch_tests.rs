@@ -52,6 +52,30 @@ async fn dispatch_wake_supersedes_when_another_run_is_active() {
 }
 
 #[tokio::test]
+async fn user_supersession_during_dispatch_aborts_wake_delivery() {
+    let harness = harness();
+    let (conversation, parent, delegate) = insert_parent_and_delegate(&harness).await;
+    let park = park(conversation, parent.id, delegate.id);
+    harness.parks.insert(park.clone()).await;
+    harness
+        .parks
+        .supersede_on_get
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+
+    harness
+        .service()
+        .dispatch_wake(&park, DelegationWakeReason::AllSettled)
+        .await
+        .unwrap();
+
+    assert!(harness.chat.get_sent_messages().await.is_empty());
+    assert_eq!(
+        harness.parks.get(&park.id).await.unwrap().unwrap().state,
+        DelegationParkState::Superseded
+    );
+}
+
+#[tokio::test]
 async fn wake_uses_hidden_resume_metadata_and_parent_runtime_overrides() {
     let harness = harness();
     let (conversation, parent, delegate) = insert_parent_and_delegate(&harness).await;

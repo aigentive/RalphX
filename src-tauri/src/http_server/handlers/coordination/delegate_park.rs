@@ -126,9 +126,7 @@ pub async fn park_delegate(
             crate::error::AppError::Validation(message) => {
                 json_error(StatusCode::BAD_REQUEST, message)
             }
-            crate::error::AppError::NotFound(message) => {
-                json_error(StatusCode::NOT_FOUND, message)
-            }
+            crate::error::AppError::NotFound(message) => json_error(StatusCode::NOT_FOUND, message),
             other => json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to arm delegation park: {other}"),
@@ -147,15 +145,21 @@ pub async fn park_delegate(
         DelegationWakePolicy::AllSettled => "all",
         DelegationWakePolicy::AnySettled => "any",
     };
+    let failure_guidance = if park.wake_on_failure {
+        ", when a delegate fails"
+    } else {
+        ""
+    };
     let guidance = format!(
         "Parked on {} delegate job(s). You may END YOUR TURN now — do not poll. RalphX will resume \
-         this conversation automatically when {}, when a delegate fails, or by {} at the latest.",
+         this conversation automatically when {}{}, or by {} at the latest.",
         watched_jobs.len(),
         if wake_on == "all" {
             "every watched delegate has settled"
         } else {
             "any watched delegate settles"
         },
+        failure_guidance,
         park.deadline_at.to_rfc3339(),
     );
 

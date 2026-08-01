@@ -187,6 +187,21 @@ async fn arm_park(state: &HttpServerState, parent: &ParentContext, job_ids: Vec<
     .park_id
 }
 
+async fn record_handoff(state: &HttpServerState, parent: &ParentContext, content: &str) {
+    let mut message = ralphx_lib::domain::entities::ChatMessage::user_in_project(
+        parent.project.id.clone(),
+        content,
+    );
+    message.role = MessageRole::Orchestrator;
+    message.conversation_id = Some(parent.conversation.id.clone());
+    state
+        .app_state
+        .chat_message_repo
+        .create(message)
+        .await
+        .expect("persist delegated handoff");
+}
+
 /// Polls until durable park state is eventually consistent after the spawned wake dispatch.
 async fn await_park_state(
     state: &HttpServerState,
@@ -335,6 +350,15 @@ impl DelegationParkRepository for FailingArmedParkReadRepository {
         ))
     }
 
+    async fn get_settlement_blocking_for_conversation(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<DelegationPark>> {
+        Err(AppError::Infrastructure(
+            "injected delegation park read failure".to_string(),
+        ))
+    }
+
     async fn list_armed(&self) -> AppResult<Vec<DelegationPark>> {
         self.inner.list_armed().await
     }
@@ -424,6 +448,7 @@ async fn park_arms_and_returns_guidance() {
         "guidance must explicitly permit ending the caller turn: {}",
         response.guidance
     );
+    assert!(response.guidance.contains("when a delegate fails"));
     assert!(
         state
             .app_state
@@ -434,6 +459,18 @@ async fn park_arms_and_returns_guidance() {
             .is_some(),
         "successful handler call must persist an armed park"
     );
+
+    let mut no_failure_wake = park_request(vec![job_id]);
+    no_failure_wake.wake_on_failure = Some(false);
+    let response = park_delegate(
+        State(state.clone()),
+        park_headers(&parent),
+        Json(no_failure_wake),
+    )
+    .await
+    .expect("park without failure wake succeeds")
+    .0;
+    assert!(!response.guidance.contains("when a delegate fails"));
 }
 
 #[tokio::test]
@@ -863,6 +900,28 @@ async fn parked_delegate_settles_parent_job_once_its_park_is_gone() {
         .expect("parked nested settlement check")
         .0;
     assert_eq!(parked.status, "running");
+    record_handoff(&state, &delegated_parent, "stale launch result").await;
+    tokio::time::sleep(Duration::from_millis(1)).await;
+    let resumed_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new_continuation(
+            delegated_parent.conversation.id,
+            delegated_run
+                .run_chain_id
+                .clone()
+                .expect("launch run chain id"),
+            delegated_run.id.as_str(),
+        ))
+        .await
+        .expect("create resumed delegated run");
+    record_handoff(&state, &delegated_parent, "current resumed result").await;
+    state
+        .app_state
+        .agent_run_repo
+        .complete(&resumed_run.id)
+        .await
+        .expect("complete resumed delegated run");
     state
         .app_state
         .delegation_park_repo
@@ -875,6 +934,7 @@ async fn parked_delegate_settles_parent_job_once_its_park_is_gone() {
         .expect("settlement after nested park release")
         .0;
     assert_eq!(settled.status, "completed");
+    assert_eq!(settled.content.as_deref(), Some("current resumed result"));
     assert_eq!(
         state
             .delegation_service
@@ -885,6 +945,164 @@ async fn parked_delegate_settles_parent_job_once_its_park_is_gone() {
         "completed",
         "once the nested park is gone, the original parent job settles normally"
     );
+}
+
+async fn seed_nested_wait_case(
+    state: &HttpServerState,
+    label: &str,
+) -> (String, ParentContext, AgentRun, DelegationParkId) {
+    let parent = create_parent_context(state).await;
+    let (parent_job, delegated_conversation, delegated_run) =
+        seed_running_delegation_job(state, &parent, &format!("{label}-parent")).await;
+    let delegated_parent = ParentContext {
+        project: parent.project,
+        conversation: delegated_conversation,
+        run: delegated_run.clone(),
+    };
+    let (child_job, _, _) =
+        seed_running_delegation_job(state, &delegated_parent, &format!("{label}-child")).await;
+    let park_id =
+        DelegationParkId::from_string(arm_park(state, &delegated_parent, vec![child_job]).await);
+    state
+        .app_state
+        .agent_run_repo
+        .complete(&delegated_run.id)
+        .await
+        .expect("complete delegated coordinator launch run");
+    (parent_job, delegated_parent, delegated_run, park_id)
+}
+
+#[tokio::test]
+async fn parked_delegate_does_not_settle_parent_job_during_wake_dispatch() {
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let (parent_job, _, _, park_id) = seed_nested_wait_case(&state, "nested-waking").await;
+    let park = state
+        .app_state
+        .delegation_park_repo
+        .get(&park_id)
+        .await
+        .expect("read nested park")
+        .expect("nested park exists");
+    assert!(state
+        .app_state
+        .delegation_park_repo
+        .claim_wake(&park_id, park.generation)
+        .await
+        .expect("claim nested wake"));
+
+    let observed = wait_delegate(State(state.clone()), Json(wait_request(&parent_job)))
+        .await
+        .expect("settlement check during wake dispatch")
+        .0;
+    assert_eq!(observed.status, "running");
+}
+
+#[tokio::test]
+async fn parked_delegate_does_not_settle_parent_job_after_wake_before_resume() {
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let (parent_job, _, _, park_id) = seed_nested_wait_case(&state, "nested-woken").await;
+    let park = state
+        .app_state
+        .delegation_park_repo
+        .get(&park_id)
+        .await
+        .expect("read nested park")
+        .expect("nested park exists");
+    assert!(state
+        .app_state
+        .delegation_park_repo
+        .claim_wake(&park_id, park.generation)
+        .await
+        .expect("claim nested wake"));
+    state
+        .app_state
+        .delegation_park_repo
+        .settle(&park_id, DelegationParkState::Woken, None)
+        .await
+        .expect("record nested wake delivery");
+
+    let observed = wait_delegate(State(state.clone()), Json(wait_request(&parent_job)))
+        .await
+        .expect("settlement check before resumed run")
+        .0;
+    assert_eq!(observed.status, "running");
+}
+
+#[tokio::test]
+async fn parked_delegate_settles_parent_job_on_the_resumed_run() {
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let (parent_job, delegated_parent, launch_run, park_id) =
+        seed_nested_wait_case(&state, "nested-resumed").await;
+    record_handoff(&state, &delegated_parent, "stale launch result").await;
+    let park = state
+        .app_state
+        .delegation_park_repo
+        .get(&park_id)
+        .await
+        .expect("read nested park")
+        .expect("nested park exists");
+    assert!(state
+        .app_state
+        .delegation_park_repo
+        .claim_wake(&park_id, park.generation)
+        .await
+        .expect("claim nested wake"));
+    state
+        .app_state
+        .delegation_park_repo
+        .settle(&park_id, DelegationParkState::Woken, None)
+        .await
+        .expect("record nested wake delivery");
+    tokio::time::sleep(Duration::from_millis(1)).await;
+    let resumed_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new_continuation(
+            delegated_parent.conversation.id,
+            launch_run
+                .run_chain_id
+                .clone()
+                .expect("launch run chain id"),
+            launch_run.id.as_str(),
+        ))
+        .await
+        .expect("create resumed delegated run");
+    record_handoff(&state, &delegated_parent, "current resumed result").await;
+    state
+        .app_state
+        .agent_run_repo
+        .complete(&resumed_run.id)
+        .await
+        .expect("complete resumed delegated run");
+
+    let settled = wait_delegate(State(state.clone()), Json(wait_request(&parent_job)))
+        .await
+        .expect("settlement from resumed run")
+        .0;
+    assert_eq!(settled.status, "completed");
+    assert_eq!(settled.content.as_deref(), Some("current resumed result"));
+}
+
+#[tokio::test]
+async fn failed_park_unblocks_parent_settlement() {
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let (parent_job, _, _, park_id) = seed_nested_wait_case(&state, "nested-failed").await;
+    state
+        .app_state
+        .delegation_park_repo
+        .settle(
+            &park_id,
+            DelegationParkState::Failed,
+            Some("wake delivery failed"),
+        )
+        .await
+        .expect("fail nested park");
+
+    let settled = wait_delegate(State(state.clone()), Json(wait_request(&parent_job)))
+        .await
+        .expect("settlement after failed park")
+        .0;
+    assert_eq!(settled.status, "completed");
 }
 
 #[tokio::test]
