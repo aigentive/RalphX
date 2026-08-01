@@ -27,7 +27,9 @@ paths-ignore:
   - plugins/app/ralphx-external-mcp/tests/**
   - plugins/app/ralphx-mcp-server/src/**/__tests__/**
   - specs/**
+  - src-tauri/crates/**/*_tests.rs
   - src-tauri/gen/**
+  - src-tauri/src/**/*_tests.rs
   - src-tauri/src/tests/**
   - src-tauri/target/**
   - src-tauri/tests/**
