@@ -9,7 +9,6 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path_for_send;
 use crate::application::agent_workspace_pr_description::escape_xml_text;
 use crate::application::chat_service::{
     chat_service_context, events, resolve_working_directory, AgentTaskCompletedPayload,
@@ -119,6 +118,10 @@ struct ResolvedDelegateParent {
     project_id: String,
     working_directory: PathBuf,
     caller_conversation_id: Option<String>,
+    /// Conversation whose agent workspace anchors the delegate's working directory.
+    /// Distinct from `caller_conversation_id` for child/forked runtimes, which call from a
+    /// descendant conversation that may own no workspace row of its own.
+    workspace_anchor_conversation_id: Option<String>,
     parent_conversation_id: Option<String>,
     ideation_verification: bool,
 }
@@ -192,8 +195,16 @@ async fn preflight_requested_delegated_session(
     let stored_parent_conversation_id = delegated_conversation
         .as_ref()
         .and_then(|conversation| conversation.parent_conversation_id.as_deref());
+    // One-way compatibility allowance: delegated conversations created before delegation was
+    // attributed to the calling runtime store the workspace anchor as their parent. Accept the
+    // current caller lineage or that legacy anchor; any other stored parent is still rejected.
     let lineage_matches = match parent.parent_conversation_id.as_deref() {
-        Some(expected) => stored_parent_conversation_id == Some(expected),
+        Some(expected) => {
+            stored_parent_conversation_id == Some(expected)
+                || (parent.workspace_anchor_conversation_id.is_some()
+                    && stored_parent_conversation_id
+                        == parent.workspace_anchor_conversation_id.as_deref())
+        }
         None => stored_parent_conversation_id.is_none(),
     };
     if !lineage_matches {
@@ -340,6 +351,7 @@ async fn resolve_ideation_delegate_parent(
             project_id: project_id.as_str().to_string(),
             working_directory,
             caller_conversation_id,
+            workspace_anchor_conversation_id: None,
             parent_conversation_id,
             ideation_verification: caller_session.session_purpose == SessionPurpose::Verification,
         });
@@ -374,6 +386,7 @@ async fn resolve_ideation_delegate_parent(
         project_id: project_id.as_str().to_string(),
         working_directory,
         caller_conversation_id,
+        workspace_anchor_conversation_id: None,
         parent_conversation_id,
         ideation_verification: false,
     })
@@ -448,33 +461,6 @@ async fn load_project_parent_conversation(
     Ok(Some(conversation))
 }
 
-async fn resolve_project_parent_working_directory(
-    state: &HttpServerState,
-    project: &Project,
-    parent_conversation: Option<&ChatConversation>,
-) -> Result<PathBuf, JsonError> {
-    let Some(parent_conversation) = parent_conversation else {
-        return validate_project_working_directory(project);
-    };
-    let workspace = state
-        .app_state
-        .agent_conversation_workspace_repo
-        .get_by_conversation_id(&parent_conversation.id)
-        .await
-        .map_err(|error| {
-            json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to load parent agent workspace: {error}"),
-            )
-        })?;
-
-    match workspace {
-        Some(workspace) => resolve_agent_conversation_workspace_path_for_send(project, &workspace)
-            .map_err(|error| json_error(StatusCode::CONFLICT, error.to_string())),
-        None => validate_project_working_directory(project),
-    }
-}
-
 async fn resolve_project_delegate_parent(
     state: &HttpServerState,
     req: &DelegateStartRequest,
@@ -488,7 +474,7 @@ async fn resolve_project_delegate_parent(
         .unwrap_or_else(|| caller_context_id.to_string());
     let project = load_project_by_id(state, &ProjectId::from_string(project_id.clone())).await?;
     let working_directory =
-        resolve_project_parent_working_directory(state, &project, parent_conversation.as_ref())
+        resolve_project_workspace_working_directory(state, &project, parent_conversation.as_ref())
             .await?;
     let parent_conversation_id = parent_conversation
         .as_ref()
@@ -499,6 +485,7 @@ async fn resolve_project_delegate_parent(
         project_id: project.id.as_str().to_string(),
         working_directory,
         caller_conversation_id: parent_conversation_id.clone(),
+        workspace_anchor_conversation_id: parent_conversation_id.clone(),
         parent_conversation_id,
         ideation_verification: false,
     })
@@ -556,6 +543,7 @@ async fn resolve_task_like_delegate_parent(
         project_id: project.id.as_str().to_string(),
         working_directory,
         caller_conversation_id,
+        workspace_anchor_conversation_id: None,
         parent_conversation_id,
         ideation_verification: false,
     })
@@ -646,7 +634,7 @@ async fn resolve_nested_delegation_parent(
         ));
     }
     let working_directory = if parent_conversation.context_type == ChatContextType::Project {
-        resolve_project_parent_working_directory(state, &project, Some(&parent_conversation))
+        resolve_project_workspace_working_directory(state, &project, Some(&parent_conversation))
             .await?
     } else {
         let default_working_directory = validate_project_working_directory(&project)?;
@@ -670,6 +658,7 @@ async fn resolve_nested_delegation_parent(
         project_id: project.id.as_str().to_string(),
         working_directory,
         caller_conversation_id: Some(delegated_conversation.id.as_str()),
+        workspace_anchor_conversation_id: None,
         parent_conversation_id: Some(parent_conversation_id),
         ideation_verification: false,
     })
@@ -830,7 +819,13 @@ pub(crate) fn build_delegated_prompt(
     )
 }
 
+mod conversation_lineage;
 mod native_delegation;
+
+pub use conversation_lineage::DELEGATION_CALLER_LINEAGE_ERROR;
+use conversation_lineage::{
+    apply_trusted_caller_conversation, resolve_project_workspace_working_directory,
+};
 
 use native_delegation::resolve_parent_conversation_id;
 pub(crate) use native_delegation::{
