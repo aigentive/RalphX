@@ -858,7 +858,8 @@ export function AgentPublishPanel({
   const retargetedBaseRef =
     freshness?.effectiveBaseRef ?? freshness?.baseRef ?? workspace.baseRef;
   const hasMergedPullRequestBase =
-    hasPublishReadinessAction(freshness, "base_pr_merged") || baseRetargeted;
+    hasPublishReadinessAction(freshness, "base_pr_merged") ||
+    (baseRetargeted && workspace.sourcePullRequest != null);
   const mergedPullRequestBaseSelection: RetargetedAgentWorkspaceBaseSelection | null =
     hasMergedPullRequestBase && retargetedBaseRef
       ? {
