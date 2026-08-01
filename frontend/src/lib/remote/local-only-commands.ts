@@ -14,7 +14,13 @@
  *   remote environment would silently open the wrong thing, so the wrapper fails it
  *   with a typed `REMOTE_COMMAND_UNAVAILABLE` instead.
  *
- * Absence from this file is not an error: an unlisted command is sent to the host,
+ * Classification comes from two places, in this order:
+ *
+ * 1. The explicit `LOCAL_ONLY_COMMANDS` table below — one reason-coded row per name.
+ * 2. The `plugin:` PREFIX RULE (`PLUGIN_COMMAND_PREFIX`) — a whole namespace decided
+ *    once instead of 77 per-import fixes. See its own comment block.
+ *
+ * Absence from both is not an error: an unlisted command is sent to the host,
  * and an unregistered one comes back as `REMOTE_COMMAND_UNAVAILABLE` from the host
  * facade itself (`remote_server/registry.rs` — "unreachable remotely by
  * construction"). The P-11 drift scan is what surfaces unclassified names at CI
@@ -257,19 +263,95 @@ export const LOCAL_ONLY_COMMANDS: readonly LocalOnlyCommand[] = [
   },
 ] as const;
 
+// ---------------------------------------------------------------------------
+// The `plugin:` prefix rule (Phase 2 — close the Tauri-plugin side door).
+// ---------------------------------------------------------------------------
+//
+// `frontend/vite.config.ts` aliases `@tauri-apps/api/core` for the WHOLE module graph,
+// node_modules included, so every `@tauri-apps/plugin-*` package invokes through this
+// wrapper too — 77 import sites across seven plugins (opener, dialog, fs, updater,
+// process, global-shortcut, notification). None of their `plugin:<name>|<command>` names
+// is in `remote_server/registry.rs` (the facade is exhaustive over `generate_handler!`,
+// which plugin commands bypass by construction), so before this rule every one of them
+// travelled to the host and answered `REMOTE_COMMAND_UNAVAILABLE`.
+//
+// That was not merely unavailable, it was pointed at the wrong machine. Each of these
+// plugins acts on the DEVICE THE UI IS RUNNING ON: `plugin:opener|open_url` opens this
+// user's browser, `plugin:updater|check` asks about THIS app binary's update, global
+// shortcuts bind THIS keyboard, `plugin:notification|is_permission_granted` reads THIS
+// macOS notification-permission grant, and the dialog/fs pickers address THIS
+// filesystem. Sending them to the host either did nothing visible or acted on the host
+// operator's machine.
+//
+// So the disposition for the namespace is `run-locally`, and it is expressed ONCE as a
+// prefix rather than as 77 call-site edits or 51 near-identical table rows: a plugin the
+// app adds tomorrow inherits the correct routing instead of silently reopening the door.
+//
+// `run-locally` and not `reject` for the same reason as the dock badge above — these
+// affordances must keep WORKING while a remote environment is active, on this device.
+// The host-path cases are already handled at a different seam: `openPath` /
+// `revealItemInDir` on host-side workspace paths are suppressed by host-affordance
+// gating (`host-affordances.ts`) and degrade to `HostPathCopyButton`, so the prefix rule
+// never opens a host path locally.
+export const PLUGIN_COMMAND_PREFIX = "plugin:";
+
+/** The one reason every `plugin:*` name inherits, so the prefix stays reason-coded. */
+export const PLUGIN_PREFIX_REASON =
+  "Tauri plugin command: opener/dialog/fs/updater/process/global-shortcut/notification " +
+  "all act on THIS device — the browser, keyboard, filesystem, app binary and macOS " +
+  "permission grants of the machine showing the UI. The host has its own. Classified by " +
+  "the `plugin:` prefix rule, not by a per-command row.";
+
+/**
+ * Reviewed exceptions: `plugin:*` names that must target the HOST instead.
+ *
+ * DELIBERATELY EMPTY. The Phase 2 review swept all seven plugins and all 77 import sites
+ * and found no plugin call whose subject is the host. The list exists so that a future
+ * exception is a reviewed, named decision rather than a silent hole in the prefix rule —
+ * and so it costs something: an excepted name leaves local-only classification entirely
+ * and must then earn a facade registration or a ledger disposition, or the P-11 drift
+ * scan reports it unclassified and CI goes red.
+ */
+export const HOST_TARGETED_PLUGIN_COMMANDS: readonly string[] = [];
+
+const HOST_TARGETED_PLUGIN_COMMAND_SET: ReadonlySet<string> = new Set(
+  HOST_TARGETED_PLUGIN_COMMANDS
+);
+
+/** `plugin:opener|open_url` → true. The namespace the prefix rule governs. */
+export function isPluginCommand(cmd: string): boolean {
+  return cmd.startsWith(PLUGIN_COMMAND_PREFIX);
+}
+
 const LOCAL_ONLY_BY_COMMAND: ReadonlyMap<string, LocalOnlyCommand> = new Map(
   LOCAL_ONLY_COMMANDS.map((entry) => [entry.command, entry])
 );
 
 export function findLocalOnlyCommand(cmd: string): LocalOnlyCommand | undefined {
-  return LOCAL_ONLY_BY_COMMAND.get(cmd);
+  const explicit = LOCAL_ONLY_BY_COMMAND.get(cmd);
+  if (explicit !== undefined) return explicit;
+
+  if (isPluginCommand(cmd) && !HOST_TARGETED_PLUGIN_COMMAND_SET.has(cmd)) {
+    return {
+      command: cmd,
+      disposition: "run-locally",
+      reason: PLUGIN_PREFIX_REASON,
+    };
+  }
+
+  return undefined;
 }
 
 export function isLocalOnlyCommand(cmd: string): boolean {
-  return LOCAL_ONLY_BY_COMMAND.has(cmd);
+  return findLocalOnlyCommand(cmd) !== undefined;
 }
 
-/** Every command name pinned here, for the P-11 drift scan. */
+/**
+ * Every EXPLICITLY pinned command name, for the P-11 drift scan.
+ *
+ * Not exhaustive over local-only routing any more: the `plugin:` namespace is classified
+ * by prefix, so ask `isLocalOnlyCommand`/`findLocalOnlyCommand` rather than this list.
+ */
 export const LOCAL_ONLY_COMMAND_NAMES: readonly string[] = LOCAL_ONLY_COMMANDS.map(
   (entry) => entry.command
 );

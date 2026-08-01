@@ -433,14 +433,55 @@ const scanMatch = scanOutput.match(
 );
 if (!scanMatch) fail(`could not parse the drift-scan PASS line: ${scanOutput.trim()}`);
 
+/**
+ * The Tauri plugin surface (Phase 2 — "close the Tauri-plugin side door").
+ *
+ * The scan reports it on its own line because the names come from a second source set: the
+ * `@tauri-apps/plugin-*` packages `frontend/src` imports, whose own `invoke("plugin:…")` calls
+ * ride the same aliased transport. This census used to describe an inventory that structurally
+ * could not see them, so its "0 unclassified" headline was blind rather than true.
+ *
+ * Parsed, never assumed: if the scan stops reporting the line the census refuses to emit,
+ * rather than quietly reprinting the old blind claim.
+ */
+const pluginMatch = scanOutput.match(
+  /Tauri plugin surface: (\d+) plugin: command name\(s\) across (\d+) imported @tauri-apps\/plugin-\* package\(s\), (\d+) reviewed host-targeted exception\(s\)\./
+);
+if (!pluginMatch) {
+  fail(
+    `could not parse the drift-scan plugin-surface line; the census will not restate a ` +
+      `"0 unclassified" claim it cannot verify over the plugin namespace: ${scanOutput.trim()}`
+  );
+}
+
+const pluginLocalMatch = scanOutput.match(/(\d+) plugin-local \(prefix rule\)/);
+if (!pluginLocalMatch) {
+  fail(`could not parse the plugin-local disposition count: ${scanOutput.trim()}`);
+}
+
 const scan = {
   invokedCommands: Number(scanMatch[1]),
   dynamicExpressions: Number(scanMatch[2]),
   seamBypasses: Number(scanMatch[3]),
   manifestClassified: Number(scanMatch[4]),
   unclassified: Number(scanMatch[5]),
+  pluginCommandNames: Number(pluginMatch[1]),
+  pluginPackages: Number(pluginMatch[2]),
+  pluginHostTargetedExceptions: Number(pluginMatch[3]),
+  pluginLocal: Number(pluginLocalMatch[1]),
   line: scanOutput.trim(),
 };
+
+// Every discovered plugin name must be dispositioned by the prefix rule. They can differ only
+// if a reviewed exception exists, and an exception that is NOT separately registered or
+// ledgered would already have failed the scan's permanent zero — so a mismatch here means the
+// two numbers stopped describing the same set.
+if (scan.pluginLocal + scan.pluginHostTargetedExceptions !== scan.pluginCommandNames) {
+  fail(
+    `the scan reports ${scan.pluginCommandNames} plugin command name(s) but disposition them as ` +
+      `${scan.pluginLocal} plugin-local + ${scan.pluginHostTargetedExceptions} exception(s)`
+  );
+}
 
 const baseline = JSON.parse(fs.readFileSync(baselinePath, "utf8"));
 const gap = [...(baseline.unclassifiedCommands ?? [])].sort();
@@ -467,8 +508,11 @@ if (gap.length !== scan.unclassified) {
 const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
 const ledger = new Map(manifest.ledger.map((entry) => [entry.command, entry]));
 const registeredCount = manifest.ledger.filter((entry) => entry.registered).length;
-const localOnlyCount = (fs.readFileSync(localOnlyPath, "utf8").match(/^\s*command:/gm) ?? [])
-  .length;
+// TABLE ROWS only — `command:` followed by a string literal. The prefix rule's synthesized
+// entry (`command: cmd,`) is not a row and must not inflate the count of hand-written reasons.
+const localOnlyCount = (
+  fs.readFileSync(localOnlyPath, "utf8").match(/^\s*command:\s*"/gm) ?? []
+).length;
 
 // ---------------------------------------------------------------------------
 // Classify + partition
@@ -698,6 +742,10 @@ const census = {
     invokedCommandNames: scan.invokedCommands,
     remoteRegistered: registeredCount,
     localOnlyRows: localOnlyCount,
+    pluginCommandNames: scan.pluginCommandNames,
+    pluginPackages: scan.pluginPackages,
+    pluginLocal: scan.pluginLocal,
+    pluginHostTargetedExceptions: scan.pluginHostTargetedExceptions,
     ledgerRows: manifest.ledger.length,
     unclassified: gap.length,
     assignedToBatches: assigned,
@@ -746,9 +794,17 @@ function renderMarkdown(data) {
   if (complete) {
     lines.push(
       `> **P-11 is COMPLETE.** All ${data.totals.invokedCommandNames} production invoke command ` +
-        "names across `frontend/src` carry a reviewed disposition: remote-registered, " +
-        "reason-coded local-only, or manifest-classified (host-denied / v1-deferred / " +
-        "v1-audit-refused). **0 unclassified, 0 dynamic expressions, 0 suppressions.**"
+        "names carry a reviewed disposition: remote-registered, reason-coded local-only, " +
+        "plugin-local by the `plugin:` prefix rule, or manifest-classified (host-denied / " +
+        "v1-deferred / v1-audit-refused). **0 unclassified, 0 dynamic expressions, 0 " +
+        "suppressions.**"
+    );
+    lines.push(
+      `> The inventory spans two source sets: \`frontend/src\`, plus the ` +
+        `${data.totals.pluginPackages} \`@tauri-apps/plugin-*\` packages it imports. The Vite ` +
+        "alias redirects `@tauri-apps/api/core` for the whole module graph, node_modules " +
+        `included, so those packages' own ${data.totals.pluginCommandNames} \`plugin:\` command ` +
+        "names ride the same transport — see §7."
     );
     lines.push(
       "> The ratchet baseline `scripts/remote-transport-drift-baseline.json` is now a PERMANENT " +
@@ -768,11 +824,13 @@ function renderMarkdown(data) {
     mdTable(
       ["Measure", "Count", "Source"],
       [
-        ["Invoke command names in `frontend/src`", data.totals.invokedCommandNames, "drift scan (AST)"],
+        ["Invoke command names on the transport", data.totals.invokedCommandNames, "drift scan (AST over `frontend/src` + imported `@tauri-apps/plugin-*`)"],
         ["Dynamic / unresolvable expressions", data.scan.dynamicExpressions, "drift scan — must stay 0"],
         ["Transport seam bypasses", data.scan.seamBypasses, "drift scan — must stay 0"],
         ["Remote-registered (`remote_commands!`)", data.totals.remoteRegistered, "`docs/generated/remote-commands.json`"],
         ["Reason-coded local-only rows", data.totals.localOnlyRows, "`frontend/src/lib/remote/local-only-commands.ts`"],
+        ["`plugin:` names classified by the prefix rule", data.totals.pluginLocal, "`PLUGIN_COMMAND_PREFIX` in `local-only-commands.ts`"],
+        ["`plugin:` host-targeted exceptions", data.totals.pluginHostTargetedExceptions, "`HOST_TARGETED_PLUGIN_COMMANDS` — reviewed, currently empty"],
         ["Ledger rows (exhaustive over `generate_handler!`)", data.totals.ledgerRows, "`docs/generated/remote-commands.json`"],
         ["Manifest-classified (host-denied / v1-deferred)", data.scan.manifestClassified, "`v1Resolution` in `docs/generated/remote-commands.json`"],
         ["**Unclassified — the 3.1 gap**", `**${data.totals.unclassified}**`, "`scripts/remote-transport-drift-baseline.json`"],
@@ -965,8 +1023,67 @@ function renderMarkdown(data) {
           `${Object.values(data.dispositionTotals).reduce((a, b) => a + b, 0)} == ${data.totals.unclassified}`,
         ],
         ["Batch plan claims no empty module and pins no absent command", "enforced by the generator"],
+        [
+          "Every discovered `plugin:` name is dispositioned",
+          `${data.totals.pluginLocal} prefix-rule + ${data.totals.pluginHostTargetedExceptions} exception(s) == ${data.totals.pluginCommandNames}`,
+        ],
       ]
     )
+  );
+  lines.push("");
+  lines.push("## 7. The Tauri plugin surface");
+  lines.push("");
+  lines.push(
+    `**${data.totals.pluginCommandNames} \`plugin:\` command names across ${data.totals.pluginPackages} packages — all routed to the LOCAL device by one prefix rule.**`
+  );
+  lines.push("");
+  lines.push(
+    "`frontend/vite.config.ts` aliases `@tauri-apps/api/core` for the whole module graph, node_modules included, so every `@tauri-apps/plugin-*` package invokes through `src/lib/remote/invoke.ts` exactly like an app call site does. None of these names can ever be registered on the host facade — the facade is exhaustive over `generate_handler!`, which plugin commands bypass by construction — so before the prefix rule every one of them travelled to the host and answered `REMOTE_COMMAND_UNAVAILABLE`."
+  );
+  lines.push("");
+  lines.push(
+    "That was not merely unavailable, it was aimed at the wrong machine: `plugin:opener|open_url` opened the host operator's browser, `plugin:updater|check` asked the host whether *this* app binary had an update, global shortcuts bound the host's keyboard, and `plugin:notification|is_permission_granted` rejected — silently short-circuiting a settings write the facade *does* register. Each plugin's subject is the device showing the UI, so the whole namespace is `run-locally`."
+  );
+  lines.push("");
+  lines.push(
+    "Earlier revisions of this census could not see any of it: the drift scan walked `frontend/src` only, and these invoke literals live in node_modules. The headline \"0 unclassified\" was therefore blind over the namespace rather than true of it. The scan now parses each imported package's shipped ESM bundle with the same AST machinery, folds the names into the same inventory, and classifies them through the prefix rule read out of `local-only-commands.ts` — so the claim covers them."
+  );
+  lines.push("");
+  lines.push(
+    mdTable(
+      ["Property", "Value", "Why it is falsifiable"],
+      [
+        [
+          "Classification",
+          "`plugin:` prefix → `run-locally`",
+          "One rule, not 77 call-site edits and not 51 table rows — a plugin added tomorrow inherits it",
+        ],
+        [
+          "Host-targeted exceptions",
+          `${data.totals.pluginHostTargetedExceptions} (\`HOST_TARGETED_PLUGIN_COMMANDS\`)`,
+          "Reviewed and empty, not absent. An excepted name leaves local-only classification and must earn a registration or a ledger row, or the scan reports it unclassified",
+        ],
+        [
+          "Missing prefix rule",
+          "fails closed",
+          "`parsePluginPrefixRule` returns `null` and classifies nothing, so every plugin name goes unclassified and CI goes red",
+        ],
+        [
+          "Dynamic name inside a plugin package",
+          "hard failure",
+          "An unenumerable name is the blindness itself; a dependency upgrade that introduces one fails the scan instead of under-reporting",
+        ],
+        [
+          "Uninstalled imported plugin package",
+          "hard failure",
+          "An uncomputable census must not pass as an empty one",
+        ],
+      ]
+    )
+  );
+  lines.push("");
+  lines.push(
+    "Host-path affordances are handled at a different seam and are unaffected: `openPath` / `revealItemInDir` against host-side workspace paths are suppressed by host-affordance gating (`lib/remote/host-affordances.ts`) and degrade to `HostPathCopyButton`, so the prefix rule never opens a host path on the client."
   );
   lines.push("");
   lines.push(
