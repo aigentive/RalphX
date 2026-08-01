@@ -120,7 +120,21 @@ export const AGENT_GATED_AFFORDANCES = {
   // absence, never hardcoded.
   conversationModeSwitch: "request_remote_agent_conversation_mode_switch",
   permissionApprove: "approve_permission_request",
-  questionAnswer: "answer_user_question",
+  // Answering the MCP `ask_user_question` gate — the ONLY question shape the Agents surface
+  // raises (`http_server/handlers/questions.rs` emits `requestId` + `sessionId` and no task).
+  // The op named here is `resolve_user_question`, which is ABSENT from `REMOTE_FACADE_OPS`, so
+  // the affordance resolves `unavailable` — derived from absence, never hardcoded.
+  //
+  // This row used to name `answer_user_question`, which IS registered, and that was the whole
+  // bug: the gate rendered enabled while every submit named the unregistered command. The two
+  // are NOT twins. `answer_user_question` takes a non-optional `taskId` and performs a
+  // Blocked→Ready TASK transition (`task_commands::mutation`); it never signals the MCP
+  // long-poll keyed by `requestId`, and no `taskId` exists on this wire to call it with.
+  // Pointing the answer path at it would return `answerRecorded: true` over an agent that is
+  // still blocked — a false terminal, which is worse than an honest unavailable control.
+  // A `requestId`-capable spawn-free twin is the fix; until the host registers one this stays
+  // absent and says so.
+  questionAnswer: "resolve_user_question",
   taskMove: "move_task",
   taskApprove: "approve_task_for_review",
   taskResume: "resume_task",
@@ -140,6 +154,22 @@ export const AGENT_GATED_AFFORDANCES = {
   // registered, so an existing reference still renders and can still be detached.
   folderReferenceAdd: "add_conversation_folder_reference",
   folderReferenceRemove: "remove_conversation_folder_reference",
+  // Dropping and rewriting a turn that is already sitting in the host's queue. Both name
+  // `delete_queued_agent_message`, which the host does NOT expose remotely, so both resolve
+  // `unavailable` — derived from absence, as always.
+  //
+  // Edit shares the delete row because delete is the step that decides it: the edit path is
+  // delete-then-send, and its send half (`send_remote_chat_message`) IS registered. That
+  // asymmetry was the bug — the delete failed, was swallowed, the local chip vanished anyway,
+  // and the send went out regardless, so the agent received BOTH the original queued turn and
+  // the rewritten one. An affordance whose first step cannot land is unavailable as a whole,
+  // whatever its second step can do.
+  //
+  // Unavailable rather than gated: no `ui:agent` grant reaches an unregistered op, so pointing
+  // the user at a host switch would point at nothing. Spawn-free queue twins
+  // (`get/delete/update_queued_agent_message`) are the real fix and need host registrations.
+  queuedMessageDelete: "delete_queued_agent_message",
+  queuedMessageEdit: "delete_queued_agent_message",
   automationResume: "resume_automation",
   automationRunNow: "trigger_automation_run_now",
   automationRestart: "restart_automation",

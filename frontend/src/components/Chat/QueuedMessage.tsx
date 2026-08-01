@@ -17,6 +17,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { formatQueuedMessageExcerpt } from "@/lib/queuedMessageExcerpt";
+import { useAgentGate } from "@/hooks/useAgentGate";
 import type { QueuedMessage as QueuedMessageType } from "@/stores/chatStore";
 
 // ============================================================================
@@ -67,6 +68,18 @@ export interface QueuedMessageProps {
 // ============================================================================
 
 export function QueuedMessage({ message, onEdit, onDelete, onSendNow }: QueuedMessageProps) {
+  // `delete_queued_agent_message` is not a facade op, so both of these resolve `unavailable`
+  // on a paired device. Rendering the buttons anyway is what made a "deleted" turn still
+  // arrive and an "edited" one arrive twice — the control looked live, the host never dropped
+  // the original. Hidden, with the gate's own hint in their place; Send now stays because its
+  // path (`send_remote_chat_message`) IS registered.
+  const deleteGate = useAgentGate("queuedMessageDelete");
+  const editGate = useAgentGate("queuedMessageEdit");
+  const queueMutationHint = deleteGate.gated
+    ? deleteGate.reason
+    : editGate.gated
+      ? editGate.reason
+      : null;
   const [isEditing, setIsEditing] = useState(message.isEditing);
   const [editContent, setEditContent] = useState(message.content);
   const previewContent = formatQueuedMessageExcerpt(message.content);
@@ -258,36 +271,49 @@ export function QueuedMessage({ message, onEdit, onDelete, onSendNow }: QueuedMe
                     <TooltipContent side="top">Send now</TooltipContent>
                   </Tooltip>
                 )}
+                {queueMutationHint && (
+                  <span
+                    data-testid="queued-message-unavailable-hint"
+                    className="text-[0.6875rem] max-w-[16rem] text-right"
+                    style={{ color: "var(--text-muted)" }}
+                  >
+                    {queueMutationHint}
+                  </span>
+                )}
                 {/* Edit button */}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      data-testid="queued-message-edit"
-                      onClick={handleStartEdit}
-                      className="p-1 rounded transition-colors hover:bg-opacity-80"
-                      style={{ color: "var(--text-muted)" }}
-                      aria-label="Edit message"
-                    >
-                      <Pencil size={16} />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top">Edit message</TooltipContent>
-                </Tooltip>
+                {!editGate.gated && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        data-testid="queued-message-edit"
+                        onClick={handleStartEdit}
+                        className="p-1 rounded transition-colors hover:bg-opacity-80"
+                        style={{ color: "var(--text-muted)" }}
+                        aria-label="Edit message"
+                      >
+                        <Pencil size={16} />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top">Edit message</TooltipContent>
+                  </Tooltip>
+                )}
                 {/* Delete button */}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      data-testid="queued-message-delete"
-                      onClick={handleDelete}
-                      className="p-1 rounded transition-colors hover:bg-opacity-80"
-                      style={{ color: "var(--status-error)" }}
-                      aria-label="Delete message"
-                    >
-                      <X size={16} />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top">Delete message</TooltipContent>
-                </Tooltip>
+                {!deleteGate.gated && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        data-testid="queued-message-delete"
+                        onClick={handleDelete}
+                        className="p-1 rounded transition-colors hover:bg-opacity-80"
+                        style={{ color: "var(--status-error)" }}
+                        aria-label="Delete message"
+                      >
+                        <X size={16} />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top">Delete message</TooltipContent>
+                  </Tooltip>
+                )}
               </>
             )}
           </div>

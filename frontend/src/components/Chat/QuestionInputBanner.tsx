@@ -37,6 +37,13 @@ export interface QuestionInputBannerProps {
   answeredValue?: string | undefined;
   /** Called when user clicks dismiss on the answered banner */
   onDismissAnswered?: (() => void) | undefined;
+  /**
+   * Set when the answer path is gated/unavailable for the active environment. Carries the
+   * gate's own copy (`AGENT_CONTROL_DISABLED_HINT` / `REMOTE_UNAVAILABLE_HINT`) — never a
+   * phrasing invented here. Without it the chips look live while every submit is dropped by
+   * `useQuestionInput`'s gate check, which is a silently-dead control.
+   */
+  disabledReason?: string | null | undefined;
   /** Optional inline action shown alongside the question. */
   planApprovalAction?: {
     label: string;
@@ -165,6 +172,7 @@ export function QuestionInputBanner({
   onDismiss,
   answeredValue,
   onDismissAnswered,
+  disabledReason,
   planApprovalAction,
 }: QuestionInputBannerProps) {
   const [visible, setVisible] = useState(false);
@@ -341,7 +349,7 @@ export function QuestionInputBanner({
                 <PlanApprovalActionButton action={planApprovalAction} />
               )}
 
-              {canSkip && (
+              {canSkip && !disabledReason && (
                 <button
                   type="button"
                   onClick={onSkip}
@@ -422,8 +430,25 @@ export function QuestionInputBanner({
                 </ReactMarkdown>
               </div>
 
+              {/* Capability boundary: the answer path is gated or unavailable here. The
+                  question STAYS on screen — the agent is still blocked and the user should
+                  see what it is waiting for — but the chips stop pretending to be live. */}
+              {disabledReason ? (
+                <p
+                  data-testid="question-input-banner-disabled-reason"
+                  className="text-[0.6875rem]"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  {disabledReason}
+                </p>
+              ) : null}
+
               {/* Option chips */}
-              <div className="flex flex-wrap gap-1.5">
+              <div
+                className="flex flex-wrap gap-1.5"
+                style={disabledReason ? { opacity: 0.45, pointerEvents: "none" } : undefined}
+                aria-disabled={disabledReason ? true : undefined}
+              >
                 {question.options.map((option, i) => {
                   const isSelected = selectedIndices.has(i);
                   const isDimmed = !question.multiSelect &&

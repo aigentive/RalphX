@@ -27,6 +27,11 @@ import {
 } from "@/components/Chat/MessageReferences.parse";
 import { extractErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
+import {
+  getTransportEnvironmentId,
+  isRemoteEnvironmentId,
+} from "@/lib/remote/active-environment";
+import { remoteErrorBannerProps } from "@/lib/remote/agent-gate";
 import { isPersonaUnavailableError } from "@/lib/personaErrors";
 import { isMessageDeliveredNotPersistedError } from "@/lib/sendDeliveryErrors";
 import type { ContextType } from "@/types/chat-conversation";
@@ -481,10 +486,48 @@ export function useChatActions({
     }
   }, [contextType, contextId, backendQueueContextId, selectedTaskId]);
 
+  /**
+   * Surfaces a failed queue mutation. Typed transport codes reuse the gate's own copy;
+   * everything else carries the host's message. Never invents a new "not available" phrasing.
+   */
+  const reportQueueMutationFailure = useCallback(
+    (title: string, err: unknown) => {
+      const banner = remoteErrorBannerProps(err);
+      toast.error(banner?.title ?? title, {
+        description:
+          banner?.body ??
+          extractErrorMessage(err, "The queued message is unchanged. Try again."),
+        duration: 10000,
+      });
+    },
+    []
+  );
+
   // ── Delete Queued Message ────────────────────────────────────────
   const handleDeleteQueuedMessage = useCallback(
     async (messageId: string) => {
-      // Delete from local store immediately (optimistic)
+      // FAIL CLOSED under a remote environment: prove the host dropped the turn BEFORE the
+      // chip disappears. The optimistic order below deletes locally and swallows the host
+      // failure, which on a paired device meant a turn the user watched vanish was still
+      // queued on the host and still delivered to the agent. Mirrors
+      // `handleSendQueuedMessageNow`, which already keeps local state truthful on failure.
+      if (isRemoteEnvironmentId(getTransportEnvironmentId())) {
+        try {
+          await chatApi.deleteQueuedAgentMessage(
+            contextType,
+            backendQueueContextId,
+            messageId,
+          );
+        } catch (err) {
+          // The chip stays: it is describing a turn that really is still queued.
+          reportQueueMutationFailure("Couldn't delete the queued message", err);
+          return;
+        }
+        deleteQueuedMessage(storeContextKey, messageId);
+        return;
+      }
+
+      // Local: unchanged. Delete from local store immediately (optimistic)
       deleteQueuedMessage(storeContextKey, messageId);
 
       // Delete from backend using the same ID
@@ -494,7 +537,13 @@ export function useChatActions({
         // Silently ignore — local state already updated
       }
     },
-    [deleteQueuedMessage, storeContextKey, contextType, backendQueueContextId]
+    [
+      deleteQueuedMessage,
+      storeContextKey,
+      contextType,
+      backendQueueContextId,
+      reportQueueMutationFailure,
+    ]
   );
 
   // ── Send Queued Message Now ─────────────────────────────────────
@@ -561,15 +610,34 @@ export function useChatActions({
       attachmentIds?: string[],
       selectionSnapshot?: ComposerSelectionSnapshot,
     ) => {
-      // Delete old message from backend
-      try {
-        await chatApi.deleteQueuedAgentMessage(contextType, backendQueueContextId, messageId);
-      } catch {
-        // Silently ignore
-      }
+      // The edit is delete-then-send, and the delete is the step that decides it. Under a
+      // remote environment a swallowed delete failure was a DOUBLE TURN: the original stayed
+      // queued on the host, the local chip was removed anyway, and the rewritten content was
+      // sent unconditionally — so the agent received both. Abort the whole edit instead, and
+      // leave the queue exactly as the host still has it.
+      if (isRemoteEnvironmentId(getTransportEnvironmentId())) {
+        try {
+          await chatApi.deleteQueuedAgentMessage(
+            contextType,
+            backendQueueContextId,
+            messageId,
+          );
+        } catch (err) {
+          reportQueueMutationFailure("Couldn't edit the queued message", err);
+          return;
+        }
+        deleteQueuedMessage(storeContextKey, messageId);
+      } else {
+        // Local: unchanged. Delete old message from backend
+        try {
+          await chatApi.deleteQueuedAgentMessage(contextType, backendQueueContextId, messageId);
+        } catch {
+          // Silently ignore
+        }
 
-      // Delete from local store
-      deleteQueuedMessage(storeContextKey, messageId);
+        // Delete from local store
+        deleteQueuedMessage(storeContextKey, messageId);
+      }
 
       // Send the edited content via sendAgentMessage (delete-before-send pattern)
       setSending(storeContextKey, true);
@@ -607,6 +675,7 @@ export function useChatActions({
       setSending,
       sendOptions,
       reportSendFailure,
+      reportQueueMutationFailure,
     ]
   );
 
