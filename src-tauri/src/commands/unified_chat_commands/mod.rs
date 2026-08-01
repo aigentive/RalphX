@@ -2426,23 +2426,24 @@ async fn reconcile_delegated_timeline_item_result(
     state: &AppState,
     item: &mut ChatTimelineItem,
     snapshot_cache: &mut HashMap<String, DelegatedToolRuntimeSnapshot>,
-) {
+) -> crate::AppResult<()> {
     let Some(tool_name) = item.tool_name.as_deref() else {
-        return;
+        return Ok(());
     };
     if !is_delegate_start_tool_name(tool_name) {
-        return;
+        return Ok(());
     }
     let Some(mut result) = item
         .result_json
         .as_deref()
         .and_then(|raw| serde_json::from_str::<JsonValue>(raw).ok())
     else {
-        return;
+        return Ok(());
     };
 
-    reconcile_delegated_result_value(state, &mut result, snapshot_cache).await;
+    reconcile_delegated_result_value(state, &mut result, snapshot_cache).await?;
     item.result_json = Some(result.to_string());
+    Ok(())
 }
 
 /// Response for agent run status
@@ -2534,65 +2535,72 @@ fn delegated_total_tokens_from_run(run: &crate::domain::entities::AgentRun) -> O
     run.processed_tokens()
 }
 
+/// Loads the live delegated-run state a persisted `delegate_start` tool result is re-rendered
+/// against.
+///
+/// **Every repository error propagates.** `Ok(None)` means "this delegation is not resolvable"
+/// — the session row is gone, the conversation is not a delegation, or the referenced run
+/// belongs to another conversation — and callers correctly answer that by serving the persisted
+/// result unenriched. A repository OUTAGE is not that: swallowing it (the pre-WP3
+/// `.ok().flatten()` shape) served the STALE persisted tool result as though it were current
+/// live state, which is the fail-open the capability ledger refused these commands over.
 async fn load_delegated_tool_runtime_snapshot(
     state: &AppState,
     delegated_session_id: &str,
     delegated_conversation_id: Option<&str>,
     delegated_agent_run_id: Option<&str>,
-) -> Option<DelegatedToolRuntimeSnapshot> {
-    let session = state
+) -> crate::AppResult<Option<DelegatedToolRuntimeSnapshot>> {
+    let Some(session) = state
         .delegated_session_repo
         .get_by_id(&DelegatedSessionId::from_string(delegated_session_id))
-        .await
-        .ok()
-        .flatten()?;
+        .await?
+    else {
+        return Ok(None);
+    };
 
     let conversation = if let Some(conversation_id) = delegated_conversation_id {
         state
             .chat_conversation_repo
             .get_by_id(&ChatConversationId::from_string(conversation_id))
-            .await
-            .ok()
-            .flatten()
+            .await?
     } else {
         state
             .chat_conversation_repo
             .get_active_for_context(ChatContextType::Delegation, delegated_session_id)
-            .await
-            .ok()
-            .flatten()
-    }?;
+            .await?
+    };
+    let Some(conversation) = conversation else {
+        return Ok(None);
+    };
     if conversation.context_type != ChatContextType::Delegation
         || conversation.context_id != delegated_session_id
     {
-        return None;
+        return Ok(None);
     }
     let conversation_id = conversation.id.as_str();
     let latest_run = if let Some(run_id) = delegated_agent_run_id {
-        let run = state
+        let Some(run) = state
             .agent_run_repo
             .get_by_id(&AgentRunId::from_string(run_id))
-            .await
-            .ok()
-            .flatten()?;
+            .await?
+        else {
+            return Ok(None);
+        };
         if run.conversation_id != conversation.id {
-            return None;
+            return Ok(None);
         }
         Some(run)
     } else {
         state
             .agent_run_repo
             .get_latest_for_conversation(&conversation.id)
-            .await
-            .ok()
-            .flatten()
+            .await?
     };
 
     let recent_messages = state
         .chat_message_repo
         .get_by_conversation(&conversation.id)
         .await
-        .ok()
         .map(|messages| {
             messages
                 .into_iter()
@@ -2616,8 +2624,7 @@ async fn load_delegated_tool_runtime_snapshot(
                 })
                 .into_iter()
                 .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+        })?;
 
     let latest_run_json = latest_run.as_ref().map(|run| {
         serde_json::json!({
@@ -2645,7 +2652,7 @@ async fn load_delegated_tool_runtime_snapshot(
         })
     });
 
-    Some(DelegatedToolRuntimeSnapshot {
+    Ok(Some(DelegatedToolRuntimeSnapshot {
         session_id: session.id.as_str().to_string(),
         conversation_id: Some(conversation_id),
         agent_run_id: latest_run.as_ref().map(|run| run.id.as_str()),
@@ -2669,7 +2676,7 @@ async fn load_delegated_tool_runtime_snapshot(
             .or_else(|| session.completed_at.map(|timestamp| timestamp.to_rfc3339())),
         latest_run: latest_run_json,
         recent_messages,
-    })
+    }))
 }
 
 fn merge_delegated_snapshot_wrapped_fields(
@@ -2809,15 +2816,15 @@ async fn reconcile_delegated_result_value(
     state: &AppState,
     result: &mut JsonValue,
     snapshot_cache: &mut HashMap<String, DelegatedToolRuntimeSnapshot>,
-) {
+) -> crate::AppResult<()> {
     let Some(parsed_result) = parse_wrapped_mcp_result_object(result) else {
-        return;
+        return Ok(());
     };
 
     let delegated_session_id = get_string_field(&parsed_result, "delegated_session_id")
         .or_else(|| get_string_field(&parsed_result, "delegatedSessionId"));
     let Some(delegated_session_id) = delegated_session_id else {
-        return;
+        return Ok(());
     };
     let delegated_conversation_id = get_string_field(&parsed_result, "delegated_conversation_id")
         .or_else(|| get_string_field(&parsed_result, "delegatedConversationId"));
@@ -2833,31 +2840,39 @@ async fn reconcile_delegated_result_value(
             delegated_conversation_id,
             delegated_agent_run_id,
         )
-        .await
+        .await?
         else {
-            return;
+            return Ok(());
         };
         snapshot_cache.insert(delegated_session_id.to_string(), snapshot.clone());
         snapshot
     };
 
     merge_delegated_snapshot_into_result(result, &snapshot);
+    Ok(())
 }
 
 async fn reconcile_delegated_result_payloads(
     state: &AppState,
     tool_calls: Option<String>,
     content_blocks: Option<String>,
-) -> (Option<JsonValue>, Option<JsonValue>) {
+) -> crate::AppResult<(Option<JsonValue>, Option<JsonValue>)> {
     let mut snapshot_cache = HashMap::<String, DelegatedToolRuntimeSnapshot>::new();
 
     async fn reconcile_value_array(
         state: &AppState,
         raw: Option<String>,
         snapshot_cache: &mut HashMap<String, DelegatedToolRuntimeSnapshot>,
-    ) -> Option<JsonValue> {
-        let mut parsed = serde_json::from_str::<JsonValue>(&raw?).ok()?;
-        let items = parsed.as_array_mut()?;
+    ) -> crate::AppResult<Option<JsonValue>> {
+        let Some(raw) = raw else {
+            return Ok(None);
+        };
+        let Ok(mut parsed) = serde_json::from_str::<JsonValue>(&raw) else {
+            return Ok(None);
+        };
+        let Some(items) = parsed.as_array_mut() else {
+            return Ok(None);
+        };
 
         for item in items.iter_mut() {
             let Some(item_object) = item.as_object_mut() else {
@@ -2873,15 +2888,15 @@ async fn reconcile_delegated_result_payloads(
             let Some(result) = item_object.get_mut("result") else {
                 continue;
             };
-            reconcile_delegated_result_value(state, result, snapshot_cache).await;
+            reconcile_delegated_result_value(state, result, snapshot_cache).await?;
         }
 
-        Some(parsed)
+        Ok(Some(parsed))
     }
 
-    let tool_calls = reconcile_value_array(state, tool_calls, &mut snapshot_cache).await;
-    let content_blocks = reconcile_value_array(state, content_blocks, &mut snapshot_cache).await;
-    (tool_calls, content_blocks)
+    let tool_calls = reconcile_value_array(state, tool_calls, &mut snapshot_cache).await?;
+    let content_blocks = reconcile_value_array(state, content_blocks, &mut snapshot_cache).await?;
+    Ok((tool_calls, content_blocks))
 }
 
 fn maybe_preview_tool_result(
@@ -9754,7 +9769,8 @@ pub async fn get_agent_conversation_for_app_state(
             message.tool_calls.clone(),
             message.content_blocks.clone(),
         )
-        .await;
+        .await
+        .map_err(|error| error.to_string())?;
 
         messages.push(AgentMessageResponse {
             id: message.id.as_str().to_string(),
@@ -9879,7 +9895,8 @@ pub async fn get_agent_conversation_messages_page_for_app_state(
             message.tool_calls.clone(),
             message.content_blocks.clone(),
         )
-        .await;
+        .await
+        .map_err(|error| error.to_string())?;
         let (tool_calls, content_blocks) = preview_tool_payloads_for_message(
             &conversation_id.as_str(),
             message.id.as_str(),
@@ -9992,7 +10009,9 @@ pub async fn get_agent_conversation_timeline_page_for_app_state(
     let mut items = page.items;
     let mut snapshot_cache = HashMap::new();
     for item in &mut items {
-        reconcile_delegated_timeline_item_result(state, item, &mut snapshot_cache).await;
+        reconcile_delegated_timeline_item_result(state, item, &mut snapshot_cache)
+            .await
+            .map_err(|error| error.to_string())?;
     }
 
     Ok(Some(AgentConversationTimelinePageResponse {
@@ -10040,7 +10059,8 @@ pub async fn get_agent_message_tool_call_detail(
         message.tool_calls.clone(),
         message.content_blocks.clone(),
     )
-    .await;
+    .await
+    .map_err(|error| error.to_string())?;
     let detail = find_tool_call_detail(
         tool_calls.as_ref(),
         content_blocks.as_ref(),
@@ -10089,7 +10109,9 @@ pub async fn get_agent_timeline_item_tool_call_detail_for_app_state(
     }
 
     let mut item = item;
-    reconcile_delegated_timeline_item_result(state, &mut item, &mut HashMap::new()).await;
+    reconcile_delegated_timeline_item_result(state, &mut item, &mut HashMap::new())
+        .await
+        .map_err(|error| error.to_string())?;
     let detail_message_id = item.message_id.as_ref().map(|id| id.as_str().to_string());
     let block = timeline_item_content_block(
         &item,

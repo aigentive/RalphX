@@ -11,6 +11,7 @@ use super::{
     filter_agent_list_visible_conversations, fork_agent_conversation,
     fork_agent_conversation_response_for_state, fork_terminal_agent_conversation_for_send,
     get_agent_conversation_runtime_index_for_app_state,
+    get_agent_conversation_messages_page_for_app_state,
     get_agent_conversation_runtime_statuses_for_app_state,
     get_agent_conversation_summary_for_app_state,
     get_agent_conversation_timeline_page_for_app_state, get_agent_conversation_workspace_freshness,
@@ -9980,9 +9981,131 @@ async fn delegate_timeline_hydration_rejects_a_run_from_another_conversation() {
         Some(&delegated_conversation.id.as_str()),
         Some(&foreign_run.id.as_str()),
     )
-    .await;
+    .await
+    .expect("a cross-conversation run is an ABSENCE, not a repository failure");
 
     assert!(snapshot.is_none());
+}
+
+// ---------------------------------------------------------------------------------------
+// WP3 — a delegated-tool repository OUTAGE must never be rendered as live state
+// ---------------------------------------------------------------------------------------
+
+/// Fails only the delegated-session read; nothing else in these tests is reached.
+///
+/// This is the first of the five reads `load_delegated_tool_runtime_snapshot` used to swallow
+/// with `.ok().flatten()`. All five now share one `?` seam, so pinning the first proves the
+/// seam; the pre-WP3 behaviour returned `Ok(...)` carrying the STALE persisted `"status":
+/// "running"` from the tool result, which is the fail-open the ledger refused.
+struct FailingDelegatedSessionRepo;
+
+#[async_trait::async_trait]
+#[allow(unused_variables)]
+impl crate::domain::repositories::DelegatedSessionRepository for FailingDelegatedSessionRepo {
+    async fn get_by_id(
+        &self,
+        id: &crate::domain::entities::DelegatedSessionId,
+    ) -> crate::AppResult<Option<DelegatedSession>> {
+        Err(crate::AppError::Database(
+            "simulated delegated-session outage".to_string(),
+        ))
+    }
+    async fn create(&self, session: DelegatedSession) -> crate::AppResult<DelegatedSession> {
+        unimplemented!("create")
+    }
+    async fn get_by_parent_context(
+        &self,
+        parent_context_type: &str,
+        parent_context_id: &str,
+    ) -> crate::AppResult<Vec<DelegatedSession>> {
+        unimplemented!("get_by_parent_context")
+    }
+    async fn update_provider_session_id(
+        &self,
+        id: &crate::domain::entities::DelegatedSessionId,
+        provider_session_id: Option<String>,
+    ) -> crate::AppResult<()> {
+        unimplemented!("update_provider_session_id")
+    }
+    async fn update_status(
+        &self,
+        id: &crate::domain::entities::DelegatedSessionId,
+        status: &str,
+        error: Option<String>,
+        completed_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> crate::AppResult<()> {
+        unimplemented!("update_status")
+    }
+}
+
+/// The timeline tool-call detail read — `get_agent_timeline_item_tool_call_detail`'s production
+/// seam — must FAIL, not serve the persisted `"running"` snapshot as current.
+#[tokio::test]
+async fn timeline_tool_call_detail_fails_closed_on_a_delegated_repository_outage() {
+    let mut state = AppState::new_test();
+    let (conversation_id, item_id, _, _) =
+        seed_delegated_timeline_tool(&state, AgentRunStatus::Completed).await;
+    state.delegated_session_repo = std::sync::Arc::new(FailingDelegatedSessionRepo);
+
+    let result =
+        get_agent_timeline_item_tool_call_detail_for_app_state(&state, conversation_id, item_id)
+            .await;
+
+    let error = result.expect_err(
+        "a delegated-session repository outage must surface as an error, not as the stale          persisted tool result",
+    );
+    assert!(
+        error.contains("simulated delegated-session outage"),
+        "the outage must be reported to the caller: {error}"
+    );
+}
+
+/// A3/L2: the transcript trio shares this seam, and its module doc claims "the seams propagate
+/// repository errors. A remote client is never told 'no messages' when the truth is 'the query
+/// failed'." Before WP3 that claim was false for the five delegated-tool reads. This pins it on
+/// the messages-page seam the registered `get_remote_agent_conversation_messages_page` twin calls.
+#[tokio::test]
+async fn transcript_messages_page_fails_closed_on_a_delegated_repository_outage() {
+    let mut state = AppState::new_test();
+    let project_id = ProjectId::new();
+    let parent = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project_id.clone()))
+        .await
+        .expect("create parent conversation");
+    let mut message = ChatMessage::orchestrator_in_session(
+        IdeationSessionId::new(),
+        "delegated the work",
+    );
+    message.session_id = None;
+    message.conversation_id = Some(parent.id.clone());
+    message.tool_calls = Some(
+        json!([{
+            "id": "delegate-tool-1",
+            "name": "mcp__ralphx__delegate_start",
+            "result": {
+                "delegated_session_id": "session-that-cannot-be-read",
+                "status": "running"
+            }
+        }])
+        .to_string(),
+    );
+    state
+        .chat_message_repo
+        .create(message)
+        .await
+        .expect("create parent message");
+    state.delegated_session_repo = std::sync::Arc::new(FailingDelegatedSessionRepo);
+
+    let error = get_agent_conversation_messages_page_for_app_state(&state, parent.id, 10, 0)
+        .await
+        .expect_err(
+            "the transcript read must propagate the delegated-tool repository error its module              doc claims it propagates",
+        );
+    assert!(
+        error.contains("simulated delegated-session outage"),
+        "the outage must be reported to the caller: {error}"
+    );
 }
 
 #[tokio::test]

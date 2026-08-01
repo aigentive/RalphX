@@ -2800,6 +2800,24 @@
     },
     {
       "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_agent_message_tool_call_detail",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::unified_chat_commands::get_agent_message_tool_call_detail"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_agent_timeline_item_tool_call_detail",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::unified_chat_commands::get_agent_timeline_item_tool_call_detail"
+    },
+    {
+      "argumentSensitive": false,
       "capabilities": [
         "agentControl"
       ],
@@ -8952,36 +8970,22 @@
       "v1Resolution": "v1-audit-refused"
     },
     {
-      "auditRefusal": {
-        "batch": "4, re-audited 8",
-        "finding": "load_delegated_tool_runtime_snapshot (unified_chat_commands/mod.rs:2496/2504/2511/2525/2536) applies .ok().flatten() to every repository read, so an outage returns the STALE persisted tool result as though it were current",
-        "reason": "fail-open-until-fixed"
-      },
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_agent_message_tool_call_detail",
       "module": "unified_chat_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
-      "v1Resolution": "v1-audit-refused"
+      "reason": "WP3 audit: `chat_message_repo` read plus delegated-run reconciliation, all errors          propagated (`load_delegated_tool_runtime_snapshot` now returns `AppResult`); no          AppHandle/ExecutionState/ChatService, no repository write",
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
-      "auditRefusal": {
-        "batch": "4, re-audited 8",
-        "finding": "same load_delegated_tool_runtime_snapshot helper chain, same swallowed reads",
-        "reason": "fail-open-until-fixed"
-      },
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
+      "capabilities": [],
+      "class": "read",
       "command": "get_agent_timeline_item_tool_call_detail",
       "module": "unified_chat_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
-      "registered": false,
-      "v1Resolution": "v1-audit-refused"
+      "reason": "WP3 audit: `chat_timeline_repo` read plus the same propagating delegated-run          reconciliation; no AppHandle/ExecutionState/ChatService, no repository write",
+      "registered": true,
+      "v1Resolution": "registerable"
     },
     {
       "capabilities": [

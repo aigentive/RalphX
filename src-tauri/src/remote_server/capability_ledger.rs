@@ -1083,8 +1083,9 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
     // 3.2 exists to validate — and it is why they sit at `ui:read` and carry no capability,
     // rather than being folded into a lower-visibility batch. The page reads apply the same
     // `preview_tool_payloads_for_message` truncation the local UI gets; the un-truncated
-    // escape hatches (`get_agent_message_tool_call_detail` and its timeline twin) are
-    // deliberately NOT registered.
+    // escape hatches (`get_agent_message_tool_call_detail` and its timeline twin) were
+    // deliberately NOT registered by batch 4 because they were fail-open. WP3 fixed the
+    // fail-open at its source and registers them below.
     CommandOverride {
         command: "get_remote_agent_conversation",
         policy: policy(
@@ -1109,6 +1110,40 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
             "pure repository read of a timeline page; no wake, no spawn; propagates read errors",
         ),
     },
+
+    // ---- WP3 — the tool-call-detail pair, released from the fail-open refusal ---------------
+    //
+    // Batch 4 refused both under `AuditRefusalReason::FailOpenUntilFixed`: the shared
+    // `load_delegated_tool_runtime_snapshot` helper applied `.ok().flatten()` to five repository
+    // reads, so a repository outage served the STALE persisted tool result as though it were
+    // the delegate's current live state. The manifest's own rule is that a repaired error path
+    // is not a registration decision on its own, so both rows carry the per-command audit that
+    // clears them, not just the fix.
+    //
+    // The audit: each command is `&AppState` plus repository reads — no `AppHandle`, no
+    // `ExecutionState`, no `ChatService`, no route through `agent_workspace_response_for_state`.
+    // Every read now propagates through one `?` seam
+    // (`unified_chat_commands/mod.rs::load_delegated_tool_runtime_snapshot`), with `Ok(None)`
+    // reserved for genuine absence (missing session row, non-delegation conversation,
+    // cross-conversation run) — the distinction pinned by
+    // `timeline_tool_call_detail_fails_closed_on_a_delegated_repository_outage`.
+    //
+    // Tier: `ui:read`, matching the registered `get_remote_agent_conversation` twin, which
+    // already serves transcript text and tool blocks at that scope. These two return the
+    // UN-truncated payload of a block that twin already surfaces truncated; the content class
+    // is identical, only the truncation differs.
+    //
+    // The same seam fix discharges follow-up A3/L2: the three transcript reads above share
+    // `load_delegated_tool_runtime_snapshot`, so their "propagates read errors" reason is now
+    // true for the delegated-tool reads too, which it was not when it was written.
+    read_audit(
+        "get_agent_message_tool_call_detail",
+        "WP3 audit: `chat_message_repo` read plus delegated-run reconciliation, all errors          propagated (`load_delegated_tool_runtime_snapshot` now returns `AppResult`); no          AppHandle/ExecutionState/ChatService, no repository write",
+    ),
+    read_audit(
+        "get_agent_timeline_item_tool_call_detail",
+        "WP3 audit: `chat_timeline_repo` read plus the same propagating delegated-run          reconciliation; no AppHandle/ExecutionState/ChatService, no repository write",
+    ),
     // -----------------------------------------------------------------------------------
     // Batch 5 — the conversation-LIST seam split. Completes PR 3.2's read surface.
     //
@@ -3243,20 +3278,6 @@ pub const AUDIT_REFUSALS: &[AuditRefusal] = &[
         finding: "agent_composer_commands/skills.rs:766 swallows the Codex config read, so \
                   losing it reports DISABLED skills as enabled — a fail-open that changes the \
                   answer, not just its completeness (also :299/:318/:442/:589)",
-        batch: "4, re-audited 8",
-    },
-    AuditRefusal {
-        command: "get_agent_message_tool_call_detail",
-        reason: AuditRefusalReason::FailOpenUntilFixed,
-        finding: "load_delegated_tool_runtime_snapshot (unified_chat_commands/mod.rs:2496/2504/\
-                  2511/2525/2536) applies .ok().flatten() to every repository read, so an outage \
-                  returns the STALE persisted tool result as though it were current",
-        batch: "4, re-audited 8",
-    },
-    AuditRefusal {
-        command: "get_agent_timeline_item_tool_call_detail",
-        reason: AuditRefusalReason::FailOpenUntilFixed,
-        finding: "same load_delegated_tool_runtime_snapshot helper chain, same swallowed reads",
         batch: "4, re-audited 8",
     },
     AuditRefusal {

@@ -35,9 +35,10 @@ use crate::application::AppState;
 use crate::commands::ExecutionState;
 use crate::http_server::delegation::DelegationService;
 use crate::http_server::handlers::{
-    get_agent_workflow_run, get_latest_agent_workflow_run_for_script,
-    get_plan_complexity_assessment, get_plan_verification, get_session_plan, list_agent_task_lists,
-    list_agent_tasks, list_agent_tasks_for_list,
+    get_agent_workflow_run, get_agent_workspace_review_context_remote_snapshot,
+    get_latest_agent_workflow_run_for_script, get_plan_complexity_assessment,
+    get_plan_verification, get_session_plan, list_agent_task_lists, list_agent_tasks,
+    list_agent_tasks_for_list,
 };
 use crate::http_server::types::HttpServerState;
 use crate::remote_server::auth::RemoteIdentity;
@@ -66,6 +67,8 @@ pub(crate) const PATH_AGENT_TASK_LISTS: &str = "/api/agent_tasks/lists";
 pub(crate) const PATH_AGENT_TASKS_FOR_LIST: &str = "/api/agent_tasks/list_for_list";
 pub(crate) const PATH_WORKFLOW_RUN_GET: &str = "/api/agent_workflows/runs/get";
 pub(crate) const PATH_WORKFLOW_RUN_LATEST: &str = "/api/agent_workflows/runs/latest";
+pub(crate) const PATH_WORKSPACE_REVIEW_CONTEXT: &str =
+    "/api/agent-workspaces/:conversation_id/workspace-review-context";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RemountMethod {
@@ -139,15 +142,35 @@ pub(crate) const REMOUNT_ALLOWLIST: &[RemountRoute] = &[
         class: RiskClass::Read,
         reason: "agent_workflow_repo latest-run read; starts, pauses and cancels are NOT mounted",
     },
+    RemountRoute {
+        path: PATH_WORKSPACE_REVIEW_CONTEXT,
+        method: RemountMethod::Get,
+        class: RiskClass::Read,
+        reason: "serves the PERSISTED workspace-review monitor snapshot (the artifact-id pair \
+                 the client needs to open a review) through a remote-only handler that takes no \
+                 query extractor, never falls through to the git-spawning target calculation, \
+                 and never schedules PR supervision recovery",
+    },
 ];
 
 /// Routes named as PERMANENTLY denied, with the reason recorded next to the name.
 ///
-/// A path absent from [`REMOUNT_ALLOWLIST`] is already unreachable; these two are additionally
+/// A path absent from [`REMOUNT_ALLOWLIST`] is already unreachable; these are additionally
 /// named so the denial is a checked-in, testable claim rather than an accident of omission.
-/// Both are unvalidated dual-decision resolve sinks: the decision arrives raw in the client's
-/// JSON body, so mounting either would let a paired device approve *or* deny on the user's
-/// behalf through a surface with no per-decision authorization.
+///
+/// The first two are unvalidated dual-decision resolve sinks: the decision arrives raw in the
+/// client's JSON body, so mounting either would let a paired device approve *or* deny on the
+/// user's behalf through a surface with no per-decision authorization.
+///
+/// The third is the Review PR context read, audited alongside its workspace-review sibling in
+/// WP3 and refused on the audit's own evidence. It is not a read: `fetch_review_pr_remote_context`
+/// drives `GithubService` (a `gh` spawn, the detector-(c) floor),
+/// `import_agent_workspace_pr_comment_evidence` and `mark_pr_comments_included` WRITE, and
+/// `reconcile_terminal_review_pr_health` performs terminal settlement — repository writes,
+/// notifications, poller shutdown and a `ChatService` stop — on a plain GET. Unlike
+/// workspace-review-context there is no persisted-snapshot subset to split out: the live remote
+/// head is the whole answer. Serving it remotely needs the host-side snapshot job the spec puts
+/// in WP5/Lane 3.
 #[allow(dead_code)] // A checked-in denial claim asserted by tests; no production reader by design.
 pub(crate) const REMOUNT_DENIED_SINKS: &[(&str, &str)] = &[
     (
@@ -157,6 +180,10 @@ pub(crate) const REMOUNT_DENIED_SINKS: &[(&str, &str)] = &[
     (
         "POST /api/question/resolve",
         "unvalidated-dual-decision-resolve",
+    ),
+    (
+        "GET /api/agent-workspaces/:conversation_id/pr-review-context",
+        "spawns-gh-and-writes-terminal-settlement",
     ),
 ];
 
@@ -310,6 +337,9 @@ fn method_router_for(route: &RemountRoute) -> Option<MethodRouter<HttpServerStat
         (Post, PATH_AGENT_TASKS_FOR_LIST) => post(list_agent_tasks_for_list),
         (Post, PATH_WORKFLOW_RUN_GET) => post(get_agent_workflow_run),
         (Post, PATH_WORKFLOW_RUN_LATEST) => post(get_latest_agent_workflow_run_for_script),
+        (Get, PATH_WORKSPACE_REVIEW_CONTEXT) => {
+            get(get_agent_workspace_review_context_remote_snapshot)
+        }
         _ => return None,
     })
 }
