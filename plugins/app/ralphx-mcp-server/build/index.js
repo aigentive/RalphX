@@ -807,6 +807,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         else if (name === "delegate_wait") {
             result = await callTauri("coordination/delegate/wait", args);
         }
+        else if (name === "delegate_park") {
+            result = await callTauri("coordination/delegate/park", args, {
+                headers: buildRuntimeIdentityTransportHeaders(runtimeContext),
+            });
+        }
         else if (name === "delegate_cancel") {
             result = await callTauri("coordination/delegate/cancel", args);
         }

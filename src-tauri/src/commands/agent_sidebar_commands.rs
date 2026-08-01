@@ -11,8 +11,8 @@ use crate::commands::unified_chat_commands::{
     AgentConversationResponse, AgentConversationWorkspaceResponse,
 };
 use crate::domain::entities::{
-    AgentRunStatus, ChatContextType, ChatConversation, ChatConversationId, Project, ProjectId,
-    TeamMemberStatus, TeamRunBindingStatus, TeamRunTriggerKind,
+    AgentRunStatus, ChatContextType, ChatConversation, ChatConversationId, DelegationPark, Project,
+    ProjectId, TeamMemberStatus, TeamRunBindingStatus, TeamRunTriggerKind,
 };
 
 const DEFAULT_LIMIT_PER_GROUP: u32 = 6;
@@ -75,6 +75,7 @@ pub struct AgentSidebarConversationRowResponse {
     pub publication_state: String,
     pub publication_label: Option<String>,
     pub attention_lane: String,
+    pub parked_delegate_count: usize,
     pub is_muted: bool,
     pub action_verb: String,
 }
@@ -226,6 +227,7 @@ struct SidebarConversationRow {
     ref_label: String,
     publication_state: SidebarPublicationState,
     attention_lane: SidebarAttentionLane,
+    parked_delegate_count: usize,
     attention_state_fingerprint: String,
     is_muted: bool,
     action_verb: String,
@@ -274,6 +276,8 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
             .collect();
     let managed_team_activity_by_conversation =
         managed_team_activity_by_conversation(state).await?;
+    let parked_delegate_counts_by_conversation =
+        armed_parked_delegate_counts_by_conversation(state).await?;
 
     let mut project_labels: Vec<(String, String)> = Vec::new();
     let mut automation_labels: HashMap<String, String> = HashMap::new();
@@ -365,7 +369,11 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
 
             let (ref_kind, ref_label) =
                 conversation_ref_display(workspace.as_ref(), default_ref_label.as_str());
-            let attention_lane = attention_lane_for_row(
+            let parked_delegate_count = parked_delegate_counts_by_conversation
+                .get(&conversation.id)
+                .copied()
+                .unwrap_or_default();
+            let attention_lane = attention_lane_for_row_with_armed_park(
                 conversation.is_archived(),
                 publication_state,
                 latest_run_status,
@@ -375,6 +383,7 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
                     .last_message_at
                     .unwrap_or(conversation.updated_at),
                 managed_team_activity_by_conversation.get(&conversation.id),
+                parked_delegate_counts_by_conversation.contains_key(&conversation.id),
             );
             let attention_state_fingerprint = attention_state_fingerprint(
                 conversation.is_archived(),
@@ -420,6 +429,7 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
                 ref_label,
                 publication_state,
                 attention_lane,
+                parked_delegate_count,
                 attention_state_fingerprint,
                 is_muted: false,
                 action_verb,
@@ -472,7 +482,11 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
 
         let (ref_kind, ref_label) =
             conversation_ref_display(None, standalone_default_ref_label.as_str());
-        let attention_lane = attention_lane_for_row(
+        let parked_delegate_count = parked_delegate_counts_by_conversation
+            .get(&conversation.id)
+            .copied()
+            .unwrap_or_default();
+        let attention_lane = attention_lane_for_row_with_armed_park(
             conversation.is_archived(),
             publication_state,
             latest_run_status,
@@ -482,6 +496,7 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
                 .last_message_at
                 .unwrap_or(conversation.updated_at),
             managed_team_activity_by_conversation.get(&conversation.id),
+            parked_delegate_counts_by_conversation.contains_key(&conversation.id),
         );
         let attention_state_fingerprint = attention_state_fingerprint(
             conversation.is_archived(),
@@ -516,6 +531,7 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
             ref_label,
             publication_state,
             attention_lane,
+            parked_delegate_count,
             attention_state_fingerprint,
             is_muted: false,
             action_verb,
@@ -775,6 +791,7 @@ async fn apply_current_mutes(
     Ok(())
 }
 
+#[cfg(test)]
 fn attention_lane_for_row(
     is_archived: bool,
     publication_state: SidebarPublicationState,
@@ -783,6 +800,28 @@ fn attention_lane_for_row(
     blocked_exhausted_repair: bool,
     last_activity_at: DateTime<Utc>,
     managed_team_activity: Option<&ManagedTeamActivity>,
+) -> SidebarAttentionLane {
+    attention_lane_for_row_with_armed_park(
+        is_archived,
+        publication_state,
+        latest_run_status,
+        workspace,
+        blocked_exhausted_repair,
+        last_activity_at,
+        managed_team_activity,
+        false,
+    )
+}
+
+fn attention_lane_for_row_with_armed_park(
+    is_archived: bool,
+    publication_state: SidebarPublicationState,
+    latest_run_status: Option<AgentRunStatus>,
+    workspace: Option<&AgentConversationWorkspaceResponse>,
+    blocked_exhausted_repair: bool,
+    last_activity_at: DateTime<Utc>,
+    managed_team_activity: Option<&ManagedTeamActivity>,
+    has_armed_delegation_park: bool,
 ) -> SidebarAttentionLane {
     if is_archived
         || matches!(
@@ -800,6 +839,7 @@ fn attention_lane_for_row(
     let supervision_status = normalized_supervision_status(workspace);
     if is_in_flight_run_status(latest_run_status)
         || managed_team_activity.is_some_and(|activity| activity.is_working)
+        || has_armed_delegation_park
         || matches!(
             supervision_status.as_deref(),
             Some("fixing" | "publishing" | "waiting" | "waiting_for_checks" | "monitoring")
@@ -813,6 +853,37 @@ fn attention_lane_for_row(
     }
 
     SidebarAttentionLane::Needs
+}
+
+async fn armed_parked_delegate_counts_by_conversation(
+    state: &AppState,
+) -> Result<HashMap<ChatConversationId, usize>, String> {
+    state
+        .delegation_park_repo
+        .list_armed()
+        .await
+        .map(parked_delegate_counts_by_conversation)
+        .map_err(|error| {
+            tracing::warn!(error = %error, "failed to load armed delegation parks for sidebar");
+            error.to_string()
+        })
+}
+
+fn parked_delegate_counts_by_conversation(
+    parks: Vec<DelegationPark>,
+) -> HashMap<ChatConversationId, usize> {
+    let mut counts_by_conversation = HashMap::new();
+    for park in parks {
+        let unsettled_count = park
+            .jobs
+            .iter()
+            .filter(|job| job.settled_status.is_none())
+            .count();
+        *counts_by_conversation
+            .entry(park.parent_conversation_id)
+            .or_default() += unsettled_count;
+    }
+    counts_by_conversation
 }
 
 async fn managed_team_activity_by_conversation(
@@ -1214,6 +1285,7 @@ impl From<SidebarConversationRow> for AgentSidebarConversationRowResponse {
             publication_state: row.publication_state.key().to_string(),
             publication_label,
             attention_lane: row.attention_lane.key().to_string(),
+            parked_delegate_count: row.parked_delegate_count,
             is_muted: row.is_muted,
             action_verb: row.action_verb,
         }
@@ -1332,6 +1404,10 @@ fn supervision_publication_label(
         _ => None,
     }
 }
+
+#[cfg(test)]
+#[path = "agent_sidebar_commands_tests.rs"]
+mod agent_sidebar_commands_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1467,7 +1543,15 @@ mod tests {
             SidebarAttentionLane::Working
         );
         assert_eq!(
-            attention_lane_for_row(true, SidebarPublicationState::Merged, None, None, true, now, None),
+            attention_lane_for_row(
+                true,
+                SidebarPublicationState::Merged,
+                None,
+                None,
+                true,
+                now,
+                None
+            ),
             SidebarAttentionLane::Done
         );
     }

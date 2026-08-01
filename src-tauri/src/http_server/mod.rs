@@ -291,6 +291,7 @@ pub async fn start_http_server_with_listener_ready(
         )
         .route("/api/coordination/delegate/wait", post(wait_delegate))
         .route("/api/coordination/delegate/cancel", post(cancel_delegate))
+        .route("/api/coordination/delegate/park", post(park_delegate))
         .route(
             "/api/agent_workflows/scripts/create",
             post(create_agent_workflow_script),

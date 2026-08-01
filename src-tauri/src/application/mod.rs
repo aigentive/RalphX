@@ -2,6 +2,7 @@
 // This layer bridges the domain and infrastructure layers
 
 pub mod agent_client_bundle;
+pub mod delegation_park;
 pub mod agent_conversation_archive;
 #[cfg(test)]
 mod agent_conversation_archive_tests;

@@ -30,7 +30,7 @@ use process_config::{resolve_canonical_process_mapping, ProcessMapping};
 
 pub use runtime_config::{
     validate_external_mcp_config, AllRuntimeConfig, AutomationsRuntimeConfig,
-    DatabaseMaintenanceConfig, ExternalMcpConfig, GitRuntimeConfig, LimitsConfig,
+    DatabaseMaintenanceConfig, DelegationConfig, ExternalMcpConfig, GitRuntimeConfig, LimitsConfig,
     ReconciliationConfig, SchedulerConfig, SpecialistEntry, StreamTimeoutsConfig,
     SupervisorRuntimeConfig, VerificationConfig,
 };
@@ -264,6 +264,8 @@ struct RalphxConfig {
     ideation: runtime_config::IdeationConfigWrapper,
     #[serde(default)]
     external_mcp: ExternalMcpConfig,
+    #[serde(default)]
+    delegation: runtime_config::DelegationConfig,
     #[serde(default)]
     ui: Option<UiConfig>,
     #[serde(default)]
@@ -1248,6 +1250,7 @@ fn resolve_loaded_config_with_lookup(
         limits: parsed.limits,
         verification: parsed.ideation.verification,
         external_mcp: parsed.external_mcp,
+        delegation: parsed.delegation,
         child_session_activity_threshold_secs: parsed
             .ideation
             .child_session_activity_threshold_secs,
@@ -1706,6 +1709,7 @@ fn load_config() -> LoadedConfig {
                 limits: LimitsConfig::default(),
                 verification: VerificationConfig::default(),
                 external_mcp: ExternalMcpConfig::default(),
+                delegation: runtime_config::DelegationConfig::default(),
                 child_session_activity_threshold_secs: None,
                 ui_feature_flags: UiFeatureFlagsConfig::default(),
             };
@@ -1882,6 +1886,11 @@ pub fn agent_harness_defaults_config() -> &'static AgentHarnessDefaultsConfig {
 
 pub fn stream_timeouts() -> &'static StreamTimeoutsConfig {
     &LOADED_CONFIG_CELL.get_or_init(load_config).runtime.stream
+}
+
+/// Backend-held delegation waiting settings (bounded `delegate_wait` + park/wake).
+pub fn delegation_config() -> &'static runtime_config::DelegationConfig {
+    &LOADED_CONFIG_CELL.get_or_init(load_config).runtime.delegation
 }
 
 pub fn database_maintenance_config() -> &'static runtime_config::DatabaseMaintenanceConfig {

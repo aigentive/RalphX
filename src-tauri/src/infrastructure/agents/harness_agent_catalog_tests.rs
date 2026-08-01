@@ -2149,6 +2149,10 @@ fn codex_spawn_capable_prompts_reference_explicit_delegation_tools() {
             "codex prompt for {agent_name} should mention delegate_wait"
         );
         assert!(
+            prompt.contains("delegate_park"),
+            "codex prompt for {agent_name} should mention delegate_park"
+        );
+        assert!(
             prompt.contains("delegate_cancel"),
             "codex prompt for {agent_name} should mention delegate_cancel"
         );
@@ -2166,6 +2170,10 @@ fn codex_spawn_capable_prompts_reference_explicit_delegation_tools() {
             "claude prompt for {agent_name} should mention delegate_wait"
         );
         assert!(
+            prompt.contains("delegate_park"),
+            "claude prompt for {agent_name} should mention delegate_park"
+        );
+        assert!(
             prompt.contains("delegate_cancel"),
             "claude prompt for {agent_name} should mention delegate_cancel"
         );
@@ -2175,6 +2183,11 @@ fn codex_spawn_capable_prompts_reference_explicit_delegation_tools() {
 #[test]
 fn canonical_delegation_policy_appendix_is_injected_only_for_delegating_agents() {
     let root = project_root();
+    let required_waiting_clauses = [
+        "For short waits, call `delegate_wait` once with `wait_timeout_ms`; the backend blocks until a delegate settles. Do not spin on repeated immediate `delegate_wait` calls.",
+        "For long waits, call `delegate_park` with the outstanding job ids and then END YOUR TURN. RalphX resumes you automatically when the wake condition is met, on failure, or at the deadline.",
+        "Parking is not abandonment: state what you are waiting for before ending the turn.",
+    ];
     let required_coordinator_clauses = [
         "### Delegated Implementation Coordination",
         "otherwise do not direct mutation or validation",
@@ -2198,6 +2211,12 @@ fn canonical_delegation_policy_appendix_is_injected_only_for_delegating_agents()
             prompt.contains("## RalphX Delegation Policy (AUTO-GENERATED)"),
             "delegating codex prompt for {agent_name} should include the generated delegation appendix"
         );
+        for clause in required_waiting_clauses {
+            assert!(
+                prompt.contains(clause),
+                "delegating codex prompt for {agent_name} should include waiting clause: {clause}"
+            );
+        }
         for clause in required_coordinator_clauses {
             assert!(
                 prompt.contains(clause),
@@ -2213,6 +2232,12 @@ fn canonical_delegation_policy_appendix_is_injected_only_for_delegating_agents()
             prompt.contains("## RalphX Delegation Policy (AUTO-GENERATED)"),
             "delegating claude prompt for {agent_name} should include the generated delegation appendix"
         );
+        for clause in required_waiting_clauses {
+            assert!(
+                prompt.contains(clause),
+                "delegating claude prompt for {agent_name} should include waiting clause: {clause}"
+            );
+        }
         for clause in required_coordinator_clauses {
             assert!(
                 prompt.contains(clause),

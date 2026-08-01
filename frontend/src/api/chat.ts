@@ -477,6 +477,7 @@ export interface AgentSidebarConversationRow {
   publicationState: AgentSidebarPublicationState;
   publicationLabel: string | null;
   attentionLane: AgentSidebarAttentionLane;
+  parkedDelegateCount: number;
   actionVerb: string;
   isMuted: boolean;
 }
@@ -2778,6 +2779,7 @@ const AgentSidebarConversationRowResponseSchema = z.object({
   ]),
   publication_label: z.string().nullable(),
   attention_lane: z.enum(["needs", "working", "stale", "done"]),
+  parked_delegate_count: z.number().int().nonnegative(),
   action_verb: z.string(),
   is_muted: z.boolean(),
 });
@@ -3405,6 +3407,7 @@ function transformAgentSidebarConversationGroups(
         publicationState: row.publication_state,
         publicationLabel: row.publication_label,
         attentionLane: row.attention_lane,
+        parkedDelegateCount: row.parked_delegate_count,
         actionVerb: row.action_verb,
         isMuted: row.is_muted,
       })),

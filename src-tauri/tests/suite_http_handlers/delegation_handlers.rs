@@ -7,9 +7,6 @@ use async_trait::async_trait;
 use axum::{extract::State, http::HeaderMap, Json};
 use chrono::{DateTime, Utc};
 use ralphx_lib::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
-use ralphx_lib::http_server::native_delegation_launcher::{
-    NativeDelegationLaunchParent, NativeDelegationLaunchRequest, NativeDelegationLauncher,
-};
 use ralphx_lib::application::AppState;
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::agents::{
@@ -37,6 +34,9 @@ use ralphx_lib::http_server::handlers::{
     build_delegated_task_completed_payload, build_delegated_task_started_payload, cancel_delegate,
     complete_delegate_assignment, get_delegate_assignment, get_delegated_session_status,
     start_delegate, start_delegate_with_runtime_context, wait_delegate,
+};
+use ralphx_lib::http_server::native_delegation_launcher::{
+    NativeDelegationLaunchParent, NativeDelegationLaunchRequest, NativeDelegationLauncher,
 };
 use ralphx_lib::http_server::types::{
     CompleteDelegateAssignmentRequest, DelegateCancelRequest, DelegateStartRequest,
@@ -985,7 +985,9 @@ async fn test_delegate_start_creates_delegated_session_and_completes_with_mock_c
             let candidate = wait_delegate(
                 State(state.clone()),
                 Json(DelegateWaitRequest {
-                    job_id: start.job_id.clone(),
+                    job_id: Some(start.job_id.clone()),
+                    job_ids: None,
+                    wait_timeout_ms: None,
                     include_delegated_status: Some(true),
                     include_child_status: None,
                     include_messages: Some(true),
@@ -1176,7 +1178,9 @@ async fn delegate_start_child_command_excludes_bound_project_persona() {
         let status = wait_delegate(
             State(state.clone()),
             Json(DelegateWaitRequest {
-                job_id: start.job_id.clone(),
+                job_id: Some(start.job_id.clone()),
+                job_ids: None,
+                wait_timeout_ms: None,
                 include_delegated_status: Some(false),
                 include_child_status: None,
                 include_messages: Some(false),
@@ -1940,7 +1944,9 @@ async fn test_delegate_start_uses_delegated_subagent_provider_defaults() {
             let candidate = wait_delegate(
                 State(state.clone()),
                 Json(DelegateWaitRequest {
-                    job_id: start.job_id.clone(),
+                    job_id: Some(start.job_id.clone()),
+                    job_ids: None,
+                    wait_timeout_ms: None,
                     include_delegated_status: Some(true),
                     include_child_status: None,
                     include_messages: Some(false),
@@ -2595,7 +2601,9 @@ async fn test_nested_delegate_preserves_original_project_agent_workspace() {
             let candidate = wait_delegate(
                 State(state.clone()),
                 Json(DelegateWaitRequest {
-                    job_id: first.job_id.clone(),
+                    job_id: Some(first.job_id.clone()),
+                    job_ids: None,
+                    wait_timeout_ms: None,
                     include_delegated_status: Some(false),
                     include_child_status: None,
                     include_messages: Some(false),
@@ -2858,7 +2866,9 @@ async fn test_delegate_start_does_not_invent_child_model_when_model_is_omitted()
             let candidate = wait_delegate(
                 State(state.clone()),
                 Json(DelegateWaitRequest {
-                    job_id: start.job_id.clone(),
+                    job_id: Some(start.job_id.clone()),
+                    job_ids: None,
+                    wait_timeout_ms: None,
                     include_delegated_status: Some(true),
                     include_child_status: None,
                     include_messages: Some(false),
@@ -3497,7 +3507,9 @@ async fn test_legacy_verification_child_uses_ideation_subagent_harness_when_omit
             let candidate = wait_delegate(
                 State(state.clone()),
                 Json(DelegateWaitRequest {
-                    job_id: start.job_id.clone(),
+                    job_id: Some(start.job_id.clone()),
+                    job_ids: None,
+                    wait_timeout_ms: None,
                     include_delegated_status: Some(true),
                     include_child_status: None,
                     include_messages: Some(false),
@@ -3619,7 +3631,9 @@ async fn test_delegate_start_uses_ideation_subagent_harness_when_harness_is_omit
             let candidate = wait_delegate(
                 State(state.clone()),
                 Json(DelegateWaitRequest {
-                    job_id: start.job_id.clone(),
+                    job_id: Some(start.job_id.clone()),
+                    job_ids: None,
+                    wait_timeout_ms: None,
                     include_delegated_status: Some(true),
                     include_child_status: None,
                     include_messages: Some(false),
@@ -4091,7 +4105,9 @@ async fn test_delegate_wait_hydrates_the_jobs_exact_run_when_session_has_newer_r
     let waited = wait_delegate(
         State(state),
         Json(DelegateWaitRequest {
-            job_id,
+            job_id: Some(job_id),
+            job_ids: None,
+            wait_timeout_ms: None,
             include_delegated_status: Some(true),
             include_child_status: None,
             include_messages: Some(false),
@@ -4149,6 +4165,7 @@ fn test_build_delegated_task_started_payload_uses_parent_lineage_and_delegated_m
             detail: None,
         }],
         delegated_status: None,
+        timed_out: None,
     };
 
     let payload = build_delegated_task_started_payload(
@@ -4241,6 +4258,7 @@ fn test_build_delegated_task_completed_payload_uses_latest_run_attribution() {
             detail: None,
         }],
         delegated_status: None,
+        timed_out: None,
     };
     let latest_run = DelegatedRunSummary {
         agent_run_id: "run-2".to_string(),
@@ -4366,6 +4384,7 @@ fn delegated_lifecycle_payload_uses_job_correlation_without_parent_tool_id() {
         completed_at: None,
         history: vec![],
         delegated_status: None,
+        timed_out: None,
     };
 
     let started = build_delegated_task_started_payload(&snapshot, None, None, None, None, 7)
@@ -4377,4 +4396,303 @@ fn delegated_lifecycle_payload_uses_job_correlation_without_parent_tool_id() {
         Some("job-without-placement")
     );
     assert_eq!(started.conversation_id, "parent-conversation");
+}
+
+// ── Phase 1: backend-held bounded delegate_wait ──────────────────────────────
+
+/// Seeds a delegated session + conversation + running agent run, registers a running
+/// delegation job for it, and returns the job id plus the delegated run id.
+async fn seed_running_delegation_job(
+    state: &HttpServerState,
+    parent: &IdeationSession,
+    job_id: &str,
+) -> (String, AgentRunId) {
+    let delegated_session = state
+        .app_state
+        .delegated_session_repo
+        .create(DelegatedSession::new(
+            parent.project_id.clone(),
+            "ideation".to_string(),
+            parent.id.as_str().to_string(),
+            "ralphx-general-explorer".to_string(),
+            AgentHarnessKind::Codex,
+        ))
+        .await
+        .expect("create delegated session");
+    let delegated_conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_delegation(
+            delegated_session.id.clone(),
+        ))
+        .await
+        .expect("create delegated conversation");
+    let run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(delegated_conversation.id))
+        .await
+        .expect("create delegated run");
+
+    state
+        .delegation_service
+        .register_running(
+            job_id.to_string(),
+            "ideation".to_string(),
+            parent.id.as_str().to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            delegated_session.id.as_str().to_string(),
+            Some(delegated_conversation.id.as_str()),
+            Some(run.id.as_str()),
+            "ralphx-general-explorer".to_string(),
+            None,
+            "codex",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+
+    (job_id.to_string(), run.id.clone())
+}
+
+fn wait_request(job_id: Option<&str>, job_ids: Option<Vec<&str>>) -> DelegateWaitRequest {
+    DelegateWaitRequest {
+        job_id: job_id.map(str::to_string),
+        job_ids: job_ids.map(|ids| ids.into_iter().map(str::to_string).collect()),
+        wait_timeout_ms: None,
+        include_delegated_status: Some(false),
+        include_child_status: None,
+        include_messages: None,
+        message_limit: None,
+    }
+}
+
+/// Marks the registered job terminal through the same CAS the production settlement path uses,
+/// which is the only thing allowed to fire the settlement watch signal.
+async fn commit_job_terminal(state: &HttpServerState, job_id: &str, status: &str) {
+    let candidate = state
+        .delegation_service
+        .terminal_candidate(job_id, status, Some("delegate output".to_string()), None)
+        .await
+        .expect("terminal candidate");
+    assert!(
+        state.delegation_service.commit_terminal(candidate).await,
+        "commit_terminal should accept the first terminal for {job_id}"
+    );
+}
+
+#[tokio::test]
+async fn wait_delegate_without_timeout_returns_immediately() {
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let parent = create_parent_session(&state).await;
+    let (job_id, _run) = seed_running_delegation_job(&state, &parent, "job-immediate").await;
+
+    let started = std::time::Instant::now();
+    let snapshot = wait_delegate(
+        State(state.clone()),
+        Json(wait_request(Some(&job_id), None)),
+    )
+    .await
+    .expect("wait response")
+    .0;
+
+    assert_eq!(snapshot.status, "running");
+    assert_eq!(
+        snapshot.timed_out, None,
+        "an immediate return must not report a timeout"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "default behavior must not block"
+    );
+}
+
+#[tokio::test]
+async fn wait_delegate_blocks_until_settlement() {
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let parent = create_parent_session(&state).await;
+    let (job_id, _run) = seed_running_delegation_job(&state, &parent, "job-blocking").await;
+
+    let settler_state = state.clone();
+    let settler_job = job_id.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        commit_job_terminal(&settler_state, &settler_job, "completed").await;
+    });
+
+    let mut request = wait_request(Some(&job_id), None);
+    request.wait_timeout_ms = Some(10_000);
+
+    let started = std::time::Instant::now();
+    let snapshot = wait_delegate(State(state.clone()), Json(request))
+        .await
+        .expect("wait response")
+        .0;
+    let elapsed = started.elapsed();
+
+    assert_eq!(snapshot.status, "completed");
+    assert_eq!(snapshot.timed_out, None);
+    assert!(
+        elapsed < Duration::from_secs(3),
+        "block must return promptly after settlement, took {elapsed:?}"
+    );
+    assert!(
+        elapsed >= Duration::from_millis(150),
+        "block must actually wait for the settlement signal, took {elapsed:?}"
+    );
+}
+
+#[tokio::test]
+async fn wait_delegate_returns_timed_out_at_cap() {
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let parent = create_parent_session(&state).await;
+    let (job_id, _run) = seed_running_delegation_job(&state, &parent, "job-timeout").await;
+
+    let mut request = wait_request(Some(&job_id), None);
+    request.wait_timeout_ms = Some(200);
+
+    let snapshot = wait_delegate(State(state.clone()), Json(request))
+        .await
+        .expect("wait response")
+        .0;
+
+    assert_eq!(snapshot.timed_out, Some(true));
+    assert_eq!(
+        snapshot.status, "running",
+        "a timeout must never settle the job"
+    );
+    assert_eq!(
+        state
+            .delegation_service
+            .snapshot(&job_id)
+            .await
+            .expect("job still registered")
+            .status,
+        "running"
+    );
+}
+
+#[test]
+fn wait_delegate_clamps_timeout_below_the_stream_stall_guard() {
+    let cap = ralphx_lib::infrastructure::agents::claude::delegation_config().wait_block_max_secs;
+    let stall_guard =
+        ralphx_lib::infrastructure::agents::claude::stream_timeouts().default_parse_stall_secs;
+
+    // Config invariant: a legitimate backend-held block can never outlive the stall guard that
+    // would kill the waiting coordinator's stream. This is the falsifiable guard against config
+    // drift re-introducing the "blocking wait kills the coordinator" failure mode.
+    assert!(
+        cap < stall_guard,
+        "delegation.wait_block_max_secs ({cap}) must stay below \
+         timeouts.stream.default_parse_stall_secs ({stall_guard})"
+    );
+
+    let clamped = ralphx_lib::http_server::handlers::effective_wait_block(u64::MAX);
+    assert!(
+        clamped <= Duration::from_secs(cap),
+        "an absurd caller timeout must clamp to the configured cap"
+    );
+    assert!(
+        clamped < Duration::from_secs(stall_guard),
+        "the effective block must stay strictly below the stall guard"
+    );
+
+    // A modest caller request is honored verbatim.
+    assert_eq!(
+        ralphx_lib::http_server::handlers::effective_wait_block(250),
+        Duration::from_millis(250)
+    );
+}
+
+#[tokio::test]
+async fn wait_delegate_with_job_ids_returns_first_settled() {
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let parent = create_parent_session(&state).await;
+    let (first, _) = seed_running_delegation_job(&state, &parent, "job-wave-1").await;
+    let (second, _) = seed_running_delegation_job(&state, &parent, "job-wave-2").await;
+
+    let settler_state = state.clone();
+    let settler_job = second.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        commit_job_terminal(&settler_state, &settler_job, "completed").await;
+    });
+
+    let mut request = wait_request(None, Some(vec![&first, &second]));
+    request.wait_timeout_ms = Some(10_000);
+
+    let snapshot = wait_delegate(State(state.clone()), Json(request))
+        .await
+        .expect("wait response")
+        .0;
+
+    assert_eq!(
+        snapshot.job_id, second,
+        "the wave wait must return the job that actually settled"
+    );
+    assert_eq!(snapshot.status, "completed");
+    assert_eq!(
+        state
+            .delegation_service
+            .snapshot(&first)
+            .await
+            .expect("sibling still registered")
+            .status,
+        "running",
+        "waking on one job must not settle its siblings"
+    );
+}
+
+#[tokio::test]
+async fn wait_delegate_rejects_both_job_id_and_job_ids() {
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let parent = create_parent_session(&state).await;
+    let (job_id, _run) = seed_running_delegation_job(&state, &parent, "job-ambiguous").await;
+
+    let mut request = wait_request(Some(&job_id), None);
+    request.job_ids = Some(vec![job_id.clone()]);
+
+    let error = wait_delegate(State(state.clone()), Json(request))
+        .await
+        .expect_err("ambiguous watch set must be rejected");
+    assert_eq!(error.0, axum::http::StatusCode::BAD_REQUEST);
+
+    let missing = wait_delegate(State(state.clone()), Json(wait_request(None, None)))
+        .await
+        .expect_err("empty watch set must be rejected");
+    assert_eq!(missing.0, axum::http::StatusCode::BAD_REQUEST);
+
+    let empty_list = wait_delegate(State(state), Json(wait_request(None, Some(vec![]))))
+        .await
+        .expect_err("empty job_ids must be rejected");
+    assert_eq!(empty_list.0, axum::http::StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn wait_delegate_rejects_unknown_job_in_set() {
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let parent = create_parent_session(&state).await;
+    let (job_id, _run) = seed_running_delegation_job(&state, &parent, "job-known").await;
+
+    let error = wait_delegate(
+        State(state),
+        Json(wait_request(
+            None,
+            Some(vec![&job_id, "job-does-not-exist"]),
+        )),
+    )
+    .await
+    .expect_err("unknown job in the watch set must be rejected");
+    assert_eq!(error.0, axum::http::StatusCode::NOT_FOUND);
 }

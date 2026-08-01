@@ -830,6 +830,7 @@ pub(crate) fn build_delegated_prompt(
     )
 }
 
+mod delegate_park;
 mod native_delegation;
 
 use native_delegation::resolve_parent_conversation_id;
@@ -837,8 +838,12 @@ pub(crate) use native_delegation::{
     build_delegated_session_status_response, cancel_delegate_impl, ensure_delegated_conversation,
     fail_started_delegated_launch, start_delegate_impl_with_parent_run,
 };
+pub use delegate_park::{
+    park_delegate, PARK_MISSING_CONVERSATION_IDENTITY_ERROR, PARK_MISSING_RUN_IDENTITY_ERROR,
+};
 pub use native_delegation::{
     build_delegated_task_completed_payload, build_delegated_task_started_payload, cancel_delegate,
-    get_delegated_session_status, start_delegate, start_delegate_with_runtime_context,
-    wait_delegate, DELEGATION_INVALID_RUN_IDENTITY_ERROR, DELEGATION_MISSING_RUN_IDENTITY_ERROR,
+    effective_wait_block, get_delegated_session_status, start_delegate,
+    start_delegate_with_runtime_context, wait_delegate, DELEGATION_INVALID_RUN_IDENTITY_ERROR,
+    DELEGATION_MISSING_RUN_IDENTITY_ERROR,
 };
