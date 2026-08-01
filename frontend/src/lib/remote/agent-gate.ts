@@ -112,6 +112,13 @@ export const AGENT_GATED_AFFORDANCES = {
   // unavailable hint instead of an enabled button that answers `REMOTE_COMMAND_UNAVAILABLE` —
   // derived from absence, never hardcoded.
   agentStop: "request_remote_agent_stop",
+  // Switching a conversation's mode routes through the spawn-free mode-switch intent
+  // (WP5a), NOT `switch_agent_conversation_mode` — that command prepares the workspace
+  // (`ensure_git_worktree`, a git spawn) and stays unregistered by the absolute process
+  // floor. The intent is `agentControl`, so the mode picker renders gated below `ui:agent`
+  // and unavailable against an older host that predates the registration — derived from
+  // absence, never hardcoded.
+  conversationModeSwitch: "request_remote_agent_conversation_mode_switch",
   permissionApprove: "approve_permission_request",
   questionAnswer: "answer_user_question",
   taskMove: "move_task",

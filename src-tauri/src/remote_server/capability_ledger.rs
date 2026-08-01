@@ -532,6 +532,41 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
             "pure repository read of one stop-intent row; no spawn carrier; propagates read errors",
         ),
     },
+    // --- WP5a: the spawn-free MODE SWITCH pair.
+    //
+    // `switch_agent_conversation_mode` is `host-denied-spawns-process` (see its `process_refusal`
+    // row: the body reaches `GitService::ref_exists` and the publish path's
+    // `inspect_repository_capability` -> `ensure_git_worktree`). Combined with the start intent
+    // host-pinning `mode` to "chat", that made every remote conversation permanently chat-only.
+    //
+    // The redesign is the same one WP1/WP2 used: persist an intent, let a host-owned dispatcher
+    // hold the denied path. Unlike the stop brake this is NOT authority-reducing — a switch into
+    // Edit/Plan prepares a worktree a later agent process runs in — so it is classified
+    // `AgentControl` with an honest `SeedsSpawnTriggeringState` and takes a
+    // `SPAWN_TRIGGERING_STATE_SURFACE` row, exactly like the start and continuation intents. It
+    // does NOT take `MutatesAgentConsumedContent`: it seeds no turn content, only a mode.
+    CommandOverride {
+        command: "request_remote_agent_conversation_mode_switch",
+        policy: policy(
+            RiskClass::AgentControl,
+            SEEDS_STATE,
+            "seeds-spawn-triggering-state, declared membership prepares-workspace-for-later-agent-run: \
+             persists a target-mode intent a host loop later applies through \
+             `switch_agent_conversation_mode_for_state`, whose REJECT policy keeps the \
+             process-terminating stop path out of the dispatcher; validates conversation \
+             ownership, archival, mode validity and run liveness fail-closed; carries no \
+             base/branch/runtime-override field to aim workspace preparation with; resolves no \
+             CLI path and arms no scheduler in-band",
+        ),
+    },
+    CommandOverride {
+        command: "get_remote_conversation_mode_switch_request",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "pure repository read of one mode-switch-intent row; no spawn carrier; propagates read errors",
+        ),
+    },
     CommandOverride {
         command: "create_task_step",
         policy: policy(
@@ -3900,6 +3935,17 @@ pub const DECLARED_MEMBERSHIPS: &[(&str, &str)] = &[
     (
         "request_remote_agent_conversation_message",
         "seeds-agent-turn-for-idle-conversation",
+    ),
+    // WP5a (remote conversation mode switch). Same reasoning as the continuation row above: the
+    // P-17b negative suite is generated from detector output, and a spawn-free command that
+    // causes the host to PREPARE A WORKSPACE — a git worktree a later agent process runs in —
+    // would otherwise never be proved unreachable from a default `ui:read`+`ui:operate` pairing.
+    // Detector (b) does fire on this one via the `remote-conversation-mode-switch` surface row,
+    // but the declaration is recorded anyway because the membership is a property of the command,
+    // not of whichever detector happens to model the surface this month.
+    (
+        "request_remote_agent_conversation_mode_switch",
+        "prepares-workspace-for-later-agent-run",
     ),
 ];
 

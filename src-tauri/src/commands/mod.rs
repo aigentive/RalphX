@@ -88,6 +88,7 @@ pub mod remote_chat_commands;
 #[cfg(test)]
 mod remote_chat_commands_tests;
 pub mod remote_conversation_message_commands;
+pub mod remote_conversation_mode_switch_commands;
 pub mod remote_conversation_start_commands;
 pub mod remote_device_commands;
 pub mod remote_environment_commands;

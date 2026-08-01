@@ -3305,6 +3305,80 @@ type RemoteConversationMessageRequest = z.infer<
   typeof GetRemoteConversationMessageRequestResponseSchema
 >;
 
+/**
+ * Remote conversation MODE SWITCH (WP5a).
+ *
+ * `switch_agent_conversation_mode` prepares the conversation workspace (`GitService::ref_exists`,
+ * `ensure_git_worktree`) and is host-denied by the absolute process floor. Combined with the
+ * start intent host-pinning `mode` to `"chat"`, a paired device could reach chat and NOTHING
+ * else — Edit, Plan and Ideation were unreachable. The switch now persists an intent through
+ * `request_remote_agent_conversation_mode_switch` and polls
+ * `get_remote_conversation_mode_switch_request` to a terminal state — the host owns the worktree.
+ *
+ * Status values are the host enum serialized camelCase
+ * (`RemoteConversationModeSwitchStatus`).
+ */
+export const RemoteConversationModeSwitchStatusSchema = z.enum([
+  "pending",
+  "switching",
+  "switched",
+  "alreadyInMode",
+  "failed",
+  "cancelled",
+  "failedStale",
+]);
+export type RemoteConversationModeSwitchStatus = z.infer<
+  typeof RemoteConversationModeSwitchStatusSchema
+>;
+
+/**
+ * Terminal states. `switched` and `alreadyInMode` are BOTH successes: the second means the
+ * conversation was already where the user asked it to be, which is the ordinary outcome of a
+ * re-fired picker or a second device. Treating it as a failure would show an error toast for a
+ * no-op. Every other terminal state is a VISIBLE failure.
+ */
+const REMOTE_CONVERSATION_MODE_SWITCH_TERMINAL_STATUSES = [
+  "switched",
+  "alreadyInMode",
+  "failed",
+  "cancelled",
+  "failedStale",
+] as const;
+
+/** The two terminal states the client may render as "the mode is now what you asked for". */
+const REMOTE_CONVERSATION_MODE_SWITCH_SUCCESS_STATUSES = [
+  "switched",
+  "alreadyInMode",
+] as const;
+
+/** Response of `request_remote_agent_conversation_mode_switch` — the persisted-intent handle. */
+const RequestRemoteAgentConversationModeSwitchResponseSchema = z
+  .object({
+    modeSwitchRequestId: z.string(),
+    conversationId: z.string(),
+    status: RemoteConversationModeSwitchStatusSchema,
+    deduplicated: z.boolean(),
+    createdAt: z.string(),
+  })
+  .strict();
+
+/** Response of `get_remote_conversation_mode_switch_request` — the post-submit poll target. */
+const GetRemoteConversationModeSwitchRequestResponseSchema = z
+  .object({
+    id: z.string(),
+    conversationId: z.string(),
+    targetMode: z.string(),
+    status: RemoteConversationModeSwitchStatusSchema,
+    errorCode: z.string().nullable(),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+  })
+  .strict();
+
+type RemoteConversationModeSwitchRequest = z.infer<
+  typeof GetRemoteConversationModeSwitchRequestResponseSchema
+>;
+
 const ForkAgentConversationResponseSchema = z.object({
   parent_conversation: ChatConversationResponseSchema,
   conversation: ChatConversationResponseSchema,
@@ -4932,9 +5006,124 @@ export async function forkAgentConversation(
   return transformForkAgentConversationResponse(raw);
 }
 
+export class RemoteConversationModeSwitchError extends Error {
+  readonly status: RemoteConversationModeSwitchStatus;
+  readonly errorCode: string | null;
+  constructor(
+    status: RemoteConversationModeSwitchStatus,
+    errorCode: string | null,
+  ) {
+    super(errorCode ?? `Mode switch ${status}`);
+    this.name = "RemoteConversationModeSwitchError";
+    this.status = status;
+    this.errorCode = errorCode;
+  }
+}
+
+const REMOTE_CONVERSATION_MODE_SWITCH_POLL_INTERVAL_MS = 750;
+/** ~3 minutes — worktree preparation on the host can legitimately take a while. */
+const REMOTE_CONVERSATION_MODE_SWITCH_MAX_POLLS = 240;
+
+function isTerminalRemoteConversationModeSwitchStatus(
+  status: RemoteConversationModeSwitchStatus,
+): boolean {
+  return (
+    REMOTE_CONVERSATION_MODE_SWITCH_TERMINAL_STATUSES as readonly string[]
+  ).includes(status);
+}
+
+/**
+ * Polls the host-side mode-switch intent to a terminal state. Fail-closed: a repo/read error
+ * propagates rather than reading as "still switching" forever.
+ */
+async function pollRemoteConversationModeSwitch(
+  modeSwitchRequestId: string,
+): Promise<RemoteConversationModeSwitchRequest> {
+  for (
+    let attempt = 0;
+    attempt < REMOTE_CONVERSATION_MODE_SWITCH_MAX_POLLS;
+    attempt += 1
+  ) {
+    // Literal command name (P-11): the status read is a pure host-side repository read.
+    const request = await typedInvoke(
+      "get_remote_conversation_mode_switch_request",
+      { modeSwitchRequestId },
+      GetRemoteConversationModeSwitchRequestResponseSchema,
+    );
+    if (isTerminalRemoteConversationModeSwitchStatus(request.status)) {
+      return request;
+    }
+    await remoteConversationStartPollDelay(
+      REMOTE_CONVERSATION_MODE_SWITCH_POLL_INTERVAL_MS,
+    );
+  }
+  throw new Error(
+    "Timed out waiting for the host to switch the conversation mode. It may still be switching — check the conversation shortly.",
+  );
+}
+
+/**
+ * The remote half of `switchAgentConversationMode` (WP5a). Persists a mode-switch intent on
+ * the host, polls it to a terminal state (the host owns the worktree preparation), then
+ * re-reads the conversation through the registered remote transcript read. `base` and
+ * `runtimeOverride` are host-forced under the spawn-free contract and MUST NOT cross the
+ * wire; no production remote caller passes them, so their presence is a programming error
+ * surfaced loudly rather than dropped silently.
+ */
+async function switchRemoteAgentConversationMode(
+  input: SwitchAgentConversationModeInput,
+): Promise<SwitchAgentConversationModeResult> {
+  if (input.base || input.runtimeOverride) {
+    throw new Error(
+      "base/runtimeOverride cannot be set on a remote mode switch — the host owns workspace preparation.",
+    );
+  }
+  const { conversation: current } = await getConversation(input.conversationId);
+  if (current.contextType !== "project") {
+    throw new Error(
+      "Only project conversations can switch modes on a remote host.",
+    );
+  }
+  // Literal command name (P-11): persists a mode-switch intent — no client-side spawn sink.
+  const requested = await typedInvoke(
+    "request_remote_agent_conversation_mode_switch",
+    {
+      input: {
+        conversationId: input.conversationId,
+        projectId: current.contextId,
+        mode: input.mode,
+      },
+    },
+    RequestRemoteAgentConversationModeSwitchResponseSchema,
+  );
+  const request = await pollRemoteConversationModeSwitch(
+    requested.modeSwitchRequestId,
+  );
+  if (
+    !(REMOTE_CONVERSATION_MODE_SWITCH_SUCCESS_STATUSES as readonly string[]).includes(
+      request.status,
+    )
+  ) {
+    throw new RemoteConversationModeSwitchError(
+      request.status,
+      request.errorCode ?? null,
+    );
+  }
+  const { conversation } = await getConversation(input.conversationId);
+  // The workspace re-hydrates through the call sites' query invalidations; the switch result
+  // deliberately reports `null` rather than a stale optimistic copy.
+  return { conversation, workspace: null };
+}
+
 export async function switchAgentConversationMode(
   input: SwitchAgentConversationModeInput,
 ): Promise<SwitchAgentConversationModeResult> {
+  // Two literal `typedInvoke` sites (P-11): a remote environment persists a mode-switch
+  // intent and polls the host to completion (the host owns the worktree preparation);
+  // local switches inline.
+  if (isRemoteEnvironmentId(getTransportEnvironmentId())) {
+    return switchRemoteAgentConversationMode(input);
+  }
   const raw = await typedInvoke(
     "switch_agent_conversation_mode",
     {

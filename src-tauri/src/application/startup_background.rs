@@ -1306,6 +1306,264 @@ pub(crate) async fn drain_one_remote_agent_stop<R: tauri::Runtime + 'static>(
     Ok(RemoteAgentStopDrain::Drained)
 }
 
+/// How often the host drains one pending remote MODE SWITCH intent.
+///
+/// Between the stop brake's 1s and the start dispatcher's cadence: a mode switch is a direct
+/// response to a picker the user just moved, so it should feel prompt, but each drain can prepare
+/// a git worktree and is materially more expensive than a repository read.
+const REMOTE_CONVERSATION_MODE_SWITCH_DISPATCH_INTERVAL: Duration = Duration::from_secs(2);
+/// `Switching` rows older than this at boot are swept to `FailedStale` and NEVER re-driven.
+/// Longer than the stop lease because a switch can legitimately take a while: preparing a
+/// worktree for a large repository is the slow path here.
+const REMOTE_CONVERSATION_MODE_SWITCH_STALE_LEASE_SECS: i64 = 600;
+
+/// The host-owned driver for spawn-free remote conversation MODE SWITCHES (WP5a).
+///
+/// This loop is the SOLE holder of the workspace-preparing switch path for the feature: the
+/// registered `request_remote_agent_conversation_mode_switch` command only persists an intent,
+/// and only this loop ever reaches `switch_agent_conversation_mode_for_state` (which reaches
+/// `GitService::ref_exists` and `ensure_git_worktree`). Per tick it CAS-claims one `Pending`
+/// intent (`Pending -> Switching`), re-validates the conversation/ownership/liveness/target at
+/// drain time, performs the switch, and records `Switched`, the benign `AlreadyInMode` terminal,
+/// or `Failed`.
+///
+/// The terminal call is deliberately `switch_agent_conversation_mode_for_state` — the
+/// `ModeSwitchRunningAgentPolicy::Reject` variant — and NOT the `..._stopping_running_agent`
+/// variant the local Tauri command uses. Reusing the stopping variant would put
+/// `ChatService::stop_agent` (and therefore `pkill`) inside this loop, making a dropdown change
+/// able to terminate a live run as a side effect. Stopping stays WP2's separate, explicitly
+/// user-initiated intent. See `remote_conversation_mode_switch_commands`' module doc.
+pub(crate) fn spawn_remote_conversation_mode_switch_dispatcher(state: AppState) {
+    if !try_start_recurring_service("remote_conversation_mode_switch_dispatcher") {
+        tracing::debug!(
+            "Remote conversation mode switch dispatcher already started; skipping duplicate spawn"
+        );
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        // Startup reconciliation: crashed `Switching` claims are terminalised, never re-driven. A
+        // half-applied switch that crossed the plan/review boundary must not be replayed blindly.
+        let now = chrono::Utc::now();
+        let stale_cutoff =
+            now - chrono::Duration::seconds(REMOTE_CONVERSATION_MODE_SWITCH_STALE_LEASE_SECS);
+        match state
+            .remote_conversation_mode_switch_request_repo
+            .fail_stale_switching_mode_switch_requests(stale_cutoff, now)
+            .await
+        {
+            Ok(count) if count > 0 => {
+                tracing::warn!(
+                    count,
+                    "swept stale remote mode-switch claims to FailedStale"
+                )
+            }
+            Ok(_) => {}
+            Err(error) => tracing::error!(%error, "remote mode switch stale sweep failed"),
+        }
+
+        let mut interval = tokio::time::interval(REMOTE_CONVERSATION_MODE_SWITCH_DISPATCH_INTERVAL);
+        interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            // Drain opportunistically: a burst of intents (one per conversation) should not be
+            // spread across one tick each. The loop stops as soon as nothing is claimable.
+            loop {
+                match drain_one_remote_conversation_mode_switch(&state).await {
+                    Ok(RemoteConversationModeSwitchDrain::Idle) => break,
+                    Ok(RemoteConversationModeSwitchDrain::Drained) => continue,
+                    Err(error) => {
+                        tracing::warn!(%error, "remote mode switch dispatcher tick failed");
+                        break;
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// Whether a dispatcher pass found work. Distinguishing "nothing claimable" from "drained one" is
+/// what lets the opportunistic drain terminate instead of spinning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RemoteConversationModeSwitchDrain {
+    Idle,
+    Drained,
+}
+
+/// Claim + switch at most one pending intent. Extracted so a test can drive one pass and prove
+/// each terminal is reached for the right reason.
+///
+/// Note the signature: no `AppHandle`, no `ExecutionState`. The switch seam this loop uses is
+/// AppState-only, which is what keeps the process-terminating path out of this file's reach.
+pub(crate) async fn drain_one_remote_conversation_mode_switch(
+    state: &AppState,
+) -> AppResult<RemoteConversationModeSwitchDrain> {
+    let claim_at = chrono::Utc::now();
+    let Some(claimed) = state
+        .remote_conversation_mode_switch_request_repo
+        .claim_pending_mode_switch_request(claim_at)
+        .await?
+    else {
+        return Ok(RemoteConversationModeSwitchDrain::Idle);
+    };
+
+    // Re-prove authority at dispatch time. Every failure terminalises the row VISIBLY — a mode the
+    // client rendered as switched but the host never applied is exactly the frontend/backend
+    // drift this surface exists to avoid.
+    match revalidate_remote_conversation_mode_switch(state, &claimed).await {
+        Ok(RemoteModeSwitchRevalidation::Proceed) => {}
+        Ok(RemoteModeSwitchRevalidation::AlreadyInMode) => {
+            // The conversation reached the requested mode on its own between persist and drain
+            // (another device, or the user on the host). Benign terminal, not a failure.
+            if let Err(error) = state
+                .remote_conversation_mode_switch_request_repo
+                .resolve_mode_switch_request_already_in_mode(&claimed.id, chrono::Utc::now())
+                .await
+            {
+                tracing::error!(%error, request_id = %claimed.id, "failed to record remote mode switch already-in-mode");
+            }
+            return Ok(RemoteConversationModeSwitchDrain::Drained);
+        }
+        Err(error_code) => {
+            settle_mode_switch_failure(state, &claimed.id, &error_code).await;
+            return Ok(RemoteConversationModeSwitchDrain::Drained);
+        }
+    }
+
+    // The host-local switch path, host-owned end to end. This is the REJECT-policy variant: it
+    // re-checks `running_agent_registry` itself and refuses rather than stopping, which makes the
+    // registry the FINAL authority on liveness even though the revalidation above already
+    // consulted `agent_run_repo`. Two fail-closed checks in the same direction, never opposing.
+    let result = crate::commands::unified_chat_commands::switch_agent_conversation_mode_for_state(
+        crate::commands::unified_chat_commands::SwitchAgentConversationModeInput {
+            conversation_id: claimed.conversation_id.as_str(),
+            mode: claimed.target_mode.to_string(),
+            // All ABSENT by construction — the wire has no field for any of them, so the host
+            // resolves workspace preparation from its own defaults. See the command module doc.
+            runtime_override: None,
+            base_ref_kind: None,
+            base_branch_mode: None,
+            base_ref: None,
+            base_display_name: None,
+            base_source_pull_request: None,
+        },
+        state,
+    )
+    .await;
+
+    match result {
+        Ok(_) => {
+            if let Err(error) = state
+                .remote_conversation_mode_switch_request_repo
+                .complete_mode_switch_request(&claimed.id, chrono::Utc::now())
+                .await
+            {
+                tracing::error!(%error, request_id = %claimed.id, "failed to record remote mode switch completion");
+            }
+        }
+        Err(error) => {
+            // Switch failures land in `Failed` VISIBLY — they must not masquerade as a hung
+            // `Switching` the client polls forever. The host's message is logged rather than
+            // returned: it is prose, and the client branches on the typed code.
+            tracing::warn!(%error, request_id = %claimed.id, "remote mode switch failed on host");
+            settle_mode_switch_failure(
+                state,
+                &claimed.id,
+                crate::commands::remote_conversation_mode_switch_commands::REMOTE_MODE_SWITCH_HOST_SWITCH_FAILED,
+            )
+            .await;
+        }
+    }
+
+    Ok(RemoteConversationModeSwitchDrain::Drained)
+}
+
+/// What re-validation concluded. `AlreadyInMode` is separated from `Proceed` because it settles on
+/// a BENIGN terminal, and from `Err` because it is not a failure.
+pub(crate) enum RemoteModeSwitchRevalidation {
+    Proceed,
+    AlreadyInMode,
+}
+
+/// Re-validate a claimed mode-switch intent at dispatch time. Returns the client-facing error code
+/// on failure.
+pub(crate) async fn revalidate_remote_conversation_mode_switch(
+    state: &AppState,
+    claimed: &crate::domain::entities::RemoteConversationModeSwitchRequest,
+) -> Result<RemoteModeSwitchRevalidation, String> {
+    use crate::commands::remote_conversation_mode_switch_commands::{
+        REMOTE_MODE_SWITCH_CONVERSATION_ARCHIVED, REMOTE_MODE_SWITCH_CONVERSATION_GONE,
+        REMOTE_MODE_SWITCH_LOOKUP_FAILED, REMOTE_MODE_SWITCH_PROJECT_MISMATCH,
+        REMOTE_MODE_SWITCH_RUN_WENT_LIVE,
+    };
+    use crate::domain::entities::AgentConversationWorkspaceMode;
+
+    // 1. The conversation must still exist and still be switchable.
+    let conversation = state
+        .chat_conversation_repo
+        .get_by_id(&claimed.conversation_id)
+        .await
+        .map_err(|_| REMOTE_MODE_SWITCH_LOOKUP_FAILED.to_string())?
+        .ok_or_else(|| REMOTE_MODE_SWITCH_CONVERSATION_GONE.to_string())?;
+    if conversation.is_archived() {
+        return Err(REMOTE_MODE_SWITCH_CONVERSATION_ARCHIVED.to_string());
+    }
+    if conversation.context_type != ChatContextType::Project
+        || conversation.context_id != claimed.project_id.as_str()
+    {
+        return Err(REMOTE_MODE_SWITCH_PROJECT_MISMATCH.to_string());
+    }
+
+    // 2. The project must still exist.
+    if state
+        .project_repo
+        .get_by_id(&claimed.project_id)
+        .await
+        .map_err(|_| REMOTE_MODE_SWITCH_LOOKUP_FAILED.to_string())?
+        .is_none()
+    {
+        return Err(REMOTE_MODE_SWITCH_PROJECT_MISMATCH.to_string());
+    }
+
+    // 3. STILL no live run — the live-run rule re-proved at drain time. If one went live between
+    //    persist and claim, switching would race a running agent's workspace. Retryable and
+    //    distinct so the client can tell the user to stop the agent first.
+    if state
+        .agent_run_repo
+        .get_active_for_conversation(&claimed.conversation_id)
+        .await
+        .map_err(|_| REMOTE_MODE_SWITCH_LOOKUP_FAILED.to_string())?
+        .is_some()
+    {
+        return Err(REMOTE_MODE_SWITCH_RUN_WENT_LIVE.to_string());
+    }
+
+    // 4. The mode must STILL differ. Resolved exactly as the host switch path resolves it.
+    let existing_workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation.id)
+        .await
+        .map_err(|_| REMOTE_MODE_SWITCH_LOOKUP_FAILED.to_string())?;
+    let current_mode = conversation
+        .agent_mode
+        .or_else(|| existing_workspace.as_ref().map(|workspace| workspace.mode))
+        .unwrap_or(AgentConversationWorkspaceMode::Chat);
+    if current_mode == claimed.target_mode {
+        return Ok(RemoteModeSwitchRevalidation::AlreadyInMode);
+    }
+
+    Ok(RemoteModeSwitchRevalidation::Proceed)
+}
+
+async fn settle_mode_switch_failure(state: &AppState, request_id: &str, error_code: &str) {
+    if let Err(error) = state
+        .remote_conversation_mode_switch_request_repo
+        .fail_mode_switch_request(request_id, error_code, chrono::Utc::now())
+        .await
+    {
+        tracing::error!(%error, %request_id, "failed to record remote mode switch failure");
+    }
+}
+
 async fn settle_stop_failure(state: &AppState, request_id: &str, error_code: &str) {
     if let Err(error) = state
         .remote_agent_stop_request_repo
