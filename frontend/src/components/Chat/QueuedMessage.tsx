@@ -282,37 +282,37 @@ export function QueuedMessage({ message, onEdit, onDelete, onSendNow }: QueuedMe
                 )}
                 {/* Edit button */}
                 {!editGate.gated && (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      data-testid="queued-message-edit"
-                      onClick={handleStartEdit}
-                      className="p-1 rounded transition-colors hover:bg-opacity-80"
-                      style={{ color: "var(--text-muted)" }}
-                      aria-label="Edit message"
-                    >
-                      <Pencil size={16} />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top">Edit message</TooltipContent>
-                </Tooltip>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        data-testid="queued-message-edit"
+                        onClick={handleStartEdit}
+                        className="p-1 rounded transition-colors hover:bg-opacity-80"
+                        style={{ color: "var(--text-muted)" }}
+                        aria-label="Edit message"
+                      >
+                        <Pencil size={16} />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top">Edit message</TooltipContent>
+                  </Tooltip>
                 )}
                 {/* Delete button */}
                 {!deleteGate.gated && (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      data-testid="queued-message-delete"
-                      onClick={handleDelete}
-                      className="p-1 rounded transition-colors hover:bg-opacity-80"
-                      style={{ color: "var(--status-error)" }}
-                      aria-label="Delete message"
-                    >
-                      <X size={16} />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top">Delete message</TooltipContent>
-                </Tooltip>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        data-testid="queued-message-delete"
+                        onClick={handleDelete}
+                        className="p-1 rounded transition-colors hover:bg-opacity-80"
+                        style={{ color: "var(--status-error)" }}
+                        aria-label="Delete message"
+                      >
+                        <X size={16} />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top">Delete message</TooltipContent>
+                  </Tooltip>
                 )}
               </>
             )}
