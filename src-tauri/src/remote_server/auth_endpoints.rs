@@ -23,7 +23,6 @@ use crate::remote_server::auth::{
 use crate::remote_server::endpoints::RemoteRouterState;
 use crate::remote_server::rate_limit::RemoteRateLimitKey;
 use crate::remote_server::remote_error_response;
-use crate::remote_server::ws::SessionLifecycleSink;
 
 /// Local-only event: a pairing code was redeemed and a device now exists (§5.5).
 ///
