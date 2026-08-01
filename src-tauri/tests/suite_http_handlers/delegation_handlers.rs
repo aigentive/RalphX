@@ -4463,7 +4463,7 @@ async fn seed_running_delegation_job(
         )
         .await;
 
-    (job_id.to_string(), run.id.clone())
+    (job_id.to_string(), run.id)
 }
 
 fn wait_request(job_id: Option<&str>, job_ids: Option<Vec<&str>>) -> DelegateWaitRequest {

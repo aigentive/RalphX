@@ -15,10 +15,7 @@ use ralphx_lib::domain::entities::{
     AgentRun, AgentRunId, AgentRunStatus, ChatConversation, ChatConversationId, DelegatedSession,
     DelegationPark, DelegationParkId, DelegationParkState, Project,
 };
-use ralphx_lib::domain::repositories::{
-    AgentRunRepository, ChatConversationRepository, ChatMessageRepository,
-    DelegatedSessionRepository, DelegationParkRepository, ProjectRepository,
-};
+use ralphx_lib::domain::repositories::DelegationParkRepository;
 use ralphx_lib::http_server::handlers::{park_delegate, wait_delegate};
 use ralphx_lib::http_server::types::{DelegateParkRequest, DelegateWaitRequest, HttpServerState};
 use ralphx_lib::{error::AppError, error::AppResult};
@@ -63,7 +60,7 @@ async fn create_parent_context(state: &HttpServerState) -> ParentContext {
     let run = state
         .app_state
         .agent_run_repo
-        .create(AgentRun::new(conversation.id.clone()))
+        .create(AgentRun::new(conversation.id))
         .await
         .expect("create active parent run");
 
@@ -142,7 +139,7 @@ async fn seed_running_delegation_job(
     let delegated_run = state
         .app_state
         .agent_run_repo
-        .create(AgentRun::new(delegated_conversation.id.clone()))
+        .create(AgentRun::new(delegated_conversation.id))
         .await
         .expect("create delegated run");
 
@@ -198,7 +195,6 @@ async fn await_park_state(
     label: &str,
 ) -> DelegationPark {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    let mut last_park = None;
 
     loop {
         let park = state
@@ -211,11 +207,10 @@ async fn await_park_state(
         if predicate(&park) {
             return park;
         }
-        last_park = Some(park);
 
         assert!(
             tokio::time::Instant::now() < deadline,
-            "timed out waiting for {label}; last observed park: {last_park:?}"
+            "timed out waiting for {label}; last observed park: {park:?}"
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
@@ -399,7 +394,7 @@ async fn park_rejects_a_stale_caller_run() {
     let active_run = state
         .app_state
         .agent_run_repo
-        .create(AgentRun::new(parent.conversation.id.clone()))
+        .create(AgentRun::new(parent.conversation.id))
         .await
         .expect("create current run");
     assert_ne!(active_run.id, parent.run.id);
@@ -562,7 +557,7 @@ async fn any_settled_policy_wakes_before_all_jobs_finish() {
         .complete(&first_run.id)
         .await
         .expect("complete first delegate");
-    wait_delegate(State(state.clone()), Json(wait_request(&first)))
+    let _ = wait_delegate(State(state.clone()), Json(wait_request(&first)))
         .await
         .expect("settle first delegate");
     let claimed_park = await_park_state(
@@ -700,7 +695,7 @@ async fn user_message_supersedes_park_and_blocks_a_later_wake() {
         .complete(&delegated_run.id)
         .await
         .expect("complete delegate");
-    wait_delegate(State(state.clone()), Json(wait_request(&job_id)))
+    let _ = wait_delegate(State(state.clone()), Json(wait_request(&job_id)))
         .await
         .expect("settle delegate after supersession");
     let park = state
