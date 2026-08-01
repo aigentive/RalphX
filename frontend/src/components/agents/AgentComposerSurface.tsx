@@ -478,6 +478,17 @@ export function AgentComposerSurface({
    * of `handleSend` is gated by the same value as the button.
    */
   const agentGate = useAgentGate("agentComposerSend");
+  /**
+   * Stopping is a BRAKE, so it resolves through its own affordance rather than the send gate:
+   * `request_remote_agent_stop` is `class: operate` and reachable from the default pairing,
+   * while sending needs `ui:agent`. Reusing the send gate here would have disabled Stop on
+   * exactly the devices that most need it. When the host does not expose the op at all this
+   * renders the unavailable hint instead of an enabled button that answers
+   * `REMOTE_COMMAND_UNAVAILABLE`.
+   */
+  const stopGate = useAgentGate("agentStop");
+  /** Visual stop-pending state. Flipped SYNCHRONOUSLY on click, before the await. */
+  const [stopPending, setStopPending] = useState(false);
   const effectiveSendDisabledReason = agentGate.reason ?? sendDisabledReason;
   /**
    * The last send rejection, kept ONLY so the two remote codes the 2.6 mapper knows
@@ -1653,12 +1664,37 @@ export function AgentComposerSurface({
     [conversationId, queryClient],
   );
 
+  /**
+   * Runs the stop and SURFACES its failure.
+   *
+   * This used to be `void onStop?.()`, which discarded the promise: a rejected stop —
+   * including a remote host answering `REMOTE_COMMAND_UNAVAILABLE` — produced no UI at all.
+   * First-paint rules are preserved by ordering, not by discarding: the pending state flips
+   * synchronously in the click handler and the failure surfaces after the await.
+   */
+  const handleStop = useCallback(async () => {
+    try {
+      await onStop?.();
+    } catch (error) {
+      toast.error("Couldn't stop the agent", {
+        description: extractErrorMessage(
+          error,
+          "The agent is still running. Try again, or stop it on the host.",
+        ),
+        duration: 10000,
+      });
+    } finally {
+      setStopPending(false);
+    }
+  }, [onStop]);
+
   const handleSend = useCallback(async () => {
     const trimmedValue = value.trim();
     const messageValue = trimmedValue || emptySubmitValue;
     if (!messageValue) {
       if (shouldShowStop) {
-        await onStop?.();
+        setStopPending(true);
+        await handleStop();
       }
       return;
     }
@@ -1711,12 +1747,12 @@ export function AgentComposerSurface({
     canSendWhileAgentActive,
     clearValue,
     emptySubmitValue,
+    handleStop,
     handleUnknownSendOutcome,
     isControlled,
     isReadOnly,
     isSubmitting,
     onSend,
-    onStop,
     prepareMessageForSend,
     questionMode,
     sendDisabledReason,
@@ -2211,8 +2247,8 @@ export function AgentComposerSurface({
             )}
 
             <AgentGateTooltip
-              gated={agentGate.gated && !shouldShowStop}
-              reason={agentGate.reason}
+              gated={shouldShowStop ? stopGate.gated : agentGate.gated}
+              reason={shouldShowStop ? stopGate.reason : agentGate.reason}
               className="ml-auto inline-flex"
               testId="agent-composer-send-gate"
             >
@@ -2238,18 +2274,25 @@ export function AgentComposerSurface({
               }}
               onClick={() => {
                 if (shouldShowStop) {
-                  void onStop?.();
+                  // First paint wins: the pending state flips in this commit, the await (and
+                  // any failure toast) happens after.
+                  setStopPending(true);
+                  void handleStop();
                   return;
                 }
                 void handleSend();
               }}
-              disabled={shouldShowStop ? false : !canSubmit}
+              disabled={
+                shouldShowStop ? stopGate.gated || stopPending : !canSubmit
+              }
               data-testid={actionTestId}
               aria-label={
-                agentGate.gated && !shouldShowStop
-                  ? `${submitLabel} — ${agentGate.reason}`
-                  : shouldShowStop
-                    ? "Stop agent"
+                shouldShowStop
+                  ? stopGate.gated
+                    ? `Stop agent — ${stopGate.reason}`
+                    : "Stop agent"
+                  : agentGate.gated
+                    ? `${submitLabel} — ${agentGate.reason}`
                     : submitLabel
               }
             >

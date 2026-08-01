@@ -1862,6 +1862,68 @@ describe("AgentComposerSurface", () => {
     expect(onSend).toHaveBeenCalledWith("1");
   });
 
+  /**
+   * The Stop button used to `void onStop?.()`, discarding the promise: a rejected stop —
+   * including a remote host answering `REMOTE_COMMAND_UNAVAILABLE` — produced no UI at all
+   * while the agent kept running.
+   */
+  it("surfaces a failed stop instead of discarding the promise", async () => {
+    const onStop = vi
+      .fn()
+      .mockRejectedValue(
+        new Error("This action runs only on the host — it is not available remotely."),
+      );
+    renderComposer({ agentStatus: "generating", onStop });
+
+    fireEvent.click(screen.getByTestId("agent-composer-submit"));
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith(
+        "Couldn't stop the agent",
+        expect.objectContaining({
+          description:
+            "This action runs only on the host — it is not available remotely.",
+        }),
+      );
+    });
+    expect(onStop).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * First paint wins: the pending state must flip in the click commit, BEFORE the await
+   * settles, so the button reads as acted-on immediately.
+   */
+  it("flips the stop button to pending synchronously, before the stop settles", async () => {
+    let settle: (() => void) | undefined;
+    const onStop = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          settle = resolve;
+        }),
+    );
+    renderComposer({ agentStatus: "generating", onStop });
+
+    const button = screen.getByTestId("agent-composer-submit");
+    fireEvent.click(button);
+    expect(button).toBeDisabled();
+
+    await act(async () => {
+      settle?.();
+    });
+    await waitFor(() => expect(button).not.toBeDisabled());
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it("does not toast when the stop succeeds", async () => {
+    const onStop = vi.fn().mockResolvedValue(undefined);
+    renderComposer({ agentStatus: "generating", onStop });
+
+    fireEvent.click(screen.getByTestId("agent-composer-submit"));
+
+    await waitFor(() => expect(onStop).toHaveBeenCalledTimes(1));
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
   it("submits the configured empty message when the textarea is blank", () => {
     const onSend = vi.fn();
     renderComposer({
