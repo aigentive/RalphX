@@ -265,7 +265,12 @@ export async function loadPullRequestBaseOptions({
     }
     const title = pullRequest.title.trim() || `Pull request #${pullRequest.number}`;
     const mergeTarget = normalizeGitBranchName(pullRequest.baseRefName);
-    const isMerged = pullRequest.state?.toUpperCase() === "MERGED";
+    const state = pullRequest.state?.toUpperCase();
+    const isMerged = state === "MERGED";
+    const isClosed = state === "CLOSED";
+    if (isClosed) {
+      continue;
+    }
     if (isMerged && !mergeTarget) {
       continue;
     }
@@ -299,7 +304,11 @@ export async function loadPullRequestBaseOptions({
     });
   }
 
-  return options;
+  return options.sort(
+    (left, right) =>
+      Number(left.selection.retargetedFromPullRequest !== undefined) -
+      Number(right.selection.retargetedFromPullRequest !== undefined),
+  );
 }
 
 async function loadPlanBranchOptions(

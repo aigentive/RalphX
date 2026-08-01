@@ -999,6 +999,28 @@ describe("AgentsView publish", () => {
     );
   });
 
+  it("offers the merged-base rebase action from freshness recommendations", async () => {
+    configurePublishPane({
+      workspace: {
+        sourcePullRequest: null,
+      },
+      freshness: {
+        baseStatus: "retargeted",
+        baseRef: "feature/merged-dependency",
+        baseDisplayName: "PR #88: Merged dependency",
+        effectiveBaseRef: "release/next",
+        effectiveBaseDisplayName: "release/next",
+        recommendedActions: ["update_from_base", "base_pr_merged"],
+      },
+    });
+
+    const actionbar = await openPublishPane();
+
+    expect(
+      await within(actionbar).findByTestId("agents-rebase-merged-pr-base"),
+    ).toHaveTextContent("Rebase onto release/next");
+  });
+
   it("names the retargeted base in the retry repair action", async () => {
     configurePublishPane({
       workspace: {

@@ -2316,7 +2316,7 @@ export interface AgentConversationWorkspaceFreshness {
   effectiveBaseRef: string | null;
   effectiveBaseDisplayName: string | null;
   baseBlockReason: string | null;
-  recommendedActions?: readonly string[] | undefined;
+  recommendedActions: readonly string[];
 }
 
 export interface UpdateAgentConversationWorkspaceFromBaseResult {
@@ -2826,6 +2826,7 @@ const AgentConversationWorkspaceFreshnessResponseSchema = z.object({
   effective_base_ref: z.string().nullable().optional().default(null),
   effective_base_display_name: z.string().nullable().optional().default(null),
   base_block_reason: z.string().nullable().optional().default(null),
+  recommended_actions: z.array(z.string()).optional().default([]),
 });
 const AgentWorkspacePrReviewMonitorResponseSchema = z.object({
   conversation_id: z.string(),
@@ -3577,6 +3578,7 @@ function transformAgentConversationWorkspaceFreshness(
     effectiveBaseRef: raw.effective_base_ref,
     effectiveBaseDisplayName: raw.effective_base_display_name,
     baseBlockReason: raw.base_block_reason,
+    recommendedActions: raw.recommended_actions,
   };
 }
 

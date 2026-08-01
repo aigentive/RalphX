@@ -584,7 +584,8 @@ pub async fn get_git_branches(working_directory: String) -> Result<Vec<String>, 
         .map_err(|e| e.to_string())
 }
 
-/// Search open GitHub pull requests for the project repository.
+/// Search all GitHub pull request states for the project repository.
+/// Consumers must filter non-actionable states while retaining merged PRs for retargeting.
 #[tauri::command]
 pub async fn search_github_pull_requests(
     input: SearchGithubPullRequestsInput,

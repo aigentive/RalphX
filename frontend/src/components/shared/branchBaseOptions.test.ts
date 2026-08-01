@@ -390,6 +390,63 @@ describe("branchBaseOptions", () => {
     ).resolves.toEqual([]);
   });
 
+  it("drops closed pull requests that were never merged", async () => {
+    searchGithubPullRequestsMock.mockResolvedValue([
+      {
+        number: 54,
+        title: "Abandoned picker work",
+        url: "https://github.com/owner/repo/pull/54",
+        headRefName: "feature/abandoned-picker",
+        headRefOid: "def456",
+        baseRefName: "main",
+        isDraft: false,
+        isCrossRepository: false,
+        state: "CLOSED",
+        mergedAt: null,
+      },
+    ]);
+
+    await expect(
+      loadPullRequestBaseOptions({ projectId: "project-1" }),
+    ).resolves.toEqual([]);
+  });
+
+  it("keeps pull requests with an unknown state as open options", async () => {
+    searchGithubPullRequestsMock.mockResolvedValue([
+      {
+        number: 55,
+        title: "Legacy CLI result",
+        url: "https://github.com/owner/repo/pull/55",
+        headRefName: "feature/legacy-result",
+        headRefOid: "ghi789",
+        baseRefName: "main",
+        isDraft: false,
+        isCrossRepository: false,
+      },
+    ]);
+
+    await expect(
+      loadPullRequestBaseOptions({ projectId: "project-1" }),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        detail: "feature/legacy-result -> main",
+        selection: {
+          kind: "local_branch",
+          ref: "feature/legacy-result",
+          displayName: "PR #55: Legacy CLI result",
+          sourcePullRequest: {
+            number: 55,
+            url: "https://github.com/owner/repo/pull/55",
+            title: "Legacy CLI result",
+            headRefName: "feature/legacy-result",
+            baseRefName: "main",
+            headRefOid: "ghi789",
+          },
+        },
+      }),
+    ]);
+  });
+
   it("retargets merged pull-request selections to their merge target", async () => {
     searchGithubPullRequestsMock.mockResolvedValue([
       {
@@ -419,6 +476,38 @@ describe("branchBaseOptions", () => {
           retargetedFromPullRequest: 52,
         },
       }),
+    ]);
+  });
+
+  it("lists open pull requests before merged ones", async () => {
+    searchGithubPullRequestsMock.mockResolvedValue([
+      {
+        number: 56,
+        title: "Recently merged",
+        url: "https://github.com/owner/repo/pull/56",
+        headRefName: "feature/recently-merged",
+        baseRefName: "main",
+        isDraft: false,
+        isCrossRepository: false,
+        state: "MERGED",
+      },
+      {
+        number: 57,
+        title: "Still open",
+        url: "https://github.com/owner/repo/pull/57",
+        headRefName: "feature/still-open",
+        baseRefName: "main",
+        isDraft: false,
+        isCrossRepository: false,
+        state: "OPEN",
+      },
+    ]);
+
+    const options = await loadPullRequestBaseOptions({ projectId: "project-1" });
+
+    expect(options.map((option) => option.key)).toEqual([
+      "pull_request:57:feature/still-open",
+      "pull_request:56:feature/recently-merged",
     ]);
   });
 });
