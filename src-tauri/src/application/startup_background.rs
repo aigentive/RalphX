@@ -509,6 +509,7 @@ pub fn spawn_automation_scheduler(
         Arc::clone(&state.agent_run_repo),
         Arc::clone(&state.chat_conversation_repo),
         Arc::clone(&state.agent_conversation_workspace_repo),
+        Arc::clone(&state.agent_workspace_repair_repo),
         Arc::clone(&state.ideation_session_repo),
         Arc::new(SqlitePlanArtifactApprovalRepository::new(state.db.clone())),
         Arc::new(DbPlanArtifactApprovalWriter::new(state.db.clone())),

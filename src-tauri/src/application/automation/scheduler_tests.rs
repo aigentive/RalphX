@@ -53,19 +53,22 @@ use crate::application::{AppState, NotificationService};
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunAttribution,
-    AgentRunId, AgentRunStatus, AgentRunUsage, Artifact, ArtifactId, ArtifactType, Automation,
-    AutomationId, AutomationJudgeState, AutomationPlanApprovalMode, AutomationPlanJudgeState,
-    AutomationPrMergeMode, AutomationPromptAuthor, AutomationRun, AutomationRunId,
-    AutomationRunStatus, AutomationStatus, ChatConversation, ChatConversationId,
+    AgentRunId, AgentRunStatus, AgentRunUsage, AgentWorkspaceRepairAttempt,
+    AgentWorkspaceRepairContinuation, AgentWorkspaceRepairSource, Artifact, ArtifactId,
+    ArtifactType, Automation, AutomationId, AutomationJudgeState, AutomationPlanApprovalMode,
+    AutomationPlanJudgeState, AutomationPrMergeMode, AutomationPromptAuthor, AutomationRun,
+    AutomationRunId, AutomationRunStatus, AutomationStatus, ChatConversation, ChatConversationId,
     IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, IdeationSessionId,
     InterruptedConversation, Project, ProjectId, VerificationGap, VerificationRunSnapshot,
     VerificationStatus, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::{
-    AgentConversationWorkspaceRepository, AgentRunRepository, ArtifactRepository,
-    AutomationConfigPatch, AutomationRepository, AutomationRunRepository, AutomationSettingsPatch,
-    ChatConversationRepository, IdeationSessionRepository, PlanApprovalActor, PlanArtifactApproval,
-    PlanArtifactApprovalRepository, PRUNED_STALE_AGENT_RUN,
+    AgentConversationWorkspaceRepository, AgentRunRepository, AgentWorkspaceRepairRepository,
+    ArtifactRepository, AutomationConfigPatch, AutomationRepository, AutomationRunRepository,
+    AutomationSettingsPatch, ChatConversationRepository, IdeationSessionRepository,
+    PlanApprovalActor, PlanArtifactApproval, PlanArtifactApprovalRepository,
+    StartOrJoinAgentWorkspaceRepairAttempt, StartOrJoinAgentWorkspaceRepairAttemptOutcome,
+    PRUNED_STALE_AGENT_RUN,
 };
 use crate::domain::services::github_service::{PrHealth, PrMergeableState, PrStatus, PrSyncState};
 use crate::domain::services::GithubServiceTrait;
@@ -1545,6 +1548,7 @@ impl ParkedPlanGateScenario {
             self.conversation_repo.clone();
         let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
             self.workspace_repo.clone();
+        let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = self.workspace_repo.clone();
         let session_repo: Arc<dyn IdeationSessionRepository> = self.session_repo.clone();
         let plan_approval_repo: Arc<dyn PlanArtifactApprovalRepository> =
             self.approval_repo.clone();
@@ -1561,6 +1565,7 @@ impl ParkedPlanGateScenario {
             agent_run_repo,
             conversation_repo,
             workspace_repo,
+            repair_repo,
             session_repo,
             plan_approval_repo,
             plan_approval_writer,
@@ -1731,12 +1736,14 @@ fn scheduler_with_judge_and_integration_pr_publisher(
             artifact_repo: Arc::clone(&artifact_repo),
         });
     let plan_approval_repo_trait: Arc<dyn PlanArtifactApprovalRepository> = plan_approval_repo;
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
     AutomationScheduler::new(
         automation_repo,
         run_repo,
         Arc::new(MemoryAgentRunRepository::new()),
         Arc::new(MemoryChatConversationRepository::new()),
         workspace_repo,
+        repair_repo,
         Arc::new(MemoryIdeationSessionRepository::new()),
         plan_approval_repo_trait,
         plan_approval_writer,
@@ -1894,12 +1901,14 @@ fn scheduler_with_judge_agent_runs_plan_deps_artifacts_writer_and_verification(
 ) -> AutomationScheduler {
     let plan_approval_repo_trait: Arc<dyn PlanArtifactApprovalRepository> =
         plan_approval_repo.clone();
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
     AutomationScheduler::new(
         automation_repo,
         run_repo,
         agent_run_repo,
         Arc::new(MemoryChatConversationRepository::new()),
         workspace_repo,
+        repair_repo,
         ideation_session_repo,
         plan_approval_repo_trait,
         plan_approval_writer,
@@ -2290,12 +2299,14 @@ async fn automation_scheduler_tick_only_leases_active_automations() {
         });
     let plan_approval_repo_trait: Arc<dyn PlanArtifactApprovalRepository> =
         plan_approval_repo.clone();
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
     let scheduler = AutomationScheduler::new(
         automation_repo,
         run_repo.clone(),
         Arc::new(MemoryAgentRunRepository::new()),
         conversation_repo,
         workspace_repo,
+        repair_repo,
         Arc::new(MemoryIdeationSessionRepository::new()),
         plan_approval_repo_trait,
         plan_approval_writer,
@@ -4492,6 +4503,137 @@ async fn automation_scheduler_fails_running_run_when_plan_reminder_send_fails() 
     assert_eq!(latest.error_code.as_deref(), Some("plan_reminder_failed"));
     assert_eq!(latest.plan_reminder_count, 0);
     assert_eq!(resumer.prompts().len(), 1);
+}
+
+#[tokio::test]
+async fn automation_scheduler_fails_needs_agent_publish_without_a_live_repair_attempt() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let automation_id = AutomationId::from_string("automation-1");
+    automation_repo
+        .create(automation(automation_id.as_str(), AutomationStatus::Active))
+        .await
+        .unwrap();
+    let conversation_id = ChatConversationId::from_string("conversation-1");
+    run_repo
+        .create_run(automation_run(
+            "run-1",
+            &automation_id,
+            AutomationRunStatus::Running,
+            Some(conversation_id.clone()),
+        ))
+        .await
+        .unwrap();
+    let mut workspace = workspace(&conversation_id);
+    workspace.publication_push_status = Some("needs_agent".to_string());
+    workspace_repo.create_or_update(workspace).await.unwrap();
+    let scheduler = scheduler_with(
+        Arc::clone(&automation_repo),
+        Arc::clone(&run_repo),
+        workspace_repo,
+        Arc::new(RecordingSignalChecker::default()),
+        AutomationSchedulerConfig {
+            publish_grace: Duration::from_secs(0),
+            ..AutomationSchedulerConfig::default()
+        },
+    );
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.failed_runs, 1);
+    let latest = run_repo
+        .latest_for_automation(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.status, AutomationRunStatus::AgentFailed);
+    assert_eq!(latest.error_code.as_deref(), Some("publish_failed"));
+}
+
+#[tokio::test]
+async fn automation_scheduler_suspends_publish_grace_while_repair_attempt_is_unsettled() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let automation_id = AutomationId::from_string("automation-1");
+    automation_repo
+        .create(automation(automation_id.as_str(), AutomationStatus::Active))
+        .await
+        .unwrap();
+    let conversation_id = ChatConversationId::from_string("conversation-1");
+    run_repo
+        .create_run(automation_run(
+            "run-1",
+            &automation_id,
+            AutomationRunStatus::Running,
+            Some(conversation_id.clone()),
+        ))
+        .await
+        .unwrap();
+    workspace_repo
+        .create_or_update(workspace(&conversation_id))
+        .await
+        .unwrap();
+    let started = workspace_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                conversation_id.clone(),
+                AgentWorkspaceRepairSource::Publish,
+                AgentWorkspaceRepairContinuation::Publish,
+                "main",
+                false,
+                true,
+                false,
+                None,
+                Utc::now(),
+            ),
+            reason: "base update conflict".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        started,
+        StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(_)
+    ));
+    let mut workspace = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    workspace.publication_push_status = Some("needs_agent".to_string());
+    workspace_repo.create_or_update(workspace).await.unwrap();
+    let scheduler = scheduler_with(
+        Arc::clone(&automation_repo),
+        Arc::clone(&run_repo),
+        workspace_repo,
+        Arc::new(RecordingSignalChecker::default()),
+        AutomationSchedulerConfig {
+            publish_grace: Duration::from_secs(0),
+            ..AutomationSchedulerConfig::default()
+        },
+    );
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(
+        summary.failed_runs, 0,
+        "an unsettled repair attempt must suspend the flat publish grace"
+    );
+    let latest = run_repo
+        .latest_for_automation(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.status, AutomationRunStatus::Running);
+    assert!(latest.error_code.is_none());
 }
 
 #[tokio::test]
