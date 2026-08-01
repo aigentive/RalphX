@@ -186,6 +186,8 @@ pub struct DelegationPark {
     pub wake_on_failure: bool,
     pub state: DelegationParkState,
     pub deadline_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wake_claimed_at: Option<DateTime<Utc>>,
     pub wake_attempts: i32,
     pub last_error: Option<String>,
     pub created_at: DateTime<Utc>,

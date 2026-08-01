@@ -1029,10 +1029,10 @@ async fn parked_delegate_does_not_settle_parent_job_after_wake_before_resume() {
 }
 
 #[tokio::test]
-async fn parked_delegate_settles_parent_job_on_the_resumed_run() {
+async fn parked_delegate_settles_parent_job_on_spawn_shaped_resumed_run() {
     let state = build_state(Arc::new(AppState::new_sqlite_test()));
-    let (parent_job, delegated_parent, launch_run, park_id) =
-        seed_nested_wait_case(&state, "nested-resumed").await;
+    let (parent_job, delegated_parent, _, park_id) =
+        seed_nested_wait_case(&state, "nested-resumed-spawn").await;
     record_handoff(&state, &delegated_parent, "stale launch result").await;
     let park = state
         .app_state
@@ -1047,13 +1047,55 @@ async fn parked_delegate_settles_parent_job_on_the_resumed_run() {
         .claim_wake(&park_id, park.generation)
         .await
         .expect("claim nested wake"));
+    let mut spawn_shaped_run = AgentRun::new(delegated_parent.conversation.id);
+    spawn_shaped_run.run_chain_id = None;
+    let resumed_run = state
+        .app_state
+        .agent_run_repo
+        .create(spawn_shaped_run)
+        .await
+        .expect("create spawn-shaped resumed delegated run");
     state
         .app_state
         .delegation_park_repo
         .settle(&park_id, DelegationParkState::Woken, None)
         .await
         .expect("record nested wake delivery");
-    tokio::time::sleep(Duration::from_millis(1)).await;
+    record_handoff(&state, &delegated_parent, "current resumed result").await;
+    state
+        .app_state
+        .agent_run_repo
+        .complete(&resumed_run.id)
+        .await
+        .expect("complete resumed delegated run");
+
+    let settled = wait_delegate(State(state.clone()), Json(wait_request(&parent_job)))
+        .await
+        .expect("settlement from spawn-shaped resumed run")
+        .0;
+    assert_eq!(settled.status, "completed");
+    assert_eq!(settled.content.as_deref(), Some("current resumed result"));
+}
+
+#[tokio::test]
+async fn parked_delegate_settles_parent_job_on_continuation_resumed_run() {
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let (parent_job, delegated_parent, launch_run, park_id) =
+        seed_nested_wait_case(&state, "nested-resumed-continuation").await;
+    record_handoff(&state, &delegated_parent, "stale launch result").await;
+    let park = state
+        .app_state
+        .delegation_park_repo
+        .get(&park_id)
+        .await
+        .expect("read nested park")
+        .expect("nested park exists");
+    assert!(state
+        .app_state
+        .delegation_park_repo
+        .claim_wake(&park_id, park.generation)
+        .await
+        .expect("claim nested wake"));
     let resumed_run = state
         .app_state
         .agent_run_repo
@@ -1067,6 +1109,12 @@ async fn parked_delegate_settles_parent_job_on_the_resumed_run() {
         ))
         .await
         .expect("create resumed delegated run");
+    state
+        .app_state
+        .delegation_park_repo
+        .settle(&park_id, DelegationParkState::Woken, None)
+        .await
+        .expect("record nested wake delivery");
     record_handoff(&state, &delegated_parent, "current resumed result").await;
     state
         .app_state
@@ -1081,6 +1129,77 @@ async fn parked_delegate_settles_parent_job_on_the_resumed_run() {
         .0;
     assert_eq!(settled.status, "completed");
     assert_eq!(settled.content.as_deref(), Some("current resumed result"));
+}
+
+#[tokio::test]
+async fn woken_park_past_deadline_stops_blocking_parent_settlement() {
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let (parent_job, delegated_parent, _, park_id) =
+        seed_nested_wait_case(&state, "nested-expired-backstop").await;
+    let park = state
+        .app_state
+        .delegation_park_repo
+        .get(&park_id)
+        .await
+        .expect("read nested park")
+        .expect("nested park exists");
+    assert!(state
+        .app_state
+        .delegation_park_repo
+        .claim_wake(&park_id, park.generation)
+        .await
+        .expect("claim nested wake"));
+    let mut spawn_shaped_run = AgentRun::new(delegated_parent.conversation.id);
+    spawn_shaped_run.run_chain_id = None;
+    let resumed_run = state
+        .app_state
+        .agent_run_repo
+        .create(spawn_shaped_run)
+        .await
+        .expect("create terminal delegated run");
+    state
+        .app_state
+        .delegation_park_repo
+        .settle(&park_id, DelegationParkState::Woken, None)
+        .await
+        .expect("record nested wake delivery");
+    state
+        .app_state
+        .db
+        .run({
+            let park_id = park_id.as_str();
+            move |conn| {
+                conn.execute(
+                    "UPDATE delegation_parks
+                     SET wake_claimed_at = NULL, deadline_at = ?1
+                     WHERE id = ?2",
+                    rusqlite::params![
+                        (Utc::now() - chrono::Duration::seconds(1)).to_rfc3339(),
+                        park_id
+                    ],
+                )?;
+                Ok(())
+            }
+        })
+        .await
+        .expect("expire woken park and clear legacy marker");
+    record_handoff(&state, &delegated_parent, "result after expired park").await;
+    state
+        .app_state
+        .agent_run_repo
+        .complete(&resumed_run.id)
+        .await
+        .expect("complete terminal delegated run");
+
+    let settled = wait_delegate(State(state.clone()), Json(wait_request(&parent_job)))
+        .await
+        .expect("expired woken park must not block settlement")
+        .0;
+    assert_eq!(settled.status, "completed");
+    assert_eq!(
+        settled.content.as_deref(),
+        Some("result after expired park")
+    );
 }
 
 #[tokio::test]

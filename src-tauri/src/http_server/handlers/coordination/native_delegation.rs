@@ -440,11 +440,22 @@ async fn settle_delegation_from_run(
                     let parked_run_id = park.parent_agent_run_id.as_str();
                     let is_resumed_run = current_run.id != park.parent_agent_run_id
                         && (current_run.parent_run_id.as_deref() == Some(parked_run_id.as_str())
-                            || current_run.started_at >= park.updated_at);
-                    if !is_resumed_run
-                        || current_run.status == crate::domain::entities::AgentRunStatus::Running
-                    {
+                            || park
+                                .wake_claimed_at
+                                .is_some_and(|claimed_at| current_run.started_at >= claimed_at));
+                    if current_run.status == crate::domain::entities::AgentRunStatus::Running {
                         return Ok(None);
+                    }
+                    if !is_resumed_run {
+                        if !park.is_expired(Utc::now()) {
+                            return Ok(None);
+                        }
+                        tracing::warn!(
+                            park_id = %park.id,
+                            parent_conversation_id = %park.parent_conversation_id,
+                            current_run_id = %current_run.id,
+                            "expired woken delegation park no longer blocks parent settlement"
+                        );
                     }
                     if current_run.id != run.id {
                         completed_content = if current_run.status

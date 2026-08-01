@@ -55,6 +55,7 @@ async fn armed_park_keeps_completed_coordinator_working_and_counts_unsettled_del
             wake_on_failure: true,
             state: DelegationParkState::Armed,
             deadline_at: now + Duration::hours(1),
+            wake_claimed_at: None,
             wake_attempts: 0,
             last_error: None,
             created_at: now,

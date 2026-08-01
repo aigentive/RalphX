@@ -17,6 +17,7 @@ fn park(wake_policy: DelegationWakePolicy, wake_on_failure: bool) -> DelegationP
         wake_on_failure,
         state: DelegationParkState::Armed,
         deadline_at: now + Duration::minutes(5),
+        wake_claimed_at: None,
         wake_attempts: 0,
         last_error: None,
         created_at: now,

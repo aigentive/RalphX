@@ -161,8 +161,10 @@ impl DelegationParkRepository for MemoryDelegationParkRepo {
         if park.state != DelegationParkState::Armed || park.generation != expected_generation {
             return Ok(false);
         }
+        let claimed_at = Utc::now();
         park.state = DelegationParkState::Waking;
-        park.updated_at = Utc::now();
+        park.wake_claimed_at = Some(claimed_at);
+        park.updated_at = claimed_at;
         Ok(true)
     }
 
@@ -203,6 +205,7 @@ impl DelegationParkRepository for MemoryDelegationParkRepo {
             return Ok(false);
         }
         park.state = DelegationParkState::Armed;
+        park.wake_claimed_at = None;
         park.wake_attempts = 0;
         park.updated_at = Utc::now();
         Ok(true)

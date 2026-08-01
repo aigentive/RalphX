@@ -14,7 +14,7 @@ use crate::domain::repositories::DelegationParkRepository;
 use crate::error::{AppError, AppResult};
 
 const PARK_COLUMNS: &str = "id, parent_conversation_id, parent_agent_run_id, generation, \
-    wake_policy, wake_on_failure, state, deadline_at, wake_attempts, last_error, created_at, updated_at";
+    wake_policy, wake_on_failure, state, deadline_at, wake_claimed_at, wake_attempts, last_error, created_at, updated_at";
 
 pub struct SqliteDelegationParkRepo {
     db: DbConnection,
@@ -71,6 +71,10 @@ fn park_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DelegationPark> {
         wake_on_failure: row.get::<_, i64>("wake_on_failure")? != 0,
         state: parse_enum(row.get("state")?, "state")?,
         deadline_at: parse_timestamp(row.get("deadline_at")?, "deadline_at")?,
+        wake_claimed_at: row
+            .get::<_, Option<String>>("wake_claimed_at")?
+            .map(|value| parse_timestamp(value, "wake_claimed_at"))
+            .transpose()?,
         wake_attempts: row.get("wake_attempts")?,
         last_error: row.get("last_error")?,
         created_at: parse_timestamp(row.get("created_at")?, "created_at")?,
@@ -137,8 +141,9 @@ impl DelegationParkRepository for SqliteDelegationParkRepo {
                 conn.execute(
                     "INSERT INTO delegation_parks (
                         id, parent_conversation_id, parent_agent_run_id, generation, wake_policy,
-                        wake_on_failure, state, deadline_at, wake_attempts, last_error, created_at, updated_at
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                        wake_on_failure, state, deadline_at, wake_claimed_at, wake_attempts,
+                        last_error, created_at, updated_at
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                     params![
                         park.id.as_str(),
                         park.parent_conversation_id.as_str(),
@@ -148,6 +153,7 @@ impl DelegationParkRepository for SqliteDelegationParkRepo {
                         if park.wake_on_failure { 1 } else { 0 },
                         park.state.as_str(),
                         park.deadline_at.to_rfc3339(),
+                        park.wake_claimed_at.map(|timestamp| timestamp.to_rfc3339()),
                         park.wake_attempts,
                         park.last_error,
                         park.created_at.to_rfc3339(),
@@ -288,7 +294,8 @@ impl DelegationParkRepository for SqliteDelegationParkRepo {
         self.db
             .run_transaction(move |conn| {
                 let rows_affected = conn.execute(
-                    "UPDATE delegation_parks SET state = 'waking', updated_at = ?1
+                    "UPDATE delegation_parks
+                     SET state = 'waking', wake_claimed_at = ?1, updated_at = ?1
                      WHERE id = ?2 AND state = 'armed' AND generation = ?3",
                     params![updated_at, id, expected_generation],
                 )?;
@@ -339,7 +346,8 @@ impl DelegationParkRepository for SqliteDelegationParkRepo {
                 // claim starts a new dispatcher, so it gets a full retry budget; `park_max_secs`
                 // still bounds total effort across recoveries.
                 let rows_affected = conn.execute(
-                    "UPDATE delegation_parks SET state = 'armed', wake_attempts = 0, updated_at = ?1
+                    "UPDATE delegation_parks
+                     SET state = 'armed', wake_claimed_at = NULL, wake_attempts = 0, updated_at = ?1
                      WHERE id = ?2 AND state = 'waking'",
                     params![updated_at, id],
                 )?;

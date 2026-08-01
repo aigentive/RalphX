@@ -30,6 +30,7 @@ fn park(
         wake_on_failure: true,
         state: DelegationParkState::Armed,
         deadline_at,
+        wake_claimed_at: None,
         wake_attempts: 0,
         last_error: None,
         created_at: now,
@@ -123,6 +124,57 @@ async fn claim_wake_only_succeeds_once_and_checks_generation() {
         repo.get(&park.id).await.unwrap().unwrap().state,
         DelegationParkState::Waking
     );
+}
+
+#[tokio::test]
+async fn wake_claim_marker_is_stamped_preserved_on_settle_and_cleared_on_reset() {
+    let (_db, repo) = setup();
+    let settled_park = park(
+        ChatConversationId::new(),
+        7,
+        Utc::now() + Duration::hours(1),
+    );
+    repo.arm(settled_park.clone()).await.unwrap();
+
+    let before_claim = Utc::now();
+    assert!(repo
+        .claim_wake(&settled_park.id, settled_park.generation)
+        .await
+        .unwrap());
+    let claimed = repo.get(&settled_park.id).await.unwrap().unwrap();
+    assert!(claimed.wake_claimed_at.is_some_and(|at| at >= before_claim));
+
+    repo.settle(&settled_park.id, DelegationParkState::Woken, None)
+        .await
+        .unwrap();
+    let settled = repo.get(&settled_park.id).await.unwrap().unwrap();
+    assert_eq!(settled.wake_claimed_at, claimed.wake_claimed_at);
+
+    let reset_park = park(
+        ChatConversationId::new(),
+        8,
+        Utc::now() + Duration::hours(1),
+    );
+    repo.arm(reset_park.clone()).await.unwrap();
+    assert!(repo
+        .claim_wake(&reset_park.id, reset_park.generation)
+        .await
+        .unwrap());
+    assert!(repo
+        .get(&reset_park.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .wake_claimed_at
+        .is_some());
+    assert!(repo.reset_wake_claim(&reset_park.id).await.unwrap());
+    assert!(repo
+        .get(&reset_park.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .wake_claimed_at
+        .is_none());
 }
 
 #[tokio::test]

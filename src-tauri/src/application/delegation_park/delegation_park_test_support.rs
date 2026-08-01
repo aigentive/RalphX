@@ -194,8 +194,10 @@ impl DelegationParkRepository for MemoryParkRepository {
         if park.state != DelegationParkState::Armed || park.generation != generation {
             return Ok(false);
         }
+        let claimed_at = Utc::now();
         park.state = DelegationParkState::Waking;
-        park.updated_at = Utc::now();
+        park.wake_claimed_at = Some(claimed_at);
+        park.updated_at = claimed_at;
         Ok(true)
     }
 
@@ -237,6 +239,7 @@ impl DelegationParkRepository for MemoryParkRepository {
             return Ok(false);
         }
         park.state = DelegationParkState::Armed;
+        park.wake_claimed_at = None;
         park.wake_attempts = 0;
         park.updated_at = Utc::now();
         Ok(true)
@@ -358,6 +361,7 @@ pub(super) fn park(
         wake_on_failure: false,
         state: DelegationParkState::Armed,
         deadline_at: now + Duration::seconds(delegation_config().park_max_secs as i64),
+        wake_claimed_at: None,
         wake_attempts: 0,
         last_error: None,
         created_at: now,

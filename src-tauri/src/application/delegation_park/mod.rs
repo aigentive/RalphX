@@ -162,6 +162,7 @@ impl DelegationParkService {
             wake_on_failure: request.wake_on_failure,
             state: DelegationParkState::Armed,
             deadline_at: now + Duration::seconds(max_wait_secs),
+            wake_claimed_at: None,
             wake_attempts: 0,
             last_error: None,
             created_at: now,
