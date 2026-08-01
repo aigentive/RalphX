@@ -33,8 +33,13 @@ fn merge_backstop_blocks_when_review_never_classified_scope_expansion() {
     let violation = evaluate_merge_scope_backstop(&review_scope, &changed_files)
         .expect("unclassified scope expansion should block merge");
 
-    assert!(violation.reason.contains("never recorded a drift classification"));
-    assert_eq!(violation.out_of_scope_files, vec!["ralphx.yaml".to_string()]);
+    assert!(violation
+        .reason
+        .contains("never recorded a drift classification"));
+    assert_eq!(
+        violation.out_of_scope_files,
+        vec!["ralphx.yaml".to_string()]
+    );
 }
 
 #[test]
@@ -52,16 +57,16 @@ fn merge_backstop_blocks_unrelated_drift_even_if_reviewed() {
 #[test]
 fn merge_backstop_blocks_new_unreviewed_scope_expansion() {
     let review_scope = sample_review_scope();
-    let changed_files = vec![
-        "ralphx.yaml".to_string(),
-        "docs/new-surface.md".to_string(),
-    ];
+    let changed_files = vec!["ralphx.yaml".to_string(), "docs/new-surface.md".to_string()];
 
     let violation = evaluate_merge_scope_backstop(&review_scope, &changed_files)
         .expect("new unreviewed drift should block merge");
 
     assert!(violation.reason.contains("without fresh classification"));
-    assert_eq!(violation.out_of_scope_files, vec!["docs/new-surface.md".to_string()]);
+    assert_eq!(
+        violation.out_of_scope_files,
+        vec!["docs/new-surface.md".to_string()]
+    );
 }
 
 #[test]
@@ -73,5 +78,7 @@ fn merge_backstop_blocks_unknown_classification() {
     let violation = evaluate_merge_scope_backstop(&review_scope, &changed_files)
         .expect("unknown drift classification should block merge");
 
-    assert!(violation.reason.contains("unsupported review scope drift classification"));
+    assert!(violation
+        .reason
+        .contains("unsupported review scope drift classification"));
 }

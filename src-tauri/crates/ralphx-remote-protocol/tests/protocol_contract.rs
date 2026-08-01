@@ -337,11 +337,7 @@ fn audit_refusal_overlays_registerable_and_never_masks_a_mechanical_refusal() {
         V1Resolution::V1AuditRefused,
     );
     for (class, capabilities, expected) in [
-        (
-            RiskClass::Denied,
-            &[][..],
-            V1Resolution::HostDenied,
-        ),
+        (RiskClass::Denied, &[][..], V1Resolution::HostDenied),
         (
             RiskClass::Elevated,
             &[Capability::SpawnsProcess][..],

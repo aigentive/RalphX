@@ -30,7 +30,9 @@ pub struct ParsedReviewIssue {
     pub code_snippet: Option<String>,
 }
 
-pub fn parse_review_issues(issues: &[RawReviewIssueInput]) -> Result<Vec<ParsedReviewIssue>, String> {
+pub fn parse_review_issues(
+    issues: &[RawReviewIssueInput],
+) -> Result<Vec<ParsedReviewIssue>, String> {
     issues.iter().map(parse_review_issue).collect()
 }
 

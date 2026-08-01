@@ -44,7 +44,9 @@ pub fn review_note_content(
 pub fn complete_review_response_message(followup_session_id: Option<&str>) -> String {
     match followup_session_id {
         Some(session_id) => {
-            format!("Review submitted successfully. Follow-up ideation session created: {session_id}")
+            format!(
+                "Review submitted successfully. Follow-up ideation session created: {session_id}"
+            )
         }
         None => "Review submitted successfully".to_string(),
     }
