@@ -13,7 +13,7 @@ use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::agents::AgentHarnessKind;
 use ralphx_lib::domain::entities::{
     AgentRun, AgentRunId, AgentRunStatus, ChatConversation, ChatConversationId, DelegatedSession,
-    DelegationPark, DelegationParkId, DelegationParkState, Project,
+    DelegationPark, DelegationParkId, DelegationParkState, MessageRole, Project,
 };
 use ralphx_lib::domain::repositories::DelegationParkRepository;
 use ralphx_lib::http_server::handlers::{park_delegate, wait_delegate};
@@ -226,6 +226,90 @@ async fn messages_for_parent(
         .get_by_conversation(&parent.conversation.id)
         .await
         .expect("read parent messages")
+}
+
+fn is_hidden_delegation_wake(message: &ralphx_lib::domain::entities::ChatMessage) -> bool {
+    message.role == MessageRole::System
+        && message
+            .metadata
+            .as_deref()
+            .and_then(|metadata| serde_json::from_str::<serde_json::Value>(metadata).ok())
+            .is_some_and(|metadata| {
+                metadata["source"] == "delegation_park"
+                    && metadata["hidden_from_ui"] == true
+                    && metadata["recovery_context"] == true
+            })
+}
+
+async fn await_hidden_wakes_for_parent(
+    state: &HttpServerState,
+    parent: &ParentContext,
+    expected_count: usize,
+) -> Vec<ralphx_lib::domain::entities::ChatMessage> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let messages: Vec<_> = messages_for_parent(state, parent)
+            .await
+            .into_iter()
+            .filter(is_hidden_delegation_wake)
+            .collect();
+        if messages.len() >= expected_count {
+            return messages;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {expected_count} hidden parent wakes; observed {}",
+            messages.len()
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+async fn reconcile_with_timeout(
+    state: &HttpServerState,
+) -> AppResult<ralphx_lib::application::delegation_park::DelegationParkReconcileSummary> {
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        state
+            .app_state
+            .build_delegation_park_service()
+            .reconcile_all(state.app_state.agent_run_repo.as_ref()),
+    )
+    .await
+    .expect("delegation park reconciliation must not stall")
+}
+
+struct NestedReconciliationContext {
+    parent: ParentContext,
+    parent_park_id: DelegationParkId,
+    delegated_parent: ParentContext,
+}
+
+async fn seed_nested_reconciliation_context(
+    state: &HttpServerState,
+    label: &str,
+) -> NestedReconciliationContext {
+    let parent = create_parent_context(state).await;
+    let parent_job_id = format!("{label}-parent-job");
+    let (parent_job, delegated_conversation, delegated_run) =
+        seed_running_delegation_job(state, &parent, &parent_job_id).await;
+    let parent_park_id =
+        DelegationParkId::from_string(arm_park(state, &parent, vec![parent_job]).await);
+    let delegated_parent = ParentContext {
+        project: parent.project.clone(),
+        conversation: delegated_conversation,
+        run: delegated_run,
+    };
+    let child_job_id = format!("{label}-child-job");
+    let (child_job, _, _) =
+        seed_running_delegation_job(state, &delegated_parent, &child_job_id).await;
+    arm_park(state, &delegated_parent, vec![child_job]).await;
+
+    NestedReconciliationContext {
+        parent,
+        parent_park_id,
+        delegated_parent,
+    }
 }
 
 struct FailingArmedParkReadRepository {
@@ -840,6 +924,179 @@ async fn park_repo_read_error_keeps_parent_settlement_pending() {
         messages_for_parent(&state, &parent).await.is_empty(),
         "failed authority reads must not dispatch a wake"
     );
+}
+
+#[tokio::test]
+async fn reconciliation_does_not_settle_a_parked_delegates_job() {
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let nested = seed_nested_reconciliation_context(&state, "reconcile-nested").await;
+    state
+        .app_state
+        .agent_run_repo
+        .complete(&nested.delegated_parent.run.id)
+        .await
+        .expect("complete parked delegate launch run");
+
+    let summary = reconcile_with_timeout(&state)
+        .await
+        .expect("reconcile nested park");
+    let parent_park = state
+        .app_state
+        .delegation_park_repo
+        .get(&nested.parent_park_id)
+        .await
+        .expect("read grandparent park")
+        .expect("grandparent park exists");
+
+    assert_eq!(summary.jobs_settled, 0);
+    assert_eq!(parent_park.state, DelegationParkState::Armed);
+    assert!(parent_park.jobs[0].settled_status.is_none());
+    assert!(
+        messages_for_parent(&state, &nested.parent).await.is_empty(),
+        "reconciliation must not wake the grandparent while its delegate is parked"
+    );
+}
+
+#[tokio::test]
+async fn reconciliation_settles_a_parked_delegate_once_its_park_clears() {
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let nested = seed_nested_reconciliation_context(&state, "reconcile-cleared").await;
+    state
+        .app_state
+        .agent_run_repo
+        .complete(&nested.delegated_parent.run.id)
+        .await
+        .expect("complete parked delegate launch run");
+
+    let first_summary = reconcile_with_timeout(&state)
+        .await
+        .expect("reconcile while nested park is armed");
+    assert_eq!(first_summary.jobs_settled, 0);
+    assert_eq!(
+        state
+            .app_state
+            .delegation_park_repo
+            .supersede_for_conversation(&nested.delegated_parent.conversation.id)
+            .await
+            .expect("supersede nested delegate park"),
+        1
+    );
+
+    let reconciliation_state = state.clone();
+    let reconciliation = tokio::spawn(async move {
+        reconciliation_state
+            .app_state
+            .build_delegation_park_service()
+            .reconcile_all(reconciliation_state.app_state.agent_run_repo.as_ref())
+            .await
+    });
+    let parent_park = await_park_state(
+        &state,
+        &nested.parent_park_id,
+        |park| {
+            park.state != DelegationParkState::Armed
+                && park.jobs[0].settled_status.as_deref() == Some("completed")
+        },
+        "reconciliation after the nested park clears",
+    )
+    .await;
+    let hidden_wake_messages = await_hidden_wakes_for_parent(&state, &nested.parent, 1).await;
+    reconciliation.abort();
+    let _ = reconciliation.await;
+
+    assert_ne!(parent_park.state, DelegationParkState::Armed);
+    assert_eq!(
+        parent_park.jobs[0].settled_status.as_deref(),
+        Some("completed")
+    );
+    assert_eq!(
+        hidden_wake_messages.len(),
+        1,
+        "the grandparent must receive exactly one hidden wake"
+    );
+    let metadata: serde_json::Value = serde_json::from_str(
+        hidden_wake_messages[0]
+            .metadata
+            .as_deref()
+            .expect("hidden wake metadata"),
+    )
+    .expect("valid wake metadata");
+    assert_eq!(metadata["hidden_from_ui"], true);
+    assert_eq!(metadata["recovery_context"], true);
+    assert_eq!(metadata["source"], "delegation_park");
+}
+
+#[tokio::test]
+async fn reconciliation_uses_the_delegates_current_run() {
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let parent = create_parent_context(&state).await;
+    let (job_id, delegated_conversation, launch_run) =
+        seed_running_delegation_job(&state, &parent, "reconcile-current-run").await;
+    let park_id = DelegationParkId::from_string(arm_park(&state, &parent, vec![job_id]).await);
+    state
+        .app_state
+        .agent_run_repo
+        .complete(&launch_run.id)
+        .await
+        .expect("complete delegate launch run");
+    tokio::time::sleep(Duration::from_millis(1)).await;
+    let current_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(delegated_conversation.id))
+        .await
+        .expect("create resumed delegate run");
+
+    let summary = reconcile_with_timeout(&state)
+        .await
+        .expect("reconcile current delegate run");
+    let park = state
+        .app_state
+        .delegation_park_repo
+        .get(&park_id)
+        .await
+        .expect("read parent park")
+        .expect("parent park exists");
+
+    assert_eq!(current_run.status, AgentRunStatus::Running);
+    assert_eq!(summary.jobs_settled, 0);
+    assert_eq!(park.state, DelegationParkState::Armed);
+    assert!(park.jobs[0].settled_status.is_none());
+    assert!(messages_for_parent(&state, &parent).await.is_empty());
+}
+
+#[tokio::test]
+async fn reconciliation_fails_closed_on_park_read_error() {
+    let mut app_state = AppState::new_sqlite_test();
+    let durable_repo = Arc::clone(&app_state.delegation_park_repo);
+    app_state.delegation_park_repo = Arc::new(FailingArmedParkReadRepository {
+        inner: Arc::clone(&durable_repo),
+    });
+    let state = build_state(Arc::new(app_state));
+    let parent = create_parent_context(&state).await;
+    let (job_id, _, delegated_run) =
+        seed_running_delegation_job(&state, &parent, "reconcile-fail-closed").await;
+    let park_id = DelegationParkId::from_string(arm_park(&state, &parent, vec![job_id]).await);
+    state
+        .app_state
+        .agent_run_repo
+        .complete(&delegated_run.id)
+        .await
+        .expect("complete delegate before failed reconciliation read");
+
+    let error = reconcile_with_timeout(&state)
+        .await
+        .expect_err("park read failure must abort reconciliation");
+    let park = durable_repo
+        .get(&park_id)
+        .await
+        .expect("read durable parent park")
+        .expect("durable parent park exists");
+
+    assert!(matches!(error, AppError::Infrastructure(_)));
+    assert_eq!(park.state, DelegationParkState::Armed);
+    assert!(park.jobs[0].settled_status.is_none());
+    assert!(messages_for_parent(&state, &parent).await.is_empty());
 }
 
 #[tokio::test]

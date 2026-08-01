@@ -79,19 +79,37 @@ impl DelegationParkService {
         summary: &mut DelegationParkReconcileSummary,
     ) -> AppResult<()> {
         for job in park.jobs.iter().filter(|job| job.settled_status.is_none()) {
-            let run = agent_run_repo
+            let Some(launch_run) = agent_run_repo
                 .get_by_id(&job.delegated_agent_run_id)
-                .await?;
-            if let Some(run) = run.filter(|run| run.status.is_terminal()) {
-                self.park_repo
-                    .record_job_settled(
-                        &park.id,
-                        &job.delegated_agent_run_id,
-                        &run.status.to_string(),
-                    )
-                    .await?;
-                summary.jobs_settled += 1;
+                .await?
+            else {
+                continue;
+            };
+            let delegated_conversation_id = launch_run.conversation_id.clone();
+            let current_run = agent_run_repo
+                .get_latest_for_conversation(&delegated_conversation_id)
+                .await?
+                .unwrap_or(launch_run);
+            if !current_run.status.is_terminal() {
+                continue;
             }
+            if self
+                .park_repo
+                .get_armed_for_conversation(&delegated_conversation_id)
+                .await?
+                .is_some()
+            {
+                continue;
+            }
+
+            self.park_repo
+                .record_job_settled(
+                    &park.id,
+                    &job.delegated_agent_run_id,
+                    &current_run.status.to_string(),
+                )
+                .await?;
+            summary.jobs_settled += 1;
         }
 
         let Some(updated) = self.park_repo.get(&park.id).await? else {
