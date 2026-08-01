@@ -310,8 +310,11 @@ impl DelegationParkRepository for SqliteDelegationParkRepo {
         let updated_at = Utc::now().to_rfc3339();
         self.db
             .run_transaction(move |conn| {
+                // `wake_attempts` belongs to the dispatcher that spent it. Reclaiming an abandoned
+                // claim starts a new dispatcher, so it gets a full retry budget; `park_max_secs`
+                // still bounds total effort across recoveries.
                 let rows_affected = conn.execute(
-                    "UPDATE delegation_parks SET state = 'armed', updated_at = ?1
+                    "UPDATE delegation_parks SET state = 'armed', wake_attempts = 0, updated_at = ?1
                      WHERE id = ?2 AND state = 'waking'",
                     params![updated_at, id],
                 )?;

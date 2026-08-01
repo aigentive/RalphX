@@ -553,6 +553,21 @@ export interface AgentRunCompletedPayload {
   run_chain_id?: string | null;
 }
 
+/**
+ * Payload emitted with the delegation_park:needs_attention Tauri event when a parked
+ * coordinator's wake could not be delivered. Conversation identity is best-effort because the
+ * lookup itself may be what failed. Fields remain snake_case to match the backend serializer.
+ */
+export interface DelegationParkAttentionPayload {
+  park_id: string;
+  parent_conversation_id: string;
+  conversation_title?: string | null;
+  context_type?: string | null;
+  context_id?: string | null;
+  delegate_count?: number | null;
+  error: string;
+}
+
 export function extractConversationProviderMetadataFromRunPayload(
   payload: AgentRunStartedPayload | AgentRunCompletedPayload
 ): ConversationProviderMetadata {

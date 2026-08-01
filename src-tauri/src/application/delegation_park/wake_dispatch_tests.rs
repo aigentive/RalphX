@@ -133,9 +133,11 @@ async fn wake_retry_budget_uses_the_existing_durable_attempt_count() {
 }
 
 #[tokio::test]
-async fn deadline_reconciliation_sends_an_explicit_timeout_notice() {
+async fn deadline_reconciliation_omits_the_timeout_notice_for_a_job_it_just_settled() {
     let harness = harness();
     let (conversation, parent, delegate) = insert_parent_and_delegate(&harness).await;
+    // The delegate is already terminal, so this pass settles the job and then finds the park
+    // expired. Nothing timed out, so the wake must not say anything did.
     let mut park = park(conversation, parent.id, delegate.id);
     park.deadline_at = Utc::now() - Duration::seconds(1);
     park.jobs[0].settled_status = None;
@@ -146,7 +148,9 @@ async fn deadline_reconciliation_sends_an_explicit_timeout_notice() {
         .reconcile_all(harness.runs.as_ref())
         .await
         .unwrap();
-    assert!(harness.chat.get_sent_messages().await[0].contains("Timeout notice"));
+    let message = &harness.chat.get_sent_messages().await[0];
+    assert!(!message.contains("Timeout notice"));
+    assert!(message.contains("researcher: completed"));
     assert_eq!(
         harness.parks.settled.lock().await.as_slice(),
         &[DelegationParkState::Expired]
@@ -255,6 +259,110 @@ async fn deadline_wake_names_delegates_that_are_still_running() {
         harness.parks.settled.lock().await.as_slice(),
         &[DelegationParkState::Expired]
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn failed_wake_attention_event_identifies_the_abandoned_coordinator() {
+    let harness = harness();
+    let (conversation, parent, delegate) = insert_parent_and_delegate(&harness).await;
+    harness.chat.set_available(false).await;
+    let park = park(conversation.clone(), parent.id, delegate.id);
+    harness.parks.insert(park.clone()).await;
+
+    harness
+        .service()
+        .dispatch_wake(&park, DelegationWakeReason::AllSettled)
+        .await
+        .unwrap();
+
+    let events = harness.events.events();
+    let payload = &events[0].payload;
+    assert_eq!(events[0].event, "delegation_park:needs_attention");
+    assert_eq!(payload["park_id"], park.id.as_str());
+    assert_eq!(payload["parent_conversation_id"], conversation.as_str());
+    assert_eq!(payload["context_type"], "project");
+    assert_eq!(payload["context_id"], "project");
+    assert_eq!(payload["delegate_count"], 1);
+    assert!(payload["error"].as_str().is_some_and(|e| !e.is_empty()));
+}
+
+#[tokio::test]
+async fn failed_wake_attention_event_survives_an_unreadable_conversation() {
+    let harness = harness();
+    let park = park(
+        ChatConversationId::new(),
+        AgentRunId::new(),
+        AgentRunId::new(),
+    );
+    harness.parks.insert(park.clone()).await;
+
+    harness
+        .service()
+        .dispatch_wake(&park, DelegationWakeReason::AllSettled)
+        .await
+        .unwrap_err();
+
+    let events = harness.events.events();
+    let payload = &events[0].payload;
+    assert_eq!(
+        payload["parent_conversation_id"],
+        park.parent_conversation_id.as_str()
+    );
+    assert!(payload["context_type"].is_null());
+    assert!(payload["conversation_title"].is_null());
+}
+
+#[tokio::test]
+async fn deadline_wake_omits_the_timeout_notice_when_every_job_settled() {
+    let harness = harness();
+    let (conversation, parent, delegate) = insert_parent_and_delegate(&harness).await;
+    // `reconcile_park` checks the deadline before the wake decision, so a park whose last job
+    // settles in the same pass still wakes as `Deadline`. It must not claim a timeout.
+    let mut park = park(conversation, parent.id, delegate.id);
+    park.deadline_at = Utc::now() - Duration::seconds(1);
+    harness.parks.insert(park).await;
+
+    harness
+        .service()
+        .reconcile_all(harness.runs.as_ref())
+        .await
+        .unwrap();
+
+    let message = &harness.chat.get_sent_messages().await[0];
+    assert!(!message.contains("Timeout notice"));
+    assert!(message.contains("researcher: completed"));
+    assert_eq!(
+        harness.parks.settled.lock().await.as_slice(),
+        &[DelegationParkState::Expired]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn reclaiming_an_abandoned_wake_restores_the_full_retry_budget() {
+    let harness = harness();
+    let (conversation, parent, delegate) = insert_parent_and_delegate(&harness).await;
+    harness.chat.set_available(false).await;
+    let config = delegation_config();
+    let retry_backoff_secs = i64::try_from(config.park_wake_retry_backoff_secs).unwrap();
+    let stale_threshold = Duration::seconds(
+        i64::from(config.park_wake_retry_max)
+            .saturating_mul(retry_backoff_secs)
+            .saturating_add(retry_backoff_secs),
+    );
+    // A dispatcher that crashed mid-wake leaves both a held claim and its spent attempts behind.
+    let mut park = park(conversation, parent.id, delegate.id);
+    park.state = DelegationParkState::Waking;
+    park.wake_attempts = i32::try_from(config.park_wake_retry_max).unwrap();
+    park.updated_at = Utc::now() - stale_threshold - stale_threshold;
+    harness.parks.insert(park.clone()).await;
+
+    harness
+        .service()
+        .reconcile_all(harness.runs.as_ref())
+        .await
+        .unwrap();
+
+    assert_eq!(harness.chat.call_count(), config.park_wake_retry_max.max(1));
 }
 
 #[tokio::test]

@@ -156,11 +156,24 @@ impl DelegationParkService {
         self.park_repo
             .settle(&park.id, DelegationParkState::Failed, Some(&error_message))
             .await?;
+        // Best-effort identity so the UI can name the coordinator that will never resume. This
+        // runs on the failure path, where an unreadable conversation may be the failure itself,
+        // so a missing lookup must degrade the payload rather than suppress the alert.
+        let conversation = self
+            .conversation_repo
+            .get_by_id(&park.parent_conversation_id)
+            .await
+            .ok()
+            .flatten();
         self.events.emit(
             PARK_WAKE_FAILED_EVENT,
             serde_json::json!({
                 "park_id": park.id.as_str(),
                 "parent_conversation_id": park.parent_conversation_id.as_str(),
+                "conversation_title": conversation.as_ref().and_then(|c| c.title.clone()),
+                "context_type": conversation.as_ref().map(|c| c.context_type.to_string()),
+                "context_id": conversation.as_ref().map(|c| c.context_id.clone()),
+                "delegate_count": park.jobs.len(),
                 "error": error_message,
             }),
         );
@@ -205,7 +218,9 @@ impl DelegationParkService {
             "Delegated work update ({reason:?}).\n{}\n\nContinue coordination from this turn.",
             lines.join("\n")
         );
-        if matches!(reason, DelegationWakeReason::Deadline) {
+        // A deadline wake can still find every job settled — `reconcile_park` checks expiry before
+        // the wake decision. Claiming a timeout there would contradict the settled job list above.
+        if matches!(reason, DelegationWakeReason::Deadline) && !unsettled.is_empty() {
             body.push_str(&format!(
                 "\n\nTimeout notice: these jobs never settled: {}.",
                 unsettled.join(", ")

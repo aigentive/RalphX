@@ -177,6 +177,7 @@ impl DelegationParkRepository for MemoryDelegationParkRepo {
             return Ok(false);
         }
         park.state = DelegationParkState::Armed;
+        park.wake_attempts = 0;
         park.updated_at = Utc::now();
         Ok(true)
     }

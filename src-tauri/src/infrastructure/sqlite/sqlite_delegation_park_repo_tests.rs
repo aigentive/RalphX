@@ -271,6 +271,38 @@ async fn reset_wake_claim_transitions_waking_once_and_skips_armed_parks() {
 }
 
 #[tokio::test]
+async fn reset_wake_claim_clears_the_abandoned_dispatchers_attempts() {
+    let (_db, repo) = setup();
+    let park = park(
+        ChatConversationId::new(),
+        1,
+        Utc::now() + Duration::hours(1),
+    );
+    repo.arm(park.clone()).await.unwrap();
+    assert!(repo.claim_wake(&park.id, park.generation).await.unwrap());
+    assert_eq!(
+        repo.record_wake_failure(&park.id, "enqueue failed")
+            .await
+            .unwrap(),
+        1
+    );
+
+    assert!(repo.reset_wake_claim(&park.id).await.unwrap());
+
+    // The recovering dispatcher must not inherit the crashed one's spent budget; `park_max_secs`
+    // still bounds total effort.
+    let reclaimed = repo.get(&park.id).await.unwrap().unwrap();
+    assert_eq!(reclaimed.wake_attempts, 0);
+    assert_eq!(reclaimed.last_error.as_deref(), Some("enqueue failed"));
+    assert_eq!(
+        repo.record_wake_failure(&park.id, "enqueue failed again")
+            .await
+            .unwrap(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn settle_writes_terminal_state_and_error() {
     let (_db, repo) = setup();
     let park = park(
@@ -481,7 +513,17 @@ async fn memory_repository_guards_wake_transitions_and_terminal_queries() {
             .id,
         expired.id
     );
+    assert_eq!(
+        repo.record_wake_failure(&expired.id, "enqueue failed")
+            .await
+            .unwrap(),
+        1
+    );
     assert!(repo.reset_wake_claim(&expired.id).await.unwrap());
+    assert_eq!(
+        repo.get(&expired.id).await.unwrap().unwrap().wake_attempts,
+        0
+    );
     assert!(!repo.reset_wake_claim(&expired.id).await.unwrap());
     assert_eq!(
         repo.list_expired(now)
