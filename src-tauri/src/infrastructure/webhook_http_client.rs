@@ -7,7 +7,6 @@
 // Test: MockWebhookHttpClient with configurable response codes and call recording.
 
 use async_trait::async_trait;
-use tokio_util::bytes::Bytes;
 use http_body_util::Full;
 use hyper::{Method, Request};
 use hyper_util::client::legacy::connect::HttpConnector;
@@ -17,6 +16,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use thiserror::Error;
 use tokio::time::Duration;
+use tokio_util::bytes::Bytes;
 
 /// Errors from webhook HTTP delivery.
 #[derive(Debug, Error)]
@@ -196,4 +196,3 @@ impl WebhookHttpClient for MockWebhookHttpClient {
         Ok(self.status_code)
     }
 }
-

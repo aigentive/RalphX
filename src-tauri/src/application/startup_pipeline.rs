@@ -222,7 +222,8 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     // follow-up message stuck `pending`, which is exactly the ghost-message hazard WP1 exists to
     // remove.
     {
-        let phase_started_at = startup_phase_started("remote_conversation_message_dispatcher_spawn");
+        let phase_started_at =
+            startup_phase_started("remote_conversation_message_dispatcher_spawn");
         startup_background::spawn_remote_conversation_message_dispatcher(
             deps.app_state.clone(),
             Arc::clone(&deps.execution_state),

@@ -594,10 +594,10 @@ async fn test_cascade_deletes_when_task_deleted() {
     let count: i32 = db
         .with_connection(|conn| {
             conn.query_row(
-            "SELECT COUNT(*) FROM task_dependencies WHERE task_id = ?1",
-            [task_a.as_str()],
-            |row| row.get(0),
-        )
+                "SELECT COUNT(*) FROM task_dependencies WHERE task_id = ?1",
+                [task_a.as_str()],
+                |row| row.get(0),
+            )
         })
         .unwrap();
     assert_eq!(count, 1);
@@ -610,10 +610,10 @@ async fn test_cascade_deletes_when_task_deleted() {
     let count_after: i32 = db
         .with_connection(|conn| {
             conn.query_row(
-            "SELECT COUNT(*) FROM task_dependencies WHERE task_id = ?1",
-            [task_a.as_str()],
-            |row| row.get(0),
-        )
+                "SELECT COUNT(*) FROM task_dependencies WHERE task_id = ?1",
+                [task_a.as_str()],
+                |row| row.get(0),
+            )
         })
         .unwrap();
     assert_eq!(count_after, 0);
@@ -645,10 +645,10 @@ async fn test_cascade_deletes_when_depends_on_task_deleted() {
     let count_after: i32 = db
         .with_connection(|conn| {
             conn.query_row(
-            "SELECT COUNT(*) FROM task_dependencies WHERE depends_on_task_id = ?1",
-            [task_b.as_str()],
-            |row| row.get(0),
-        )
+                "SELECT COUNT(*) FROM task_dependencies WHERE depends_on_task_id = ?1",
+                [task_b.as_str()],
+                |row| row.get(0),
+            )
         })
         .unwrap();
     assert_eq!(count_after, 0);

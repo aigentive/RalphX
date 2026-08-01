@@ -2,8 +2,7 @@ use ralphx_lib::application::app_state::AppState;
 use ralphx_lib::commands::api_key_commands::{
     create_api_key, get_api_key_audit_log, list_api_keys, revoke_api_key, rotate_api_key,
     update_api_key_permissions, update_api_key_projects, CreateApiKeyInput, GetAuditLogInput,
-    RevokeApiKeyInput, RotateApiKeyInput, UpdateApiKeyPermissionsInput,
-    UpdateApiKeyProjectsInput,
+    RevokeApiKeyInput, RotateApiKeyInput, UpdateApiKeyPermissionsInput, UpdateApiKeyProjectsInput,
 };
 use ralphx_lib::domain::entities::ApiKeyId;
 use ralphx_lib::domain::services::api_key_service::{ApiKeyService, KeySource};
@@ -347,12 +346,9 @@ async fn update_api_key_permissions_command_updates_active_key_and_logs_audit() 
     assert_eq!(keys.len(), 1);
     assert_eq!(keys[0].permissions, 1);
 
-    let audit = get_api_key_audit_log(
-        app.state::<AppState>(),
-        GetAuditLogInput { id: created.id },
-    )
-    .await
-    .expect("audit log loads");
+    let audit = get_api_key_audit_log(app.state::<AppState>(), GetAuditLogInput { id: created.id })
+        .await
+        .expect("audit log loads");
     assert!(audit.len() >= 2);
 }
 
@@ -407,12 +403,9 @@ async fn update_api_key_projects_command_replaces_project_associations() {
     assert_eq!(keys.len(), 1);
     assert_eq!(keys[0].project_ids, vec!["new-a", "new-b"]);
 
-    let audit = get_api_key_audit_log(
-        app.state::<AppState>(),
-        GetAuditLogInput { id: created.id },
-    )
-    .await
-    .expect("audit log loads");
+    let audit = get_api_key_audit_log(app.state::<AppState>(), GetAuditLogInput { id: created.id })
+        .await
+        .expect("audit log loads");
     assert!(audit.len() >= 2);
 }
 
@@ -450,12 +443,10 @@ async fn get_api_key_audit_log_command_returns_recent_entries() {
     .await
     .expect("key creates");
 
-    let entries = get_api_key_audit_log(
-        app.state::<AppState>(),
-        GetAuditLogInput { id: created.id },
-    )
-    .await
-    .expect("audit log loads");
+    let entries =
+        get_api_key_audit_log(app.state::<AppState>(), GetAuditLogInput { id: created.id })
+            .await
+            .expect("audit log loads");
 
     assert!(!entries.is_empty());
     assert!(entries.iter().any(|entry| entry.success));

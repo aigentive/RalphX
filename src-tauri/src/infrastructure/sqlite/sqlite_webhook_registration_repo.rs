@@ -188,7 +188,10 @@ impl WebhookRegistrationRepository for SqliteWebhookRegistrationRepository {
             .await
     }
 
-    async fn list_active_for_project(&self, project_id: &str) -> AppResult<Vec<WebhookRegistration>> {
+    async fn list_active_for_project(
+        &self,
+        project_id: &str,
+    ) -> AppResult<Vec<WebhookRegistration>> {
         let project_id = project_id.to_string();
         self.db
             .run(move |conn| {

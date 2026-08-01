@@ -86,7 +86,7 @@ async fn test_shutdown_ordering_agents_before_mcp_before_wal() {
 
     shutdown_sequence(
         Arc::clone(&tracker),
-        50,  // agents finish in 50ms (well within 2.5s)
+        50, // agents finish in 50ms (well within 2.5s)
         Arc::clone(&mcp_flag),
         Arc::clone(&wal_flag),
     )
@@ -98,8 +98,14 @@ async fn test_shutdown_ordering_agents_before_mcp_before_wal() {
 
     // All three completed
     assert!(agent_order > 0, "agent shutdown should have completed");
-    assert!(mcp_flag.load(Ordering::SeqCst), "MCP shutdown should have run");
-    assert!(wal_flag.load(Ordering::SeqCst), "WAL checkpoint should have run");
+    assert!(
+        mcp_flag.load(Ordering::SeqCst),
+        "MCP shutdown should have run"
+    );
+    assert!(
+        wal_flag.load(Ordering::SeqCst),
+        "WAL checkpoint should have run"
+    );
 
     // Ordering: agents first, then MCP, then WAL
     assert!(
@@ -138,8 +144,14 @@ async fn test_shutdown_timeout_guard_mcp_and_wal_still_run() {
     );
 
     // MCP and WAL still ran despite agent timeout
-    assert!(mcp_flag.load(Ordering::SeqCst), "MCP shutdown must run even after agent timeout");
-    assert!(wal_flag.load(Ordering::SeqCst), "WAL checkpoint must run even after agent timeout");
+    assert!(
+        mcp_flag.load(Ordering::SeqCst),
+        "MCP shutdown must run even after agent timeout"
+    );
+    assert!(
+        wal_flag.load(Ordering::SeqCst),
+        "WAL checkpoint must run even after agent timeout"
+    );
 
     // MCP before WAL
     assert!(
@@ -237,7 +249,10 @@ async fn test_wait_for_backend_ready_succeeds_after_probe_retries() {
     })
     .await;
 
-    assert!(result.is_ok(), "probe should eventually report ready: {result:?}");
+    assert!(
+        result.is_ok(),
+        "probe should eventually report ready: {result:?}"
+    );
     assert_eq!(attempts.load(Ordering::SeqCst), 3);
 }
 
@@ -245,10 +260,11 @@ async fn test_wait_for_backend_ready_succeeds_after_probe_retries() {
 async fn test_wait_for_backend_ready_times_out_after_non_200_probe() {
     use super::super::{wait_for_backend_ready_with_probe, BackendReadyProbeResult};
 
-    let result = wait_for_backend_ready_with_probe(3847, Duration::from_millis(450), move |_| async {
-        BackendReadyProbeResult::HttpStatus(404)
-    })
-    .await;
+    let result =
+        wait_for_backend_ready_with_probe(3847, Duration::from_millis(450), move |_| async {
+            BackendReadyProbeResult::HttpStatus(404)
+        })
+        .await;
 
     assert!(result.is_err(), "non-200 probe should time out");
 }
@@ -258,10 +274,11 @@ async fn test_wait_for_backend_ready_times_out_when_probe_unreachable() {
     use super::super::{wait_for_backend_ready_with_probe, BackendReadyProbeResult};
 
     let start = std::time::Instant::now();
-    let result = wait_for_backend_ready_with_probe(3847, Duration::from_millis(450), move |_| async {
-        BackendReadyProbeResult::Unreachable
-    })
-    .await;
+    let result =
+        wait_for_backend_ready_with_probe(3847, Duration::from_millis(450), move |_| async {
+            BackendReadyProbeResult::Unreachable
+        })
+        .await;
 
     assert!(result.is_err(), "unreachable probe should time out");
     assert!(

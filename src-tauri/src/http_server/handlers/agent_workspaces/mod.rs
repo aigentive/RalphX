@@ -46,32 +46,31 @@ use crate::application::agent_workspace_pr_supervision_recovery::{
 };
 #[cfg(test)]
 use crate::application::agent_workspace_publish_repair_state::{
-    abort_agent_workspace_pr_fix_review_handoff, continue_agent_workspace_pr_fix_after_review_handoff,
-    AgentWorkspaceRepairClaim,
+    abort_agent_workspace_pr_fix_review_handoff,
+    continue_agent_workspace_pr_fix_after_review_handoff, AgentWorkspaceRepairClaim,
 };
 #[cfg(test)]
 use crate::application::agent_workspace_publish_repair_state::{
     block_agent_workspace_pr_fix_claim, complete_agent_workspace_pr_fix_claim,
 };
+#[cfg(test)]
+use crate::application::agent_workspace_review::apply_review_artifact_to_monitor;
+#[cfg(test)]
+use crate::application::agent_workspace_review::AgentWorkspaceReviewStart;
 use crate::application::agent_workspace_review::{
     apply_review_artifact_pair_to_monitor, complete_agent_workspace_review_run_unlocked,
     load_agent_workspace_review_context, load_current_workspace_review_eligible,
     lock_workspace_review_lifecycle, review_gate_publish_blocker,
     start_agent_workspace_review_blocking_fixer_with_override, workspace_review_mode_is_eligible,
-    AgentWorkspaceReviewGoalContext, AgentWorkspaceReviewHunkAnchor,
-    AgentWorkspaceReviewTarget, WorkspaceReviewFixerConfirmation,
+    AgentWorkspaceReviewGoalContext, AgentWorkspaceReviewHunkAnchor, AgentWorkspaceReviewTarget,
+    WorkspaceReviewFixerConfirmation,
 };
 #[cfg(test)]
-use crate::application::agent_workspace_review::AgentWorkspaceReviewStart;
-#[cfg(test)]
-use crate::application::agent_workspace_review::apply_review_artifact_to_monitor;
+use crate::application::agent_workspace_review_auto_merge::start_guarded_agent_workspace_review;
 use crate::application::agent_workspace_review_auto_merge::{
-    preview_manual_workspace_review_start, start_guarded_agent_workspace_review_with_runtime_override,
-    WorkspaceReviewStartConfirmation, WorkspaceReviewStartOrigin,
-};
-#[cfg(test)]
-use crate::application::agent_workspace_review_auto_merge::{
-    start_guarded_agent_workspace_review,
+    preview_manual_workspace_review_start,
+    start_guarded_agent_workspace_review_with_runtime_override, WorkspaceReviewStartConfirmation,
+    WorkspaceReviewStartOrigin,
 };
 use crate::application::agent_workspace_review_diff::{
     ensure_workspace_review_snapshot_current, full_hunk_anchors_for_requests,
@@ -87,9 +86,9 @@ use crate::application::publish_resilience::{
     verify_agent_workspace_settled_current_head, AgentWorkspaceSettledHeadCheck,
 };
 use crate::application::services::pr_merge_poller::import_agent_workspace_pr_comment_evidence;
-use crate::application::{AppState, ChatService};
 #[cfg(test)]
 use crate::application::GitService;
+use crate::application::{AppState, ChatService};
 use crate::commands::unified_chat_commands::{
     agent_workspace_response_for_state, get_agent_conversation_workspace_freshness_for_app_state,
     publish_agent_conversation_workspace_for_app_state,
@@ -105,20 +104,20 @@ use crate::domain::agents::{
 };
 #[cfg(test)]
 use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus as PlanDbPrStatus};
+#[cfg(test)]
+use crate::domain::entities::PlanBranch;
 use crate::domain::entities::{
     is_publication_push_active, pr_comment_body_excerpt, AgentConversationWorkspace,
-    AgentConversationWorkspaceMode,
-    AgentConversationWorkspacePublicationEvent, AgentWorkspacePrCommentEvidence,
-    AgentWorkspacePrMetadataDecision, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
+    AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent, AgentRunId,
+    AgentWorkspacePrCommentEvidence, AgentWorkspacePrMetadataDecision,
+    AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
     AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewGateStatus,
-    AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor, AgentRunId,
+    AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
     AgentWorkspaceReviewTargetScope, Artifact, ArtifactId, ArtifactType, ChatConversationId,
     IdeationAnalysisBaseRefKind, NewNotification, NotificationCategory, NotificationSeverity,
     NotificationTarget, NotificationTargetKind, ProjectId,
 };
-#[cfg(test)]
-use crate::domain::entities::PlanBranch;
 use crate::domain::repositories::AgentWorkspacePrReviewActionMutation;
 #[cfg(test)]
 use crate::domain::repositories::AgentWorkspaceRepairStateGuard;
@@ -1904,26 +1903,25 @@ pub async fn write_agent_workspace_review_artifact(
                 json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
             })?
     };
-    let created_requested_changes =
-        if let Some(previous) = previous_requested_changes_artifact {
-            state
-                .app_state
-                .artifact_repo
-                .create_with_previous_version(requested_changes_artifact, previous.id)
-                .await
-                .map_err(|error| {
-                    json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
-                })?
-        } else {
-            state
-                .app_state
-                .artifact_repo
-                .create(requested_changes_artifact)
-                .await
-                .map_err(|error| {
-                    json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
-                })?
-        };
+    let created_requested_changes = if let Some(previous) = previous_requested_changes_artifact {
+        state
+            .app_state
+            .artifact_repo
+            .create_with_previous_version(requested_changes_artifact, previous.id)
+            .await
+            .map_err(|error| {
+                json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+            })?
+    } else {
+        state
+            .app_state
+            .artifact_repo
+            .create(requested_changes_artifact)
+            .await
+            .map_err(|error| {
+                json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+            })?
+    };
 
     apply_review_artifact_pair_to_monitor(
         &mut monitor,
@@ -1982,8 +1980,7 @@ pub async fn write_agent_workspace_review_artifact(
 
     let mut artifact_response = ArtifactResponse::from(created);
     artifact_response.previous_artifact_id = previous_artifact_id.clone();
-    let mut requested_changes_artifact_response =
-        ArtifactResponse::from(created_requested_changes);
+    let mut requested_changes_artifact_response = ArtifactResponse::from(created_requested_changes);
     requested_changes_artifact_response.previous_artifact_id =
         previous_requested_changes_artifact_id.clone();
     tracing::info!(
@@ -2863,20 +2860,22 @@ fn schedule_pr_autofix_completion_recovery(
     state: &HttpServerState,
     conversation_id: &ChatConversationId,
 ) {
-    let Ok(resumer) = state.app_state.agent_workspace_pr_fix_review_publish_resumer() else {
+    let Ok(resumer) = state
+        .app_state
+        .agent_workspace_pr_fix_review_publish_resumer()
+    else {
         return;
     };
     let runtime_app_handle = state.app_state.app_handle.clone();
-    let transition_service = Arc::new(
-        state.app_state.build_transition_service_for_runtime(
-            Arc::clone(&state.execution_state),
-            runtime_app_handle.clone(),
-        ),
-    );
-    let chat_service: Arc<dyn ChatService> = Arc::new(state.app_state.build_chat_service_for_runtime(
-        Some(Arc::clone(&state.execution_state)),
+    let transition_service = Arc::new(state.app_state.build_transition_service_for_runtime(
+        Arc::clone(&state.execution_state),
         runtime_app_handle.clone(),
     ));
+    let chat_service: Arc<dyn ChatService> =
+        Arc::new(state.app_state.build_chat_service_for_runtime(
+            Some(Arc::clone(&state.execution_state)),
+            runtime_app_handle.clone(),
+        ));
     let Some(deps) = build_agent_workspace_pr_supervision_recovery_deps(
         state.app_state.as_ref(),
         runtime_app_handle,
@@ -5081,7 +5080,6 @@ async fn action_response_for_needs_repair(
         pr_url: None,
     }))
 }
-
 
 // =========================================================================
 // Extension A — Staged / Unstaged diff HTTP handlers

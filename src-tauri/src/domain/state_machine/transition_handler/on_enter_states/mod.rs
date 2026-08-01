@@ -38,8 +38,8 @@ use crate::domain::services::PlanPrDescriptionDrafter;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::{reconciliation_config, scheduler_config};
 
-mod execution;
 mod branch_update;
+mod execution;
 mod merge;
 mod outcomes;
 mod qa;
@@ -143,19 +143,18 @@ pub(super) async fn apply_freshness_result(
                 "pending_merge" => crate::domain::entities::BranchUpdateContinuation::RetryPendingMerge,
                 _ => crate::domain::entities::BranchUpdateContinuation::ResumeExecution,
             };
-            let (source_branch, target_branch) = if direction
-                == crate::domain::entities::BranchUpdateDirection::PlanBranch
-            {
-                (
-                    freshness_metadata.source_branch.clone(),
-                    freshness_metadata.target_branch.clone(),
-                )
-            } else {
-                (
-                    freshness_metadata.target_branch.clone(),
-                    freshness_metadata.source_branch.clone(),
-                )
-            };
+            let (source_branch, target_branch) =
+                if direction == crate::domain::entities::BranchUpdateDirection::PlanBranch {
+                    (
+                        freshness_metadata.source_branch.clone(),
+                        freshness_metadata.target_branch.clone(),
+                    )
+                } else {
+                    (
+                        freshness_metadata.target_branch.clone(),
+                        freshness_metadata.source_branch.clone(),
+                    )
+                };
             let source_branch = source_branch.ok_or_else(|| {
                 AppError::ExecutionBlocked("Branch update source is missing".to_string())
             })?;
@@ -163,13 +162,12 @@ pub(super) async fn apply_freshness_result(
                 AppError::ExecutionBlocked("Branch update target is missing".to_string())
             })?;
             let identity = GitService::canonical_target_identity(repo_path, &target_branch).await?;
-            let workspace_path = if direction
-                == crate::domain::entities::BranchUpdateDirection::PlanBranch
-            {
-                super::merge_helpers::compute_plan_update_worktree_path(project, task_id_str)
-            } else {
-                super::merge_helpers::compute_source_update_worktree_path(project, task_id_str)
-            };
+            let workspace_path =
+                if direction == crate::domain::entities::BranchUpdateDirection::PlanBranch {
+                    super::merge_helpers::compute_plan_update_worktree_path(project, task_id_str)
+                } else {
+                    super::merge_helpers::compute_source_update_worktree_path(project, task_id_str)
+                };
             let mut operation = crate::domain::entities::BranchUpdateOperation::new(
                 task.id.clone(),
                 direction,
@@ -188,13 +186,12 @@ pub(super) async fn apply_freshness_result(
                 Some(GitService::resolve_ref_sha(repo_path, &operation.source_branch).await?);
             operation.observed_target_sha =
                 Some(GitService::resolve_ref_sha(repo_path, &operation.target_branch).await?);
-            let update_status = if direction
-                == crate::domain::entities::BranchUpdateDirection::PlanBranch
-            {
-                InternalStatus::UpdatingPlanBranch
-            } else {
-                InternalStatus::UpdatingTaskBranch
-            };
+            let update_status =
+                if direction == crate::domain::entities::BranchUpdateDirection::PlanBranch {
+                    InternalStatus::UpdatingPlanBranch
+                } else {
+                    InternalStatus::UpdatingTaskBranch
+                };
             let operation_for_execution = operation.clone();
             let fencing_epoch = match branch_update_repo
                 .activate(crate::domain::repositories::BranchUpdateActivation {
@@ -446,8 +443,7 @@ async fn create_fresh_branch_and_worktree(
 
     // Create worktree — use existing branch if it exists, create new one otherwise
     let result: AppResult<TaskExecutionWorktree> = if branch_exists {
-        let (base_ref, base_sha) =
-            persisted_task_branch_base_or_block(task, &branch, task_id_str)?;
+        let (base_ref, base_sha) = persisted_task_branch_base_or_block(task, &branch, task_id_str)?;
         tracing::info!(
             task_id = task_id_str,
             branch = %branch,

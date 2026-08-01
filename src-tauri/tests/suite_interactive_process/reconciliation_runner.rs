@@ -1,15 +1,16 @@
-use ralphx_lib::application::reconciliation::*;
 use ralphx_lib::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessRegistry,
 };
+use ralphx_lib::application::reconciliation::*;
 use ralphx_lib::application::{AppState, TaskTransitionService};
 use ralphx_lib::commands::execution_commands::ExecutionState;
 use ralphx_lib::domain::entities::{
-    AgentRun, AgentRunId, AgentRunStatus, ChatContextType, ChatConversation,
-    ChatConversationId, ExecutionRecoveryMetadata,
-    InternalStatus, MergeFailureSource, Project, Task, TaskId,
+    AgentRun, AgentRunId, AgentRunStatus, ChatContextType, ChatConversation, ChatConversationId,
+    ExecutionRecoveryMetadata, InternalStatus, MergeFailureSource, Project, Task, TaskId,
 };
-use ralphx_lib::domain::services::{MemoryRunningAgentRegistry, RunningAgentKey, RunningAgentRegistry};
+use ralphx_lib::domain::services::{
+    MemoryRunningAgentRegistry, RunningAgentKey, RunningAgentRegistry,
+};
 use ralphx_lib::infrastructure::agents::claude::reconciliation_config;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -308,10 +309,7 @@ fn merge_incomplete_retry_delay_uses_exponential_backoff_and_cap() {
     // Exponent caps at 6, so base_delay = 5 * 64 = 320 (below max 1800).
     // With base=5, exponent saturation at 6 gives 320s as the effective ceiling.
     let d10 = ReconciliationRunner::merge_incomplete_retry_delay(10).num_seconds();
-    assert!(
-        (320..=320 + 320 / 4).contains(&d10),
-        "retry 10: got {d10}"
-    );
+    assert!((320..=320 + 320 / 4).contains(&d10), "retry 10: got {d10}");
 }
 
 #[test]
@@ -666,10 +664,7 @@ fn merging_auto_retry_count_counts_attempt_failed_events() {
         })
         .to_string(),
     );
-    assert_eq!(
-        ReconciliationRunner::merging_auto_retry_count(&task),
-        2
-    );
+    assert_eq!(ReconciliationRunner::merging_auto_retry_count(&task), 2);
 }
 
 #[test]
@@ -678,10 +673,7 @@ fn merging_auto_retry_count_returns_zero_for_no_metadata() {
         ralphx_lib::domain::entities::ProjectId::new(),
         "No Metadata Task".to_string(),
     );
-    assert_eq!(
-        ReconciliationRunner::merging_auto_retry_count(&task),
-        0
-    );
+    assert_eq!(ReconciliationRunner::merging_auto_retry_count(&task), 0);
 }
 
 #[test]
@@ -1813,8 +1805,8 @@ async fn reconcile_paused_provider_error_new_format_future_retry_stays_paused() 
 #[tokio::test]
 async fn reconcile_paused_provider_error_respects_project_execution_capacity() {
     use ralphx_lib::application::chat_service::{PauseReason, ProviderErrorCategory};
-    use ralphx_lib::domain::services::RunningAgentKey;
     use ralphx_lib::domain::execution::ExecutionSettings;
+    use ralphx_lib::domain::services::RunningAgentKey;
 
     let app_state = AppState::new_test();
     let execution_state = Arc::new(ExecutionState::new());
@@ -2667,7 +2659,10 @@ async fn reconcile_merge_incomplete_reroutes_commit_hook_failures_to_reexecution
         .await
         .unwrap();
 
-    let mut task = Task::new(project.id.clone(), "Commit Hook MergeIncomplete".to_string());
+    let mut task = Task::new(
+        project.id.clone(),
+        "Commit Hook MergeIncomplete".to_string(),
+    );
     task.internal_status = InternalStatus::MergeIncomplete;
     task.updated_at = chrono::Utc::now() - chrono::Duration::seconds(3600);
     task.metadata = Some(
@@ -3116,10 +3111,7 @@ fn validation_revert_count_reads_counter_from_metadata() {
         "Revert Count Task".to_string(),
     );
     task.metadata = Some(serde_json::json!({"validation_revert_count": 3}).to_string());
-    assert_eq!(
-        ReconciliationRunner::validation_revert_count(&task),
-        3
-    );
+    assert_eq!(ReconciliationRunner::validation_revert_count(&task), 3);
 }
 
 #[test]
@@ -3128,10 +3120,7 @@ fn validation_revert_count_returns_zero_for_no_metadata() {
         ralphx_lib::domain::entities::ProjectId::new(),
         "No Metadata".to_string(),
     );
-    assert_eq!(
-        ReconciliationRunner::validation_revert_count(&task),
-        0
-    );
+    assert_eq!(ReconciliationRunner::validation_revert_count(&task), 0);
 }
 
 // ── Retry delay jitter + cap tests ──────────────────────────────────
@@ -3159,8 +3148,7 @@ fn merge_incomplete_retry_delay_caps_at_configured_max() {
     // If saturated base < max, the effective ceiling is saturated base, not max.
     let saturated = (base_secs * 64).min(max_secs);
     for _ in 0..20 {
-        let delay =
-            ReconciliationRunner::merge_incomplete_retry_delay(100).num_seconds();
+        let delay = ReconciliationRunner::merge_incomplete_retry_delay(100).num_seconds();
         assert!(
             delay <= saturated + saturated / 4,
             "Delay {} exceeded saturated {} + jitter ceiling {}",
@@ -3194,8 +3182,7 @@ fn merge_conflict_retry_delay_caps_at_configured_max() {
     let cfg = reconciliation_config();
     let max_secs = cfg.merge_conflict_retry_max_secs as i64;
     for _ in 0..20 {
-        let delay =
-            ReconciliationRunner::merge_conflict_retry_delay(100).num_seconds();
+        let delay = ReconciliationRunner::merge_conflict_retry_delay(100).num_seconds();
         assert!(
             delay <= max_secs + max_secs / 4,
             "Delay {} exceeded max {} + jitter ceiling {}",
@@ -3427,8 +3414,7 @@ async fn rate_limited_skips_dont_count_toward_max_retries() {
         .await
         .unwrap()
         .expect("task should exist");
-    let retry_count =
-        ReconciliationRunner::merge_incomplete_auto_retry_count(&updated);
+    let retry_count = ReconciliationRunner::merge_incomplete_auto_retry_count(&updated);
     assert_eq!(
         retry_count, 0,
         "Rate-limited skips should NOT count toward max retries (got {} retries)",
@@ -3908,10 +3894,7 @@ async fn rc4_consecutive_validation_failures_circuit_breaker_stops_retry() {
 
     let circuit_breaker_count = reconciliation_config().validation_failure_circuit_breaker_count;
 
-    let mut task = Task::new(
-        project.id.clone(),
-        "Circuit Breaker Task".to_string(),
-    );
+    let mut task = Task::new(project.id.clone(), "Circuit Breaker Task".to_string());
     task.internal_status = InternalStatus::MergeIncomplete;
     // Set validation failure with consecutive failures at circuit breaker threshold
     task.metadata = Some(
@@ -4045,10 +4028,7 @@ async fn rc4_non_validation_failure_retries_normally() {
         .await
         .unwrap();
 
-    let mut task = Task::new(
-        project.id.clone(),
-        "Transient Git Failure Task".to_string(),
-    );
+    let mut task = Task::new(project.id.clone(), "Transient Git Failure Task".to_string());
     task.internal_status = InternalStatus::MergeIncomplete;
     // TransientGit failure — should NOT be subject to validation cooldown or circuit breaker
     task.metadata = Some(
@@ -4303,7 +4283,11 @@ async fn set_merge_pipeline_active_persists_to_task_column() {
     let app_state = AppState::new_test();
 
     let project = Project::new("Test Project".to_string(), "/test/path".to_string());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     let mut task = Task::new(project.id.clone(), "Set Flag Task".to_string());
     task.internal_status = InternalStatus::PendingMerge;
@@ -4315,7 +4299,12 @@ async fn set_merge_pipeline_active_persists_to_task_column() {
     app_state.task_repo.update(&task).await.unwrap();
 
     // Reload from repo and verify
-    let reloaded = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
+    let reloaded = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
         ReconciliationRunner::has_merge_pipeline_active(&reloaded),
         "Flag should survive persist + reload"
@@ -4331,7 +4320,11 @@ async fn clear_merge_pipeline_active_removes_column_value() {
     let app_state = AppState::new_test();
 
     let project = Project::new("Test Project".to_string(), "/test/path".to_string());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     let mut task = Task::new(project.id.clone(), "Clear Flag Task".to_string());
     task.internal_status = InternalStatus::PendingMerge;
@@ -4347,7 +4340,12 @@ async fn clear_merge_pipeline_active_removes_column_value() {
     app_state.task_repo.update(&task).await.unwrap();
 
     // Reload and verify flag is gone
-    let reloaded = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
+    let reloaded = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
         !ReconciliationRunner::has_merge_pipeline_active(&reloaded),
         "Flag should be cleared after removal"
@@ -4366,7 +4364,11 @@ async fn set_merge_pipeline_active_does_not_clobber_metadata() {
     let app_state = AppState::new_test();
 
     let project = Project::new("Test Project".to_string(), "/test/path".to_string());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     let mut task = Task::new(project.id.clone(), "Race Condition Task".to_string());
     task.internal_status = InternalStatus::PendingMerge;
@@ -4385,16 +4387,28 @@ async fn set_merge_pipeline_active_does_not_clobber_metadata() {
     app_state.task_repo.update(&task).await.unwrap();
 
     // Step 2: Concurrent writer modifies metadata (simulates chat_service_merge.rs)
-    let mut concurrent_task = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
+    let mut concurrent_task = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
     let mut meta: serde_json::Value =
         serde_json::from_str(concurrent_task.metadata.as_deref().unwrap_or("{}")).unwrap();
-    meta.as_object_mut().unwrap().insert("merge_error".to_string(), serde_json::json!("some error"));
+    meta.as_object_mut()
+        .unwrap()
+        .insert("merge_error".to_string(), serde_json::json!("some error"));
     concurrent_task.metadata = Some(meta.to_string());
     concurrent_task.touch();
     app_state.task_repo.update(&concurrent_task).await.unwrap();
 
     // Step 3: Reload and verify the pipeline flag survived the concurrent metadata write
-    let reloaded = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
+    let reloaded = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
         ReconciliationRunner::has_merge_pipeline_active(&reloaded),
         "merge_pipeline_active column must survive concurrent metadata writes"
@@ -4428,12 +4442,14 @@ fn set_merge_pipeline_active_preserves_other_metadata_keys() {
     assert!(ReconciliationRunner::has_merge_pipeline_active(&task));
 
     // Verify metadata is untouched
-    let json: serde_json::Value =
-        serde_json::from_str(task.metadata.as_deref().unwrap()).unwrap();
+    let json: serde_json::Value = serde_json::from_str(task.metadata.as_deref().unwrap()).unwrap();
     assert_eq!(json["merge_source_branch"], "feature/test");
     assert_eq!(json["merge_target_branch"], "main");
     assert_eq!(json["some_counter"], 42);
-    assert!(json.get("merge_pipeline_active").is_none(), "flag must not be in metadata JSON");
+    assert!(
+        json.get("merge_pipeline_active").is_none(),
+        "flag must not be in metadata JSON"
+    );
 }
 
 #[test]
@@ -4458,8 +4474,7 @@ fn clear_merge_pipeline_active_preserves_other_metadata_keys() {
     assert!(!ReconciliationRunner::has_merge_pipeline_active(&task));
 
     // Verify metadata is untouched
-    let json: serde_json::Value =
-        serde_json::from_str(task.metadata.as_deref().unwrap()).unwrap();
+    let json: serde_json::Value = serde_json::from_str(task.metadata.as_deref().unwrap()).unwrap();
     assert_eq!(json["merge_source_branch"], "feature/test");
     assert_eq!(json["some_counter"], 42);
 }
@@ -4490,7 +4505,11 @@ async fn reconcile_pending_merge_full_flow_set_skip_clear_act() {
     let reconciler = build_reconciler(&app_state, &execution_state);
 
     let project = Project::new("Test Project".to_string(), "/test/path".to_string());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     let mut task = Task::new(project.id.clone(), "Full Flow Task".to_string());
     task.internal_status = InternalStatus::PendingMerge;
@@ -4563,7 +4582,11 @@ async fn reconcile_pending_merge_skips_when_both_flags_set() {
     let reconciler = build_reconciler(&app_state, &execution_state);
 
     let project = Project::new("Test Project".to_string(), "/test/path".to_string());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     let mut task = Task::new(project.id.clone(), "Both Flags Task".to_string());
     task.internal_status = InternalStatus::PendingMerge;
@@ -4595,7 +4618,12 @@ async fn reconcile_pending_merge_skips_when_both_flags_set() {
     );
 
     // Verify task unchanged
-    let updated = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(updated.internal_status, InternalStatus::PendingMerge);
 }
 
@@ -4606,7 +4634,11 @@ async fn reconcile_pending_merge_skips_for_validation_even_without_pipeline_flag
     let reconciler = build_reconciler(&app_state, &execution_state);
 
     let project = Project::new("Test Project".to_string(), "/test/path".to_string());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     let mut task = Task::new(project.id.clone(), "Validation Only Task".to_string());
     task.internal_status = InternalStatus::PendingMerge;
@@ -4832,26 +4864,30 @@ async fn is_ipr_process_alive_returns_true_when_process_alive() {
     // Spawn a real process and register in IPR
     let (stdin, child) = create_test_stdin().await;
     let pid = child.id().expect("cat should have PID");
-    let key = InteractiveProcessKey::new(
-        ChatContextType::TaskExecution.to_string(),
-        "task-1",
-    );
+    let key = InteractiveProcessKey::new(ChatContextType::TaskExecution.to_string(), "task-1");
     ipr.register(key.clone(), stdin).await;
 
     // Also register in running_agent_registry with the real PID
-    let registry_key = RunningAgentKey::new(
-        ChatContextType::TaskExecution.to_string(),
-        "task-1",
-    );
+    let registry_key = RunningAgentKey::new(ChatContextType::TaskExecution.to_string(), "task-1");
     app_state
         .running_agent_registry
-        .register(registry_key, pid, "conv-1".into(), "run-1".into(), None, None)
+        .register(
+            registry_key,
+            pid,
+            "conv-1".into(),
+            "run-1".into(),
+            None,
+            None,
+        )
         .await;
 
     let alive = reconciler
         .is_ipr_process_alive(ChatContextType::TaskExecution, "task-1")
         .await;
-    assert!(alive, "Should return true when IPR entry exists AND PID is alive");
+    assert!(
+        alive,
+        "Should return true when IPR entry exists AND PID is alive"
+    );
 
     // IPR entry should NOT have been removed
     assert!(
@@ -4873,10 +4909,7 @@ async fn is_ipr_process_alive_removes_stale_entry_no_registry() {
     // Register in IPR but NOT in running_agent_registry (simulates registry cleanup
     // that happened but IPR wasn't cleaned — the stale entry scenario)
     let (stdin, child) = create_test_stdin().await;
-    let key = InteractiveProcessKey::new(
-        ChatContextType::TaskExecution.to_string(),
-        "task-1",
-    );
+    let key = InteractiveProcessKey::new(ChatContextType::TaskExecution.to_string(), "task-1");
     ipr.register(key.clone(), stdin).await;
     assert!(ipr.has_process(&key).await, "Precondition: IPR has entry");
 
@@ -4903,17 +4936,11 @@ async fn is_ipr_process_alive_removes_stale_entry_dead_pid() {
 
     // Register in IPR
     let (stdin, child) = create_test_stdin().await;
-    let key = InteractiveProcessKey::new(
-        ChatContextType::TaskExecution.to_string(),
-        "task-1",
-    );
+    let key = InteractiveProcessKey::new(ChatContextType::TaskExecution.to_string(), "task-1");
     ipr.register(key.clone(), stdin).await;
 
     // Register in registry with a dead PID (PID 0 is treated as dead)
-    let registry_key = RunningAgentKey::new(
-        ChatContextType::TaskExecution.to_string(),
-        "task-1",
-    );
+    let registry_key = RunningAgentKey::new(ChatContextType::TaskExecution.to_string(), "task-1");
     app_state
         .running_agent_registry
         .register(registry_key, 0, "conv-1".into(), "run-1".into(), None, None)
@@ -4995,17 +5022,19 @@ async fn reconcile_execution_proceeds_with_stale_ipr() {
 
     // Create project + task in Executing state
     let project = Project::new("Test Project".to_string(), "/tmp/test".to_string());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
     let mut task = Task::new(project.id.clone(), "Stuck Task".to_string());
     task.internal_status = InternalStatus::Executing;
     app_state.task_repo.create(task.clone()).await.unwrap();
 
     // Register stale IPR entry (process died but IPR wasn't cleaned)
     let (stdin, child) = create_test_stdin().await;
-    let key = InteractiveProcessKey::new(
-        ChatContextType::TaskExecution.to_string(),
-        task.id.as_str(),
-    );
+    let key =
+        InteractiveProcessKey::new(ChatContextType::TaskExecution.to_string(), task.id.as_str());
     ipr.register(key.clone(), stdin).await;
     // No registry entry → stale IPR
 
@@ -5041,7 +5070,11 @@ async fn reconcile_execution_skips_for_live_ipr() {
 
     // Create project + task in Executing state
     let project = Project::new("Test Project".to_string(), "/tmp/test".to_string());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
     let mut task = Task::new(project.id.clone(), "Active Task".to_string());
     task.internal_status = InternalStatus::Executing;
     app_state.task_repo.create(task.clone()).await.unwrap();
@@ -5049,27 +5082,33 @@ async fn reconcile_execution_skips_for_live_ipr() {
     // Register IPR entry with a live process
     let (stdin, child) = create_test_stdin().await;
     let pid = child.id().expect("cat should have PID");
-    let key = InteractiveProcessKey::new(
-        ChatContextType::TaskExecution.to_string(),
-        task.id.as_str(),
-    );
+    let key =
+        InteractiveProcessKey::new(ChatContextType::TaskExecution.to_string(), task.id.as_str());
     ipr.register(key.clone(), stdin).await;
 
     // Also register in running_agent_registry with the real PID
-    let registry_key = RunningAgentKey::new(
-        ChatContextType::TaskExecution.to_string(),
-        task.id.as_str(),
-    );
+    let registry_key =
+        RunningAgentKey::new(ChatContextType::TaskExecution.to_string(), task.id.as_str());
     app_state
         .running_agent_registry
-        .register(registry_key, pid, "conv-1".into(), "run-1".into(), None, None)
+        .register(
+            registry_key,
+            pid,
+            "conv-1".into(),
+            "run-1".into(),
+            None,
+            None,
+        )
         .await;
 
     // Should skip reconciliation (return true) because process is alive
     let reconciled = reconciler
         .reconcile_completed_execution(&task, InternalStatus::Executing)
         .await;
-    assert!(reconciled, "Should skip reconciliation for live IPR process");
+    assert!(
+        reconciled,
+        "Should skip reconciliation for live IPR process"
+    );
 
     // IPR entry should be preserved
     assert!(
@@ -5088,7 +5127,11 @@ async fn reconcile_completed_execution_records_pending_review_transition_for_com
     let worktree = tempfile::TempDir::new().expect("create temp dir for reviewable worktree");
 
     let project = Project::new("Test Project".to_string(), "/tmp/test".to_string());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
     let mut task = Task::new(project.id.clone(), "Completed Execution Task".to_string());
     task.internal_status = InternalStatus::Executing;
     task.worktree_path = Some(worktree.path().to_string_lossy().into_owned());
@@ -5107,7 +5150,12 @@ async fn reconcile_completed_execution_records_pending_review_transition_for_com
 
     app_state
         .task_repo
-        .persist_status_change(&task.id, InternalStatus::Ready, InternalStatus::Executing, "test")
+        .persist_status_change(
+            &task.id,
+            InternalStatus::Ready,
+            InternalStatus::Executing,
+            "test",
+        )
         .await
         .unwrap();
 
@@ -5154,17 +5202,18 @@ async fn reconcile_review_proceeds_with_stale_ipr() {
     let reconciler = build_reconciler_with_ipr(&app_state, &execution_state, Arc::clone(&ipr));
 
     let project = Project::new("Test Project".to_string(), "/tmp/test".to_string());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
     let mut task = Task::new(project.id.clone(), "Review Task".to_string());
     task.internal_status = InternalStatus::Reviewing;
     app_state.task_repo.create(task.clone()).await.unwrap();
 
     // Register stale IPR entry for Review context
     let (stdin, child) = create_test_stdin().await;
-    let key = InteractiveProcessKey::new(
-        ChatContextType::Review.to_string(),
-        task.id.as_str(),
-    );
+    let key = InteractiveProcessKey::new(ChatContextType::Review.to_string(), task.id.as_str());
     ipr.register(key.clone(), stdin).await;
 
     let _reconciled = reconciler
@@ -5187,17 +5236,18 @@ async fn reconcile_merge_proceeds_with_stale_ipr() {
     let reconciler = build_reconciler_with_ipr(&app_state, &execution_state, Arc::clone(&ipr));
 
     let project = Project::new("Test Project".to_string(), "/tmp/test".to_string());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
     let mut task = Task::new(project.id.clone(), "Merge Task".to_string());
     task.internal_status = InternalStatus::Merging;
     app_state.task_repo.create(task.clone()).await.unwrap();
 
     // Register stale IPR entry for Merge context
     let (stdin, child) = create_test_stdin().await;
-    let key = InteractiveProcessKey::new(
-        ChatContextType::Merge.to_string(),
-        task.id.as_str(),
-    );
+    let key = InteractiveProcessKey::new(ChatContextType::Merge.to_string(), task.id.as_str());
     ipr.register(key.clone(), stdin).await;
 
     let _reconciled = reconciler
@@ -5221,17 +5271,19 @@ async fn reconcile_re_executing_proceeds_with_stale_ipr() {
     let reconciler = build_reconciler_with_ipr(&app_state, &execution_state, Arc::clone(&ipr));
 
     let project = Project::new("Test Project".to_string(), "/tmp/test".to_string());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
     let mut task = Task::new(project.id.clone(), "ReExecuting Task".to_string());
     task.internal_status = InternalStatus::ReExecuting;
     app_state.task_repo.create(task.clone()).await.unwrap();
 
     // Register stale IPR entry
     let (stdin, child) = create_test_stdin().await;
-    let key = InteractiveProcessKey::new(
-        ChatContextType::TaskExecution.to_string(),
-        task.id.as_str(),
-    );
+    let key =
+        InteractiveProcessKey::new(ChatContextType::TaskExecution.to_string(), task.id.as_str());
     ipr.register(key.clone(), stdin).await;
 
     let _reconciled = reconciler
@@ -5469,7 +5521,10 @@ fn merge_policy_auto_completes_on_completed_run() {
         is_deferred: false,
     };
     let decision = policy.decide_reconciliation(RecoveryContext::Merge, evidence);
-    assert_eq!(decision.action, RecoveryActionKind::AttemptMergeAutoComplete);
+    assert_eq!(
+        decision.action,
+        RecoveryActionKind::AttemptMergeAutoComplete
+    );
 }
 
 #[test]
@@ -5499,17 +5554,19 @@ async fn reconcile_re_executing_stale_ipr_and_no_run_triggers_recovery() {
     let reconciler = build_reconciler_with_ipr(&app_state, &execution_state, Arc::clone(&ipr));
 
     let project = Project::new("Test Project".to_string(), "/tmp/test".to_string());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
     let mut task = Task::new(project.id.clone(), "Stuck ReExecuting Task".to_string());
     task.internal_status = InternalStatus::ReExecuting;
     app_state.task_repo.create(task.clone()).await.unwrap();
 
     // Register a stale IPR entry (no matching registry PID → will be detected as stale)
     let (stdin, child) = create_test_stdin().await;
-    let ipr_key = InteractiveProcessKey::new(
-        ChatContextType::TaskExecution.to_string(),
-        task.id.as_str(),
-    );
+    let ipr_key =
+        InteractiveProcessKey::new(ChatContextType::TaskExecution.to_string(), task.id.as_str());
     ipr.register(ipr_key.clone(), stdin).await;
 
     // No agent_run in DB, no registry entry → policy sees run_status=None, can_start=true
@@ -5686,7 +5743,10 @@ fn execution_next_retry_at_returns_future_timestamp() {
     task.metadata = Some(recovery.update_task_metadata(None).expect("serialize"));
 
     let next_at = ReconciliationRunner::execution_next_retry_at(&task, None);
-    assert!(next_at.is_some(), "should return Some when AutoRetryTriggered event exists");
+    assert!(
+        next_at.is_some(),
+        "should return Some when AutoRetryTriggered event exists"
+    );
     assert!(
         next_at.unwrap() > chrono::Utc::now(),
         "next_retry_at should be in the future"
@@ -5705,7 +5765,11 @@ async fn record_execution_auto_retry_event_persists_event_via_update_metadata() 
     let reconciler = build_reconciler(&app_state, &execution_state);
 
     let project = Project::new("Test Project".into(), "/test".into());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     let task = Task::new(project.id.clone(), "Failing Task".into());
     app_state.task_repo.create(task.clone()).await.unwrap();
@@ -5720,11 +5784,15 @@ async fn record_execution_auto_retry_event_persists_event_via_update_metadata() 
         .await
         .expect("record event should succeed");
 
-    let updated = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
-    let recovery =
-        ExecutionRecoveryMetadata::from_task_metadata(updated.metadata.as_deref())
-            .expect("parse metadata")
-            .expect("execution_recovery key should exist");
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let recovery = ExecutionRecoveryMetadata::from_task_metadata(updated.metadata.as_deref())
+        .expect("parse metadata")
+        .expect("execution_recovery key should exist");
 
     assert_eq!(
         recovery
@@ -5740,14 +5808,20 @@ async fn record_execution_auto_retry_event_persists_event_via_update_metadata() 
 
 #[tokio::test]
 async fn set_execution_stop_retrying_sets_flag_in_db() {
-    use ralphx_lib::domain::entities::{ExecutionRecoveryMetadata, ExecutionRecoveryState, Project, Task};
+    use ralphx_lib::domain::entities::{
+        ExecutionRecoveryMetadata, ExecutionRecoveryState, Project, Task,
+    };
 
     let app_state = AppState::new_test();
     let execution_state = Arc::new(ExecutionState::new());
     let reconciler = build_reconciler(&app_state, &execution_state);
 
     let project = Project::new("Test Project".into(), "/test".into());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     let task = Task::new(project.id.clone(), "Failing Task".into());
     app_state.task_repo.create(task.clone()).await.unwrap();
@@ -5757,11 +5831,15 @@ async fn set_execution_stop_retrying_sets_flag_in_db() {
         .await
         .expect("set stop retrying should succeed");
 
-    let updated = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
-    let recovery =
-        ExecutionRecoveryMetadata::from_task_metadata(updated.metadata.as_deref())
-            .expect("parse metadata")
-            .expect("execution_recovery key should exist");
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let recovery = ExecutionRecoveryMetadata::from_task_metadata(updated.metadata.as_deref())
+        .expect("parse metadata")
+        .expect("execution_recovery key should exist");
 
     assert!(recovery.stop_retrying, "stop_retrying should be true");
     assert_eq!(
@@ -5780,7 +5858,11 @@ async fn clear_execution_flat_metadata_removes_is_timeout_and_failure_error() {
     let reconciler = build_reconciler(&app_state, &execution_state);
 
     let project = Project::new("Test Project".into(), "/test".into());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     let mut task = Task::new(project.id.clone(), "Failing Task".into());
     task.metadata = Some(
@@ -5798,7 +5880,12 @@ async fn clear_execution_flat_metadata_removes_is_timeout_and_failure_error() {
         .await
         .expect("clear flat metadata should succeed");
 
-    let updated = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
     let json: serde_json::Value =
         serde_json::from_str(updated.metadata.as_deref().unwrap()).unwrap();
 
@@ -5821,7 +5908,8 @@ async fn clear_execution_flat_metadata_removes_is_timeout_and_failure_error() {
 async fn reset_execution_recovery_metadata_clears_events_and_resets_state() {
     use ralphx_lib::domain::entities::{
         ExecutionRecoveryEvent, ExecutionRecoveryEventKind, ExecutionRecoveryMetadata,
-        ExecutionRecoveryReasonCode, ExecutionRecoverySource, ExecutionRecoveryState, Project, Task,
+        ExecutionRecoveryReasonCode, ExecutionRecoverySource, ExecutionRecoveryState, Project,
+        Task,
     };
 
     let app_state = AppState::new_test();
@@ -5829,7 +5917,11 @@ async fn reset_execution_recovery_metadata_clears_events_and_resets_state() {
     let reconciler = build_reconciler(&app_state, &execution_state);
 
     let project = Project::new("Test Project".into(), "/test".into());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     // Set up task with existing recovery metadata (2 events, stop_retrying=true, last_state=Failed)
     let mut recovery = ExecutionRecoveryMetadata::new();
@@ -5854,11 +5946,15 @@ async fn reset_execution_recovery_metadata_clears_events_and_resets_state() {
         .await
         .expect("reset should succeed");
 
-    let updated = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
-    let reset_recovery =
-        ExecutionRecoveryMetadata::from_task_metadata(updated.metadata.as_deref())
-            .expect("parse metadata")
-            .expect("execution_recovery key should exist");
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let reset_recovery = ExecutionRecoveryMetadata::from_task_metadata(updated.metadata.as_deref())
+        .expect("parse metadata")
+        .expect("execution_recovery key should exist");
 
     assert!(reset_recovery.events.is_empty(), "events should be cleared");
     assert!(
@@ -5884,7 +5980,11 @@ async fn stop_execution_retrying_by_user_persists_user_source_and_user_stopped_r
     let reconciler = build_reconciler(&app_state, &execution_state);
 
     let project = Project::new("Test Project".into(), "/test".into());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     let task = Task::new(project.id.clone(), "Failing Task".into());
     app_state.task_repo.create(task.clone()).await.unwrap();
@@ -5894,11 +5994,15 @@ async fn stop_execution_retrying_by_user_persists_user_source_and_user_stopped_r
         .await
         .expect("stop_execution_retrying_by_user should succeed");
 
-    let updated = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
-    let recovery =
-        ExecutionRecoveryMetadata::from_task_metadata(updated.metadata.as_deref())
-            .expect("parse metadata")
-            .expect("execution_recovery key should exist");
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let recovery = ExecutionRecoveryMetadata::from_task_metadata(updated.metadata.as_deref())
+        .expect("parse metadata")
+        .expect("execution_recovery key should exist");
 
     assert!(recovery.stop_retrying, "stop_retrying should be true");
     assert_eq!(
@@ -5936,7 +6040,11 @@ async fn record_execution_manual_retry_event_persists_manual_retry_kind_with_use
     let reconciler = build_reconciler(&app_state, &execution_state);
 
     let project = Project::new("Test Project".into(), "/test".into());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     let task = Task::new(project.id.clone(), "Failing Task".into());
     app_state.task_repo.create(task.clone()).await.unwrap();
@@ -5946,11 +6054,15 @@ async fn record_execution_manual_retry_event_persists_manual_retry_kind_with_use
         .await
         .expect("record_execution_manual_retry_event should succeed");
 
-    let updated = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
-    let recovery =
-        ExecutionRecoveryMetadata::from_task_metadata(updated.metadata.as_deref())
-            .expect("parse metadata")
-            .expect("execution_recovery key should exist");
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let recovery = ExecutionRecoveryMetadata::from_task_metadata(updated.metadata.as_deref())
+        .expect("parse metadata")
+        .expect("execution_recovery key should exist");
 
     assert_eq!(recovery.events.len(), 1, "one event should be recorded");
     let event = &recovery.events[0];
@@ -5979,7 +6091,11 @@ async fn apply_failed_user_recovery_cancel_sets_stop_retrying_and_returns_true()
     let reconciler = build_reconciler(&app_state, &execution_state);
 
     let project = Project::new("Test Project".into(), "/test".into());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     let mut task = Task::new(project.id.clone(), "Failed Task".into());
     task.internal_status = InternalStatus::Failed;
@@ -5991,17 +6107,21 @@ async fn apply_failed_user_recovery_cancel_sets_stop_retrying_and_returns_true()
 
     assert!(result, "Cancel action should return true");
 
-    let updated = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
     // Task remains Failed — Cancel does not transition
     assert_eq!(
         updated.internal_status,
         InternalStatus::Failed,
         "task should remain Failed after Cancel"
     );
-    let recovery =
-        ExecutionRecoveryMetadata::from_task_metadata(updated.metadata.as_deref())
-            .expect("parse metadata")
-            .expect("execution_recovery key should exist");
+    let recovery = ExecutionRecoveryMetadata::from_task_metadata(updated.metadata.as_deref())
+        .expect("parse metadata")
+        .expect("execution_recovery key should exist");
     assert!(
         recovery.stop_retrying,
         "stop_retrying should be true after Cancel"
@@ -6019,7 +6139,11 @@ async fn apply_failed_user_recovery_restart_transitions_to_ready_and_records_man
     let reconciler = build_reconciler(&app_state, &execution_state);
 
     let project = Project::new("Test Project".into(), "/test".into());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     // Create task in Failed state with stale flat metadata
     let mut task = Task::new(project.id.clone(), "Failed Task".into());
@@ -6039,7 +6163,12 @@ async fn apply_failed_user_recovery_restart_transitions_to_ready_and_records_man
 
     assert!(result, "Restart action should return true");
 
-    let updated = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
     // Task should now be Ready
     assert_eq!(
         updated.internal_status,
@@ -6068,12 +6197,14 @@ async fn apply_failed_user_recovery_restart_transitions_to_ready_and_records_man
         );
     }
     // ManualRetry event should be recorded
-    let recovery =
-        ExecutionRecoveryMetadata::from_task_metadata(updated.metadata.as_deref())
-            .expect("parse metadata")
-            .expect("execution_recovery key should exist");
+    let recovery = ExecutionRecoveryMetadata::from_task_metadata(updated.metadata.as_deref())
+        .expect("parse metadata")
+        .expect("execution_recovery key should exist");
     assert!(
-        recovery.events.iter().any(|e| matches!(e.kind, ExecutionRecoveryEventKind::ManualRetry)),
+        recovery
+            .events
+            .iter()
+            .any(|e| matches!(e.kind, ExecutionRecoveryEventKind::ManualRetry)),
         "ManualRetry event should be recorded after Restart"
     );
 }
@@ -6083,17 +6214,27 @@ async fn apply_failed_user_recovery_restart_transitions_to_ready_and_records_man
 // These test the early-exit conditions and the happy path of the reconciler handler
 // that auto-retries Failed tasks with transient execution failures.
 
-fn make_execution_recovery(stop: bool, state: ralphx_lib::domain::entities::ExecutionRecoveryState) -> ExecutionRecoveryMetadata {
+fn make_execution_recovery(
+    stop: bool,
+    state: ralphx_lib::domain::entities::ExecutionRecoveryState,
+) -> ExecutionRecoveryMetadata {
     let mut recovery = ExecutionRecoveryMetadata::new();
     recovery.last_state = state;
     recovery.stop_retrying = stop;
     recovery
 }
 
-fn make_task_with_recovery(project_id: &ralphx_lib::domain::entities::ProjectId, recovery: ExecutionRecoveryMetadata) -> Task {
+fn make_task_with_recovery(
+    project_id: &ralphx_lib::domain::entities::ProjectId,
+    recovery: ExecutionRecoveryMetadata,
+) -> Task {
     let mut task = Task::new(project_id.clone(), "Failed Task".into());
     task.internal_status = InternalStatus::Failed;
-    task.metadata = Some(recovery.update_task_metadata(None).expect("serialize recovery"));
+    task.metadata = Some(
+        recovery
+            .update_task_metadata(None)
+            .expect("serialize recovery"),
+    );
     task
 }
 
@@ -6107,18 +6248,33 @@ async fn reconcile_failed_legacy_task_skip_no_metadata() {
     let reconciler = build_reconciler(&app_state, &execution_state);
 
     let project = Project::new("Test Project".into(), "/tmp".into());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     let mut task = Task::new(project.id.clone(), "Legacy Task".into());
     task.internal_status = InternalStatus::Failed;
     // No execution_recovery metadata — legacy task
     app_state.task_repo.create(task.clone()).await.unwrap();
 
-    let result = reconciler.reconcile_failed_execution_task(&task, InternalStatus::Failed).await;
+    let result = reconciler
+        .reconcile_failed_execution_task(&task, InternalStatus::Failed)
+        .await;
 
     assert!(!result, "legacy task without metadata should be skipped");
-    let updated = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
-    assert_eq!(updated.internal_status, InternalStatus::Failed, "status unchanged");
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        updated.internal_status,
+        InternalStatus::Failed,
+        "status unchanged"
+    );
 }
 
 /// stop_retrying = true → reconciler skips.
@@ -6131,13 +6287,22 @@ async fn reconcile_failed_stop_retrying_flag_skips() {
     let reconciler = build_reconciler(&app_state, &execution_state);
 
     let project = Project::new("Test Project".into(), "/tmp".into());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
-    let recovery = make_execution_recovery(true, ralphx_lib::domain::entities::ExecutionRecoveryState::Retrying);
+    let recovery = make_execution_recovery(
+        true,
+        ralphx_lib::domain::entities::ExecutionRecoveryState::Retrying,
+    );
     let task = make_task_with_recovery(&project.id, recovery);
     app_state.task_repo.create(task.clone()).await.unwrap();
 
-    let result = reconciler.reconcile_failed_execution_task(&task, InternalStatus::Failed).await;
+    let result = reconciler
+        .reconcile_failed_execution_task(&task, InternalStatus::Failed)
+        .await;
 
     assert!(!result, "stop_retrying=true should be skipped");
 }
@@ -6152,15 +6317,27 @@ async fn reconcile_failed_permanent_failure_state_skips() {
     let reconciler = build_reconciler(&app_state, &execution_state);
 
     let project = Project::new("Test Project".into(), "/tmp".into());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
-    let recovery = make_execution_recovery(false, ralphx_lib::domain::entities::ExecutionRecoveryState::Failed);
+    let recovery = make_execution_recovery(
+        false,
+        ralphx_lib::domain::entities::ExecutionRecoveryState::Failed,
+    );
     let task = make_task_with_recovery(&project.id, recovery);
     app_state.task_repo.create(task.clone()).await.unwrap();
 
-    let result = reconciler.reconcile_failed_execution_task(&task, InternalStatus::Failed).await;
+    let result = reconciler
+        .reconcile_failed_execution_task(&task, InternalStatus::Failed)
+        .await;
 
-    assert!(!result, "permanent failure (last_state=Failed) should be skipped");
+    assert!(
+        !result,
+        "permanent failure (last_state=Failed) should be skipped"
+    );
 }
 
 /// GAP H1: WallClockTimeout failure source → reconciler skips (would cause infinite C5 loop).
@@ -6176,7 +6353,11 @@ async fn reconcile_failed_wall_clock_timeout_skip() {
     let reconciler = build_reconciler(&app_state, &execution_state);
 
     let project = Project::new("Test Project".into(), "/tmp".into());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     let mut recovery = ExecutionRecoveryMetadata::new();
     recovery.append_event_with_state(
@@ -6193,7 +6374,9 @@ async fn reconcile_failed_wall_clock_timeout_skip() {
     let task = make_task_with_recovery(&project.id, recovery);
     app_state.task_repo.create(task.clone()).await.unwrap();
 
-    let result = reconciler.reconcile_failed_execution_task(&task, InternalStatus::Failed).await;
+    let result = reconciler
+        .reconcile_failed_execution_task(&task, InternalStatus::Failed)
+        .await;
 
     assert!(!result, "GAP H1: wall-clock timeout must not be retried");
 }
@@ -6211,7 +6394,11 @@ async fn reconcile_failed_max_retries_exceeded_marks_permanent_failure() {
     let reconciler = build_reconciler(&app_state, &execution_state);
 
     let project = Project::new("Test Project".into(), "/tmp".into());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     let max = reconciliation_config().execution_failed_max_retries as u32;
 
@@ -6234,12 +6421,19 @@ async fn reconcile_failed_max_retries_exceeded_marks_permanent_failure() {
     let task = make_task_with_recovery(&project.id, recovery);
     app_state.task_repo.create(task.clone()).await.unwrap();
 
-    let result = reconciler.reconcile_failed_execution_task(&task, InternalStatus::Failed).await;
+    let result = reconciler
+        .reconcile_failed_execution_task(&task, InternalStatus::Failed)
+        .await;
 
     assert!(!result, "max retries exceeded: should return false");
 
     // Verify stop_retrying = true set in metadata
-    let updated = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
     let updated_recovery =
         ExecutionRecoveryMetadata::from_task_metadata(updated.metadata.as_deref())
             .expect("parse metadata")
@@ -6268,7 +6462,11 @@ async fn reconcile_failed_backoff_not_elapsed_skip() {
     let reconciler = build_reconciler(&app_state, &execution_state);
 
     let project = Project::new("Test Project".into(), "/tmp".into());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     let mut recovery = ExecutionRecoveryMetadata::new();
     // Add an AutoRetryTriggered event with at = now → next_retry_at is in the future
@@ -6289,7 +6487,9 @@ async fn reconcile_failed_backoff_not_elapsed_skip() {
     let task = make_task_with_recovery(&project.id, recovery);
     app_state.task_repo.create(task.clone()).await.unwrap();
 
-    let result = reconciler.reconcile_failed_execution_task(&task, InternalStatus::Failed).await;
+    let result = reconciler
+        .reconcile_failed_execution_task(&task, InternalStatus::Failed)
+        .await;
 
     assert!(!result, "backoff not elapsed: should skip");
 }
@@ -6304,18 +6504,30 @@ async fn reconcile_failed_concurrency_guard_skip_at_max_concurrent() {
     let reconciler = build_reconciler(&app_state, &execution_state);
 
     let project = Project::new("Test Project".into(), "/tmp".into());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     // Fill up max_concurrent slots (configured = 2 for this test)
     execution_state.increment_running();
     execution_state.increment_running();
-    assert!(!execution_state.can_start_task(), "pre-condition: at max capacity");
+    assert!(
+        !execution_state.can_start_task(),
+        "pre-condition: at max capacity"
+    );
 
-    let recovery = make_execution_recovery(false, ralphx_lib::domain::entities::ExecutionRecoveryState::Retrying);
+    let recovery = make_execution_recovery(
+        false,
+        ralphx_lib::domain::entities::ExecutionRecoveryState::Retrying,
+    );
     let task = make_task_with_recovery(&project.id, recovery);
     app_state.task_repo.create(task.clone()).await.unwrap();
 
-    let result = reconciler.reconcile_failed_execution_task(&task, InternalStatus::Failed).await;
+    let result = reconciler
+        .reconcile_failed_execution_task(&task, InternalStatus::Failed)
+        .await;
 
     assert!(!result, "GAP B6: at max_concurrent, should skip");
 }
@@ -6330,19 +6542,33 @@ async fn reconcile_failed_eligible_task_transitions_to_ready() {
     let reconciler = build_reconciler(&app_state, &execution_state);
 
     let project = Project::new("Test Project".into(), "/tmp".into());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     // Task in Retrying state — no prior retries, backoff not an issue (first attempt)
-    let recovery = make_execution_recovery(false, ralphx_lib::domain::entities::ExecutionRecoveryState::Retrying);
+    let recovery = make_execution_recovery(
+        false,
+        ralphx_lib::domain::entities::ExecutionRecoveryState::Retrying,
+    );
     let task = make_task_with_recovery(&project.id, recovery);
     // No task_branch / worktree_path → git cleanup is no-op
     app_state.task_repo.create(task.clone()).await.unwrap();
 
-    let result = reconciler.reconcile_failed_execution_task(&task, InternalStatus::Failed).await;
+    let result = reconciler
+        .reconcile_failed_execution_task(&task, InternalStatus::Failed)
+        .await;
 
     assert!(result, "eligible task should return true");
 
-    let updated = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         updated.internal_status,
         InternalStatus::Ready,
@@ -6360,15 +6586,25 @@ async fn reconcile_failed_flat_metadata_cleared_before_retry() {
     let reconciler = build_reconciler(&app_state, &execution_state);
 
     let project = Project::new("Test Project".into(), "/tmp".into());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
-    let recovery = make_execution_recovery(false, ralphx_lib::domain::entities::ExecutionRecoveryState::Retrying);
+    let recovery = make_execution_recovery(
+        false,
+        ralphx_lib::domain::entities::ExecutionRecoveryState::Retrying,
+    );
     let base_metadata = recovery.update_task_metadata(None).expect("serialize");
     // Inject stale flat keys alongside structured recovery
     let mut json: serde_json::Value = serde_json::from_str(&base_metadata).unwrap();
     if let Some(obj) = json.as_object_mut() {
         obj.insert("is_timeout".to_string(), serde_json::json!(true));
-        obj.insert("failure_error".to_string(), serde_json::json!("Agent timed out after 600s"));
+        obj.insert(
+            "failure_error".to_string(),
+            serde_json::json!("Agent timed out after 600s"),
+        );
     }
 
     let mut task = Task::new(project.id.clone(), "Task with stale flat metadata".into());
@@ -6376,11 +6612,18 @@ async fn reconcile_failed_flat_metadata_cleared_before_retry() {
     task.metadata = Some(json.to_string());
     app_state.task_repo.create(task.clone()).await.unwrap();
 
-    let result = reconciler.reconcile_failed_execution_task(&task, InternalStatus::Failed).await;
+    let result = reconciler
+        .reconcile_failed_execution_task(&task, InternalStatus::Failed)
+        .await;
 
     assert!(result, "eligible task should return true");
 
-    let updated = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
     if let Some(meta_str) = updated.metadata.as_deref() {
         let parsed: serde_json::Value = serde_json::from_str(meta_str).unwrap();
         assert!(
@@ -6410,13 +6653,22 @@ async fn reconcile_failed_activity_event_emitted_on_auto_retry() {
     let reconciler = build_reconciler(&app_state, &execution_state);
 
     let project = Project::new("Test Project".into(), "/tmp".into());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
-    let recovery = make_execution_recovery(false, ralphx_lib::domain::entities::ExecutionRecoveryState::Retrying);
+    let recovery = make_execution_recovery(
+        false,
+        ralphx_lib::domain::entities::ExecutionRecoveryState::Retrying,
+    );
     let task = make_task_with_recovery(&project.id, recovery);
     app_state.task_repo.create(task.clone()).await.unwrap();
 
-    let result = reconciler.reconcile_failed_execution_task(&task, InternalStatus::Failed).await;
+    let result = reconciler
+        .reconcile_failed_execution_task(&task, InternalStatus::Failed)
+        .await;
     assert!(result, "eligible task should return true");
 
     // Verify at least one activity event was recorded for this task
@@ -6442,10 +6694,17 @@ async fn targeted_metadata_write_preserves_other_keys() {
     let reconciler = build_reconciler(&app_state, &execution_state);
 
     let project = Project::new("Test Project".into(), "/tmp".into());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     // Task has other metadata keys alongside execution_recovery
-    let recovery = make_execution_recovery(false, ralphx_lib::domain::entities::ExecutionRecoveryState::Retrying);
+    let recovery = make_execution_recovery(
+        false,
+        ralphx_lib::domain::entities::ExecutionRecoveryState::Retrying,
+    );
     let base = recovery.update_task_metadata(None).expect("serialize");
     let mut json: serde_json::Value = serde_json::from_str(&base).unwrap();
     if let Some(obj) = json.as_object_mut() {
@@ -6459,11 +6718,21 @@ async fn targeted_metadata_write_preserves_other_keys() {
     app_state.task_repo.create(task.clone()).await.unwrap();
 
     reconciler
-        .record_execution_auto_retry_event(&task, 1, ExecutionFailureSource::TransientTimeout, "test")
+        .record_execution_auto_retry_event(
+            &task,
+            1,
+            ExecutionFailureSource::TransientTimeout,
+            "test",
+        )
         .await
         .expect("record should succeed");
 
-    let updated = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
     let meta_str = updated.metadata.as_deref().expect("metadata should exist");
     let parsed: serde_json::Value = serde_json::from_str(meta_str).unwrap();
 
@@ -6493,7 +6762,11 @@ async fn apply_failed_restart_resets_execution_recovery_metadata_fresh_budget() 
     let reconciler = build_reconciler(&app_state, &execution_state);
 
     let project = Project::new("Test Project".into(), "/tmp".into());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     // Task has used up 2 of 3 retries — manual restart should give fresh budget
     let mut recovery = ExecutionRecoveryMetadata::new();
@@ -6522,8 +6795,17 @@ async fn apply_failed_restart_resets_execution_recovery_metadata_fresh_budget() 
 
     assert!(result, "Restart should return true");
 
-    let updated = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
-    assert_eq!(updated.internal_status, InternalStatus::Ready, "task should be Ready");
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        updated.internal_status,
+        InternalStatus::Ready,
+        "task should be Ready"
+    );
 
     // Metadata should have been reset — events cleared, fresh retry budget
     let updated_recovery =
@@ -6554,14 +6836,20 @@ async fn apply_failed_restart_resets_execution_recovery_metadata_fresh_budget() 
 /// Cancel on Failed sets stop_retrying permanently.
 #[tokio::test]
 async fn apply_failed_cancel_sets_stop_retrying_permanently() {
-    use ralphx_lib::domain::entities::{ExecutionRecoveryMetadata, ExecutionRecoveryState, Project};
+    use ralphx_lib::domain::entities::{
+        ExecutionRecoveryMetadata, ExecutionRecoveryState, Project,
+    };
 
     let app_state = AppState::new_test();
     let execution_state = Arc::new(ExecutionState::new());
     let reconciler = build_reconciler(&app_state, &execution_state);
 
     let project = Project::new("Test Project".into(), "/tmp".into());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     let recovery = make_execution_recovery(false, ExecutionRecoveryState::Retrying);
     let task = make_task_with_recovery(&project.id, recovery);
@@ -6573,8 +6861,17 @@ async fn apply_failed_cancel_sets_stop_retrying_permanently() {
 
     assert!(result, "Cancel should return true");
 
-    let updated = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
-    assert_eq!(updated.internal_status, InternalStatus::Failed, "task remains Failed");
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        updated.internal_status,
+        InternalStatus::Failed,
+        "task remains Failed"
+    );
 
     let updated_recovery =
         ExecutionRecoveryMetadata::from_task_metadata(updated.metadata.as_deref())
@@ -6608,7 +6905,11 @@ async fn recover_timeout_failures_processes_legacy_is_timeout_tasks() {
     let reconciler = build_reconciler(&app_state, &execution_state);
 
     let project = Project::new("Test Project".to_string(), "/test/path".to_string());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     // Legacy task: Failed with is_timeout:true, no execution_recovery metadata
     let mut task = Task::new(project.id.clone(), "Legacy Timeout Task".to_string());
@@ -6618,7 +6919,12 @@ async fn recover_timeout_failures_processes_legacy_is_timeout_tasks() {
 
     reconciler.recover_timeout_failures().await;
 
-    let updated = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         updated.internal_status,
         InternalStatus::Ready,
@@ -6655,7 +6961,11 @@ async fn recover_timeout_failures_processes_new_format_retrying_tasks() {
     let reconciler = build_reconciler(&app_state, &execution_state);
 
     let project = Project::new("Test Project".to_string(), "/test/path".to_string());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     // New-format task: has execution_recovery metadata with last_state=Retrying, no is_timeout
     let mut recovery = ExecutionRecoveryMetadata::new();
@@ -6675,7 +6985,12 @@ async fn recover_timeout_failures_processes_new_format_retrying_tasks() {
 
     reconciler.recover_timeout_failures().await;
 
-    let updated = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         updated.internal_status,
         InternalStatus::Ready,
@@ -6693,7 +7008,11 @@ async fn recover_timeout_failures_skips_tasks_with_no_timeout_metadata() {
     let reconciler = build_reconciler(&app_state, &execution_state);
 
     let project = Project::new("Test Project".to_string(), "/test/path".to_string());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     // Task with no relevant metadata (e.g., cancelled or provider-error failure)
     let mut task = Task::new(project.id.clone(), "Non-Timeout Failed Task".to_string());
@@ -6703,7 +7022,12 @@ async fn recover_timeout_failures_skips_tasks_with_no_timeout_metadata() {
 
     reconciler.recover_timeout_failures().await;
 
-    let updated = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         updated.internal_status,
         InternalStatus::Failed,
@@ -7290,7 +7614,10 @@ async fn deferred_task_reconcile_classifies_as_target_branch_busy() {
         .await
         .unwrap();
 
-    let mut task = Task::new(project.id.clone(), "Deferred Classification Task".to_string());
+    let mut task = Task::new(
+        project.id.clone(),
+        "Deferred Classification Task".to_string(),
+    );
     task.internal_status = InternalStatus::MergeIncomplete;
     // Set updated_at far in the past to pass both the age guard and retry delay guard.
     task.updated_at = chrono::Utc::now() - chrono::Duration::seconds(3600);
@@ -7453,10 +7780,10 @@ async fn merge_incomplete_deterministic_failure_sources_do_not_retry() {
             .expect("metadata parse should succeed")
             .expect("merge_recovery should exist");
         assert!(
-            !recovery.events.iter().any(|event| matches!(
-                event.kind,
-                MergeRecoveryEventKind::AutoRetryTriggered
-            )),
+            !recovery
+                .events
+                .iter()
+                .any(|event| matches!(event.kind, MergeRecoveryEventKind::AutoRetryTriggered)),
             "deterministic source {source} should not append AutoRetryTriggered"
         );
         assert!(
@@ -7782,8 +8109,7 @@ fn execution_failed_retry_delay_git_isolation_shorter_than_default() {
         Some(ExecutionFailureSource::GitIsolation),
     )
     .num_seconds();
-    let default_delay =
-        ReconciliationRunner::execution_failed_retry_delay(0, None).num_seconds();
+    let default_delay = ReconciliationRunner::execution_failed_retry_delay(0, None).num_seconds();
 
     assert!(
         git_delay < default_delay,
@@ -7851,7 +8177,11 @@ async fn reconcile_failed_git_isolation_task_transitions_to_ready() {
     let reconciler = build_reconciler(&app_state, &execution_state);
 
     let project = Project::new("Test Project".into(), "/tmp".into());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     let recovery = make_git_isolation_recovery();
     let task = make_task_with_recovery(&project.id, recovery);
@@ -7864,7 +8194,12 @@ async fn reconcile_failed_git_isolation_task_transitions_to_ready() {
 
     assert!(result, "git-isolation task should be retried");
 
-    let updated = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         updated.internal_status,
         InternalStatus::Ready,
@@ -7915,9 +8250,16 @@ async fn reconcile_failed_git_isolation_removes_stale_worktree_dir() {
     let execution_state = Arc::new(ExecutionState::new());
     let reconciler = build_reconciler(&app_state, &execution_state);
 
-    let mut project = Project::new("Git Isolation Project".into(), repo_path.to_str().unwrap().to_string());
+    let mut project = Project::new(
+        "Git Isolation Project".into(),
+        repo_path.to_str().unwrap().to_string(),
+    );
     project.worktree_parent_directory = Some(temp.path().to_str().unwrap().to_string());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     let recovery = make_git_isolation_recovery();
     let mut task = make_task_with_recovery(&project.id, recovery);
@@ -7930,7 +8272,10 @@ async fn reconcile_failed_git_isolation_removes_stale_worktree_dir() {
         .reconcile_failed_execution_task(&task, InternalStatus::Failed)
         .await;
 
-    assert!(result, "git-isolation task with real worktree dir should be retried");
+    assert!(
+        result,
+        "git-isolation task with real worktree dir should be retried"
+    );
 
     // Verify stale worktree directory was removed
     assert!(
@@ -7938,12 +8283,16 @@ async fn reconcile_failed_git_isolation_removes_stale_worktree_dir() {
         "cleanup_stale_worktree_artifacts must remove the stale worktree dir"
     );
 
-    let updated = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(updated.internal_status, InternalStatus::Ready);
     // task_branch and worktree_path in DB should NOT be cleared (git-isolation skips steps 1-3)
     assert_eq!(
-        updated.worktree_path,
-        task.worktree_path,
+        updated.worktree_path, task.worktree_path,
         "git-isolation recovery must NOT clear worktree_path from DB"
     );
 }
@@ -7961,7 +8310,11 @@ async fn reconcile_failed_git_isolation_exhaustion_skips_without_stop_retrying()
     let reconciler = build_reconciler(&app_state, &execution_state);
 
     let project = Project::new("Test Project".into(), "/tmp".into());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     let git_max = ralphx_lib::infrastructure::agents::claude::reconciliation_config()
         .git_isolation_max_retries as u32;
@@ -8000,10 +8353,18 @@ async fn reconcile_failed_git_isolation_exhaustion_skips_without_stop_retrying()
         .reconcile_failed_execution_task(&task, InternalStatus::Failed)
         .await;
 
-    assert!(!result, "git-isolation budget exhausted: should return false");
+    assert!(
+        !result,
+        "git-isolation budget exhausted: should return false"
+    );
 
     // Git-isolation exhaustion is terminal for the current task attempt.
-    let updated = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
     let updated_recovery =
         ExecutionRecoveryMetadata::from_task_metadata(updated.metadata.as_deref())
             .expect("parse metadata")
@@ -8085,7 +8446,10 @@ async fn reconcile_failed_cross_contamination_independent_retry_budgets() {
         git_count, git_max,
         "git-isolation count must equal git_max (exhausted)"
     );
-    assert_eq!(timeout_count, 1, "timeout count must be 1 (independent budget)");
+    assert_eq!(
+        timeout_count, 1,
+        "timeout count must be 1 (independent budget)"
+    );
     assert_eq!(
         total_count,
         git_max + 1,
@@ -8104,7 +8468,11 @@ async fn recover_timeout_failures_picks_up_git_isolation_task() {
 
     let mut project = Project::new("Startup Recovery Project".into(), "/tmp".into());
     project.worktree_parent_directory = Some("/tmp".into());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     let recovery = make_git_isolation_recovery();
     let task = make_task_with_recovery(&project.id, recovery);
@@ -8112,7 +8480,12 @@ async fn recover_timeout_failures_picks_up_git_isolation_task() {
 
     reconciler.recover_timeout_failures().await;
 
-    let updated = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         updated.internal_status,
         InternalStatus::Ready,
@@ -8125,7 +8498,9 @@ async fn recover_timeout_failures_picks_up_git_isolation_task() {
             .expect("parse metadata")
             .expect("execution_recovery should exist");
     let has_startup_git_isolation_event = updated_recovery.events.iter().any(|e| {
-        use ralphx_lib::domain::entities::{ExecutionFailureSource, ExecutionRecoveryEventKind, ExecutionRecoverySource};
+        use ralphx_lib::domain::entities::{
+            ExecutionFailureSource, ExecutionRecoveryEventKind, ExecutionRecoverySource,
+        };
         matches!(e.kind, ExecutionRecoveryEventKind::AutoRetryTriggered)
             && matches!(e.source, ExecutionRecoverySource::Startup)
             && matches!(e.failure_source, Some(ExecutionFailureSource::GitIsolation))
@@ -8149,7 +8524,11 @@ async fn record_execution_startup_retry_event_records_git_isolation_source() {
     let reconciler = build_reconciler(&app_state, &execution_state);
 
     let project = Project::new("Test Project".into(), "/tmp".into());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     let recovery = make_git_isolation_recovery();
     let task = make_task_with_recovery(&project.id, recovery);
@@ -8165,7 +8544,12 @@ async fn record_execution_startup_retry_event_records_git_isolation_source() {
         .await
         .expect("should succeed");
 
-    let updated = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
     let updated_recovery =
         ExecutionRecoveryMetadata::from_task_metadata(updated.metadata.as_deref())
             .expect("parse metadata")
@@ -8175,7 +8559,10 @@ async fn record_execution_startup_retry_event_records_git_isolation_source() {
         matches!(e.kind, ExecutionRecoveryEventKind::AutoRetryTriggered)
             && matches!(e.source, ExecutionRecoverySource::Startup)
     });
-    assert!(startup_event.is_some(), "Startup AutoRetryTriggered event must exist");
+    assert!(
+        startup_event.is_some(),
+        "Startup AutoRetryTriggered event must exist"
+    );
     let event = startup_event.unwrap();
     assert_eq!(
         event.failure_source,
@@ -8202,7 +8589,11 @@ async fn record_execution_startup_retry_event_records_timeout_source_backward_co
     let reconciler = build_reconciler(&app_state, &execution_state);
 
     let project = Project::new("Test Project".into(), "/tmp".into());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     // Legacy task — no prior recovery metadata
     let mut task = Task::new(project.id.clone(), "Legacy timeout task".into());
@@ -8219,7 +8610,12 @@ async fn record_execution_startup_retry_event_records_timeout_source_backward_co
         .await
         .expect("should succeed");
 
-    let updated = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
     let updated_recovery =
         ExecutionRecoveryMetadata::from_task_metadata(updated.metadata.as_deref())
             .expect("parse metadata")
@@ -8229,7 +8625,10 @@ async fn record_execution_startup_retry_event_records_timeout_source_backward_co
         matches!(e.kind, ExecutionRecoveryEventKind::AutoRetryTriggered)
             && matches!(e.source, ExecutionRecoverySource::Startup)
     });
-    assert!(startup_event.is_some(), "Startup AutoRetryTriggered event must exist");
+    assert!(
+        startup_event.is_some(),
+        "Startup AutoRetryTriggered event must exist"
+    );
     let event = startup_event.unwrap();
     assert_eq!(
         event.failure_source,
@@ -8262,7 +8661,11 @@ async fn reconcile_completed_execution_e7_prewrite_stop_retrying() {
     let reconciler = build_reconciler(&app_state, &execution_state);
 
     let project = Project::new("E7 Test Project".into(), "/tmp".into());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     // Set retry count exactly at the limit so E7 triggers on the next reconcile cycle.
     let max_retries = reconciliation_config().executing_max_retries as u32;
@@ -8281,7 +8684,10 @@ async fn reconcile_completed_execution_e7_prewrite_stop_retrying() {
         .reconcile_completed_execution(&task, InternalStatus::Executing)
         .await;
 
-    assert!(reconciled, "E7 path should take action and escalate to Failed");
+    assert!(
+        reconciled,
+        "E7 path should take action and escalate to Failed"
+    );
 
     let updated = app_state
         .task_repo
@@ -8296,8 +8702,11 @@ async fn reconcile_completed_execution_e7_prewrite_stop_retrying() {
         "E7 path must transition task to Failed"
     );
 
-    let meta_str = updated.metadata.expect("metadata must exist after E7 pre-write");
-    let meta: serde_json::Value = serde_json::from_str(&meta_str).expect("metadata must be valid JSON");
+    let meta_str = updated
+        .metadata
+        .expect("metadata must exist after E7 pre-write");
+    let meta: serde_json::Value =
+        serde_json::from_str(&meta_str).expect("metadata must be valid JSON");
 
     let recovery = &meta["execution_recovery"];
     assert!(
@@ -8341,7 +8750,11 @@ async fn reconcile_failed_execution_e7_terminal_metadata_not_overwritten() {
     let reconciler = build_reconciler(&app_state, &execution_state);
 
     let project = Project::new("E7 No-Overwrite Test Project".into(), "/tmp".into());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     // Build the exact metadata that the E7 path writes before transitioning to Failed.
     let mut recovery = ExecutionRecoveryMetadata::new();
@@ -8361,8 +8774,14 @@ async fn reconcile_failed_execution_e7_terminal_metadata_not_overwritten() {
     let mut meta_json: serde_json::Value =
         serde_json::from_str(&base_metadata).expect("valid JSON");
     if let Some(obj) = meta_json.as_object_mut() {
-        obj.insert("failure_source".into(), serde_json::json!("max_retries_exceeded"));
-        obj.insert("failed_at".into(), serde_json::json!("2026-03-14T10:00:00Z"));
+        obj.insert(
+            "failure_source".into(),
+            serde_json::json!("max_retries_exceeded"),
+        );
+        obj.insert(
+            "failed_at".into(),
+            serde_json::json!("2026-03-14T10:00:00Z"),
+        );
     }
     let full_metadata = serde_json::to_string(&meta_json).expect("serialize full metadata");
 
@@ -8445,7 +8864,11 @@ async fn test_deferred_merge_cleanup_with_existing_worktree_clears_task_fields()
 
     let app_state = AppState::new_test();
     let project = Project::new("RC3 project".to_string(), "/tmp/rc3-project".to_string());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     // Set up a Merged task with pending_cleanup metadata, task_branch, and worktree_path
     let mut task = Task::new(project.id.clone(), "RC3 deferred cleanup test".to_string());
@@ -8456,7 +8879,8 @@ async fn test_deferred_merge_cleanup_with_existing_worktree_clears_task_fields()
     let task_id = task.id.clone();
     app_state.task_repo.create(task.clone()).await.unwrap();
 
-    let task_repo = Arc::clone(&app_state.task_repo) as Arc<dyn ralphx_lib::domain::repositories::TaskRepository>;
+    let task_repo = Arc::clone(&app_state.task_repo)
+        as Arc<dyn ralphx_lib::domain::repositories::TaskRepository>;
 
     // Run Phase 3 deferred cleanup. kill step completes quickly (no processes in temp dir),
     // so the OS timeout does not fire — verifying the wrapped happy path works correctly.
@@ -8536,8 +8960,8 @@ fn test_deferred_merge_cleanup_timeout_metadata_format_matches_domain_types() {
     );
 
     // Verify CleanupPhase::DeferredWorktreeKill serializes to "deferred_worktree_kill"
-    let phase_json =
-        serde_json::to_value(CleanupPhase::DeferredWorktreeKill).expect("serialize DeferredWorktreeKill");
+    let phase_json = serde_json::to_value(CleanupPhase::DeferredWorktreeKill)
+        .expect("serialize DeferredWorktreeKill");
     assert_eq!(
         phase_json,
         serde_json::json!("deferred_worktree_kill"),
@@ -8552,19 +8976,17 @@ fn test_deferred_merge_cleanup_timeout_metadata_format_matches_domain_types() {
         "cleanup_phase": phase_json,
     });
 
-    let deserialized_source: MergeFailureSource = serde_json::from_value(
-        metadata["merge_failure_source"].clone(),
-    )
-    .expect("deserialize merge_failure_source");
+    let deserialized_source: MergeFailureSource =
+        serde_json::from_value(metadata["merge_failure_source"].clone())
+            .expect("deserialize merge_failure_source");
     assert!(
         matches!(deserialized_source, MergeFailureSource::CleanupTimeout),
         "RC3 Test 5: metadata round-trip must deserialize back to CleanupTimeout variant"
     );
 
-    let deserialized_phase: CleanupPhase = serde_json::from_value(
-        metadata["cleanup_phase"].clone(),
-    )
-    .expect("deserialize cleanup_phase");
+    let deserialized_phase: CleanupPhase =
+        serde_json::from_value(metadata["cleanup_phase"].clone())
+            .expect("deserialize cleanup_phase");
     assert!(
         matches!(deserialized_phase, CleanupPhase::DeferredWorktreeKill),
         "RC3 Test 5: metadata round-trip must deserialize back to DeferredWorktreeKill variant"
@@ -8581,20 +9003,25 @@ fn test_deferred_merge_cleanup_timeout_metadata_format_matches_domain_types() {
 /// calls set_execution_stop_retrying_with_reason(GitIsolationExhausted) so the task
 /// is not retried again after an app restart (event clearing via auto_recover_task).
 #[tokio::test]
-async fn reconcile_failed_git_isolation_budget_exhausted_sets_stop_retrying_git_isolation_exhausted() {
+async fn reconcile_failed_git_isolation_budget_exhausted_sets_stop_retrying_git_isolation_exhausted(
+) {
+    use ralphx_lib::domain::entities::task_metadata::StopRetryingReason;
     use ralphx_lib::domain::entities::{
         ExecutionFailureSource, ExecutionRecoveryEvent, ExecutionRecoveryEventKind,
         ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode, ExecutionRecoverySource,
         ExecutionRecoveryState, Project,
     };
-    use ralphx_lib::domain::entities::task_metadata::StopRetryingReason;
 
     let app_state = AppState::new_test();
     let execution_state = Arc::new(ExecutionState::new());
     let reconciler = build_reconciler(&app_state, &execution_state);
 
     let project = Project::new("Test Project".into(), "/tmp".into());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     let max = reconciliation_config().git_isolation_max_retries as u32;
 
@@ -8621,10 +9048,18 @@ async fn reconcile_failed_git_isolation_budget_exhausted_sets_stop_retrying_git_
         .reconcile_failed_execution_task(&task, InternalStatus::Failed)
         .await;
 
-    assert!(!result, "git-isolation budget exhausted: should return false");
+    assert!(
+        !result,
+        "git-isolation budget exhausted: should return false"
+    );
 
     // Verify stop_retrying=true and unrecoverable_reason=GitIsolationExhausted
-    let updated = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
     let updated_recovery =
         ExecutionRecoveryMetadata::from_task_metadata(updated.metadata.as_deref())
             .expect("parse metadata")
@@ -8647,19 +9082,23 @@ async fn reconcile_failed_git_isolation_budget_exhausted_sets_stop_retrying_git_
 /// bypass on_enter(Failed) pre-validation).
 #[tokio::test]
 async fn reconcile_failed_structural_error_sets_stop_retrying_structural_git_error() {
+    use ralphx_lib::domain::entities::task_metadata::StopRetryingReason;
     use ralphx_lib::domain::entities::{
         ExecutionFailureSource, ExecutionRecoveryEvent, ExecutionRecoveryEventKind,
         ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode, ExecutionRecoverySource,
         ExecutionRecoveryState, Project,
     };
-    use ralphx_lib::domain::entities::task_metadata::StopRetryingReason;
 
     let app_state = AppState::new_test();
     let execution_state = Arc::new(ExecutionState::new());
     let reconciler = build_reconciler(&app_state, &execution_state);
 
     let project = Project::new("Test Project".into(), "/tmp".into());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     let mut recovery = ExecutionRecoveryMetadata::new();
     // Structural error message — contains "structural:" prefix
@@ -8684,7 +9123,12 @@ async fn reconcile_failed_structural_error_sets_stop_retrying_structural_git_err
     assert!(!result, "structural git error: should return false");
 
     // Verify stop_retrying=true and unrecoverable_reason=StructuralGitError
-    let updated = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
     let updated_recovery =
         ExecutionRecoveryMetadata::from_task_metadata(updated.metadata.as_deref())
             .expect("parse metadata")
@@ -8718,7 +9162,11 @@ async fn recover_timeout_failures_skips_task_with_stop_retrying_true() {
     let reconciler = build_reconciler(&app_state, &execution_state);
 
     let project = Project::new("Test Project".into(), "/tmp".into());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     // Task with stop_retrying=true and last_state=Retrying — simulates post-structural-error state
     let mut recovery = ExecutionRecoveryMetadata::new();
@@ -8742,7 +9190,12 @@ async fn recover_timeout_failures_skips_task_with_stop_retrying_true() {
     reconciler.recover_timeout_failures().await;
 
     // Task must remain Failed — stop_retrying=true prevents startup recovery
-    let updated = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         updated.internal_status,
         InternalStatus::Failed,
@@ -8766,7 +9219,11 @@ async fn recover_timeout_failures_classifier_overlap_blocked_by_stop_retrying_ga
     let reconciler = build_reconciler(&app_state, &execution_state);
 
     let project = Project::new("Test Project".into(), "/tmp".into());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     // Message matching BOTH is_structural_git_error ("structural:" prefix)
     // AND is_permanent_git_error ("invalid reference", "does not exist")
@@ -8791,7 +9248,12 @@ async fn recover_timeout_failures_classifier_overlap_blocked_by_stop_retrying_ga
     // Startup recovery should skip this — stop_retrying=true blocks it at the !r.stop_retrying gate
     reconciler.recover_timeout_failures().await;
 
-    let updated = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         updated.internal_status,
         InternalStatus::Failed,

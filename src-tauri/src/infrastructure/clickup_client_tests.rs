@@ -13,9 +13,8 @@ use super::clickup_client::{
     create_task_comment, fetch_current_user, fetch_filtered_tasks, fetch_folder_lists,
     fetch_folder_statuses, fetch_folderless_lists, fetch_list_statuses, fetch_list_tasks,
     fetch_space_folders, fetch_space_statuses, fetch_spaces, fetch_task_detail,
-    fetch_task_detail_by_custom_id, fetch_workspaces, map_status_type_to_category,
-    put_task_status, validate_token, ClickUpJsonRequester,
-    HyperClickUpApiClient,
+    fetch_task_detail_by_custom_id, fetch_workspaces, map_status_type_to_category, put_task_status,
+    validate_token, ClickUpJsonRequester, HyperClickUpApiClient,
 };
 
 #[derive(Clone, Debug)]
@@ -206,11 +205,7 @@ async fn requester_trait_impl_delegates_clickup_api_client_methods() {
         "review"
     );
     assert_eq!(
-        client
-            .list_list_statuses(&auth, "list-1")
-            .await
-            .unwrap()[0]
-            .status,
+        client.list_list_statuses(&auth, "list-1").await.unwrap()[0].status,
         "ready"
     );
     assert_eq!(client.current_user(&auth).await.unwrap().id, 42);
@@ -339,7 +334,9 @@ async fn folder_and_list_statuses_map_with_category() {
         })),
     ]);
 
-    let folder_statuses = fetch_folder_statuses(&fake, "tok", "folder-1").await.unwrap();
+    let folder_statuses = fetch_folder_statuses(&fake, "tok", "folder-1")
+        .await
+        .unwrap();
     let list_statuses = fetch_list_statuses(&fake, "tok", "list-1").await.unwrap();
 
     assert_eq!(folder_statuses[0].status, "awaiting deploy");

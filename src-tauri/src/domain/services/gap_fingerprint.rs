@@ -2,8 +2,8 @@
 //! Used to detect duplicate/convergent gaps across verification rounds.
 use sha2::{Digest, Sha256};
 
-use super::text_similarity::tokenize_for_similarity;
 pub use super::text_similarity::jaccard_similarity;
+use super::text_similarity::tokenize_for_similarity;
 
 /// Compute a 12-character hex fingerprint for a gap description.
 ///

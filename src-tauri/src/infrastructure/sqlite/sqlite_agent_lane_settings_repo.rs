@@ -41,7 +41,9 @@ fn parse_datetime(s: &str) -> DateTime<Utc> {
 }
 
 fn parse_row(row: &rusqlite::Row<'_>) -> AppResult<StoredAgentLaneSettings> {
-    let id: i64 = row.get("id").map_err(|e| AppError::Database(e.to_string()))?;
+    let id: i64 = row
+        .get("id")
+        .map_err(|e| AppError::Database(e.to_string()))?;
     let project_id: Option<String> = row
         .get("scope_id")
         .map_err(|e| AppError::Database(e.to_string()))?;
@@ -71,7 +73,9 @@ fn parse_row(row: &rusqlite::Row<'_>) -> AppResult<StoredAgentLaneSettings> {
         lane,
         settings: AgentLaneSettings {
             harness,
-            model: row.get("model").map_err(|e| AppError::Database(e.to_string()))?,
+            model: row
+                .get("model")
+                .map_err(|e| AppError::Database(e.to_string()))?,
             effort,
             approval_policy: row
                 .get("approval_policy")
@@ -91,11 +95,7 @@ fn fetch_optional<P: rusqlite::Params>(
 ) -> AppResult<Option<StoredAgentLaneSettings>> {
     match conn.query_row(sql, params, |row| {
         parse_row(row).map_err(|err| {
-            rusqlite::Error::FromSqlConversionFailure(
-                0,
-                rusqlite::types::Type::Text,
-                Box::new(err),
-            )
+            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(err))
         })
     }) {
         Ok(row) => Ok(Some(row)),
@@ -172,7 +172,9 @@ impl AgentLaneSettingsRepository for SqliteAgentLaneSettingsRepository {
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
     }
 
-    async fn list_global(&self) -> Result<Vec<StoredAgentLaneSettings>, Box<dyn std::error::Error>> {
+    async fn list_global(
+        &self,
+    ) -> Result<Vec<StoredAgentLaneSettings>, Box<dyn std::error::Error>> {
         self.db
             .run(move |conn| {
                 fetch_many(
@@ -283,7 +285,9 @@ impl AgentLaneSettingsRepository for SqliteAgentLaneSettingsRepository {
                      WHERE scope_type = 'global' AND lane = ?1",
                     rusqlite::params![lane_key],
                 )?
-                .ok_or_else(|| AppError::Database("Global lane settings row missing after upsert".to_string()))
+                .ok_or_else(|| {
+                    AppError::Database("Global lane settings row missing after upsert".to_string())
+                })
             })
             .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
@@ -366,7 +370,9 @@ impl AgentLaneSettingsRepository for SqliteAgentLaneSettingsRepository {
                      WHERE scope_type = 'project' AND scope_id = ?1 AND lane = ?2",
                     rusqlite::params![project_id, lane_key],
                 )?
-                .ok_or_else(|| AppError::Database("Project lane settings row missing after upsert".to_string()))
+                .ok_or_else(|| {
+                    AppError::Database("Project lane settings row missing after upsert".to_string())
+                })
             })
             .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)

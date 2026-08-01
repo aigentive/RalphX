@@ -318,7 +318,10 @@ impl ReviewRepository for SqliteReviewRepository {
                     (
                         review.status.to_string(),
                         review.notes.as_deref(),
-                        review.completed_at.as_ref().map(SqliteReviewRepository::format_datetime),
+                        review
+                            .completed_at
+                            .as_ref()
+                            .map(SqliteReviewRepository::format_datetime),
                         review.id.as_str(),
                     ),
                 )
@@ -368,11 +371,14 @@ impl ReviewRepository for SqliteReviewRepository {
         let review_id = review_id.as_str().to_string();
         self.db
             .run(move |conn| {
-                let mut stmt = conn.prepare(
-                    "SELECT id, review_id, action_type, target_task_id, created_at
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id, review_id, action_type, target_task_id, created_at
                      FROM review_actions WHERE review_id = ?1 ORDER BY created_at ASC",
-                )
-                .map_err(|e| AppError::Database(format!("Failed to prepare statement: {}", e)))?;
+                    )
+                    .map_err(|e| {
+                        AppError::Database(format!("Failed to prepare statement: {}", e))
+                    })?;
 
                 let rows: Vec<(String, String, String, Option<String>, String)> = stmt
                     .query_map([review_id.as_str()], |row| {
@@ -423,15 +429,15 @@ impl ReviewRepository for SqliteReviewRepository {
                 );
 
                 match result {
-                    Ok((id, review_id, action_type, target_task_id, created_at)) => Ok(Some(
-                        SqliteReviewRepository::row_to_action(
+                    Ok((id, review_id, action_type, target_task_id, created_at)) => {
+                        Ok(Some(SqliteReviewRepository::row_to_action(
                             id,
                             review_id,
                             action_type,
                             target_task_id,
                             created_at,
-                        )?,
-                    )),
+                        )?))
+                    }
                     Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
                     Err(e) => Err(AppError::Database(format!("Failed to get action: {}", e))),
                 }
@@ -695,9 +701,7 @@ impl ReviewRepository for SqliteReviewRepository {
                             row.get::<_, String>(4)?,
                         ))
                     })
-                    .map_err(|e| {
-                        AppError::Database(format!("Failed to query fix actions: {}", e))
-                    })?
+                    .map_err(|e| AppError::Database(format!("Failed to query fix actions: {}", e)))?
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(|e| AppError::Database(format!("Failed to read row: {}", e)))?;
 

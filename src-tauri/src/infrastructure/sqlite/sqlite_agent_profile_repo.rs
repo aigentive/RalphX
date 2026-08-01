@@ -106,8 +106,8 @@ impl AgentProfileRepository for SqliteAgentProfileRepository {
     async fn get_all(&self) -> AppResult<Vec<AgentProfile>> {
         self.db
             .run(move |conn| {
-                let mut stmt = conn
-                    .prepare("SELECT profile_json FROM agent_profiles ORDER BY name ASC")?;
+                let mut stmt =
+                    conn.prepare("SELECT profile_json FROM agent_profiles ORDER BY name ASC")?;
                 let jsons = stmt
                     .query_map([], |row| row.get::<_, String>(0))?
                     .collect::<Result<Vec<String>, _>>()?;

@@ -246,7 +246,11 @@ async fn fail_stale_only_touches_dispatching_older_than_cutoff() {
     assert_eq!(swept, 1);
 
     assert_eq!(
-        repo.get_message_request("old").await.unwrap().unwrap().status,
+        repo.get_message_request("old")
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
         RemoteConversationMessageStatus::FailedStale
     );
     assert_eq!(

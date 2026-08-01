@@ -263,8 +263,7 @@ impl GlobalExecutionSettingsRepository for SqliteGlobalExecutionSettingsReposito
             global_ideation_max: settings
                 .global_ideation_max
                 .min(GLOBAL_MAX_CONCURRENT_LIMIT),
-            allow_ideation_borrow_idle_execution: settings
-                .allow_ideation_borrow_idle_execution,
+            allow_ideation_borrow_idle_execution: settings.allow_ideation_borrow_idle_execution,
         }
         .validate();
         self.db

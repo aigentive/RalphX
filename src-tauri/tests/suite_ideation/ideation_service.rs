@@ -1,12 +1,10 @@
 use async_trait::async_trait;
-use ralphx_lib::application::{
-    CreateProposalOptions, IdeationService, UpdateProposalOptions,
-};
+use chrono::Utc;
+use ralphx_lib::application::{CreateProposalOptions, IdeationService, UpdateProposalOptions};
 use ralphx_lib::domain::agents::ProviderSessionRef;
 use ralphx_lib::domain::entities::{self, *};
 use ralphx_lib::domain::repositories::{self, *};
 use ralphx_lib::error::{AppError, AppResult};
-use chrono::Utc;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -97,8 +95,7 @@ impl IdeationSessionRepository for MockSessionRepository {
         plan_artifact_id: Option<String>,
     ) -> AppResult<()> {
         if let Some(session) = self.sessions.lock().unwrap().get_mut(&id.to_string()) {
-            session.plan_artifact_id =
-                plan_artifact_id.map(entities::ArtifactId::from_string);
+            session.plan_artifact_id = plan_artifact_id.map(entities::ArtifactId::from_string);
             session.updated_at = Utc::now();
         }
         Ok(())
@@ -161,10 +158,7 @@ impl IdeationSessionRepository for MockSessionRepository {
             .unwrap()
             .values()
             .filter(|s| {
-                s.inherited_plan_artifact_id
-                    .as_ref()
-                    .map(|id| id.as_str())
-                    == Some(artifact_id)
+                s.inherited_plan_artifact_id.as_ref().map(|id| id.as_str()) == Some(artifact_id)
             })
             .cloned()
             .collect())
@@ -457,11 +451,7 @@ impl IdeationSessionRepository for MockSessionRepository {
         Ok(())
     }
 
-    async fn update_last_effective_model(
-        &self,
-        _session_id: &str,
-        _model: &str,
-    ) -> AppResult<()> {
+    async fn update_last_effective_model(&self, _session_id: &str, _model: &str) -> AppResult<()> {
         Ok(())
     }
 
@@ -536,10 +526,7 @@ impl IdeationSessionRepository for MockSessionRepository {
         Ok(vec![])
     }
 
-    async fn count_active_proposals(
-        &self,
-        _session_id: &IdeationSessionId,
-    ) -> AppResult<usize> {
+    async fn count_active_proposals(&self, _session_id: &IdeationSessionId) -> AppResult<usize> {
         Ok(0)
     }
 
@@ -1300,8 +1287,16 @@ async fn test_get_sessions_by_project() {
     );
 
     // Create sessions
-    service.session_repo_for_test().create(session1.clone()).await.unwrap();
-    service.session_repo_for_test().create(session2.clone()).await.unwrap();
+    service
+        .session_repo_for_test()
+        .create(session1.clone())
+        .await
+        .unwrap();
+    service
+        .session_repo_for_test()
+        .create(session2.clone())
+        .await
+        .unwrap();
 
     let sessions = service.get_sessions_by_project(&project_id).await.unwrap();
     assert_eq!(sessions.len(), 2);
@@ -1321,8 +1316,16 @@ async fn test_get_active_sessions() {
         Arc::new(MockDependencyRepository::new()),
     );
 
-    service.session_repo_for_test().create(session1.clone()).await.unwrap();
-    service.session_repo_for_test().create(session2.clone()).await.unwrap();
+    service
+        .session_repo_for_test()
+        .create(session1.clone())
+        .await
+        .unwrap();
+    service
+        .session_repo_for_test()
+        .create(session2.clone())
+        .await
+        .unwrap();
 
     let active = service.get_active_sessions(&project_id).await.unwrap();
     assert_eq!(active.len(), 1);

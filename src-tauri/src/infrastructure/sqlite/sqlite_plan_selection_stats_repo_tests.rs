@@ -110,9 +110,15 @@ async fn test_get_stats_batch() {
 
     assert_eq!(results.len(), 3);
     assert!(results[0].is_some());
-    assert_eq!(results[0].as_ref().unwrap().ideation_session_id, session1.id);
+    assert_eq!(
+        results[0].as_ref().unwrap().ideation_session_id,
+        session1.id
+    );
     assert!(results[1].is_some());
-    assert_eq!(results[1].as_ref().unwrap().ideation_session_id, session2.id);
+    assert_eq!(
+        results[1].as_ref().unwrap().ideation_session_id,
+        session2.id
+    );
     assert!(results[2].is_none());
 }
 

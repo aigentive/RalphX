@@ -3,7 +3,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::sync::RwLock;
 
-use crate::domain::integrations::{ClickUpIntegrationSettings, ClickUpIntegrationSettingsRepository};
+use crate::domain::integrations::{
+    ClickUpIntegrationSettings, ClickUpIntegrationSettingsRepository,
+};
 
 pub struct MemoryClickUpIntegrationSettingsRepository {
     settings: Arc<RwLock<ClickUpIntegrationSettings>>,
@@ -69,7 +71,10 @@ mod tests {
         assert!(saved.enabled);
 
         let stored = repo.get().await.unwrap();
-        assert_eq!(stored.token_secret_ref.as_deref(), Some("clickup-token-ref"));
+        assert_eq!(
+            stored.token_secret_ref.as_deref(),
+            Some("clickup-token-ref")
+        );
         assert_eq!(stored.workspace_id.as_deref(), Some("9000123"));
         assert!(stored.task_search_available);
     }

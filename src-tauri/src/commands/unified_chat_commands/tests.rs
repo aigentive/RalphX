@@ -10,8 +10,8 @@ use super::{
     ensure_plan_workspace_planning_session_link_for_send, existing_pr_retarget_block_reason,
     filter_agent_list_visible_conversations, fork_agent_conversation,
     fork_agent_conversation_response_for_state, fork_terminal_agent_conversation_for_send,
-    get_agent_conversation_runtime_index_for_app_state,
     get_agent_conversation_messages_page_for_app_state,
+    get_agent_conversation_runtime_index_for_app_state,
     get_agent_conversation_runtime_statuses_for_app_state,
     get_agent_conversation_summary_for_app_state,
     get_agent_conversation_timeline_page_for_app_state, get_agent_conversation_workspace_freshness,
@@ -10073,10 +10073,8 @@ async fn transcript_messages_page_fails_closed_on_a_delegated_repository_outage(
         .create(ChatConversation::new_project(project_id.clone()))
         .await
         .expect("create parent conversation");
-    let mut message = ChatMessage::orchestrator_in_session(
-        IdeationSessionId::new(),
-        "delegated the work",
-    );
+    let mut message =
+        ChatMessage::orchestrator_in_session(IdeationSessionId::new(), "delegated the work");
     message.session_id = None;
     message.conversation_id = Some(parent.id.clone());
     message.tool_calls = Some(

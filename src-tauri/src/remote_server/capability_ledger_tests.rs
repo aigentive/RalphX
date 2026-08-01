@@ -3500,102 +3500,101 @@ fn the_spawn_free_remote_read_module_carries_no_authority_carriers() {
              which is what lets its commands sit at `ui:read` with no capability."
         );
     }
-/// WP2 — the spawn-free STOP module's contract, checked mechanically rather than in prose.
-///
-/// `stop_agent` is unregistered because `AppChatService::stop_agent` reaches
-/// `Command::new(resolve_pkill_cli_path())`. The whole justification for registering the brake
-/// as an INTENT is that the request path cannot reach that sink, and the three carriers that
-/// could re-introduce it are `AppHandle`, `ExecutionState`, and any chat-service constructor.
-/// Their absence is what lets `request_remote_agent_stop` sit at `ui:operate` with no
-/// capability, so it is asserted over the module source instead of trusted from the ledger
-/// reason: a future edit that reconnects a carrier fails here rather than silently re-arming
-/// the default pairing.
-#[test]
-fn the_spawn_free_remote_agent_stop_module_carries_no_authority_carriers() {
-    let sources = load_production_sources();
-    let (_, module) = sources
-        .iter()
-        .find(|(file, _)| file == "commands/remote_agent_stop_commands.rs")
-        .expect("the spawn-free remote stop module must exist");
+    /// WP2 — the spawn-free STOP module's contract, checked mechanically rather than in prose.
+    ///
+    /// `stop_agent` is unregistered because `AppChatService::stop_agent` reaches
+    /// `Command::new(resolve_pkill_cli_path())`. The whole justification for registering the brake
+    /// as an INTENT is that the request path cannot reach that sink, and the three carriers that
+    /// could re-introduce it are `AppHandle`, `ExecutionState`, and any chat-service constructor.
+    /// Their absence is what lets `request_remote_agent_stop` sit at `ui:operate` with no
+    /// capability, so it is asserted over the module source instead of trusted from the ledger
+    /// reason: a future edit that reconnects a carrier fails here rather than silently re-arming
+    /// the default pairing.
+    #[test]
+    fn the_spawn_free_remote_agent_stop_module_carries_no_authority_carriers() {
+        let sources = load_production_sources();
+        let (_, module) = sources
+            .iter()
+            .find(|(file, _)| file == "commands/remote_agent_stop_commands.rs")
+            .expect("the spawn-free remote stop module must exist");
 
-    // Comments are stripped: the module doc NAMES the carriers in order to explain why they are
-    // absent, and the contract is about code, not prose.
-    let code = module
-        .lines()
-        .filter(|line| !line.trim_start().starts_with("//"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(
-        code.contains("pub async fn request_remote_agent_stop"),
-        "comment stripping ate the module body; this assertion would be vacuous"
-    );
-
-    for carrier in [
-        "AppHandle",
-        "ExecutionState",
-        "create_chat_service",
-        "build_chat_service",
-        "stop_agent(",
-        "kill_process",
-        "resolve_pkill_cli_path",
-    ] {
+        // Comments are stripped: the module doc NAMES the carriers in order to explain why they are
+        // absent, and the contract is about code, not prose.
+        let code = module
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(
-            !code.contains(carrier),
-            "`remote_agent_stop_commands` mentions `{carrier}`. The whole contract of this \
+            code.contains("pub async fn request_remote_agent_stop"),
+            "comment stripping ate the module body; this assertion would be vacuous"
+        );
+
+        for carrier in [
+            "AppHandle",
+            "ExecutionState",
+            "create_chat_service",
+            "build_chat_service",
+            "stop_agent(",
+            "kill_process",
+            "resolve_pkill_cli_path",
+        ] {
+            assert!(
+                !code.contains(carrier),
+                "`remote_agent_stop_commands` mentions `{carrier}`. The whole contract of this \
              module is that the process-terminating authority carriers are absent by \
              construction, which is what lets its request sit at `ui:operate` with no capability."
+            );
+        }
+    }
+
+    /// The brake is registered at `Operate` and the sibling it replaces stays unregistered.
+    ///
+    /// Both halves matter. Registering the intent while `stop_agent` also became reachable would
+    /// re-open the process floor; classifying the intent above `Operate` would take the brake away
+    /// from the default pairing, which is the exact regression the WP exists to fix.
+    #[test]
+    fn the_remote_agent_stop_intent_is_an_operate_brake_and_stop_agent_stays_denied() {
+        let rows = census().into_iter().collect::<BTreeMap<_, _>>();
+
+        let module = rows
+            .get("request_remote_agent_stop")
+            .expect("`request_remote_agent_stop` must be a live Tauri command");
+        assert_eq!(module, "remote_agent_stop_commands");
+        let row = policy_for("request_remote_agent_stop", module).expect("ledgered");
+        assert_eq!(row.class, RiskClass::Operate);
+        assert!(
+            row.capabilities.is_empty(),
+            "an Operate row with capabilities is a mislabel — `class_permits` admits none there"
+        );
+        let spec = find_spec("request_remote_agent_stop").expect("registered");
+        assert_eq!(spec.class, RiskClass::Operate);
+
+        let poll_module = rows
+            .get("get_remote_agent_stop_request")
+            .expect("`get_remote_agent_stop_request` must be a live Tauri command");
+        let poll_row = policy_for("get_remote_agent_stop_request", poll_module).expect("ledgered");
+        assert_eq!(poll_row.class, RiskClass::Read);
+        assert!(poll_row.capabilities.is_empty());
+
+        assert!(
+            find_spec("stop_agent").is_none(),
+            "`stop_agent` resolves pkill and must stay unreachable; the registered answer is the \
+         spawn-free intent"
+        );
+
+        // The class gap to `stop_agent` is justified by a RECORDED exemption, not by this comment.
+        assert!(
+            AUTHORITY_REDUCING_EXEMPTIONS.iter().any(|exemption| {
+                exemption.subject == "request_remote_agent_stop"
+                    && exemption.kind == "command"
+                    && exemption.direction == "authority-reducing"
+                    && exemption.scope == "ui:operate"
+            }),
+            "the remote stop brake is registered below its `stop_agent` sibling with no \
+         authority-reducing exemption to justify the gap"
         );
     }
-}
-
-/// The brake is registered at `Operate` and the sibling it replaces stays unregistered.
-///
-/// Both halves matter. Registering the intent while `stop_agent` also became reachable would
-/// re-open the process floor; classifying the intent above `Operate` would take the brake away
-/// from the default pairing, which is the exact regression the WP exists to fix.
-#[test]
-fn the_remote_agent_stop_intent_is_an_operate_brake_and_stop_agent_stays_denied() {
-    let rows = census().into_iter().collect::<BTreeMap<_, _>>();
-
-    let module = rows
-        .get("request_remote_agent_stop")
-        .expect("`request_remote_agent_stop` must be a live Tauri command");
-    assert_eq!(module, "remote_agent_stop_commands");
-    let row = policy_for("request_remote_agent_stop", module).expect("ledgered");
-    assert_eq!(row.class, RiskClass::Operate);
-    assert!(
-        row.capabilities.is_empty(),
-        "an Operate row with capabilities is a mislabel — `class_permits` admits none there"
-    );
-    let spec = find_spec("request_remote_agent_stop").expect("registered");
-    assert_eq!(spec.class, RiskClass::Operate);
-
-    let poll_module = rows
-        .get("get_remote_agent_stop_request")
-        .expect("`get_remote_agent_stop_request` must be a live Tauri command");
-    let poll_row = policy_for("get_remote_agent_stop_request", poll_module).expect("ledgered");
-    assert_eq!(poll_row.class, RiskClass::Read);
-    assert!(poll_row.capabilities.is_empty());
-
-    assert!(
-        find_spec("stop_agent").is_none(),
-        "`stop_agent` resolves pkill and must stay unreachable; the registered answer is the \
-         spawn-free intent"
-    );
-
-    // The class gap to `stop_agent` is justified by a RECORDED exemption, not by this comment.
-    assert!(
-        AUTHORITY_REDUCING_EXEMPTIONS.iter().any(|exemption| {
-            exemption.subject == "request_remote_agent_stop"
-                && exemption.kind == "command"
-                && exemption.direction == "authority-reducing"
-                && exemption.scope == "ui:operate"
-        }),
-        "the remote stop brake is registered below its `stop_agent` sibling with no \
-         authority-reducing exemption to justify the gap"
-    );
-}
-
 }
 
 /// The WP1 continuation module holds none of the three authority carriers, asserted over SOURCE.
@@ -7218,4 +7217,3 @@ fn merged_commands_pin_host_log_amplification_and_workspace_recovery_funnel() {
          or retaining its process-floor disposition"
     );
 }
-

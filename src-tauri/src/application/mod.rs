@@ -16,41 +16,27 @@ pub mod agent_conversation_workspace_base;
 pub(crate) mod agent_conversation_workspace_restart;
 pub mod agent_issue_report;
 pub mod agent_lane_resolution;
+pub mod agent_lane_settings_bootstrap;
 pub(crate) mod agent_plan_context;
 #[cfg(test)]
 mod agent_plan_context_tests;
-pub mod manual_role_default_service;
-pub mod manual_router_config;
-pub mod mcp_policy_config;
-pub mod mcp_policy_agent_client;
-pub mod mcp_policy_service;
-#[cfg(test)]
-mod mcp_policy_agent_client_tests;
-#[cfg(test)]
-mod mcp_policy_config_tests;
-#[cfg(test)]
-mod mcp_policy_service_tests;
-pub mod agent_lane_settings_bootstrap;
 pub(crate) mod agent_planning_session_titles;
 pub mod agent_task_assignment_recovery;
 pub(crate) mod agent_task_pipeline_service;
 pub mod agent_task_service;
 pub mod agent_terminal;
 pub mod agent_workspace_bridge;
+pub mod agent_workspace_continuation;
+pub mod agent_workspace_external_pr_reconciliation;
 pub mod agent_workspace_local_commit;
 #[cfg(test)]
 mod agent_workspace_local_commit_tests;
-pub mod agent_workspace_continuation;
-pub mod agent_workspace_external_pr_reconciliation;
 pub(crate) mod agent_workspace_pr_autofix_attempt;
 #[cfg(test)]
 mod agent_workspace_pr_autofix_attempt_tests;
 pub mod agent_workspace_pr_description;
 #[cfg(test)]
 pub(crate) mod agent_workspace_pr_metadata_reconciliation;
-pub(crate) mod agent_workspace_terminal_cleanup;
-#[cfg(test)]
-mod agent_workspace_terminal_cleanup_tests;
 pub(crate) mod agent_workspace_pr_supervision_recovery;
 pub mod agent_workspace_publish_recovery;
 pub(crate) mod agent_workspace_publish_repair_state;
@@ -81,6 +67,9 @@ mod agent_workspace_review_run_guard_tests;
 mod agent_workspace_review_unfinished_git_recovery_tests;
 #[cfg(test)]
 mod agent_workspace_review_unfinished_git_tests;
+pub(crate) mod agent_workspace_terminal_cleanup;
+#[cfg(test)]
+mod agent_workspace_terminal_cleanup_tests;
 pub mod app_paths;
 #[cfg(test)]
 mod app_paths_tests;
@@ -98,9 +87,6 @@ mod branch_update_executor_tests;
 pub mod branch_update_workflow;
 pub mod builder_attachment_materializer;
 pub mod chat_attachment_service;
-pub(crate) mod conversation_reference_inheritance;
-#[cfg(test)]
-mod conversation_reference_inheritance_tests;
 pub mod chat_attachment_storage;
 pub mod chat_resumption;
 pub mod chat_service;
@@ -109,6 +95,9 @@ pub mod clickup_integration_service;
 pub mod conversation_folder_reference_service;
 #[cfg(test)]
 mod conversation_folder_reference_service_tests;
+pub(crate) mod conversation_reference_inheritance;
+#[cfg(test)]
+mod conversation_reference_inheritance_tests;
 pub mod dependency_service;
 #[cfg(target_os = "macos")]
 pub(crate) mod desktop_notification;
@@ -147,6 +136,17 @@ pub mod linear_integration_service;
 pub mod linear_webhook_reconciliation_service;
 pub(crate) mod managed_provider_cli;
 pub mod managed_team;
+pub mod manual_role_default_service;
+pub mod manual_router_config;
+pub mod mcp_policy_agent_client;
+#[cfg(test)]
+mod mcp_policy_agent_client_tests;
+pub mod mcp_policy_config;
+#[cfg(test)]
+mod mcp_policy_config_tests;
+pub mod mcp_policy_service;
+#[cfg(test)]
+mod mcp_policy_service_tests;
 pub mod memory_archive_service;
 pub mod memory_orchestration;
 pub(crate) mod merge_pipeline_visibility;
@@ -464,13 +464,13 @@ mod ideation_harness_availability_tests;
 #[cfg(test)]
 mod ideation_workspace_tests;
 #[cfg(test)]
+mod integration_reference_expansion_edge_tests;
+#[cfg(test)]
 mod integration_reference_expansion_tests;
 #[cfg(test)]
 mod manual_role_default_service_tests;
 #[cfg(test)]
 mod manual_router_config_tests;
-#[cfg(test)]
-mod integration_reference_expansion_edge_tests;
 #[cfg(test)]
 mod orphan_worktree_cleanup_tests;
 #[cfg(test)]

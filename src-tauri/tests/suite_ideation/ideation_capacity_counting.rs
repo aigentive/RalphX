@@ -16,8 +16,8 @@
 use std::sync::Arc;
 
 use ralphx_lib::application::AppState;
-use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::commands::execution_commands::count_active_ideation_slots;
+use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::ideation::{SessionOrigin, SessionPurpose};
 use ralphx_lib::domain::entities::{IdeationSession, ProjectId};
 use ralphx_lib::domain::services::{RunningAgentKey, RunningAgentRegistry};
@@ -120,7 +120,10 @@ async fn test_general_session_generating_is_counted() {
     let count = count_active_ideation_slots(&app, &exec_state, None)
         .await
         .unwrap();
-    assert_eq!(count, 1, "Generating general session must count as 1 active ideation slot");
+    assert_eq!(
+        count, 1,
+        "Generating general session must count as 1 active ideation slot"
+    );
 }
 
 /// General session in waiting_for_input (marked interactive_idle) → excluded from active count.
@@ -361,7 +364,10 @@ async fn test_all_session_types_idle_count_zero() {
     let count = count_active_ideation_slots(&app, &exec_state, None)
         .await
         .unwrap();
-    assert_eq!(count, 0, "When all sessions are idle, active count must be 0");
+    assert_eq!(
+        count, 0,
+        "When all sessions are idle, active count must be 0"
+    );
 }
 
 // ─── Project-scoped counting ─────────────────────────────────────────────────
@@ -456,5 +462,8 @@ async fn test_ghost_registry_entry_not_counted() {
     let count = count_active_ideation_slots(&app, &exec_state, None)
         .await
         .unwrap();
-    assert_eq!(count, 0, "Ghost registry entry (no matching session in DB) must not be counted");
+    assert_eq!(
+        count, 0,
+        "Ghost registry entry (no matching session in DB) must not be counted"
+    );
 }

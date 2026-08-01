@@ -252,9 +252,13 @@ async fn test_get_pending_excludes_done_and_failed() {
     repo.update_status(&done_id, ArchiveJobStatus::Done, None)
         .await
         .unwrap();
-    repo.update_status(&failed_id, ArchiveJobStatus::Failed, Some("error".to_string()))
-        .await
-        .unwrap();
+    repo.update_status(
+        &failed_id,
+        ArchiveJobStatus::Failed,
+        Some("error".to_string()),
+    )
+    .await
+    .unwrap();
 
     let pending = repo.get_pending_by_project(&project_id).await.unwrap();
     assert!(pending.is_empty());

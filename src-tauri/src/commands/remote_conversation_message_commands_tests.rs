@@ -57,10 +57,7 @@ async fn seed(state: &AppState) -> (String, ChatConversation) {
     (project.id.to_string(), conversation)
 }
 
-fn input(
-    conversation_id: &str,
-    project_id: &str,
-) -> RequestRemoteAgentConversationMessageInput {
+fn input(conversation_id: &str, project_id: &str) -> RequestRemoteAgentConversationMessageInput {
     RequestRemoteAgentConversationMessageInput {
         conversation_id: conversation_id.to_string(),
         project_id: project_id.to_string(),
@@ -289,19 +286,16 @@ async fn status_read_resolves_the_intent_and_fails_closed_on_unknown() {
     .await
     .expect("intent persisted");
 
-    let view = get_remote_conversation_message_request_for_state(
-        &state,
-        &response.message_request_id,
-    )
-    .await
-    .expect("status resolves");
+    let view =
+        get_remote_conversation_message_request_for_state(&state, &response.message_request_id)
+            .await
+            .expect("status resolves");
     assert_eq!(view.id, response.message_request_id);
     assert_eq!(view.status, RemoteConversationMessageStatus::Pending);
     assert!(view.error_code.is_none());
     assert!(view.agent_run_id.is_none());
 
-    let missing =
-        get_remote_conversation_message_request_for_state(&state, "no-such-id").await;
+    let missing = get_remote_conversation_message_request_for_state(&state, "no-such-id").await;
     assert_eq!(missing.unwrap_err(), REMOTE_CONV_MESSAGE_REQUEST_NOT_FOUND);
     assert!(intent_absent(&state, "no-such-id").await);
 }

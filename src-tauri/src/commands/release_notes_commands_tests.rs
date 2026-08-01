@@ -72,10 +72,9 @@ fn collect_versions_tolerates_a_missing_directory() {
     std::fs::write(present.path().join("v1.2.0.md"), "").unwrap();
     let absent = present.path().join("definitely-not-here");
 
-    let versions = collect_versions_from_dirs(
-        vec![absent, present.path().to_path_buf()],
-        |path| std::fs::read_dir(path),
-    )
+    let versions = collect_versions_from_dirs(vec![absent, present.path().to_path_buf()], |path| {
+        std::fs::read_dir(path)
+    })
     .expect("a missing root is not a failure");
 
     assert_eq!(versions, vec!["1.2.0"]);
@@ -90,15 +89,12 @@ fn collect_versions_fails_closed_when_a_readable_directory_errors() {
     let present = tempfile::tempdir().unwrap();
     std::fs::write(present.path().join("v1.2.0.md"), "").unwrap();
 
-    let error = collect_versions_from_dirs(
-        vec![present.path().to_path_buf()],
-        |_| {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "release notes directory is not readable",
-            ))
-        },
-    )
+    let error = collect_versions_from_dirs(vec![present.path().to_path_buf()], |_| {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "release notes directory is not readable",
+        ))
+    })
     .expect_err("a non-NotFound read failure must surface, not collapse into an empty list");
 
     assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);

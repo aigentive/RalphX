@@ -2,8 +2,8 @@ use super::sqlite_delegated_session_repo::SqliteDelegatedSessionRepository;
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{DelegatedSession, DelegatedSessionId, Project};
 use crate::domain::repositories::{DelegatedSessionRepository, ProjectRepository};
-use crate::testing::SqliteTestDb;
 use crate::infrastructure::sqlite::SqliteProjectRepository;
+use crate::testing::SqliteTestDb;
 
 fn setup_test_db() -> SqliteTestDb {
     SqliteTestDb::new("sqlite_delegated_session_repo_tests")
@@ -72,7 +72,10 @@ async fn test_get_by_parent_context_orders_latest_first() {
     let newer_id = newer.id.clone();
     repo.create(newer).await.unwrap();
 
-    let sessions = repo.get_by_parent_context("review", "review-1").await.unwrap();
+    let sessions = repo
+        .get_by_parent_context("review", "review-1")
+        .await
+        .unwrap();
     assert_eq!(sessions.len(), 2);
     assert_eq!(sessions[0].id, newer_id);
     assert_eq!(sessions[1].id, older_id);
