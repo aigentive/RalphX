@@ -135,6 +135,30 @@ fn parse_pr_search_output_returns_base_picker_fields() {
 }
 
 #[test]
+fn parse_pr_search_output_preserves_all_states_and_absent_state() {
+    let json = r#"[
+        {"number":1,"title":"Open","url":"https://example.test/1","headRefName":"open","baseRefName":"main","state":"OPEN","mergedAt":null},
+        {"number":2,"title":"Merged","url":"https://example.test/2","headRefName":"merged","baseRefName":"main","state":"MERGED","mergedAt":"2026-08-01T10:00:00Z"},
+        {"number":3,"title":"Closed","url":"https://example.test/3","headRefName":"closed","baseRefName":"main","state":"CLOSED","mergedAt":null},
+        {"number":4,"title":"Legacy","url":"https://example.test/4","headRefName":"legacy","baseRefName":"main"}
+    ]"#;
+
+    let results = parse_pr_search_output(json).expect("all PR states should parse");
+
+    assert_eq!(results[0].state.as_deref(), Some("OPEN"));
+    assert_eq!(results[0].merged_at, None);
+    assert_eq!(results[1].state.as_deref(), Some("MERGED"));
+    assert_eq!(
+        results[1].merged_at.as_deref(),
+        Some("2026-08-01T10:00:00Z")
+    );
+    assert_eq!(results[2].state.as_deref(), Some("CLOSED"));
+    assert_eq!(results[2].merged_at, None);
+    assert_eq!(results[3].state, None);
+    assert_eq!(results[3].merged_at, None);
+}
+
+#[test]
 fn parse_pr_search_output_fails_on_missing_head_ref() {
     let json = r#"[{"number": 42, "title": "Missing head", "url": "https://example.test", "baseRefName": "main"}]"#;
     let err = parse_pr_search_output(json).unwrap_err();
@@ -1876,6 +1900,39 @@ mod mock_roundtrip {
                 "20",
                 "--json",
                 "number,url,state,isDraft,headRefName,updatedAt",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()]
+        );
+    }
+
+    #[tokio::test]
+    async fn search_pull_requests_uses_all_state_lookup_with_state_fields() {
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![Ok(vec![
+            "[]".to_string()
+        ])]));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        let results = service
+            .search_pull_requests(Path::new("/tmp"), Some(" base picker "), 30)
+            .await
+            .unwrap();
+
+        assert!(results.is_empty());
+        assert_eq!(
+            runner.gh_calls(),
+            vec![vec![
+                "pr",
+                "list",
+                "--state",
+                "all",
+                "--limit",
+                "30",
+                "--json",
+                "number,title,url,headRefName,headRefOid,baseRefName,isDraft,state,mergedAt,updatedAt,author,assignees,reviewDecision,latestReviews,reviewRequests,isCrossRepository",
+                "--search",
+                "base picker",
             ]
             .into_iter()
             .map(str::to_string)

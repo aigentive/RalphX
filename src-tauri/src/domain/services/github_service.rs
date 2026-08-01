@@ -158,6 +158,26 @@ pub struct PrSearchResult {
     pub is_cross_repository: bool,
 }
 
+impl PrSearchResult {
+    pub fn is_open(&self) -> bool {
+        self.state
+            .as_deref()
+            .is_none_or(|state| state.eq_ignore_ascii_case("OPEN"))
+    }
+
+    pub fn is_merged(&self) -> bool {
+        self.state
+            .as_deref()
+            .is_some_and(|state| state.eq_ignore_ascii_case("MERGED"))
+    }
+
+    pub fn is_closed_unmerged(&self) -> bool {
+        self.state
+            .as_deref()
+            .is_some_and(|state| state.eq_ignore_ascii_case("CLOSED"))
+    }
+}
+
 /// Inline review comment attached to a GitHub pull request review.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PrReviewCommentFeedback {

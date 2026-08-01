@@ -311,6 +311,89 @@ fn ticket_start_prefers_unique_pull_request_over_branch_candidates() {
 }
 
 #[test]
+fn ticket_start_ignores_merged_candidate_when_an_open_match_exists() {
+    let resolution = select_clickup_ticket_start_candidate(
+        &identity("8689abc", Some("DEV-42")),
+        vec![
+            PrSearchResult {
+                state: Some("MERGED".to_string()),
+                merged_at: Some("2026-08-01T10:00:00Z".to_string()),
+                ..pull_request(41, "feature/DEV-42-merged", "DEV-42 merged")
+            },
+            pull_request(42, "feature/DEV-42-open", "DEV-42 open"),
+        ],
+        Vec::new(),
+    );
+
+    let ClickUpTicketStartResolution::Unique(candidate) = resolution else {
+        panic!("expected the open pull request to be the unique candidate");
+    };
+    assert_eq!(candidate.branch_name, "feature/DEV-42-open");
+    assert_eq!(candidate.pull_request.map(|pr| pr.number), Some(42));
+}
+
+#[test]
+fn ticket_start_falls_back_to_branch_when_only_historical_prs_match() {
+    let resolution = select_clickup_ticket_start_candidate(
+        &identity("8689abc", Some("DEV-42")),
+        vec![
+            PrSearchResult {
+                state: Some("MERGED".to_string()),
+                ..pull_request(41, "feature/DEV-42-merged", "DEV-42 merged")
+            },
+            PrSearchResult {
+                state: Some("CLOSED".to_string()),
+                ..pull_request(42, "feature/DEV-42-closed", "DEV-42 closed")
+            },
+        ],
+        vec!["feature/DEV-42-local".to_string()],
+    );
+
+    let ClickUpTicketStartResolution::Unique(candidate) = resolution else {
+        panic!("expected branch-only fallback");
+    };
+    assert_eq!(candidate.branch_name, "feature/DEV-42-local");
+    assert!(candidate.pull_request.is_none());
+}
+
+#[test]
+fn ticket_start_does_not_treat_two_merged_matches_as_ambiguous() {
+    let resolution = select_clickup_ticket_start_candidate(
+        &identity("8689abc", Some("DEV-42")),
+        vec![
+            PrSearchResult {
+                state: Some("MERGED".to_string()),
+                ..pull_request(41, "feature/DEV-42-a", "DEV-42 a")
+            },
+            PrSearchResult {
+                state: Some("MERGED".to_string()),
+                ..pull_request(42, "feature/DEV-42-b", "DEV-42 b")
+            },
+        ],
+        Vec::new(),
+    );
+
+    assert_eq!(resolution, ClickUpTicketStartResolution::NoMatch);
+}
+
+#[test]
+fn ticket_start_treats_absent_pr_state_as_open() {
+    let resolution = select_clickup_ticket_start_candidate(
+        &identity("8689abc", Some("DEV-42")),
+        vec![PrSearchResult {
+            state: None,
+            ..pull_request(42, "feature/DEV-42-legacy", "DEV-42 legacy")
+        }],
+        Vec::new(),
+    );
+
+    let ClickUpTicketStartResolution::Unique(candidate) = resolution else {
+        panic!("expected state-less pull request to remain eligible");
+    };
+    assert_eq!(candidate.pull_request.map(|pr| pr.number), Some(42));
+}
+
+#[test]
 fn ticket_start_fails_closed_for_multiple_pull_requests_or_branches() {
     let task = identity("8689abc", Some("DEV-42"));
     assert!(matches!(

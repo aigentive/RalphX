@@ -344,7 +344,7 @@ describe("branchBaseOptions", () => {
     expect(searchGithubPullRequestsMock).toHaveBeenCalledWith({
       projectId: "project-1",
       query: "picker",
-      limit: 30,
+      limit: 50,
     });
     expect(options).toEqual([
       {
@@ -509,5 +509,47 @@ describe("branchBaseOptions", () => {
       "pull_request:57:feature/still-open",
       "pull_request:56:feature/recently-merged",
     ]);
+  });
+
+  it("keeps open pull requests ahead of a merge-heavy result window", async () => {
+    const mergedPullRequests = Array.from({ length: 25 }, (_, index) => ({
+      number: 100 + index,
+      title: `Merged ${index}`,
+      url: `https://github.com/owner/repo/pull/${100 + index}`,
+      headRefName: `feature/merged-${index}`,
+      baseRefName: "main",
+      isDraft: false,
+      isCrossRepository: false,
+      state: "MERGED",
+      mergedAt: "2026-08-01T10:00:00Z",
+    }));
+    const openPullRequests = Array.from({ length: 5 }, (_, index) => ({
+      number: 200 + index,
+      title: `Open ${index}`,
+      url: `https://github.com/owner/repo/pull/${200 + index}`,
+      headRefName: `feature/open-${index}`,
+      baseRefName: "main",
+      isDraft: false,
+      isCrossRepository: false,
+      state: "OPEN",
+    }));
+    searchGithubPullRequestsMock.mockResolvedValue([
+      ...mergedPullRequests,
+      ...openPullRequests,
+    ]);
+
+    const options = await loadPullRequestBaseOptions({ projectId: "project-1" });
+
+    expect(searchGithubPullRequestsMock).toHaveBeenCalledWith({
+      projectId: "project-1",
+      limit: 50,
+    });
+    expect(options.slice(0, 5).map((option) => option.key)).toEqual(
+      openPullRequests.map(
+        (pullRequest) =>
+          `pull_request:${pullRequest.number}:${pullRequest.headRefName}`,
+      ),
+    );
+    expect(options).toHaveLength(30);
   });
 });

@@ -249,7 +249,7 @@ export async function loadPullRequestBaseOptions({
 }): Promise<BranchBaseOption[]> {
   const input = {
     projectId,
-    limit: 30,
+    limit: 50,
     ...(query !== undefined ? { query } : {}),
   };
   const pullRequests = await searchGithubPullRequests(input);
