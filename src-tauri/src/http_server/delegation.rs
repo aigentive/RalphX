@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{watch, RwLock};
 
+use crate::application::delegation_park::{DelegationJobSource, ParkJobSnapshot};
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
     AgentRunId, ChatConversationId, ChatTimelineItem, ChatTimelineItemId, ChatTimelineItemKind,
@@ -289,6 +290,20 @@ impl DelegationService {
         // has accepted this terminal, never from `terminal_candidate`.
         let _ = record.settled_tx.send(Some(settled_status));
         true
+    }
+}
+
+/// The live job registry is the park's source of delegate ownership and durable-run facts.
+#[async_trait::async_trait]
+impl DelegationJobSource for DelegationService {
+    async fn park_job_snapshot(&self, job_id: &str) -> Option<ParkJobSnapshot> {
+        self.snapshot(job_id).await.map(|snapshot| ParkJobSnapshot {
+            status: snapshot.status,
+            parent_conversation_id: snapshot.parent_conversation_id,
+            parent_agent_run_id: snapshot.parent_agent_run_id,
+            delegated_session_id: snapshot.delegated_session_id,
+            delegated_agent_run_id: snapshot.delegated_agent_run_id,
+        })
     }
 }
 

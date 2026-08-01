@@ -4,6 +4,7 @@
 mod arm_tests;
 #[cfg(test)]
 mod delegation_park_test_support;
+mod job_source;
 mod reconcile;
 mod wake_dispatch;
 #[cfg(test)]
@@ -29,9 +30,9 @@ use crate::domain::repositories::{
     AgentRunRepository, ChatConversationRepository, DelegationParkRepository,
 };
 use crate::error::{AppError, AppResult};
-use crate::http_server::delegation::DelegationService;
 use crate::infrastructure::agents::claude::delegation_config;
 
+pub use job_source::{DelegationJobSource, ParkJobSnapshot};
 pub use reconcile::DelegationParkReconcileSummary;
 
 /// Request to durably park a coordinator until delegated jobs require a wake.
@@ -83,7 +84,7 @@ impl DelegationParkService {
     pub async fn arm(
         &self,
         request: ArmParkRequest,
-        delegation_service: &DelegationService,
+        delegation_jobs: &dyn DelegationJobSource,
     ) -> AppResult<DelegationPark> {
         if request.job_ids.is_empty() {
             return Err(AppError::Validation(
@@ -93,8 +94,8 @@ impl DelegationParkService {
 
         let mut jobs = Vec::with_capacity(request.job_ids.len());
         for job_id in &request.job_ids {
-            let snapshot = delegation_service
-                .snapshot(job_id)
+            let snapshot = delegation_jobs
+                .park_job_snapshot(job_id)
                 .await
                 .ok_or_else(|| AppError::NotFound(format!("delegation job not found: {job_id}")))?;
             if snapshot.status != "running" {

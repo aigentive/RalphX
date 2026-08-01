@@ -18,7 +18,41 @@ use crate::error::AppResult;
 use crate::infrastructure::agents::claude::delegation_config;
 use crate::infrastructure::memory::{MemoryAgentRunRepository, MemoryChatConversationRepository};
 
-use super::DelegationParkService;
+use super::{DelegationJobSource, DelegationParkService, ParkJobSnapshot};
+
+/// Stand-in for the transport-owned job registry; the production `DelegationService` mapping is
+/// covered by `http_server::delegation_tests` and the `delegation_park` handler suite.
+pub(super) struct FakeDelegationJobs {
+    job_id: String,
+    snapshot: ParkJobSnapshot,
+}
+
+impl FakeDelegationJobs {
+    pub(super) fn running(
+        job_id: &str,
+        parent_conversation_id: &ChatConversationId,
+        parent_agent_run_id: &AgentRunId,
+        delegated_agent_run_id: Option<&AgentRunId>,
+    ) -> Self {
+        Self {
+            job_id: job_id.to_string(),
+            snapshot: ParkJobSnapshot {
+                status: "running".to_string(),
+                parent_conversation_id: Some(parent_conversation_id.as_str()),
+                parent_agent_run_id: Some(parent_agent_run_id.as_str()),
+                delegated_session_id: "session".to_string(),
+                delegated_agent_run_id: delegated_agent_run_id.map(AgentRunId::as_str),
+            },
+        }
+    }
+}
+
+#[async_trait]
+impl DelegationJobSource for FakeDelegationJobs {
+    async fn park_job_snapshot(&self, job_id: &str) -> Option<ParkJobSnapshot> {
+        (job_id == self.job_id).then(|| self.snapshot.clone())
+    }
+}
 
 #[derive(Default)]
 pub(super) struct MemoryParkRepository {

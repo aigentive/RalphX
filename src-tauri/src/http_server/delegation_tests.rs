@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use super::delegation::{persist_terminal_projection, DelegationJobSnapshot, DelegationService};
+use crate::application::delegation_park::DelegationJobSource;
 use crate::domain::entities::{ChatConversation, ProjectId};
 use crate::domain::repositories::{ChatConversationRepository, ChatTimelineRepository};
 use crate::infrastructure::sqlite::{
@@ -315,4 +316,54 @@ async fn rejected_commit_terminal_emits_no_settlement_signal() {
 async fn subscribe_settlement_returns_none_for_unknown_jobs() {
     let service = DelegationService::new();
     assert!(service.subscribe_settlement("missing").await.is_none());
+}
+
+#[tokio::test]
+async fn park_job_snapshot_mirrors_the_live_job_registry() {
+    let service = DelegationService::new();
+    service
+        .register_running(
+            "job-park".to_string(),
+            "project".to_string(),
+            "project-1".to_string(),
+            None,
+            None,
+            Some("parent-conversation".to_string()),
+            Some("parent-run".to_string()),
+            Some("tool-delegate".to_string()),
+            "delegated-session".to_string(),
+            Some("delegated-conversation".to_string()),
+            Some("delegated-run".to_string()),
+            "reviewer".to_string(),
+            None,
+            "codex",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+
+    let park_view = service
+        .park_job_snapshot("job-park")
+        .await
+        .expect("registered job is visible to the park");
+    assert_eq!(park_view.status, "running");
+    assert_eq!(
+        park_view.parent_conversation_id.as_deref(),
+        Some("parent-conversation")
+    );
+    assert_eq!(park_view.parent_agent_run_id.as_deref(), Some("parent-run"));
+    assert_eq!(park_view.delegated_session_id, "delegated-session");
+    assert_eq!(
+        park_view.delegated_agent_run_id.as_deref(),
+        Some("delegated-run")
+    );
+
+    assert!(service.park_job_snapshot("unknown-job").await.is_none());
 }

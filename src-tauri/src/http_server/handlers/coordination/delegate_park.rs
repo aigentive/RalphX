@@ -119,7 +119,7 @@ pub async fn park_delegate(
                 wake_on_failure: req.wake_on_failure.unwrap_or(true),
                 max_wait_secs: req.max_wait_secs,
             },
-            &state.delegation_service,
+            state.delegation_service.as_ref(),
         )
         .await
         .map_err(|error| match error {
