@@ -54,9 +54,8 @@ fn parse_timestamp(value: String, column: &str) -> rusqlite::Result<DateTime<Utc
     DateTime::parse_from_rfc3339(&value)
         .map(|timestamp| timestamp.with_timezone(&Utc))
         .map_err(|error| rusqlite::Error::FromSqlConversionFailure(0, Type::Text, Box::new(error)))
-        .map_err(|error| {
+        .inspect_err(|_error| {
             tracing::debug!(%column, "failed to parse delegation park timestamp");
-            error
         })
 }
 

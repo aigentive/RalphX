@@ -86,7 +86,7 @@ impl DelegationParkService {
                         .record_wake_failure(&park.id, &error_message)
                         .await?;
                     if i64::from(durable_count) >= i64::from(retry_max) {
-                        self.settle_failed_wake(&park, &AppError::Agent(error_message))
+                        self.settle_failed_wake(park, &AppError::Agent(error_message))
                             .await?;
                         return Ok(());
                     }
