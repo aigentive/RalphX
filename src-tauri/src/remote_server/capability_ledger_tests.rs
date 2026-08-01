@@ -995,7 +995,13 @@ fn detector_b_is_calibrated_and_floor_enforced() {
         // 553 -> 555: the spawn-free conversation-start pair. `request_remote_agent_conversation_start`
         // persists a start intent (detector (b) flags it via the `remote-conversation-start`
         // surface row; silent on (a)/(c)); `get_remote_conversation_start_request` is a pure read.
-        555,
+        // 555 -> 557: WP1's spawn-free conversation-CONTINUATION pair, the same shape one table
+        // over. `request_remote_agent_conversation_message` persists a continuation intent
+        // (detector (b) flags it via the `remote-conversation-message` surface row; silent on
+        // (a)/(c), proved by `remote_conversation_message_request_carries_no_spawn_authority`);
+        // `get_remote_conversation_message_request` is a pure read. A census-count change, not a
+        // detector change.
+        557,
         "review the detector against the full command census"
     );
     let flagged = spawn_triggering_writers(

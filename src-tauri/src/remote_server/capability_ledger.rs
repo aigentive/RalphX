@@ -478,7 +478,8 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
         policy: policy(
             RiskClass::AgentControl,
             CONTENT_AND_SEEDS,
-            "seeds-spawn-triggering-state: persists a continuation intent a host loop later sends \
+            "seeds-spawn-triggering-state, declared membership seeds-agent-turn-for-idle-conversation: \
+             persists a continuation intent a host loop later sends \
              through the provider-session resume seam; validates conversation ownership, \
              archival, run liveness, provider and model fail-closed and rejects unknown models \
              rather than passing them to CLI argv; has no role field to forge; resolves no CLI \
