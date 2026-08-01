@@ -193,7 +193,7 @@ async fn record_handoff(state: &HttpServerState, parent: &ParentContext, content
         content,
     );
     message.role = MessageRole::Orchestrator;
-    message.conversation_id = Some(parent.conversation.id.clone());
+    message.conversation_id = Some(parent.conversation.id);
     state
         .app_state
         .chat_message_repo
