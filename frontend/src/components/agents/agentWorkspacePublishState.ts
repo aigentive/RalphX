@@ -476,10 +476,6 @@ export function canInspectAgentWorkspaceBaseFreshness(
     return false;
   }
 
-  if (workspace.mode === "plan") {
-    return false;
-  }
-
   if (isAgentWorkspacePublishSurfaceMode(workspace)) {
     return true;
   }
