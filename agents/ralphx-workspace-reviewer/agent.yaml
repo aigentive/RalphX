@@ -14,6 +14,9 @@ capabilities:
     - write_workspace_review_artifact
     - write_workspace_review_hunk_annotations
     - complete_workspace_review_run
+    - delegate_start
+    - delegate_wait
+    - delegate_cancel
 harnesses:
   claude:
     model: sonnet
@@ -40,3 +43,9 @@ harnesses:
       - write_workspace_review_artifact
       - write_workspace_review_hunk_annotations
       - complete_workspace_review_run
+      - delegate_start
+      - delegate_wait
+      - delegate_cancel
+delegation:
+  allowed_targets:
+    - ralphx-general-explorer
