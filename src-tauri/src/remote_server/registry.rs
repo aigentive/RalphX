@@ -1215,6 +1215,46 @@ crate::remote_commands! {
         pins: [("input", "mode", "chat")],
     },
 
+    // Spawn-free conversation CONTINUATION (WP1) — the fix for the one-shot remote surface.
+    // `send_remote_chat_message` above only works while a run is LIVE; once the agent finished
+    // its turn a paired device hit a dead end. This closure only PERSISTS a continuation intent;
+    // the host-owned `spawn_remote_conversation_message_dispatcher` loop is the sole sender, and
+    // its terminal call is `ChatService::send_message` (the provider-session resume seam), NOT
+    // `AgentConversationStartService::start` — starting would mint a fresh run and abandon the
+    // session. Detector-silent on (a) and (c); detector (b) flags it MECHANICALLY through the
+    // `remote-conversation-message` state-surface row, which is what `SeedsSpawnTriggeringState`
+    // expresses honestly.
+    //
+    // There is NO `role` field to pin: first-turn authorship is host-forced by FIELD ABSENCE,
+    // which is stronger than a pinned value because there is nothing on the wire to forge. The
+    // command additionally REFUSES when a run is already live, so this surface and
+    // `send_remote_chat_message` are disjoint by construction and a turn can never be doubled.
+    "request_remote_agent_conversation_message"
+        => crate::commands::remote_conversation_message_commands::request_remote_agent_conversation_message {
+        class: AgentControl,
+        caps: [MutatesAgentConsumedContent, SeedsSpawnTriggeringState],
+        params: [
+            (arg input: crate::commands::remote_conversation_message_commands::RequestRemoteAgentConversationMessageInput),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+
+    // The client's post-submit poll target for the continuation intent. Pure repository read;
+    // the client MUST reach a terminal status here before it may render the turn as delivered.
+    "get_remote_conversation_message_request"
+        => crate::commands::remote_conversation_message_commands::get_remote_conversation_message_request {
+        class: Read,
+        caps: [],
+        params: [
+            (arg message_request_id: String),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+
     // The client's post-submit poll target for the intent above. Pure repository read.
     "get_remote_conversation_start_request"
         => crate::commands::remote_conversation_start_commands::get_remote_conversation_start_request {

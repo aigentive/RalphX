@@ -995,7 +995,13 @@ fn detector_b_is_calibrated_and_floor_enforced() {
         // 553 -> 555: the spawn-free conversation-start pair. `request_remote_agent_conversation_start`
         // persists a start intent (detector (b) flags it via the `remote-conversation-start`
         // surface row; silent on (a)/(c)); `get_remote_conversation_start_request` is a pure read.
-        555,
+        // 555 -> 557: WP1's spawn-free conversation-CONTINUATION pair, the same shape one table
+        // over. `request_remote_agent_conversation_message` persists a continuation intent
+        // (detector (b) flags it via the `remote-conversation-message` surface row; silent on
+        // (a)/(c), proved by `remote_conversation_message_request_carries_no_spawn_authority`);
+        // `get_remote_conversation_message_request` is a pure read. A census-count change, not a
+        // detector change.
+        557,
         "review the detector against the full command census"
     );
     let flagged = spawn_triggering_writers(
@@ -3528,6 +3534,74 @@ fn the_spawn_free_remote_read_module_carries_no_authority_carriers() {
              which is what lets its commands sit at `ui:read` with no capability."
         );
     }
+}
+
+/// The WP1 continuation module holds none of the three authority carriers, asserted over SOURCE.
+///
+/// This is the whole reason `request_remote_agent_conversation_message` can sit on the facade at
+/// all: the command that persists the intent must be unable to spawn, and the host dispatcher —
+/// which DOES build a `ChatService` — must live elsewhere. If a future edit pulls the send back
+/// into the command module to "save a hop", this fails instead of quietly putting a process
+/// launch on the request path and defeating the detector-(c) floor.
+#[test]
+fn the_spawn_free_remote_conversation_message_module_carries_no_authority_carriers() {
+    let sources = load_production_sources();
+    let (_, module) = sources
+        .iter()
+        .find(|(file, _)| file == "commands/remote_conversation_message_commands.rs")
+        .expect("the spawn-free remote continuation module must exist");
+
+    // Comments are stripped: the module doc NAMES the carriers in order to explain why they are
+    // absent, and the contract is about code, not prose.
+    let code = module
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        code.contains("pub async fn request_remote_agent_conversation_message"),
+        "comment stripping ate the module body; this assertion would be vacuous"
+    );
+
+    for carrier in [
+        "AppHandle",
+        "ExecutionState",
+        "create_chat_service",
+        "build_chat_service",
+    ] {
+        assert!(
+            !code.contains(carrier),
+            "`remote_conversation_message_commands` mentions `{carrier}`. The whole contract of \
+             this module is that the spawn/steer authority carriers are absent by construction, \
+             which is what lets the host dispatcher — not the request path — own the send."
+        );
+    }
+}
+
+/// The continuation command reaches no arming sink, no process-launch sink, no transition sink.
+///
+/// The module-source check above proves the carriers are textually absent; this proves the same
+/// thing over the CALL GRAPH, so a carrier smuggled in through a helper in another file still
+/// fails.
+#[test]
+fn remote_conversation_message_request_carries_no_spawn_authority() {
+    let graph = CallGraph::build(&load_production_sources());
+
+    let closure = graph.closure(["request_remote_agent_conversation_message".to_string()]);
+    assert!(
+        !closure.visited.is_empty(),
+        "`request_remote_agent_conversation_message` resolved to an empty closure; the graph did \
+         not find its body and this assertion would be vacuous"
+    );
+    assert!(
+        !tokens_reach_any(&closure.tokens, PROCESS_LAUNCH_SINKS),
+        "`request_remote_agent_conversation_message` reaches a process-launch sink; the \
+         detector-(c) floor admits no exceptions"
+    );
+    assert!(
+        !tokens_reach_any(&closure.tokens, TRANSITION_SINKS),
+        "`request_remote_agent_conversation_message` reaches a transition sink"
+    );
 }
 
 /// The local list commands stay unregistered; the registered answer is the `*_remote_*` twin.
@@ -7081,3 +7155,4 @@ fn merged_commands_pin_host_log_amplification_and_workspace_recovery_funnel() {
          or retaining its process-floor disposition"
     );
 }
+

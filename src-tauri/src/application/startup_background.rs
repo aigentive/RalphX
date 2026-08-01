@@ -882,6 +882,257 @@ async fn revalidate_remote_conversation_start(
     Ok(())
 }
 
+/// How often the host drains one pending remote conversation-message intent.
+const REMOTE_CONVERSATION_MESSAGE_DISPATCH_INTERVAL: Duration = Duration::from_secs(2);
+/// `Dispatching` rows older than this at boot are swept to `FailedStale` and NEVER auto-retried:
+/// the outcome of a claim lost to a crash is unknown, and a retry would risk delivering the same
+/// turn twice. We fail closed and let the user re-send explicitly.
+const REMOTE_CONVERSATION_MESSAGE_STALE_LEASE_SECS: i64 = 300;
+
+/// The host-owned driver for spawn-free remote conversation CONTINUATIONS (WP1).
+///
+/// This loop is the SOLE holder of spawn authority for the feature: the registered
+/// `request_remote_agent_conversation_message` command only persists an intent, and only this
+/// loop ever builds a `ChatService`. Per tick it CAS-claims one `Pending` intent
+/// (`Pending -> Dispatching`), RE-VALIDATES conversation/provider/model AND re-proves that no run
+/// went live in the meantime, then sends through `ChatService::send_message`.
+///
+/// The terminal call is deliberately `send_message` and NOT
+/// `AgentConversationStartService::start`: `start` treats the conversation id as a draft and
+/// mints a FRESH run, which would abandon the provider session. `send_message` goes through the
+/// provider-session resume seam (`chat_service_context.rs`, `claude_resume_session_id` /
+/// `--resume`), which is the entire point of "continue an existing conversation".
+pub(crate) fn spawn_remote_conversation_message_dispatcher(
+    state: AppState,
+    execution_state: Arc<ExecutionState>,
+    app_handle: tauri::AppHandle,
+) {
+    if !try_start_recurring_service("remote_conversation_message_dispatcher") {
+        tracing::debug!(
+            "Remote conversation message dispatcher already started; skipping duplicate spawn"
+        );
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        // Startup reconciliation: crashed `Dispatching` claims are terminalised, never retried.
+        let now = chrono::Utc::now();
+        let stale_cutoff =
+            now - chrono::Duration::seconds(REMOTE_CONVERSATION_MESSAGE_STALE_LEASE_SECS);
+        match state
+            .remote_conversation_message_request_repo
+            .fail_stale_dispatching_message_requests(stale_cutoff, now)
+            .await
+        {
+            Ok(count) if count > 0 => {
+                tracing::warn!(
+                    count,
+                    "swept stale remote conversation-message claims to FailedStale"
+                )
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::error!(%error, "remote conversation message stale sweep failed")
+            }
+        }
+
+        let mut interval = tokio::time::interval(REMOTE_CONVERSATION_MESSAGE_DISPATCH_INTERVAL);
+        interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            if let Err(error) =
+                dispatch_one_remote_conversation_message(&state, &execution_state, &app_handle)
+                    .await
+            {
+                tracing::warn!(%error, "remote conversation message dispatcher tick failed");
+            }
+        }
+    });
+}
+
+/// Claim + send at most one pending intent. Extracted (and generic over the runtime) so a test
+/// can drive one tick and prove the re-validation-failure paths never send.
+pub(crate) async fn dispatch_one_remote_conversation_message<R: tauri::Runtime + 'static>(
+    state: &AppState,
+    execution_state: &Arc<ExecutionState>,
+    app_handle: &tauri::AppHandle<R>,
+) -> AppResult<()> {
+    let claim_at = chrono::Utc::now();
+    let Some(claimed) = state
+        .remote_conversation_message_request_repo
+        .claim_pending_message_request(claim_at)
+        .await?
+    else {
+        return Ok(());
+    };
+
+    // Re-prove authority at dispatch time (settings and run liveness may have changed since
+    // persist). Every failure terminalises the row VISIBLY — a persisted-but-never-delivered
+    // turn must never look like a sent message (chat-send design §7).
+    let context = match revalidate_remote_conversation_message(state, &claimed).await {
+        Ok(context) => context,
+        Err(error_code) => {
+            if let Err(error) = state
+                .remote_conversation_message_request_repo
+                .fail_message_request(&claimed.id, &error_code, chrono::Utc::now())
+                .await
+            {
+                tracing::error!(%error, request_id = %claimed.id, "failed to record remote conversation message revalidation failure");
+            }
+            return Ok(());
+        }
+    };
+
+    let service = build_chat_service_from_deps(
+        Some(app_handle.clone()),
+        Some(Arc::clone(execution_state)),
+        &ChatRuntimeFactoryDeps::from_app_state(state),
+    );
+
+    let result = service
+        .send_message(
+            ChatContextType::Project,
+            claimed.project_id.as_str(),
+            &claimed.content,
+            SendMessageOptions {
+                // The conversation is named explicitly, so the send lands on the row the client
+                // named rather than on whatever the project's "active" conversation happens to be.
+                conversation_id_override: Some(claimed.conversation_id.clone()),
+                harness_override: Some(context.provider),
+                model_override: claimed.model_override.clone(),
+                logical_effort_override: context.logical_effort,
+                ..Default::default()
+            },
+        )
+        .await;
+
+    match result {
+        Ok(send_result) => {
+            if let Err(error) = state
+                .remote_conversation_message_request_repo
+                .complete_message_request(
+                    &claimed.id,
+                    &send_result.agent_run_id,
+                    chrono::Utc::now(),
+                )
+                .await
+            {
+                tracing::error!(%error, request_id = %claimed.id, "failed to record remote conversation message completion");
+            }
+        }
+        Err(error) => {
+            if let Err(persist_error) = state
+                .remote_conversation_message_request_repo
+                .fail_message_request(
+                    &claimed.id,
+                    crate::commands::remote_conversation_message_commands::REMOTE_CONV_MESSAGE_HOST_SEND_FAILED,
+                    chrono::Utc::now(),
+                )
+                .await
+            {
+                tracing::error!(%persist_error, request_id = %claimed.id, "failed to record remote conversation message failure");
+            }
+            tracing::warn!(%error, request_id = %claimed.id, "remote conversation message send failed on host");
+        }
+    }
+
+    Ok(())
+}
+
+/// What re-validation proved, carried forward so the send does not re-derive it.
+pub(crate) struct RemoteConversationMessageDispatchContext {
+    pub provider: crate::domain::agents::AgentHarnessKind,
+    pub logical_effort: Option<crate::domain::agents::LogicalEffort>,
+}
+
+/// Re-validate a claimed continuation intent at dispatch time. Returns the client-facing error
+/// code on failure.
+pub(crate) async fn revalidate_remote_conversation_message(
+    state: &AppState,
+    claimed: &crate::domain::entities::RemoteConversationMessageRequest,
+) -> Result<RemoteConversationMessageDispatchContext, String> {
+    use crate::commands::remote_conversation_message_commands::{
+        REMOTE_CONV_MESSAGE_CONVERSATION_ARCHIVED, REMOTE_CONV_MESSAGE_CONVERSATION_NOT_FOUND,
+        REMOTE_CONV_MESSAGE_LOOKUP_FAILED, REMOTE_CONV_MESSAGE_MODEL_NOT_ENABLED,
+        REMOTE_CONV_MESSAGE_PROJECT_MISMATCH, REMOTE_CONV_MESSAGE_PROVIDER_NOT_ENABLED,
+        REMOTE_CONV_MESSAGE_RUN_WENT_LIVE,
+    };
+
+    // 1. The conversation must still exist and still be continuable.
+    let conversation = state
+        .chat_conversation_repo
+        .get_by_id(&claimed.conversation_id)
+        .await
+        .map_err(|_| REMOTE_CONV_MESSAGE_LOOKUP_FAILED.to_string())?
+        .ok_or_else(|| REMOTE_CONV_MESSAGE_CONVERSATION_NOT_FOUND.to_string())?;
+    if conversation.is_archived() {
+        return Err(REMOTE_CONV_MESSAGE_CONVERSATION_ARCHIVED.to_string());
+    }
+    if conversation.context_type != ChatContextType::Project
+        || conversation.context_id != claimed.project_id.as_str()
+    {
+        return Err(REMOTE_CONV_MESSAGE_PROJECT_MISMATCH.to_string());
+    }
+
+    // 2. The project must still exist.
+    if state
+        .project_repo
+        .get_by_id(&claimed.project_id)
+        .await
+        .map_err(|_| REMOTE_CONV_MESSAGE_LOOKUP_FAILED.to_string())?
+        .is_none()
+    {
+        return Err(REMOTE_CONV_MESSAGE_PROJECT_MISMATCH.to_string());
+    }
+
+    // 3. STILL no live run. If one went live between persist and claim, the live queue owns the
+    //    turn and a fresh send would double it. Retryable and distinct so the client can tell the
+    //    user to re-send through the live path rather than showing an opaque failure.
+    if state
+        .agent_run_repo
+        .get_active_for_conversation(&claimed.conversation_id)
+        .await
+        .map_err(|_| REMOTE_CONV_MESSAGE_LOOKUP_FAILED.to_string())?
+        .is_some()
+    {
+        return Err(REMOTE_CONV_MESSAGE_RUN_WENT_LIVE.to_string());
+    }
+
+    // 4. The recorded provider must still be enabled — never substituted silently.
+    let provider = claimed
+        .provider
+        .parse::<crate::domain::agents::AgentHarnessKind>()
+        .map_err(|_| REMOTE_CONV_MESSAGE_PROVIDER_NOT_ENABLED.to_string())?;
+    let stored = state
+        .agent_provider_settings_repo
+        .list()
+        .await
+        .map_err(|_| REMOTE_CONV_MESSAGE_LOOKUP_FAILED.to_string())?;
+    if !stored
+        .iter()
+        .any(|row| row.provider == provider && row.enabled)
+    {
+        return Err(REMOTE_CONV_MESSAGE_PROVIDER_NOT_ENABLED.to_string());
+    }
+
+    // 5. A named model must still be enabled for that provider.
+    if let Some(model_id) = claimed.model_override.as_deref() {
+        let snapshot = crate::commands::agent_model_commands::load_agent_model_registry(state)
+            .await
+            .map_err(|_| REMOTE_CONV_MESSAGE_LOOKUP_FAILED.to_string())?;
+        if snapshot.find_enabled(provider, model_id).is_none() {
+            return Err(REMOTE_CONV_MESSAGE_MODEL_NOT_ENABLED.to_string());
+        }
+    }
+
+    Ok(RemoteConversationMessageDispatchContext {
+        provider,
+        logical_effort: claimed
+            .logical_effort
+            .as_deref()
+            .and_then(|effort| effort.parse::<crate::domain::agents::LogicalEffort>().ok()),
+    })
+}
+
 pub async fn maybe_start_external_mcp(
     app_handle: tauri::AppHandle,
     wait_for_backend_ready: impl Fn(
@@ -965,6 +1216,281 @@ pub async fn maybe_start_external_mcp(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod remote_conversation_message_dispatcher_tests {
+    use std::sync::Arc;
+
+    use super::dispatch_one_remote_conversation_message;
+    use crate::application::AppState;
+    use crate::commands::remote_conversation_message_commands::{
+        REMOTE_CONV_MESSAGE_CONVERSATION_ARCHIVED, REMOTE_CONV_MESSAGE_CONVERSATION_NOT_FOUND,
+        REMOTE_CONV_MESSAGE_MODEL_NOT_ENABLED, REMOTE_CONV_MESSAGE_PROJECT_MISMATCH,
+        REMOTE_CONV_MESSAGE_PROVIDER_NOT_ENABLED, REMOTE_CONV_MESSAGE_RUN_WENT_LIVE,
+    };
+    use crate::commands::ExecutionState;
+    use crate::domain::entities::{
+        AgentRun, ChatConversation, Project, ProjectId, RemoteConversationMessageRequest,
+        RemoteConversationMessageStatus,
+    };
+    use crate::infrastructure::memory::MemoryAgentProviderSettingsRepository;
+    use ralphx_domain::agents::{AgentHarnessKind, AgentProviderSettings};
+
+    fn claude_enabled_default() -> AgentProviderSettings {
+        AgentProviderSettings {
+            enabled: true,
+            is_default: true,
+            model: Some("sonnet".to_string()),
+            ..AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude)
+        }
+    }
+
+    /// A state with an enabled Claude provider, a project, and one idle project conversation.
+    async fn seeded_state() -> (AppState, ProjectId, ChatConversation) {
+        let mut state = AppState::new_test();
+        state.agent_provider_settings_repo = Arc::new(MemoryAgentProviderSettingsRepository::new());
+        state
+            .agent_provider_settings_repo
+            .upsert(&claude_enabled_default())
+            .await
+            .expect("seed provider");
+        let project = state
+            .project_repo
+            .create(Project::new(
+                "Continue".to_string(),
+                "/tmp/continue".to_string(),
+            ))
+            .await
+            .expect("seed project");
+        let conversation = state
+            .chat_conversation_repo
+            .create(ChatConversation::new_project(project.id.clone()))
+            .await
+            .expect("seed conversation");
+        (state, project.id, conversation)
+    }
+
+    async fn seed_intent(
+        state: &AppState,
+        conversation: &ChatConversation,
+        project_id: &ProjectId,
+        provider: &str,
+        model_override: Option<&str>,
+    ) {
+        let now = chrono::Utc::now();
+        state
+            .remote_conversation_message_request_repo
+            .create_message_request(RemoteConversationMessageRequest {
+                id: "intent-1".to_string(),
+                conversation_id: conversation.id.clone(),
+                project_id: project_id.clone(),
+                content: "keep going".to_string(),
+                provider: provider.to_string(),
+                model_override: model_override.map(str::to_string),
+                logical_effort: None,
+                status: RemoteConversationMessageStatus::Pending,
+                error_code: None,
+                requested_by_device_id: String::new(),
+                agent_run_id: None,
+                claimed_at: None,
+                created_at: now,
+                updated_at: now,
+            })
+            .await
+            .expect("seed intent");
+    }
+
+    async fn tick(state: &AppState) {
+        let execution_state = Arc::new(ExecutionState::new());
+        let app_handle = crate::testing::create_mock_app_handle();
+        dispatch_one_remote_conversation_message(state, &execution_state, &app_handle)
+            .await
+            .expect("dispatcher tick");
+    }
+
+    async fn stored_intent(state: &AppState) -> RemoteConversationMessageRequest {
+        state
+            .remote_conversation_message_request_repo
+            .get_message_request("intent-1")
+            .await
+            .expect("read intent")
+            .expect("intent exists")
+    }
+
+    /// The revalidation that only the dispatcher can perform: a run that went live between
+    /// persist and claim. The live queue owns the turn, so a fresh send here would DOUBLE it.
+    /// The intent must terminalise with the distinct retryable code, and no second run may exist.
+    #[tokio::test]
+    async fn a_run_that_went_live_between_persist_and_claim_fails_the_intent() {
+        let (state, project_id, conversation) = seeded_state().await;
+        seed_intent(&state, &conversation, &project_id, "claude", None).await;
+        // The race: a run goes live AFTER the command validated "no active run".
+        state
+            .agent_run_repo
+            .create(AgentRun::new(conversation.id.clone()))
+            .await
+            .expect("live run");
+
+        tick(&state).await;
+
+        let stored = stored_intent(&state).await;
+        assert_eq!(stored.status, RemoteConversationMessageStatus::Failed);
+        assert_eq!(
+            stored.error_code.as_deref(),
+            Some(REMOTE_CONV_MESSAGE_RUN_WENT_LIVE)
+        );
+        assert!(stored.agent_run_id.is_none());
+    }
+
+    /// A provider disabled since persist must terminalise the intent as `Failed` and NEVER send —
+    /// authority-before-effects, fail-closed, and no silent substitution to another provider.
+    #[tokio::test]
+    async fn a_provider_disabled_since_persist_fails_the_intent_and_never_sends() {
+        let (state, project_id, conversation) = seeded_state().await;
+        // The intent named codex, which was never enabled here.
+        seed_intent(&state, &conversation, &project_id, "codex", None).await;
+
+        tick(&state).await;
+
+        let stored = stored_intent(&state).await;
+        assert_eq!(stored.status, RemoteConversationMessageStatus::Failed);
+        assert_eq!(
+            stored.error_code.as_deref(),
+            Some(REMOTE_CONV_MESSAGE_PROVIDER_NOT_ENABLED)
+        );
+        // Absence: re-validation failure sends nothing.
+        assert!(
+            state
+                .agent_run_repo
+                .get_active_for_conversation(&conversation.id)
+                .await
+                .expect("run read")
+                .is_none(),
+            "a re-validation failure must not start a run"
+        );
+    }
+
+    /// A model disabled since persist is rejected rather than silently swapped for the default.
+    #[tokio::test]
+    async fn a_model_disabled_since_persist_fails_the_intent() {
+        let (state, project_id, conversation) = seeded_state().await;
+        seed_intent(
+            &state,
+            &conversation,
+            &project_id,
+            "claude",
+            Some("totally-not-a-real-model"),
+        )
+        .await;
+
+        tick(&state).await;
+
+        let stored = stored_intent(&state).await;
+        assert_eq!(stored.status, RemoteConversationMessageStatus::Failed);
+        assert_eq!(
+            stored.error_code.as_deref(),
+            Some(REMOTE_CONV_MESSAGE_MODEL_NOT_ENABLED)
+        );
+    }
+
+    /// A conversation archived since persist must not be continued.
+    #[tokio::test]
+    async fn a_conversation_archived_since_persist_fails_the_intent() {
+        let (state, project_id, conversation) = seeded_state().await;
+        seed_intent(&state, &conversation, &project_id, "claude", None).await;
+        state
+            .chat_conversation_repo
+            .archive(&conversation.id)
+            .await
+            .expect("archive");
+
+        tick(&state).await;
+
+        let stored = stored_intent(&state).await;
+        assert_eq!(stored.status, RemoteConversationMessageStatus::Failed);
+        assert_eq!(
+            stored.error_code.as_deref(),
+            Some(REMOTE_CONV_MESSAGE_CONVERSATION_ARCHIVED)
+        );
+    }
+
+    /// The intent's own scope is re-proved at dispatch: a row whose project no longer matches the
+    /// persisted conversation is refused rather than sent into whichever project it names.
+    #[tokio::test]
+    async fn a_project_mismatch_at_dispatch_fails_the_intent() {
+        let (state, _, conversation) = seeded_state().await;
+        seed_intent(
+            &state,
+            &conversation,
+            &ProjectId::from_string("some-other-project".to_string()),
+            "claude",
+            None,
+        )
+        .await;
+
+        tick(&state).await;
+
+        let stored = stored_intent(&state).await;
+        assert_eq!(stored.status, RemoteConversationMessageStatus::Failed);
+        assert_eq!(
+            stored.error_code.as_deref(),
+            Some(REMOTE_CONV_MESSAGE_PROJECT_MISMATCH)
+        );
+    }
+
+    /// A conversation deleted since persist terminalises visibly rather than hanging in
+    /// `Dispatching` — the ghost-message hazard is a stuck row just as much as a lost one.
+    #[tokio::test]
+    async fn a_conversation_deleted_since_persist_fails_the_intent() {
+        let (state, project_id, conversation) = seeded_state().await;
+        seed_intent(&state, &conversation, &project_id, "claude", None).await;
+        state
+            .chat_conversation_repo
+            .delete(&conversation.id)
+            .await
+            .expect("delete conversation");
+
+        tick(&state).await;
+
+        let stored = stored_intent(&state).await;
+        assert_eq!(stored.status, RemoteConversationMessageStatus::Failed);
+        assert_eq!(
+            stored.error_code.as_deref(),
+            Some(REMOTE_CONV_MESSAGE_CONVERSATION_NOT_FOUND)
+        );
+    }
+
+    /// An empty table is a no-op, not an error: the loop ticks every two seconds forever.
+    #[tokio::test]
+    async fn an_empty_queue_is_a_no_op() {
+        let (state, _, _) = seeded_state().await;
+        tick(&state).await;
+        assert!(state
+            .remote_conversation_message_request_repo
+            .get_message_request("intent-1")
+            .await
+            .expect("read intent")
+            .is_none());
+    }
+
+    /// The claim is CAS-guarded, so a second tick cannot re-claim a row the first already took.
+    /// Without this, two ticks racing would deliver the same turn twice.
+    #[tokio::test]
+    async fn a_claimed_intent_is_never_reclaimed_by_a_later_tick() {
+        let (state, project_id, conversation) = seeded_state().await;
+        seed_intent(&state, &conversation, &project_id, "codex", None).await;
+
+        tick(&state).await;
+        let after_first = stored_intent(&state).await;
+        assert_eq!(after_first.status, RemoteConversationMessageStatus::Failed);
+
+        // A second tick must find nothing to claim and must not touch the settled row.
+        tick(&state).await;
+        let after_second = stored_intent(&state).await;
+        assert_eq!(after_second.status, RemoteConversationMessageStatus::Failed);
+        assert_eq!(after_second.updated_at, after_first.updated_at);
     }
 }
 

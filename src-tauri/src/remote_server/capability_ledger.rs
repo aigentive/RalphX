@@ -232,6 +232,10 @@ pub const MODULE_DEFAULTS: &[ModuleDefault] = &[
     // Same construction and the same conservative default as `remote_chat_commands`: the module
     // takes no AppHandle/ExecutionState/ChatService, so it cannot spawn, but a future member must
     // still earn its own row rather than inherit the start command's.
+    // Same construction and the same conservative default: the continuation module takes no
+    // AppHandle/ExecutionState/ChatService, so it cannot spawn, but a future member must still
+    // earn its own row rather than inherit the message command's.
+    agent_default("remote_conversation_message_commands"),
     agent_default("remote_conversation_start_commands"),
     // Same construction and the same conservative default as `remote_chat_commands`: the
     // module cannot spawn (no AppHandle, no ExecutionState, no ChatService), but a future
@@ -459,6 +463,35 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
             RiskClass::Read,
             NONE,
             "pure repository read of one start-intent row; no spawn carrier; propagates read errors",
+        ),
+    },
+    // Reviewed, not inherited. The CONTINUATION half of remote chat send (WP1): removes the
+    // one-shot behaviour `send_remote_chat_message` alone left behind. Seeds a message-intent row
+    // the host-owned dispatcher loop consumes to send — honestly `SeedsSpawnTriggeringState`,
+    // the same capability inject_task / resume_automation carry — PLUS
+    // `MutatesAgentConsumedContent` for the turn content it seeds. Detector-silent on (a)/(c);
+    // detector (b) flags it mechanically via the `remote-conversation-message` surface row.
+    // The unknown-model pass-through of the local send path is deliberately NOT reused, and the
+    // command REFUSES when a run is already live so it can never double a turn.
+    CommandOverride {
+        command: "request_remote_agent_conversation_message",
+        policy: policy(
+            RiskClass::AgentControl,
+            CONTENT_AND_SEEDS,
+            "seeds-spawn-triggering-state, declared membership seeds-agent-turn-for-idle-conversation: \
+             persists a continuation intent a host loop later sends \
+             through the provider-session resume seam; validates conversation ownership, \
+             archival, run liveness, provider and model fail-closed and rejects unknown models \
+             rather than passing them to CLI argv; has no role field to forge; resolves no CLI \
+             path and arms no scheduler in-band",
+        ),
+    },
+    CommandOverride {
+        command: "get_remote_conversation_message_request",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "pure repository read of one message-intent row; no spawn carrier; propagates read errors",
         ),
     },
     CommandOverride {
@@ -3823,6 +3856,17 @@ pub const DECLARED_MEMBERSHIPS: &[(&str, &str)] = &[
     (
         "upsert_custom_agent_model",
         "configures-future-agent-runtime",
+    ),
+    // WP1 (remote conversation continuation). Same reasoning as `send_remote_chat_message`
+    // above and the same failure it prevents: the P-17b negative suite is generated from
+    // detector output, and a spawn-free command that CAUSES a live agent turn would otherwise
+    // never be proved unreachable from a default `ui:read`+`ui:operate` pairing. Detector (b)
+    // does fire on this one via the `remote-conversation-message` surface row, but the
+    // declaration is recorded anyway because the membership is a property of the command, not
+    // of whichever detector happens to model the surface this month.
+    (
+        "request_remote_agent_conversation_message",
+        "seeds-agent-turn-for-idle-conversation",
     ),
 ];
 

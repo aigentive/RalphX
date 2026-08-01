@@ -177,14 +177,14 @@ describe("remote send routing", () => {
     useRemoteEnvironment();
     primitiveInvoke.mockResolvedValue({
       outcome: "commandError",
-      error: "REMOTE_CHAT_SEND_NOT_STEERABLE",
+      error: "REMOTE_CHAT_SEND_CONVERSATION_ARCHIVED",
     });
 
     await expect(
       sendAgentMessage("project", "project-1", "hi", undefined, {
         conversationId: CONVERSATION_ID,
       }),
-    ).rejects.toThrow(/isn't running right now/);
+    ).rejects.toThrow(/archived/);
   });
 
   it("leaves a RemoteTransportError intact so unknown-outcome reconcile still fires", async () => {

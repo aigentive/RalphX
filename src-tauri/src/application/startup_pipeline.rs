@@ -216,6 +216,24 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         );
     }
 
+    // Same reasoning as the start dispatcher above, and the same placement for the same reason:
+    // the continuation driver is a LIVE operational loop, not recovery work. A host running with
+    // `RALPHX_DISABLE_STARTUP_RECOVERY` (routine in dev) would otherwise leave every remote
+    // follow-up message stuck `pending`, which is exactly the ghost-message hazard WP1 exists to
+    // remove.
+    {
+        let phase_started_at = startup_phase_started("remote_conversation_message_dispatcher_spawn");
+        startup_background::spawn_remote_conversation_message_dispatcher(
+            deps.app_state.clone(),
+            Arc::clone(&deps.execution_state),
+            deps.app_handle.clone(),
+        );
+        startup_phase_completed(
+            "remote_conversation_message_dispatcher_spawn",
+            phase_started_at,
+        );
+    }
+
     if startup_jobs::is_startup_recovery_disabled() {
         info!(
             env_var = startup_jobs::RALPHX_DISABLE_STARTUP_RECOVERY_ENV,

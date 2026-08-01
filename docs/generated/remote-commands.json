@@ -536,6 +536,7 @@
     "validate_granola_integration_settings",
     "resolve_user_question",
     "request_remote_agent_conversation_start",
+    "request_remote_agent_conversation_message",
     "start_agent_conversation",
     "abort_seeded_agent_conversation",
     "switch_agent_conversation_mode",
@@ -1091,6 +1092,19 @@
       "sinksReached": [
         "send_message",
         "write_message"
+      ]
+    },
+    {
+      "authorityBearing": true,
+      "enclosingFunction": "application/startup_background.rs:::::spawn_remote_conversation_message_dispatcher",
+      "file": "application/startup_background.rs",
+      "id": "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_conversation_message_dispatcher@419d74969e41afba",
+      "kind": "async_runtime::spawn",
+      "readSurface": [
+        "remote-conversation-message"
+      ],
+      "sinksReached": [
+        "send_message"
       ]
     },
     {
@@ -2141,6 +2155,10 @@
     {
       "command": "upsert_custom_agent_model",
       "reason": "configures-future-agent-runtime"
+    },
+    {
+      "command": "request_remote_agent_conversation_message",
+      "reason": "seeds-agent-turn-for-idle-conversation"
     }
   ],
   "facade_ops": [
@@ -2580,6 +2598,27 @@
       ],
       "scopeConfined": false,
       "target": "crate::commands::remote_conversation_start_commands::request_remote_agent_conversation_start"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "mutatesAgentConsumedContent",
+        "seedsSpawnTriggeringState"
+      ],
+      "class": "agentControl",
+      "command": "request_remote_agent_conversation_message",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::remote_conversation_message_commands::request_remote_agent_conversation_message"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_remote_conversation_message_request",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::remote_conversation_message_commands::get_remote_conversation_message_request"
     },
     {
       "argumentSensitive": false,
@@ -8658,6 +8697,27 @@
       "v1Resolution": "registerable"
     },
     {
+      "capabilities": [
+        "mutatesAgentConsumedContent",
+        "seedsSpawnTriggeringState"
+      ],
+      "class": "agentControl",
+      "command": "request_remote_agent_conversation_message",
+      "module": "remote_conversation_message_commands",
+      "reason": "seeds-spawn-triggering-state, declared membership seeds-agent-turn-for-idle-conversation: persists a continuation intent a host loop later sends through the provider-session resume seam; validates conversation ownership, archival, run liveness, provider and model fail-closed and rejects unknown models rather than passing them to CLI argv; has no role field to forge; resolves no CLI path and arms no scheduler in-band",
+      "registered": true,
+      "v1Resolution": "registerable"
+    },
+    {
+      "capabilities": [],
+      "class": "read",
+      "command": "get_remote_conversation_message_request",
+      "module": "remote_conversation_message_commands",
+      "reason": "pure repository read of one message-intent row; no spawn carrier; propagates read errors",
+      "registered": true,
+      "v1Resolution": "registerable"
+    },
+    {
       "capabilities": [],
       "class": "read",
       "command": "list_remote_agent_conversations_page",
@@ -10588,6 +10648,17 @@
       "writers": [
         "update_notification_settings",
         "update_review_settings"
+      ]
+    },
+    {
+      "armedValue": "Pending",
+      "id": "remote-conversation-message",
+      "readByLoops": [
+        "application/startup_background.rs::application/startup_background.rs:::::spawn_remote_conversation_message_dispatcher@419d74969e41afba"
+      ],
+      "surface": "remote_conversation_message_requests.status",
+      "writers": [
+        "request_remote_agent_conversation_message"
       ]
     },
     {
