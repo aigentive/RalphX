@@ -196,6 +196,26 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     }
     startup_phase_completed("legacy_claude_mcp_reconciliation", phase_started_at);
 
+    // The host-owned driver for spawn-free remote conversation starts is a LIVE operational
+    // driver, not recovery work: it polls a durable intent table and starts chat-mode
+    // conversations on the host. It must run whenever the host is (or becomes) reachable, so it is
+    // spawned here — in the always-run prefix, BEFORE the recovery-disabled early return below —
+    // not in the recovery pipeline. Otherwise a host with `RALPHX_DISABLE_STARTUP_RECOVERY` set
+    // (routine in dev) leaves every remote start intent stuck `pending` and the conversation blank.
+    // `try_start_recurring_service` inside the spawn dedupes if the recovery path ever reaches it.
+    {
+        let phase_started_at = startup_phase_started("remote_conversation_start_dispatcher_spawn");
+        startup_background::spawn_remote_conversation_start_dispatcher(
+            deps.app_state.clone(),
+            Arc::clone(&deps.execution_state),
+            deps.app_handle.clone(),
+        );
+        startup_phase_completed(
+            "remote_conversation_start_dispatcher_spawn",
+            phase_started_at,
+        );
+    }
+
     if startup_jobs::is_startup_recovery_disabled() {
         info!(
             env_var = startup_jobs::RALPHX_DISABLE_STARTUP_RECOVERY_ENV,
@@ -1069,21 +1089,9 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         startup_phase_completed("agent_workspace_bridge_dispatcher_spawn", phase_started_at);
     }
 
-    {
-        // The host-owned driver for spawn-free remote conversation starts. Independent of the
-        // Git preflight above: seeding + starting a chat-mode conversation needs no repository
-        // Git authority, and the loop re-validates provider/model/project at claim time.
-        let phase_started_at = startup_phase_started("remote_conversation_start_dispatcher_spawn");
-        startup_background::spawn_remote_conversation_start_dispatcher(
-            app_state.clone(),
-            Arc::clone(&execution_state),
-            app_handle.clone(),
-        );
-        startup_phase_completed(
-            "remote_conversation_start_dispatcher_spawn",
-            phase_started_at,
-        );
-    }
+    // The remote conversation-start dispatcher is spawned earlier, in the always-run startup
+    // prefix (before the recovery-disabled early return), because it is a live driver rather than
+    // recovery work — see the note above the `is_startup_recovery_disabled` check.
 
     if mode == StartupPipelineMode::Full {
         let phase_started_at = startup_phase_started("cleanup_loop_spawn");
