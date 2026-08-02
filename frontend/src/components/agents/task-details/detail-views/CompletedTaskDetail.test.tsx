@@ -3,7 +3,10 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskValidationSummary } from "@/hooks/useTaskValidationSummary";
 import type { Task } from "@/types/task";
+import { AGENT_CONTROL_DISABLED_HINT } from "@/lib/remote/agent-gate";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { CompletedTaskDetail } from "./CompletedTaskDetail";
+import { setDetailViewEnvironment } from "./agent-gate.test-utils";
 
 const {
   historyState,
@@ -72,18 +75,23 @@ vi.mock("../TaskRerunDialog", () => ({
   TaskRerunDialog: ({
     isOpen,
     onConfirm,
+    error,
   }: {
     isOpen: boolean;
     onConfirm: (result: { option: "keep_changes"; note: string }) => void;
+    error?: string | null;
   }) =>
     isOpen ? (
-      <button
-        type="button"
-        data-testid="confirm-rerun"
-        onClick={() => onConfirm({ option: "keep_changes", note: "Review new changes" })}
-      >
-        Confirm rerun
-      </button>
+      <div>
+        <button
+          type="button"
+          data-testid="confirm-rerun"
+          onClick={() => onConfirm({ option: "keep_changes", note: "Review new changes" })}
+        >
+          Confirm rerun
+        </button>
+        {error && <p>{error}</p>}
+      </div>
     ) : null,
 }));
 
@@ -156,7 +164,7 @@ function TestWrapper({ children }: { children: React.ReactNode }) {
   });
   return (
     <QueryClientProvider client={queryClient}>
-      {children}
+      <TooltipProvider>{children}</TooltipProvider>
     </QueryClientProvider>
   );
 }
@@ -168,6 +176,7 @@ describe("Agents CompletedTaskDetail", () => {
     validationState.display = validationSummary();
     moveTask.mockResolvedValue(undefined);
     resumeExecution.mockResolvedValue(undefined);
+    setDetailViewEnvironment("local");
   });
 
   it("renders completed stage content, review evidence, and current actions in the one-column shell", () => {
@@ -232,5 +241,33 @@ describe("Agents CompletedTaskDetail", () => {
       expect(moveTask).toHaveBeenCalledWith("task-1", "ready", "Review new changes");
       expect(resumeExecution).toHaveBeenCalledWith("project-1");
     });
+  });
+
+  it.each([
+    ["remote-default", true, AGENT_CONTROL_DISABLED_HINT],
+    ["remote-agent", false, null],
+    ["local", false, null],
+  ] as const)("gates rerun in the %s environment", (environment, disabled, hint) => {
+    setDetailViewEnvironment(environment);
+    render(<CompletedTaskDetail task={task()} />, { wrapper: TestWrapper });
+
+    const button = screen.getByTestId("reopen-task-button");
+    disabled ? expect(button).toBeDisabled() : expect(button).toBeEnabled();
+    if (hint) {
+      expect(screen.getByTestId("agent-gate-tooltip")).toHaveAttribute("data-agent-gated", "true");
+    } else {
+      expect(screen.queryByTestId("agent-gate-tooltip")).not.toBeInTheDocument();
+    }
+  });
+
+  it("reports a resume-preflight failure after the move still succeeds", async () => {
+    resumeExecution.mockRejectedValue(new Error("scheduler resume unavailable"));
+    render(<CompletedTaskDetail task={task()} />, { wrapper: TestWrapper });
+
+    fireEvent.click(screen.getByTestId("reopen-task-button"));
+    fireEvent.click(screen.getByTestId("confirm-rerun"));
+
+    await waitFor(() => expect(moveTask).toHaveBeenCalledWith("task-1", "ready", "Review new changes"));
+    expect(await screen.findByText("scheduler resume unavailable")).toBeInTheDocument();
   });
 });
