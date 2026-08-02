@@ -118,6 +118,10 @@ coverage:
           # by focused agent_workspace_fixer_conversation_tests; keep patch
           # coverage on those extracted helpers, not orchestration error branches.
           - "!src-tauri/src/application/agent_workspace_review.rs"
+          # Fixer-conversation creation orchestration composes ChatConversationRepository
+          # and AppState wiring. Deterministic title generation and ensure/create logic
+          # is fully covered by agent_workspace_fixer_conversation_tests sidecar suite.
+          - "!src-tauri/src/application/agent_workspace_fixer_conversation.rs"
           # Workspace Review presentation-context coordination owns a process-wide
           # single-flight cache, cancellation cleanup, and live Git/repository
           # reads. The public status, cache, refresh, and coalescing outcomes are
@@ -144,6 +148,14 @@ coverage:
           - "!src-tauri/src/http_server/handlers/git.rs"
           - "!src-tauri/src/infrastructure/memory/memory_branch_update_repo.rs"
           - "!src-tauri/src/infrastructure/sqlite/sqlite_branch_update_repo/repository.rs"
+          # SQLite workspace-repair persistence adapter. Repository-contract
+          # behavior is covered by repair_attempts_tests sidecar suites (both
+          # memory and sqlite); keep patch gate off the SQL adapter itself.
+          - "!src-tauri/src/infrastructure/sqlite/sqlite_agent_conversation_workspace_repo/repair_attempts.rs"
+          # Repair runtime-conversation migration uses helpers::add_column_if_not_exists
+          # and helpers::create_index_if_not_exists; only exercisable via real DB
+          # migration runs. Tested through migration integration tests.
+          - "!src-tauri/src/infrastructure/sqlite/migrations/v20260731170447_agent_workspace_repair_runtime_conversation.rs"
           - "!src-tauri/src/http_server/mod.rs"
           - "!src-tauri/src/http_server/handlers/artifacts/approval.rs"
           - "!src-tauri/src/http_server/handlers/artifacts/create.rs"
