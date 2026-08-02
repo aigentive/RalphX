@@ -454,6 +454,7 @@
     ]
   },
   "agent_control_floor": [
+    "retry_startup",
     "update_notification_settings",
     "remote_fetch",
     "complete_atlassian_oauth_local_callback",
@@ -542,7 +543,6 @@
     "abort_seeded_agent_conversation",
     "switch_agent_conversation_mode",
     "send_agent_message",
-    "queue_agent_message",
     "send_queued_agent_message_now",
     "list_agent_sidebar_conversations",
     "set_agent_conversation_muted",
@@ -652,9 +652,9 @@
     },
     {
       "authorityBearing": true,
-      "enclosingFunction": "application/agent_workspace_external_pr_reconciliation.rs:::::schedule_agent_workspace_external_pr_reconciliation",
+      "enclosingFunction": "application/agent_workspace_external_pr_reconciliation.rs:::::schedule_agent_workspace_external_pr_reconciliation_with_lazy_deps",
       "file": "application/agent_workspace_external_pr_reconciliation.rs",
-      "id": "application/agent_workspace_external_pr_reconciliation.rs::application/agent_workspace_external_pr_reconciliation.rs:::::schedule_agent_workspace_external_pr_reconciliation@8583f7d45a144f7f",
+      "id": "application/agent_workspace_external_pr_reconciliation.rs::application/agent_workspace_external_pr_reconciliation.rs:::::schedule_agent_workspace_external_pr_reconciliation_with_lazy_deps@f00e635e44918aa6",
       "kind": "tokio::spawn",
       "readSurface": [],
       "sinksReached": [
@@ -664,9 +664,9 @@
     },
     {
       "authorityBearing": true,
-      "enclosingFunction": "application/agent_workspace_pr_supervision_recovery.rs:::::schedule_agent_workspace_pr_supervision_recovery",
+      "enclosingFunction": "application/agent_workspace_pr_supervision_recovery.rs:::::schedule_agent_workspace_pr_supervision_recovery_with_lazy_deps",
       "file": "application/agent_workspace_pr_supervision_recovery.rs",
-      "id": "application/agent_workspace_pr_supervision_recovery.rs::application/agent_workspace_pr_supervision_recovery.rs:::::schedule_agent_workspace_pr_supervision_recovery@c029447ef98e9ee5",
+      "id": "application/agent_workspace_pr_supervision_recovery.rs::application/agent_workspace_pr_supervision_recovery.rs:::::schedule_agent_workspace_pr_supervision_recovery_with_lazy_deps@e2996e37b5161290",
       "kind": "tokio::spawn",
       "readSurface": [],
       "sinksReached": [
@@ -704,7 +704,7 @@
       "authorityBearing": true,
       "enclosingFunction": "application/app_setup.rs:::::launch_startup_attempt",
       "file": "application/app_setup.rs",
-      "id": "application/app_setup.rs::application/app_setup.rs:::::launch_startup_attempt@a7f8e57aac6aa30c",
+      "id": "application/app_setup.rs::application/app_setup.rs:::::launch_startup_attempt@47945a764fb18d39",
       "kind": "async_runtime::spawn",
       "readSurface": [],
       "sinksReached": [
@@ -799,7 +799,7 @@
       "authorityBearing": true,
       "enclosingFunction": "application/chat_service/chat_service_send_background.rs:::::spawn_send_message_background",
       "file": "application/chat_service/chat_service_send_background.rs",
-      "id": "application/chat_service/chat_service_send_background.rs::application/chat_service/chat_service_send_background.rs:::::spawn_send_message_background@2d993297d593cb6a",
+      "id": "application/chat_service/chat_service_send_background.rs::application/chat_service/chat_service_send_background.rs:::::spawn_send_message_background@cadb8d702e658966",
       "kind": "tokio::spawn",
       "readSurface": [],
       "sinksReached": [
@@ -1181,6 +1181,15 @@
       "authorityBearing": false,
       "enclosingFunction": "application/startup_jobs.rs::StartupJobRunner::run_inner",
       "file": "application/startup_jobs.rs",
+      "id": "application/startup_jobs.rs::application/startup_jobs.rs::StartupJobRunner::run_inner@6a4da428113a9f43",
+      "kind": "async_runtime::spawn",
+      "readSurface": [],
+      "sinksReached": []
+    },
+    {
+      "authorityBearing": false,
+      "enclosingFunction": "application/startup_jobs.rs::StartupJobRunner::run_inner",
+      "file": "application/startup_jobs.rs",
       "id": "application/startup_jobs.rs::application/startup_jobs.rs::StartupJobRunner::run_inner@c38775e416773b52",
       "kind": "tokio::spawn",
       "readSurface": [],
@@ -1194,6 +1203,17 @@
       "kind": "tokio::spawn",
       "readSurface": [],
       "sinksReached": []
+    },
+    {
+      "authorityBearing": true,
+      "enclosingFunction": "application/startup_pipeline.rs:::::spawn_delegation_park_deadline_sweep",
+      "file": "application/startup_pipeline.rs",
+      "id": "application/startup_pipeline.rs::application/startup_pipeline.rs:::::spawn_delegation_park_deadline_sweep@c42aace6a39532e2",
+      "kind": "async_runtime::spawn",
+      "readSurface": [],
+      "sinksReached": [
+        "send_message"
+      ]
     },
     {
       "authorityBearing": false,
@@ -1834,13 +1854,26 @@
       "sinksReached": []
     },
     {
-      "authorityBearing": false,
-      "enclosingFunction": "http_server/handlers/coordination/native_delegation.rs:::::start_delegate_impl_with_parent_run",
+      "authorityBearing": true,
+      "enclosingFunction": "http_server/handlers/coordination/native_delegation.rs:::::settle_delegation_from_run",
       "file": "http_server/handlers/coordination/native_delegation.rs",
-      "id": "http_server/handlers/coordination/native_delegation.rs::http_server/handlers/coordination/native_delegation.rs:::::start_delegate_impl_with_parent_run@cbaeb4a79a195ac7",
+      "id": "http_server/handlers/coordination/native_delegation.rs::http_server/handlers/coordination/native_delegation.rs:::::settle_delegation_from_run@2587d494b7cce8c2",
       "kind": "tokio::spawn",
       "readSurface": [],
-      "sinksReached": []
+      "sinksReached": [
+        "send_message"
+      ]
+    },
+    {
+      "authorityBearing": true,
+      "enclosingFunction": "http_server/handlers/coordination/native_delegation.rs:::::start_delegate_impl_with_parent_run",
+      "file": "http_server/handlers/coordination/native_delegation.rs",
+      "id": "http_server/handlers/coordination/native_delegation.rs::http_server/handlers/coordination/native_delegation.rs:::::start_delegate_impl_with_parent_run@bc6f55eab957ba94",
+      "kind": "tokio::spawn",
+      "readSurface": [],
+      "sinksReached": [
+        "send_message"
+      ]
     },
     {
       "authorityBearing": false,
@@ -3031,6 +3064,24 @@
       "pins": [],
       "scopeConfined": false,
       "target": "crate::commands::unified_chat_commands::get_agent_conversation_runtime_index"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_agent_run_attribution",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::unified_chat_commands::get_agent_run_attribution"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
+      "command": "get_agent_run_attributions",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::unified_chat_commands::get_agent_run_attributions"
     },
     {
       "argumentSensitive": false,
@@ -9460,6 +9511,24 @@
       "v1Resolution": "v1-audit-refused"
     },
     {
+      "capabilities": [],
+      "class": "read",
+      "command": "get_agent_run_attribution",
+      "module": "unified_chat_commands",
+      "reason": "bounded agent_run_repo lookup of one persisted attribution row; no spawn, no writes",
+      "registered": true,
+      "v1Resolution": "registerable"
+    },
+    {
+      "capabilities": [],
+      "class": "read",
+      "command": "get_agent_run_attributions",
+      "module": "unified_chat_commands",
+      "reason": "batched (max 100) agent_run_repo lookup of persisted attribution rows; no spawn, no writes",
+      "registered": true,
+      "v1Resolution": "registerable"
+    },
+    {
       "capabilities": [
         "spawnsProcess"
       ],
@@ -10159,6 +10228,28 @@
       "reason": "configures repository process authority",
       "registered": false,
       "v1Resolution": "v1-deferred"
+    },
+    {
+      "capabilities": [
+        "writesArbitraryPath"
+      ],
+      "class": "denied",
+      "command": "get_database_maintenance_stats",
+      "module": "database_maintenance_commands",
+      "reason": "host database file maintenance (stats read + compaction marker) operates on this Mac's SQLite files",
+      "registered": false,
+      "v1Resolution": "host-denied"
+    },
+    {
+      "capabilities": [
+        "writesArbitraryPath"
+      ],
+      "class": "denied",
+      "command": "set_database_compaction_pending",
+      "module": "database_maintenance_commands",
+      "reason": "host database file maintenance (stats read + compaction marker) operates on this Mac's SQLite files",
+      "registered": false,
+      "v1Resolution": "host-denied"
     },
     {
       "capabilities": [],

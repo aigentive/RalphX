@@ -104,10 +104,16 @@ describe("store isolation inventory", () => {
     }
   });
 
-  it("has valid classifications, rationales, and one infrastructure store", () => {
+  it("has valid classifications, rationales, and exactly the audited infrastructure stores", () => {
     const allowed = ["env-owned", "global", "mixed", "infrastructure"];
     expect(STORE_ISOLATION_INVENTORY.every((entry) => entry.rationale.trim().length > 0)).toBe(true);
     expect(STORE_ISOLATION_INVENTORY.every((entry) => allowed.includes(entry.classification))).toBe(true);
-    expect(STORE_ISOLATION_INVENTORY.filter((entry) => entry.classification === "infrastructure")).toHaveLength(1);
+    // Pin the exact set, not a count: environment identity and the connection journal are
+    // the only stores allowed to sit outside the env-isolation reset contract.
+    expect(
+      STORE_ISOLATION_INVENTORY.filter((entry) => entry.classification === "infrastructure")
+        .map((entry) => entry.storeName)
+        .sort(),
+    ).toEqual(["useEnvironmentStore", "useRemoteConnectionJournalStore"]);
   });
 });

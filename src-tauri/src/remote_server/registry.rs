@@ -1864,6 +1864,31 @@ crate::remote_commands! {
         call: async,
         result: fallible,
     },
+    // Turn-attribution reads (main #939): bounded repo lookups of persisted AgentRun rows.
+    // Without them a remote transcript loses per-turn attribution the moment main's client
+    // code renders it. Pure `agent_run_repo` reads — no spawn, no writes, no filesystem.
+    "get_agent_run_attribution"
+        => crate::commands::unified_chat_commands::get_agent_run_attribution {
+        class: Read,
+        caps: [],
+        params: [
+            (arg run_id: String),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    "get_agent_run_attributions"
+        => crate::commands::unified_chat_commands::get_agent_run_attributions {
+        class: Read,
+        caps: [],
+        params: [
+            (arg run_ids: Vec<String>),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
     "list_agent_conversation_workspace_publication_events"
         => crate::commands::unified_chat_commands::list_agent_conversation_workspace_publication_events {
         class: Read,

@@ -31,7 +31,7 @@ export const STORE_ISOLATION_INVENTORY: readonly StoreInventoryEntry[] = [
     classification: "mixed",
     persisted: {
       storageName: "ralphx-agent-session-store",
-      envFields: ["focusedProjectId", "selectedProjectId", "selectedConversationId", "lastSelectedConversationByProjectId", "expandedProjectIds", "sidebarProjectFilterIds", "pinnedConversationIds", "artifactByConversationId", "runtimeByConversationId", "serviceTierByConversationId", "roleRuntimeOverridesByConversationId", "lastRuntimeByProjectId", "branchBaseCacheByProjectId", "lastBranchBaseSelectionByProjectId"],
+      envFields: ["focusedProjectId", "selectedProjectId", "selectedConversationId", "lastSelectedConversationByProjectId", "expandedProjectIds", "sidebarProjectFilterIds", "pinnedConversationIds", "artifactByConversationId", "runtimeByConversationId", "serviceTierByConversationId", "roleRuntimeOverridesByConversationId", "lastRuntimeByProjectId", "lastRuntimeByProjectMode", "branchBaseCacheByProjectId", "lastBranchBaseSelectionByProjectId"],
       globalFields: ["defaultStartMode", "showAllProjects", "showEmptyProjectGroups", "projectSort", "sidebarGroupBy", "sidebarInboxActiveLane", "sidebarPublicationStateFilters", "lastModelEffortByProvider"],
     },
     reset: full,

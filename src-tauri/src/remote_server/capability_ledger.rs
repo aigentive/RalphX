@@ -159,6 +159,11 @@ pub const MODULE_DEFAULTS: &[ModuleDefault] = &[
     ),
     agent_default("conversation_folder_reference_commands"),
     agent_default("conversation_stats_commands"),
+    denied_default(
+        "database_maintenance_commands",
+        PATH,
+        "host database file maintenance (stats read + compaction marker) operates on this Mac's SQLite files",
+    ),
     elevated_default(
         "diagnostic_commands",
         PROCESS,
@@ -1143,6 +1148,22 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
             RiskClass::Read,
             NONE,
             "runtime lifecycle index via the non-mutating direct_agent_running_state_for_context path; propagates read errors",
+        ),
+    },
+    CommandOverride {
+        command: "get_agent_run_attribution",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "bounded agent_run_repo lookup of one persisted attribution row; no spawn, no writes",
+        ),
+    },
+    CommandOverride {
+        command: "get_agent_run_attributions",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "batched (max 100) agent_run_repo lookup of persisted attribution rows; no spawn, no writes",
         ),
     },
     CommandOverride {

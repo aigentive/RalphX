@@ -134,6 +134,12 @@ export const GATE_CALLSITE_INDIRECTIONS: readonly {
       "Setup edits post through `automationsApi.setupAgent.updateAutomation`, whose `update_automation` route name is computed inside `postAutomationJson` — invisible to the literal reach walk.",
   },
   {
+    file: "src/components/agents/AgentsStartComposer.tsx",
+    affordance: "startConversation",
+    reason:
+      "The start dispatch escapes through the `onSubmit` prop (supplied by the Agents view host); main's branch-picker refactor removed the import chain that previously exposed the op literal to the reach walk.",
+  },
+  {
     file: "src/components/Ideation/FinalizeConfirmationDialog.tsx",
     affordance: "ideationAcceptFinalize",
     reason:

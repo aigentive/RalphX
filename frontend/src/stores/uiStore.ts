@@ -610,6 +610,9 @@ export const useUiStore = create<UiState & UiActions>()(
       set((state) => {
         state.executionStatus.isPaused = isPaused;
         state.executionStatus.haltMode = isPaused ? "paused" : "running";
+        // A pause/resume event is authoritative backend state, so the halt banner may
+        // render from it even before the first full status read lands.
+        state.executionStatusKnown = true;
       }),
 
     setExecutionRunningCount: (count) =>

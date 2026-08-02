@@ -1,4 +1,4 @@
-import { backendApiUrl } from "@/api/backend";
+import { backendFetch } from "@/api/backend";
 
 import {
   ManagedTeamAssignmentSchema,
@@ -65,7 +65,10 @@ async function requestJson(
   endpoint: string,
   init: RequestInit,
 ): Promise<unknown> {
-  const response = await fetch(backendApiUrl(endpoint), init);
+  // Through the env-aware seam: local stays byte-identical fetch; a remote environment
+  // routes to the host proxy (and fails closed on unmounted routes) instead of silently
+  // hitting this device's localhost.
+  const response = await backendFetch(endpoint, init);
   if (response.ok) {
     if (response.status === 204) return null;
     return response.json();

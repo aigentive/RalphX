@@ -146,6 +146,11 @@ const NON_CONTENT_TOOLS: &[&str] = &[
     "create_agent_task",
     "create_followup_agent_conversation",
     "delegate_cancel",
+    // Merged from main: `delegate_park` registers a durable wake set for delegated jobs and ends
+    // the calling turn (`ideation-tools.ts`). It STEERS the harness — it returns no
+    // worker-consumed content of its own — so it joins its three `delegate_*` siblings here
+    // rather than widening the content-read surface.
+    "delegate_park",
     "delegate_start",
     "delegate_wait",
     "execution_complete",
@@ -1012,7 +1017,26 @@ fn detector_b_is_calibrated_and_floor_enforced() {
         // 560 -> 562: the spawn-free MODE-SWITCH pair (WP5a). `request_remote_agent_conversation_mode_switch`
         // persists a switch intent (detector (b) flags it via the `remote-conversation-mode-switch`
         // surface row; silent on (a)/(c)); `get_remote_conversation_mode_switch_request` is a pure read.
-        562,
+        // 562 -> 563: `get_remote_execution_status`, the spawn-free execution-status read twin, was
+        // added to `generate_handler!` after the 562 comment without bumping this literal (the same
+        // drift the 548 -> 551 note records); reconciled here. Measured a=b=c=false at 499 nodes —
+        // the fanout is bare-name collision on the `db.run` upsert seam batch 12 pinned, not a
+        // reached authority — so its `Read` row is detector-supported.
+        // 563 -> 567: the four commands `origin/main` added to the census, each hand-measured
+        // against all three detectors on the merged graph (a=b=c=false for all four):
+        //   * `get_agent_run_attribution` (74 nodes) and `get_agent_run_attributions` (35 nodes) —
+        //     main's per-turn attribution reads. Bounded `agent_run_repo` lookups (the batched half
+        //     is capped at 100 ids); no AppHandle/ExecutionState/ChatService, no spawn, no writes.
+        //     Registered as reviewed `Read` rows, the same clearance class as the transcript reads
+        //     they hydrate.
+        //   * `get_database_maintenance_stats` (10 nodes) and `set_database_compaction_pending`
+        //     (4 nodes) — main's host SQLite maintenance pair. Detector-silent because they touch
+        //     the DB file rather than the scheduler, which is exactly why they are NOT a `Read`
+        //     row: the `database_maintenance_commands` module default denies them on `PATH`
+        //     (`WritesArbitraryPath`) and neither is remotely registrable. Detector silence is not
+        //     a licence here; the file-scope disposition is.
+        // A census-count change in both halves, not a detector change.
+        567,
         "review the detector against the full command census"
     );
     let flagged = spawn_triggering_writers(
@@ -6205,12 +6229,29 @@ fn batch12_detector_attribution_limits_are_measured_not_assumed() {
         "`save_metrics_config` now reaches a launch sink; it is registered and that forecloses it"
     );
 
-    // (3) The collision does NOT reach the sibling read, which is why one is Read and one is not.
+    // (3) The `execute` collision does NOT reach the sibling read, which is why one is Read and
+    // one is not. The read's own closure DID grow — 23 nodes when batch 12 measured it, 413 on
+    // the graph that merged main — but the growth is the same bare-name mechanism, one method
+    // name over: `get_metrics_config` is `state.db.clone().run(|conn| load_metrics_config(..))`,
+    // and main's managed-team subsystem (`ManagedTeamStartupBarrier::run` and its siblings) added
+    // new same-arity `run` definitions for that call site to bind. Node count alone is therefore
+    // not the invariant; the two assertions below are. Detectors (a)/(b)/(c) all read false on
+    // the merged graph, and the `spawn`-named methods the collision drags in are post-resolution
+    // launchers, not `PROCESS_LAUNCH_SINKS` CLI-path resolvers, so nothing in this closure can
+    // name a binary to execute.
     let read = graph.closure(["get_metrics_config".to_string()]);
     assert!(
-        read.visited.len() < 100,
-        "`get_metrics_config` was measured at 23 nodes; if it has grown into the workflow runner \
-         its Read classification is no longer supported by its own body"
+        !read
+            .visited
+            .iter()
+            .any(|node| node.ends_with("AgentWorkflowRunner::execute")),
+        "`get_metrics_config` has grown into the workflow runner that makes its sibling upsert \
+         detector-(a) positive; its Read classification is no longer supported by its own body"
+    );
+    assert!(
+        read.visited.len() < 600,
+        "`get_metrics_config` was measured at 413 nodes through the bare name `run`; a jump past \
+         600 means a new collision class, which has to be re-audited rather than absorbed"
     );
 }
 
