@@ -3919,7 +3919,10 @@ async fn automatic_workspace_review_fixers_stop_after_the_configured_fresh_finge
     assert_eq!(capped.review_fixer_cycle_count, 2);
     assert!(capped.review_fixer_attempt_id.is_none());
     assert!(capped.review_fixer_run_id.is_none());
-    assert!(capped.review_fixer_conversation_id.is_none());
+    assert!(
+        capped.review_fixer_conversation_id.is_some(),
+        "capped state pre-creates a fixer conversation for manual routing"
+    );
     assert!(capped.last_error.is_none());
 }
 
@@ -4121,7 +4124,10 @@ async fn manual_blocking_review_fixer_routes_hidden_repair_message_when_cycle_is
     assert_eq!(completed.review_fixer_cycle_count, 0);
     assert!(completed.review_fixer_attempt_id.is_none());
     assert!(completed.review_fixer_run_id.is_none());
-    assert!(completed.review_fixer_conversation_id.is_none());
+    assert!(
+        completed.review_fixer_conversation_id.is_some(),
+        "capped state pre-creates a fixer conversation for manual routing"
+    );
     let blocking_fingerprint = completed
         .review_blocking_fingerprint
         .clone()
