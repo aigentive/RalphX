@@ -33,6 +33,7 @@ use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, QueuedMessageRepository,
     ORPHANED_AGENT_RUN_ON_APP_RESTART,
 };
+use crate::domain::review::ReviewSettings;
 use crate::domain::services::{
     ComposerArtifactReference, ComposerIntegrationReference, ComposerProjectReference,
     ComposerProjectReferenceKind,
@@ -2724,23 +2725,64 @@ async fn workspace_review_autofix_blocking_findings_policy(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
 ) -> (bool, i64) {
-    match state.review_settings_repo.get_settings().await {
-        Ok(settings) => (
-            settings.autofix_workspace_review_blocking_findings,
-            settings.workspace_review_fixer_cycle_cap.max(0),
-        ),
+    let workspace = match state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&workspace.conversation_id)
+        .await
+    {
+        Ok(Some(workspace)) => workspace,
+        Ok(None) => return (false, 0),
         Err(error) => {
             warn!(
                 target: WORKSPACE_REVIEW_LOG_TARGET,
-                operation = "blocking_fixer_autofix_settings_load_failed",
+                operation = "blocking_fixer_workspace_load_failed",
                 conversation_id = %workspace.conversation_id,
                 project_id = %workspace.project_id,
                 branch = %workspace.branch_name,
                 error = %error,
-                "Failed to load Review settings; automatic workspace Review fixer routing is disabled for this completion"
+                "Failed to load current workspace; automatic workspace Review fixer routing is disabled for this completion"
             );
-            (false, 0)
+            return (false, 0);
         }
+    };
+    match workspace.review_automation_override {
+        Some(false) => (false, 0),
+        Some(true) => match state.review_settings_repo.get_settings().await {
+            Ok(settings) => (true, settings.workspace_review_fixer_cycle_cap.max(0)),
+            Err(error) => {
+                warn!(
+                    target: WORKSPACE_REVIEW_LOG_TARGET,
+                    operation = "blocking_fixer_autofix_settings_load_failed",
+                    conversation_id = %workspace.conversation_id,
+                    project_id = %workspace.project_id,
+                    branch = %workspace.branch_name,
+                    error = %error,
+                    "Failed to load Review settings; explicit workspace automation remains enabled with the default cycle cap"
+                );
+                (
+                    true,
+                    ReviewSettings::default().workspace_review_fixer_cycle_cap,
+                )
+            }
+        },
+        None => match state.review_settings_repo.get_settings().await {
+            Ok(settings) => (
+                settings.autofix_workspace_review_blocking_findings,
+                settings.workspace_review_fixer_cycle_cap.max(0),
+            ),
+            Err(error) => {
+                warn!(
+                    target: WORKSPACE_REVIEW_LOG_TARGET,
+                    operation = "blocking_fixer_autofix_settings_load_failed",
+                    conversation_id = %workspace.conversation_id,
+                    project_id = %workspace.project_id,
+                    branch = %workspace.branch_name,
+                    error = %error,
+                    "Failed to load Review settings; automatic workspace Review fixer routing is disabled for this completion"
+                );
+                (false, 0)
+            }
+        },
     }
 }
 

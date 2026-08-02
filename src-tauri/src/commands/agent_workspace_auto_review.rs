@@ -80,6 +80,7 @@ pub(crate) enum AutoReviewSkipReason {
     ManualOnlyTerminalPr,
     NoReviewableChanges,
     GateNotRequired,
+    WorkspaceAutomationOff,
     AlreadyReviewing,
     BlockingFindings,
     ReviewFailed,
@@ -97,6 +98,7 @@ impl AutoReviewSkipReason {
             Self::ManualOnlyTerminalPr => "manual_only_terminal_pr",
             Self::NoReviewableChanges => "no_reviewable_changes",
             Self::GateNotRequired => "gate_not_required",
+            Self::WorkspaceAutomationOff => "workspace_automation_off",
             Self::AlreadyReviewing => "already_reviewing",
             Self::BlockingFindings => "blocking_findings",
             Self::ReviewFailed => "review_failed",
@@ -415,9 +417,18 @@ pub(crate) async fn resolve_auto_review_start_action(
         .get_settings()
         .await
         .map_err(|error| error.to_string())?;
-    if !review_settings.require_workspace_review {
+    if !review_settings
+        .effective_workspace_review_automation(workspace.review_automation_override)
+        .auto_review
+    {
         return Ok(AutoReviewStartAction::Skip(
-            AutoReviewSkipReason::GateNotRequired,
+            if workspace.review_automation_override == Some(false)
+                && review_settings.require_workspace_review
+            {
+                AutoReviewSkipReason::WorkspaceAutomationOff
+            } else {
+                AutoReviewSkipReason::GateNotRequired
+            },
         ));
     }
 

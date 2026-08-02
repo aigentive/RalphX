@@ -222,6 +222,11 @@ async fn seed_conversation(state: &AppState, workspace: &AgentConversationWorksp
         .create(conversation)
         .await
         .expect("conversation should persist");
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
 }
 
 fn fixer_attempt_monitor(
@@ -3796,6 +3801,136 @@ async fn complete_blocking_review_does_not_autoroute_fixer_when_autofix_is_disab
 }
 
 #[tokio::test]
+async fn review_automation_explicit_opt_out_suppresses_global_blocking_fixer() {
+    let (_temp, repo, base_sha) = init_repo();
+    committed_workspace_delta(&repo);
+
+    let state = AppState::new_test();
+    let project = seed_project(&state, &repo).await;
+    let mut workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    workspace.review_automation_override = Some(false);
+    seed_conversation(&state, &workspace).await;
+    persist_active_review_for_current_target(
+        &state,
+        &workspace,
+        "review-workspace-opt-out",
+        "artifact-workspace-opt-out",
+        0,
+    )
+    .await;
+
+    let completed = complete_agent_workspace_review_run(
+        &state,
+        &workspace,
+        Some("blocking".to_string()),
+        Some("Explicit opt-out keeps repair manual.".to_string()),
+        None,
+        Some("review-workspace-opt-out".to_string()),
+    )
+    .await
+    .expect("explicit opt-out should persist the blocker without routing");
+
+    assert_eq!(completed.review_fixer_cycle_count, 0);
+    assert!(completed.review_fixer_status.is_none());
+    assert!(completed.review_fixer_attempt_id.is_none());
+    assert!(completed.last_error.is_none());
+}
+
+#[tokio::test]
+async fn review_automation_explicit_opt_in_routes_fixer_when_global_autofix_is_off() {
+    let (_temp, repo, base_sha) = init_repo();
+    committed_workspace_delta(&repo);
+
+    let state = AppState::new_test();
+    state
+        .review_settings_repo
+        .update_settings(&ReviewSettings {
+            autofix_workspace_review_blocking_findings: false,
+            ..ReviewSettings::default()
+        })
+        .await
+        .expect("review settings should persist");
+    let project = seed_project(&state, &repo).await;
+    let mut workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    workspace.review_automation_override = Some(true);
+    seed_conversation(&state, &workspace).await;
+    persist_active_review_for_current_target(
+        &state,
+        &workspace,
+        "review-workspace-opt-in",
+        "artifact-workspace-opt-in",
+        0,
+    )
+    .await;
+
+    let completed = complete_agent_workspace_review_run(
+        &state,
+        &workspace,
+        Some("blocking".to_string()),
+        Some("Explicit opt-in should attempt automatic repair.".to_string()),
+        None,
+        Some("review-workspace-opt-in".to_string()),
+    )
+    .await
+    .expect("explicit opt-in should route through the existing fixer path");
+
+    assert_eq!(completed.review_fixer_cycle_count, 1);
+    assert_eq!(
+        completed.review_fixer_status.as_deref(),
+        Some(WORKSPACE_REVIEW_FIXER_STATUS_FAILED)
+    );
+    assert!(completed
+        .last_error
+        .as_deref()
+        .is_some_and(|error| error.contains("Review fixer")));
+}
+
+#[tokio::test]
+async fn review_automation_opt_in_does_not_enable_the_publish_gate() {
+    let (_temp, repo, base_sha) = init_repo();
+    committed_workspace_delta(&repo);
+
+    let state = AppState::new_test();
+    state
+        .review_settings_repo
+        .update_settings(&ReviewSettings {
+            require_workspace_review: false,
+            ..ReviewSettings::default()
+        })
+        .await
+        .expect("review settings should persist");
+    let project = seed_project(&state, &repo).await;
+    let mut workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    workspace.review_automation_override = Some(true);
+    seed_conversation(&state, &workspace).await;
+
+    assert_eq!(
+        load_workspace_review_publish_blocker(&state, &workspace)
+            .await
+            .expect("publish policy should load"),
+        None
+    );
+}
+
+#[tokio::test]
 async fn automatic_workspace_review_fixers_stop_after_the_configured_fresh_fingerprint_cap() {
     let (_temp, repo, base_sha) = init_repo();
     committed_workspace_delta(&repo);
@@ -4054,6 +4189,54 @@ async fn automatic_workspace_review_fixer_fails_closed_when_settings_cannot_be_r
     assert!(completed.review_fixer_run_id.is_none());
     assert!(completed.review_fixer_conversation_id.is_none());
     assert!(completed.last_error.is_none());
+}
+
+#[tokio::test]
+async fn review_automation_explicit_opt_in_uses_default_cap_when_settings_are_unavailable() {
+    let (_temp, repo, base_sha) = init_repo();
+    committed_workspace_delta(&repo);
+
+    let mut state = AppState::new_test();
+    state.review_settings_repo = Arc::new(FailingReviewSettingsRepository);
+    let project = seed_project(&state, &repo).await;
+    let mut workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    workspace.review_automation_override = Some(true);
+    seed_conversation(&state, &workspace).await;
+    persist_active_review_for_current_target(
+        &state,
+        &workspace,
+        "review-explicit-settings-failure",
+        "artifact-explicit-settings-failure",
+        0,
+    )
+    .await;
+
+    let completed = complete_agent_workspace_review_run(
+        &state,
+        &workspace,
+        Some("blocking".to_string()),
+        Some("Explicit automation survives a settings read failure.".to_string()),
+        None,
+        Some("review-explicit-settings-failure".to_string()),
+    )
+    .await
+    .expect("explicit automation should remain bounded and attempt routing");
+
+    assert_eq!(completed.review_fixer_cycle_count, 1);
+    assert_eq!(
+        completed.review_fixer_status.as_deref(),
+        Some(WORKSPACE_REVIEW_FIXER_STATUS_FAILED)
+    );
+    assert!(completed
+        .last_error
+        .as_deref()
+        .is_some_and(|error| error.contains("Review fixer")));
 }
 
 #[tokio::test]

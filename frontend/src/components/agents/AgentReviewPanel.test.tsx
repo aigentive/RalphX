@@ -9,6 +9,7 @@ import type {
   AgentWorkspaceReviewTarget,
   StartAgentWorkspaceReviewResult,
 } from "@/api/chat";
+import { chatApi } from "@/api/chat";
 import type { Artifact } from "@/types/artifact";
 
 import {
@@ -354,6 +355,59 @@ describe("AgentReviewPanel", () => {
       ),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Fix Issues" })).toBeEnabled();
+    expect(
+      screen.getAllByText("Automatic fix cycle limit reached"),
+    ).toHaveLength(1);
+    expect(
+      screen.getByText("Turn Auto Review & Fix off, then on to re-arm the loop with a fresh cycle budget."),
+    ).toBeInTheDocument();
+  });
+
+  it("shows the Workspace Review-only automation row and writes its explicit override", async () => {
+    const user = userEvent.setup();
+    const workspace = conversationWorkspaceFixture({
+      reviewAutomationOverride: true,
+    });
+    const update = vi
+      .spyOn(chatApi, "setAgentConversationWorkspaceReviewAutomation")
+      .mockResolvedValue({ ...workspace, reviewAutomationOverride: false });
+    renderPanel({
+      reviewContext: reviewContext({
+        workspace,
+        monitor: reviewMonitor({
+          reviewFixerStatus: "running",
+          reviewFixerCycleCount: 2,
+        }),
+      }),
+    });
+
+    expect(
+      screen.getByTestId("agents-review-auto-review-fix"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("switch", { name: "Auto Review & Fix" }),
+    ).toBeChecked();
+    expect(
+      screen.getByText("Auto Review & Fix · cycle 2 — fixing…"),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("switch", { name: "Auto Review & Fix" }));
+
+    expect(update).toHaveBeenCalledWith(workspace.conversationId, {
+      enabled: false,
+    });
+  });
+
+  it("keeps Auto Review & Fix out of Review PR mode", () => {
+    renderPanel({
+      isReviewPrWorkspace: true,
+      reviewContext: reviewContext({
+        workspace: conversationWorkspaceFixture({ reviewAutomationOverride: true }),
+      }),
+    });
+
+    expect(
+      screen.queryByTestId("agents-review-auto-review-fix"),
+    ).not.toBeInTheDocument();
   });
 
   it("shows only the cap detail when its blocking summary is absent", () => {

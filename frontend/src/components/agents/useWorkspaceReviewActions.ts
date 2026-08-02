@@ -10,6 +10,7 @@ import {
 } from "@/api/chat";
 import type { ManualRoleRuntimeSelection } from "@/api/manual-role-defaults.types";
 import { useRoleRuntimeConfirmation } from "./useRoleRuntimeConfirmation";
+import { WORKSPACE_REVIEW_AUTOMATION_COPY } from "./workspaceReviewAutomationCopy";
 
 function reviewTargetLabel(preview: AgentWorkspaceReviewStartPreview): string {
   const target = preview.target;
@@ -78,6 +79,7 @@ export function useWorkspaceReviewActions({
   projectId,
   onStartReview,
   onStartFixer,
+  reviewAutomation = null,
 }: {
   conversationId: string | null;
   projectId: string | null;
@@ -85,7 +87,12 @@ export function useWorkspaceReviewActions({
     force: boolean;
     confirmation: AgentWorkspaceReviewStartConfirmation;
     runtimeOverride: ManualRoleRuntimeSelection;
+    enableReviewAutomation?: boolean;
   }) => Promise<unknown>;
+  reviewAutomation?: {
+    effectiveLoopActive: boolean;
+    overrideOn: boolean;
+  } | null;
   onStartFixer: (input: {
     confirmation: AgentWorkspaceReviewFixerConfirmation;
     runtimeOverride: ManualRoleRuntimeSelection;
@@ -112,7 +119,17 @@ export function useWorkspaceReviewActions({
           const description = blockedWorkspaceReviewCopy(error);
           return description ? { description, confirmDisabled: true } : null;
         },
-        onConfirm: async (runtimeOverride) => {
+        ...(reviewAutomation
+          ? {
+              optIn: {
+                title: "Auto Review & Fix until passing",
+                description: `${WORKSPACE_REVIEW_AUTOMATION_COPY} Applies to this conversation and stays on until you turn it off.`,
+                initialValue: reviewAutomation.overrideOn,
+                hidden: reviewAutomation.effectiveLoopActive,
+              },
+            }
+          : {}),
+        onConfirm: async (runtimeOverride, optInEnabled) => {
           if (!preview) {
             throw new Error("Workspace Review preparation did not finish");
           }
@@ -120,6 +137,9 @@ export function useWorkspaceReviewActions({
             force,
             confirmation: preview.confirmation,
             runtimeOverride,
+            ...(!reviewAutomation?.overrideOn && optInEnabled
+              ? { enableReviewAutomation: true }
+              : {}),
           });
         },
         recoverFromError: async (error) => {
@@ -145,7 +165,7 @@ export function useWorkspaceReviewActions({
         },
       });
     },
-    [confirmRoleRuntime, conversationId, onStartReview],
+    [confirmRoleRuntime, conversationId, onStartReview, reviewAutomation],
   );
 
   const startFixer = useCallback(

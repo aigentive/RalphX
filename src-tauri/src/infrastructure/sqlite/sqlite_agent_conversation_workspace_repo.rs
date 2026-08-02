@@ -32,6 +32,8 @@ use crate::domain::repositories::{
     AgentWorkspacePublicationUpdate,
 };
 use crate::error::{AppError, AppResult};
+
+const WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED: &str = "cycle_capped";
 use crate::infrastructure::agents::claude::git_runtime_config;
 use crate::infrastructure::sqlite::DbConnection;
 
@@ -142,6 +144,7 @@ fn row_to_workspace(row: &rusqlite::Row<'_>) -> AppResult<AgentConversationWorks
         auto_publish_paused_pr_auto_merge_desired: row
             .get("auto_publish_paused_pr_auto_merge_desired")?,
         pr_autofix_enabled: row.get("pr_autofix_enabled")?,
+        review_automation_override: row.get("review_automation_override")?,
         pr_auto_merge_desired: row.get("pr_auto_merge_desired")?,
         pr_auto_merge_method: row
             .get::<_, Option<String>>("pr_auto_merge_method")?
@@ -889,6 +892,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
         let auto_publish_paused_pr_auto_merge_desired =
             workspace.auto_publish_paused_pr_auto_merge_desired;
         let pr_autofix_enabled = workspace.pr_autofix_enabled;
+        let review_automation_override = workspace.review_automation_override;
         let pr_auto_merge_desired = workspace.pr_auto_merge_desired;
         let pr_auto_merge_method = workspace.pr_auto_merge_method.clone();
         let pr_auto_merge_current = workspace.pr_auto_merge_current;
@@ -915,11 +919,11 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         publication_push_status, auto_publish_enabled,
                         auto_publish_initial_pr_enabled, auto_publish_paused_pr_autofix_enabled,
                         auto_publish_paused_pr_auto_merge_desired, pr_autofix_enabled,
-                        pr_auto_merge_desired, pr_auto_merge_method,
+                        review_automation_override, pr_auto_merge_desired, pr_auto_merge_method,
                         pr_auto_merge_current, pr_supervision_status,
                         pr_supervision_summary, pr_supervision_updated_at, status,
                         created_at, updated_at
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37)
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38)
                     ON CONFLICT(conversation_id) DO UPDATE SET
                         project_id=excluded.project_id,
                         mode=excluded.mode,
@@ -948,6 +952,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         auto_publish_paused_pr_autofix_enabled=excluded.auto_publish_paused_pr_autofix_enabled,
                         auto_publish_paused_pr_auto_merge_desired=excluded.auto_publish_paused_pr_auto_merge_desired,
                         pr_autofix_enabled=excluded.pr_autofix_enabled,
+                        review_automation_override=excluded.review_automation_override,
                         pr_auto_merge_desired=excluded.pr_auto_merge_desired,
                         pr_auto_merge_method=excluded.pr_auto_merge_method,
                         pr_auto_merge_current=excluded.pr_auto_merge_current,
@@ -985,6 +990,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         auto_publish_paused_pr_autofix_enabled,
                         auto_publish_paused_pr_auto_merge_desired,
                         pr_autofix_enabled,
+                        review_automation_override,
                         pr_auto_merge_desired,
                         pr_auto_merge_method,
                         pr_auto_merge_current,
@@ -2635,6 +2641,43 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         now
                     ],
                 )?;
+                Ok(())
+            })
+            .await
+    }
+
+    async fn set_review_automation_override(
+        &self,
+        conversation_id: &ChatConversationId,
+        value: Option<bool>,
+    ) -> AppResult<()> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let now = Utc::now().to_rfc3339();
+        self.db
+            .run_transaction(move |conn| {
+                conn.execute(
+                    "UPDATE agent_conversation_workspaces
+                     SET review_automation_override = ?2,
+                         updated_at = ?3
+                     WHERE conversation_id = ?1",
+                    rusqlite::params![conversation_id, value, now],
+                )?;
+                if value == Some(true) {
+                    conn.execute(
+                        "UPDATE agent_workspace_review_monitors
+                         SET review_fixer_cycle_count = 0,
+                             review_fixer_status = NULL,
+                             review_fixer_attempt_id = NULL,
+                             updated_at = ?2
+                         WHERE conversation_id = ?1
+                           AND review_fixer_status = ?3",
+                        rusqlite::params![
+                            conversation_id,
+                            now,
+                            WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED,
+                        ],
+                    )?;
+                }
                 Ok(())
             })
             .await

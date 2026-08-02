@@ -943,6 +943,8 @@ pub struct AgentConversationWorkspace {
     pub auto_publish_paused_pr_autofix_enabled: Option<bool>,
     pub auto_publish_paused_pr_auto_merge_desired: Option<bool>,
     pub pr_autofix_enabled: bool,
+    /// Per-workspace automation choice: None inherits global Review settings.
+    pub review_automation_override: Option<bool>,
     pub pr_auto_merge_desired: bool,
     pub pr_auto_merge_method: String,
     pub pr_auto_merge_current: Option<bool>,
@@ -999,6 +1001,7 @@ impl AgentConversationWorkspace {
             auto_publish_paused_pr_autofix_enabled: None,
             auto_publish_paused_pr_auto_merge_desired: None,
             pr_autofix_enabled: false,
+            review_automation_override: None,
             pr_auto_merge_desired: false,
             pr_auto_merge_method: DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD.to_string(),
             pr_auto_merge_current: None,

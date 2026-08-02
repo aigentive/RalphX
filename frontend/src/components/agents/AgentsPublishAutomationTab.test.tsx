@@ -1,13 +1,17 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import userEvent from "@testing-library/user-event";
 
 import { chatApi } from "@/api/chat";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { createTestQueryClient } from "@/test/store-utils";
 import { conversationWorkspaceFixture } from "./agentsTestFixtures";
 import { AgentsPublishAutomationTab } from "./AgentsPublishAutomationTab";
-import { deriveAgentsPublishAutomationSnapshot } from "./agentsPublishAutomationSnapshot";
+import {
+  deriveAgentsPublishAutomationSnapshot,
+  hasActiveAgentsPublishAutomation,
+} from "./agentsPublishAutomationSnapshot";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -96,11 +100,14 @@ describe("AgentsPublishAutomationTab", () => {
     expect(
       screen.getByRole("button", { name: "About Auto Publish" }),
     ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Inherit" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "On" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Off" })).toBeInTheDocument();
 
     const cards = screen
       .getByTestId("agents-pr-supervision-controls")
       .querySelectorAll(":scope > div");
-    expect(cards).toHaveLength(3);
+    expect(cards).toHaveLength(4);
     for (const card of cards) {
       expect(card.getAttribute("style")).toContain(
         "background-color: var(--bg-subtle)",
@@ -111,6 +118,53 @@ describe("AgentsPublishAutomationTab", () => {
       expect(card.getAttribute("style")).toContain("border-style: solid");
       expect(card.getAttribute("style")).toContain("border-width: 1px");
     }
+  });
+
+  it("confirms and snapshots the explicit Auto Review & Fix override", async () => {
+    const user = userEvent.setup();
+    const workspace = conversationWorkspaceFixture({
+      reviewAutomationOverride: null,
+    });
+    const mutation = vi
+      .spyOn(chatApi, "setAgentConversationWorkspaceReviewAutomation")
+      .mockResolvedValue({ ...workspace, reviewAutomationOverride: true });
+    const { onSnapshotChange } = renderAutomationTab(workspace);
+
+    await user.click(screen.getByRole("button", { name: "On" }));
+    await user.click(
+      screen.getByRole("button", { name: "Turn on Auto Review & Fix" }),
+    );
+
+    await waitFor(() =>
+      expect(mutation).toHaveBeenCalledWith(workspace.conversationId, {
+        enabled: true,
+      }),
+    );
+    await waitFor(() =>
+      expect(onSnapshotChange).toHaveBeenLastCalledWith(
+        expect.objectContaining({ reviewAutomationOverride: true }),
+      ),
+    );
+  });
+
+  it("marks automation active only for an explicit review override", () => {
+    const base = deriveAgentsPublishAutomationSnapshot({
+      workspace: conversationWorkspaceFixture({
+        autoPublishEnabled: false,
+        prAutofixEnabled: false,
+        prAutoMergeDesired: false,
+        reviewAutomationOverride: null,
+      }),
+      hasPublishedPr: true,
+    });
+
+    expect(hasActiveAgentsPublishAutomation(base)).toBe(false);
+    expect(
+      hasActiveAgentsPublishAutomation({ ...base, reviewAutomationOverride: true }),
+    ).toBe(true);
+    expect(
+      hasActiveAgentsPublishAutomation({ ...base, reviewAutomationOverride: false }),
+    ).toBe(false);
   });
 
   it("keeps the extracted coordinator as the PR preference mutation writer", async () => {

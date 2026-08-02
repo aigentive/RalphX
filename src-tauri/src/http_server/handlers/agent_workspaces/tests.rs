@@ -71,6 +71,110 @@ fn test_http_state(app_state: Arc<AppState>) -> HttpServerState {
     }
 }
 
+#[tokio::test]
+async fn review_automation_start_opt_in_persists_before_the_review_decision() {
+    let repo = tempfile::TempDir::new().expect("repo tempdir");
+    git(repo.path(), &["init", "-b", "main"]);
+    git(repo.path(), &["config", "user.email", "test@example.com"]);
+    git(repo.path(), &["config", "user.name", "RalphX Test"]);
+    std::fs::write(repo.path().join("README.md"), "base\n").expect("write base file");
+    git(repo.path(), &["add", "README.md"]);
+    git(repo.path(), &["commit", "-m", "base"]);
+    let base_sha = git(repo.path(), &["rev-parse", "HEAD"]);
+
+    let app_state = Arc::new(AppState::new_test());
+    app_state
+        .review_settings_repo
+        .update_settings(&ReviewSettings {
+            require_workspace_review: false,
+            autofix_workspace_review_blocking_findings: false,
+            ..ReviewSettings::default()
+        })
+        .await
+        .expect("review settings should update");
+    let mut project = Project::new(
+        "Review start opt-in".to_string(),
+        repo.path().to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .expect("project should persist");
+
+    let conversation_id = ChatConversationId::new();
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.id = conversation_id.clone();
+    conversation.agent_mode = Some(AgentConversationWorkspaceMode::Edit);
+    app_state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("conversation should persist");
+    let workspace = AgentConversationWorkspace::new(
+        conversation_id.clone(),
+        project.id,
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("Project default (main)".to_string()),
+        Some(base_sha),
+        "main".to_string(),
+        repo.path().to_string_lossy().to_string(),
+    );
+    app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    let Json(preview) = get_agent_workspace_review_start_preview(
+        State(test_http_state(Arc::clone(&app_state))),
+        Path(conversation_id.as_str()),
+    )
+    .await
+    .expect("review preview should provide a fresh confirmation");
+    let confirmation = preview.confirmation;
+
+    let Json(response) = start_agent_workspace_review_run(
+        State(test_http_state(Arc::clone(&app_state))),
+        Path(conversation_id.as_str()),
+        Json(StartAgentWorkspaceReviewRequest {
+            force: Some(false),
+            enable_review_automation: Some(true),
+            confirmation: Some(StartAgentWorkspaceReviewConfirmationRequest {
+                target_scope: confirmation.target_scope,
+                diff_fingerprint: confirmation.diff_fingerprint,
+                head_sha: confirmation.head_sha,
+                pr_number: confirmation.pr_number,
+                will_disable_auto_merge: confirmation.will_disable_auto_merge,
+                merge_method: confirmation.merge_method,
+                restore_after_publish: confirmation.restore_after_publish,
+            }),
+            runtime_override: None,
+        }),
+    )
+    .await
+    .expect("review start should evaluate the newly armed workspace");
+
+    assert!(!response.started);
+    assert_eq!(
+        response.skipped_reason.as_deref(),
+        Some("no_reviewable_changes")
+    );
+    assert_eq!(
+        app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace should load")
+            .expect("workspace should exist")
+            .review_automation_override,
+        Some(true)
+    );
+}
+
 /// Legacy fixture coverage remains isolated from the production compatibility endpoint, which
 /// delegates exclusively through the durable repair coordinator.
 async fn complete_agent_workspace_pr_fix(
