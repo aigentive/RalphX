@@ -97,6 +97,7 @@ pub(crate) struct AgentWorkspaceRepairStartRequest {
     pub reason: String,
     pub summary: String,
     pub auto_merge_current: Option<bool>,
+    pub explicit_publish_requested: bool,
     pub retry_blocked: bool,
     /// Backend-observed PR evidence carried onto a successor generation. Without it a successor
     /// starts with no failure identity, and every fingerprint-based suppression downstream
@@ -289,6 +290,7 @@ fn start_attempt_from_workspace(
     );
     attempt.target_base_commit = request.target_base_commit.clone();
     attempt.summary = Some(request.summary.clone());
+    attempt.explicit_publish_requested = request.explicit_publish_requested;
     if let Some(carryover) = request.carryover_pr_autofix_evidence.as_ref() {
         attempt.pr_autofix_dispatch_head_commit = carryover.dispatch_head_commit.clone();
         attempt.pr_autofix_health_fingerprint = carryover.health_fingerprint.clone();
@@ -562,9 +564,7 @@ pub(crate) async fn block_agent_workspace_repair_needs_human(
 /// True while a PR autofix generation is parked against a backend-derived health fingerprint.
 /// Only the poller may end such a hold, and only after GitHub reports different health; no other
 /// retry path may consume the hold's budget or settle it on a timer.
-pub(crate) fn agent_workspace_repair_is_health_held(
-    attempt: &AgentWorkspaceRepairAttempt,
-) -> bool {
+pub(crate) fn agent_workspace_repair_is_health_held(attempt: &AgentWorkspaceRepairAttempt) -> bool {
     attempt.pending_reasons.iter().any(|reason| {
         reason == PRE_EXISTING_ON_BASE_REPAIR_REASON || reason == UNCHANGED_HEALTH_REPAIR_REASON
     })
@@ -1710,12 +1710,23 @@ where
     {
         attempt.continuation = AgentWorkspaceRepairContinuation::Publish;
     }
+    if explicit_publish
+        && matches!(
+            attempt.continuation,
+            AgentWorkspaceRepairContinuation::Publish
+                | AgentWorkspaceRepairContinuation::ResumePrSupervision
+        )
+    {
+        attempt.explicit_publish_requested = true;
+    }
     let next_phase = if review_blocker.is_some() {
         AgentWorkspaceRepairPhase::AwaitingReview
     } else if matches!(
         attempt.continuation,
         AgentWorkspaceRepairContinuation::Manual | AgentWorkspaceRepairContinuation::UpdateOnly
-    ) || (!workspace.auto_publish_enabled && !explicit_publish)
+    ) || (!workspace.auto_publish_enabled
+        && !explicit_publish
+        && !attempt.explicit_publish_requested)
     {
         AgentWorkspaceRepairPhase::Ready
     } else {

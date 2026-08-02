@@ -556,6 +556,73 @@ async fn park_current_repair_at_ready(
     }
 }
 
+async fn backdate_current_ready_repair_attempt_for_recovery(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    continuation: Option<AgentWorkspaceRepairContinuation>,
+    explicit_publish_requested: Option<bool>,
+) -> AgentWorkspaceRepairAttempt {
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(conversation_id)
+        .await
+        .expect("load Ready repair attempt")
+        .expect("Ready repair attempt should remain current");
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Ready);
+
+    let mut ready = current.clone();
+    if let Some(continuation) = continuation {
+        ready.continuation = continuation;
+    }
+    if let Some(explicit_publish_requested) = explicit_publish_requested {
+        ready.explicit_publish_requested = explicit_publish_requested;
+    }
+    ready.updated_at -= chrono::Duration::seconds(61);
+    match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: ready,
+            expected_phase: current.phase,
+            expected_updated_at: current.updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Ready,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("backdate Ready repair attempt for recovery")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(ready) => ready,
+        outcome => panic!("expected backdated Ready repair attempt, got {outcome:?}"),
+    }
+}
+
+async fn prepare_current_ready_repair_attempt_for_recovery(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    continuation: Option<AgentWorkspaceRepairContinuation>,
+    explicit_publish_requested: Option<bool>,
+) -> AgentWorkspaceRepairAttempt {
+    let ready = backdate_current_ready_repair_attempt_for_recovery(
+        state,
+        conversation_id,
+        continuation,
+        explicit_publish_requested,
+    )
+    .await;
+    if ready.git_common_dir.is_none()
+        && ready.target_ref.is_none()
+        && ready.target_identity_version.is_none()
+        && ready.target_lease_epoch.is_none()
+    {
+        return ready;
+    }
+
+    recover_stale_agent_workspace_publish_repairs_for_state(state)
+        .await
+        .expect("release parked Ready repair target authority");
+    backdate_current_ready_repair_attempt_for_recovery(state, conversation_id, None, None).await
+}
+
 async fn setup_durable_recovery_fixture(
     fixture: &RewrittenRepairPublishFixture,
 ) -> (HttpServerState, Arc<MockGithubService>, AgentRunId) {
@@ -568,6 +635,354 @@ async fn setup_durable_recovery_fixture(
         app_state.with_agent_client(Arc::new(SubmittingPlanPrAgentClient::new(workspace_repo)));
     let run_id = seed_checkpointed_rewritten_repair_publish_workspace(&app_state, fixture).await;
     (make_http_state(app_state), mock_github, run_id)
+}
+
+#[tokio::test]
+async fn ready_publish_repair_stays_parked_when_auto_publish_disabled() {
+    let conversation_id = ChatConversationId::from_string("63636363-6363-6363-6363-636363636363");
+    let fixture = setup_rewritten_repair_publish_fixture(
+        conversation_id,
+        "project-ready-repair-auto-publish-disabled",
+    );
+    let (state, mock_github, _) = setup_durable_recovery_fixture(&fixture).await;
+    let mut workspace = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load workspace")
+        .expect("workspace exists");
+    workspace.auto_publish_enabled = false;
+    state
+        .app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("disable auto publish");
+    park_current_repair_at_ready(
+        state.app_state.as_ref(),
+        &conversation_id,
+        &fixture.base_sha,
+        &fixture.repaired_head,
+    )
+    .await;
+    prepare_current_ready_repair_attempt_for_recovery(
+        state.app_state.as_ref(),
+        &conversation_id,
+        None,
+        None,
+    )
+    .await;
+
+    assert_eq!(
+        recover_stale_agent_workspace_publish_repairs_for_state(state.app_state.as_ref())
+            .await
+            .expect("recover parked repair"),
+        0,
+    );
+
+    let current = state
+        .app_state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("read parked repair")
+        .expect("unauthorized repair remains current");
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Ready);
+    assert!(current.settled_at.is_none());
+    assert!(
+        current
+            .pending_reasons
+            .iter()
+            .all(|reason| !reason.starts_with("auto_retry_ready_repair:")),
+        "unauthorized recovery must not spend a ready-retry streak"
+    );
+    assert_eq!(mock_github.push_calls(), 0);
+    assert_eq!(
+        *mock_github
+            .push_branch_with_expected_remote_oid_lease_calls
+            .lock()
+            .expect("exact push counter"),
+        0,
+    );
+    assert_eq!(mock_github.create_calls(), 0);
+
+    let expected_updated_at = current.updated_at;
+    let mut exhausted = current.clone();
+    exhausted
+        .pending_reasons
+        .push("auto_retry_ready_repair:3".to_string());
+    exhausted.updated_at -= chrono::Duration::seconds(61);
+    let exhausted = match state
+        .app_state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: exhausted,
+            expected_phase: AgentWorkspaceRepairPhase::Ready,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Ready,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("seed an exhausted unauthorized Ready streak")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("expected exhausted Ready attempt, got {outcome:?}"),
+    };
+    assert_eq!(
+        recover_stale_agent_workspace_publish_repairs_for_state(state.app_state.as_ref())
+            .await
+            .expect("recover exhausted unauthorized repair"),
+        0,
+    );
+    let still_parked = state
+        .app_state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("read exhausted unauthorized repair")
+        .expect("exhausted unauthorized repair remains current");
+    assert_eq!(still_parked.id, exhausted.id);
+    assert_eq!(still_parked.phase, AgentWorkspaceRepairPhase::Ready);
+    assert!(still_parked.settled_at.is_none());
+    assert!(still_parked.outcome.is_none());
+    assert_eq!(
+        *mock_github
+            .push_branch_with_expected_remote_oid_lease_calls
+            .lock()
+            .expect("exact push counter"),
+        0,
+        "an exhausted unauthorized attempt must not publish before settlement"
+    );
+    assert!(
+        state
+            .app_state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("read publication events")
+            .is_empty(),
+        "unauthorized recovery must not record a publish effect"
+    );
+}
+
+#[tokio::test]
+async fn ready_publish_repair_redrives_when_auto_publish_enabled() {
+    let conversation_id = ChatConversationId::from_string("64646464-6464-6464-6464-646464646464");
+    let fixture = setup_rewritten_repair_publish_fixture(
+        conversation_id,
+        "project-ready-repair-auto-publish-enabled",
+    );
+    let (state, mock_github, _) = setup_durable_recovery_fixture(&fixture).await;
+    let mut workspace = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load workspace")
+        .expect("workspace exists");
+    workspace.auto_publish_enabled = true;
+    state
+        .app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("enable auto publish");
+    park_current_repair_at_ready(
+        state.app_state.as_ref(),
+        &conversation_id,
+        &fixture.base_sha,
+        &fixture.repaired_head,
+    )
+    .await;
+    prepare_current_ready_repair_attempt_for_recovery(
+        state.app_state.as_ref(),
+        &conversation_id,
+        None,
+        None,
+    )
+    .await;
+    mock_github.will_fail_exact_lease_push("exercise authorized Ready re-drive");
+
+    recover_stale_agent_workspace_publish_repairs_for_state(state.app_state.as_ref())
+        .await
+        .expect("recover authorized repair");
+
+    let current = state
+        .app_state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("read authorized repair")
+        .expect("failed re-drive remains current for backoff");
+    assert!(
+        current
+            .pending_reasons
+            .iter()
+            .any(|reason| reason == "auto_retry_ready_repair:1"),
+        "authorized recovery records its bounded re-drive streak: {current:?}"
+    );
+    assert_eq!(
+        *mock_github
+            .push_branch_with_expected_remote_oid_lease_calls
+            .lock()
+            .expect("exact push counter"),
+        1,
+        "the live auto-publish toggle authorizes the recovery re-drive"
+    );
+}
+
+#[tokio::test]
+async fn ready_publish_repair_redrives_when_user_consent_persisted() {
+    let conversation_id = ChatConversationId::from_string("65656565-6565-6565-6565-656565656565");
+    let fixture = setup_rewritten_repair_publish_fixture(
+        conversation_id,
+        "project-ready-repair-persisted-publish-consent",
+    );
+    let (state, mock_github, _) = setup_durable_recovery_fixture(&fixture).await;
+    let mut workspace = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load workspace")
+        .expect("workspace exists");
+    workspace.auto_publish_enabled = false;
+    state
+        .app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("disable auto publish");
+    park_current_repair_at_ready(
+        state.app_state.as_ref(),
+        &conversation_id,
+        &fixture.base_sha,
+        &fixture.repaired_head,
+    )
+    .await;
+    prepare_current_ready_repair_attempt_for_recovery(
+        state.app_state.as_ref(),
+        &conversation_id,
+        None,
+        Some(true),
+    )
+    .await;
+    mock_github.will_fail_exact_lease_push("exercise consent-authorized Ready re-drive");
+
+    recover_stale_agent_workspace_publish_repairs_for_state(state.app_state.as_ref())
+        .await
+        .expect("recover user-consented repair");
+
+    let current = state
+        .app_state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("read consent-authorized repair")
+        .expect("failed re-drive remains current for backoff");
+    assert!(current.explicit_publish_requested);
+    assert!(
+        current
+            .pending_reasons
+            .iter()
+            .any(|reason| reason == "auto_retry_ready_repair:1"),
+        "consent-authorized recovery records its bounded re-drive streak: {current:?}"
+    );
+    assert_eq!(
+        *mock_github
+            .push_branch_with_expected_remote_oid_lease_calls
+            .lock()
+            .expect("exact push counter"),
+        1,
+        "persisted user consent authorizes recovery while the live toggle is off"
+    );
+}
+
+#[tokio::test]
+async fn ready_update_only_repair_is_never_upgraded_to_publish_by_recovery() {
+    let conversation_id = ChatConversationId::from_string("66666666-6666-6666-6666-666666666666");
+    let fixture = setup_rewritten_repair_publish_fixture(
+        conversation_id,
+        "project-ready-update-only-repair-recovery",
+    );
+    let (state, mock_github, _) = setup_durable_recovery_fixture(&fixture).await;
+    let mut workspace = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load workspace")
+        .expect("workspace exists");
+    workspace.auto_publish_enabled = true;
+    state
+        .app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("enable auto publish");
+    park_current_repair_at_ready(
+        state.app_state.as_ref(),
+        &conversation_id,
+        &fixture.base_sha,
+        &fixture.repaired_head,
+    )
+    .await;
+    prepare_current_ready_repair_attempt_for_recovery(
+        state.app_state.as_ref(),
+        &conversation_id,
+        Some(AgentWorkspaceRepairContinuation::UpdateOnly),
+        Some(true),
+    )
+    .await;
+
+    assert_eq!(
+        recover_stale_agent_workspace_publish_repairs_for_state(state.app_state.as_ref())
+            .await
+            .expect("recover update-only repair"),
+        0,
+    );
+
+    let current = state
+        .app_state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("read update-only repair")
+        .expect("update-only repair remains current");
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Ready);
+    assert_eq!(
+        current.continuation,
+        AgentWorkspaceRepairContinuation::UpdateOnly,
+        "recovery must not upgrade an update-only repair into a publish continuation"
+    );
+    assert!(
+        current
+            .pending_reasons
+            .iter()
+            .all(|reason| !reason.starts_with("auto_retry_ready_repair:")),
+        "update-only recovery must not spend a publish retry streak"
+    );
+    assert_eq!(mock_github.push_calls(), 0);
+    assert_eq!(
+        *mock_github
+            .push_branch_with_expected_remote_oid_lease_calls
+            .lock()
+            .expect("exact push counter"),
+        0,
+    );
+    assert_eq!(mock_github.create_calls(), 0);
+    assert!(
+        state
+            .app_state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("read publication events")
+            .is_empty(),
+        "update-only recovery must not record a publish effect"
+    );
 }
 
 async fn assert_recovery_blocked_without_effects(
@@ -3383,7 +3798,12 @@ async fn explicit_base_update_supersedes_blocked_repair_with_the_new_base() {
     git(&repo_path, &["commit", "-m", "base"]);
     git(
         &repo_path,
-        &["remote", "add", "origin", remote_path.to_str().expect("remote path")],
+        &[
+            "remote",
+            "add",
+            "origin",
+            remote_path.to_str().expect("remote path"),
+        ],
     );
     git(&repo_path, &["push", "-u", "origin", "main"]);
 

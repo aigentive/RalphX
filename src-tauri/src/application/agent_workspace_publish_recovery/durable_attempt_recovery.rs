@@ -397,12 +397,11 @@ async fn retry_safe_ready_agent_workspace_repair_publish(
     state: &AppState,
     current: AgentWorkspaceRepairAttempt,
 ) -> AppResult<DurableRepairRecoveryOutcome> {
-    if !current.continuation.is_automatic()
-        || state
-            .agent_workspace_repair_repo
-            .get_open_repair_effect(&current.id)
-            .await?
-            .is_some()
+    if state
+        .agent_workspace_repair_repo
+        .get_open_repair_effect(&current.id)
+        .await?
+        .is_some()
     {
         return Ok(DurableRepairRecoveryOutcome::Noop);
     }
@@ -411,6 +410,24 @@ async fn retry_safe_ready_agent_workspace_repair_publish(
     // the generation, freeing the poller to dispatch a fresh one on the identical failure.
     // Only the poller, comparing live GitHub health, may end a hold.
     if agent_workspace_repair_is_health_held(&current) {
+        return Ok(DurableRepairRecoveryOutcome::Noop);
+    }
+
+    let redrive_authorized = match current.continuation {
+        AgentWorkspaceRepairContinuation::ResumePrSupervision => true,
+        AgentWorkspaceRepairContinuation::Publish => {
+            current.explicit_publish_requested
+                || state
+                    .agent_conversation_workspace_repo
+                    .get_by_conversation_id(&current.conversation_id)
+                    .await?
+                    .is_some_and(|workspace| workspace.auto_publish_enabled)
+        }
+        AgentWorkspaceRepairContinuation::Manual | AgentWorkspaceRepairContinuation::UpdateOnly => {
+            false
+        }
+    };
+    if !redrive_authorized {
         return Ok(DurableRepairRecoveryOutcome::Noop);
     }
 
@@ -450,6 +467,8 @@ async fn retry_safe_ready_agent_workspace_repair_publish(
 
     // A failed re-drive must not abort the whole recovery sweep for other workspaces; the
     // persisted streak marker keeps this attempt on backoff until it re-drives or settles.
+    // The authority gate above proves this timer redrive represents durable user consent,
+    // current Auto Publish policy, or supervision of an already-created PR.
     let resumed = match resume_current_agent_workspace_repair_publish(
         state,
         &marked.conversation_id,
@@ -631,6 +650,7 @@ async fn retry_safe_blocked_agent_workspace_repair(
             reason: marker,
             summary: "Automatically retrying the blocked workspace repair.".to_string(),
             auto_merge_current: workspace.pr_auto_merge_current,
+            explicit_publish_requested: current.explicit_publish_requested,
             retry_blocked: true,
             carryover_pr_autofix_evidence,
         },

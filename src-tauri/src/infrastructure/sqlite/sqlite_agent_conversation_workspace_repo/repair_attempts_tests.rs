@@ -41,6 +41,63 @@ fn setup_repo() -> (
 }
 
 #[tokio::test]
+async fn repair_attempt_round_trip_and_join_preserve_explicit_publish_consent() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(workspace(conversation_id.clone()))
+        .await
+        .expect("persist workspace");
+
+    let mut consented = repair_attempt(conversation_id.clone());
+    consented.explicit_publish_requested = true;
+    let started = repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: consented,
+            reason: "explicit publish failed".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("start consented repair attempt");
+    let StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(started) = started else {
+        panic!("consented repair generation must start");
+    };
+    assert!(started.explicit_publish_requested);
+    assert!(
+        repo.get_current_repair_attempt(&conversation_id)
+            .await
+            .expect("reload started repair attempt")
+            .expect("repair attempt exists")
+            .explicit_publish_requested
+    );
+
+    let mut background_join = repair_attempt(conversation_id.clone());
+    background_join.updated_at = started.updated_at + Duration::microseconds(1);
+    let joined = repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: background_join,
+            reason: "background failure joined".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("join current repair attempt");
+    assert!(matches!(
+        joined,
+        StartOrJoinAgentWorkspaceRepairAttemptOutcome::Joined(ref attempt)
+            if attempt.explicit_publish_requested
+    ));
+    assert!(
+        repo.get_current_repair_attempt(&conversation_id)
+            .await
+            .expect("reload joined repair attempt")
+            .expect("repair attempt exists")
+            .explicit_publish_requested
+    );
+}
+
+#[tokio::test]
 async fn bind_repair_run_rejects_a_stale_same_phase_snapshot() {
     let (_db, repo, conversation_id) = setup_repo();
     repo.create_or_update(workspace(conversation_id.clone()))

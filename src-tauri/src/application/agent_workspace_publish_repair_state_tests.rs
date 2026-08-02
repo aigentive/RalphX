@@ -7,9 +7,9 @@ use crate::application::agent_conversation_workspace::resolve_agent_conversation
 use crate::application::agent_workspace_publish_repair_state::{
     abort_agent_workspace_pr_fix_review_handoff, block_agent_workspace_pr_fix_claim,
     block_agent_workspace_repair_needs_human, claim_agent_workspace_repair,
-    classify_agent_workspace_repair_completion_authority,
-    classify_agent_workspace_repair_delivery, complete_agent_workspace_pr_fix_claim,
-    complete_agent_workspace_repair_claim, continue_agent_workspace_repair_at_boundary,
+    classify_agent_workspace_repair_completion_authority, classify_agent_workspace_repair_delivery,
+    complete_agent_workspace_pr_fix_claim, complete_agent_workspace_repair_claim,
+    continue_agent_workspace_repair_at_boundary,
     continue_agent_workspace_repair_at_boundary_with_review_starter,
     current_agent_workspace_repair_claim_for_completion, inspect_agent_workspace_repair_completion,
     reconcile_active_agent_workspace_repair,
@@ -468,6 +468,7 @@ fn repair_start_request(
         reason: reason.to_string(),
         summary: "Repair requested.".to_string(),
         auto_merge_current: None,
+        explicit_publish_requested: false,
         retry_blocked: false,
         carryover_pr_autofix_evidence: None,
     }
@@ -1243,6 +1244,65 @@ async fn continuation_boundary_re_reads_auto_publish_preference_before_leaving_r
 }
 
 #[tokio::test]
+async fn continuation_boundary_honors_persisted_explicit_publish_consent() {
+    let state = AppState::new_test();
+    let mut review_settings = state
+        .review_settings_repo
+        .get_settings()
+        .await
+        .expect("review settings should load");
+    review_settings.require_workspace_review = false;
+    state
+        .review_settings_repo
+        .update_settings(&review_settings)
+        .await
+        .expect("review settings should update");
+
+    let conversation_id = ChatConversationId::from_string("repair-attempt-explicit-consent");
+    let mut workspace = repair_workspace(conversation_id.clone());
+    workspace.auto_publish_enabled = false;
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    let mut request = repair_start_request(
+        conversation_id,
+        AgentWorkspaceRepairSource::Publish,
+        AgentWorkspaceRepairContinuation::Publish,
+        "explicit publish failure",
+    );
+    request.explicit_publish_requested = true;
+    let attempt = start_or_join_agent_workspace_repair(
+        Arc::clone(&state.agent_workspace_repair_repo),
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        request,
+    )
+    .await
+    .expect("attempt should start")
+    .into_attempt();
+
+    let outcome = continue_agent_workspace_repair_at_boundary(
+        &state,
+        attempt,
+        AgentWorkspaceRepairPhase::Requested,
+        "repair completed",
+        false,
+    )
+    .await
+    .expect("persisted consent should authorize the continuation");
+    let AgentWorkspaceRepairTransitionOutcome::Applied(continued) = outcome else {
+        panic!("current repair generation should continue");
+    };
+    assert_eq!(
+        continued.phase,
+        AgentWorkspaceRepairPhase::ContinuationPending
+    );
+    assert!(continued.explicit_publish_requested);
+    assert!(!continued.auto_publish_enabled);
+}
+
+#[tokio::test]
 async fn inactive_repair_lease_review_wait_restart_and_pass_are_fenced_once() {
     let temp = tempfile::tempdir().expect("review boundary tempdir should be created");
     let state = AppState::new_test();
@@ -1577,6 +1637,7 @@ async fn inactive_repair_lease_ready_manual_publish_reacquires_before_continuati
         resumed.phase,
         AgentWorkspaceRepairPhase::ContinuationPending
     );
+    assert!(resumed.explicit_publish_requested);
     assert_eq!(
         resumed.target_ref.as_deref(),
         Some(target_identity.full_ref())
@@ -3171,7 +3232,10 @@ async fn reserve_pre_existing_on_base_settles_to_ready_with_marker() {
             .contains(&PRE_EXISTING_ON_BASE_REPAIR_REASON.to_string()),
         "the pre-existing-on-base marker must be persisted"
     );
-    assert!(settled.blocker.is_none(), "Ready phase must not carry a blocker");
+    assert!(
+        settled.blocker.is_none(),
+        "Ready phase must not carry a blocker"
+    );
 }
 
 #[tokio::test]
