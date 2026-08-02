@@ -1814,7 +1814,7 @@ wait "$stdin_drain_pid" 2>/dev/null || true
 
     // The retry marker is internal scheduling bookkeeping. Rendering it as the assignment's
     // "Context:" told the recipient nothing about what needed repairing.
-    let delivered = latest_sent_repair_message(&state, &conversation_id).await;
+    let delivered = latest_sent_repair_message(&state, successor.runtime_conversation_id()).await;
     assert!(
         !delivered.contains("auto_retry_blocked_repair"),
         "internal retry markers must never reach an agent assignment: {delivered}"
@@ -4590,7 +4590,13 @@ wait "$stdin_drain_pid" 2>/dev/null || true
         1
     );
 
-    let message = latest_sent_repair_message(&state, &conversation_id).await;
+    let current_attempt = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load current attempt after recovery")
+        .expect("current attempt exists after recovery");
+    let message = latest_sent_repair_message(&state, current_attempt.runtime_conversation_id()).await;
     assert!(
         message.contains("redelivering an interrupted PR fix"),
         "PR autofix redelivery must use the PR fixer assignment, got: {message}"
@@ -4638,7 +4644,13 @@ wait "$stdin_drain_pid" 2>/dev/null || true
         1
     );
 
-    let message = latest_sent_repair_message(&state, &conversation_id).await;
+    let current_attempt = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load current attempt after recovery")
+        .expect("current attempt exists after recovery");
+    let message = latest_sent_repair_message(&state, current_attempt.runtime_conversation_id()).await;
     assert!(
         message.contains("complete_agent_workspace_repair"),
         "a publish repair must name the repairer's own completion tool: {message}"
