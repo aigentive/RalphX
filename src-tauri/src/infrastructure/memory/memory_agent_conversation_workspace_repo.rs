@@ -2172,6 +2172,7 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         }
         monitor.review_fixer_status = Some("routing".to_string());
         monitor.review_fixer_attempt_id = Some(attempt_id.to_string());
+        monitor.review_fixer_cycle_count = monitor.review_fixer_cycle_count.saturating_add(1);
         monitor.review_fixer_run_id = None;
         monitor.review_fixer_conversation_id = None;
         monitor.last_error = None;

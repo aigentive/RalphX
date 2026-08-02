@@ -708,6 +708,7 @@ pub struct AgentWorkspaceReviewMonitorResponse {
     pub review_fixer_run_id: Option<String>,
     pub review_fixer_conversation_id: Option<String>,
     pub review_fixer_status: Option<String>,
+    pub review_fixer_cycle_count: i64,
     pub last_run_id: Option<String>,
     pub last_error: Option<String>,
     pub auto_merge_guard_status: Option<String>,
@@ -785,6 +786,7 @@ impl From<AgentWorkspaceReviewMonitor> for AgentWorkspaceReviewMonitorResponse {
                 .review_fixer_conversation_id
                 .map(|conversation_id| conversation_id.as_str()),
             review_fixer_status: value.review_fixer_status,
+            review_fixer_cycle_count: value.review_fixer_cycle_count,
             last_run_id: value.last_run_id,
             last_error: value.last_error,
             auto_merge_guard_status: value
