@@ -1,6 +1,6 @@
 [package]
 name = "ralphx"
-version = "0.89.0"
+version = "0.90.0"
 description = "RalphX - Autonomous AI-driven development GUI"
 authors = ["RalphX Team"]
 edition = "2021"
