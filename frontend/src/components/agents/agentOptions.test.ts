@@ -379,20 +379,20 @@ describe("agentOptions", () => {
 
   it("progressively exposes Fable only when Claude reports the alias", () => {
     expect(agentModelOptions("claude").map((option) => option.id)).toEqual([
-      "sonnet",
       "opus",
+      "sonnet",
       "haiku",
     ]);
     expect(
       agentModelOptions("claude", undefined, ["sonnet", "opus", "haiku"]).map(
         (option) => option.id,
       ),
-    ).toEqual(["sonnet", "opus", "haiku"]);
+    ).toEqual(["opus", "sonnet", "haiku"]);
     expect(
       agentModelOptions("claude", undefined, ["sonnet", "opus", "haiku", "fable"]).map(
         (option) => option.id,
       ),
-    ).toEqual(["sonnet", "opus", "haiku", "fable"]);
+    ).toEqual(["fable", "opus", "sonnet", "haiku"]);
     expect(
       agentModelOptions("claude", undefined, [
         "sonnet",
@@ -400,7 +400,7 @@ describe("agentOptions", () => {
         "haiku",
         "claude-sonnet-4-6",
       ]).map((option) => option.id),
-    ).toEqual(["sonnet", "opus", "haiku"]);
+    ).toEqual(["opus", "sonnet", "haiku"]);
   });
 
   it("progressively exposes each pinned Opus model only for its exact reported id", () => {
@@ -410,38 +410,62 @@ describe("agentOptions", () => {
     const opus5Aliases = [...opus48Aliases, "claude-opus-5"];
 
     expect(agentModelOptions("claude", undefined, oldCliAliases).map((option) => option.id)).toEqual([
-      "sonnet",
-      "opus",
-      "haiku",
       "fable",
+      "opus",
+      "sonnet",
+      "haiku",
     ]);
     expect(agentModelOptions("claude", undefined, opus47Aliases).map((option) => option.id)).toEqual([
-      "sonnet",
-      "opus",
-      "claude-opus-4-7",
-      "haiku",
       "fable",
+      "claude-opus-4-7",
+      "opus",
+      "sonnet",
+      "haiku",
     ]);
     expect(agentModelOptions("claude", undefined, opus48Aliases).map((option) => option.id)).toEqual([
-      "sonnet",
-      "opus",
-      "claude-opus-4-7",
-      "claude-opus-4-8",
-      "haiku",
       "fable",
+      "claude-opus-4-8",
+      "claude-opus-4-7",
+      "opus",
+      "sonnet",
+      "haiku",
     ]);
     expect(agentModelOptions("claude", undefined, opus5Aliases).map((option) => option.id)).toEqual([
-      "sonnet",
-      "opus",
-      "claude-opus-4-7",
-      "claude-opus-4-8",
-      "claude-opus-5",
-      "haiku",
       "fable",
+      "claude-opus-5",
+      "claude-opus-4-8",
+      "claude-opus-4-7",
+      "opus",
+      "sonnet",
+      "haiku",
     ]);
     expect(agentModelOptions("claude", undefined, ["opus"]).map((option) => option.id)).toEqual([
-      "sonnet",
       "opus",
+      "sonnet",
+      "haiku",
+    ]);
+
+    expect(
+      agentModelOptions("claude", undefined, [
+        "fable",
+        "claude-opus-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7",
+        "opus",
+        "claude-sonnet-5",
+        "claude-sonnet-4-6",
+        "sonnet",
+        "haiku",
+      ]).map((option) => option.id),
+    ).toEqual([
+      "fable",
+      "claude-opus-5",
+      "claude-opus-4-8",
+      "claude-opus-4-7",
+      "opus",
+      "claude-sonnet-5",
+      "claude-sonnet-4-6",
+      "sonnet",
       "haiku",
     ]);
 
@@ -474,8 +498,8 @@ describe("agentOptions", () => {
 
   it("progressively exposes Sonnet 5 only when Claude reports the model id", () => {
     expect(agentModelOptions("claude").map((option) => option.id)).toEqual([
-      "sonnet",
       "opus",
+      "sonnet",
       "haiku",
     ]);
     expect(
@@ -487,12 +511,12 @@ describe("agentOptions", () => {
         "claude-sonnet-5",
       ]).map((option) => option.id),
     ).toEqual([
-      "sonnet",
-      "claude-sonnet-4-6",
-      "claude-sonnet-5",
-      "opus",
-      "haiku",
       "fable",
+      "opus",
+      "claude-sonnet-5",
+      "claude-sonnet-4-6",
+      "sonnet",
+      "haiku",
     ]);
   });
 
