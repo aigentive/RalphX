@@ -3,6 +3,7 @@ const DELEGATION_TOOL_NAMES = new Set([
     "delegate_start",
     "delegate_wait",
     "delegate_cancel",
+    "delegate_park",
 ]);
 function agentCanDelegate(agentType, agentProfile) {
     const definition = loadCanonicalAgentDefinitionForProfile(agentType, agentProfile);

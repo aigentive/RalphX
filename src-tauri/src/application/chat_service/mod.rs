@@ -105,7 +105,7 @@ use crate::domain::repositories::{
     AgentProviderSettingsRepository, AgentRunRepository, ArtifactRepository,
     BranchUpdateRepository, ChatAttachmentRepository, ChatConversationRepository,
     ChatMessageRepository, ChatTimelineRepository, ConversationFolderReferenceRepository,
-    DelegatedSessionRepository, ExecutionSettingsRepository, ExternalEventsRepository,
+    DelegatedSessionRepository, DelegationParkRepository, ExecutionSettingsRepository, ExternalEventsRepository,
     IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
     MemoryEventRepository, PersonaRepository, PlanBranchRepository, ProjectRepository,
     QueuedMessageRepository, ReviewRepository, StateHistoryMetadata, TaskDependencyRepository,
@@ -1629,6 +1629,7 @@ pub struct AppChatService<R: Runtime = tauri::Wry> {
     task_repo: Arc<dyn TaskRepository>,
     task_dependency_repo: Arc<dyn TaskDependencyRepository>,
     delegated_session_repo: Arc<dyn DelegatedSessionRepository>,
+    delegation_park_repo: Option<Arc<dyn DelegationParkRepository>>,
     execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
     agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
     agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
@@ -1780,6 +1781,7 @@ impl<R: Runtime> AppChatService<R> {
             task_repo,
             task_dependency_repo,
             delegated_session_repo,
+            delegation_park_repo: None,
             execution_settings_repo: None,
             agent_lane_settings_repo: None,
             agent_provider_settings_repo: None,
@@ -1883,6 +1885,42 @@ impl<R: Runtime> AppChatService<R> {
     pub fn with_queued_message_repo(mut self, repo: Arc<dyn QueuedMessageRepository>) -> Self {
         self.queued_message_repo = Some(repo);
         self
+    }
+
+    pub fn with_delegation_park_repo(mut self, repo: Arc<dyn DelegationParkRepository>) -> Self {
+        self.delegation_park_repo = Some(repo);
+        self
+    }
+
+    /// A user-visible message to a parked conversation supersedes its park: the coordinator is
+    /// being redirected, so a later delegate settlement must not inject a stale wake on top of
+    /// the user's turn.
+    ///
+    /// Hidden messages are skipped deliberately — the park's OWN `resume_in_place` wake arrives
+    /// through this same path and must never supersede the park it is delivering.
+    async fn supersede_delegation_park_for_user_send(&self, options: &SendMessageOptions) {
+        if message_metadata_hidden_from_ui(options.metadata.as_deref()) {
+            return;
+        }
+        let (Some(repo), Some(conversation_id)) = (
+            self.delegation_park_repo.as_ref(),
+            options.conversation_id_override.as_ref(),
+        ) else {
+            return;
+        };
+        match repo.supersede_for_conversation(conversation_id).await {
+            Ok(0) => {}
+            Ok(count) => tracing::info!(
+                conversation_id = %conversation_id.as_str(),
+                superseded = count,
+                "User message superseded an armed delegation park"
+            ),
+            Err(error) => tracing::warn!(
+                conversation_id = %conversation_id.as_str(),
+                %error,
+                "Failed to supersede delegation park on user send; wake dispatch still re-verifies parent-run authority"
+            ),
+        }
     }
 
     fn queued_key(context_type: ChatContextType, context_id: &str) -> QueueKey {
@@ -5098,6 +5136,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 )
                 .await;
         }
+        self.supersede_delegation_park_for_user_send(&options).await;
         if runtime_context_id != context_id {
             tracing::info!(
                 %context_type,

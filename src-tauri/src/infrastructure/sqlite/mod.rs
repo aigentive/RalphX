@@ -92,6 +92,9 @@ mod sqlite_clickup_integration_settings_repo_tests;
 pub mod sqlite_delegated_session_repo;
 #[cfg(test)]
 mod sqlite_delegated_session_repo_tests;
+pub mod sqlite_delegation_park_repo;
+#[cfg(test)]
+mod sqlite_delegation_park_repo_tests;
 pub mod sqlite_execution_plan_repo;
 #[cfg(test)]
 mod sqlite_execution_plan_repo_tests;
@@ -207,6 +210,7 @@ pub use sqlite_chat_message_repo::SqliteChatMessageRepository;
 pub use sqlite_chat_timeline_repo::SqliteChatTimelineRepository;
 pub use sqlite_clickup_integration_settings_repo::SqliteClickUpIntegrationSettingsRepository;
 pub use sqlite_delegated_session_repo::SqliteDelegatedSessionRepository;
+pub use sqlite_delegation_park_repo::SqliteDelegationParkRepo;
 pub use sqlite_execution_plan_repo::SqliteExecutionPlanRepository;
 pub use sqlite_execution_settings_repo::{
     SqliteExecutionSettingsRepository, SqliteGlobalExecutionSettingsRepository,

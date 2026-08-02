@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use super::delegation::{persist_terminal_projection, DelegationJobSnapshot, DelegationService};
+use crate::application::delegation_park::DelegationJobSource;
 use crate::domain::entities::{ChatConversation, ProjectId};
 use crate::domain::repositories::{ChatConversationRepository, ChatTimelineRepository};
 use crate::infrastructure::sqlite::{
@@ -50,6 +51,7 @@ async fn terminal_projection_is_idempotent_and_fully_hydrated() {
         completed_at: Some("2026-04-12T10:00:05Z".to_string()),
         history: Vec::new(),
         delegated_status: None,
+        timed_out: None,
     };
 
     persist_terminal_projection(&timeline_repo, &snapshot, None)
@@ -207,4 +209,161 @@ async fn terminal_candidate_reserves_settlement_against_competing_cancellation()
         service.snapshot("job-complete").await.unwrap().status,
         "completed"
     );
+}
+
+/// Registers a running job and returns the service plus its id.
+async fn register_running_job(job_id: &str) -> DelegationService {
+    let service = DelegationService::new();
+    service
+        .register_running(
+            job_id.to_string(),
+            "project".to_string(),
+            "project-1".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            "delegated-session-1".to_string(),
+            Some("delegated-conversation-1".to_string()),
+            Some("delegated-run-1".to_string()),
+            "ralphx-general-explorer".to_string(),
+            None,
+            "codex",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+    service
+}
+
+#[tokio::test]
+async fn settlement_signal_fires_once_after_commit_terminal_accepts() {
+    let service = register_running_job("job-signal").await;
+    let mut receiver = service
+        .subscribe_settlement("job-signal")
+        .await
+        .expect("subscribe to a registered job");
+    assert_eq!(*receiver.borrow(), None, "a running job has not settled");
+
+    let candidate = service
+        .terminal_candidate("job-signal", "completed", Some("done".to_string()), None)
+        .await
+        .expect("terminal candidate");
+    assert_eq!(
+        *receiver.borrow(),
+        None,
+        "a speculative terminal_candidate must NOT signal settlement before the CAS accepts"
+    );
+
+    assert!(service.commit_terminal(candidate).await);
+    receiver
+        .changed()
+        .await
+        .expect("settlement signal after commit_terminal");
+    assert_eq!(*receiver.borrow_and_update(), Some("completed".to_string()));
+
+    // A second terminal for an already-settled job is rejected, so no further signal is emitted.
+    assert!(service
+        .terminal_candidate("job-signal", "failed", None, Some("late".to_string()))
+        .await
+        .is_none());
+    assert!(!receiver.has_changed().expect("receiver alive"));
+}
+
+#[tokio::test]
+async fn rejected_commit_terminal_emits_no_settlement_signal() {
+    let service = register_running_job("job-rejected").await;
+    let receiver = service
+        .subscribe_settlement("job-rejected")
+        .await
+        .expect("subscribe to a registered job");
+
+    let mut candidate = service
+        .terminal_candidate("job-rejected", "completed", Some("done".to_string()), None)
+        .await
+        .expect("terminal candidate");
+    // Stale delegated run identity: commit_terminal must refuse this candidate.
+    candidate.delegated_agent_run_id = Some("some-other-run".to_string());
+
+    assert!(
+        !service.commit_terminal(candidate).await,
+        "a candidate whose delegated run id no longer matches must be rejected"
+    );
+    assert!(
+        !receiver.has_changed().expect("receiver alive"),
+        "a rejected commit_terminal must never signal settlement; a blocked delegate_wait would \
+         otherwise wake on a terminal that was never durably accepted"
+    );
+    assert_eq!(
+        service
+            .snapshot("job-rejected")
+            .await
+            .expect("job still registered")
+            .status,
+        "running"
+    );
+}
+
+#[tokio::test]
+async fn subscribe_settlement_returns_none_for_unknown_jobs() {
+    let service = DelegationService::new();
+    assert!(service.subscribe_settlement("missing").await.is_none());
+}
+
+#[tokio::test]
+async fn park_job_snapshot_mirrors_the_live_job_registry() {
+    let service = DelegationService::new();
+    service
+        .register_running(
+            "job-park".to_string(),
+            "project".to_string(),
+            "project-1".to_string(),
+            None,
+            None,
+            Some("parent-conversation".to_string()),
+            Some("parent-run".to_string()),
+            Some("tool-delegate".to_string()),
+            "delegated-session".to_string(),
+            Some("delegated-conversation".to_string()),
+            Some("delegated-run".to_string()),
+            "reviewer".to_string(),
+            None,
+            "codex",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+
+    let park_view = service
+        .park_job_snapshot("job-park")
+        .await
+        .expect("registered job is visible to the park");
+    assert_eq!(park_view.status, "running");
+    assert_eq!(
+        park_view.parent_conversation_id.as_deref(),
+        Some("parent-conversation")
+    );
+    assert_eq!(park_view.parent_agent_run_id.as_deref(), Some("parent-run"));
+    assert_eq!(park_view.delegated_session_id, "delegated-session");
+    assert_eq!(
+        park_view.delegated_agent_run_id.as_deref(),
+        Some("delegated-run")
+    );
+
+    assert!(service.park_job_snapshot("unknown-job").await.is_none());
 }

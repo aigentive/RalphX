@@ -84,6 +84,13 @@ export function shouldEscalateAge(lane: AgentSidebarAttentionLane): boolean {
   return lane !== "working" && lane !== "done";
 }
 
+export function formatParkedDelegateMeta(count: number): string | null {
+  if (count <= 0) {
+    return null;
+  }
+  return `Waiting on ${count} ${count === 1 ? "delegate" : "delegates"}`;
+}
+
 export function summarizeInboxLaneCounts(
   countsByLane: Readonly<Record<AgentSidebarAttentionLane, number>>
 ): { needsCount: number; footerLabel: string } {

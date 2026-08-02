@@ -13,6 +13,7 @@ capabilities:
     - delegate_start
     - delegate_wait
     - delegate_cancel
+    - delegate_park
     - create_agent_task
     - get_agent_task
     - list_agent_tasks
@@ -52,6 +53,7 @@ profiles:
         - delegate_start
         - delegate_wait
         - delegate_cancel
+        - delegate_park
         - create_agent_task
         - get_agent_task
         - list_agent_tasks

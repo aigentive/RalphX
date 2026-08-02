@@ -987,6 +987,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       );
     } else if (name === "delegate_wait") {
       result = await callTauri("coordination/delegate/wait", args as Record<string, unknown>);
+    } else if (name === "delegate_park") {
+      result = await callTauri(
+        "coordination/delegate/park",
+        args as Record<string, unknown>,
+        {
+          headers: buildRuntimeIdentityTransportHeaders(runtimeContext),
+        },
+      );
     } else if (name === "delegate_cancel") {
       result = await callTauri("coordination/delegate/cancel", args as Record<string, unknown>);
     } else if ((AGENT_TASK_TOOL_NAMES as string[]).includes(name)) {

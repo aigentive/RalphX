@@ -20,11 +20,44 @@ pub struct AllRuntimeConfig {
     pub limits: LimitsConfig,
     pub verification: VerificationConfig,
     pub external_mcp: ExternalMcpConfig,
+    pub delegation: DelegationConfig,
     /// Seconds of inactivity before an agent is considered "likely_waiting" vs "likely_generating".
     /// Used by get_child_session_status to derive estimated_status. Default: 10.
     pub child_session_activity_threshold_secs: Option<u64>,
     /// UI feature flags (page visibility). Defaults to all enabled.
     pub ui_feature_flags: super::ui_config::UiFeatureFlagsConfig,
+}
+
+/// Backend-held delegation waiting: bounded `delegate_wait` blocks and durable park/wake.
+///
+/// `wait_block_max_secs` MUST stay strictly below `timeouts.stream.default_parse_stall_secs`
+/// so a blocking wait can never be mistaken for a stalled stream and kill the coordinator.
+/// All fields required in config/ralphx.yaml; the `Default` impl exists only for the
+/// embedded-fallback and test paths.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DelegationConfig {
+    /// Default bounded block applied when a caller asks to wait without naming a duration.
+    pub wait_block_secs: u64,
+    /// Hard cap applied to any caller-supplied `wait_timeout_ms`.
+    pub wait_block_max_secs: u64,
+    /// Upper bound on how long a coordinator may stay parked before a force-wake.
+    pub park_max_secs: u64,
+    /// Wake-enqueue attempts before a park is marked failed.
+    pub park_wake_retry_max: u32,
+    /// Backoff between wake-enqueue attempts.
+    pub park_wake_retry_backoff_secs: u64,
+}
+
+impl Default for DelegationConfig {
+    fn default() -> Self {
+        Self {
+            wait_block_secs: 120,
+            wait_block_max_secs: 150,
+            park_max_secs: 3600,
+            park_wake_retry_max: 5,
+            park_wake_retry_backoff_secs: 30,
+        }
+    }
 }
 
 /// Startup-only database compaction settings. The percent avoids floating-point config drift.
@@ -1294,6 +1327,29 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
              The session gate was removed; sessions are always created. Remove this env var."
         );
     }
+
+    // Delegation waiting (bounded delegate_wait + park/wake)
+    env_u64!(
+        cfg.delegation.wait_block_secs,
+        "RALPHX_DELEGATION_WAIT_BLOCK_SECS"
+    );
+    env_u64!(
+        cfg.delegation.wait_block_max_secs,
+        "RALPHX_DELEGATION_WAIT_BLOCK_MAX_SECS"
+    );
+    env_u64!(
+        cfg.delegation.park_max_secs,
+        "RALPHX_DELEGATION_PARK_MAX_SECS"
+    );
+    if let Some(v) = lookup("RALPHX_DELEGATION_PARK_WAKE_RETRY_MAX") {
+        if let Ok(n) = v.parse::<u32>() {
+            cfg.delegation.park_wake_retry_max = n;
+        }
+    }
+    env_u64!(
+        cfg.delegation.park_wake_retry_backoff_secs,
+        "RALPHX_DELEGATION_PARK_WAKE_RETRY_BACKOFF_SECS"
+    );
 
     // Ideation
     if let Some(v) = lookup("RALPHX_IDEATION_ACTIVITY_THRESHOLD_SECS") {
