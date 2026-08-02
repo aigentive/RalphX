@@ -127,6 +127,7 @@ async fn workspace_review_fixer_claim_is_exact_and_single_winner() {
     monitor.review_requested_changes_artifact_id = Some(artifact_id.clone());
     monitor.review_requested_changes_artifact_version = Some(4);
     monitor.review_blocking_fingerprint = Some("blocker-claim".to_string());
+    monitor.review_fixer_cycle_count = 2;
     repo.upsert_workspace_review_monitor(monitor)
         .await
         .expect("monitor should persist");
@@ -153,6 +154,13 @@ async fn workspace_review_fixer_claim_is_exact_and_single_winner() {
         .await
         .expect("stale plan claim should be a clean rejection")
         .is_none());
+    let rejected = repo
+        .get_workspace_review_monitor(&conversation_id)
+        .await
+        .expect("monitor read should succeed")
+        .expect("rejected claim must not remove the monitor");
+    assert_eq!(rejected.review_fixer_cycle_count, 2);
+    assert!(rejected.review_fixer_attempt_id.is_none());
 
     let claimed = repo
         .claim_workspace_review_fixer(
@@ -169,6 +177,7 @@ async fn workspace_review_fixer_claim_is_exact_and_single_winner() {
         claimed.review_fixer_attempt_id.as_deref(),
         Some("attempt-one")
     );
+    assert_eq!(claimed.review_fixer_cycle_count, 3);
     assert!(repo
         .claim_workspace_review_fixer(
             &conversation_id,

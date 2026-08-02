@@ -3579,6 +3579,7 @@ describe("getConversationActiveState", () => {
     previous_version_id: "review-artifact-0",
     review_requested_changes_previous_version_id:
       "requested-changes-artifact-0",
+    review_fixer_cycle_count: 0,
     last_run_id: "run-1",
     last_error: null,
     created_at: "2026-06-18T12:00:00Z",
@@ -3974,6 +3975,7 @@ describe("getConversationActiveState", () => {
             review_gate_status: "blocking",
             review_blocking_summary: "Fix the blocking finding.",
             review_fixer_status: "running",
+            review_fixer_cycle_count: 2,
             review_fixer_run_id: "fixer-run-1",
             review_fixer_conversation_id: "conversation-1",
           }),
@@ -4032,6 +4034,7 @@ describe("getConversationActiveState", () => {
     expect(result.started).toBe(true);
     expect(result.isCurrent).toBe(true);
     expect(result.monitor.reviewFixerStatus).toBe("running");
+    expect(result.monitor.reviewFixerCycleCount).toBe(2);
     expect(result.monitor.reviewFixerRunId).toBe("fixer-run-1");
   });
 

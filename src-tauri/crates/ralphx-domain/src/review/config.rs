@@ -19,6 +19,10 @@ fn default_run_task_validations() -> bool {
     true
 }
 
+fn default_workspace_review_fixer_cycle_cap() -> i64 {
+    3
+}
+
 /// Global review settings stored in project settings
 ///
 /// Controls how the review system behaves including:
@@ -56,6 +60,10 @@ pub struct ReviewSettings {
     #[serde(default = "default_autofix_workspace_review_blocking_findings")]
     pub autofix_workspace_review_blocking_findings: bool,
 
+    /// Maximum automatic workspace Review fixer cycles per workspace. Zero disables auto-routing.
+    #[serde(default = "default_workspace_review_fixer_cycle_cap")]
+    pub workspace_review_fixer_cycle_cap: i64,
+
     /// Allow task execution pipeline agents to run/cache backend task validation
     /// Default: true
     #[serde(default = "default_run_task_validations")]
@@ -84,6 +92,7 @@ impl Default for ReviewSettings {
             require_human_review: false,
             require_workspace_review: true,
             autofix_workspace_review_blocking_findings: true,
+            workspace_review_fixer_cycle_cap: 3,
             run_task_validations: true,
             max_fix_attempts: 3,
             max_revision_cycles: 5,

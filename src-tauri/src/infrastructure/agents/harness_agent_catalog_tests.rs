@@ -1475,6 +1475,21 @@ fn workspace_reviewer_codex_surface_uses_shared_prompt_and_review_tools() {
             && prompt.contains("can_mutate_review_state=true"),
         "workspace reviewer prompt should make active-run authority independent from prior artifact freshness"
     );
+    for marker in [
+        "Cost of doing nothing",
+        "Fold In",
+        "Backlog",
+        "Informational",
+        "Behavior Changes Beyond Stated Goal",
+        "**Disposition:**",
+        "review_fixer_status",
+        "review_fixer_cycle_count",
+    ] {
+        assert!(
+            prompt.contains(marker),
+            "workspace reviewer prompt should carry the finding classification contract marker {marker}"
+        );
+    }
     for removed_tool in [
         "get_agent_task",
         "list_agent_tasks",
@@ -1500,6 +1515,31 @@ fn workspace_reviewer_codex_surface_uses_shared_prompt_and_review_tools() {
         Some(&false),
         "workspace reviewer should use review_packet and bounded filesystem tools instead of Codex shell"
     );
+}
+
+#[test]
+fn pr_reviewer_prompt_carries_the_finding_classification_contract() {
+    let root = project_root();
+    let prompt = load_harness_agent_prompt(&root, "ralphx-pr-reviewer", AgentPromptHarness::Claude)
+        .expect("expected PR reviewer Claude prompt");
+
+    for marker in [
+        "Cost of doing nothing",
+        "Fold In",
+        "Backlog",
+        "Informational",
+        "Behavior Changes Beyond Stated Goal",
+        "**Disposition:**",
+        "Blocking findings map to `Request Changes`",
+        "Fold In findings with no Blocking findings map to `Comment / No Action`",
+        "No requested work maps to `Approve PR`",
+        "maps to `Blocked`",
+    ] {
+        assert!(
+            prompt.contains(marker),
+            "PR reviewer prompt should carry the finding classification contract marker {marker}"
+        );
+    }
 }
 
 #[test]

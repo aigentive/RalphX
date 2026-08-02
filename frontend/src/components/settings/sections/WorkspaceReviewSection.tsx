@@ -11,7 +11,11 @@ import {
 import { useWorkspaceReviewRuntimeSettings } from "@/hooks/useWorkspaceReviewSettings";
 import { selectActiveProject, useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
-import { SettingsSection, ToggleSettingRow } from "../SettingsView.shared";
+import {
+  NumberSettingRow,
+  SettingsSection,
+  ToggleSettingRow,
+} from "../SettingsView.shared";
 import { WorkspaceReviewScopeRows } from "./WorkspaceReviewRuntimeRows";
 import { isKnownHarness } from "./workspaceReviewHarness";
 
@@ -91,6 +95,22 @@ export default function WorkspaceReviewSection({ embedded = false }: { embedded?
               updateReviewSettings({
                 autofixWorkspaceReviewBlockingFindings:
                   !reviewSettings.autofix_workspace_review_blocking_findings,
+              })
+            }
+          />
+          <NumberSettingRow
+            id="workspace-review-fixer-cycle-cap"
+            label="Maximum automatic fixer cycles"
+            description="Maximum times RalphX automatically starts a Workspace Review fixer. Set 0 to turn off automatic fixing; manual fixes remain available."
+            value={reviewSettings.workspace_review_fixer_cycle_cap}
+            min={0}
+            max={Number.MAX_SAFE_INTEGER}
+            step={1}
+            unit=""
+            disabled={disabledPublishGate}
+            onChange={(value) =>
+              updateReviewSettings({
+                workspaceReviewFixerCycleCap: Math.max(0, value),
               })
             }
           />

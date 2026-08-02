@@ -341,6 +341,7 @@ pub fn migrate(conn: &Connection) -> AppResult<()> {
             require_human_review INTEGER NOT NULL DEFAULT 0,
             require_workspace_review INTEGER NOT NULL DEFAULT 1,
             autofix_workspace_review_blocking_findings INTEGER NOT NULL DEFAULT 1,
+            workspace_review_fixer_cycle_cap INTEGER NOT NULL DEFAULT 3,
             run_task_validations INTEGER NOT NULL DEFAULT 1,
             max_fix_attempts INTEGER NOT NULL DEFAULT 3,
             max_revision_cycles INTEGER NOT NULL DEFAULT 5,
