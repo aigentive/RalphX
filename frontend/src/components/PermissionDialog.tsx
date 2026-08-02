@@ -431,6 +431,7 @@ export function PermissionDialog() {
           <RemoteErrorBanner
             error={resolveError}
             testId="permission-remote-error"
+            fallbackForTransportErrors
           />
           {/* Agent identity row */}
           {hasIdentity && (

@@ -13,6 +13,7 @@ import { Check, X, Eye, Loader2 } from "lucide-react";
 import { useUiStore } from "@/stores/uiStore";
 import { useIdeationStore } from "@/stores/ideationStore";
 import { useAcceptFinalize, useRejectFinalize } from "@/hooks/useAcceptFinalize";
+import { useAgentGate } from "@/hooks/useAgentGate";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { withAlpha } from "@/lib/theme-colors";
@@ -37,10 +38,13 @@ function ActiveDialog({ sessionId, onViewPlan }: ActiveDialogProps) {
 
   const accept = useAcceptFinalize(sessionId);
   const reject = useRejectFinalize(sessionId);
+  const acceptGate = useAgentGate("ideationAcceptFinalize");
+  const rejectGate = useAgentGate("ideationRejectFinalize");
 
   const isLoading = accept.isPending || reject.isPending;
 
   const handleAccept = useCallback(async () => {
+    if (acceptGate.gated) return;
     try {
       await accept.mutateAsync();
       if (autoAcceptSession) {
@@ -50,16 +54,17 @@ function ActiveDialog({ sessionId, onViewPlan }: ActiveDialogProps) {
     } catch {
       // Error toast handled in useAcceptFinalize onError; keep dialog open for retry
     }
-  }, [accept, autoAcceptSession, addAutoAcceptSession, sessionId, dequeue]);
+  }, [accept, acceptGate.gated, autoAcceptSession, addAutoAcceptSession, sessionId, dequeue]);
 
   const handleReject = useCallback(async () => {
+    if (rejectGate.gated) return;
     try {
       await reject.mutateAsync();
       dequeue();
     } catch {
       // Error toast handled in useRejectFinalize onError; keep dialog open for retry
     }
-  }, [reject, dequeue]);
+  }, [reject, rejectGate.gated, dequeue]);
 
   const handleViewPlan = useCallback(() => {
     dequeue();
@@ -129,7 +134,8 @@ function ActiveDialog({ sessionId, onViewPlan }: ActiveDialogProps) {
               id="auto-accept-session"
               checked={autoAcceptSession}
               onCheckedChange={(checked) => { setAutoAcceptSession(checked === true); }}
-              disabled={isLoading}
+              disabled={isLoading || rejectGate.gated}
+              title={rejectGate.reason ?? undefined}
               className="data-[state=checked]:bg-[var(--accent-primary)] data-[state=checked]:border-[var(--accent-primary)]"
             />
             <Label
@@ -146,7 +152,8 @@ function ActiveDialog({ sessionId, onViewPlan }: ActiveDialogProps) {
             {/* View Plan */}
             <button
               onClick={handleViewPlan}
-              disabled={isLoading}
+              disabled={isLoading || acceptGate.gated}
+              title={acceptGate.reason ?? undefined}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[0.75rem] font-medium transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed"
               style={{
                 color: "var(--text-secondary)",

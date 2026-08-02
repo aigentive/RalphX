@@ -861,6 +861,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   // the facade: a host that predates it, or a device without `ui:agent`, gets a disabled picker
   // carrying the reason instead of a control whose every click ends in a refusal.
   const modeSwitchGate = useAgentGate("conversationModeSwitch");
+  const planApproveGate = useAgentGate("planApprove");
+  const conversationForkGate = useAgentGate("conversationFork");
   const ideationSettingsQuery = useIdeationSettings();
   const tasksEnabled =
     !ideationSettingsQuery.isLoading &&
@@ -1897,7 +1899,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   });
 
   const handleApprovePlanFromQuestion = useCallback(async () => {
-    if (!planApprovalSessionId || !planApprovalArtifact || !canApproveComposerPlan) {
+    if (planApproveGate.gated || !planApprovalSessionId || !planApprovalArtifact || !canApproveComposerPlan) {
       return;
     }
     setIsApprovingPlan(true);
@@ -1929,6 +1931,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       setIsApprovingPlan(false);
     }
   }, [
+    planApproveGate.gated,
     canApproveComposerPlan,
     planApprovalArtifact,
     planApprovalSessionId,
@@ -2142,7 +2145,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
           icon: CheckCircle2,
           isPrimary: true,
           isPending: isApprovingPlan,
-          disabled: false,
+          disabled: planApproveGate.gated,
           onClick: () => {
             void handleApprovePlanFromQuestion();
           },
@@ -2343,13 +2346,14 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       onClick: () => {
         void handleApprovePlanFromQuestion();
       },
-      disabled: isApprovingPlan,
+      disabled: isApprovingPlan || planApproveGate.gated,
       isPending: isApprovingPlan,
     };
   }, [
     canApproveComposerPlan,
     handleApprovePlanFromQuestion,
     isApprovingPlan,
+    planApproveGate.gated,
   ]);
 
   const continuePlanModeConversation = useCallback(
@@ -2786,6 +2790,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                 followup: string,
                 options?: AgentComposerSendOptions,
               ) => {
+                if (conversationForkGate.gated) return;
                 const confirmed = await confirm({
                   title: "Fork session?",
                   description:
@@ -2981,7 +2986,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                     {...(!isFocusedChildChat
                       ? {
                           onForkSession: () => runForkCommand(""),
-                          forkSessionDisabled: isForkingConversation,
+                          forkSessionDisabled: isForkingConversation || conversationForkGate.gated,
                         }
                       : {})}
                     placeholder={
@@ -3080,7 +3085,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                               id: "fork",
                               label: "/fork",
                               description: "Fork this agent conversation",
-                              disabled: isForkingConversation,
+                              disabled: isForkingConversation || conversationForkGate.gated,
                               onSelect: () => runForkCommand(""),
                             },
                           ]

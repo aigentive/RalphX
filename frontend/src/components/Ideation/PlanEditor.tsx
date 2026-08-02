@@ -148,7 +148,7 @@ const markdownComponents = {
 // ============================================================================
 
 export function PlanEditor({ plan, onSave, onCancel, isNewPlan = false }: PlanEditorProps) {
-  const agentGate = useAgentGate("artifactEdit");
+  const agentGate = useAgentGate("planArtifactEdit");
   // Get initial content
   const initialContent = plan.content.type === "inline" ? plan.content.text : "";
 
@@ -167,6 +167,9 @@ export function PlanEditor({ plan, onSave, onCancel, isNewPlan = false }: PlanEd
 
   // Handle save - call HTTP endpoint
   const handleSave = useCallback(async () => {
+    if (agentGate.gated) {
+      return;
+    }
     if (!hasChanges) {
       onCancel();
       return;
@@ -176,7 +179,9 @@ export function PlanEditor({ plan, onSave, onCancel, isNewPlan = false }: PlanEd
     setError(null);
 
     try {
-      // Call the HTTP endpoint to update plan artifact
+      // This plan route creates a new version, repoints sessions/proposals, resets
+      // verification, and emits plan events. `update_artifact` only mutates one row
+      // in place, so its superficially similar id/content shape is not compatible.
       const response = await backendFetch("update_plan_artifact", {
         method: "POST",
         headers: {
@@ -205,7 +210,7 @@ export function PlanEditor({ plan, onSave, onCancel, isNewPlan = false }: PlanEd
     } finally {
       setIsSaving(false);
     }
-  }, [plan.id, content, hasChanges, onSave, onCancel]);
+  }, [agentGate.gated, plan.id, content, hasChanges, onSave, onCancel]);
 
   // Handle cancel
   const handleCancel = useCallback(() => {

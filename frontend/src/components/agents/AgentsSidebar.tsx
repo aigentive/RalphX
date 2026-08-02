@@ -62,6 +62,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
 import { useConfirmation } from "@/hooks/useConfirmation";
+import { useAgentGate } from "@/hooks/useAgentGate";
 import {
   Collapsible,
   CollapsibleContent,
@@ -3546,6 +3547,9 @@ function AgentSessionRow({
   setActionsTriggerRef,
   onActionsOpenChange,
 }: AgentSessionRowProps) {
+  const forkGate = useAgentGate("conversationFork");
+  const archiveGate = useAgentGate("conversationArchive");
+  const muteGate = useAgentGate("conversationMute");
   const bulkArchiveSelection = useBulkArchiveSelection();
   const setConversationMuted = useContext(AgentConversationMuteContext);
   const title = conversation.title || "Untitled agent";
@@ -3738,7 +3742,7 @@ function AgentSessionRow({
             )}
             {isPinned ? "Unpin session" : "Pin session"}
           </DropdownMenuItem>
-          <DropdownMenuItem className="gap-2 text-xs" onClick={onFork}>
+          <DropdownMenuItem className="gap-2 text-xs" onClick={onFork} disabled={forkGate.gated} title={forkGate.reason ?? undefined}>
             <GitFork className="w-3.5 h-3.5" />
             Fork session
           </DropdownMenuItem>
@@ -3751,6 +3755,8 @@ function AgentSessionRow({
           {!conversation.archivedAt && (
             <DropdownMenuItem
               className="items-start gap-2 text-xs"
+              disabled={muteGate.gated}
+              title={muteGate.reason ?? undefined}
               onClick={() => void setConversationMuted(conversation, !isMuted)}
             >
               {isMuted ? (
@@ -3774,7 +3780,7 @@ function AgentSessionRow({
               Restore session
             </DropdownMenuItem>
           ) : (
-            <DropdownMenuItem className="items-start gap-2 text-xs" onClick={onArchiveRequest}>
+            <DropdownMenuItem className="items-start gap-2 text-xs" onClick={onArchiveRequest} disabled={archiveGate.gated} title={archiveGate.reason ?? undefined}>
               <Archive className="mt-0.5 h-3.5 w-3.5" style={{ color: "var(--destructive)" }} />
               <span className="flex flex-col">
                 <span>Archive session</span>

@@ -516,6 +516,7 @@ export function AgentComposerSurface({
   // conversation's folder-reference READ, which the host does serve remotely
   // (`list_conversation_folder_references`), so existing references must keep rendering.
   const folderReferenceAddGate = useAgentGate("folderReferenceAdd");
+  const folderReferenceRemoveGate = useAgentGate("folderReferenceRemove");
   const canAddFolderReference = folderReferencesSupported && !folderReferenceAddGate.gated;
   const effectivePlaceholder = isReadOnly
     ? "Viewing historical state (read-only)"
@@ -2068,6 +2069,10 @@ export function AgentComposerSurface({
             {folderReferences.data && (
               <FolderReferenceChips
                 references={folderReferences.data}
+                removeDisabled={folderReferenceRemoveGate.gated}
+                {...(folderReferenceRemoveGate.reason
+                  ? { removeDisabledReason: folderReferenceRemoveGate.reason }
+                  : {})}
                 {...(removeFolderReference.isPending &&
                 removeFolderReference.variables?.folderReferenceId
                   ? { removingId: removeFolderReference.variables.folderReferenceId }

@@ -2,6 +2,7 @@ import { useCallback } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import type { QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
+import { useAgentGate } from "@/hooks/useAgentGate";
 
 import {
   chatApi,
@@ -114,6 +115,8 @@ export function useAgentConversationActions({
   setOptimisticSelectedConversationId,
   setRuntimeForConversation,
 }: UseAgentConversationActionsArgs) {
+  const forkGate = useAgentGate("conversationFork");
+  const archiveGate = useAgentGate("conversationArchive");
   const invalidateConversationLists = useCallback(
     async (conversationProjectId: string | null) => {
       if (conversationProjectId) {
@@ -234,6 +237,7 @@ export function useAgentConversationActions({
 
   const handleForkConversation = useCallback(
     async (conversationId: string) => {
+      if (forkGate.gated) return Promise.reject(new Error(forkGate.reason ?? "Fork unavailable"));
       try {
         const result = await chatApi.forkAgentConversation(conversationId);
         const conversation = toProjectAgentConversation(result.conversation);
@@ -288,6 +292,8 @@ export function useAgentConversationActions({
     },
     [
       invalidateConversationLists,
+      forkGate.gated,
+      forkGate.reason,
       queryClient,
       selectConversation,
       setActiveConversation,
@@ -337,6 +343,7 @@ export function useAgentConversationActions({
       conversation: AgentConversation,
       options: AgentConversationArchiveOptions
     ) => {
+      if (archiveGate.gated) return;
       try {
         const result = await archiveAgentConversation(conversation, options);
         if (selectedConversationId === conversation.id) {
@@ -359,7 +366,7 @@ export function useAgentConversationActions({
         toast.error(err instanceof Error ? err.message : "Failed to archive session");
       }
     },
-    [clearAgentConversationSelection, invalidateConversationLists, selectedConversationId]
+    [archiveGate.gated, clearAgentConversationSelection, invalidateConversationLists, selectedConversationId]
   );
 
   const handleBulkArchiveConversations = useCallback(

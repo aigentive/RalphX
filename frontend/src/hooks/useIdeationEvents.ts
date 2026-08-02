@@ -23,6 +23,7 @@ import { taskKeys } from "./useTasks";
 import { proposalKeys } from "./useProposals";
 import type { Unsubscribe } from "@/lib/event-bus";
 import { logger } from "@/lib/logger";
+import { useAgentGate } from "@/hooks/useAgentGate";
 
 /**
  * Schema for session title updated event payload
@@ -111,6 +112,7 @@ const FinalizePendingConfirmationEventSchema = z.object({
  * ```
  */
 export function useIdeationEvents() {
+  const acceptFinalizeGate = useAgentGate("ideationAcceptFinalize");
   const bus = useEventBus();
   const updateSession = useIdeationStore((s) => s.updateSession);
   const setVerificationNotification = useIdeationStore((s) => s.setVerificationNotification);
@@ -335,6 +337,11 @@ export function useIdeationEvents() {
 
         // Check auto-accept: global or per-session — if on, bypass dialog entirely
         if (autoAcceptPlans || autoAcceptSessions.has(sessionId)) {
+          if (acceptFinalizeGate.gated) {
+            logger.warn("[IdeationEvents] Auto-accept skipped because finalize acceptance is unavailable:", acceptFinalizeGate.reason);
+            enqueuePendingConfirmation(sessionId);
+            return;
+          }
           logger.debug("[IdeationEvents] Auto-accepting finalize for session:", sessionId);
           ideationApi.acceptance.accept(sessionId).then(() => {
             // Mirror useAcceptFinalize.onSuccess query invalidations
@@ -367,5 +374,5 @@ export function useIdeationEvents() {
     return () => {
       unsubscribes.forEach((unsub) => unsub());
     };
-  }, [bus, updateSession, setVerificationNotification, clearVerificationNotification, setActiveVerificationChildId, setLastVerificationChildId, enqueuePendingConfirmation, autoAcceptPlans, autoAcceptSessions, queryClient]);
+  }, [bus, updateSession, setVerificationNotification, clearVerificationNotification, setActiveVerificationChildId, setLastVerificationChildId, enqueuePendingConfirmation, autoAcceptPlans, autoAcceptSessions, queryClient, acceptFinalizeGate.gated, acceptFinalizeGate.reason]);
 }

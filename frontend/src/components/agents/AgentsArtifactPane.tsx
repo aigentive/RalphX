@@ -83,6 +83,7 @@ import {
   planBundleTabId,
 } from "@/components/Ideation/planBundleTabIds";
 import { useChatStore } from "@/stores/chatStore";
+import { useAgentGate } from "@/hooks/useAgentGate";
 import {
   selectActivePlanId,
   selectActiveExecutionPlanId,
@@ -2908,6 +2909,7 @@ function AgentPlanPanel({
     ((conversationId: string, sessionId: string) => void) | undefined;
   onOpenTasks: () => void;
 }) {
+  const planApproveGate = useAgentGate("planApprove");
   const generatedPlanBundleTabsId = useId();
   const planBundleTabsId = `agents-plan-bundle-${generatedPlanBundleTabsId.replace(
     /:/g,
@@ -3198,7 +3200,7 @@ function AgentPlanPanel({
   const workspaceConversationId = workspace?.conversationId ?? null;
 
   const handleApprovePlan = useCallback(async () => {
-    if (!session || !planArtifact || !canApprovePlan) {
+    if (planApproveGate.gated || !session || !planArtifact || !canApprovePlan) {
       return;
     }
     setIsApprovingPlan(true);
@@ -3232,7 +3234,7 @@ function AgentPlanPanel({
     } finally {
       setIsApprovingPlan(false);
     }
-  }, [canApprovePlan, onPlanUpdated, planArtifact, queryClient, session]);
+  }, [canApprovePlan, onPlanUpdated, planApproveGate.gated, planArtifact, queryClient, session]);
 
   const handleImplementDirectly = useCallback(() => {
     if (!session || !workspace?.conversationId || !canImplementDirectly) {
@@ -3685,6 +3687,7 @@ function AgentPlanPanel({
             void handleApprovePlan();
           },
           icon: Sparkles,
+          disabled: planApproveGate.gated,
           loading: isApprovingPlan,
           primary: true,
           testId: "plan-lifecycle-approve-button",
@@ -3763,6 +3766,7 @@ function AgentPlanPanel({
     isStartingPlanVerification,
     isStartingTasks,
     planLifecycleState,
+    planApproveGate.gated,
     primaryPlanAction,
     proposals.length,
     showCreateProposalsLifecycleAction,

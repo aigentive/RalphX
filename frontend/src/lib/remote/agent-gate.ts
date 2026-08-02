@@ -119,6 +119,15 @@ export const AGENT_GATED_AFFORDANCES = {
   // and unavailable against an older host that predates the registration — derived from
   // absence, never hardcoded.
   conversationModeSwitch: "request_remote_agent_conversation_mode_switch",
+  planApprove: "approve_plan_artifact",
+  planArtifactEdit: "update_plan_artifact",
+  ideationAcceptFinalize: "ideation/sessions/:sessionId/accept-finalize",
+  ideationRejectFinalize: "ideation/sessions/:sessionId/reject-finalize",
+  conversationFork: "fork_agent_conversation",
+  conversationArchive: "archive_agent_conversation",
+  conversationMute: "set_agent_conversation_muted",
+  personaSwitch: "switch_agent_conversation_persona",
+  attachmentUpload: "upload_chat_attachment",
   permissionApprove: "approve_permission_request",
   // Answering the MCP `ask_user_question` gate — the ONLY question shape the Agents surface
   // raises (`http_server/handlers/questions.rs` emits `requestId` + `sessionId` and no task).
@@ -155,7 +164,6 @@ export const AGENT_GATED_AFFORDANCES = {
   stepUpdate: "update_task_step",
   stepSkip: "skip_step",
   proposalEdit: "update_task_proposal",
-  artifactEdit: "update_artifact",
   // Attaching a folder to a conversation. Unavailable remotely for TWO independent reasons
   // and derived, as always, from absence: the host keeps `add_conversation_folder_reference`
   // off the facade (the stored path becomes an MCP filesystem root for every later spawn, with

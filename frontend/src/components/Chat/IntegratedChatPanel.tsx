@@ -117,6 +117,7 @@ import {
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
 import { usePersonas, useSwitchConversationPersona } from "@/hooks/usePersonas";
 import { useConfirmation } from "@/hooks/useConfirmation";
+import { useAgentGate } from "@/hooks/useAgentGate";
 import { usePersonaRunEvents } from "@/hooks/usePersonaRunEvents";
 import { useIdeationStore } from "@/stores/ideationStore";
 import { PersonaUnavailableNotice } from "@/components/personas/PersonaUnavailableNotice";
@@ -344,6 +345,7 @@ export function IntegratedChatPanel({
   onUserMessageSent,
   onQuestionAnswered,
 }: IntegratedChatPanelProps) {
+  const attachmentUploadGate = useAgentGate("attachmentUpload");
   const bus = useEventBus();
   const queryClient = useQueryClient();
   const { data: featureFlags } = useFeatureFlags();
@@ -1920,7 +1922,7 @@ export function IntegratedChatPanel({
                           getContextConfig(currentContextType).placeholder,
                         autoFocus: autoFocusInput,
                         enableAttachments:
-                          !!effectiveConversationId && !isHistoryMode,
+                          !!effectiveConversationId && !isHistoryMode && !attachmentUploadGate.gated,
                         attachments,
                         onFilesSelected: uploadFiles,
                         onRemoveAttachment: removeAttachment,
@@ -1991,7 +1993,7 @@ export function IntegratedChatPanel({
                             : {})}
                         autoFocus={autoFocusInput}
                         enableAttachments={
-                          !!effectiveConversationId && !isHistoryMode
+                          !!effectiveConversationId && !isHistoryMode && !attachmentUploadGate.gated
                         }
                         attachments={attachments}
                         onFilesSelected={uploadFiles}

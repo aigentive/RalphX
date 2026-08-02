@@ -134,6 +134,24 @@ export const GATE_CALLSITE_INDIRECTIONS: readonly {
       "Setup edits post through `automationsApi.setupAgent.updateAutomation`, whose `update_automation` route name is computed inside `postAutomationJson` — invisible to the literal reach walk.",
   },
   {
+    file: "src/components/Ideation/FinalizeConfirmationDialog.tsx",
+    affordance: "ideationAcceptFinalize",
+    reason:
+      "Accept dispatches through `ideationApi.acceptFinalize`, whose route path is a template literal in `api/ideation.ts` — invisible to the literal reach walk.",
+  },
+  {
+    file: "src/components/Ideation/FinalizeConfirmationDialog.tsx",
+    affordance: "ideationRejectFinalize",
+    reason:
+      "Reject dispatches through `ideationApi.rejectFinalize`, whose route path is a template literal in `api/ideation.ts` — invisible to the literal reach walk.",
+  },
+  {
+    file: "src/hooks/useIdeationEvents.ts",
+    affordance: "ideationAcceptFinalize",
+    reason:
+      "The event-driven accept dispatches through `ideationApi.acceptFinalize`; the route path is a template literal in `api/ideation.ts` — invisible to the literal reach walk.",
+  },
+  {
     file: "src/components/agents/AgentComposerSurface.tsx",
     affordance: "agentComposerSend",
     reason: "Composer dispatches through the `onSend` prop; the invoke lives in the conversation host.",
@@ -288,12 +306,6 @@ export interface KnownGateGap {
 export const KNOWN_GATE_GAPS: readonly KnownGateGap[] = [
   {
     kind: "dead-row",
-    id: "dead-row:folderReferenceRemove",
-    owner: 4,
-    why: "The folder-reference chip's remove button is ungated while its `folderReferenceAdd` sibling four lines away is gated.",
-  },
-  {
-    kind: "dead-row",
     id: "dead-row:chatContinueIdle",
     owner: 4,
     why: "The idle-continuation half of remote send has no consumer, so a host predating WP1 still renders an enabled send instead of the unavailable hint.",
@@ -311,12 +323,6 @@ export const KNOWN_GATE_GAPS: readonly KnownGateGap[] = [
   // `deny_permission_request` under a remote environment, so the gate and the callsite agree.
   // The ratchet turned red on the stale entry, which is exactly what it is for — the row is
   // deleted rather than the assertion relaxed.
-  {
-    kind: "op-mismatch",
-    id: "op-mismatch:src/components/Ideation/PlanEditor.tsx::artifactEdit",
-    owner: 4,
-    why: "Gate resolves update_artifact; the save path POSTs update_plan_artifact, which is not on the remount allowlist (confirmed critical).",
-  },
 
   // --- raw twins still invoked ---------------------------------------------
   {

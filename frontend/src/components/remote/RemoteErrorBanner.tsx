@@ -22,16 +22,24 @@ export interface RemoteErrorBannerProps {
   error: unknown;
   className?: string;
   testId?: string;
+  /**
+   * Render a generic connection-failure banner for transport errors whose code has no
+   * mapped copy. Default OFF: unmapped codes render nothing so surfaces with their own
+   * treatment are not double-bannered. Opt in only when this banner is the surface's
+   * ONLY error presentation (e.g. PermissionDialog's kept-queued resolve failure).
+   */
+  fallbackForTransportErrors?: boolean;
 }
 
 export function RemoteErrorBanner({
   error,
   className,
   testId,
+  fallbackForTransportErrors = false,
 }: RemoteErrorBannerProps) {
   const props = remoteErrorBannerProps(error);
   if (props === null) {
-    if (isRemoteTransportError(error)) {
+    if (fallbackForTransportErrors && isRemoteTransportError(error)) {
       return (
         <NoticeBanner
           tone="error"

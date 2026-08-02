@@ -21,6 +21,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useConfirmation } from "@/hooks/useConfirmation";
+import { useAgentGate } from "@/hooks/useAgentGate";
 import { usePersonas, useSwitchConversationPersona } from "@/hooks/usePersonas";
 import { extractErrorMessage } from "@/lib/errors";
 import { cn } from "@/lib/utils";
@@ -66,6 +67,7 @@ export function PersonaChip({
   );
   const { data: personas = [] } = usePersonas(scope);
   const switchPersona = useSwitchConversationPersona();
+  const personaSwitchGate = useAgentGate("personaSwitch");
   const { confirm, confirmationDialogProps, ConfirmationDialog } =
     useConfirmation();
   const [isOpen, setIsOpen] = useState(false);
@@ -104,7 +106,7 @@ export function PersonaChip({
 
   const selectPersona = useCallback(
     async (nextPersonaId: string | null) => {
-      if (nextPersonaId === personaId || switchPersona.isPending) {
+      if (nextPersonaId === personaId || switchPersona.isPending || personaSwitchGate.gated) {
         setIsOpen(false);
         return;
       }
@@ -131,7 +133,7 @@ export function PersonaChip({
         );
       }
     },
-    [confirm, conversationId, isAgentRunning, personaId, switchPersona],
+    [confirm, conversationId, isAgentRunning, personaId, personaSwitchGate.gated, switchPersona],
   );
 
   return (
@@ -144,6 +146,7 @@ export function PersonaChip({
                 <button
                   type="button"
                   aria-label="Switch conversation persona"
+                  disabled={personaSwitchGate.gated}
                   className={cn(
                     "inline-flex shrink-0 items-center gap-1 rounded-full border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2 py-1 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:border-[var(--accent-primary)] hover:text-[var(--text-primary)]",
                     selectedPersona && "text-[var(--text-primary)]",
@@ -176,7 +179,7 @@ export function PersonaChip({
                 </button>
               </PopoverTrigger>
             </TooltipTrigger>
-            <TooltipContent>{chipTooltip}</TooltipContent>
+            <TooltipContent>{personaSwitchGate.reason ?? chipTooltip}</TooltipContent>
           </Tooltip>
         </TooltipProvider>
         <PopoverContent align="end" className="w-72 p-1.5">
@@ -184,7 +187,7 @@ export function PersonaChip({
             projectId={projectId}
             projectName={projectName}
             selectedPersonaId={selectedPersona?.id ?? null}
-            disabled={switchPersona.isPending}
+            disabled={switchPersona.isPending || personaSwitchGate.gated}
             showNoPersona={false}
             onSelect={(nextPersonaId) => void selectPersona(nextPersonaId)}
           />
@@ -206,7 +209,7 @@ export function PersonaChip({
             <button
               type="button"
               role="menuitem"
-              disabled={personaId == null || switchPersona.isPending}
+              disabled={personaId == null || switchPersona.isPending || personaSwitchGate.gated}
               onClick={() => void selectPersona(null)}
               className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] disabled:cursor-not-allowed disabled:opacity-60"
             >
