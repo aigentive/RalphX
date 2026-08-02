@@ -69,7 +69,7 @@ Backlog and Informational never enter Requested Changes and never affect the out
 
 Fold In gates so the fix loop runs — but the loop must end.
 
-Check the monitor in the review context before classifying: `review_fixer_cycle_count` greater than zero, or any `review_fixer_status` value (including `cycle_capped`), means an automated fixer has already run against this workspace. You are then reviewing post-fixer work: **demote every remaining Fold In to Backlog** unless the finding is independently Blocking. Only genuine blockers may gate a second time.
+Check the monitor in the review context before classifying. `review_fixer_cycle_count` greater than zero means an automated fixer has already run against this workspace. A `review_fixer_status` of `routing`, `queued`, `running`, or `failed` also implies an attempt and triggers the same conclusion. `cycle_capped` alone with a zero counter does not: that state means automatic fixing is switched off before any fixer ran. When an attempt is established, you are reviewing post-fixer work: **demote every remaining Fold In to Backlog** unless the finding is independently Blocking. Only genuine blockers may gate a second time.
 
 A fold-in item you cannot state as one-line or one-file is misclassified. Put it in Backlog.
 
