@@ -83,7 +83,7 @@ Practical rules:
 
 Required repository secret:
 
-- `CODEX_API_KEY` for Codex CLI release proposal and release-note generation. `OPENAI_API_KEY` is accepted as a fallback, but `CODEX_API_KEY` is preferred for `codex exec` automation.
+- `CODEX_API_KEY` for Codex CLI release proposal and release-note generation. `OPENAI_API_KEY` is accepted as a fallback, but `CODEX_API_KEY` is preferred for `codex exec` automation. `Stable Release Control` uses the same secret for cumulative Stable release notes.
 - Optional: `RELEASE_AUTOMATION_TOKEN` with `contents:write` and `actions:write` when branch protection prevents the default `GITHUB_TOKEN` from pushing the release-prep commit/tag or dispatching `Release Build`.
 
 What the scheduled workflow does:
@@ -330,11 +330,43 @@ To promote a tested prerelease:
 
 1. Go to `aigentive/ralphx.app` → Actions → `Stable Release Control`.
 2. Choose `operation=promote` and set only `candidate_tag` to the exact source tag, for example `v0.77.0` (not `0.77.0`, a branch, or a ref prefix).
-3. The workflow validates/downloads/renders the candidate first: it requires the exact eight-source-asset allowlist, byte-compares manifest signatures with their `.sig` files, checks every updater URL is the fixed GitHub download URL for that tag, and stages the deterministic Homebrew cask from the downloaded DMGs.
-4. It then creates or validates the mutable, published-prerelease `updater-stable` infrastructure release before changing version authority; only after that does it make the candidate the full GitHub latest release, publish both fixed pointers, wait for their public URLs to converge, and reconcile the already-staged cask.
-5. Later promotions are semver-monotonic, but older successful Stable releases remain published full releases as history; normal promotion never demotes them to prereleases.
+3. Before any mutation, the workflow builds the cumulative Stable release note (see below).
+4. The workflow validates/downloads/renders the candidate: it requires the exact eight-source-asset allowlist, byte-compares manifest signatures with their `.sig` files, checks every updater URL is the fixed GitHub download URL for that tag, and stages the deterministic Homebrew cask from the downloaded DMGs.
+5. It then creates or validates the mutable, published-prerelease `updater-stable` infrastructure release before changing version authority; only after that does it make the candidate the full GitHub latest release, apply the combined notes, publish both fixed pointers, wait for their public URLs to converge, and reconcile the already-staged cask.
+6. Later promotions are semver-monotonic, but older successful Stable releases remain published full releases as history; normal promotion never demotes them to prereleases.
 
-An exact rerun repairs only bounded partial states for the same request: GitHub authority already advanced with absent, prior, or one-architecture-updated pointers; or completed pointers with an unfinished Homebrew cask. Unrelated pointer disagreement, a draft/immutable release, a mismatched full release, or a missing fixed asset fails closed.
+An exact rerun repairs only bounded partial states for the same request: GitHub authority already advanced with absent, prior, or one-architecture-updated pointers; or completed pointers with an unfinished Homebrew cask. Unrelated pointer disagreement, a draft/immutable release, a mismatched full release, or a missing fixed asset fails closed. Reruns regenerate the combined note and reapply it idempotently.
+
+#### Cumulative Stable Release Notes
+
+Stable promotion bundles every prerelease build since the previous Stable release, so a Stable upgrader never saw the intermediate per-build notes. Promotion therefore replaces the promoted release's presentation with one combined note covering the whole span. It does not rebuild, retag, or copy assets.
+
+Generation runs as a read-only pre-step, before any release, pointer, or Homebrew mutation:
+
+1. `scripts/resolve-stable-baseline.sh` resolves the previous Stable tag — the newest published full `vX.Y.Z` release strictly below `candidate_tag`. If none exists (first-ever promotion), the whole combine path is skipped with a summary line and promotion proceeds with the candidate's existing per-build note.
+2. `scripts/generate-stable-release-notes.sh` collects the committed `release-notes/vX.Y.Z.md` for every version tag in `(last_stable, candidate]`, reading them from the candidate tag's own tree, strips each managed metadata block, and drives Codex to merge and dedupe them into one note. Version tags with no committed note are skipped with a warning; the next build's note normally already covers them.
+3. `scripts/append-github-release-metadata.sh` appends a fresh metadata block spanning `last_stable...candidate`, so pull-request attribution and the full changelog link cover the whole Stable span. A stripped copy is produced for the updater surfaces.
+4. Both files are uploaded as the `stable-release-notes-<candidate_tag>` workflow artifact.
+
+`scripts/reconcile-stable-release-state.sh` then applies them, only after GitHub authority has advanced to the candidate:
+
+- the promoted release **body** is replaced with the combined note, which is also what the in-app "What's New" view shows
+- the promoted release's `latest.json` is re-rendered with the stripped combined note and clobbered in place, so legacy clients on `/releases/latest/download/latest.json` and any later halt recovery stay consistent
+- both `updater-stable` pointers carry the same stripped combined note
+
+Only the `notes` field changes; version, fixed download URLs, and signature bytes are re-rendered identically from the same source assets and re-verified afterwards. The committed `release-notes/vX.Y.Z.md` files are never rewritten, and the promote workflow makes no git commit.
+
+Promote-only inputs:
+
+| Input | Default | Purpose |
+|---|---|---|
+| `codex_model` | `gpt-5.6-terra` | Codex model for the combine step |
+| `codex_reasoning_effort` | `xhigh` | `low`, `medium`, `high`, or `xhigh` |
+| `notes_dry_run` | `false` | Generate and upload the combined note, then stop before every mutation |
+
+Use `notes_dry_run=true` to review the generated note as a rehearsal before a real promotion; it changes no release, pointer, or Homebrew state. The gate applies to `promote` only and can never block a `halt`.
+
+`Stable Release Control` now needs the `CODEX_API_KEY` secret (with `OPENAI_API_KEY` as a fallback) that `Daily Release` already uses. A missing key or a Codex failure fails the run during generation, before anything has been mutated.
 
 To halt Stable, select `operation=halt`, set `bad_tag` to the exact current Stable tag, and set `restore_tag` to the exact derived prior full Stable tag. The workflow validates the bad and restore releases first, demotes the bad release and promotes the restore release in GitHub, restores both `updater-stable` pointers, and then reconciles Homebrew. Exact reruns repair only those bad/restore partial states; they never accept another candidate combination. It does not build, upload versioned assets, retag, or push a release tag.
 
@@ -350,6 +382,7 @@ Current release contract:
 - every versioned prerelease retains only its normal `latest.json`, with both Tauri macOS targets and fixed URLs under its own `vX.Y.Z` GitHub Release tag
 - `updater-nightly` owns the two fixed one-target Nightly pointers: `latest-aarch64.json` and `latest-x86_64.json`; it is always a published prerelease with `latest=false`, and each pointer is rendered only after the versioned source assets are readable and validated
 - `updater-stable` owns the same two fixed one-target Stable pointers; it is always a published prerelease with `latest=false`, and Stable control first moves the versioned GitHub latest authority, then replaces both pointers and verifies the public pointer bytes before continuing
+- Nightly pointer notes are the per-build note for that version; Stable pointer notes are the cumulative note since the previous Stable release, so the Stable updater dialog describes the whole upgrade span rather than the last daily increment
 - the Homebrew cask declares `auto_updates true`, so RalphX.app can self-update after install while still allowing an explicit `brew upgrade --cask ralphx`
 
 Rollout compatibility: already-shipped clients using `/releases/latest/download/latest.json` remain Stable-only because `Release Publish` keeps normal `latest.json` on every version release and only Stable Release Control makes a version release GitHub latest. New builds use `updater-{{target}}/latest-{{arch}}.json`.
@@ -466,7 +499,10 @@ cargo tauri build
 | `scripts/propose-release.sh` | Codex-assisted version recommendation generator |
 | `scripts/release-analysis-common.sh` | Shared release evidence and Codex logging helper used by the proposal and notes scripts |
 | `scripts/bump-version.sh` | Version management script |
-| `scripts/generate-release-notes.sh` | Codex-assisted release notes draft generator |
+| `scripts/generate-release-notes.sh` | Codex-assisted per-build release notes draft generator |
+| `scripts/generate-stable-release-notes.sh` | Codex-assisted combiner that merges the committed per-build notes since the previous Stable release into one cumulative Stable note |
+| `scripts/resolve-stable-baseline.sh` | Resolves the newest published full `vX.Y.Z` release strictly below a ceiling tag; empty output means first-ever promotion |
+| `scripts/prompts/stable-release-notes-codex-prompt.md` | Model instructions for merging and deduping per-build notes into one Stable note |
 | `scripts/append-github-release-metadata.sh` | Appends managed GitHub pull-request, contributor, and changelog metadata to release notes |
 | `release-notes/` | Curated release notes consumed automatically by the release workflow when present |
 | `src-tauri/tauri.conf.json` | Bundle config, updater config |
