@@ -23,6 +23,7 @@ mod delegation_handlers;
 mod delegation_park;
 mod ideation_event_emission;
 mod internal_handlers;
+mod managed_team_members_handlers;
 mod personas_handlers;
 mod projects_handlers;
 mod reliability_tests;

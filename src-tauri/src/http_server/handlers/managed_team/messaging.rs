@@ -10,8 +10,9 @@ use sha2::{Digest, Sha256};
 use crate::application::managed_team::{
     ManagedTeamMessageRequest, ManagedTeamMessageSender, ManagedTeamMessageTarget,
 };
-use crate::domain::entities::{
-    AgentRunId, ChatConversationId, TeamMessageKind, TeamRunBindingStatus,
+use crate::domain::entities::{AgentRunId, ChatConversationId, TeamMessageKind};
+use crate::http_server::handlers::managed_team::authority::{
+    resolve_team_authority, TeamAuthorityKind,
 };
 use crate::http_server::types::{
     HttpServerState, ManagedTeamMessageResponse, ManagedTeamRosterEntry,
@@ -70,124 +71,22 @@ async fn resolve_message_authority(
     state: &HttpServerState,
     headers: &HeaderMap,
 ) -> Result<MessageAuthority, JsonError> {
-    let enabled = state
-        .app_state
-        .managed_team
-        .team_capability_enabled()
-        .await
-        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
-    if !enabled {
-        return Err(json_error(
-            StatusCode::FORBIDDEN,
-            "Team capability is disabled",
-        ));
-    }
-    let conversation_id = headers
-        .get("x-ralphx-conversation-id")
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ChatConversationId::from_string)
-        .ok_or_else(|| {
-            json_error(
-                StatusCode::BAD_REQUEST,
-                "Team tools require trusted caller conversation context",
-            )
-        })?;
-    let run_id = headers
-        .get("x-ralphx-agent-run-id")
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(AgentRunId::from_string)
-        .ok_or_else(|| {
-            json_error(
-                StatusCode::BAD_REQUEST,
-                "Team tools require trusted caller run context",
-            )
-        })?;
-    let active = state
-        .app_state
-        .agent_run_repo
-        .get_active_for_conversation(&conversation_id)
-        .await
-        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
-        .ok_or_else(|| json_error(StatusCode::CONFLICT, "Trusted Team run is not active"))?;
-    if active.id != run_id {
-        return Err(json_error(
-            StatusCode::CONFLICT,
-            "Trusted Team run is not active",
-        ));
-    }
-    let binding = state
-        .app_state
-        .managed_team
-        .run_binding_repo()
-        .get_by_agent_run_id(&run_id)
-        .await
-        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
-        .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Trusted run has no Team binding"))?;
-    if binding.conversation_id != conversation_id
-        || !matches!(
-            binding.status,
-            TeamRunBindingStatus::Planned
-                | TeamRunBindingStatus::Launching
-                | TeamRunBindingStatus::Running
-        )
-    {
-        return Err(json_error(
-            StatusCode::FORBIDDEN,
-            "Trusted run is not current Team authority",
-        ));
-    }
-    let session = state
-        .app_state
-        .managed_team
-        .team_repo()
-        .get_session(&binding.team_id)
-        .await
-        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
-        .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Team session was not found"))?;
-    if session.status.is_closed() {
-        return Err(json_error(StatusCode::CONFLICT, "Team session is closed"));
-    }
-    match (binding.team_member_id, binding.team_member_generation) {
-        (None, None) if session.coordinator_conversation_id == conversation_id => {
-            Ok(MessageAuthority::Coordinator {
-                team_id: session.id,
-                conversation_id,
-                run_id,
-            })
-        }
-        (Some(member_id), Some(generation)) => {
-            let member = state
-                .app_state
-                .managed_team
-                .team_repo()
-                .get_member(&member_id)
-                .await
-                .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
-                .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Team member was not found"))?;
-            if member.team_id != session.id
-                || !member.is_current_generation(generation)
-                || !member.current_run_is_authoritative(generation, &run_id)
-            {
-                return Err(json_error(
-                    StatusCode::CONFLICT,
-                    "Trusted member run has stale Team generation authority",
-                ));
-            }
-            Ok(MessageAuthority::Member {
-                team_id: session.id,
-                member_id,
-                generation,
-                run_id,
-            })
-        }
-        _ => Err(json_error(
-            StatusCode::FORBIDDEN,
-            "Trusted Team run has invalid member authority",
-        )),
+    let resolution = resolve_team_authority(state, headers).await?;
+    match resolution.kind {
+        TeamAuthorityKind::Coordinator => Ok(MessageAuthority::Coordinator {
+            team_id: resolution.session.id,
+            conversation_id: resolution.conversation_id,
+            run_id: resolution.run.id,
+        }),
+        TeamAuthorityKind::Member {
+            member_id,
+            generation,
+        } => Ok(MessageAuthority::Member {
+            team_id: resolution.session.id,
+            member_id,
+            generation,
+            run_id: resolution.run.id,
+        }),
     }
 }
 
