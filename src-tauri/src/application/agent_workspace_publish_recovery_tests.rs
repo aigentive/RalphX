@@ -7,7 +7,7 @@ use std::os::unix::fs::PermissionsExt;
 
 use crate::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
 use crate::application::agent_workspace_publish_recovery::{
-    evaluate_pr_autofix_successor, is_blocked_and_not_auto_retryable,
+    due_repair_dispatch_message, evaluate_pr_autofix_successor, is_blocked_and_not_auto_retryable,
     recover_agent_workspace_repair_after_terminal_run,
     recover_agent_workspace_repair_attempts_for_state,
     recover_stale_agent_workspace_publish_repairs,
@@ -20,7 +20,8 @@ use crate::application::agent_workspace_publish_recovery::{
     recover_stale_publish_repair_for_workspace_in_state,
     recover_stale_publish_repair_for_workspace_with_project_repo_outcome,
     recover_stale_transient_publish_statuses, PrAutofixSuccessorDecision,
-    StalePublishRepairRecoveryOutcome, STALE_NEEDS_AGENT_CLASSIFICATION,
+    StalePublishRepairRecoveryOutcome, AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX,
+    AUTO_RETRY_READY_REPAIR_REASON_PREFIX, STALE_NEEDS_AGENT_CLASSIFICATION,
     STALE_REPAIR_BLOCKED_SUMMARY, STALE_REPAIR_RECOVERED_STEP, STALE_TRANSIENT_CLASSIFICATION,
     STALE_TRANSIENT_RECOVERED_STEP,
 };
@@ -28,6 +29,7 @@ use crate::application::agent_workspace_publish_repair_state::{
     reserve_agent_workspace_repair_dispatch, start_or_join_agent_workspace_repair,
     AgentWorkspaceRepairDispatchOutcome, AgentWorkspaceRepairStartOutcome,
     AgentWorkspaceRepairStartRequest, MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES,
+    NEEDS_HUMAN_REPAIR_REASON, PRE_EXISTING_ON_BASE_REPAIR_REASON, UNCHANGED_HEALTH_REPAIR_REASON,
 };
 use crate::application::agent_workspace_review::{
     resolve_review_target, AgentWorkspaceReviewPacket, AgentWorkspaceReviewTarget,
@@ -68,6 +70,70 @@ fn conversation_id(suffix: u8) -> ChatConversationId {
 
 fn project_id() -> ProjectId {
     ProjectId::from_string("project-publish-recovery".to_string())
+}
+
+#[test]
+fn generic_repair_redelivery_uses_default_context_when_only_machine_markers_remain() {
+    let markers = [
+        NEEDS_HUMAN_REPAIR_REASON.to_string(),
+        PRE_EXISTING_ON_BASE_REPAIR_REASON.to_string(),
+        UNCHANGED_HEALTH_REPAIR_REASON.to_string(),
+        format!("{AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX}3"),
+        format!("{AUTO_RETRY_READY_REPAIR_REASON_PREFIX}2"),
+    ];
+
+    for marker in markers {
+        let mut attempt = AgentWorkspaceRepairAttempt::new(
+            conversation_id(90),
+            AgentWorkspaceRepairSource::Publish,
+            AgentWorkspaceRepairContinuation::Publish,
+            "main",
+            false,
+            true,
+            false,
+            None,
+            chrono::Utc::now(),
+        );
+        attempt.pending_reasons = vec![marker.clone()];
+        let message = due_repair_dispatch_message(
+            &attempt,
+            &needs_agent_workspace(attempt.conversation_id.clone()),
+        );
+
+        assert!(message
+            .contains("Context: The current durable workspace repair still needs attention."));
+        assert!(
+            !message.contains(&marker),
+            "machine marker {marker:?} must not leak into agent context: {message}"
+        );
+    }
+}
+
+#[test]
+fn generic_repair_redelivery_uses_older_human_context_before_needs_human_marker() {
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        conversation_id(91),
+        AgentWorkspaceRepairSource::Publish,
+        AgentWorkspaceRepairContinuation::Publish,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    attempt.pending_reasons = vec![
+        "old base ref was deleted after its PR merged".to_string(),
+        NEEDS_HUMAN_REPAIR_REASON.to_string(),
+    ];
+
+    let message = due_repair_dispatch_message(
+        &attempt,
+        &needs_agent_workspace(attempt.conversation_id.clone()),
+    );
+
+    assert!(message.contains("Context: old base ref was deleted after its PR merged"));
+    assert!(!message.contains(NEEDS_HUMAN_REPAIR_REASON));
 }
 
 #[test]

@@ -4,6 +4,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use crate::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
+use crate::application::agent_workspace_publish_recovery::{
+    AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX, AUTO_RETRY_READY_REPAIR_REASON_PREFIX,
+};
 use crate::application::agent_workspace_publish_repair_state::{
     abort_agent_workspace_pr_fix_review_handoff, block_agent_workspace_pr_fix_claim,
     block_agent_workspace_repair_needs_human, claim_agent_workspace_repair,
@@ -12,6 +15,7 @@ use crate::application::agent_workspace_publish_repair_state::{
     continue_agent_workspace_repair_at_boundary,
     continue_agent_workspace_repair_at_boundary_with_review_starter,
     current_agent_workspace_repair_claim_for_completion, inspect_agent_workspace_repair_completion,
+    is_machine_repair_reason_marker, last_human_repair_reason,
     reconcile_active_agent_workspace_repair,
     reopen_agent_workspace_repair_after_validation_failure, repair_event_authorizes_active_run,
     reserve_agent_workspace_ci_rerun, reserve_agent_workspace_pre_existing_on_base,
@@ -28,6 +32,7 @@ use crate::application::agent_workspace_publish_repair_state::{
     AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION, DEFERRED_REPAIR_WAIT_TIMEOUT_SECS,
     MAX_AGENT_WORKSPACE_CI_RERUN_RETRIES, MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES,
     NEEDS_HUMAN_REPAIR_REASON, PRE_EXISTING_ON_BASE_REPAIR_REASON, REPAIR_SENT_STEP,
+    UNCHANGED_HEALTH_REPAIR_REASON,
 };
 use crate::application::agent_workspace_review::{
     load_agent_workspace_review_context, AgentWorkspaceReviewStart,
@@ -56,6 +61,76 @@ use crate::infrastructure::memory::{
     MemoryAgentConversationWorkspaceRepository, MemoryAgentRunRepository,
     MemoryBranchUpdateRepository,
 };
+
+#[test]
+fn repair_reason_helpers_exclude_every_machine_marker_and_preserve_latest_human_context() {
+    let human_context = "Resolve the workspace conflict in src/lib.rs.".to_string();
+    let newer_human_context = "Retry after the maintainer refreshes the base branch.".to_string();
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        ChatConversationId::from_string("repair-reason-helper-human".to_string()),
+        AgentWorkspaceRepairSource::Publish,
+        AgentWorkspaceRepairContinuation::Publish,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    attempt.pending_reasons = vec![
+        human_context.clone(),
+        NEEDS_HUMAN_REPAIR_REASON.to_string(),
+        PRE_EXISTING_ON_BASE_REPAIR_REASON.to_string(),
+        UNCHANGED_HEALTH_REPAIR_REASON.to_string(),
+        format!("{AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX}2"),
+        format!("{AUTO_RETRY_READY_REPAIR_REASON_PREFIX}1"),
+        newer_human_context.clone(),
+    ];
+
+    for marker in &attempt.pending_reasons[1..6] {
+        assert!(
+            is_machine_repair_reason_marker(marker),
+            "{marker:?} must remain internal scheduling state"
+        );
+    }
+    assert!(!is_machine_repair_reason_marker(&human_context));
+    assert!(!is_machine_repair_reason_marker(&newer_human_context));
+    assert!(is_machine_repair_reason_marker(""));
+    assert!(is_machine_repair_reason_marker("   \t"));
+    assert!(is_machine_repair_reason_marker(&format!(
+        "  {NEEDS_HUMAN_REPAIR_REASON}  "
+    )));
+    assert_eq!(
+        last_human_repair_reason(&attempt),
+        Some(newer_human_context.as_str()),
+        "the most recent human reason must win over earlier context and internal markers"
+    );
+}
+
+#[test]
+fn repair_reason_helpers_return_no_context_when_only_machine_markers_remain() {
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        ChatConversationId::from_string("repair-reason-helper-markers".to_string()),
+        AgentWorkspaceRepairSource::Publish,
+        AgentWorkspaceRepairContinuation::Publish,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    attempt.pending_reasons = vec![
+        NEEDS_HUMAN_REPAIR_REASON.to_string(),
+        PRE_EXISTING_ON_BASE_REPAIR_REASON.to_string(),
+        UNCHANGED_HEALTH_REPAIR_REASON.to_string(),
+        format!("{AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX}3"),
+        format!("{AUTO_RETRY_READY_REPAIR_REASON_PREFIX}2"),
+        "   ".to_string(),
+    ];
+
+    assert_eq!(last_human_repair_reason(&attempt), None);
+}
 
 fn repair_workspace(conversation_id: ChatConversationId) -> AgentConversationWorkspace {
     let mut workspace = AgentConversationWorkspace::new(

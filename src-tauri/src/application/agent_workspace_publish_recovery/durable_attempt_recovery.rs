@@ -13,7 +13,7 @@ use crate::application::agent_workspace_publish_repair_state::{
     agent_workspace_repair_dispatch_is_due, agent_workspace_repair_is_health_held,
     block_agent_workspace_repair_completion, block_agent_workspace_repair_needs_human,
     classify_agent_workspace_repair_delivery, continue_agent_workspace_repair_at_boundary,
-    inspect_agent_workspace_repair_completion,
+    inspect_agent_workspace_repair_completion, last_human_repair_reason,
     reacquire_agent_workspace_repair_target_lease_for_continuation,
     record_agent_workspace_repair_validation,
     release_and_clear_agent_workspace_repair_target_lease,
@@ -1119,19 +1119,10 @@ async fn schedule_interrupted_dispatch_retry(
 pub(super) const DEFAULT_REPAIR_DISPATCH_CONTEXT: &str =
     "The current durable workspace repair still needs attention.";
 
-/// `pending_reasons` carries internal scheduling markers (`auto_retry_blocked_repair:2`) alongside
-/// human-authored context. Only the latter belongs in an agent assignment; a marker rendered as
-/// "Context:" tells the recipient nothing about what actually needs repairing.
+/// Delegates marker filtering to the durable repair-state seam so every dispatcher shares the
+/// same definition of human-authored context.
 pub(super) fn human_repair_dispatch_context(attempt: &AgentWorkspaceRepairAttempt) -> Option<&str> {
-    attempt
-        .pending_reasons
-        .iter()
-        .rev()
-        .map(String::as_str)
-        .find(|reason| {
-            !reason.starts_with(AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX)
-                && !reason.starts_with(AUTO_RETRY_READY_REPAIR_REASON_PREFIX)
-        })
+    last_human_repair_reason(attempt)
 }
 
 pub(crate) fn due_repair_dispatch_message(
