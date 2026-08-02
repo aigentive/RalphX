@@ -9672,13 +9672,14 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
             ) {
                 let repair_summary =
                     post_repair_action.repair_send_failed_summary(&authority_error);
+                let runtime_conv_id = *dispatch.runtime_conversation_id();
                 settle_agent_workspace_repair_dispatch_failure(
                     state,
                     dispatch,
                     &repair_summary,
                     classify_agent_workspace_repair_delivery(
                         Ok(&result),
-                        dispatch.runtime_conversation_id(),
+                        &runtime_conv_id,
                         &repair_run_id,
                     ),
                 )
@@ -9700,13 +9701,14 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
             );
             let repair_summary =
                 post_repair_action.repair_send_failed_summary(&repair_error.to_string());
+            let runtime_conv_id = dispatch.runtime_conversation_id().clone();
             settle_agent_workspace_repair_dispatch_failure(
                 state,
                 dispatch,
                 &repair_summary,
                 classify_agent_workspace_repair_delivery(
                     Err(&repair_error),
-                    dispatch.runtime_conversation_id(),
+                    &runtime_conv_id,
                     &repair_run_id,
                 ),
             )
@@ -9873,13 +9875,14 @@ async fn spawn_deferred_agent_workspace_repair_message(
                 ) {
                     let repair_summary =
                         post_repair_action.repair_send_failed_summary(&authority_error);
+                    let runtime_conv_id = dispatch.runtime_conversation_id().clone();
                     settle_agent_workspace_repair_dispatch_failure(
                         state.inner(),
                         dispatch,
                         &repair_summary,
                         classify_agent_workspace_repair_delivery(
                             Ok(&result),
-                            dispatch.runtime_conversation_id(),
+                            &runtime_conv_id,
                             &repair_run_id,
                         ),
                     )
@@ -9901,13 +9904,14 @@ async fn spawn_deferred_agent_workspace_repair_message(
                 );
                 let repair_summary =
                     post_repair_action.repair_send_failed_summary(&repair_error.to_string());
+                let runtime_conv_id = dispatch.runtime_conversation_id().clone();
                 settle_agent_workspace_repair_dispatch_failure(
                     state.inner(),
                     dispatch,
                     &repair_summary,
                     classify_agent_workspace_repair_delivery(
                         Err(&repair_error),
-                        dispatch.runtime_conversation_id(),
+                        &runtime_conv_id,
                         &repair_run_id,
                     ),
                 )

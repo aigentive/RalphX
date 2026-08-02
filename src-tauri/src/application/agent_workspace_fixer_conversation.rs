@@ -128,5 +128,11 @@ fn agent_workspace_fixer_conversation_title(
             "Fix PR conflict".to_string()
         }
         (_, AgentWorkspaceFixerTitleContext::Repair(_)) => "Fix workspace".to_string(),
+        (AgentWorkspaceFixerKind::WorkspaceRepair, AgentWorkspaceFixerTitleContext::PullRequest(Some(number))) => {
+            format!("Fix PR #{number}")
+        }
+        (AgentWorkspaceFixerKind::WorkspaceRepair, AgentWorkspaceFixerTitleContext::PullRequest(None)) => {
+            "Fix workspace".to_string()
+        }
     }
 }
