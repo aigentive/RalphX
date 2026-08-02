@@ -88,6 +88,7 @@ coverage:
           # the composition layers that mostly wire those tested pieces.
           - "!frontend/src/api/artifact.ts"
           - "!frontend/src/components/agents/AgentsActiveConversationPanel.tsx"
+          - "!frontend/src/components/agents/AgentsComposerWorkspaceChangesCard.tsx"
           - "!frontend/src/components/agents/useAgentsViewController.ts"
           - "!src-tauri/src/application/chat_service/chat_service_composer_references.rs"
           - "!src-tauri/src/application/chat_service/mod.rs"
@@ -111,6 +112,12 @@ coverage:
           # repository atomicity tests; keep patch coverage focused on those
           # deterministic units instead of every orchestration error branch.
           - "!src-tauri/src/application/agent_workspace_review_auto_merge.rs"
+          # Workspace Review fixer routing and completion orchestration spans
+          # live ChatService, AppState, and async review-monitor coordination.
+          # Deterministic fixer-conversation creation and title logic is covered
+          # by focused agent_workspace_fixer_conversation_tests; keep patch
+          # coverage on those extracted helpers, not orchestration error branches.
+          - "!src-tauri/src/application/agent_workspace_review.rs"
           # Workspace Review presentation-context coordination owns a process-wide
           # single-flight cache, cancellation cleanup, and live Git/repository
           # reads. The public status, cache, refresh, and coalescing outcomes are

@@ -30,6 +30,8 @@ pub mod agent_workspace_bridge;
 pub mod agent_workspace_continuation;
 pub mod agent_workspace_external_pr_reconciliation;
 pub mod agent_workspace_fixer_conversation;
+#[cfg(test)]
+mod agent_workspace_fixer_conversation_tests;
 pub mod agent_workspace_local_commit;
 #[cfg(test)]
 mod agent_workspace_local_commit_tests;
