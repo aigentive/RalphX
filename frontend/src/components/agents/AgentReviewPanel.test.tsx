@@ -86,6 +86,7 @@ function reviewMonitor(
     reviewFixerRunId: null,
     reviewFixerConversationId: null,
     reviewFixerStatus: null,
+    reviewFixerCycleCount: 0,
     lastRunId: null,
     lastError: null,
     createdAt: "2026-07-10T00:00:00.000Z",
@@ -327,6 +328,75 @@ describe("AgentReviewPanel", () => {
     expect(onApproveAnyway).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Approve anyway" }));
     expect(onApproveAnyway).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the blocking reason visible when automatic fixing reaches its cycle cap", () => {
+    renderPanel({
+      reviewContext: reviewContext({
+        isCurrent: true,
+        isOutdated: false,
+        monitor: reviewMonitor({
+          reviewOutcome: "blocking",
+          reviewGateStatus: "blocking",
+          reviewBlockingSummary: "One unresolved blocker remains.",
+          reviewFixerStatus: "cycle_capped",
+          reviewFixerCycleCount: 3,
+        }),
+      }),
+    });
+
+    expect(
+      screen.getByText("Automatic fix cycle limit reached"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "One unresolved blocker remains. This workspace has recorded 3 fixer cycles. Automatic fixing is paused; Fix Issues manually to continue.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Fix Issues" })).toBeEnabled();
+  });
+
+  it("shows only the cap detail when its blocking summary is absent", () => {
+    renderPanel({
+      reviewContext: reviewContext({
+        isCurrent: true,
+        isOutdated: false,
+        monitor: reviewMonitor({
+          reviewOutcome: "blocking",
+          reviewGateStatus: "blocking",
+          reviewBlockingSummary: null,
+          reviewFixerStatus: "cycle_capped",
+          reviewFixerCycleCount: 3,
+        }),
+      }),
+    });
+
+    expect(
+      screen.getByText(
+        "This workspace has recorded 3 fixer cycles. Automatic fixing is paused; Fix Issues manually to continue.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("explains that automatic fixing is disabled when the cap is zero", () => {
+    renderPanel({
+      reviewContext: reviewContext({
+        isCurrent: true,
+        isOutdated: false,
+        monitor: reviewMonitor({
+          reviewOutcome: "blocking",
+          reviewGateStatus: "blocking",
+          reviewFixerStatus: "cycle_capped",
+          reviewFixerCycleCount: 0,
+        }),
+      }),
+    });
+
+    expect(
+      screen.getByText(
+        "Automatic fixes are disabled by the cycle limit. Fix Issues manually to continue.",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("cancels cleanly and prevents duplicate approval while confirmation is pending", async () => {

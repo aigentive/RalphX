@@ -29,6 +29,7 @@ RalphX has two distinct review workflows. A local checkout exists in both, but i
 - Review PR mutations fail closed when live PR health cannot be confirmed. Late proposals/submissions use repository guards/CAS and cannot resurrect actions after terminal settlement.
 - Durable state is authoritative. UI projections suppress stale action controls when either workspace publication or monitor state is terminal and keep polling every nonterminal Review PR context.
 - Workspace Review reviewer/repair confirmations use the exact per-conversation role runtime override for provider, model, effort, and speed; approval and sandbox remain backend-resolved role defaults, while the backend alone owns target receipts and repair attempt identity.
+- Review findings carry a disposition (Blocking | Fold In | Backlog | Informational) and a stated cost of doing nothing; Blocking and Fold In are both requested work and both drive outcome `blocking`, while Backlog and Informational never affect the gate. Fold In demotes to Backlog once an automated fixer has already run against the delta, so the review → fix → review loop terminates.
 
 ## Ownership And Debugging
 

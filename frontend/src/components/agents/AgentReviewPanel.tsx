@@ -161,6 +161,13 @@ function isWorkspaceReviewFixerActive(
   return status === "routing" || status === "queued" || status === "running";
 }
 
+function reviewFixerCycleCapDetail(cycleCount: number): string {
+  if (cycleCount === 0) {
+    return "Automatic fixes are disabled by the cycle limit. Fix Issues manually to continue.";
+  }
+  return `This workspace has recorded ${cycleCount} fixer ${cycleCount === 1 ? "cycle" : "cycles"}. Automatic fixing is paused; Fix Issues manually to continue.`;
+}
+
 function canFixBlockingReview(
   context: ReviewDisplayContext | null,
   isRunning: boolean,
@@ -295,6 +302,19 @@ function reviewStatusForState({
       detail:
         context?.monitor.reviewBlockingSummary ??
         "The original blocking findings remain visible below. Publishing is allowed for this exact Review and change set.",
+      color: "var(--status-warning)",
+      icon: AlertCircle,
+    };
+  }
+  if (context?.monitor.reviewFixerStatus === "cycle_capped") {
+    return {
+      label: "Automatic fix cycle limit reached",
+      detail: [
+        context.monitor.reviewBlockingSummary,
+        reviewFixerCycleCapDetail(context.monitor.reviewFixerCycleCount),
+      ]
+        .filter(Boolean)
+        .join(" "),
       color: "var(--status-warning)",
       icon: AlertCircle,
     };

@@ -576,6 +576,8 @@ pub struct AgentWorkspaceReviewMonitor {
     pub review_fixer_status: Option<String>,
     /// Backend-owned identity for the exact blocker repair reservation.
     pub review_fixer_attempt_id: Option<String>,
+    /// Number of automatic or manual workspace Review fixer attempts since the last clean gate.
+    pub review_fixer_cycle_count: i64,
     pub last_run_id: Option<String>,
     pub last_error: Option<String>,
     pub auto_merge_guard: Option<AgentWorkspaceReviewAutoMergeGuard>,
@@ -628,6 +630,7 @@ impl AgentWorkspaceReviewMonitor {
             review_fixer_conversation_id: None,
             review_fixer_status: None,
             review_fixer_attempt_id: None,
+            review_fixer_cycle_count: 0,
             last_run_id: None,
             last_error: None,
             auto_merge_guard: None,

@@ -12,10 +12,11 @@ The workspace branch and base ref are provided in the user payload.
 2. Treat the workspace branch and base ref in the user payload only as repair context.
 3. If the user payload includes a Requested Changes or Review artifact ID, call `get_artifact` before editing when its injected content is absent or truncated; treat Requested Changes as the repair blueprint and the Review artifact as the blocker list and rationale.
 4. Resolve the publish or Review blocker with the smallest safe code or git change.
-5. Stage only the files involved in the repair. Do not use blanket staging such as `git add .`.
-6. Commit the completed repair when a commit is required for publishing to retry.
-7. After the workspace branch contains the current base and the worktree is clean, call `complete_agent_workspace_repair({ "summary": "...", "resolution": "fixed", "fix_commit_sha": "<40-character HEAD SHA>" })`; RalphX will verify the repair and retry publishing automatically.
-8. If the repair cannot be completed safely, classify it honestly: `transient_ci` only for GitHub Actions infrastructure failures; `pre_existing_on_base` only with evidence that the failure reproduces on base; `needs_human` for a blocker requiring user action. PR-autofix-sourced repairs must use `fixed`, `transient_ci`, `pre_existing_on_base`, or `needs_human` rather than writing a free-text blocker in place of a classification.
+5. A Requested Changes step prefixed `Fold-in` carries a size class. Stay within it: do not refactor beyond the named files or expand a one-line fix into a redesign. If it cannot be completed within that bound, leave it undone and say so in the completion summary.
+6. Stage only the files involved in the repair. Do not use blanket staging such as `git add .`.
+7. Commit the completed repair when a commit is required for publishing to retry.
+8. After the workspace branch contains the current base and the worktree is clean, call `complete_agent_workspace_repair({ "summary": "...", "resolution": "fixed", "fix_commit_sha": "<40-character HEAD SHA>" })`; RalphX will verify the repair and retry publishing automatically.
+9. If the repair cannot be completed safely, classify it honestly: `transient_ci` only for GitHub Actions infrastructure failures; `pre_existing_on_base` only with evidence that the failure reproduces on base; `needs_human` for a blocker requiring user action. PR-autofix-sourced repairs must use `fixed`, `transient_ci`, `pre_existing_on_base`, or `needs_human` rather than writing a free-text blocker in place of a classification.
 </rules>
 
 <workflow>
