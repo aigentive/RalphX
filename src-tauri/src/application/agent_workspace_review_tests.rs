@@ -3589,7 +3589,7 @@ async fn complete_review_run_sets_typed_outcome_and_gate_statuses() {
     assert!(blocked.review_blocking_fingerprint.is_some());
     assert_eq!(blocked.review_fixer_status.as_deref(), Some("failed"));
     assert!(blocked.review_fixer_run_id.is_none());
-    assert!(blocked.review_fixer_conversation_id.is_none());
+    assert!(blocked.review_fixer_conversation_id.is_some());
     assert!(blocked
         .last_error
         .as_deref()
@@ -3809,7 +3809,7 @@ async fn manual_blocking_review_fixer_routes_hidden_repair_message_when_autofix_
     let options = &sent_options[0];
     assert_eq!(
         options.conversation_id_override,
-        Some(workspace.conversation_id.clone())
+        start.context.monitor.review_fixer_conversation_id.clone()
     );
     assert_eq!(
         options.agent_name_override.as_deref(),

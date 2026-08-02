@@ -272,7 +272,8 @@ async fn reconcile_agent_workspace_repair_attempt(
                     .get_by_id(run_id)
                     .await?
                     .is_some_and(|run| {
-                        run.conversation_id == current.conversation_id && run.status.is_active()
+                        run.conversation_id == *current.runtime_conversation_id()
+                            && run.status.is_active()
                     }),
                 None => false,
             };
@@ -306,7 +307,8 @@ async fn reconcile_agent_workspace_repair_attempt(
                     .get_by_id(run_id)
                     .await?
                     .is_some_and(|run| {
-                        run.conversation_id == current.conversation_id && run.status.is_active()
+                        run.conversation_id == *current.runtime_conversation_id()
+                            && run.status.is_active()
                     }),
                 None => false,
             };
