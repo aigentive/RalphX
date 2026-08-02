@@ -389,6 +389,8 @@ pub struct ReviewSettingsResponse {
     pub auto_create_followup_agent_conversation: bool,
     /// Whether blocking Workspace Review findings automatically spawn the workspace repair agent.
     pub autofix_workspace_review_blocking_findings: bool,
+    /// Maximum automatic workspace Review fixer cycles; zero disables automatic routing.
+    pub workspace_review_fixer_cycle_cap: i64,
     /// Whether task execution agents may run backend-managed validation commands.
     pub run_task_validations: bool,
 }
@@ -405,6 +407,7 @@ pub struct UpdateReviewSettingsInput {
     pub max_revision_cycles: Option<u32>,
     pub auto_create_followup_agent_conversation: Option<bool>,
     pub autofix_workspace_review_blocking_findings: Option<bool>,
+    pub workspace_review_fixer_cycle_cap: Option<i64>,
     pub run_task_validations: Option<bool>,
 }
 
@@ -423,6 +426,7 @@ impl From<ReviewSettings> for ReviewSettingsResponse {
             auto_create_followup_agent_conversation: s.auto_create_followup_agent_conversation,
             autofix_workspace_review_blocking_findings: s
                 .autofix_workspace_review_blocking_findings,
+            workspace_review_fixer_cycle_cap: s.workspace_review_fixer_cycle_cap,
             run_task_validations: s.run_task_validations,
         }
     }
