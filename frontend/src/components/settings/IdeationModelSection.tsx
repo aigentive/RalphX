@@ -39,24 +39,9 @@ const MODEL_OPTIONS = [
     description: "Use default from configuration",
   },
   {
-    value: "sonnet",
-    label: "Sonnet",
-    description: "Fast and capable",
-  },
-  {
-    value: "opus",
-    label: "Opus",
-    description: "Most capable, highest cost",
-  },
-  {
-    value: "claude-opus-4-7",
-    label: "Claude Opus 4.7",
-    description: "Claude Opus 4.7, requires Claude Code 2.1.111+",
-  },
-  {
-    value: "claude-opus-4-8",
-    label: "Claude Opus 4.8",
-    description: "Claude Opus 4.8, requires Claude Code 2.1.154+",
+    value: "fable",
+    label: "Fable",
+    description: "Claude Fable 5, requires Claude Code 2.1.170+",
   },
   {
     value: "claude-opus-5",
@@ -64,14 +49,29 @@ const MODEL_OPTIONS = [
     description: "Claude Opus 5, requires Claude Code 2.1.219+",
   },
   {
+    value: "claude-opus-4-8",
+    label: "Claude Opus 4.8",
+    description: "Claude Opus 4.8, requires Claude Code 2.1.154+",
+  },
+  {
+    value: "claude-opus-4-7",
+    label: "Claude Opus 4.7",
+    description: "Claude Opus 4.7, requires Claude Code 2.1.111+",
+  },
+  {
+    value: "opus",
+    label: "Opus",
+    description: "Most capable, highest cost",
+  },
+  {
+    value: "sonnet",
+    label: "Sonnet",
+    description: "Fast and capable",
+  },
+  {
     value: "haiku",
     label: "Haiku",
     description: "Fastest, lowest cost",
-  },
-  {
-    value: "fable",
-    label: "Fable",
-    description: "Claude Fable 5, requires Claude Code 2.1.170+",
   },
 ] as const satisfies readonly ModelOption[];
 
