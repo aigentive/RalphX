@@ -2,9 +2,10 @@ use async_trait::async_trait;
 use chrono::Duration;
 
 use crate::domain::entities::{
-    AgentRunId, ChatConversationId, DelegationParkJob, DelegationParkState, DelegationWakePolicy,
+    AgentRun, AgentRunId, ChatConversationId, DelegationParkJob, DelegationParkState,
+    DelegationWakePolicy,
 };
-use crate::domain::repositories::DelegationParkRepository;
+use crate::domain::repositories::{AgentRunRepository, DelegationParkRepository};
 use crate::infrastructure::agents::claude::delegation_config;
 
 use super::delegation_park_test_support::{
@@ -212,7 +213,9 @@ async fn arm_clamps_wait_and_supersedes_an_armed_park() {
     let harness = harness();
     let service = harness.service();
     let conversation = ChatConversationId::new();
-    let parent = AgentRunId::new();
+    let caller_run = AgentRun::new(conversation.clone());
+    let parent = caller_run.id;
+    harness.runs.create(caller_run).await.unwrap();
     let delegated = AgentRunId::new();
     let delegation = FakeDelegationJobs::running("job", &conversation, &parent, Some(&delegated));
     harness
@@ -243,6 +246,87 @@ async fn arm_clamps_wait_and_supersedes_an_armed_park() {
         harness.parks.parks.lock().await[0].state,
         crate::domain::entities::DelegationParkState::Superseded
     );
+}
+
+#[tokio::test]
+async fn arm_accepts_a_job_whose_lineage_anchor_is_not_the_calling_conversation() {
+    // Nested delegates and ideation verification children register jobs whose
+    // `parent_conversation_id` is an ancestor conversation, not the runtime that called
+    // `delegate_start`. The caller run still belongs to the calling conversation, so the park
+    // must arm.
+    let harness = harness();
+    let service = harness.service();
+    let caller_conversation = ChatConversationId::new();
+    let caller_run = AgentRun::new(caller_conversation.clone());
+    let caller_run_id = caller_run.id;
+    harness.runs.create(caller_run).await.unwrap();
+    let lineage_anchor_conversation = ChatConversationId::new();
+    let delegation = FakeDelegationJobs::running(
+        "job",
+        &lineage_anchor_conversation,
+        &caller_run_id,
+        Some(&AgentRunId::new()),
+    );
+
+    let armed = service
+        .arm(
+            request(
+                caller_conversation.clone(),
+                caller_run_id,
+                vec!["job".to_string()],
+            ),
+            &delegation,
+        )
+        .await
+        .expect("a caller-run-owned job must arm even when the job's lineage anchor differs");
+    assert_eq!(armed.parent_conversation_id, caller_conversation);
+    assert_eq!(armed.state, DelegationParkState::Armed);
+}
+
+#[tokio::test]
+async fn arm_rejects_a_caller_run_from_another_conversation() {
+    let harness = harness();
+    let service = harness.service();
+    let caller_run = AgentRun::new(ChatConversationId::new());
+    let caller_run_id = caller_run.id;
+    harness.runs.create(caller_run).await.unwrap();
+    let claimed_conversation = ChatConversationId::new();
+    let delegation = FakeDelegationJobs::running(
+        "job",
+        &claimed_conversation,
+        &caller_run_id,
+        Some(&AgentRunId::new()),
+    );
+
+    let error = service
+        .arm(
+            request(claimed_conversation, caller_run_id, vec!["job".to_string()]),
+            &delegation,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, crate::error::AppError::Validation(_)));
+    assert_eq!(*harness.parks.supersede_count.lock().await, 0);
+}
+
+#[tokio::test]
+async fn arm_rejects_a_caller_run_that_does_not_exist() {
+    let harness = harness();
+    let service = harness.service();
+    let conversation = ChatConversationId::new();
+    let missing_run = AgentRunId::new();
+    let delegation =
+        FakeDelegationJobs::running("job", &conversation, &missing_run, Some(&AgentRunId::new()));
+
+    let error = service
+        .arm(
+            request(conversation, missing_run, vec!["job".to_string()]),
+            &delegation,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, crate::error::AppError::Validation(_)));
+    assert_eq!(*harness.parks.supersede_count.lock().await, 0);
 }
 
 #[tokio::test]

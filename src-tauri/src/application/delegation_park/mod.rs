@@ -81,10 +81,15 @@ impl DelegationParkService {
 
     /// Validate delegate ownership then arm one durable park for the conversation.
     ///
+    /// Ownership means the caller run: every watched job must have been started by
+    /// `request.parent_agent_run_id`, and that run must belong to
+    /// `request.parent_conversation_id`.
+    ///
     /// # Errors
     ///
-    /// Returns a validation error for unknown, unowned, non-running, or unbound jobs; returns
-    /// repository errors when supersession or persistence fails.
+    /// Returns a validation error for unknown, unowned, non-running, or unbound jobs, and for a
+    /// caller run that is missing or belongs to another conversation; returns repository errors
+    /// when the run lookup, supersession, or persistence fails.
     pub async fn arm(
         &self,
         request: ArmParkRequest,
@@ -112,10 +117,13 @@ impl DelegationParkService {
                     "delegation job is not running: {job_id}"
                 )));
             }
-            if snapshot.parent_conversation_id.as_deref()
-                != Some(request.parent_conversation_id.as_str().as_str())
-                || snapshot.parent_agent_run_id.as_deref()
-                    != Some(request.parent_agent_run_id.as_str().as_str())
+            // Ownership is proven from the caller RUN alone. A job's `parent_conversation_id` is
+            // the Delegate widget / lineage anchor, which `resolve_nested_delegation_parent` and
+            // the ideation verification-child resolver deliberately leave pointing at an ancestor
+            // conversation rather than the runtime that called `delegate_start`. Only
+            // `parent_agent_run_id` is bound to the calling conversation on every resolver branch.
+            if snapshot.parent_agent_run_id.as_deref()
+                != Some(request.parent_agent_run_id.as_str().as_str())
             {
                 return Err(AppError::Validation(format!(
                     "delegation job is not owned by this parent: {job_id}"
@@ -138,6 +146,26 @@ impl DelegationParkService {
                 delegated_agent_run_id,
                 settled_status: None,
             });
+        }
+
+        // Bind the claimed run to the claimed conversation here rather than trusting the transport
+        // to have done it: without this the caller-run token above would authorize a park for any
+        // conversation the request names.
+        let caller_run = self
+            .agent_run_repo
+            .get_by_id(&request.parent_agent_run_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::Validation(format!(
+                    "delegation park caller agent run not found: {}",
+                    request.parent_agent_run_id.as_str()
+                ))
+            })?;
+        if caller_run.conversation_id != request.parent_conversation_id {
+            return Err(AppError::Validation(
+                "delegation park caller agent run does not belong to the caller conversation"
+                    .to_string(),
+            ));
         }
 
         let config = delegation_config();

@@ -46,6 +46,7 @@ Parks and their watched-job links are durable, generation-scoped records. RalphX
 - If the parent run has changed, the park becomes `superseded` instead of injecting into a stale run.
 - A read failure at the parent-settlement gate fails closed: the delegate remains pending rather than being settled while its coordinator may still be parked.
 - A coordinator that is itself a delegate does not settle its own parent job while its park remains armed.
+- A coordinator may only park on jobs its own current run started, and that run must belong to the parking conversation. Ownership is proven from the caller run rather than the job's parent conversation, because nested delegates and ideation verification children record an ancestor conversation there as the Delegate widget's lineage anchor.
 
 ## Restart and recovery
 

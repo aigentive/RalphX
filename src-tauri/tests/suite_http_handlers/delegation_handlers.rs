@@ -33,14 +33,14 @@ use ralphx_lib::http_server::delegation::{DelegationHistoryEntry, DelegationJobS
 use ralphx_lib::http_server::handlers::{
     build_delegated_task_completed_payload, build_delegated_task_started_payload, cancel_delegate,
     complete_delegate_assignment, get_delegate_assignment, get_delegated_session_status,
-    start_delegate, start_delegate_with_runtime_context, wait_delegate,
+    park_delegate, start_delegate, start_delegate_with_runtime_context, wait_delegate,
 };
 use ralphx_lib::http_server::native_delegation_launcher::{
     NativeDelegationLaunchParent, NativeDelegationLaunchRequest, NativeDelegationLauncher,
 };
 use ralphx_lib::http_server::types::{
-    CompleteDelegateAssignmentRequest, DelegateCancelRequest, DelegateStartRequest,
-    DelegateWaitRequest, DelegatedRunSummary, HttpServerState,
+    CompleteDelegateAssignmentRequest, DelegateCancelRequest, DelegateParkRequest,
+    DelegateStartRequest, DelegateWaitRequest, DelegatedRunSummary, HttpServerState,
 };
 use tempfile::TempDir;
 use tokio::sync::Mutex;
@@ -117,6 +117,14 @@ if [ -n "$RALPHX_TEST_CODEX_ARGS_PATH" ]; then
 fi
 if [ -n "$RALPHX_TEST_CODEX_CWD_PATH" ]; then
   pwd -P >> "$RALPHX_TEST_CODEX_CWD_PATH"
+fi
+# Optional hold: when set, stay running until the test creates the release file. Tests that
+# need a delegate to still be `running` at a later assertion point set this; every other test
+# leaves it unset and the run completes immediately as before.
+if [ -n "$RALPHX_TEST_CODEX_HOLD_PATH" ]; then
+  while [ ! -f "$RALPHX_TEST_CODEX_HOLD_PATH" ]; do
+    sleep 0.05
+  done
 fi
 printf '%s\n' '{"type":"thread.started","thread_id":"delegation-thread-1"}'
 printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"MOCK_COMPLETION"}}'
@@ -2790,6 +2798,204 @@ async fn test_nested_delegate_preserves_original_project_agent_workspace() {
             .all(|cwd| cwd != Path::new(&project.working_directory)),
         "nested delegation must never fall back to the project checkout"
     );
+}
+
+/// A nested delegate must be able to park on the sub-delegate it just started.
+///
+/// `resolve_nested_delegation_parent` deliberately keeps the job's `parent_conversation_id`
+/// pinned to the ORIGINAL non-delegated conversation, because that field is the Delegate
+/// widget / lineage anchor. It is therefore NOT the runtime that called `delegate_start`, so
+/// park ownership must be proven from the caller RUN — the identity
+/// `resolve_trusted_caller_agent_run_id` binds to the calling conversation.
+///
+/// This drives the real `delegate_start` -> `delegate_park` sequence; seeding the job registry
+/// by hand cannot reproduce the divergent shape that makes this fail.
+#[tokio::test]
+async fn nested_delegate_parks_on_the_sub_delegate_it_started() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let captured_cwd_path = fake_codex_dir.path().join("nested-park-cwds.txt");
+    let _captured_cwd_guard = crate::support::env::EnvVarGuard::set(
+        "RALPHX_TEST_CODEX_CWD_PATH",
+        captured_cwd_path.clone(),
+    );
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    seed_codex_provider_default(state.app_state.as_ref(), "gpt-5.5", LogicalEffort::XHigh).await;
+    let (project, parent_conversation, _workspace) =
+        create_project_agent_workspace(state.app_state.as_ref(), worktree_parent.path()).await;
+    let parent_conversation_id = parent_conversation.id.as_str();
+
+    let outer = start_delegate(
+        State(state.clone()),
+        Json(DelegateStartRequest {
+            caller_agent_name: Some("ralphx-general-worker".to_string()),
+            caller_agent_profile: None,
+            caller_context_type: Some("project".to_string()),
+            caller_context_id: Some(project.id.as_str().to_string()),
+            parent_session_id: None,
+            parent_turn_id: None,
+            parent_message_id: None,
+            parent_conversation_id: Some(parent_conversation_id.clone()),
+            parent_tool_use_id: None,
+            delegated_session_id: None,
+            child_session_id: None,
+            task_ref: None,
+            agent_name: "ralphx-general-worker".to_string(),
+            prompt: "Start the outer coordinator delegate.".to_string(),
+            title: None,
+            inherit_context: true,
+            harness: None,
+            model: None,
+            logical_effort: None,
+            approval_policy: None,
+            sandbox_mode: None,
+        }),
+    )
+    .await
+    .expect("outer delegate should start")
+    .0;
+    wait_for_captured_cwds(&captured_cwd_path, 1).await;
+    // The outer delegate's launch run must be terminal before the coordinator run below can be
+    // the conversation's ACTIVE run, which both `delegate_start` and `delegate_park` require.
+    let mut outer_settled = false;
+    for _ in 0..40 {
+        let candidate = wait_delegate(
+            State(state.clone()),
+            Json(DelegateWaitRequest {
+                job_id: Some(outer.job_id.clone()),
+                job_ids: None,
+                wait_timeout_ms: None,
+                include_delegated_status: Some(false),
+                include_child_status: None,
+                include_messages: Some(false),
+                message_limit: None,
+            }),
+        )
+        .await
+        .expect("outer delegate status should load")
+        .0;
+        if candidate.status != "running" {
+            outer_settled = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        outer_settled,
+        "outer delegate should settle before nested delegation"
+    );
+
+    let outer_conversation_id = outer
+        .delegated_conversation_id
+        .clone()
+        .expect("outer delegate should expose its conversation");
+    let nested_caller_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(ChatConversationId::from_string(
+            outer_conversation_id.clone(),
+        )))
+        .await
+        .expect("create active outer delegate run");
+
+    // Hold the sub-delegate open so the park observes a `running` job instead of racing its
+    // settlement. Every other test leaves this env var unset.
+    let hold_release_path = fake_codex_dir.path().join("nested-park-release");
+    let hold_guard = crate::support::env::EnvVarGuard::set(
+        "RALPHX_TEST_CODEX_HOLD_PATH",
+        hold_release_path.clone(),
+    );
+
+    let mut nested_headers = HeaderMap::new();
+    nested_headers.insert(
+        "x-ralphx-agent-run-id",
+        nested_caller_run.id.as_str().parse().unwrap(),
+    );
+    nested_headers.insert(
+        "x-ralphx-conversation-id",
+        outer_conversation_id.parse().unwrap(),
+    );
+
+    let nested = start_delegate_with_runtime_context(
+        State(state.clone()),
+        nested_headers.clone(),
+        Json(DelegateStartRequest {
+            caller_agent_name: Some("ralphx-general-worker".to_string()),
+            caller_agent_profile: None,
+            caller_context_type: Some("delegation".to_string()),
+            caller_context_id: Some(outer.delegated_session_id.clone()),
+            parent_session_id: None,
+            parent_turn_id: None,
+            parent_message_id: None,
+            parent_conversation_id: Some(parent_conversation_id.clone()),
+            parent_tool_use_id: None,
+            delegated_session_id: None,
+            child_session_id: None,
+            task_ref: None,
+            agent_name: "ralphx-general-explorer".to_string(),
+            prompt: "Inspect the workspace from the sub-delegate.".to_string(),
+            title: None,
+            inherit_context: true,
+            harness: None,
+            model: None,
+            logical_effort: None,
+            approval_policy: None,
+            sandbox_mode: None,
+        }),
+    )
+    .await
+    .expect("nested delegate should start")
+    .0;
+
+    // The shape a hand-seeded fixture cannot produce: the job's lineage anchor is the original
+    // project conversation, while its caller run belongs to the delegating runtime.
+    assert_eq!(
+        nested.parent_conversation_id.as_deref(),
+        Some(parent_conversation_id.as_str()),
+        "nested delegation keeps the original conversation as the widget/lineage anchor"
+    );
+    assert_ne!(
+        nested.parent_conversation_id.as_deref(),
+        Some(outer_conversation_id.as_str()),
+        "the lineage anchor is not the delegating runtime, so it cannot prove park ownership"
+    );
+    assert_eq!(
+        nested.parent_agent_run_id.as_deref(),
+        Some(nested_caller_run.id.as_str().as_str()),
+        "the caller run is bound to the delegating runtime and is the real ownership token"
+    );
+
+    let parked = park_delegate(
+        State(state.clone()),
+        nested_headers,
+        Json(DelegateParkRequest {
+            job_ids: vec![nested.job_id.clone()],
+            wake_on: None,
+            wake_on_failure: None,
+            max_wait_secs: Some(60),
+        }),
+    )
+    .await
+    .expect("a nested delegate must be able to park on the sub-delegate it started")
+    .0;
+    assert!(parked.parked);
+    assert_eq!(parked.watched_jobs.len(), 1);
+    assert_eq!(parked.watched_jobs[0].job_id, nested.job_id);
+
+    // Clear the park before releasing the held sub-delegate so settlement does not dispatch a
+    // background wake while the test is tearing down.
+    state
+        .app_state
+        .delegation_park_repo
+        .supersede_for_conversation(&ChatConversationId::from_string(
+            outer_conversation_id.clone(),
+        ))
+        .await
+        .expect("clear park before releasing the held sub-delegate");
+    drop(hold_guard);
+    fs::write(&hold_release_path, "release").expect("release held sub-delegate");
 }
 
 #[tokio::test]
