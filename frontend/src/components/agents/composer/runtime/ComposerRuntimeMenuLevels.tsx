@@ -174,12 +174,19 @@ export function ComposerRuntimeModelLevel({
   providerLabel,
   narrow,
   onBack,
+  onSettled,
 }: {
   model: ComposerRuntimeModelField;
   providerLabel: string;
   narrow: boolean;
   onBack: () => void;
+  onSettled: () => void;
 }) {
+  const selectModel = (value: string) => {
+    model.onValueChange(value);
+    onSettled();
+  };
+
   return (
     <RuntimeLevelShell
       testId="agent-composer-runtime-model-submenu"
@@ -196,7 +203,7 @@ export function ComposerRuntimeModelLevel({
           disabled={model.disabled ?? false}
           testId={model.testId ?? "agent-composer-runtime-model"}
           icon={Cpu}
-          onValueChange={model.onValueChange}
+          onValueChange={selectModel}
           {...(model.allowCustomValue !== undefined && {
             allowCustomValue: model.allowCustomValue,
           })}
@@ -224,12 +231,19 @@ export function ComposerRuntimeEffortLevel({
   modelLabel,
   narrow,
   onBack,
+  onSettled,
 }: {
   effort: ComposerRuntimeEffortField;
   modelLabel: string;
   narrow: boolean;
   onBack: () => void;
+  onSettled: () => void;
 }) {
+  const selectEffort = (value: string) => {
+    effort.onValueChange(value);
+    onSettled();
+  };
+
   return (
     <RuntimeLevelShell
       testId="agent-composer-runtime-effort-submenu"
@@ -247,7 +261,7 @@ export function ComposerRuntimeEffortLevel({
             disabled={effort.disabled ?? false}
             testId={effort.testId ?? "agent-composer-runtime-effort"}
             icon={Gauge}
-            onValueChange={effort.onValueChange}
+            onValueChange={selectEffort}
           />
         </div>
       ) : (
@@ -318,11 +332,18 @@ export function ComposerRuntimeSpeedLevel({
   speed,
   narrow,
   onBack,
+  onSettled,
 }: {
   speed: ComposerRuntimeSpeedField;
   narrow: boolean;
   onBack: () => void;
+  onSettled: () => void;
 }) {
+  const selectSpeed = (value: string) => {
+    speed.onValueChange(value);
+    onSettled();
+  };
+
   return (
     <RuntimeLevelShell
       testId="agent-composer-runtime-speed-submenu"
@@ -339,7 +360,7 @@ export function ComposerRuntimeSpeedLevel({
           disabled={speed.disabled ?? false}
           testId={speed.testId ?? "agent-composer-runtime-speed"}
           icon={Zap}
-          onValueChange={speed.onValueChange}
+          onValueChange={selectSpeed}
         />
       </div>
     </RuntimeLevelShell>
@@ -350,11 +371,29 @@ export function ComposerRuntimePersonaLevel({
   persona,
   narrow,
   onBack,
+  onSettled,
 }: {
   persona: ComposerRuntimePersonaField;
   narrow: boolean;
   onBack: () => void;
+  onSettled: () => void;
 }) {
+  const [settling, setSettling] = useState(false);
+  const disabled = Boolean(persona.disabled || settling);
+
+  const selectPersona = async (value: string) => {
+    if (disabled) return;
+    setSettling(true);
+    try {
+      await persona.onValueChange(value);
+      onSettled();
+    } catch {
+      // The parent owns error reporting and the controlled selection value.
+    } finally {
+      setSettling(false);
+    }
+  };
+
   return (
     <RuntimeLevelShell
       testId="agent-composer-runtime-persona-submenu"
@@ -368,10 +407,10 @@ export function ComposerRuntimePersonaLevel({
           label="Persona"
           value={persona.value}
           options={persona.options}
-          disabled={persona.disabled ?? false}
+          disabled={disabled}
           testId={persona.testId ?? "agent-composer-runtime-persona"}
           icon={UserRound}
-          onValueChange={(value) => void persona.onValueChange(value)}
+          onValueChange={(value) => void selectPersona(value)}
         />
         {persona.footerAction}
       </div>
