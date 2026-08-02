@@ -70,6 +70,8 @@ export function useExecutionStatus(
 
   return {
     ...query,
+    status: query.data ? query.status : "unknown" as const,
+    isStatusKnown: query.data !== undefined,
     // Convenience accessors
     isPaused: query.data?.isPaused ?? false,
     haltMode: query.data?.haltMode ?? "running",
@@ -78,7 +80,7 @@ export function useExecutionStatus(
     queuedMessageCount: query.data?.queuedMessageCount ?? 0,
     maxConcurrent: query.data?.maxConcurrent ?? 10,
     globalMaxConcurrent: query.data?.globalMaxConcurrent ?? 20,
-    canStartTask: query.data?.canStartTask ?? true,
+    canStartTask: query.data?.canStartTask ?? false,
   };
 }
 

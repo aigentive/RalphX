@@ -112,6 +112,9 @@ describe("useExecutionStatus", () => {
 
     expect(api.execution.getStatus).not.toHaveBeenCalled();
     expect(result.current.isPaused).toBe(false);
+    expect(result.current.status).toBe("unknown");
+    expect(result.current.isStatusKnown).toBe(false);
+    expect(result.current.canStartTask).toBe(false);
   });
 
   it("updates uiStore on successful fetch", async () => {
@@ -221,6 +224,29 @@ describe("useExecutionStatus", () => {
     });
 
     expect(result.current.error?.message).toBe("Network error");
+    expect(result.current.status).toBe("unknown");
+    expect(result.current.isStatusKnown).toBe(false);
+    expect(result.current.canStartTask).toBe(false);
+  });
+
+  it("passes through a known execution status", async () => {
+    vi.mocked(api.execution.getStatus).mockResolvedValue({
+      ...mockStatus,
+      runningCount: 2,
+      queuedCount: 3,
+      canStartTask: true,
+    });
+
+    const { result } = renderHook(() => useExecutionStatus(), {
+      wrapper: createWrapper(),
+    });
+
+    await waitFor(() => expect(result.current.isStatusKnown).toBe(true));
+
+    expect(result.current.status).toBe("success");
+    expect(result.current.runningCount).toBe(2);
+    expect(result.current.queuedCount).toBe(3);
+    expect(result.current.canStartTask).toBe(true);
   });
 });
 

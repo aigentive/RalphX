@@ -33,10 +33,10 @@ import type {
 // Re-export types for convenience
 
 /**
- * True while the active environment is remote, so settings writes must use the spawn-free
- * twin rather than the Elevated local command.
+ * True while the active environment is remote, so execution operations with spawn-free
+ * facade twins use those twins instead of local-only commands.
  */
-function remoteExecutionWritesEnabled(): boolean {
+function remoteExecutionFacadeEnabled(): boolean {
   return isRemoteEnvironmentId(getTransportEnvironmentId());
 }
 
@@ -100,13 +100,22 @@ export const executionApi = {
    * @param projectId - Optional project ID to scope status to
    * @returns Execution status with pause state, running count, queued count
    */
-  getStatus: (projectId?: string): Promise<ExecutionStatusResponse> =>
-    typedInvokeWithTransform(
-      "get_execution_status",
-      { projectId: projectId ?? null },
-      ExecutionStatusResponseSchema,
-      transformExecutionStatus
-    ),
+  getStatus: (projectId?: string): Promise<ExecutionStatusResponse> => {
+    const args = { projectId: projectId ?? null };
+    return remoteExecutionFacadeEnabled()
+      ? typedInvokeWithTransform(
+          "get_remote_execution_status",
+          args,
+          ExecutionStatusResponseSchema,
+          transformExecutionStatus
+        )
+      : typedInvokeWithTransform(
+          "get_execution_status",
+          args,
+          ExecutionStatusResponseSchema,
+          transformExecutionStatus
+        );
+  },
 
   /**
    * Pause execution (stops picking up new tasks)
@@ -197,7 +206,7 @@ export const executionApi = {
     // the scheduler and drains pending ideation sessions, both spawn sinks) and unregistered,
     // so saving them failed silently. The spawn-free twin persists and syncs the caps without
     // arming queued work. Two literal call sites, because P-11 requires literal names.
-    return remoteExecutionWritesEnabled()
+    return remoteExecutionFacadeEnabled()
       ? typedInvokeWithTransform(
           "update_remote_execution_settings",
           args,

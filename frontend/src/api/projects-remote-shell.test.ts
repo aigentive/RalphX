@@ -55,6 +55,22 @@ const RAW_PROJECT = {
   updated_at: "2026-07-30T12:00:00+00:00",
 } as const;
 
+const RAW_STOPPED_EXECUTION_STATUS = {
+  is_paused: true,
+  halt_mode: "stopped",
+  running_count: 0,
+  max_concurrent: 3,
+  global_max_concurrent: 6,
+  queued_count: 2,
+  queued_message_count: 1,
+  can_start_task: false,
+  ideation_active: 0,
+  ideation_idle: 0,
+  ideation_waiting: 0,
+  ideation_max_project: 2,
+  ideation_max_global: 4,
+} as const;
+
 function useRemoteEnvironment(): void {
   useEnvironmentStore.setState({
     activeEnvironmentId: REMOTE_ID,
@@ -179,6 +195,34 @@ describe("workspace shell read routing", () => {
     );
 
     expect(wireInput().cmd).toBe("update_remote_execution_settings");
+  });
+
+  it("reads remote execution status through the spawn-free twin", async () => {
+    useRemoteEnvironment();
+    remoteOk(RAW_STOPPED_EXECUTION_STATUS);
+
+    const status = await executionApi.getStatus("project-1");
+
+    expect(wireInput().cmd).toBe("get_remote_execution_status");
+    expect(wireInput().args).toEqual({ projectId: "project-1" });
+    expect(status.haltMode).toBe("stopped");
+  });
+
+  it("keeps reading execution status through the original local command", async () => {
+    primitiveInvoke.mockResolvedValue(RAW_STOPPED_EXECUTION_STATUS);
+
+    await executionApi.getStatus("project-1");
+
+    expect(primitiveInvoke.mock.calls[0]?.[0]).toBe("get_execution_status");
+    expect(primitiveInvoke.mock.calls[0]?.[1]).toEqual({ projectId: "project-1" });
+  });
+
+  it("surfaces a failed remote execution-status twin read", async () => {
+    useRemoteEnvironment();
+    primitiveInvoke.mockRejectedValue("REMOTE_INTERNAL_ERROR: scheduler unavailable");
+
+    await expect(executionApi.getStatus("project-1")).rejects.toBeDefined();
+    expect(wireInput().cmd).toBe("get_remote_execution_status");
   });
 
   it("surfaces a failed project read instead of returning an empty workspace", async () => {

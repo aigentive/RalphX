@@ -78,6 +78,46 @@ const {
 
 const providerUpdatedAt = new Date().toISOString();
 
+describe("AgentsStartComposer execution halt banner", () => {
+  beforeEach(setupAgentsViewTest);
+
+  it("renders the existing stopped banner from a stopped execution snapshot", () => {
+    renderWithAgentProviders(
+      <AgentsStartComposer
+        projects={[project]}
+        defaultProjectId={project.id}
+        defaultRuntime={null}
+        executionHaltState="stopped"
+        isLoadingProjects={false}
+        isSubmitting={false}
+        modelRegistry={{ claude: [], codex: [] }}
+        onSubmit={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("Execution is stopped")).toBeInTheDocument();
+    expect(screen.queryByText("Execution is paused")).not.toBeInTheDocument();
+  });
+
+  it("does not render a healthy or halted banner when status is unavailable", () => {
+    renderWithAgentProviders(
+      <AgentsStartComposer
+        projects={[project]}
+        defaultProjectId={project.id}
+        defaultRuntime={null}
+        executionHaltState={null}
+        isLoadingProjects={false}
+        isSubmitting={false}
+        modelRegistry={{ claude: [], codex: [] }}
+        onSubmit={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByText("Execution is stopped")).not.toBeInTheDocument();
+    expect(screen.queryByText("Execution is paused")).not.toBeInTheDocument();
+  });
+});
+
 function prPickerBranchOption(): BranchBaseOption {
   return {
     key: "pull_request:42:feature/pr-picker",

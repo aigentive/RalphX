@@ -3,21 +3,21 @@
 > GENERATED — do not edit by hand. Regenerate: `node scripts/generate-remote-coverage-census.mjs`. Staleness gate: `--check`.
 > This is the PR 3.1-a planning artifact. It registers nothing. Every class here is the ledger's CURRENT value; the per-command hand audit (§3.3) and the P-17 detector run own the final one.
 
-> **P-11 is COMPLETE.** All 573 production invoke command names carry a reviewed disposition: remote-registered, reason-coded local-only, plugin-local by the `plugin:` prefix rule, or manifest-classified (host-denied / v1-deferred / v1-audit-refused). **0 unclassified, 0 dynamic expressions, 0 suppressions.**
+> **P-11 is COMPLETE.** All 574 production invoke command names carry a reviewed disposition: remote-registered, reason-coded local-only, plugin-local by the `plugin:` prefix rule, or manifest-classified (host-denied / v1-deferred / v1-audit-refused). **0 unclassified, 0 dynamic expressions, 0 suppressions.**
 > The inventory spans two source sets: `frontend/src`, plus the 7 `@tauri-apps/plugin-*` packages it imports. The Vite alias redirects `@tauri-apps/api/core` for the whole module graph, node_modules included, so those packages' own 51 `plugin:` command names ride the same transport — see §7.
 > The ratchet baseline `scripts/remote-transport-drift-baseline.json` is now a PERMANENT ZERO — `check-remote-transport-drift.mjs` fails if it is non-empty and refuses `--update-baseline` when unclassified names exist, so the list cannot quietly regrow. The work-batch sections below are kept as the audit record of how the 499 were resolved.
 
 ## 1. Scan state
 
 ```
-PASS: remote transport drift — 573 invoke command name(s), 0 dynamic, 0 seam bypasses; 277 manifest-classified; 0 unclassified (P-11 COMPLETE — permanent zero).
-      P-11 census: all 573 names have a reviewed disposition — 244 remote-registered, 33 reason-coded local-only, 51 plugin-local (prefix rule), 245 manifest-classified only, 0 unclassified, 0 suppressions.
+PASS: remote transport drift — 574 invoke command name(s), 0 dynamic, 0 seam bypasses; 277 manifest-classified; 0 unclassified (P-11 COMPLETE — permanent zero).
+      P-11 census: all 574 names have a reviewed disposition — 245 remote-registered, 33 reason-coded local-only, 51 plugin-local (prefix rule), 245 manifest-classified only, 0 unclassified, 0 suppressions.
       Tauri plugin surface: 51 plugin: command name(s) across 7 imported @tauri-apps/plugin-* package(s), 0 reviewed host-targeted exception(s).
 ```
 
 | Measure | Count | Source |
 |---|---|---|
-| Invoke command names on the transport | 573 | drift scan (AST over `frontend/src` + imported `@tauri-apps/plugin-*`) |
+| Invoke command names on the transport | 574 | drift scan (AST over `frontend/src` + imported `@tauri-apps/plugin-*`) |
 | Dynamic / unresolvable expressions | 0 | drift scan — must stay 0 |
 | Transport seam bypasses | 0 | drift scan — must stay 0 |
 | Remote-registered (`remote_commands!`) | 244 | `docs/generated/remote-commands.json` |
