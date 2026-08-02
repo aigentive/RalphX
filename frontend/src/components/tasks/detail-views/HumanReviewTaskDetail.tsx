@@ -313,7 +313,7 @@ function ActionButtonsCard({
           reason={agentGate.reason}
           testId="approve-button-gate"
         >
-        <Button
+        <AgentGateTooltip gated={agentGate.gated} reason={agentGate.reason}><Button
           data-testid="approve-button"
           onClick={handleApprove}
           disabled={isLoading || showFeedback || agentGate.gated}
@@ -335,7 +335,7 @@ function ActionButtonsCard({
         <Button
           data-testid="request-changes-button"
           onClick={handleRequestChangesClick}
-          disabled={isLoading || (showFeedback && !feedback.trim())}
+          disabled={isLoading || (showFeedback && !feedback.trim()) || agentGate.gated}
           variant="ghost"
           className="h-9 px-4 gap-2 rounded-lg font-medium text-[0.8125rem]"
           style={{
@@ -349,7 +349,7 @@ function ActionButtonsCard({
             <RotateCcw className="w-4 h-4" />
           )}
           {showFeedback ? "Submit" : "Request Changes"}
-        </Button>
+        </Button></AgentGateTooltip>
         </div>
       </div>
 

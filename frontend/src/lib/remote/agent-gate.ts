@@ -136,9 +136,19 @@ export const AGENT_GATED_AFFORDANCES = {
   // absent and says so.
   questionAnswer: "resolve_user_question",
   taskMove: "move_task",
+  // Task-level stop is registered as agentControl, so default-paired remotes must not invoke it.
+  taskStop: "stop_task",
+  // Restart is absent on older/current hosts and therefore resolves unavailable remotely.
+  taskRestart: "restart_task",
   taskApprove: "approve_task_for_review",
   taskResume: "resume_task",
   taskUnblock: "unblock_task",
+  // Merge recovery commands are not registered on the remote facade.
+  mergeRetry: "retry_merge",
+  mergeResolveConflict: "resolve_merge_conflict",
+  // Reviewing feedback and execution resume remain local-only command surfaces.
+  taskRequestChangesFromReviewing: "request_task_changes_from_reviewing",
+  executionResume: "resume_execution",
   applyProposals: "apply_proposals_to_kanban",
   taskEditContent: "update_task",
   stepCreate: "create_task_step",

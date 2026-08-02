@@ -36,6 +36,8 @@ import {
 } from "../TaskRerunDialog";
 import { useGitDiff } from "@/hooks/useGitDiff";
 import { resumeExecutionIfStopped } from "@/lib/task-actions/resume-execution-if-stopped";
+import { useAgentGate } from "@/hooks/useAgentGate";
+import { AgentGateTooltip } from "@/components/remote/AgentGateTooltip";
 
 interface CompletedTaskDetailProps {
   task: Task;
@@ -54,6 +56,10 @@ function ActionButtonsCard({
   onReopenTask?: () => void;
   onReviewCode?: () => void;
 }) {
+  const moveGate = useAgentGate("taskMove");
+  const executionResumeGate = useAgentGate("executionResume");
+  // Moving the task to ready is independently useful; a stopped scheduler is reported by the resume preflight.
+  void executionResumeGate;
   return (
     <div className="flex gap-2 justify-end">
       {onReviewCode && (
@@ -68,7 +74,7 @@ function ActionButtonsCard({
           Review Code
         </Button>
       )}
-      <Button
+      <AgentGateTooltip gated={moveGate.gated} reason={moveGate.reason}><Button
         data-testid="view-diff-button"
         onClick={onViewDiff}
         variant="ghost"
@@ -84,6 +90,7 @@ function ActionButtonsCard({
       <Button
         data-testid="reopen-task-button"
         onClick={onReopenTask}
+        disabled={moveGate.gated}
         variant="ghost"
         className="h-9 px-4 gap-2 rounded-lg font-medium text-[0.8125rem]"
         style={{
@@ -93,7 +100,7 @@ function ActionButtonsCard({
       >
         <RefreshCw className="w-4 h-4" />
         Reopen Task
-      </Button>
+      </Button></AgentGateTooltip>
     </div>
   );
 }

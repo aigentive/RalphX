@@ -37,6 +37,8 @@ import { useConflictDetection } from "@/hooks/useConflictDetection";
 import { useConflictDiff } from "@/hooks/useConflictDiff";
 import { ConflictDiffViewer } from "@/components/diff/ConflictDiffViewer";
 import { statusTint } from "@/lib/theme-colors";
+import { useAgentGate } from "@/hooks/useAgentGate";
+import { AgentGateTooltip } from "@/components/remote/AgentGateTooltip";
 
 interface MergeConflictTaskDetailProps {
   task: Task;
@@ -176,12 +178,15 @@ function ActionButtonsCard({
   onCancel: () => void;
   isProcessing: boolean;
 }) {
+  const retryGate = useAgentGate("mergeRetry");
+  const resolveGate = useAgentGate("mergeResolveConflict");
+  const moveGate = useAgentGate("taskMove");
   return (
     <div className="flex gap-2 justify-end flex-wrap">
-      <Button
+      <AgentGateTooltip gated={retryGate.gated} reason={retryGate.reason}><Button
         data-testid="retry-merge-button"
         onClick={onRetry}
-        disabled={isProcessing}
+        disabled={isProcessing || retryGate.gated}
         variant="ghost"
         className="h-9 px-4 gap-2 rounded-lg font-medium text-[0.8125rem]"
         style={{
@@ -191,11 +196,11 @@ function ActionButtonsCard({
       >
         <GitMerge className="w-4 h-4" />
         Retry Merge
-      </Button>
-      <Button
+      </Button></AgentGateTooltip>
+      <AgentGateTooltip gated={resolveGate.gated} reason={resolveGate.reason}><Button
         data-testid="resolve-conflict-button"
         onClick={onResolve}
-        disabled={isProcessing}
+        disabled={isProcessing || resolveGate.gated}
         className="h-9 px-4 gap-2 rounded-lg font-medium text-[0.8125rem]"
         style={{
           color: "white",
@@ -208,11 +213,11 @@ function ActionButtonsCard({
           <CheckCircle2 className="w-4 h-4" />
         )}
         Conflicts Resolved
-      </Button>
-      <Button
+      </Button></AgentGateTooltip>
+      <AgentGateTooltip gated={moveGate.gated} reason={moveGate.reason}><Button
         data-testid="cancel-task-button"
         onClick={onCancel}
-        disabled={isProcessing}
+        disabled={isProcessing || moveGate.gated}
         className="h-9 px-4 gap-2 rounded-lg font-medium text-[0.8125rem]"
         style={{
           color: "white",
@@ -225,7 +230,7 @@ function ActionButtonsCard({
           <Ban className="w-4 h-4" />
         )}
         Cancel
-      </Button>
+      </Button></AgentGateTooltip>
     </div>
   );
 }
@@ -234,6 +239,8 @@ export function MergeConflictTaskDetail({ task, isHistorical = false }: MergeCon
   const queryClient = useQueryClient();
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const retryGate = useAgentGate("mergeRetry");
+  const resolveGate = useAgentGate("mergeResolveConflict");
   const { confirm } = useConfirmation();
 
   // Parse conflict files from task metadata (for historical view or fallback)
@@ -282,6 +289,7 @@ export function MergeConflictTaskDetail({ task, isHistorical = false }: MergeCon
   const branchName = task.taskBranch ?? "task branch";
 
   const handleResolveConflicts = useCallback(async () => {
+    if (resolveGate.gated) return;
     setIsProcessing(true);
     setError(null);
     try {
@@ -294,9 +302,10 @@ export function MergeConflictTaskDetail({ task, isHistorical = false }: MergeCon
     } finally {
       setIsProcessing(false);
     }
-  }, [task.id, task.projectId, queryClient]);
+  }, [task.id, task.projectId, queryClient, resolveGate.gated]);
 
   const handleRetryMerge = useCallback(async () => {
+    if (retryGate.gated) return;
     setIsProcessing(true);
     setError(null);
     try {
@@ -309,7 +318,7 @@ export function MergeConflictTaskDetail({ task, isHistorical = false }: MergeCon
     } finally {
       setIsProcessing(false);
     }
-  }, [task.id, task.projectId, queryClient]);
+  }, [task.id, task.projectId, queryClient, retryGate.gated]);
 
   const handleCancel = useCallback(async () => {
     const confirmed = await confirm({
