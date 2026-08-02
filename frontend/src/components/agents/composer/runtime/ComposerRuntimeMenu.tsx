@@ -110,6 +110,7 @@ export function ComposerRuntimeMenu({
     onViewingProviderChange(nextProvider);
     if (!disabled && !provider.disabled) {
       provider.onValueChange(nextProvider);
+      returnToOverview(providerTriggerRef);
     }
   };
 
@@ -128,6 +129,7 @@ export function ComposerRuntimeMenu({
       providerLabel={viewingProviderLabel}
       narrow={narrow}
       onBack={() => returnToOverview(modelTriggerRef)}
+      onSettled={() => returnToOverview(modelTriggerRef)}
     />
   );
   const effortLevel = (
@@ -136,6 +138,7 @@ export function ComposerRuntimeMenu({
       modelLabel={modelLabel}
       narrow={narrow}
       onBack={() => returnToOverview(effortTriggerRef)}
+      onSettled={() => returnToOverview(effortTriggerRef)}
     />
   );
   const capabilityLevel = capability ? (
@@ -151,6 +154,7 @@ export function ComposerRuntimeMenu({
       speed={speed!}
       narrow={narrow}
       onBack={() => returnToOverview(speedTriggerRef)}
+      onSettled={() => returnToOverview(speedTriggerRef)}
     />
   );
   const personaLevel = persona ? (
@@ -158,6 +162,7 @@ export function ComposerRuntimeMenu({
       persona={persona}
       narrow={narrow}
       onBack={() => returnToOverview(personaTriggerRef)}
+      onSettled={() => returnToOverview(personaTriggerRef)}
     />
   ) : null;
 
