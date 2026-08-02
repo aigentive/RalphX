@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use std::{fs, os::unix::fs::PermissionsExt};
@@ -21,9 +22,9 @@ use ralphx_lib::domain::entities::{
     AgentTaskAssignmentTerminalStatus, AgentTaskAssignmentView, AgentTaskCreate, AgentTaskDetail,
     AgentTaskListId, AgentTaskListSummary, AgentTaskMutationResult, AgentTaskPatch, AgentTaskScope,
     AgentTaskState, AgentTaskSummary, ChatContextType, ChatConversation, ChatConversationId,
-    DelegatedSession, DelegatedSessionId, IdeationAnalysisBaseRefKind, IdeationSession,
-    InterruptedConversation, Persona, PersonaId, PersonaStatus, Project, ProjectId, SessionPurpose,
-    UsageCapture,
+    ChatMessage, DelegatedSession, DelegatedSessionId, IdeationAnalysisBaseRefKind,
+    IdeationSession, InterruptedConversation, MessageRole, Persona, PersonaId, PersonaStatus,
+    Project, ProjectId, SessionPurpose, UsageCapture,
 };
 use ralphx_lib::domain::repositories::{
     AgentRunRepository, AgentTaskListOptions, AgentTaskRepository, DelegatedSessionRepository,
@@ -32,15 +33,17 @@ use ralphx_lib::error::{AppError, AppResult};
 use ralphx_lib::http_server::delegation::{DelegationHistoryEntry, DelegationJobSnapshot};
 use ralphx_lib::http_server::handlers::{
     build_delegated_task_completed_payload, build_delegated_task_started_payload, cancel_delegate,
-    complete_delegate_assignment, get_delegate_assignment, get_delegated_session_status,
-    park_delegate, start_delegate, start_delegate_with_runtime_context, wait_delegate,
+    complete_delegate_assignment, get_delegate_assignment, get_delegate_parent_context,
+    get_delegated_session_status, park_delegate, start_delegate,
+    start_delegate_with_runtime_context, wait_delegate,
 };
 use ralphx_lib::http_server::native_delegation_launcher::{
     NativeDelegationLaunchParent, NativeDelegationLaunchRequest, NativeDelegationLauncher,
 };
 use ralphx_lib::http_server::types::{
     CompleteDelegateAssignmentRequest, DelegateCancelRequest, DelegateParkRequest,
-    DelegateStartRequest, DelegateWaitRequest, DelegatedRunSummary, HttpServerState,
+    DelegateStartRequest, DelegateWaitRequest, DelegatedRunSummary,
+    GetDelegateParentContextRequest, HttpServerState,
 };
 use tempfile::TempDir;
 use tokio::sync::Mutex;
@@ -166,6 +169,60 @@ async fn wait_for_captured_cwds(capture_path: &Path, expected_count: usize) -> V
 struct RemoveWorkspaceOnRunningDelegatedSessionRepository {
     inner: Arc<dyn DelegatedSessionRepository>,
     workspace_path: PathBuf,
+}
+
+struct CompleteSessionOnThirdReadDelegatedSessionRepository {
+    inner: Arc<dyn DelegatedSessionRepository>,
+    read_count: AtomicUsize,
+}
+
+#[async_trait]
+impl DelegatedSessionRepository for CompleteSessionOnThirdReadDelegatedSessionRepository {
+    async fn create(&self, session: DelegatedSession) -> AppResult<DelegatedSession> {
+        self.inner.create(session).await
+    }
+
+    async fn get_by_id(&self, id: &DelegatedSessionId) -> AppResult<Option<DelegatedSession>> {
+        let mut session = self.inner.get_by_id(id).await?;
+        if self.read_count.fetch_add(1, Ordering::SeqCst) + 1 >= 3 {
+            if let Some(session) = session.as_mut() {
+                session.status = "completed".to_string();
+            }
+        }
+        Ok(session)
+    }
+
+    async fn get_by_parent_context(
+        &self,
+        parent_context_type: &str,
+        parent_context_id: &str,
+    ) -> AppResult<Vec<DelegatedSession>> {
+        self.inner
+            .get_by_parent_context(parent_context_type, parent_context_id)
+            .await
+    }
+
+    async fn update_provider_session_id(
+        &self,
+        id: &DelegatedSessionId,
+        provider_session_id: Option<String>,
+    ) -> AppResult<()> {
+        self.inner
+            .update_provider_session_id(id, provider_session_id)
+            .await
+    }
+
+    async fn update_status(
+        &self,
+        id: &DelegatedSessionId,
+        status: &str,
+        error: Option<String>,
+        completed_at: Option<DateTime<Utc>>,
+    ) -> AppResult<()> {
+        self.inner
+            .update_status(id, status, error, completed_at)
+            .await
+    }
 }
 
 #[async_trait]
@@ -643,6 +700,372 @@ fn build_state(app_state: Arc<AppState>) -> HttpServerState {
         execution_state,
         delegation_service: Default::default(),
     }
+}
+
+struct ParentContextReader {
+    project: Project,
+    source_conversation: ChatConversation,
+    fallback_conversation: ChatConversation,
+    delegated_session: DelegatedSession,
+    delegated_conversation: ChatConversation,
+    run: AgentRun,
+    headers: HeaderMap,
+}
+
+async fn seed_parent_context_reader(
+    state: &HttpServerState,
+    inherit_context: bool,
+    persist_caller_link: bool,
+    persist_fallback_link: bool,
+) -> ParentContextReader {
+    let project = state
+        .app_state
+        .project_repo
+        .create(Project::new(
+            "Parent context reader project".to_string(),
+            repo_root().display().to_string(),
+        ))
+        .await
+        .expect("create parent context project");
+    let source_conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project.id.clone()))
+        .await
+        .expect("create source conversation");
+    let fallback_conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project.id.clone()))
+        .await
+        .expect("create fallback conversation");
+    let mut delegated_session = DelegatedSession::new(
+        project.id.clone(),
+        "project",
+        project.id.as_str(),
+        "ralphx-general-explorer",
+        AgentHarnessKind::Codex,
+    );
+    delegated_session.delegate_context_authorized = inherit_context;
+    delegated_session.caller_conversation_id =
+        persist_caller_link.then(|| source_conversation.id.as_str());
+    let delegated_session = state
+        .app_state
+        .delegated_session_repo
+        .create(delegated_session)
+        .await
+        .expect("create delegated session");
+    let mut delegated_conversation = ChatConversation::new_delegation(delegated_session.id.clone());
+    delegated_conversation.parent_conversation_id =
+        persist_fallback_link.then(|| fallback_conversation.id.as_str());
+    let delegated_conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(delegated_conversation)
+        .await
+        .expect("create delegated conversation");
+    let run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(delegated_conversation.id))
+        .await
+        .expect("create active delegated run");
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "x-ralphx-conversation-id",
+        delegated_conversation.id.as_str().parse().unwrap(),
+    );
+    headers.insert("x-ralphx-agent-run-id", run.id.as_str().parse().unwrap());
+    ParentContextReader {
+        project,
+        source_conversation,
+        fallback_conversation,
+        delegated_session,
+        delegated_conversation,
+        run,
+        headers,
+    }
+}
+
+async fn seed_parent_context_message(
+    state: &HttpServerState,
+    project_id: &ProjectId,
+    conversation_id: ChatConversationId,
+    role: MessageRole,
+    content: &str,
+    offset_seconds: i64,
+) {
+    let mut message = ChatMessage::user_in_project(project_id.clone(), content);
+    message.conversation_id = Some(conversation_id);
+    message.role = role;
+    message.created_at = Utc::now() + chrono::Duration::seconds(offset_seconds);
+    state
+        .app_state
+        .chat_message_repo
+        .create(message)
+        .await
+        .expect("seed parent context message");
+}
+
+#[tokio::test]
+async fn get_parent_context_returns_bounded_immediate_caller_data_and_filters_system_messages() {
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let reader = seed_parent_context_reader(&state, true, true, true).await;
+    seed_parent_context_message(
+        &state,
+        &reader.project.id,
+        reader.fallback_conversation.id,
+        MessageRole::User,
+        "LINEAGE_ROOT_MUST_NOT_LEAK",
+        0,
+    )
+    .await;
+    seed_parent_context_message(
+        &state,
+        &reader.project.id,
+        reader.source_conversation.id,
+        MessageRole::User,
+        "older caller message",
+        1,
+    )
+    .await;
+    seed_parent_context_message(
+        &state,
+        &reader.project.id,
+        reader.source_conversation.id,
+        MessageRole::System,
+        "resume_in_place hidden wake marker",
+        2,
+    )
+    .await;
+    seed_parent_context_message(
+        &state,
+        &reader.project.id,
+        reader.source_conversation.id,
+        MessageRole::Orchestrator,
+        "latest <caller> & data",
+        3,
+    )
+    .await;
+
+    let Json(response) = get_delegate_parent_context(
+        State(state),
+        reader.headers,
+        Json(GetDelegateParentContextRequest { limit: Some(1) }),
+    )
+    .await
+    .expect("authorized delegate should read bounded caller context");
+
+    assert_eq!(
+        response.source_conversation_id,
+        reader.source_conversation.id.as_str()
+    );
+    assert_eq!(response.source_context_type, "project");
+    assert_eq!(response.total_available, 2);
+    assert!(response.truncated);
+    assert_eq!(response.messages.len(), 1);
+    assert_eq!(
+        response.messages[0].content,
+        "latest &lt;caller&gt; &amp; data"
+    );
+    assert!(!response.messages[0].content.contains("resume_in_place"));
+    assert!(!response.messages[0].content.contains("LINEAGE_ROOT"));
+}
+
+#[tokio::test]
+async fn get_parent_context_truncates_oversized_message_content() {
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let reader = seed_parent_context_reader(&state, true, true, true).await;
+    seed_parent_context_message(
+        &state,
+        &reader.project.id,
+        reader.source_conversation.id,
+        MessageRole::User,
+        &"x".repeat(600),
+        0,
+    )
+    .await;
+
+    let Json(response) = get_delegate_parent_context(
+        State(state),
+        reader.headers,
+        Json(GetDelegateParentContextRequest { limit: None }),
+    )
+    .await
+    .expect("authorized delegate should receive truncated caller content");
+
+    assert_eq!(response.messages.len(), 1);
+    assert_eq!(response.messages[0].content.chars().count(), 500);
+    assert!(response.truncated);
+    assert_eq!(response.total_available, 1);
+}
+
+#[tokio::test]
+async fn get_parent_context_fails_closed_when_inheritance_is_disabled() {
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let reader = seed_parent_context_reader(&state, false, true, true).await;
+    seed_parent_context_message(
+        &state,
+        &reader.project.id,
+        reader.source_conversation.id,
+        MessageRole::User,
+        "secret parent content",
+        0,
+    )
+    .await;
+
+    let error = get_delegate_parent_context(
+        State(state),
+        reader.headers,
+        Json(GetDelegateParentContextRequest { limit: None }),
+    )
+    .await
+    .expect_err("disabled inheritance must fail closed");
+
+    assert_eq!(error.0, axum::http::StatusCode::FORBIDDEN);
+    assert!(!error.1 .0.to_string().contains("secret parent content"));
+}
+
+#[tokio::test]
+async fn get_parent_context_rejects_missing_parent_links_instead_of_returning_empty_success() {
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let reader = seed_parent_context_reader(&state, true, false, false).await;
+
+    let error = get_delegate_parent_context(
+        State(state),
+        reader.headers,
+        Json(GetDelegateParentContextRequest { limit: None }),
+    )
+    .await
+    .expect_err("missing source authority must fail closed");
+
+    assert_eq!(error.0, axum::http::StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn get_parent_context_rejects_a_run_from_another_conversation() {
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let reader = seed_parent_context_reader(&state, true, true, true).await;
+    let unrelated_conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(reader.project.id.clone()))
+        .await
+        .expect("create unrelated conversation");
+    let unrelated_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(unrelated_conversation.id))
+        .await
+        .expect("create unrelated active run");
+    let mut mismatched_headers = reader.headers;
+    mismatched_headers.insert(
+        "x-ralphx-agent-run-id",
+        unrelated_run.id.as_str().parse().unwrap(),
+    );
+
+    let error = get_delegate_parent_context(
+        State(state),
+        mismatched_headers,
+        Json(GetDelegateParentContextRequest { limit: None }),
+    )
+    .await
+    .expect_err("a run from another conversation must not authorize parent context");
+
+    assert_eq!(error.0, axum::http::StatusCode::BAD_REQUEST);
+    assert!(error.1 .0["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("does not belong"));
+}
+
+#[tokio::test]
+async fn get_parent_context_rejects_stale_runs_before_reading_messages() {
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let reader = seed_parent_context_reader(&state, true, true, true).await;
+    state
+        .app_state
+        .agent_run_repo
+        .complete(&reader.run.id)
+        .await
+        .expect("complete the stale delegated run");
+    state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(reader.delegated_conversation.id))
+        .await
+        .expect("replace the active delegated run");
+
+    let error = get_delegate_parent_context(
+        State(state),
+        reader.headers,
+        Json(GetDelegateParentContextRequest { limit: None }),
+    )
+    .await
+    .expect_err("stale delegated run must be rejected");
+
+    assert_eq!(error.0, axum::http::StatusCode::BAD_REQUEST);
+    assert!(error.1 .0["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("stale or no longer active"));
+}
+
+#[tokio::test]
+async fn get_parent_context_rejects_non_running_delegated_sessions() {
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let reader = seed_parent_context_reader(&state, true, true, true).await;
+    state
+        .app_state
+        .delegated_session_repo
+        .update_status(
+            &reader.delegated_session.id,
+            "completed",
+            None,
+            Some(Utc::now()),
+        )
+        .await
+        .expect("complete delegated session");
+
+    let error = get_delegate_parent_context(
+        State(state),
+        reader.headers,
+        Json(GetDelegateParentContextRequest { limit: None }),
+    )
+    .await
+    .expect_err("completed delegated session must be rejected");
+
+    assert_eq!(error.0, axum::http::StatusCode::BAD_REQUEST);
+    assert!(error.1 .0["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("not currently running"));
+}
+
+#[tokio::test]
+async fn get_parent_context_revalidates_delegate_authority_after_loading_messages() {
+    let mut app_state = AppState::new_sqlite_test();
+    app_state.delegated_session_repo =
+        Arc::new(CompleteSessionOnThirdReadDelegatedSessionRepository {
+            inner: app_state.delegated_session_repo.clone(),
+            read_count: AtomicUsize::new(0),
+        });
+    let state = build_state(Arc::new(app_state));
+    let reader = seed_parent_context_reader(&state, true, true, true).await;
+
+    let error = get_delegate_parent_context(
+        State(state),
+        reader.headers,
+        Json(GetDelegateParentContextRequest { limit: None }),
+    )
+    .await
+    .expect_err("authority lost during the read must fail closed");
+
+    assert_eq!(error.0, axum::http::StatusCode::BAD_REQUEST);
+    assert!(error.1 .0["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("not currently running"));
 }
 
 struct NestedAssignmentCaller {
@@ -1200,6 +1623,7 @@ async fn native_delegation_launcher_does_not_create_http_delegation_job_state() 
                 parent_conversation_id: Some(parent_conversation.id.as_str()),
                 ideation_verification: false,
             },
+            inherit_context: false,
             caller_agent_run_id: None,
             target_agent_name: "ralphx-general-explorer".to_string(),
             reusable_delegated_session: None,
@@ -1223,6 +1647,20 @@ async fn native_delegation_launcher_does_not_create_http_delegation_job_state() 
     assert!(!launch.delegated_conversation_id.is_empty());
     assert!(!launch.delegated_agent_run_id.is_empty());
     assert_eq!(state.delegation_service.job_count_for_test().await, 0);
+    let persisted_session = state
+        .app_state
+        .delegated_session_repo
+        .get_by_id(&DelegatedSessionId::from_string(
+            launch.delegated_session_id.clone(),
+        ))
+        .await
+        .expect("read launched delegated session")
+        .expect("launched delegated session should exist");
+    assert!(!persisted_session.delegate_context_authorized);
+    assert_eq!(
+        persisted_session.caller_conversation_id.as_deref(),
+        Some(parent_conversation.id.as_str().as_str())
+    );
 }
 
 #[tokio::test]
@@ -1697,6 +2135,7 @@ async fn reused_unassigned_launch_does_not_bind_stale_reserved_attempt() {
         AgentHarnessKind::Codex,
     );
     delegated_session.status = "failed".to_string();
+    delegated_session.delegate_context_authorized = false;
     let delegated_session = state
         .app_state
         .delegated_session_repo
@@ -1783,6 +2222,21 @@ async fn reused_unassigned_launch_does_not_bind_stale_reserved_attempt() {
         "the stale attempt must remain unbound"
     );
     assert!(unresolved.assignment.delegated_agent_run_id.is_none());
+    let reused_session = state
+        .app_state
+        .delegated_session_repo
+        .get_by_id(&delegated_session.id)
+        .await
+        .expect("reload reused delegated session")
+        .expect("reused delegated session should exist");
+    assert!(
+        !reused_session.delegate_context_authorized,
+        "reuse must preserve the original context grant"
+    );
+    assert!(
+        reused_session.caller_conversation_id.is_none(),
+        "reuse must not backfill or widen the original caller authority"
+    );
 }
 
 #[tokio::test]
@@ -2750,8 +3204,8 @@ async fn test_nested_delegate_preserves_original_project_agent_workspace() {
         delegated_conversation_id.parse().unwrap(),
     );
 
-    let _ = start_delegate_with_runtime_context(
-        State(state),
+    let nested = start_delegate_with_runtime_context(
+        State(state.clone()),
         nested_headers,
         Json(DelegateStartRequest {
             caller_agent_name: Some("ralphx-general-worker".to_string()),
@@ -2778,7 +3232,22 @@ async fn test_nested_delegate_preserves_original_project_agent_workspace() {
         }),
     )
     .await
-    .expect("nested workspace delegate should start");
+    .expect("nested workspace delegate should start")
+    .0;
+    let nested_session = state
+        .app_state
+        .delegated_session_repo
+        .get_by_id(&DelegatedSessionId::from_string(
+            nested.delegated_session_id.clone(),
+        ))
+        .await
+        .expect("load nested delegated session")
+        .expect("nested delegated session exists");
+    assert_eq!(
+        nested_session.caller_conversation_id.as_deref(),
+        Some(delegated_conversation_id.as_str()),
+        "nested pull authority must point at the immediate delegated caller"
+    );
 
     let captured_cwds = wait_for_captured_cwds(&captured_cwd_path, 2).await;
     let expected_workspace = ralphx_lib::utils::path_safety::validate_absolute_non_root_path(
@@ -3766,6 +4235,20 @@ async fn delegate_start_from_child_runtime_attaches_delegation_to_the_calling_co
         delegated_conversation.parent_conversation_id,
         Some(review_conversation.id.as_str()),
         "delegated conversation lineage must point at the calling runtime"
+    );
+    let delegated_session = state
+        .app_state
+        .delegated_session_repo
+        .get_by_id(&DelegatedSessionId::from_string(
+            started.delegated_session_id.clone(),
+        ))
+        .await
+        .expect("load delegated session")
+        .expect("delegated session exists");
+    assert_eq!(
+        delegated_session.caller_conversation_id,
+        Some(review_conversation.id.as_str()),
+        "the durable pull grant must retain the adopted immediate caller"
     );
 
     let caller_state = state

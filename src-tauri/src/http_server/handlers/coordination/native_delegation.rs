@@ -1027,6 +1027,7 @@ pub(crate) async fn start_delegate_impl_with_parent_run(
                 parent_conversation_id: parent.parent_conversation_id,
                 ideation_verification: parent.ideation_verification,
             },
+            inherit_context: req.inherit_context,
             caller_agent_run_id: parent_agent_run_id,
             target_agent_name: req.agent_name.clone(),
             reusable_delegated_session,

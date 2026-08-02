@@ -1776,6 +1776,22 @@ pub struct DelegateParkResponse {
     pub guidance: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct GetDelegateParentContextRequest {
+    /// Number of eligible messages to return from the caller-conversation tail.
+    /// The backend applies a default and clamps the value to its safe maximum.
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GetDelegateParentContextResponse {
+    pub source_conversation_id: String,
+    pub source_context_type: String,
+    pub messages: Vec<ChatMessageSummary>,
+    pub truncated: bool,
+    pub total_available: u32,
+}
+
 fn default_inherit_context() -> bool {
     true
 }
