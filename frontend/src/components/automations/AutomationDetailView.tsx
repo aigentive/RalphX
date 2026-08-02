@@ -24,6 +24,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useConfirmation } from "@/hooks/useConfirmation";
+import { useAgentGate } from "@/hooks/useAgentGate";
 import {
   evictDeletedAutomation,
   invalidateAutomationQueries,
@@ -110,6 +111,11 @@ export function AutomationDetailView({
   onOpenRunConversation,
   onOpenAutomationRun,
 }: AutomationDetailViewProps) {
+  const runNowGate = useAgentGate("automationRunNow");
+  const stopGate = useAgentGate("automationStop");
+  const deleteGate = useAgentGate("automationDelete");
+  const deleteRunGate = useAgentGate("automationDeleteRun");
+  const resumeRunGate = useAgentGate("automationResumeRun");
   const afterPaint = useAfterPaintMounted(Boolean(automationId));
   const detail = useAutomationDetail(automationId, { enabled: afterPaint });
   const queryClient = useQueryClient();
@@ -244,6 +250,7 @@ export function AutomationDetailView({
     onError: () => toast.error("Failed to resume run"),
   });
   const handleDeleteRun = useCallback(async (run: AutomationRun) => {
+    if (deleteRunGate.gated) return;
     const running = run.status === "running";
     const confirmed = await confirm({
       title: running ? "Stop and delete run?" : "Delete run?",
@@ -257,8 +264,9 @@ export function AutomationDetailView({
     if (confirmed) {
       deleteRunMutation.mutate(run.id);
     }
-  }, [confirm, deleteRunMutation]);
+  }, [confirm, deleteRunGate.gated, deleteRunMutation]);
   const handleResumeRun = useCallback(async (run: AutomationRun) => {
+    if (resumeRunGate.gated) return;
     const confirmed = await confirm({
       title: "Resume run?",
       description: `Reopens Run ${run.runIndex} in place and continues the existing agent in its worktree — prior work and conversation history are kept, nothing restarts.`,
@@ -269,7 +277,7 @@ export function AutomationDetailView({
     if (confirmed) {
       resumeRunMutation.mutate(run.id);
     }
-  }, [confirm, resumeRunMutation]);
+  }, [confirm, resumeRunGate.gated, resumeRunMutation]);
   const goalItemsJson = detail.data?.automation.goalItemsJson ?? null;
   const activeGoalItem = useMemo(
     () => findInProgressAutomationGoalItem(goalItemsJson),
@@ -339,6 +347,7 @@ export function AutomationDetailView({
     || deleteMutation.isPending;
 
   const handleRunNow = async () => {
+    if (runNowGate.gated) return;
     if (automation.status === "paused") {
       const confirmed = await confirm({
         title: "Resume and run now?",
@@ -353,6 +362,7 @@ export function AutomationDetailView({
   };
 
   const handleStop = async () => {
+    if (stopGate.gated) return;
     const confirmed = await confirm({
       title: "Cancel automation?",
       description: AUTOMATION_CANCEL_CONFIRMATION_DESCRIPTION,
@@ -366,6 +376,7 @@ export function AutomationDetailView({
   };
 
   const handleDelete = async () => {
+    if (deleteGate.gated) return;
     const confirmed = await confirm({
       title: "Delete automation?",
       description: describeAutomationDeleteConsequences(automation, runs),

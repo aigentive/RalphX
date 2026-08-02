@@ -297,11 +297,13 @@ function MaxRunsEditor({
   runsUsed,
   isSaving,
   onSave,
+  gateReason,
 }: {
   currentMaxRuns: number;
   runsUsed: number;
   isSaving: boolean;
   onSave: (maxRuns: number) => void;
+  gateReason: string | null;
 }) {
   const min = Math.max(1, runsUsed);
   const [value, setValue] = useState(String(currentMaxRuns));
@@ -320,6 +322,8 @@ function MaxRunsEditor({
         type="number"
         min={min}
         value={value}
+        disabled={gateReason !== null}
+        title={gateReason ?? undefined}
         onChange={(event) => setValue(event.target.value)}
         aria-label="Max runs"
         className="w-16 rounded px-2 py-1 text-xs outline-none focus:ring-0 focus:outline-none focus-visible:outline-none"
@@ -336,7 +340,8 @@ function MaxRunsEditor({
         type="button"
         variant="secondary"
         size="sm"
-        disabled={!isValid || !isChanged || isSaving}
+        disabled={!isValid || !isChanged || isSaving || gateReason !== null}
+        title={gateReason ?? undefined}
         onClick={() => onSave(parsed)}
         data-testid="agents-automation-max-runs-save"
       >
@@ -354,11 +359,13 @@ function AutomationPlanGateSettings({
   isSaving,
   pendingPatch,
   onUpdate,
+  gateReason,
 }: {
   automation: Automation;
   isSaving: boolean;
   pendingPatch: AutomationSettingsPatch | null;
   onUpdate: (patch: AutomationSettingsPatch) => void;
+  gateReason: string | null;
 }) {
   const planApprovalMode =
     pendingPatch?.planApprovalMode ?? automation.planApprovalMode;
@@ -372,12 +379,12 @@ function AutomationPlanGateSettings({
   const planDeepVerificationSaving =
     isSaving && pendingPatch?.planDeepVerification !== undefined;
   return (
-    <div className="space-y-3">
+    <div className="space-y-3" title={gateReason ?? undefined}>
       <div className="grid gap-2 sm:grid-cols-2">
         <AutomationSelect
           label="Plan approval"
           value={planApprovalMode}
-          disabled={planApprovalSaving}
+          disabled={planApprovalSaving || gateReason !== null}
           testId="agents-automation-plan-approval-mode"
           onChange={(value) =>
             onUpdate({ planApprovalMode: value as AutomationPlanApprovalMode })
@@ -390,7 +397,7 @@ function AutomationPlanGateSettings({
         <AutomationSelect
           label="PR merge"
           value={prMergeMode}
-          disabled={prMergeSaving || stackedChain}
+          disabled={prMergeSaving || stackedChain || gateReason !== null}
           testId="agents-automation-pr-merge-mode"
           onChange={(value) =>
             onUpdate({ prMergeMode: value as AutomationPrMergeMode })
@@ -428,7 +435,8 @@ function AutomationPlanGateSettings({
         </span>
         <Switch
           checked={planDeepVerification}
-          disabled={planDeepVerificationSaving}
+          disabled={planDeepVerificationSaving || gateReason !== null}
+          title={gateReason ?? undefined}
           onCheckedChange={(checked) =>
             onUpdate({ planDeepVerification: checked })
           }
@@ -442,6 +450,11 @@ function AutomationPlanGateSettings({
           <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
           Saving
         </span>
+      ) : null}
+      {gateReason ? (
+        <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+          {gateReason}
+        </p>
       ) : null}
     </div>
   );
@@ -461,6 +474,7 @@ function AutomationRunsList({
   activeGoalItem,
   onCancelRun,
   cancelingRunId,
+  cancelGateReason,
   onFocusAutomationRun,
 }: {
   automation: Automation;
@@ -469,6 +483,7 @@ function AutomationRunsList({
   activeGoalItem: AutomationGoalItem | null;
   onCancelRun?: (runId: string) => void;
   cancelingRunId?: string | null;
+  cancelGateReason: string | null;
   onFocusAutomationRun?: (
     automationId: string,
     runId: string,
@@ -597,7 +612,8 @@ function AutomationRunsList({
                   type="button"
                   className="rounded px-1.5 py-0.5 text-[0.6875rem] font-semibold disabled:opacity-50"
                   style={{ color: "var(--status-error)" }}
-                  disabled={isCanceling}
+                  disabled={isCanceling || cancelGateReason !== null}
+                  title={cancelGateReason ?? undefined}
                   onClick={() => onCancelRun(run.id)}
                   data-testid={`agents-automation-run-${run.runIndex}-cancel`}
                 >
@@ -643,15 +659,17 @@ export function AgentsAutomationPanel({
   onOpenAutomation,
   onFocusAutomationRun,
 }: AgentsAutomationPanelProps) {
-  /**
-   * Running, restarting, and resuming an automation all ARM autonomous work — the
-   * clearest case of agent steering (2.6-b). Pause and stop are authority-reducing
-   * and stay available to a paired device under the brakes boundary.
-   *
-   * Declared before the loading/error early returns: hooks must run in the same
-   * order on every render.
-   */
-  const agentGate = useAgentGate("automationResume");
+  const resumeGate = useAgentGate("automationResume");
+  const runNowGate = useAgentGate("automationRunNow");
+  const restartGate = useAgentGate("automationRestart");
+  const pauseGate = useAgentGate("automationPause");
+  const stopGate = useAgentGate("automationStop");
+  const cancelRunGate = useAgentGate("automationCancelRun");
+  const retryPlanJudgeGate = useAgentGate("automationRetryPlanJudge");
+  const retryJudgeGate = useAgentGate("automationRetryJudge");
+  const settingsGate = useAgentGate("automationSettingsEdit");
+  const setupEditGate = useAgentGate("automationSetupEdit");
+  const deleteGate = useAgentGate("automationDelete");
   const afterPaint = useAfterPaintMounted(Boolean(automationId));
   const detail = useAutomationDetail(automationId, { enabled: afterPaint });
   const queryClient = useQueryClient();
@@ -863,6 +881,7 @@ export function AgentsAutomationPanel({
     mutationFn: (patch: AutomationSettingsPatch) =>
       automationsApi.updateSettings({ id: automationId, ...patch }),
     onMutate: (patch) => {
+      if (settingsGate.gated) return;
       setPendingAutomationSettingsPatch((current) => ({ ...current, ...patch }));
     },
     onSuccess: () => {
@@ -1110,8 +1129,6 @@ export function AgentsAutomationPanel({
   const judgeRecovery = getAutomationJudgeRecovery(automation, run);
   const showPausedReason =
     !failureReason && automation.status === "paused" && Boolean(automation.pausedReasonCode);
-  const armingDisabled = agentGate.gated;
-
   const actionPending =
     pauseMutation.isPending ||
     resumeMutation.isPending ||
@@ -1127,12 +1144,12 @@ export function AgentsAutomationPanel({
   const canDelete = automation.status === "draft";
   const setupConversationId = automation.setupConversationId;
   const setupControlsDisabled =
-    automation.status !== "draft" || !setupConversationId;
+    automation.status !== "draft" || !setupConversationId || setupEditGate.gated;
   const setupDisabledReason = !setupConversationId
     ? "Setup conversation link is missing, so settings cannot be updated here."
     : automation.status !== "draft"
       ? "Approved automation settings are read-only."
-      : null;
+      : setupEditGate.reason;
   const showAutomationProposalCta =
     automation.status === "draft" &&
     Boolean(activeAutomationSetupQuestion) &&
@@ -1205,7 +1222,10 @@ export function AgentsAutomationPanel({
             currentMaxRuns={automation.maxRuns}
             runsUsed={runs.length}
             isSaving={maxRunsMutation.isPending}
-            onSave={(maxRuns) => maxRunsMutation.mutate(maxRuns)}
+            gateReason={settingsGate.reason}
+            onSave={(maxRuns) => {
+              if (!settingsGate.gated) maxRunsMutation.mutate(maxRuns);
+            }}
           />
         ) : null}
         <AutomationRunsList
@@ -1219,6 +1239,7 @@ export function AgentsAutomationPanel({
               ? (cancelRunMutation.variables ?? null)
               : null
           }
+          cancelGateReason={cancelRunGate.reason}
           {...(onFocusAutomationRun ? { onFocusAutomationRun } : {})}
         />
       </DetailSection>
@@ -1228,7 +1249,10 @@ export function AgentsAutomationPanel({
           automation={automation}
           isSaving={automationSettingsMutation.isPending}
           pendingPatch={pendingAutomationSettingsPatch}
-          onUpdate={(patch) => automationSettingsMutation.mutate(patch)}
+          gateReason={settingsGate.reason}
+          onUpdate={(patch) => {
+            if (!settingsGate.gated) automationSettingsMutation.mutate(patch);
+          }}
         />
       </DetailSection>
 
@@ -1340,7 +1364,8 @@ export function AgentsAutomationPanel({
             type="button"
             variant="secondary"
             size="sm"
-            disabled={actionPending}
+            disabled={actionPending || (judgeRecovery.kind === "plan" ? retryPlanJudgeGate.gated : retryJudgeGate.gated)}
+            title={(judgeRecovery.kind === "plan" ? retryPlanJudgeGate.reason : retryJudgeGate.reason) ?? undefined}
             onClick={() =>
               judgeRecovery.kind === "plan"
                 ? retryPlanJudgeMutation.mutate()
@@ -1419,8 +1444,8 @@ export function AgentsAutomationPanel({
             type="button"
             variant="secondary"
             size="sm"
-            disabled={actionPending || armingDisabled}
-            title={agentGate.reason ?? undefined}
+            disabled={actionPending || runNowGate.gated}
+            title={runNowGate.reason ?? undefined}
             onClick={() => runNowMutation.mutate()}
           >
             Run now
@@ -1447,7 +1472,8 @@ export function AgentsAutomationPanel({
             variant="secondary"
             size="sm"
             className="gap-2"
-            disabled={actionPending}
+            disabled={actionPending || pauseGate.gated}
+            title={pauseGate.reason ?? undefined}
             onClick={() => pauseMutation.mutate()}
             data-testid="agents-automation-pause"
           >
@@ -1461,8 +1487,8 @@ export function AgentsAutomationPanel({
             variant="secondary"
             size="sm"
             className="gap-2"
-            disabled={actionPending || armingDisabled}
-            title={agentGate.reason ?? undefined}
+            disabled={actionPending || resumeGate.gated}
+            title={resumeGate.reason ?? undefined}
             onClick={() => resumeMutation.mutate()}
             data-testid="agents-automation-resume"
           >
@@ -1476,7 +1502,8 @@ export function AgentsAutomationPanel({
             variant="outline"
             size="sm"
             className="gap-2"
-            disabled={actionPending}
+            disabled={actionPending || stopGate.gated}
+            title={stopGate.reason ?? undefined}
             onClick={handleStop}
             data-testid="agents-automation-stop"
           >
@@ -1490,8 +1517,8 @@ export function AgentsAutomationPanel({
             variant="secondary"
             size="sm"
             className="gap-2"
-            disabled={actionPending || armingDisabled}
-            title={agentGate.reason ?? undefined}
+            disabled={actionPending || restartGate.gated}
+            title={restartGate.reason ?? undefined}
             onClick={() => restartMutation.mutate()}
             data-testid="agents-automation-restart"
           >
@@ -1505,7 +1532,8 @@ export function AgentsAutomationPanel({
             variant="outline"
             size="sm"
             className="gap-2 text-[var(--status-error)]"
-            disabled={actionPending}
+            disabled={actionPending || deleteGate.gated}
+            title={deleteGate.reason ?? undefined}
             onClick={handleDelete}
             data-testid="agents-automation-delete"
           >

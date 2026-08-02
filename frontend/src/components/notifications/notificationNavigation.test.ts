@@ -12,6 +12,8 @@ import {
 } from "@/lib/navigation";
 import { useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
+import { AGENT_CONTROL_DISABLED_HINT } from "@/lib/remote/agent-gate";
+import { RemoteTransportError } from "@/lib/remote/transport-errors";
 import type { NotificationCategory, NotificationTarget } from "@/types/notifications";
 
 import {
@@ -118,6 +120,27 @@ describe("navigateNotification", () => {
     expect(toastError).toHaveBeenCalledWith("Automation is no longer resumable");
     expect(onClose).not.toHaveBeenCalled();
     expect(requestAutomationRunOpen).not.toHaveBeenCalled();
+  });
+
+  it("reports the remote gate hint instead of a stale lifecycle rejection", async () => {
+    vi.mocked(automationsApi.resume).mockRejectedValue(new RemoteTransportError({
+      code: "REMOTE_FORBIDDEN",
+      message: "scope denied",
+      environmentId: "remote-1",
+      cmd: "resume_automation",
+    }));
+
+    await performNotificationPrimaryAction(
+      {
+        id: "automation-paused-remote",
+        category: "automation_paused",
+        target: { ...target, runId: undefined, conversationId: undefined },
+      },
+      new QueryClient(),
+    );
+
+    expect(toastError).toHaveBeenCalledWith(AGENT_CONTROL_DISABLED_HINT);
+    expect(toastError).not.toHaveBeenCalledWith("Automation is no longer resumable");
   });
 
   it("keeps a supplied automation detail callback when opening a complete run", async () => {

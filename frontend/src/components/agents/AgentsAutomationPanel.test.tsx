@@ -4,6 +4,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Automation, AutomationDetail, AutomationRun } from "@/api/automations";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import {
+  AGENT_CONTROL_DISABLED_HINT,
+  REMOTE_UNAVAILABLE_HINT,
+} from "@/lib/remote/agent-gate";
+import { LOCAL_ENVIRONMENT_ID, useEnvironmentStore } from "@/stores/environmentStore";
 import { AgentsAutomationPanel } from "./AgentsAutomationPanel";
 
 const {
@@ -314,6 +319,12 @@ function renderPanel({
 
 describe("AgentsAutomationPanel", () => {
   beforeEach(() => {
+    useEnvironmentStore.setState({
+      activeEnvironmentId: LOCAL_ENVIRONMENT_ID,
+      environments: [{ id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" }],
+      effectiveScopes: {},
+      connectionPresentations: {},
+    });
     vi.clearAllMocks();
     useArtifactMock.mockReturnValue({
       data: null,
@@ -390,6 +401,52 @@ describe("AgentsAutomationPanel", () => {
 
     expect(onOpenAutomation).toHaveBeenCalledWith("automation-1");
     expect(useAutomationEventsMock).not.toHaveBeenCalled();
+  });
+
+  it("gates Run now by its unavailable op while Resume follows agent-control scope", () => {
+    useEnvironmentStore.setState({
+      activeEnvironmentId: "remote-1",
+      environments: [{ id: "remote-1", name: "Studio", kind: "remote" }],
+      effectiveScopes: { "remote-1": ["ui:read", "ui:operate", "ui:agent"] },
+      connectionPresentations: {
+        "remote-1": { presentation: "connected", blockedFailure: null, blockedMessage: null },
+      },
+    });
+    // "Run now" renders only via isIdleAfterCancelledRun (active automation + cancelled
+    // run); the Resume affordance renders only for a paused automation. The two states are
+    // mutually exclusive, so each gets its own render.
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        automation: automationFixture({ status: "active" }),
+        runs: [automationRunFixture({ status: "cancelled", finishedAt: "2026-07-05T11:00:00Z" })],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    const { unmount } = renderPanel();
+
+    expect(screen.getByRole("button", { name: "Run now" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Run now" })).toHaveAttribute("title", REMOTE_UNAVAILABLE_HINT);
+
+    unmount();
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        automation: automationFixture({ status: "paused" }),
+        runs: [automationRunFixture({ status: "cancelled", finishedAt: "2026-07-05T11:00:00Z" })],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+    const withAgentScope = renderPanel();
+
+    expect(screen.getByTestId("agents-automation-resume")).toBeEnabled();
+
+    withAgentScope.unmount();
+    useEnvironmentStore.setState({ effectiveScopes: { "remote-1": ["ui:read", "ui:operate"] } });
+    renderPanel();
+    expect(screen.getByTestId("agents-automation-resume")).toBeDisabled();
+    expect(screen.getByTestId("agents-automation-resume")).toHaveAttribute("title", AGENT_CONTROL_DISABLED_HINT);
   });
 
   it("lists every run with its status, newest first", () => {

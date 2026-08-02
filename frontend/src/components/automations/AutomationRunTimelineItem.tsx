@@ -14,6 +14,7 @@ import { AutomationRunTaskLedger } from "@/components/automations/AutomationRunT
 import type { AutomationRunOpenTarget } from "@/components/automations/automationRunNavigation";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useAgentGate } from "@/hooks/useAgentGate";
 import { cn } from "@/lib/utils";
 
 import {
@@ -113,6 +114,8 @@ export const RunTimelineItem = memo(function RunTimelineItem({
   onOpenAutomationRun?: (target: AutomationRunOpenTarget) => void;
   setupConversationId: string | null;
 }) {
+  const deleteRunGate = useAgentGate("automationDeleteRun");
+  const resumeRunGate = useAgentGate("automationResumeRun");
   const [expanded, setExpanded] = useState(defaultExpanded);
   const [promptOpen, setPromptOpen] = useState(false);
   const [planOpen, setPlanOpen] = useState(false);
@@ -346,6 +349,8 @@ export const RunTimelineItem = memo(function RunTimelineItem({
                         size="icon-sm"
                         aria-label={`${run.status === "running" ? "Stop and delete" : "Delete"} run ${run.runIndex}`}
                         className="-ml-1 h-7 w-7 shrink-0 text-[var(--text-muted)] hover:bg-transparent hover:text-[var(--status-error)]"
+                        disabled={deleteRunGate.gated}
+                        title={deleteRunGate.reason ?? undefined}
                         onClick={() => onDeleteRun?.(run)}
                         data-testid={`automation-run-${run.id}-delete`}
                       >
@@ -424,6 +429,8 @@ export const RunTimelineItem = memo(function RunTimelineItem({
                     variant="default"
                     size="sm"
                     aria-label={`Resume run ${run.runIndex}`}
+                    disabled={resumeRunGate.gated}
+                    title={resumeRunGate.reason ?? undefined}
                     onClick={() => onResumeRun?.(run)}
                     data-testid={`automation-run-${run.id}-resume`}
                   >

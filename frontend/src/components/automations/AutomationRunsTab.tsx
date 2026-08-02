@@ -12,6 +12,7 @@ import { RunTimelineItem } from "@/components/automations/AutomationRunTimelineI
 import { AutomationRunsTimelineHeader } from "@/components/automations/AutomationRunsTimelineHeader";
 import { Button } from "@/components/ui/button";
 import { NoticeBanner } from "@/components/ui/notice-banner";
+import { useAgentGate } from "@/hooks/useAgentGate";
 
 function sortedNewestRuns(runs: AutomationRun[]): AutomationRun[] {
   return [...runs].sort((a, b) => b.runIndex - a.runIndex);
@@ -52,6 +53,9 @@ export function AutomationRunsTab({
   onOpenRunConversation,
   onOpenAutomationRun,
 }: AutomationRunsTabProps) {
+  const retryPlanJudgeGate = useAgentGate("automationRetryPlanJudge");
+  const retryJudgeGate = useAgentGate("automationRetryJudge");
+  const runNowGate = useAgentGate("automationRunNow");
   const newestRuns = sortedNewestRuns(runs);
   return (
     <div>
@@ -65,7 +69,8 @@ export function AutomationRunsTab({
               type="button"
               variant="secondary"
               size="sm"
-              disabled={actionPending}
+              disabled={actionPending || (judgeRecovery.kind === "plan" ? retryPlanJudgeGate.gated : retryJudgeGate.gated)}
+              title={(judgeRecovery.kind === "plan" ? retryPlanJudgeGate.reason : retryJudgeGate.reason) ?? undefined}
               onClick={() =>
                 judgeRecovery.kind === "plan" ? onRetryPlanJudge() : onRetryJudge()
               }
@@ -88,7 +93,8 @@ export function AutomationRunsTab({
               type="button"
               variant="secondary"
               size="sm"
-              disabled={actionPending}
+              disabled={actionPending || runNowGate.gated}
+              title={runNowGate.reason ?? undefined}
               onClick={onRunNow}
             >
               Run now

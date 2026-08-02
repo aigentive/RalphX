@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { StatusPill } from "@/components/ui/status-pill";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useAgentGate } from "@/hooks/useAgentGate";
 import { formatDate } from "./automationDetailFormat";
 
 function TooltipIconButton({
@@ -118,6 +119,15 @@ export function AutomationDetailHeader({
   onEdit,
   onDelete,
 }: AutomationDetailHeaderProps) {
+  const finalizeGate = useAgentGate("automationFinalize");
+  const restartGate = useAgentGate("automationRestart");
+  const resumeGate = useAgentGate("automationResume");
+  const pauseGate = useAgentGate("automationPause");
+  const runNowGate = useAgentGate("automationRunNow");
+  const stopGate = useAgentGate("automationStop");
+  const skipJudgeGate = useAgentGate("automationSkipJudge");
+  const setupEditGate = useAgentGate("automationSetupEdit");
+  const deleteGate = useAgentGate("automationDelete");
   return (
     <header
       className="flex flex-wrap items-center justify-between gap-4 border-b px-6 py-4"
@@ -171,7 +181,8 @@ export function AutomationDetailHeader({
             type="button"
             variant="outline"
             className="gap-2"
-            disabled={actionPending}
+            disabled={actionPending || finalizeGate.gated}
+            title={finalizeGate.reason ?? undefined}
             onClick={onApprove}
           >
             <PlayCircle className="h-4 w-4" />
@@ -183,7 +194,8 @@ export function AutomationDetailHeader({
             type="button"
             variant="outline"
             className="gap-2"
-            disabled={actionPending}
+            disabled={actionPending || restartGate.gated}
+            title={restartGate.reason ?? undefined}
             onClick={onRestart}
           >
             <RotateCcw className="h-4 w-4" aria-hidden="true" />
@@ -194,7 +206,8 @@ export function AutomationDetailHeader({
           <TooltipIconButton
             label="Resume automation"
             variant="outline"
-            disabled={actionPending}
+            disabled={actionPending || resumeGate.gated}
+            tooltip={resumeGate.reason ?? undefined}
             onClick={onResume}
           >
             <Play className="h-4 w-4" />
@@ -203,7 +216,8 @@ export function AutomationDetailHeader({
           <TooltipIconButton
             label="Pause automation"
             variant="outline"
-            disabled={actionPending || automation.status !== "active"}
+            disabled={actionPending || automation.status !== "active" || pauseGate.gated}
+            tooltip={pauseGate.reason ?? undefined}
             onClick={onPause}
           >
             <Pause className="h-4 w-4" />
@@ -211,9 +225,9 @@ export function AutomationDetailHeader({
         )}
         <TooltipIconButton
           label="Run now"
-          {...(runNowBlockedReason ? { tooltip: runNowBlockedReason } : {})}
+          tooltip={runNowGate.reason ?? runNowBlockedReason ?? undefined}
           variant="outline"
-          disabled={actionPending || runNowBlockedReason !== null}
+          disabled={actionPending || runNowBlockedReason !== null || runNowGate.gated}
           onClick={onRunNow}
         >
           <PlayCircle className="h-4 w-4" />
@@ -221,7 +235,8 @@ export function AutomationDetailHeader({
         <TooltipIconButton
           label="Cancel automation"
           variant="outline"
-          disabled={actionPending || automationTerminal}
+          disabled={actionPending || automationTerminal || stopGate.gated}
+          tooltip={stopGate.reason ?? undefined}
           onClick={onCancelAutomation}
         >
           <Square className="h-4 w-4" />
@@ -245,7 +260,8 @@ export function AutomationDetailHeader({
           </Tooltip>
           <DropdownMenuContent align="end">
             <DropdownMenuItem
-              disabled={!skipJudgeRunId}
+              disabled={!skipJudgeRunId || skipJudgeGate.gated}
+              title={skipJudgeGate.reason ?? undefined}
               onSelect={(event) => {
                 event.preventDefault();
                 if (skipJudgeRunId) {
@@ -257,7 +273,8 @@ export function AutomationDetailHeader({
               Skip judge
             </DropdownMenuItem>
             <DropdownMenuItem
-              disabled={!canOpenSetupConversation}
+              disabled={!canOpenSetupConversation || setupEditGate.gated}
+              title={setupEditGate.reason ?? undefined}
               onSelect={(event) => {
                 event.preventDefault();
                 onEdit();
@@ -268,7 +285,8 @@ export function AutomationDetailHeader({
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem
-              disabled={!isAutomationDeletable(automation.status)}
+              disabled={!isAutomationDeletable(automation.status) || deleteGate.gated}
+              title={deleteGate.reason ?? undefined}
               className="text-[var(--status-error)]"
               onSelect={(event) => {
                 event.preventDefault();

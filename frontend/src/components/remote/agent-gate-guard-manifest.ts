@@ -83,6 +83,10 @@ export const GATE_WIRED_FILES: readonly string[] = [
   "src/components/Ideation/ProposalCard.tsx",
   "src/components/Ideation/ProposalDetailSheet.tsx",
   "src/components/agents/AgentsAutomationPanel.tsx",
+  "src/components/automations/AutomationDetailView.tsx",
+  "src/components/automations/AutomationDetailHeader.tsx",
+  "src/components/automations/AutomationRunsTab.tsx",
+  "src/components/automations/AutomationRunTimelineItem.tsx",
   "src/hooks/useIdeation.ts",
   // The Agents-pane fork (Phase 0 work item 3) — all five currently ungated.
   "src/components/agents/task-details/detail-views/BasicTaskDetail.tsx",
@@ -122,6 +126,12 @@ export const GATE_CALLSITE_INDIRECTIONS: readonly {
     file: "src/components/Chat/ChatInput.tsx",
     affordance: "chatSend",
     reason: "Presentational input; send dispatches through the `onSend` prop the host owns.",
+  },
+  {
+    file: "src/components/agents/AgentsAutomationPanel.tsx",
+    affordance: "automationSetupEdit",
+    reason:
+      "Setup edits post through `automationsApi.setupAgent.updateAutomation`, whose `update_automation` route name is computed inside `postAutomationJson` — invisible to the literal reach walk.",
   },
   {
     file: "src/components/agents/AgentComposerSurface.tsx",
@@ -193,6 +203,38 @@ export const GATE_CALLSITE_INDIRECTIONS: readonly {
     affordance: "proposalEdit",
     reason: "Edit dispatches through the `onEdit` prop owned by the ideation host.",
   },
+  ...([
+    ["automationFinalize", "onApprove"],
+    ["automationRestart", "onRestart"],
+    ["automationResume", "onResume"],
+    ["automationPause", "onPause"],
+    ["automationRunNow", "onRunNow"],
+    ["automationStop", "onCancelAutomation"],
+    ["automationSkipJudge", "onSkipJudge"],
+    ["automationSetupEdit", "onEdit"],
+    ["automationDelete", "onDelete"],
+  ] as const).map(([affordance, prop]) => ({
+    file: "src/components/automations/AutomationDetailHeader.tsx",
+    affordance,
+    reason: `Header dispatches through the \`${prop}\` prop owned by AutomationDetailView.`,
+  })),
+  ...([
+    ["automationRetryPlanJudge", "onRetryPlanJudge"],
+    ["automationRetryJudge", "onRetryJudge"],
+    ["automationRunNow", "onRunNow"],
+  ] as const).map(([affordance, prop]) => ({
+    file: "src/components/automations/AutomationRunsTab.tsx",
+    affordance,
+    reason: `Runs tab dispatches through the \`${prop}\` prop owned by AutomationDetailView.`,
+  })),
+  ...([
+    ["automationDeleteRun", "onDeleteRun"],
+    ["automationResumeRun", "onResumeRun"],
+  ] as const).map(([affordance, prop]) => ({
+    file: "src/components/automations/AutomationRunTimelineItem.tsx",
+    affordance,
+    reason: `Timeline item dispatches through the \`${prop}\` prop owned by AutomationDetailView.`,
+  })),
 ];
 
 /**
@@ -244,19 +286,6 @@ export interface KnownGateGap {
  * Shrink procedure is documented at the top of this file. Do not add rows.
  */
 export const KNOWN_GATE_GAPS: readonly KnownGateGap[] = [
-  // --- dead affordance rows (no production surface resolves them) ------------
-  {
-    kind: "dead-row",
-    id: "dead-row:automationRunNow",
-    owner: 4,
-    why: "Run now is gated by `automationResume` instead, so the unregistered trigger_automation_run_now renders as an enabled button (confirmed critical).",
-  },
-  {
-    kind: "dead-row",
-    id: "dead-row:automationRestart",
-    owner: 4,
-    why: "Restart is gated by `automationResume` in the Agents panel and ungated on the Automations page.",
-  },
   {
     kind: "dead-row",
     id: "dead-row:folderReferenceRemove",

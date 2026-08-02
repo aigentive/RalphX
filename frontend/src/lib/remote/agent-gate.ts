@@ -173,8 +173,25 @@ export const AGENT_GATED_AFFORDANCES = {
   // Unavailable until a spawn-free queue twin registers; Phase 6 is the candidate owner.
   queuedMessageSendNow: "send_queued_agent_message_now",
   automationResume: "resume_automation",
+  // Automation lifecycle controls are host-classified `agentControl`, including
+  // authority-reducing pause/stop, matching the task pause/stop precedent below.
+  automationPause: "pause_automation",
+  automationStop: "stop_automation",
   automationRunNow: "trigger_automation_run_now",
   automationRestart: "restart_automation",
+  automationCancelRun: "cancel_automation_run",
+  automationResumeRun: "resume_automation_run",
+  automationRetryPlanJudge: "retry_automation_plan_judge",
+  automationSkipJudge: "skip_automation_judge",
+  automationSettingsEdit: "update_automation_settings",
+  automationFinalize: "finalize_automation",
+  // These mutation commands/routes are intentionally absent from the remote facade;
+  // their controls therefore resolve `unavailable` at every remote scope.
+  automationRetryJudge: "retry_automation_judge",
+  automationDelete: "delete_automation",
+  automationDeleteRun: "delete_automation_run",
+  automationSetupEdit: "update_automation",
+  automationCreate: "create_automation_draft",
 } as const satisfies Record<string, string>;
 
 export type AgentGatedAffordance = keyof typeof AGENT_GATED_AFFORDANCES;

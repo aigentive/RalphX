@@ -5,6 +5,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Automation, AutomationRun } from "@/api/automations";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { AGENT_CONTROL_DISABLED_HINT, REMOTE_UNAVAILABLE_HINT } from "@/lib/remote/agent-gate";
+import { LOCAL_ENVIRONMENT_ID, useEnvironmentStore } from "@/stores/environmentStore";
 
 import { RunTimelineItem } from "./AutomationRunTimelineItem";
 
@@ -145,6 +147,12 @@ function renderItem(
 
 describe("RunTimelineItem run deletion", () => {
   beforeEach(() => {
+    useEnvironmentStore.setState({
+      activeEnvironmentId: LOCAL_ENVIRONMENT_ID,
+      environments: [{ id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" }],
+      effectiveScopes: {},
+      connectionPresentations: {},
+    });
     listConversationTasksMock.mockReset();
     listConversationTasksMock.mockResolvedValue([]);
   });
@@ -360,6 +368,28 @@ describe("RunTimelineItem run deletion", () => {
 
     expect(screen.getByTestId("automation-run-run-10-delete")).toBeInTheDocument();
     expect(screen.getByTestId("automation-run-run-10-resume")).toBeInTheDocument();
+  });
+
+  it("keeps delete unavailable remotely while gating resume by agent-control scope", () => {
+    useEnvironmentStore.setState({
+      activeEnvironmentId: "remote-1",
+      environments: [{ id: "remote-1", name: "Studio", kind: "remote" }],
+      effectiveScopes: { "remote-1": ["ui:read", "ui:operate"] },
+      connectionPresentations: {
+        "remote-1": { presentation: "connected", blockedFailure: null, blockedMessage: null },
+      },
+    });
+    const onDeleteRun = vi.fn();
+    const onResumeRun = vi.fn();
+
+    renderItem(run(), { isLatest: true, onDeleteRun, onResumeRun, defaultExpanded: true });
+
+    expect(screen.getByTestId("automation-run-run-10-delete")).toBeDisabled();
+    expect(screen.getByTestId("automation-run-run-10-delete")).toHaveAttribute("title", REMOTE_UNAVAILABLE_HINT);
+    expect(screen.getByTestId("automation-run-run-10-resume")).toBeDisabled();
+    expect(screen.getByTestId("automation-run-run-10-resume")).toHaveAttribute("title", AGENT_CONTROL_DISABLED_HINT);
+    expect(onDeleteRun).not.toHaveBeenCalled();
+    expect(onResumeRun).not.toHaveBeenCalled();
   });
 
   it("renders Run prompt as a minimal inline disclosure", async () => {

@@ -8,6 +8,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import type { AutomationRunOpenTarget } from "@/components/automations/automationRunNavigation";
 import { preloadAutomationDetailView } from "@/components/automations/preloadAutomationDetailView";
 import { useAutomationsList } from "@/hooks/useAutomations";
+import { useAgentGate } from "@/hooks/useAgentGate";
 import { withAlpha } from "@/lib/theme-colors";
 import { lazyWithRetry } from "@/lib/lazy-with-retry";
 import { AutomationListGroup } from "./AutomationListGroup";
@@ -79,7 +80,15 @@ function AutomationsListSkeleton() {
   );
 }
 
-function EmptyAutomations({ onNewAutomation }: { onNewAutomation?: () => void }) {
+function EmptyAutomations({
+  onNewAutomation,
+  newAutomationDisabled = false,
+  newAutomationReason = null,
+}: {
+  onNewAutomation?: () => void;
+  newAutomationDisabled?: boolean;
+  newAutomationReason?: string | null;
+}) {
   return (
     <div
       className="flex min-h-[360px] flex-col items-center justify-center rounded-md px-6 py-10 text-center"
@@ -108,7 +117,8 @@ function EmptyAutomations({ onNewAutomation }: { onNewAutomation?: () => void })
         type="button"
         className="mt-6 gap-2"
         onClick={onNewAutomation}
-        disabled={!onNewAutomation}
+        disabled={!onNewAutomation || newAutomationDisabled}
+        title={newAutomationReason ?? undefined}
         data-testid="automations-empty-new-button"
       >
         <Plus className="h-4 w-4" />
@@ -163,6 +173,7 @@ export function AutomationsView({
   onOpenRunConversation,
   onOpenAutomationRun,
 }: AutomationsViewProps) {
+  const createGate = useAgentGate("automationCreate");
   const [localSelectedAutomationId, setLocalSelectedAutomationId] = useState<string | null>(null);
   const [filter, setFilter] = useState<AutomationListFilter>("all");
   const [searchText, setSearchText] = useState("");
@@ -280,7 +291,8 @@ export function AutomationsView({
             type="button"
             className="gap-2"
             onClick={onNewAutomation}
-            disabled={!projectId || !onNewAutomation}
+            disabled={!projectId || !onNewAutomation || createGate.gated}
+            title={createGate.reason ?? undefined}
             data-testid="automations-new-button"
           >
             <Plus className="h-4 w-4" />
@@ -299,7 +311,11 @@ export function AutomationsView({
             Could not load automations.
           </div>
         ) : rows.length === 0 ? (
-          <EmptyAutomations {...(onNewAutomation ? { onNewAutomation } : {})} />
+          <EmptyAutomations
+            {...(onNewAutomation ? { onNewAutomation } : {})}
+            newAutomationDisabled={createGate.gated}
+            newAutomationReason={createGate.reason}
+          />
         ) : (
           <div className="space-y-5" data-testid="automations-list">
             <AutomationListToolbar
