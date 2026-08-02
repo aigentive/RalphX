@@ -330,7 +330,7 @@ describe("AgentReviewPanel", () => {
     expect(onApproveAnyway).toHaveBeenCalledOnce();
   });
 
-  it("keeps manual fixes available when automatic fixing reaches its cycle cap", () => {
+  it("keeps the blocking reason visible when automatic fixing reaches its cycle cap", () => {
     renderPanel({
       reviewContext: reviewContext({
         isCurrent: true,
@@ -338,6 +338,7 @@ describe("AgentReviewPanel", () => {
         monitor: reviewMonitor({
           reviewOutcome: "blocking",
           reviewGateStatus: "blocking",
+          reviewBlockingSummary: "One unresolved blocker remains.",
           reviewFixerStatus: "cycle_capped",
           reviewFixerCycleCount: 3,
         }),
@@ -349,10 +350,32 @@ describe("AgentReviewPanel", () => {
     ).toBeInTheDocument();
     expect(
       screen.getByText(
-        "This workspace has recorded 3 fixer cycles. Automatic fixing is paused; Fix Issues manually to continue.",
+        "One unresolved blocker remains. This workspace has recorded 3 fixer cycles. Automatic fixing is paused; Fix Issues manually to continue.",
       ),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Fix Issues" })).toBeEnabled();
+  });
+
+  it("shows only the cap detail when its blocking summary is absent", () => {
+    renderPanel({
+      reviewContext: reviewContext({
+        isCurrent: true,
+        isOutdated: false,
+        monitor: reviewMonitor({
+          reviewOutcome: "blocking",
+          reviewGateStatus: "blocking",
+          reviewBlockingSummary: null,
+          reviewFixerStatus: "cycle_capped",
+          reviewFixerCycleCount: 3,
+        }),
+      }),
+    });
+
+    expect(
+      screen.getByText(
+        "This workspace has recorded 3 fixer cycles. Automatic fixing is paused; Fix Issues manually to continue.",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("cancels cleanly and prevents duplicate approval while confirmation is pending", async () => {

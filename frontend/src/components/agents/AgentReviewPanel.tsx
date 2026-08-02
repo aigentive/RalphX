@@ -309,7 +309,12 @@ function reviewStatusForState({
   if (context?.monitor.reviewFixerStatus === "cycle_capped") {
     return {
       label: "Automatic fix cycle limit reached",
-      detail: reviewFixerCycleCapDetail(context.monitor.reviewFixerCycleCount),
+      detail: [
+        context.monitor.reviewBlockingSummary,
+        reviewFixerCycleCapDetail(context.monitor.reviewFixerCycleCount),
+      ]
+        .filter(Boolean)
+        .join(" "),
       color: "var(--status-warning)",
       icon: AlertCircle,
     };
