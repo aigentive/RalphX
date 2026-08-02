@@ -158,6 +158,8 @@ async fn capture_owner_returns_current_token_run_id_and_cloned_metadata() {
         provider_session_id: Some("thread-123".to_string()),
         persona_id: Some("planner".to_string()),
         persona_content_hash: Some("content-hash".to_string()),
+        agent_name: Some("ralphx-ideation".to_string()),
+        agent_profile: Some("plan".to_string()),
     };
     let token = registry
         .register_with_metadata(key.clone(), stdin, metadata.clone())
@@ -954,6 +956,8 @@ async fn test_register_with_metadata_persists_harness_metadata() {
                 provider_session_id: Some("thread-123".to_string()),
                 persona_id: None,
                 persona_content_hash: None,
+                agent_name: Some("ralphx-ideation".to_string()),
+                agent_profile: Some("plan".to_string()),
             },
         )
         .await;
@@ -961,6 +965,8 @@ async fn test_register_with_metadata_persists_harness_metadata() {
     let metadata = registry.get_metadata(&key).await.unwrap();
     assert_eq!(metadata.harness, Some(AgentHarnessKind::Codex));
     assert_eq!(metadata.provider_session_id.as_deref(), Some("thread-123"));
+    assert_eq!(metadata.agent_name.as_deref(), Some("ralphx-ideation"));
+    assert_eq!(metadata.agent_profile.as_deref(), Some("plan"));
 }
 
 #[tokio::test]

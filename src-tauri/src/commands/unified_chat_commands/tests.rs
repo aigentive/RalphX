@@ -9863,7 +9863,7 @@ async fn switching_unlocked_linked_plan_ideation_to_edit_uses_plan_worktree() {
 }
 
 #[tokio::test]
-async fn switching_to_plan_defers_planning_session_until_first_send_and_edit_preserves_it() {
+async fn switching_to_plan_defers_session_and_edit_preserves_link_but_clears_provider() {
     let state = AppState::new_test();
     let temp = tempfile::tempdir().expect("tempdir should be created");
     let repo_path = temp.path().join("repo");
@@ -9930,6 +9930,18 @@ async fn switching_to_plan_defers_planning_session_until_first_send_and_edit_pre
             .await
             .expect("existing planning session should be reused");
     assert!(!second_ensure);
+
+    state
+        .chat_conversation_repo
+        .update_provider_session_ref(
+            &conversation_id,
+            &ProviderSessionRef {
+                harness: AgentHarnessKind::Claude,
+                provider_session_id: "planning-provider-session".to_string(),
+            },
+        )
+        .await
+        .expect("planning provider session should persist before Edit handoff");
 
     let plan_workspace = state
         .agent_conversation_workspace_repo
@@ -10009,6 +10021,7 @@ async fn switching_to_plan_defers_planning_session_until_first_send_and_edit_pre
         Some(session_id.as_str())
     );
     assert!(edit_workspace.linked_plan_branch_id.is_none());
+    assert!(edit_response.conversation.provider_session_id.is_none());
     let cleaned_review = state
         .agent_conversation_workspace_repo
         .get_workspace_review_monitor(&conversation_id)

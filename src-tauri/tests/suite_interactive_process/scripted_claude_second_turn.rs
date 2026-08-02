@@ -145,6 +145,8 @@ async fn scripted_claude_process_round_trips_second_turn_through_gate1_and_strea
                 provider_session_id: Some("scripted-claude-session".to_string()),
                 persona_id: None,
                 persona_content_hash: None,
+                agent_name: None,
+                agent_profile: None,
             },
         )
         .await;

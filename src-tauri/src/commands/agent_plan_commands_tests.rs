@@ -11,17 +11,21 @@ use crate::application::{
     agent_task_pipeline_service::{
         validate_start_authority_sync, validate_supervised_task_pipeline,
     },
+    interactive_process_registry::{InteractiveProcessKey, InteractiveProcessMetadata},
     AppState,
 };
-use crate::domain::agents::{AgentHarnessKind, ManualRoleRuntimeOverride, ManualServiceTier};
+use crate::domain::agents::{
+    AgentHarnessKind, ManualRoleRuntimeOverride, ManualServiceTier, ProviderSessionRef,
+};
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, Artifact, ArtifactBucketId,
-    ArtifactContent, ArtifactId, ArtifactMetadata, ArtifactRelationType, ArtifactType,
-    ChatConversation, CoordinationMode, IdeationAnalysisBaseRefKind, IdeationSession,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, Artifact,
+    ArtifactBucketId, ArtifactContent, ArtifactId, ArtifactMetadata, ArtifactRelationType,
+    ArtifactType, ChatConversation, CoordinationMode, IdeationAnalysisBaseRefKind, IdeationSession,
     IdeationSessionFlow, IdeationSessionId, IdeationSessionStatus, Priority, Project,
     ProposalCategory, TaskProposal,
 };
 use crate::domain::repositories::PlanApprovalActor;
+use crate::domain::services::RunningAgentKey;
 use std::path::Path;
 use std::process::Command;
 use tempfile::TempDir;
@@ -201,6 +205,20 @@ async fn set_sql_conversation_mode(
         })
         .await
         .unwrap();
+}
+
+async fn seed_planning_provider_session(state: &AppState, conversation: &ChatConversation) {
+    state
+        .chat_conversation_repo
+        .update_provider_session_ref(
+            &conversation.id,
+            &ProviderSessionRef {
+                harness: AgentHarnessKind::Claude,
+                provider_session_id: "planning-session".to_string(),
+            },
+        )
+        .await
+        .expect("planning provider session should persist");
 }
 
 async fn seed_source_plan(
@@ -453,6 +471,7 @@ async fn direct_implementation_rejects_stale_blueprint_before_atomic_mode_switch
         .unwrap();
     seed_blueprint_for_session(&state, &seeded.session_id, "# Blueprint v2").await;
     set_sql_conversation_mode(&state, &conversation, AgentConversationWorkspaceMode::Plan).await;
+    seed_planning_provider_session(&state, &conversation).await;
 
     let input = || ActivateAgentPlanDirectImplementationInput {
         conversation_id: conversation.id.as_str().to_string(),
@@ -463,6 +482,17 @@ async fn direct_implementation_rejects_stale_blueprint_before_atomic_mode_switch
         .await
         .unwrap_err();
     assert!(error.contains("blueprint version requires explicit user approval"));
+    assert!(
+        state
+            .chat_conversation_repo
+            .get_by_id(&conversation.id)
+            .await
+            .unwrap()
+            .expect("conversation should persist")
+            .provider_session_ref()
+            .is_some(),
+        "authority rejection must not clear the planning provider session"
+    );
     let unchanged = state
         .agent_conversation_workspace_repo
         .get_by_conversation_id(&conversation.id)
@@ -490,6 +520,17 @@ async fn direct_implementation_rejects_stale_blueprint_before_atomic_mode_switch
         .await
         .unwrap();
     assert_eq!(activated.workspace.mode, "edit");
+    assert!(
+        state
+            .chat_conversation_repo
+            .get_by_id(&conversation.id)
+            .await
+            .unwrap()
+            .expect("conversation should persist")
+            .provider_session_ref()
+            .is_none(),
+        "committed activation must clear the planning provider session"
+    );
     assert_eq!(activated.artifact_references.len(), 2);
     assert_eq!(
         activated.artifact_references[0].artifact_id,
@@ -519,6 +560,122 @@ async fn direct_implementation_rejects_stale_blueprint_before_atomic_mode_switch
         retry.plan_context_fingerprint,
         activated.plan_context_fingerprint
     );
+}
+
+#[tokio::test]
+async fn direct_implementation_authority_conflict_keeps_provider_session() {
+    let (state, _project, conversation, _test_root) =
+        setup_target_workspace(AgentConversationWorkspaceMode::Edit).await;
+    let seeded = import_agent_conversation_plan_for_state(
+        ImportAgentConversationPlanInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            title: "CAS conflict plan".to_string(),
+            content: "# Overview".to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    seed_blueprint_for_session(&state, &seeded.session_id, "# Blueprint").await;
+    let session_id = seeded.session_id.clone();
+    let artifact_id = seeded.artifact.id.clone();
+    state
+        .db
+        .run_transaction(move |conn| {
+            crate::application::plan_artifact_approval::approve_current_plan_artifact_sync(
+                conn,
+                IdeationSessionId::from_string(session_id),
+                Some(&artifact_id),
+                PlanApprovalActor::User,
+            )
+            .map(|_| ())
+        })
+        .await
+        .unwrap();
+    set_sql_conversation_mode(&state, &conversation, AgentConversationWorkspaceMode::Plan).await;
+    let mut workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation.id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+    workspace.mode = AgentConversationWorkspaceMode::Edit;
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+    seed_planning_provider_session(&state, &conversation).await;
+    let run = AgentRun::new(conversation.id);
+    let run_id = run.id.as_str().to_string();
+    state.agent_run_repo.create(run).await.unwrap();
+    let interactive_key = InteractiveProcessKey::new("project", conversation.id.as_str());
+    let mut child = tokio::process::Command::new("cat")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn Plan runtime fixture");
+    state
+        .interactive_process_registry
+        .register_with_metadata(
+            interactive_key.clone(),
+            child.stdin.take().expect("Plan runtime stdin"),
+            InteractiveProcessMetadata {
+                agent_run_id: Some(run_id.clone()),
+                agent_name: Some("ralphx:ralphx-ideation".to_string()),
+                agent_profile: Some("plan".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+    state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("project", conversation.id.as_str()),
+            0,
+            conversation.id.as_str(),
+            run_id,
+            None,
+            None,
+        )
+        .await;
+
+    let error = activate_agent_plan_direct_implementation_for_state(
+        ActivateAgentPlanDirectImplementationInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            session_id: seeded.session_id,
+            retry: false,
+        },
+        &state,
+    )
+    .await
+    .expect_err("stale workspace mode must reject the activation CAS");
+
+    assert!(error.contains("Plan conversation no longer owns this planning session"));
+    assert!(
+        state
+            .interactive_process_registry
+            .has_process(&interactive_key)
+            .await,
+        "authority preflight must not retire the Plan runtime"
+    );
+    assert!(
+        state
+            .chat_conversation_repo
+            .get_by_id(&conversation.id)
+            .await
+            .unwrap()
+            .expect("conversation should persist")
+            .provider_session_ref()
+            .is_some(),
+        "authority conflict must leave the planning provider session intact"
+    );
+    state
+        .interactive_process_registry
+        .remove(&interactive_key)
+        .await;
+    let _ = child.kill().await;
 }
 
 #[tokio::test]
