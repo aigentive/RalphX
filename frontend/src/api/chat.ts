@@ -477,6 +477,7 @@ export interface AgentSidebarConversationRow {
   publicationState: AgentSidebarPublicationState;
   publicationLabel: string | null;
   attentionLane: AgentSidebarAttentionLane;
+  parkedDelegateCount: number;
   actionVerb: string;
   isMuted: boolean;
 }
@@ -2316,6 +2317,7 @@ export interface AgentConversationWorkspaceFreshness {
   effectiveBaseRef: string | null;
   effectiveBaseDisplayName: string | null;
   baseBlockReason: string | null;
+  recommendedActions: readonly string[];
 }
 
 export interface UpdateAgentConversationWorkspaceFromBaseResult {
@@ -2779,6 +2781,7 @@ const AgentSidebarConversationRowResponseSchema = z.object({
   ]),
   publication_label: z.string().nullable(),
   attention_lane: z.enum(["needs", "working", "stale", "done"]),
+  parked_delegate_count: z.number().int().nonnegative(),
   action_verb: z.string(),
   is_muted: z.boolean(),
 });
@@ -2827,6 +2830,7 @@ const AgentConversationWorkspaceFreshnessResponseSchema = z.object({
   effective_base_ref: z.string().nullable().optional().default(null),
   effective_base_display_name: z.string().nullable().optional().default(null),
   base_block_reason: z.string().nullable().optional().default(null),
+  recommended_actions: z.array(z.string()).optional().default([]),
 });
 const AgentWorkspacePrReviewMonitorResponseSchema = z.object({
   conversation_id: z.string(),
@@ -3411,6 +3415,7 @@ function transformAgentSidebarConversationGroups(
         publicationState: row.publication_state,
         publicationLabel: row.publication_label,
         attentionLane: row.attention_lane,
+        parkedDelegateCount: row.parked_delegate_count,
         actionVerb: row.action_verb,
         isMuted: row.is_muted,
       })),
@@ -3584,6 +3589,7 @@ function transformAgentConversationWorkspaceFreshness(
     effectiveBaseRef: raw.effective_base_ref,
     effectiveBaseDisplayName: raw.effective_base_display_name,
     baseBlockReason: raw.base_block_reason,
+    recommendedActions: raw.recommended_actions,
   };
 }
 

@@ -9,6 +9,10 @@ use rusqlite::{Connection, Transaction, TransactionBehavior};
 
 use crate::error::{AppError, AppResult};
 
+use super::helpers::{
+    foreign_key_violation_counts, introduced_violations, ForeignKeyViolationCounts,
+};
+
 /// The rebuild needs room for a full copy of the table plus the WAL that holds
 /// it. Whole-database size already over-estimates the table, so doubling it
 /// covers both without inflating the requirement further — an over-estimate here
@@ -32,6 +36,25 @@ pub fn migrate(conn: &Connection) -> AppResult<()> {
         // avoid a WAL write-upgrade surfacing as "database is locked".
         let transaction = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
             .map_err(|error| AppError::Database(error.to_string()))?;
+
+        // Live databases carry orphan rows this rebuild neither created nor owns:
+        // foreign keys are enforced by default, but migrations that rewrite tables
+        // turn them off, so deletes inside those windows leave children behind.
+        // Snapshot them before the rebuild and gate only on violations this
+        // migration introduces; counting pre-existing damage as our own aborts
+        // startup permanently with no way to recover.
+        //
+        // Patched in place rather than as a follow-up version on purpose:
+        // databases where this migration already succeeded recorded it applied and
+        // never re-run it, while databases it wedged re-run the patched version and
+        // get past the gate.
+        let baseline_violations = foreign_key_violation_counts(&transaction)?;
+        if !baseline_violations.is_empty() {
+            tracing::warn!(
+                "chat message block rebuild: ignoring {} pre-existing foreign-key violation(s) not owned by this migration",
+                baseline_violations.values().sum::<i64>()
+            );
+        }
 
         transaction
             .execute_batch(
@@ -89,7 +112,12 @@ pub fn migrate(conn: &Connection) -> AppResult<()> {
         "#,
     )
             .map_err(|error| AppError::Database(error.to_string()))?;
-        ensure_foreign_key_check_is_clean(&transaction)?;
+
+        check_introduced_violations(
+            &baseline_violations,
+            &foreign_key_violation_counts(&transaction)?,
+        )?;
+
         transaction
             .commit()
             .map_err(|error| AppError::Database(error.to_string()))
@@ -106,30 +134,34 @@ pub fn migrate(conn: &Connection) -> AppResult<()> {
     Ok(())
 }
 
-fn ensure_foreign_key_check_is_clean(transaction: &Transaction<'_>) -> AppResult<()> {
-    let mut statement = transaction
-        .prepare("PRAGMA foreign_key_check")
-        .map_err(|error| AppError::Database(error.to_string()))?;
-    let mut rows = statement
-        .query([])
-        .map_err(|error| AppError::Database(error.to_string()))?;
-
-    if let Some(row) = rows
-        .next()
-        .map_err(|error| AppError::Database(error.to_string()))?
-    {
-        let table = row
-            .get::<_, String>(0)
-            .map_err(|error| AppError::Database(error.to_string()))?;
-        let parent = row
-            .get::<_, String>(2)
-            .map_err(|error| AppError::Database(error.to_string()))?;
-        return Err(AppError::Database(format!(
-            "chat message block rebuild left a foreign-key violation: {table} -> {parent}"
-        )));
+/// Fails only on violations the rebuild itself added, so orphan rows that were
+/// already in the database cannot be attributed to it.
+///
+/// The rebuild renumbers rowids, so the comparison keys on `(table, parent,
+/// fkid)` counts instead of the offending rowids.
+///
+/// Split from `migrate` the same way `check_free_space` is: the rebuild copies
+/// every row verbatim into a table carrying the same foreign keys, so no
+/// fixture can drive it into introducing a violation, and the refusal would
+/// otherwise be unreachable in tests.
+pub(super) fn check_introduced_violations(
+    baseline: &ForeignKeyViolationCounts,
+    after: &ForeignKeyViolationCounts,
+) -> AppResult<()> {
+    let introduced = introduced_violations(baseline, after);
+    if introduced.is_empty() {
+        return Ok(());
     }
 
-    Ok(())
+    let violation_count: i64 = introduced.iter().map(|(_, _, count)| count).sum();
+    let details = introduced
+        .iter()
+        .map(|(table, parent, count)| format!("{table} -> {parent} ({count})"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(AppError::Database(format!(
+        "chat message block rebuild left {violation_count} foreign-key violations: {details}"
+    )))
 }
 
 #[cfg(unix)]

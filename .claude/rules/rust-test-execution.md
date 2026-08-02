@@ -79,6 +79,7 @@ paths:
 | Add an integration test module | Prefer an existing `src-tauri/tests/suite_*/main.rs` target and update the suite mapping below; the existing target is already included in the integration archive |
 | Add an unavoidable top-level integration target | Add it to `FULL_INTEGRATION_TESTS` in `scripts/test-rust-fast.sh`; add a `nextest.toml` group override only when resource behavior requires one; ❌ duplicate the target list in workflow YAML |
 | Change archive execution | Keep one archive producer and partition-only consumers on the same profile/features/workspace remap; consumers must not rebuild Cargo targets |
+| Change lib coverage topology | `rust-lib-coverage-archive` is the sole archive producer; four partition-only consumers mirror the CI test archive pattern; update `scripts/tests/test-coverage-rust-shards.sh` and Codecov inputs with shard/artifact changes |
 | Add IPC/command coverage | Update the single target/filter union in `.github/workflows/coverage.yml`; keep one `cargo llvm-cov nextest` invocation so filter groups do not relink the instrumented root crate repeatedly |
 | Change shard counts or artifact names | Update the matrix, unique artifact/JUnit names, publish-time artifact validation, and every Codecov input together |
 | Validate topology changes | Run `scripts/tests/test-ci-rust-full-integration-targets.sh` and `scripts/tests/test-coverage-rust-shards.sh` plus YAML/actionlint checks; do not run broad Rust/llvm-cov suites merely to validate workflow wiring |
@@ -222,6 +223,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --features test-utils 'infrastru
 |---|---|
 | Converting an old SQLite test | Replace `open_memory_connection() + run_migrations()` with `SqliteTestDb` first, then extract shared seed helpers |
 | Reproducing a named Rust CI failure | Run only the failing lane/target first; use `scripts/test-rust-fast.sh pr` / `main` only when the user explicitly requests full parity or the failure cannot be isolated |
+| Suspected environmental CI failure (timeout/infra/download flake, not a code signal) | First response: `gh run rerun <run-id> --failed` to re-run only red jobs without a push; a code fix still requires a push and full re-run; ❌ pushing no-op commits to re-trigger CI |
 | Seeing remaining `open_memory_connection()` calls after migration work | Check whether the suite is connection/formatting-only before converting it; optimize real migration-replay hotspots first |
 | Splitting oversized lib suites | Move them to `src-tauri/tests/<suite>.rs`, compile them as a separate integration binary, and keep the exported surface minimal and explicitly internal-facing |
 | Splitting HTTP handler suites | Make the handler/types module reachable from integration tests, import through `ralphx_lib::http_server::{handlers, types}`, and keep SQLite-only handler helpers on `AppState::new_sqlite_test()` / `new_sqlite_test_with_registry()` instead of duplicating ad hoc setup |

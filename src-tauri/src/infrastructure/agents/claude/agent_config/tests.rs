@@ -549,7 +549,10 @@ fn early_file_logging_zero_max_bytes_falls_back_to_default_from_any_source() {
 
 #[test]
 fn early_file_logging_limits_default_on_malformed_yaml() {
-    let defaults = (default_file_logging_max_bytes(), default_file_logging_keep_files());
+    let defaults = (
+        default_file_logging_max_bytes(),
+        default_file_logging_keep_files(),
+    );
     assert_eq!(
         resolve_file_logging_limits_from_sources(None, None, None, "totally: [broken"),
         defaults,
@@ -602,7 +605,10 @@ fn database_maintenance_config_yaml_deserializes_with_defaults() {
     let yaml = "database_maintenance:\n  db_auto_compact_enabled: false\n";
     let cfg: RalphxConfig = serde_yaml::from_str(yaml).unwrap();
     assert!(!cfg.database_maintenance.db_auto_compact_enabled);
-    assert_eq!(cfg.database_maintenance.db_auto_compact_max_db_bytes, 2_147_483_648);
+    assert_eq!(
+        cfg.database_maintenance.db_auto_compact_max_db_bytes,
+        2_147_483_648
+    );
 }
 
 #[test]
@@ -1036,7 +1042,12 @@ fn test_embedded_config_omits_live_agent_runtime_mirrors_and_uses_canonical_meta
         .contains(&"Write".to_string()));
     assert_eq!(
         qa_executor.allowed_mcp_tools,
-        vec!["delegate_start", "delegate_wait", "delegate_cancel"]
+        vec![
+            "delegate_start",
+            "delegate_wait",
+            "delegate_cancel",
+            "delegate_park",
+        ]
     );
 }
 
@@ -1868,6 +1879,7 @@ agents:
             "delegate_start",
             "delegate_wait",
             "delegate_cancel",
+            "delegate_park",
         ]
     );
 }
@@ -3148,6 +3160,7 @@ fn test_env_override_activity_page_false() {
         supervisor: runtime_config::SupervisorRuntimeConfig::default(),
         limits: runtime_config::LimitsConfig::default(),
         verification: runtime_config::VerificationConfig::default(),
+        delegation: runtime_config::DelegationConfig::default(),
         external_mcp: runtime_config::ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
@@ -3178,6 +3191,7 @@ fn test_env_override_true_value_enables_flag() {
         supervisor: runtime_config::SupervisorRuntimeConfig::default(),
         limits: runtime_config::LimitsConfig::default(),
         verification: runtime_config::VerificationConfig::default(),
+        delegation: runtime_config::DelegationConfig::default(),
         external_mcp: runtime_config::ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         database_maintenance: runtime_config::DatabaseMaintenanceConfig::default(),
@@ -3238,6 +3252,7 @@ fn test_env_override_atlassian_oauth() {
         supervisor: runtime_config::SupervisorRuntimeConfig::default(),
         limits: runtime_config::LimitsConfig::default(),
         verification: runtime_config::VerificationConfig::default(),
+        delegation: runtime_config::DelegationConfig::default(),
         external_mcp: runtime_config::ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
@@ -3273,6 +3288,7 @@ fn test_env_override_ticketing_dashboard() {
         supervisor: runtime_config::SupervisorRuntimeConfig::default(),
         limits: runtime_config::LimitsConfig::default(),
         verification: runtime_config::VerificationConfig::default(),
+        delegation: runtime_config::DelegationConfig::default(),
         external_mcp: runtime_config::ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),

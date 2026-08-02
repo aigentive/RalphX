@@ -162,7 +162,8 @@ pub async fn resolve_clickup_ticket_start(
                 .await
                 .map_err(|error| error.to_string())?;
             for pull_request in results {
-                if pull_request.is_cross_repository
+                if !pull_request.is_open()
+                    || pull_request.is_cross_repository
                     || pull_requests
                         .iter()
                         .any(|existing: &PrSearchResult| existing.number == pull_request.number)
@@ -197,7 +198,8 @@ pub fn select_clickup_ticket_start_candidate(
     branches: Vec<String>,
 ) -> ClickUpTicketStartResolution {
     pull_requests.retain(|pull_request| {
-        !pull_request.is_cross_repository
+        pull_request.is_open()
+            && !pull_request.is_cross_repository
             && matching_clickup_evidence(
                 task,
                 &ClickUpGitEvidence {

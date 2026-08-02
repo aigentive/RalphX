@@ -68,15 +68,16 @@ use crate::domain::repositories::{
     ArtifactFlowRepository, ArtifactRepository, AutomationRepository, AutomationRunRepository,
     BranchUpdateRepository, ChatAttachmentRepository, ChatConversationRepository,
     ChatMessageRepository, ChatTimelineRepository, ConversationFolderReferenceRepository,
-    DelegatedSessionRepository, ExecutionPlanRepository, ExecutionSettingsRepository,
-    ExternalEventsRepository, GlobalExecutionSettingsRepository, IdeationEffortSettingsRepository,
-    IdeationModelSettingsRepository, IdeationSessionRepository, IdeationSettingsRepository,
-    ManualRoleDefaultRepository, McpPolicyRepository, MemoryArchiveRepository,
-    MemoryEntryRepository, MemoryEventRepository, MethodologyRepository, NotificationRepository,
-    NotificationSettingsRepository, OrphanWorktreeCleanupMarkerRepository, PersonaRepository,
-    PlanArtifactApprovalRepository, PlanBranchRepository, PlanSelectionStatsRepository,
-    ProcessRepository, ProjectRepository, ProposalDependencyRepository, QueuedMessageRepository,
-    ReviewRepository, ReviewSettingsRepository, SessionLinkRepository, TaskDependencyRepository,
+    DelegatedSessionRepository, DelegationParkRepository, ExecutionPlanRepository,
+    ExecutionSettingsRepository, ExternalEventsRepository, GlobalExecutionSettingsRepository,
+    IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
+    IdeationSettingsRepository, ManualRoleDefaultRepository, McpPolicyRepository,
+    MemoryArchiveRepository, MemoryEntryRepository, MemoryEventRepository, MethodologyRepository,
+    NotificationRepository, NotificationSettingsRepository, OrphanWorktreeCleanupMarkerRepository,
+    PersonaRepository, PlanArtifactApprovalRepository, PlanBranchRepository,
+    PlanSelectionStatsRepository, ProcessRepository, ProjectRepository,
+    ProposalDependencyRepository, QueuedMessageRepository, ReviewRepository,
+    ReviewSettingsRepository, SessionLinkRepository, TaskDependencyRepository,
     TaskProposalRepository, TaskQARepository, TaskRepository, TaskStepRepository,
     TicketCanonicalBranchRepository, UiFeatureFlagOverridesRepository, ValidationRunRepository,
     WebhookRegistrationRepository, WorkflowRepository, WorkspaceReviewRuntimeSettingsRepository,
@@ -99,7 +100,7 @@ use crate::infrastructure::memory::{
     MemoryAutomationRunRepository, MemoryBranchUpdateRepository, MemoryChatAttachmentRepository,
     MemoryChatConversationRepository, MemoryChatMessageRepository, MemoryChatTimelineRepository,
     MemoryClickUpIntegrationSettingsRepository, MemoryConversationFolderReferenceRepository,
-    MemoryDelegatedSessionRepository, MemoryExecutionPlanRepository,
+    MemoryDelegatedSessionRepository, MemoryDelegationParkRepo, MemoryExecutionPlanRepository,
     MemoryExecutionSettingsRepository, MemoryExternalEventsRepository,
     MemoryExternalIssueLinkRepository, MemoryGlobalExecutionSettingsRepository,
     MemoryGranolaIntegrationSettingsRepository, MemoryIdeationEffortSettingsRepository,
@@ -136,7 +137,7 @@ use crate::infrastructure::sqlite::{
     SqliteChatAttachmentRepository, SqliteChatConversationRepository, SqliteChatMessageRepository,
     SqliteChatTimelineRepository, SqliteClickUpIntegrationSettingsRepository,
     SqliteConversationFolderReferenceRepository, SqliteDelegatedSessionRepository,
-    SqliteExecutionPlanRepository, SqliteExecutionSettingsRepository,
+    SqliteDelegationParkRepo, SqliteExecutionPlanRepository, SqliteExecutionSettingsRepository,
     SqliteExternalEventsRepository, SqliteExternalIssueLinkRepository,
     SqliteGlobalExecutionSettingsRepository, SqliteGranolaIntegrationSettingsRepository,
     SqliteIdeationEffortSettingsRepository, SqliteIdeationModelSettingsRepository,
@@ -250,6 +251,8 @@ pub struct AppState {
     pub ideation_settings_repo: Arc<dyn IdeationSettingsRepository>,
     /// Delegated specialist session repository
     pub delegated_session_repo: Arc<dyn DelegatedSessionRepository>,
+    /// Durable delegation parks: coordinators waiting on their delegates between turns
+    pub delegation_park_repo: Arc<dyn DelegationParkRepository>,
     /// Lightweight agent task repository for todo/dependency tracking
     pub agent_task_repo: Arc<dyn AgentTaskRepository>,
     /// Durable scripted Agent workflow state and current-run authority.
@@ -1162,6 +1165,24 @@ impl AppState {
         self.build_chat_service_for_runtime(None, self.app_handle.clone())
     }
 
+    /// Build the delegation park service on demand.
+    ///
+    /// Constructed per call (like `build_chat_service`) rather than stored on `AppState`,
+    /// because the park service depends on `ChatService`, which is itself built from
+    /// `AppState`. Durable authority lives in `delegation_park_repo`, so both AppState
+    /// graphs observe the same parks.
+    pub fn build_delegation_park_service(
+        &self,
+    ) -> crate::application::delegation_park::DelegationParkService {
+        crate::application::delegation_park::DelegationParkService::new(
+            Arc::clone(&self.delegation_park_repo),
+            Arc::new(self.build_chat_service()),
+            Arc::clone(&self.agent_run_repo),
+            Arc::clone(&self.chat_conversation_repo),
+            Arc::clone(&self.events),
+        )
+    }
+
     /// Build chat service with the app-managed execution halt state when available.
     pub fn build_chat_service_with_managed_execution_state(&self) -> AppChatService {
         let execution_state = self
@@ -1584,6 +1605,9 @@ impl AppState {
             delegated_session_repo: Arc::new(SqliteDelegatedSessionRepository::from_shared(
                 Arc::clone(&shared_conn),
             )),
+            delegation_park_repo: Arc::new(SqliteDelegationParkRepo::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
             agent_task_repo: Arc::new(SqliteAgentTaskRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
@@ -1884,6 +1908,9 @@ impl AppState {
             delegated_session_repo: Arc::new(SqliteDelegatedSessionRepository::from_shared(
                 Arc::clone(&shared_conn),
             )),
+            delegation_park_repo: Arc::new(SqliteDelegationParkRepo::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
             agent_task_repo: Arc::new(SqliteAgentTaskRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
@@ -2089,6 +2116,9 @@ impl AppState {
             delegated_session_repo: Arc::new(SqliteDelegatedSessionRepository::from_shared(
                 Arc::clone(&shared_conn),
             )),
+            delegation_park_repo: Arc::new(SqliteDelegationParkRepo::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
             agent_task_repo: Arc::new(SqliteAgentTaskRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
@@ -2304,6 +2334,9 @@ impl AppState {
             delegated_session_repo: Arc::new(SqliteDelegatedSessionRepository::from_shared(
                 Arc::clone(&shared_conn),
             )),
+            delegation_park_repo: Arc::new(SqliteDelegationParkRepo::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
             agent_task_repo: Arc::new(SqliteAgentTaskRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
@@ -2505,6 +2538,7 @@ impl AppState {
             ideation_session_repo: Arc::new(MemoryIdeationSessionRepository::new()),
             plan_approval_repo: Arc::new(MemoryPlanArtifactApprovalRepository::new()),
             delegated_session_repo: Arc::new(MemoryDelegatedSessionRepository::new()),
+            delegation_park_repo: Arc::new(MemoryDelegationParkRepo::new()),
             agent_task_repo: Arc::new(MemoryAgentTaskRepository::new()),
             agent_workflow_repo: Self::memory_agent_workflow_repo(),
             agent_conversation_issue_repo: Arc::new(MemoryAgentConversationIssueRepository::new()),

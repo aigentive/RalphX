@@ -1,4 +1,4 @@
-import { QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestQueryClient } from "@/test/store-utils";
 
 import { conversationWorkspaceFixture } from "./agentsTestFixtures";
+import { agentWorkspaceKeys } from "./agentWorkspaceQueries";
 import { useAgentWorkspaceBaseUpdate } from "./useAgentWorkspaceBaseUpdate";
 
 const {
@@ -56,6 +57,33 @@ function wrapper(queryClient: ReturnType<typeof createTestQueryClient>) {
   };
 }
 
+function freshnessCacheQueryClient() {
+  return new QueryClient({
+    defaultOptions: { queries: { gcTime: Infinity, retry: false } },
+  });
+}
+
+function staleFreshness(scope: "full" | "local") {
+  return {
+    conversationId: "conversation-1",
+    freshnessScope: scope,
+    baseRef: "main",
+    baseDisplayName: "Project default (main)",
+    targetRef: "origin/main",
+    capturedBaseCommit: "old-base",
+    targetBaseCommit: "new-base",
+    isBaseAhead: true,
+    hasUncommittedChanges: false,
+    unpublishedCommitCount: 0,
+    remoteRefreshed: true,
+    worktreeStatusChecked: true,
+    baseStatus: "valid" as const,
+    effectiveBaseRef: null,
+    effectiveBaseDisplayName: null,
+    baseBlockReason: null,
+  };
+}
+
 describe("useAgentWorkspaceBaseUpdate", () => {
   beforeEach(() => {
     getAgentConversationWorkspaceMock.mockReset();
@@ -71,11 +99,99 @@ describe("useAgentWorkspaceBaseUpdate", () => {
     vi.useRealTimers();
   });
 
+  it.each([false, true])(
+    "reconciles existing full and local freshness caches after a successful base update (updated: %s)",
+    async (updated) => {
+      const queryClient = freshnessCacheQueryClient();
+      const workspace = conversationWorkspaceFixture();
+      for (const scope of ["full", "local"] as const) {
+        queryClient.setQueryData(
+          agentWorkspaceKeys.scopedFreshness(workspace.conversationId, scope),
+          staleFreshness(scope),
+        );
+      }
+      updateAgentConversationWorkspaceFromBaseMock.mockResolvedValue({
+        workspace,
+        updated,
+        repairStarted: false,
+        targetRef: "origin/main",
+        baseCommit: "updated-base",
+        baseStatus: "valid",
+        effectiveBaseDisplayName: null,
+      });
+      const { result } = renderHook(
+        () => useAgentWorkspaceBaseUpdate({ conversationTitle: "Checkout flow fix" }),
+        { wrapper: wrapper(queryClient) },
+      );
+
+      act(() => {
+        result.current.runUpdateFromBase({
+          conversationId: workspace.conversationId,
+          detail: "Update workspace from main",
+          kind: "update-from-base",
+          title: "Updating from base",
+        });
+      });
+
+      await waitFor(() => expect(toastSuccessMock).toHaveBeenCalled());
+      for (const scope of ["full", "local"] as const) {
+        expect(
+          queryClient.getQueryData(
+            agentWorkspaceKeys.scopedFreshness(workspace.conversationId, scope),
+          ),
+        ).toEqual(
+          expect.objectContaining({
+            isBaseAhead: false,
+            capturedBaseCommit: "updated-base",
+            targetBaseCommit: "updated-base",
+            targetRef: "origin/main",
+            baseStatus: "valid",
+          }),
+        );
+      }
+    },
+  );
+
+  it("does not fabricate freshness cache entries after a successful base update", async () => {
+    const queryClient = freshnessCacheQueryClient();
+    const workspace = conversationWorkspaceFixture();
+    updateAgentConversationWorkspaceFromBaseMock.mockResolvedValue({
+      workspace,
+      updated: false,
+      repairStarted: false,
+      targetRef: "origin/main",
+      baseCommit: "updated-base",
+      baseStatus: "valid",
+      effectiveBaseDisplayName: null,
+    });
+    const { result } = renderHook(
+      () => useAgentWorkspaceBaseUpdate({ conversationTitle: "Checkout flow fix" }),
+      { wrapper: wrapper(queryClient) },
+    );
+
+    act(() => {
+      result.current.runUpdateFromBase({
+        conversationId: workspace.conversationId,
+        detail: "Update workspace from main",
+        kind: "update-from-base",
+        title: "Updating from base",
+      });
+    });
+
+    await waitFor(() => expect(toastSuccessMock).toHaveBeenCalled());
+    expect(queryClient.getQueryData(agentWorkspaceKeys.scopedFreshness("conversation-1", "full"))).toBeUndefined();
+    expect(queryClient.getQueryData(agentWorkspaceKeys.scopedFreshness("conversation-1", "local"))).toBeUndefined();
+  });
+
   it("shows an informational repair-started toast for a successful base-update retry", async () => {
-    const queryClient = createTestQueryClient();
+    const queryClient = freshnessCacheQueryClient();
     const workspace = conversationWorkspaceFixture({
       publicationPushStatus: "needs_agent",
     });
+    queryClient.setQueryData(
+      agentWorkspaceKeys.scopedFreshness(workspace.conversationId, "full"),
+      staleFreshness("full"),
+    );
     updateAgentConversationWorkspaceFromBaseMock.mockResolvedValue({
       workspace,
       updated: false,
@@ -108,6 +224,53 @@ describe("useAgentWorkspaceBaseUpdate", () => {
       ),
     );
     expect(toastErrorMock).not.toHaveBeenCalled();
+    expect(
+      queryClient.getQueryData(
+        agentWorkspaceKeys.scopedFreshness(workspace.conversationId, "full"),
+      ),
+    ).toEqual(expect.objectContaining({ isBaseAhead: true }));
+  });
+
+  it("adds merged pull-request retarget context to the rebase progress toast", async () => {
+    const queryClient = createTestQueryClient();
+    const workspace = conversationWorkspaceFixture();
+    updateAgentConversationWorkspaceFromBaseMock.mockResolvedValue({
+      workspace,
+      updated: true,
+      repairStarted: false,
+      targetRef: "release/next",
+      baseCommit: "base-sha",
+      baseStatus: "retargeted",
+      effectiveBaseDisplayName: "release/next",
+    });
+    const { result } = renderHook(
+      () => useAgentWorkspaceBaseUpdate({ conversationTitle: "Checkout flow fix" }),
+      { wrapper: wrapper(queryClient) },
+    );
+
+    act(() => {
+      result.current.runUpdateFromBase({
+        baseSelection: {
+          kind: "local_branch",
+          ref: "release/next",
+          displayName: "release/next",
+          retargetedFromPullRequest: 88,
+        },
+        conversationId: "conversation-1",
+        detail: "From release/next",
+        kind: "rebase",
+        title: "Rebasing onto release/next",
+      });
+    });
+
+    expect(toastLoadingMock).toHaveBeenCalledWith(
+      "Rebasing onto release/next",
+      expect.objectContaining({
+        description: expect.stringContaining(
+          "PR #88 merged — rebasing onto release/next",
+        ),
+      }),
+    );
   });
 
   it("dismisses live maintenance progress when the hook unmounts", () => {

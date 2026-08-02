@@ -12,7 +12,8 @@ use crate::application::agent_workspace_review::{
     start_agent_workspace_review_unlocked_with_runtime_override, workspace_review_mode_is_eligible,
     AgentWorkspaceReviewStart, AgentWorkspaceReviewTarget,
 };
-use crate::application::AppState;
+use crate::application::publish_resilience::count_unpublished_publish_commits;
+use crate::application::{AppState, GitService};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspacePublicationEvent,
     AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewAutoMergeGuardStatus,
@@ -21,7 +22,7 @@ use crate::domain::entities::{
 use crate::domain::services::github_service::{PrHealth, PrStatus};
 use crate::error::{AppError, AppResult};
 
-const REVIEW_AUTO_MERGE_PAUSED_SUMMARY: &str =
+pub(crate) const REVIEW_AUTO_MERGE_PAUSED_SUMMARY: &str =
     "GitHub auto-merge is paused while the workspace Review is authoritative.";
 const REVIEW_AUTO_MERGE_RESTORED_SUMMARY: &str =
     "GitHub auto-merge was restored after the workspace Review passed.";
@@ -661,42 +662,54 @@ pub async fn handle_passing_workspace_review_auto_merge_guard(
             restore_guarded_auto_merge(state, workspace, guard).await?;
         }
         AgentWorkspaceReviewTargetScope::WorkspaceDelta => {
-            let awaiting_publish = AgentWorkspaceReviewAutoMergeGuard {
-                status: AgentWorkspaceReviewAutoMergeGuardStatus::AwaitingPublish,
-                ..guard.clone()
-            };
-            let transitioned = state
-                .agent_conversation_workspace_repo
-                .compare_and_set_workspace_review_auto_merge_guard(
-                    &workspace.conversation_id,
-                    Some(guard.clone()),
-                    Some(awaiting_publish.clone()),
-                )
-                .await?;
-            if transitioned {
-                if let Err(error) = append_workspace_delta_restore_deferred_event(
-                    state,
-                    workspace,
-                    &awaiting_publish,
-                    &current,
-                )
-                .await
-                {
-                    let rolled_back = state
-                        .agent_conversation_workspace_repo
-                        .compare_and_set_workspace_review_auto_merge_guard(
-                            &workspace.conversation_id,
-                            Some(awaiting_publish),
-                            Some(guard.clone()),
-                        )
-                        .await?;
-                    if !rolled_back {
-                        warn!(
-                            conversation_id = %workspace.conversation_id,
-                            "Workspace Review auto-merge guard changed while rolling back a failed publish marker"
-                        );
+            if workspace_delta_already_published_proves_guard(
+                state,
+                &current,
+                workspace,
+                guard,
+                &target.working_directory,
+            )
+            .await
+            {
+                restore_guarded_auto_merge(state, workspace, guard).await?;
+            } else {
+                let awaiting_publish = AgentWorkspaceReviewAutoMergeGuard {
+                    status: AgentWorkspaceReviewAutoMergeGuardStatus::AwaitingPublish,
+                    ..guard.clone()
+                };
+                let transitioned = state
+                    .agent_conversation_workspace_repo
+                    .compare_and_set_workspace_review_auto_merge_guard(
+                        &workspace.conversation_id,
+                        Some(guard.clone()),
+                        Some(awaiting_publish.clone()),
+                    )
+                    .await?;
+                if transitioned {
+                    if let Err(error) = append_workspace_delta_restore_deferred_event(
+                        state,
+                        workspace,
+                        &awaiting_publish,
+                        &current,
+                    )
+                    .await
+                    {
+                        let rolled_back = state
+                            .agent_conversation_workspace_repo
+                            .compare_and_set_workspace_review_auto_merge_guard(
+                                &workspace.conversation_id,
+                                Some(awaiting_publish),
+                                Some(guard.clone()),
+                            )
+                            .await?;
+                        if !rolled_back {
+                            warn!(
+                                conversation_id = %workspace.conversation_id,
+                                "Workspace Review auto-merge guard changed while rolling back a failed publish marker"
+                            );
+                        }
+                        return Err(error);
                     }
-                    return Err(error);
                 }
             }
         }
@@ -720,8 +733,37 @@ pub async fn restore_guarded_auto_merge_after_publish(
         guard.status,
         AgentWorkspaceReviewAutoMergeGuardStatus::AwaitingPublish
             | AgentWorkspaceReviewAutoMergeGuardStatus::RestoreFailed
-    ) || !workspace_delta_publish_proves_guard(state, &monitor, workspace, guard).await?
-    {
+    ) {
+        return Ok(());
+    }
+    let ordering_proves =
+        workspace_delta_publish_proves_guard(state, &monitor, workspace, guard).await?;
+    let already_published_proves = if ordering_proves {
+        false
+    } else {
+        match resolve_workspace_working_directory(state, workspace).await {
+            Ok(working_directory) => {
+                workspace_delta_already_published_proves_guard(
+                    state,
+                    &monitor,
+                    workspace,
+                    guard,
+                    &working_directory,
+                )
+                .await
+            }
+            Err(error) => {
+                warn!(
+                    target: WORKSPACE_REVIEW_AUTO_MERGE_LOG_TARGET,
+                    conversation_id = %workspace.conversation_id,
+                    error = %error,
+                    "Workspace Review auto-merge could not resolve the workspace while checking an already-published guard"
+                );
+                false
+            }
+        }
+    };
+    if !(ordering_proves || already_published_proves) {
         return Ok(());
     }
     restore_guarded_auto_merge(state, workspace, guard).await
@@ -878,7 +920,34 @@ async fn reconcile_workspace_review_auto_merge_guard(
                 | AgentWorkspaceReviewAutoMergeGuardStatus::RestoreFailed
         )
     {
-        if !workspace_delta_publish_proves_guard(state, monitor, workspace, guard).await? {
+        let ordering_proves =
+            workspace_delta_publish_proves_guard(state, monitor, workspace, guard).await?;
+        let already_published_proves = if ordering_proves {
+            false
+        } else {
+            match resolve_workspace_working_directory(state, workspace).await {
+                Ok(working_directory) => {
+                    workspace_delta_already_published_proves_guard(
+                        state,
+                        monitor,
+                        workspace,
+                        guard,
+                        &working_directory,
+                    )
+                    .await
+                }
+                Err(error) => {
+                    warn!(
+                        target: WORKSPACE_REVIEW_AUTO_MERGE_LOG_TARGET,
+                        conversation_id = %workspace.conversation_id,
+                        error = %error,
+                        "Workspace Review auto-merge could not resolve the workspace while reconciling an already-published guard"
+                    );
+                    false
+                }
+            }
+        };
+        if !(ordering_proves || already_published_proves) {
             return Ok(false);
         }
         restore_guarded_auto_merge(state, workspace, guard).await?;
@@ -1128,20 +1197,27 @@ fn monitor_has_current_passing_review_for_guard(
     )
 }
 
+fn workspace_delta_guard_review_is_current(
+    monitor: &AgentWorkspaceReviewMonitor,
+    workspace: &AgentConversationWorkspace,
+    guard: &AgentWorkspaceReviewAutoMergeGuard,
+) -> bool {
+    guard.target_scope == AgentWorkspaceReviewTargetScope::WorkspaceDelta
+        && monitor.review_outcome == AgentWorkspaceReviewOutcome::Passed
+        && monitor.reviewed_target_scope == Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta)
+        && monitor.reviewed_diff_fingerprint.as_deref() == Some(guard.diff_fingerprint.as_str())
+        && workspace.publication_pr_number == Some(guard.pr_number)
+        && workspace.has_pr_status_pollable_push_status()
+        && !workspace.has_terminal_publication_pr_status()
+}
+
 async fn workspace_delta_publish_proves_guard(
     state: &AppState,
     monitor: &AgentWorkspaceReviewMonitor,
     workspace: &AgentConversationWorkspace,
     guard: &AgentWorkspaceReviewAutoMergeGuard,
 ) -> AppResult<bool> {
-    if !(guard.target_scope == AgentWorkspaceReviewTargetScope::WorkspaceDelta
-        && monitor.review_outcome == AgentWorkspaceReviewOutcome::Passed
-        && monitor.reviewed_target_scope == Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta)
-        && monitor.reviewed_diff_fingerprint.as_deref() == Some(guard.diff_fingerprint.as_str())
-        && workspace.publication_pr_number == Some(guard.pr_number)
-        && workspace.has_pr_status_pollable_push_status()
-        && !workspace.has_terminal_publication_pr_status())
-    {
+    if !workspace_delta_guard_review_is_current(monitor, workspace, guard) {
         return Ok(false);
     }
     let Some(marker) = workspace_delta_restore_deferred_classification(guard, monitor) else {
@@ -1163,6 +1239,78 @@ async fn workspace_delta_publish_proves_guard(
             && event.status == "succeeded"
             && event.classification.as_deref() == Some(publish_classification.as_str())
     }))
+}
+
+async fn workspace_delta_already_published_proves_guard(
+    state: &AppState,
+    monitor: &AgentWorkspaceReviewMonitor,
+    workspace: &AgentConversationWorkspace,
+    guard: &AgentWorkspaceReviewAutoMergeGuard,
+    working_directory: &std::path::Path,
+) -> bool {
+    if !workspace_delta_guard_review_is_current(monitor, workspace, guard) {
+        return false;
+    }
+    match count_unpublished_publish_commits(working_directory, &workspace.branch_name).await {
+        Ok(Some(0)) => {}
+        Ok(Some(_)) | Ok(None) => return false,
+        Err(error) => {
+            warn!(
+                target: WORKSPACE_REVIEW_AUTO_MERGE_LOG_TARGET,
+                conversation_id = %workspace.conversation_id,
+                error = %error,
+                "Workspace Review auto-merge could not count unpublished commits for an already-published guard"
+            );
+            return false;
+        }
+    }
+    let Some(github) = state.github_service.as_ref() else {
+        warn!(
+            target: WORKSPACE_REVIEW_AUTO_MERGE_LOG_TARGET,
+            conversation_id = %workspace.conversation_id,
+            "Workspace Review auto-merge cannot prove an already-published guard without GitHub"
+        );
+        return false;
+    };
+    let health = match github
+        .fetch_pr_health(working_directory, guard.pr_number)
+        .await
+    {
+        Ok(health) => health,
+        Err(error) => {
+            warn!(
+                target: WORKSPACE_REVIEW_AUTO_MERGE_LOG_TARGET,
+                conversation_id = %workspace.conversation_id,
+                error = %error,
+                "Workspace Review auto-merge could not fetch guarded pull request health"
+            );
+            return false;
+        }
+    };
+    if pr_health_is_terminal(&health) {
+        return false;
+    }
+    let Some(remote_head_oid) = health.sync_state.head_ref_oid.as_deref() else {
+        return false;
+    };
+    let local_head_oid = match GitService::resolve_ref_sha(
+        working_directory,
+        &workspace.branch_name,
+    )
+    .await
+    {
+        Ok(oid) => oid,
+        Err(error) => {
+            warn!(
+                target: WORKSPACE_REVIEW_AUTO_MERGE_LOG_TARGET,
+                conversation_id = %workspace.conversation_id,
+                error = %error,
+                "Workspace Review auto-merge could not resolve the local head for an already-published guard"
+            );
+            return false;
+        }
+    };
+    remote_head_oid == local_head_oid
 }
 
 fn workspace_delta_restore_deferred_classification(

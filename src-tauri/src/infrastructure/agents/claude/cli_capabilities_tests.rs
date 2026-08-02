@@ -6,6 +6,7 @@ use crate::infrastructure::agents::claude::cli_capabilities::{
     parse_claude_cli_capabilities, parse_claude_version, probe_claude_cli, probe_claude_cli_cached,
     validate_claude_model_for_cli_path, ClaudeCliCapabilities, CLAUDE_OPUS_4_7_API_MODEL_ID,
     CLAUDE_OPUS_4_8_API_MODEL_ID, CLAUDE_OPUS_5_API_MODEL_ID,
+    CLAUDE_THINKING_DISPLAY_ACCEPTANCE_MARKER, CLAUDE_THINKING_DISPLAY_PROBE_VALUE,
 };
 use std::path::Path;
 
@@ -60,10 +61,86 @@ fn parse_capabilities_detects_modern_effort_surface_from_help() {
     );
 }
 
+#[test]
+fn parse_capabilities_keeps_thinking_display_detection_help_only() {
+    let help_marker = parse_claude_cli_capabilities("--thinking-display", None);
+    let no_help_marker = parse_claude_cli_capabilities("Options:", None);
+
+    assert!(help_marker.supports_thinking_display());
+    assert!(!no_help_marker.supports_thinking_display());
+}
+
 #[cfg(unix)]
 #[test]
-fn thinking_display_is_unsupported_when_help_omits_flag_even_if_version_short_circuits_unknown_args(
-) {
+fn thinking_display_help_marker_uses_fast_path_without_acceptance_probe() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
+    clear_claude_cli_capability_cache();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cli_path = temp.path().join("claude");
+    write_fake_claude_cli(
+        &cli_path,
+        r#"#!/bin/sh
+case "$1" in
+  --version)
+    printf 'claude-code 2.1.220\n'
+    ;;
+  --help)
+    printf '%s\n' 'Claude Code' 'Options:' '  --thinking-display <display>'
+    ;;
+  --thinking-display)
+    echo 'acceptance probe should not be called when help advertises the flag' >&2
+    exit 42
+    ;;
+esac
+"#,
+    );
+
+    let capabilities = probe_claude_cli(&cli_path).expect("capability probe");
+
+    assert!(capabilities.supports_thinking_display());
+    clear_claude_cli_capability_cache();
+}
+
+#[cfg(unix)]
+#[test]
+fn thinking_display_acceptance_probe_supports_help_hidden_flag() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
+    clear_claude_cli_capability_cache();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cli_path = temp.path().join("claude");
+    write_fake_claude_cli(
+        &cli_path,
+        &format!(
+            r#"#!/bin/sh
+case "$1" in
+  --version)
+    printf 'claude-code 2.1.220\n'
+    ;;
+  --help)
+    printf '%s\n' 'Claude Code' 'Options:'
+    ;;
+  --thinking-display)
+    printf "%s\\n" "error: {CLAUDE_THINKING_DISPLAY_ACCEPTANCE_MARKER} <display>' argument '{CLAUDE_THINKING_DISPLAY_PROBE_VALUE}' is invalid. Allowed choices are summarized, omitted." >&2
+    exit 1
+    ;;
+esac
+"#
+        ),
+    );
+
+    let capabilities = probe_claude_cli(&cli_path).expect("capability probe");
+
+    assert!(capabilities.supports_thinking_display());
+    clear_claude_cli_capability_cache();
+}
+
+#[cfg(unix)]
+#[test]
+fn thinking_display_acceptance_probe_rejects_zero_exit_unknown_flag_behavior() {
     let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
         .lock()
         .expect("env mutex");
@@ -74,27 +151,83 @@ fn thinking_display_is_unsupported_when_help_omits_flag_even_if_version_short_ci
         &cli_path,
         r#"#!/bin/sh
 if [ "$1" = "--help" ]; then
-  printf '%s\n' 'Claude Code' 'Options:' '  --include-partial-messages'
-  exit 0
+  printf '%s\n' 'Claude Code' 'Options:'
 fi
-for arg in "$@"; do
-  if [ "$arg" = "--version" ]; then
-    printf 'claude-code 2.1.220\n'
-    exit 0
-  fi
-done
-printf "error: unknown option '%s'\n" "$1" >&2
-exit 1
+exit 0
 "#,
     );
 
     let capabilities = probe_claude_cli(&cli_path).expect("capability probe");
 
-    assert!(capabilities.supports_include_partial_messages());
-    assert!(
-        !capabilities.supports_thinking_display(),
-        "help text is authoritative; an unknown flag must not be inferred from a version-short-circuit"
+    assert!(!capabilities.supports_thinking_display());
+    clear_claude_cli_capability_cache();
+}
+
+#[cfg(unix)]
+#[test]
+fn thinking_display_acceptance_probe_rejects_unknown_option_error_that_mentions_flag() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
+    clear_claude_cli_capability_cache();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cli_path = temp.path().join("claude");
+    // A CLI that rejects unknown options mentions the flag but never echoes the
+    // probe value; that shape must not be read as flag acceptance.
+    write_fake_claude_cli(
+        &cli_path,
+        r#"#!/bin/sh
+case "$1" in
+  --version)
+    printf 'claude-code 2.1.220\n'
+    ;;
+  --help)
+    printf '%s\n' 'Claude Code' 'Options:'
+    ;;
+  --thinking-display)
+    printf "%s\n" "error: unknown option '--thinking-display'" >&2
+    exit 1
+    ;;
+esac
+"#,
     );
+
+    let capabilities = probe_claude_cli(&cli_path).expect("capability probe");
+
+    assert!(!capabilities.supports_thinking_display());
+    clear_claude_cli_capability_cache();
+}
+
+#[cfg(unix)]
+#[test]
+fn thinking_display_acceptance_probe_rejects_nonzero_exit_without_marker() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
+    clear_claude_cli_capability_cache();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cli_path = temp.path().join("claude");
+    write_fake_claude_cli(
+        &cli_path,
+        r#"#!/bin/sh
+case "$1" in
+  --version)
+    printf 'claude-code 2.1.220\n'
+    ;;
+  --help)
+    printf '%s\n' 'Claude Code' 'Options:'
+    ;;
+  --thinking-display)
+    echo 'unrelated command failure' >&2
+    exit 1
+    ;;
+esac
+"#,
+    );
+
+    let capabilities = probe_claude_cli(&cli_path).expect("capability probe");
+
+    assert!(!capabilities.supports_thinking_display());
     clear_claude_cli_capability_cache();
 }
 

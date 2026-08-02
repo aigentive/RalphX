@@ -51,7 +51,8 @@ use crate::application::agent_conversation_workspace::{
 };
 use crate::application::agent_conversation_workspace_base::{
     apply_workspace_base_resolution, resolve_workspace_base,
-    resolve_workspace_base_from_local_snapshot, BaseResolutionResult, BaseStatus,
+    resolve_workspace_base_from_local_snapshot, resolve_workspace_base_with_github,
+    BaseResolutionResult, BaseStatus,
 };
 use crate::application::agent_plan_context::{
     admit_linked_edit_plan_references, linked_workspace_planning_session_is_reusable,
@@ -131,7 +132,7 @@ use crate::application::publish_resilience::{
     verify_agent_workspace_repair_pr_handoff, AgentWorkspaceRepairPrHandoff,
     AgentWorkspaceRepairPrHandoffResult, AgentWorkspaceRepairPublishContinuation,
     AgentWorkspaceRepairPushOutcome, PublishAfterRepairPushError, PublishBranchFreshnessOutcome,
-    PublishBranchFreshnessStatus, PublishFailureClass,
+    PublishBranchFreshnessStatus, PublishFailureClass, RepairPrHandoffVerification,
 };
 use crate::application::services::pr_auto_merge_status::{
     auto_merge_disable_failure_summary, auto_merge_enable_failure_summary,
@@ -166,7 +167,9 @@ use crate::domain::execution::{
     elapsed_seconds_for_status, RunningIdeationSession, RunningProcess,
 };
 use crate::domain::services::github_service::GithubServiceTrait;
-use crate::domain::services::pr_publish_service::AgentWorkspacePrPublishOutcome;
+use crate::domain::services::pr_publish_service::{
+    AgentWorkspacePrPublishOutcome, AgentWorkspacePrPublishResult,
+};
 use crate::domain::services::{
     normalize_title_with_jira_key, primary_jira_key_from_composer_metadata,
     AgentWorkspacePrPublisher, ComposerArtifactReference, ComposerExcerptReference,
@@ -862,12 +865,27 @@ async fn retarget_existing_workspace_pr_base_if_needed(
         return Ok(());
     }
 
-    let pr_number = target
+    // Only a live PR may be retargeted on GitHub: linked plan PRs that are not terminal,
+    // then the workspace's own non-terminal publication PR. Terminal or absent PRs skip.
+    let plan_pr_number = target
         .plan_branch
         .as_ref()
-        .and_then(|branch| branch.pr_number)
-        .or(workspace.publication_pr_number);
-    let Some(pr_number) = pr_number else {
+        .filter(|branch| {
+            !matches!(
+                branch.pr_status,
+                Some(
+                    crate::domain::entities::plan_branch::PrStatus::Merged
+                        | crate::domain::entities::plan_branch::PrStatus::Closed
+                )
+            )
+        })
+        .and_then(|branch| branch.pr_number);
+    let workspace_pr_number = if workspace.has_terminal_publication_pr_status() {
+        None
+    } else {
+        workspace.publication_pr_number
+    };
+    let Some(pr_number) = plan_pr_number.or(workspace_pr_number) else {
         return Ok(());
     };
     let Some(github) = state.github_service.as_ref() else {
@@ -1175,6 +1193,7 @@ fn schedule_external_pr_reconciliation_for_workspace(
             let chat_service: Arc<dyn ChatService> = Arc::new(recovery_state.build_chat_service());
             AgentWorkspaceExternalPrReconciliationDeps {
                 workspace_repo: Arc::clone(&recovery_state.agent_conversation_workspace_repo),
+                chat_conversation_repo: Arc::clone(&recovery_state.chat_conversation_repo),
                 project_repo: Arc::clone(&recovery_state.project_repo),
                 github,
                 clickup_integration_service: Some(Arc::clone(
@@ -1392,6 +1411,8 @@ pub struct AgentConversationWorkspaceFreshnessResponse {
     pub effective_base_ref: Option<String>,
     pub effective_base_display_name: Option<String>,
     pub base_block_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recommended_actions: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1449,6 +1470,9 @@ impl AgentConversationWorkspaceFreshnessResponse {
             .or_else(|| base_display_name.clone());
         let base_block_reason =
             base_resolution.and_then(|resolution| resolution.block_reason.clone());
+        let recommended_actions = base_resolution
+            .filter(|resolution| resolution.retargeted_from_merged_source_pull_request())
+            .map(|_| vec!["update_from_base".to_string(), "base_pr_merged".to_string()]);
         Self {
             conversation_id,
             freshness_scope: freshness_scope.as_str().to_string(),
@@ -1466,6 +1490,7 @@ impl AgentConversationWorkspaceFreshnessResponse {
             effective_base_ref,
             effective_base_display_name,
             base_block_reason,
+            recommended_actions,
         }
     }
 
@@ -1496,6 +1521,7 @@ impl AgentConversationWorkspaceFreshnessResponse {
             effective_base_ref: None,
             effective_base_display_name: None,
             base_block_reason: base_resolution.block_reason.clone(),
+            recommended_actions: None,
         }
     }
 
@@ -1524,6 +1550,7 @@ impl AgentConversationWorkspaceFreshnessResponse {
             effective_base_ref: Some(base_ref),
             effective_base_display_name: base_display_name,
             base_block_reason: None,
+            recommended_actions: None,
         }
     }
 
@@ -1550,6 +1577,7 @@ impl AgentConversationWorkspaceFreshnessResponse {
             effective_base_ref: Some(workspace.base_ref.clone()),
             effective_base_display_name: workspace.base_display_name.clone(),
             base_block_reason: None,
+            recommended_actions: None,
         }
     }
 }
@@ -3296,7 +3324,9 @@ async fn hydrate_linked_branch_source_pull_request(
     Ok(matches
         .into_iter()
         .find(|pull_request| {
-            !pull_request.is_cross_repository && pull_request.head_ref_name == branch_name
+            pull_request.is_open()
+                && !pull_request.is_cross_repository
+                && pull_request.head_ref_name == branch_name
         })
         .map(|pull_request| AgentWorkspaceSourcePullRequest {
             number: pull_request.number,
@@ -5783,15 +5813,17 @@ async fn get_agent_conversation_workspace_local_freshness(
 fn ensure_agent_workspace_supports_freshness(
     workspace: &AgentConversationWorkspace,
 ) -> Result<(), String> {
-    if workspace.mode == AgentConversationWorkspaceMode::Edit
-        || (workspace.mode == AgentConversationWorkspaceMode::Ideation
-            && workspace.linked_plan_branch_id.is_some())
+    if matches!(
+        workspace.mode,
+        AgentConversationWorkspaceMode::Edit | AgentConversationWorkspaceMode::Plan
+    ) || (workspace.mode == AgentConversationWorkspaceMode::Ideation
+        && workspace.linked_plan_branch_id.is_some())
     {
         return Ok(());
     }
 
     Err(
-        "Only edit workspaces and ideation workspaces with linked plan branches can be inspected for freshness"
+        "Only edit and plan workspaces, and ideation workspaces with linked plan branches, can be inspected for freshness"
             .to_string(),
     )
 }
@@ -5873,9 +5905,13 @@ async fn get_agent_conversation_workspace_freshness_for_state(
     if workspace.mode == AgentConversationWorkspaceMode::Ideation {
         let mut target =
             resolve_agent_workspace_publish_target(state, &project, &workspace).await?;
-        let base_resolution = resolve_workspace_base(&project, &workspace)
-            .await
-            .map_err(|e| e.to_string())?;
+        let base_resolution = resolve_workspace_base_with_github(
+            &project,
+            &workspace,
+            state.github_service.as_deref(),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
         if base_resolution.status == BaseStatus::Blocked {
             return Ok(AgentConversationWorkspaceFreshnessResponse::blocked(
                 workspace.conversation_id.as_str(),
@@ -5915,7 +5951,7 @@ async fn get_agent_conversation_workspace_freshness_for_state(
     }
     let (worktree_path, base_resolution) = tokio::join!(
         resolve_valid_agent_conversation_workspace_path(&project, &workspace),
-        resolve_workspace_base(&project, &workspace),
+        resolve_workspace_base_with_github(&project, &workspace, state.github_service.as_deref()),
     );
     let worktree_path = worktree_path.map_err(|e| e.to_string())?;
     let base_resolution = base_resolution.map_err(|e| e.to_string())?;
@@ -6118,9 +6154,13 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
         false
     };
 
+    // Parse the user selection before the blocked-repair gate. An explicit selection is an
+    // instruction to supersede the old repair target, not a request to replay it unchanged.
+    let explicit_base = normalize_explicit_publish_base_selection(selection)?;
     let repair_service = state.build_chat_service_with_execution_state(Arc::clone(execution_state));
 
     if created_by_run_id.is_none()
+        && explicit_base.is_none()
         && retry_blocked_agent_workspace_repair_for_explicit_user_action(
             state,
             &workspace,
@@ -6145,8 +6185,6 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
             effective_base_display_name: None,
         });
     }
-
-    let explicit_base = normalize_explicit_publish_base_selection(selection)?;
 
     let project = state
         .project_repo
@@ -6187,20 +6225,18 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
     let base_resolution = if let Some(explicit_base) = explicit_base.as_ref() {
         publish_target.base_ref = explicit_base.base_ref.clone();
         publish_target.base_display_name = Some(explicit_base.display_name.clone());
-        if explicit_base.source_pull_request.is_some() {
-            if let Err(error) = GitService::fetch_origin(&publish_target.worktree_path).await {
-                let message = format!("Failed to refresh selected pull request branch: {error}");
-                mark_agent_workspace_update_failure_with_target(
-                    state,
-                    &workspace,
-                    &message,
-                    None,
-                    &repair_service,
-                    &publish_target.repair_target(),
-                )
-                .await;
-                return Err(message);
-            }
+        if let Err(error) = GitService::fetch_origin(&publish_target.worktree_path).await {
+            let message = format!("Failed to refresh selected base branch: {error}");
+            mark_agent_workspace_update_failure_with_target(
+                state,
+                &workspace,
+                &message,
+                None,
+                &repair_service,
+                &publish_target.repair_target(),
+            )
+            .await;
+            return Err(message);
         }
         if let Err(message) = validate_explicit_publish_base_ref(
             &publish_target.worktree_path,
@@ -6219,14 +6255,74 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
             .await;
             return Err(message);
         }
+        let selected_base_target =
+            crate::application::publish_resilience::resolve_publish_freshness_target(
+                &publish_target.worktree_path,
+                &explicit_base.base_ref,
+            )
+            .await;
+        let selected_base_commit = match GitService::get_branch_sha(
+            &publish_target.worktree_path,
+            &selected_base_target,
+        )
+        .await
+        {
+            Ok(commit) => commit,
+            Err(error) => {
+                let message = format!("Failed to resolve selected base branch: {error}");
+                mark_agent_workspace_update_failure_with_target(
+                    state,
+                    &workspace,
+                    &message,
+                    None,
+                    &repair_service,
+                    &publish_target.repair_target(),
+                )
+                .await;
+                return Err(message);
+            }
+        };
+        let previous_base_ref = workspace.base_ref.clone();
+        // Persist before any retry so start_attempt_from_workspace captures the new target.
+        workspace.base_ref_kind = explicit_base.kind;
+        workspace.base_ref = explicit_base.base_ref.clone();
+        workspace.base_display_name = Some(explicit_base.display_name.clone());
+        workspace.source_pull_request = explicit_base.source_pull_request.clone();
+        workspace.base_commit = Some(selected_base_commit);
+        workspace.updated_at = chrono::Utc::now();
+        workspace = state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .map_err(|e| e.to_string())?;
+        if created_by_run_id.is_none()
+            && retry_blocked_agent_workspace_repair_for_explicit_user_action(
+                state,
+                &workspace,
+                &repair_service,
+                AgentWorkspacePostRepairAction::UpdateOnly,
+            )
+            .await
+        {
+            return Ok(UpdateAgentConversationWorkspaceFromBaseResponse {
+                target_ref: workspace.base_ref.clone(),
+                base_commit: workspace.base_commit.clone().unwrap_or_default(),
+                workspace: agent_workspace_response_for_state(state, workspace).await?,
+                updated: false,
+                repair_started: true,
+                base_status: BaseStatus::Valid.as_str().to_string(),
+                effective_base_display_name: None,
+            });
+        }
         let retargeted_base = BaseResolutionResult {
             status: BaseStatus::Retargeted,
-            old_base_ref: workspace.base_ref.clone(),
+            old_base_ref: previous_base_ref,
             effective_base_ref: Some(explicit_base.base_ref.clone()),
             effective_checkout_ref: Some(explicit_base.base_ref.clone()),
             effective_base_commit: None,
             display_name: Some(explicit_base.display_name.clone()),
             block_reason: None,
+            merged_source_pull_request_number: None,
         };
         if let Err(message) = retarget_existing_workspace_pr_base_if_needed(
             state,
@@ -6249,9 +6345,13 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
         }
         None
     } else {
-        let base_resolution = resolve_workspace_base(&project, &workspace)
-            .await
-            .map_err(|e| e.to_string())?;
+        let base_resolution = resolve_workspace_base_with_github(
+            &project,
+            &workspace,
+            state.github_service.as_deref(),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
         if base_resolution.status == BaseStatus::Blocked {
             let message = base_resolution
                 .block_reason
@@ -6705,6 +6805,9 @@ async fn resolve_agent_workspace_pr_metadata_target(
     worktree_path: &Path,
     workspace: &AgentConversationWorkspace,
 ) -> Result<ResolvedAgentWorkspacePrTarget, String> {
+    if workspace.has_terminal_publication_pr_status() {
+        return Ok(ResolvedAgentWorkspacePrTarget::NewPr);
+    }
     let github = github.ok_or_else(|| {
         "GitHub integration is required to update metadata for an existing pull request".to_string()
     })?;
@@ -7244,6 +7347,8 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
             handoff,
         )
         .await
+        .map_err(|error| error.to_string())
+        .and_then(repair_handoff_verification_result)
         {
             let error = error.to_string();
             mark_agent_workspace_publish_failure_with_routing(
@@ -7406,6 +7511,8 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
             handoff,
         )
         .await
+        .map_err(|error| error.to_string())
+        .and_then(repair_handoff_verification_result)
         {
             let error = error.to_string();
             mark_agent_workspace_publish_failure_with_routing(
@@ -7862,9 +7969,6 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
                 .to_string(),
         );
     }
-    if workspace.has_terminal_publication_pr_status() {
-        return Err("Cannot publish a workspace whose PR is already closed or merged".to_string());
-    }
     review_base_for_publish(workspace.base_commit.as_deref(), &workspace.base_ref)?;
     if let Some(blocker) = load_workspace_review_publish_blocker(state, &workspace)
         .await
@@ -7949,6 +8053,8 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
             handoff,
         )
         .await
+        .map_err(|error| error.to_string())
+        .and_then(repair_handoff_verification_result)
         {
             let error = error.to_string();
             mark_agent_workspace_publish_failure_with_routing(
@@ -7983,9 +8089,10 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
         }
     };
 
-    let base_resolution = resolve_workspace_base(&project, &workspace)
-        .await
-        .map_err(|e| e.to_string())?;
+    let base_resolution =
+        resolve_workspace_base_with_github(&project, &workspace, state.github_service.as_deref())
+            .await
+            .map_err(|e| e.to_string())?;
     if base_resolution.status == BaseStatus::Blocked {
         let error = base_resolution
             .block_reason
@@ -8114,10 +8221,14 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
         )
         .await
         {
-            Ok(freshness) => PublishBranchFreshnessOutcome::AlreadyFresh {
+            Ok(RepairPrHandoffVerification::Ok(freshness)) => PublishBranchFreshnessOutcome::AlreadyFresh {
                 base_commit: freshness.target_base_commit,
                 target_ref: freshness.target_ref,
             },
+            Ok(RepairPrHandoffVerification::Retargetable { reason })
+            | Ok(RepairPrHandoffVerification::Fatal(reason)) => {
+                PublishBranchFreshnessOutcome::OperationalError { message: reason }
+            }
             Err(error) => PublishBranchFreshnessOutcome::OperationalError {
                 message: error.to_string(),
             },
@@ -8515,6 +8626,8 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
             handoff,
         )
         .await
+        .map_err(|error| error.to_string())
+        .and_then(repair_handoff_verification_result)
         {
             let error = error.to_string();
             mark_agent_workspace_publish_failure_with_routing(
@@ -8547,7 +8660,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
         ) => {
             let description =
                 AgentWorkspacePrDescription::new(title.clone(), body_markdown.clone());
-            match publisher
+            let publish_result = match publisher
                 .publish_draft_pr_without_duplicate_recovery(
                     &worktree_path,
                     &conversation,
@@ -8556,21 +8669,39 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
                 )
                 .await
             {
-                Err(AppError::DuplicatePr) => {
-                    recover_duplicate_agent_workspace_pr_publish(
-                        state,
-                        github.as_ref(),
-                        &publisher,
-                        &conversation,
-                        &project,
-                        &workspace,
-                        &worktree_path,
-                        review_base,
-                        conversation_id.clone(),
-                        &branch_head_sha,
-                        reviewable_commit_count,
-                    )
-                    .await
+                Err(AppError::DuplicatePr) => recover_duplicate_agent_workspace_pr_publish(
+                    state,
+                    github.as_ref(),
+                    &publisher,
+                    &conversation,
+                    &project,
+                    &workspace,
+                    &worktree_path,
+                    review_base,
+                    conversation_id.clone(),
+                    &branch_head_sha,
+                    reviewable_commit_count,
+                )
+                .await
+                .map(AgentWorkspacePrPublishResult::Published),
+                result => result,
+            };
+            match publish_result {
+                Ok(AgentWorkspacePrPublishResult::TerminalPublicationIdentity) => {
+                    clear_terminal_agent_workspace_publication_for_republish(state, &workspace)
+                        .await?;
+                    workspace.publication_pr_number = None;
+                    workspace.publication_pr_url = None;
+                    workspace.publication_pr_status = None;
+                    workspace.publication_push_status = None;
+                    publisher
+                        .publish_draft_pr_without_duplicate_recovery(
+                            &worktree_path,
+                            &conversation,
+                            &workspace,
+                            &description,
+                        )
+                        .await
                 }
                 result => result,
             }
@@ -8578,21 +8709,20 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
         (ResolvedAgentWorkspacePrTarget::NewPr, _) => Err(AppError::Validation(
             "new pull requests require a complete metadata body patch".to_string(),
         )),
-        (ResolvedAgentWorkspacePrTarget::Existing(snapshot), decision) => {
-            publisher
-                .publish_existing_pr_metadata_decision(
-                    &worktree_path,
-                    &conversation,
-                    snapshot.number,
-                    snapshot.url.as_deref(),
-                    snapshot.body.as_deref(),
-                    decision,
-                )
-                .await
-        }
+        (ResolvedAgentWorkspacePrTarget::Existing(snapshot), decision) => publisher
+            .publish_existing_pr_metadata_decision(
+                &worktree_path,
+                &conversation,
+                snapshot.number,
+                snapshot.url.as_deref(),
+                snapshot.body.as_deref(),
+                decision,
+            )
+            .await
+            .map(AgentWorkspacePrPublishResult::Published),
     };
     let outcome = match pr_result {
-        Ok(result) => {
+        Ok(AgentWorkspacePrPublishResult::Published(result)) => {
             tracing::info!(
                 target: "ralphx_lib::commands::agent_workspace_publish",
                 conversation_id = %workspace.conversation_id,
@@ -8604,6 +8734,11 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
                 "Published agent workspace draft pull request"
             );
             result
+        }
+        Ok(AgentWorkspacePrPublishResult::TerminalPublicationIdentity) => {
+            return Err(
+                "terminal publication identity was not cleared before draft creation".to_string(),
+            )
         }
         Err(error) => {
             let error = error.to_string();
@@ -8816,6 +8951,27 @@ async fn mark_agent_workspace_publish_status(
         None,
     )
     .await
+}
+
+async fn clear_terminal_agent_workspace_publication_for_republish(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+) -> Result<(), String> {
+    state
+        .agent_conversation_workspace_repo
+        .update_publication(&workspace.conversation_id, None, None, None, None)
+        .await
+        .map_err(|error| error.to_string())?;
+    append_agent_workspace_publication_event(
+        state,
+        &workspace.conversation_id,
+        "terminal_publication_identity_cleared",
+        "succeeded",
+        "Cleared terminal pull request association before creating a fresh draft",
+        None,
+    )
+    .await
+    .map_err(|error| error.to_string())
 }
 
 async fn mark_agent_workspace_publish_description_failure(
@@ -9186,17 +9342,38 @@ where
                 return false;
             }
         };
+    let mut retry_workspace = workspace.clone();
+    if let Some(base_commit) = resolve_current_base_commit(&resolved.path, &workspace.base_ref).await {
+        if retry_workspace.base_commit.as_deref() != Some(base_commit.as_str()) {
+            retry_workspace.base_commit = Some(base_commit);
+            retry_workspace.updated_at = chrono::Utc::now();
+            match state
+                .agent_conversation_workspace_repo
+                .create_or_update(retry_workspace.clone())
+                .await
+            {
+                Ok(persisted) => retry_workspace = persisted,
+                Err(error) => {
+                    tracing::warn!(
+                        conversation_id = %workspace.conversation_id,
+                        error = %error,
+                        "Could not persist refreshed base commit before blocked workspace repair retry"
+                    );
+                }
+            }
+        }
+    }
     let target = AgentConversationWorkspaceRepairTarget {
-        branch_name: workspace.branch_name.clone(),
-        base_ref: workspace.base_ref.clone(),
-        base_display_name: workspace.base_display_name.clone(),
+        branch_name: retry_workspace.branch_name.clone(),
+        base_ref: retry_workspace.base_ref.clone(),
+        base_display_name: retry_workspace.base_display_name.clone(),
         worktree_path: Some(resolved.path),
     };
 
     let error = last_meaningful_agent_workspace_repair_reason(&attempt);
     mark_agent_workspace_failure_with_routing_and_action_classified(
         state,
-        workspace,
+        &retry_workspace,
         error,
         None,
         repair_service,
@@ -9208,6 +9385,29 @@ where
     )
     .await;
     true
+}
+
+/// Best-effort origin refresh for a user-directed repair successor. Retrying a durable blocked
+/// generation is still allowed when origin cannot be read; it retains its persisted base commit.
+async fn resolve_current_base_commit(worktree_path: &Path, base_ref: &str) -> Option<String> {
+    let _ = GitService::fetch_origin(worktree_path).await;
+    let target =
+        crate::application::publish_resilience::resolve_publish_freshness_target(
+            worktree_path,
+            base_ref,
+        )
+        .await;
+    GitService::get_branch_sha(worktree_path, &target).await.ok()
+}
+
+fn repair_handoff_verification_result(
+    verification: RepairPrHandoffVerification,
+) -> Result<(), String> {
+    match verification {
+        RepairPrHandoffVerification::Ok(_) => Ok(()),
+        RepairPrHandoffVerification::Retargetable { reason }
+        | RepairPrHandoffVerification::Fatal(reason) => Err(reason),
+    }
 }
 
 /// Delivery retries append `auto_retry_*` streak markers to the durable reason history. Those

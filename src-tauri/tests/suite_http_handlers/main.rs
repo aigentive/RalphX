@@ -20,6 +20,7 @@ mod automations_handlers;
 mod chat_service_streaming;
 mod conversations_handlers;
 mod delegation_handlers;
+mod delegation_park;
 mod ideation_event_emission;
 mod internal_handlers;
 mod personas_handlers;

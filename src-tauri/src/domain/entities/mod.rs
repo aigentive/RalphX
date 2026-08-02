@@ -1,9 +1,12 @@
 pub mod memory_archive_job;
+pub mod delegation_park;
 pub mod ui_feature_flag_overrides;
 
 #[cfg(test)]
 #[path = "agent_conversation_workspace_tests.rs"]
 mod agent_conversation_workspace_tests;
+#[cfg(test)]
+mod delegation_park_tests;
 
 pub use ralphx_domain::entities::*;
 pub use ralphx_domain::entities::{
@@ -15,4 +18,8 @@ pub use ralphx_domain::entities::{
     task_metadata, task_qa, task_step, team, types, workflow,
 };
 pub use memory_archive_job::{MemoryArchiveJobStatus, MemoryArchiveJobType};
+pub use delegation_park::{
+    DelegationPark, DelegationParkId, DelegationParkJob, DelegationParkState,
+    DelegationWakeDecision, DelegationWakePolicy, DelegationWakeReason,
+};
 pub use ui_feature_flag_overrides::UiFeatureFlagOverrides;

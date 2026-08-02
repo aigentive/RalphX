@@ -168,6 +168,31 @@ where
     startup_phase_completed(phase, phase_started_at);
 }
 
+/// Periodically re-runs delegation-park reconciliation so a park whose deadline passes while the
+/// app stays up is force-woken with a timeout notice instead of waiting for the next restart.
+///
+/// `reconcile_all` is the same entry point startup recovery uses, so live and recovery paths
+/// share one decision. Spawned from async startup, so `tauri::async_runtime::spawn` is safe here.
+fn spawn_delegation_park_deadline_sweep(app_state: &AppState) {
+    let park_service = Arc::new(app_state.build_delegation_park_service());
+    let agent_run_repo = Arc::clone(&app_state.agent_run_repo);
+    // Cadence reuses the wake-retry backoff: no inline duration constants (src-tauri/CLAUDE.md).
+    let interval = Duration::from_secs(
+        crate::infrastructure::agents::claude::delegation_config().park_wake_retry_backoff_secs,
+    );
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(interval).await;
+            if let Err(error) = park_service.reconcile_all(agent_run_repo.as_ref()).await {
+                tracing::warn!(
+                    error = %error,
+                    "Delegation park deadline sweep failed; retrying on the next interval"
+                );
+            }
+        }
+    });
+}
+
 async fn run_external_mcp_startup(mode: StartupPipelineMode, app_handle: tauri::AppHandle) {
     if mode != StartupPipelineMode::Full {
         return;
@@ -524,12 +549,15 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         .with_previous_session_cutoff(previous_session_cutoff)
         .with_git_startup_blocked_projects(Arc::clone(&blocked_git_project_ids))
         .with_notification_repo(Arc::clone(&app_state.notification_repo))
-        .with_chat_payload_retention_db(app_state.db.clone()),
+        .with_chat_payload_retention_db(app_state.db.clone())
+        .with_delegation_park_service(Arc::new(app_state.build_delegation_park_service())),
     );
 
     let phase_started_at = startup_phase_started("startup_job_runner");
     let _startup_ideation_recovery_claims = runner.run().await;
     startup_phase_completed("startup_job_runner", phase_started_at);
+
+    spawn_delegation_park_deadline_sweep(&app_state);
 
     publish_runtime_boundary_for(startup_coordinator.as_ref(), startup_attempt_id)?;
     run_external_mcp_startup(mode, app_handle.clone()).await;
@@ -694,6 +722,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         let deps =
             crate::application::agent_workspace_external_pr_reconciliation::AgentWorkspaceExternalPrReconciliationDeps {
                 workspace_repo: Arc::clone(&agent_conversation_workspace_repo),
+                chat_conversation_repo: Arc::clone(&app_state.chat_conversation_repo),
                 project_repo: Arc::clone(&project_repo),
                 github: github_service,
                 clickup_integration_service: Some(Arc::clone(
@@ -1008,9 +1037,8 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         };
 
     let recovery_ok = if recovery_ok {
-        let task_service = crate::application::AgentTaskService::new(Arc::clone(
-            &app_state.agent_task_repo,
-        ));
+        let task_service =
+            crate::application::AgentTaskService::new(Arc::clone(&app_state.agent_task_repo));
         match app_state
             .managed_team
             .recover_pending_exits(&task_service)

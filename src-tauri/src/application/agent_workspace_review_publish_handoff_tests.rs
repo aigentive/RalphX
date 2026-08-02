@@ -7,6 +7,7 @@ use std::sync::{
 use crate::application::agent_workspace_review::{
     AgentWorkspaceReviewPacket, AgentWorkspaceReviewTarget,
 };
+use crate::application::agent_workspace_review_auto_merge::REVIEW_AUTO_MERGE_PAUSED_SUMMARY;
 use crate::application::agent_workspace_review_publish_handoff::{
     has_open_pr_fix_workspace_review_publish_handoff,
     has_pending_pr_fix_workspace_review_publish_handoff,
@@ -386,6 +387,39 @@ fn resume_predicate_requires_current_passed_review_and_publishable_pr_fix_state(
         &monitor,
         Some(&target),
         &events,
+    ));
+}
+
+#[test]
+fn resume_accepts_review_paused_with_review_guard_summary() {
+    let target = review_target();
+    let monitor = current_passed_monitor(&target);
+    let mut workspace = pr_fix_workspace();
+    workspace.pr_supervision_status = Some("review_paused".to_string());
+    workspace.pr_supervision_summary = Some(REVIEW_AUTO_MERGE_PAUSED_SUMMARY.to_string());
+
+    assert!(pr_fix_publish_can_resume_after_workspace_review(
+        &workspace,
+        &monitor,
+        Some(&target),
+        &[],
+    ));
+}
+
+#[test]
+fn resume_rejects_review_paused_with_other_summary() {
+    let target = review_target();
+    let monitor = current_passed_monitor(&target);
+    let mut workspace = pr_fix_workspace();
+    workspace.pr_supervision_status = Some("review_paused".to_string());
+    workspace.pr_supervision_summary =
+        Some("GitHub auto-merge was paused because the review was cancelled.".to_string());
+
+    assert!(!pr_fix_publish_can_resume_after_workspace_review(
+        &workspace,
+        &monitor,
+        Some(&target),
+        &[],
     ));
 }
 

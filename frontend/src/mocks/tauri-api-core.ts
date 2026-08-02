@@ -2547,6 +2547,7 @@ const commandHandlers: Record<
           publication_state: row.publicationState,
           publication_label: row.publicationLabel,
           attention_lane: row.attentionLane ?? "needs",
+          parked_delegate_count: row.parkedDelegateCount ?? 0,
           action_verb: row.actionVerb ?? "",
           is_muted: row.isMuted ?? false,
         })),

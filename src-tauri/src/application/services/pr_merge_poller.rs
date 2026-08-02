@@ -36,10 +36,6 @@ use crate::application::agent_workspace_terminal_cleanup::{
     settle_review_pr_terminal_observation, terminalize_agent_workspace_after_pr,
     TerminalAgentWorkspaceCause,
 };
-use crate::domain::entities::{
-    NewNotification, NotificationCategory, NotificationSeverity, NotificationTarget,
-    NotificationTargetKind,
-};
 use crate::application::chat_service::{ChatService, SendMessageOptions, SendQueuePolicy};
 use crate::application::interactive_notification_producer::pr_review_notification_key;
 use crate::application::services::pr_auto_merge_status::{
@@ -1144,6 +1140,7 @@ async fn agent_workspace_poll_loop(
                     &stopping,
                     &conversation_id,
                     &project,
+                    pr_number,
                     TerminalAgentWorkspaceCause::MergedPr,
                     "merged",
                     "Pull request merged",
@@ -1165,6 +1162,7 @@ async fn agent_workspace_poll_loop(
                     &stopping,
                     &conversation_id,
                     &project,
+                    pr_number,
                     TerminalAgentWorkspaceCause::ClosedPr,
                     "closed",
                     "Pull request closed without merging",
@@ -1178,16 +1176,27 @@ async fn agent_workspace_poll_loop(
             }
             Ok(PrStatus::Open) => {
                 drop(permit);
-                if let Err(error) =
-                    mark_agent_workspace_pr_open(Arc::clone(&workspace_repo), &conversation_id)
-                        .await
+                match mark_agent_workspace_pr_open(
+                    Arc::clone(&workspace_repo),
+                    &conversation_id,
+                    pr_number,
+                )
+                .await
                 {
-                    tracing::warn!(
-                        conversation_id = conversation_id.as_str(),
-                        pr_number,
-                        error = %error,
-                        "Agent workspace PR poller: failed to mark PR open"
-                    );
+                    Ok(false) => {
+                        active.remove(&conversation_id);
+                        stopping.remove(&conversation_id);
+                        return;
+                    }
+                    Ok(true) => {}
+                    Err(error) => {
+                        tracing::warn!(
+                            conversation_id = conversation_id.as_str(),
+                            pr_number,
+                            error = %error,
+                            "Agent workspace PR poller: failed to mark PR open"
+                        );
+                    }
                 }
 
                 match github.fetch_pr_health(&working_dir, pr_number).await {
@@ -1393,6 +1402,7 @@ async fn terminalize_polled_agent_workspace(
     stopping: &Arc<DashMap<ChatConversationId, ()>>,
     conversation_id: &ChatConversationId,
     project: &Project,
+    pr_number: i64,
     cause: TerminalAgentWorkspaceCause,
     status: &str,
     summary: &str,
@@ -1406,6 +1416,7 @@ async fn terminalize_polled_agent_workspace(
         stopping,
         conversation_id,
         project,
+        pr_number,
         cause,
         status,
         summary,
@@ -1424,6 +1435,7 @@ async fn terminalize_polled_agent_workspace_with_notifications(
     stopping: &Arc<DashMap<ChatConversationId, ()>>,
     conversation_id: &ChatConversationId,
     project: &Project,
+    pr_number: i64,
     cause: TerminalAgentWorkspaceCause,
     status: &str,
     summary: &str,
@@ -1438,7 +1450,25 @@ async fn terminalize_polled_agent_workspace_with_notifications(
                     .map(|pull_request| pull_request.number)
                     .or(workspace.publication_pr_number);
             }
-            Ok(_) => break None,
+            Ok(Some(workspace)) if edit_workspace_owns_pr(&workspace, pr_number) => break None,
+            Ok(Some(workspace)) => {
+                tracing::info!(
+                    conversation_id = conversation_id.as_str(),
+                    pr_number,
+                    mode = %workspace.mode,
+                    publication_pr_number = workspace.publication_pr_number,
+                    "Agent workspace PR poller: terminal result no longer belongs to this workspace"
+                );
+                return;
+            }
+            Ok(None) => {
+                tracing::info!(
+                    conversation_id = conversation_id.as_str(),
+                    pr_number,
+                    "Agent workspace PR poller: terminal workspace row disappeared"
+                );
+                return;
+            }
             Err(error) => tracing::error!(
                 conversation_id = conversation_id.as_str(),
                 error = %error,
@@ -1500,12 +1530,14 @@ async fn terminalize_polled_agent_workspace_with_notifications(
         match mark_agent_workspace_pr_terminal(
             Arc::clone(workspace_repo),
             conversation_id,
+            pr_number,
             status,
             summary,
         )
         .await
         {
-            Ok(_) => break,
+            Ok(true) => break,
+            Ok(false) => return,
             Err(error) => tracing::error!(
                 conversation_id = conversation_id.as_str(),
                 error = %error,
@@ -1621,6 +1653,10 @@ async fn agent_workspace_pr_polling_is_current(
         .await;
     }
 
+    edit_workspace_owns_pr(workspace, pr_number)
+}
+
+fn edit_workspace_owns_pr(workspace: &AgentConversationWorkspace, pr_number: i64) -> bool {
     workspace.mode == AgentConversationWorkspaceMode::Edit
         && workspace.linked_plan_branch_id.is_none()
         && workspace.publication_pr_number == Some(pr_number)
@@ -1653,26 +1689,44 @@ async fn agent_workspace_pr_review_monitor_is_current(
 async fn mark_agent_workspace_pr_open(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     conversation_id: &ChatConversationId,
-) -> crate::AppResult<()> {
+    pr_number: i64,
+) -> crate::AppResult<bool> {
     let Some(workspace) = workspace_repo
         .get_by_conversation_id(conversation_id)
         .await?
     else {
-        return Ok(());
+        return Ok(false);
     };
 
     if workspace.mode == AgentConversationWorkspaceMode::ReviewPr {
-        return Ok(());
+        return Ok(true);
+    }
+
+    if !edit_workspace_owns_pr(&workspace, pr_number) {
+        tracing::info!(
+            conversation_id = conversation_id.as_str(),
+            pr_number,
+            mode = %workspace.mode,
+            publication_pr_number = workspace.publication_pr_number,
+            "Agent workspace PR poller: refusing open publication update for an unowned PR"
+        );
+        return Ok(false);
     }
 
     if workspace.has_terminal_publication_pr_status() {
-        return Ok(());
+        tracing::info!(
+            conversation_id = conversation_id.as_str(),
+            pr_number,
+            publication_pr_status = workspace.publication_pr_status.as_deref(),
+            "Agent workspace PR poller: refusing to reopen a terminal publication status"
+        );
+        return Ok(false);
     }
 
     if workspace.publication_pr_status.as_deref() == Some("open")
         && workspace.publication_push_status.as_deref() == Some("pushed")
     {
-        return Ok(());
+        return Ok(true);
     }
 
     workspace_repo
@@ -1683,20 +1737,22 @@ async fn mark_agent_workspace_pr_open(
             Some("open"),
             Some("pushed"),
         )
-        .await
+        .await?;
+    Ok(true)
 }
 
 async fn mark_agent_workspace_pr_terminal(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     conversation_id: &ChatConversationId,
+    pr_number: i64,
     status: &str,
     summary: &str,
-) -> crate::AppResult<Vec<String>> {
+) -> crate::AppResult<bool> {
     let Some(workspace) = workspace_repo
         .get_by_conversation_id(conversation_id)
         .await?
     else {
-        return Ok(Vec::new());
+        return Ok(false);
     };
 
     if workspace.mode == AgentConversationWorkspaceMode::ReviewPr {
@@ -1713,7 +1769,18 @@ async fn mark_agent_workspace_pr_terminal(
         return workspace_repo
             .settle_pr_review_terminal(conversation_id, pr_number, status, summary)
             .await
-            .map(|settlement| settlement.superseded_action_ids);
+            .map(|_| true);
+    }
+
+    if !edit_workspace_owns_pr(&workspace, pr_number) {
+        tracing::info!(
+            conversation_id = conversation_id.as_str(),
+            pr_number,
+            mode = %workspace.mode,
+            publication_pr_number = workspace.publication_pr_number,
+            "Agent workspace PR poller: refusing terminal publication update for an unowned PR"
+        );
+        return Ok(false);
     }
 
     workspace_repo
@@ -1734,7 +1801,7 @@ async fn mark_agent_workspace_pr_terminal(
             None,
         ))
         .await?;
-    Ok(Vec::new())
+    Ok(true)
 }
 
 async fn mark_agent_workspace_pr_merge_conflict_if_needed(

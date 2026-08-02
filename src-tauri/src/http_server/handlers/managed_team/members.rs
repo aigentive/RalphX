@@ -427,6 +427,7 @@ pub async fn assign_managed_team_member(
                 project_id: authority.project_id.as_str().to_string(),
                 working_directory: authority.working_directory,
                 caller_conversation_id: Some(authority.conversation_id.as_str()),
+                workspace_anchor_conversation_id: Some(authority.conversation_id.as_str()),
                 parent_conversation_id: Some(authority.conversation_id.as_str()),
                 ideation_verification: false,
             },

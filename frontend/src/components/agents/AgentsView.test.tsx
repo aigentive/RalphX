@@ -355,7 +355,7 @@ describe("AgentsView", () => {
     );
   });
 
-  it("does not request freshness for a published Plan-mode workspace", async () => {
+  it("requests freshness for a published Plan-mode workspace", async () => {
     mockAgentViewData(conversation({ agentMode: "plan" }));
     getAgentConversationWorkspaceMock.mockResolvedValue(
       conversationWorkspace({
@@ -363,6 +363,24 @@ describe("AgentsView", () => {
         publicationPrNumber: 42,
         publicationPrStatus: "open",
       })
+    );
+
+    renderAgentsView();
+    const row = selectSidebarConversationRow();
+    fireEvent.click(within(row).getAllByRole("button")[0] ?? row);
+
+    await waitFor(() =>
+      expect(getAgentConversationWorkspaceFreshnessMock).toHaveBeenCalledWith(
+        "conversation-1",
+        { scope: "local" }
+      )
+    );
+  });
+
+  it("does not request freshness for a missing Plan-mode workspace", async () => {
+    mockAgentViewData(conversation({ agentMode: "plan" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspace({ mode: "plan", status: "missing" })
     );
 
     renderAgentsView();

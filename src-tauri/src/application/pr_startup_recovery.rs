@@ -1259,7 +1259,7 @@ pub async fn recover_agent_workspace_pr_pollers_with_notifications(
         .await;
 }
 
-async fn recover_one_agent_workspace_pr_poller(
+pub(crate) async fn recover_one_agent_workspace_pr_poller(
     workspace: AgentConversationWorkspace,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     project_repo: Arc<dyn ProjectRepository>,
@@ -1642,11 +1642,15 @@ async fn recover_one_agent_workspace_pr_poller(
 }
 
 fn agent_workspace_pr_poller_number(workspace: &AgentConversationWorkspace) -> Option<i64> {
-    workspace
-        .source_pull_request
-        .as_ref()
-        .map(|pull_request| pull_request.number)
-        .or(workspace.publication_pr_number)
+    if workspace.mode == AgentConversationWorkspaceMode::ReviewPr {
+        workspace
+            .source_pull_request
+            .as_ref()
+            .map(|pull_request| pull_request.number)
+            .or(workspace.publication_pr_number)
+    } else {
+        workspace.publication_pr_number
+    }
 }
 
 async fn resolve_agent_workspace_pr_poller_worktree_path(

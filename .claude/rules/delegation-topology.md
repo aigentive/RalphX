@@ -29,6 +29,7 @@ paths:
 | Backend settles authority | Assignment completion requires exact-run intent plus successful termination; failure, cancellation, release, implicit completion, and orphan recovery reopen the exact task. |
 | Native Team uses this topology | RX-native Team is a product surface over this provider-neutral delegation contract; removed vendor-specific Team semantics do not return here. |
 | Tool naming convention | Prompt prose uses bare tool names like `delegate_start`; config/frontmatter/allowlists use fully qualified MCP names only where that path requires qualification. |
+| Waiting is backend-held | Coordinators wait via bounded `delegate_wait` (`wait_timeout_ms`) or `delegate_park` + turn end; never model-side polling loops. |
 
 ## Shared-Worktree Coordination
 

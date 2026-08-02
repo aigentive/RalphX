@@ -1727,7 +1727,13 @@ pub struct DelegateStartRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct DelegateWaitRequest {
-    pub job_id: String,
+    /// Exactly one of `job_id` / `job_ids` must be present.
+    pub job_id: Option<String>,
+    /// Watch a whole delegated wave with one call; returns as soon as any member settles.
+    pub job_ids: Option<Vec<String>>,
+    /// Opt-in backend-held block. Absent means today's immediate-return behavior.
+    /// Clamped to `delegation.wait_block_max_secs`.
+    pub wait_timeout_ms: Option<u64>,
     pub include_delegated_status: Option<bool>,
     pub include_child_status: Option<bool>,
     pub include_messages: Option<bool>,
@@ -1737,6 +1743,37 @@ pub struct DelegateWaitRequest {
 #[derive(Debug, Deserialize)]
 pub struct DelegateCancelRequest {
     pub job_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DelegateParkRequest {
+    /// Delegation job IDs the coordinator is waiting on. Parent identity is transport-owned
+    /// (headers), never accepted from the model.
+    pub job_ids: Vec<String>,
+    /// `"all"` (default) or `"any"`.
+    pub wake_on: Option<String>,
+    /// Wake immediately when a watched delegate fails or is cancelled. Defaults to true.
+    pub wake_on_failure: Option<bool>,
+    /// Clamped by the backend to `delegation.park_max_secs`.
+    pub max_wait_secs: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ParkedJobSummary {
+    pub job_id: String,
+    pub delegated_session_id: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DelegateParkResponse {
+    pub park_id: String,
+    pub parked: bool,
+    pub wake_on: String,
+    pub wake_on_failure: bool,
+    pub watched_jobs: Vec<ParkedJobSummary>,
+    pub deadline_at: String,
+    /// Explicit permission to end the turn, plus the exact wake condition and deadline.
+    pub guidance: String,
 }
 
 fn default_inherit_context() -> bool {

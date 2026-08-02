@@ -1779,6 +1779,7 @@ describe("chat api", () => {
               publication_state: "merged",
               publication_label: "merged",
               attention_lane: "done",
+              parked_delegate_count: 2,
               action_verb: "Merged",
               is_muted: false,
             },
@@ -1825,6 +1826,7 @@ describe("chat api", () => {
           publicationState: "merged",
           publicationLabel: "merged",
           attentionLane: "done",
+          parkedDelegateCount: 2,
           actionVerb: "Merged",
           isMuted: false,
         },
@@ -1932,6 +1934,7 @@ describe("chat api", () => {
       effective_base_ref: "main",
       effective_base_display_name: "Project default (main)",
       base_block_reason: null,
+      recommended_actions: ["update_from_base", "base_pr_merged"],
     });
 
     const result =
@@ -1954,7 +1957,29 @@ describe("chat api", () => {
       unpublishedCommitCount: 2,
       remoteRefreshed: true,
       worktreeStatusChecked: true,
+      recommendedActions: ["update_from_base", "base_pr_merged"],
     });
+  });
+
+  it("defaults absent workspace freshness recommended actions", async () => {
+    mockInvoke.mockResolvedValue({
+      conversation_id: "conversation-1",
+      freshness_scope: "full",
+      base_ref: "main",
+      base_display_name: "Project default (main)",
+      target_ref: "origin/main",
+      captured_base_commit: "base",
+      target_base_commit: "base",
+      is_base_ahead: false,
+      has_uncommitted_changes: false,
+      unpublished_commit_count: null,
+      remote_refreshed: true,
+      worktree_status_checked: true,
+    });
+
+    await expect(
+      getAgentConversationWorkspaceFreshness("conversation-1"),
+    ).resolves.toMatchObject({ recommendedActions: [] });
   });
 
   it("requests scoped agent conversation workspace freshness", async () => {
