@@ -12,12 +12,19 @@ Usage:
     --work-dir <path> \
     --output <path> \
     [--candidate-tag <vX.Y.Z>] \
-    [--bad-tag <vX.Y.Z> --restore-tag <vX.Y.Z>]
+    [--bad-tag <vX.Y.Z> --restore-tag <vX.Y.Z>] \
+    [--promote-body-notes-file <path> --pointer-notes-file <path>]
 
 The ordered mutation contract is: validate/download/render/stage the target cask, pre-create or
-validate Stable pointer infrastructure, reconcile versioned GitHub authority, then publish both
-Stable pointers. The workflow reconciles the already-staged Homebrew cask only after convergence.
+validate Stable pointer infrastructure, reconcile versioned GitHub authority, apply any requested
+combined-notes presentation, then publish both Stable pointers. The workflow reconciles the
+already-staged Homebrew cask only after convergence.
 It never builds, tags, pushes, or mutates a version release other than the requested candidate/bad/restore.
+
+Promote-only notes overrides (both or neither):
+  --promote-body-notes-file  Markdown written to the promoted release body
+  --pointer-notes-file       Markdown written into the promoted release's latest.json and both
+                             Stable updater pointers
 EOF
 }
 
@@ -28,6 +35,8 @@ restore_tag=""
 repo=""
 work_dir=""
 output_file=""
+promote_body_notes_file=""
+pointer_notes_file=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -57,6 +66,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --output)
       output_file="${2:-}"
+      shift 2
+      ;;
+    --promote-body-notes-file)
+      promote_body_notes_file="${2:-}"
+      shift 2
+      ;;
+    --pointer-notes-file)
+      pointer_notes_file="${2:-}"
       shift 2
       ;;
     --help|-h)
@@ -89,14 +106,31 @@ done
 [[ "${repo}" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] \
   || die "--repo must be an exact owner/repo value."
 
+assert_readable_notes_file() {
+  local label="$1"
+  local path="$2"
+  [[ -f "${path}" && -r "${path}" ]] \
+    || die "${label} must be a readable file: ${path}"
+  [[ -s "${path}" ]] \
+    || die "${label} must not be empty: ${path}"
+}
+
 case "${operation}" in
   promote)
     assert_tag "candidate-tag" "${candidate_tag}"
     [[ -z "${bad_tag}" && -z "${restore_tag}" ]] \
       || die "promote accepts only --candidate-tag."
+    if [[ -n "${promote_body_notes_file}" || -n "${pointer_notes_file}" ]]; then
+      [[ -n "${promote_body_notes_file}" && -n "${pointer_notes_file}" ]] \
+        || die "--promote-body-notes-file and --pointer-notes-file must be supplied together."
+      assert_readable_notes_file "--promote-body-notes-file" "${promote_body_notes_file}"
+      assert_readable_notes_file "--pointer-notes-file" "${pointer_notes_file}"
+    fi
     ;;
   halt)
     [[ -z "${candidate_tag}" ]] || die "halt does not accept --candidate-tag."
+    [[ -z "${promote_body_notes_file}" && -z "${pointer_notes_file}" ]] \
+      || die "halt does not accept combined-notes overrides."
     assert_tag "bad-tag" "${bad_tag}"
     assert_tag "restore-tag" "${restore_tag}"
     ;;
@@ -233,10 +267,13 @@ download_source_assets() {
   printf '%s\n' "${destination}"
 }
 
+staged_latest_json_dir="${work_dir}/staged-latest-json"
+
 render_and_validate_pointer() {
   local tag="$1"
   local source_dir="$2"
   local pointer_dir="$3"
+  local notes_override_file="${4:-}"
   local notes_file render_dir pub_date
   notes_file="$(mktemp "${work_dir}/notes.XXXXXX")"
   render_dir="$(mktemp -d "${work_dir}/render.XXXXXX")"
@@ -244,7 +281,12 @@ render_and_validate_pointer() {
   jq -e '(.notes | type == "string") and (.pub_date | type == "string")' \
     "${source_dir}/latest.json" >/dev/null \
     || die "${tag} latest.json is missing updater notes or pub_date."
-  jq -r '.notes' "${source_dir}/latest.json" >"${notes_file}"
+  if [[ -n "${notes_override_file}" ]]; then
+    assert_readable_notes_file "combined pointer notes for ${tag}" "${notes_override_file}"
+    cp "${notes_override_file}" "${notes_file}"
+  else
+    jq -r '.notes' "${source_dir}/latest.json" >"${notes_file}"
+  fi
   pub_date="$(jq -r '.pub_date' "${source_dir}/latest.json")"
   bash "${script_dir}/render-updater-channel-manifests.sh" \
     --tag "${tag}" \
@@ -256,6 +298,12 @@ render_and_validate_pointer() {
     --output-dir "${render_dir}"
   cp "${render_dir}/latest-aarch64.json" "${pointer_dir}/latest-aarch64.json"
   cp "${render_dir}/latest-x86_64.json" "${pointer_dir}/latest-x86_64.json"
+  # Only a notes-override render may replace the released versioned manifest; every other
+  # call path leaves the source latest.json exactly as published.
+  if [[ -n "${notes_override_file}" ]]; then
+    mkdir -p "${staged_latest_json_dir}"
+    cp "${render_dir}/latest.json" "${staged_latest_json_dir}/latest.json"
+  fi
   bash "${script_dir}/validate-release-promotion.sh" \
     "${tag}" "${source_dir}" "${pointer_dir}" stable >/dev/null
 }
@@ -285,10 +333,11 @@ prepare_pointer_for_tag() {
 
 prepare_stable_target_for_tag() {
   local tag="$1"
+  local notes_override_file="${2:-}"
   local source_dir pointer_dir
   source_dir="$(download_source_assets "${tag}")"
   pointer_dir="$(mktemp -d "${work_dir}/expected-pointer.XXXXXX")"
-  render_and_validate_pointer "${tag}" "${source_dir}" "${pointer_dir}"
+  render_and_validate_pointer "${tag}" "${source_dir}" "${pointer_dir}" "${notes_override_file}"
   stage_target_homebrew_cask "${tag}" "${source_dir}"
   printf '%s\t%s\n' "${source_dir}" "${pointer_dir}"
 }
@@ -471,6 +520,36 @@ set_promotion_github_authority() {
     || die "GitHub latest did not converge on ${tag}."
 }
 
+apply_combined_notes_presentation() {
+  local tag="$1"
+  local version="${tag#v}"
+  local staged_latest_json="${staged_latest_json_dir}/latest.json"
+  local verified_dir
+  assert_readable_notes_file "combined release body notes" "${promote_body_notes_file}"
+  [[ -s "${staged_latest_json}" ]] \
+    || die "Combined-notes promotion has no staged latest.json for ${tag}."
+  assert_mutable_published_release "${tag}"
+
+  gh release edit "${tag}" --repo "${repo}" --notes-file "${promote_body_notes_file}"
+  gh release upload "${tag}" --repo "${repo}" --clobber "${staged_latest_json}"
+
+  # The asset name set is unchanged; latest.json was replaced in place.
+  assert_exact_remote_assets "${tag}" \
+    "RalphX_${version}_aarch64.app.tar.gz" \
+    "RalphX_${version}_aarch64.app.tar.gz.sig" \
+    "RalphX_${version}_aarch64.dmg" \
+    "RalphX_${version}_x86_64.app.tar.gz" \
+    "RalphX_${version}_x86_64.app.tar.gz.sig" \
+    "RalphX_${version}_x86_64.dmg" \
+    "checksums.txt" \
+    "latest.json"
+
+  verified_dir="$(mktemp -d "${work_dir}/verified-latest-json.XXXXXX")"
+  gh release download "${tag}" --repo "${repo}" --pattern latest.json --dir "${verified_dir}" >/dev/null
+  cmp -s "${verified_dir}/latest.json" "${staged_latest_json}" \
+    || die "Published ${tag} latest.json does not byte-match the staged combined-notes manifest."
+}
+
 set_halt_github_authority() {
   local bad="$1"
   local restore="$2"
@@ -493,7 +572,8 @@ selected_tag=""
 
 if [[ "${operation}" == "promote" ]]; then
   assert_mutable_published_release "${candidate_tag}"
-  IFS=$'\t' read -r source_dir pointer_dir < <(prepare_stable_target_for_tag "${candidate_tag}")
+  IFS=$'\t' read -r source_dir pointer_dir \
+    < <(prepare_stable_target_for_tag "${candidate_tag}" "${pointer_notes_file}")
   candidate_state="$(release_state "${candidate_tag}")"
   latest_tag="$(github_latest_full_tag)"
   prior_tag="$(derive_prior_full_tag "${candidate_tag}")"
@@ -542,6 +622,11 @@ if [[ "${operation}" == "promote" ]]; then
   ensure_pointer_release
   # Phase 3: GitHub authority. Older full releases remain full history.
   set_promotion_github_authority "${candidate_tag}"
+  # Phase 3.5: presentation only. Both operations are clobber-style, so an interrupted run
+  # that reaches here reapplies them idempotently on the next exact rerun.
+  if [[ -n "${pointer_notes_file}" ]]; then
+    apply_combined_notes_presentation "${candidate_tag}"
+  fi
   # Phase 4: only after GitHub latest is proven, publish both Stable pointers.
   publish_and_verify_pointer "${candidate_tag}" "${source_dir}" "${pointer_dir}"
   snapshot_pointer_state

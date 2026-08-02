@@ -36,6 +36,25 @@ on:
           - depot
           - github-hosted
           - self-hosted
+      codex_model:
+        description: "Promote only: Codex model for the combined Stable release notes"
+        required: true
+        default: gpt-5.6-terra
+      codex_reasoning_effort:
+        description: "Promote only: Codex reasoning effort for the combined Stable release notes"
+        required: true
+        type: choice
+        default: xhigh
+        options:
+          - low
+          - medium
+          - high
+          - xhigh
+      notes_dry_run:
+        description: "Promote only: generate and upload the combined notes, then stop before any release mutation"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -59,15 +78,20 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      CODEX_API_KEY: ${{ secrets.CODEX_API_KEY || secrets.OPENAI_API_KEY }}
       CONTROL_OPERATION: ${{ inputs.operation }}
       CONTROL_CANDIDATE_TAG: ${{ inputs.candidate_tag }}
       CONTROL_BAD_TAG: ${{ inputs.bad_tag }}
       CONTROL_RESTORE_TAG: ${{ inputs.restore_tag }}
+      STABLE_RELEASE_NOTES_MODEL: ${{ inputs.codex_model }}
+      STABLE_RELEASE_NOTES_REASONING_EFFORT: ${{ inputs.codex_reasoning_effort }}
+      STABLE_NOTES_DIR: ${{ github.workspace }}/stable-notes
     steps:
       - name: Checkout release automation
         uses: actions/checkout@v6
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 0
           path: workflow-support
 
       - name: Preflight Homebrew credentials and tap access
@@ -86,23 +110,131 @@ jobs:
               exit 1
             }
 
+      - name: Fetch release tags
+        if: ${{ inputs.operation == 'promote' }}
+        shell: bash
+        working-directory: workflow-support
+        run: |
+          set -euo pipefail
+          git fetch --force --tags origin
+
+      - name: Resolve previous Stable baseline
+        id: baseline
+        if: ${{ inputs.operation == 'promote' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "${GH_TOKEN:-}" ]] || {
+            echo "Missing GitHub token for Stable baseline resolution." >&2
+            exit 1
+          }
+          from_stable_tag="$(bash workflow-support/scripts/resolve-stable-baseline.sh \
+            --repo "${PUBLIC_RELEASES_REPO}" \
+            --ceiling-tag "${CONTROL_CANDIDATE_TAG}")"
+          if [[ -z "${from_stable_tag}" ]]; then
+            echo "combine=false" >> "${GITHUB_OUTPUT}"
+            echo "No previous Stable release below ${CONTROL_CANDIDATE_TAG}; promoting with the existing per-build release notes." >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+          echo "combine=true" >> "${GITHUB_OUTPUT}"
+          echo "from_stable_tag=${from_stable_tag}" >> "${GITHUB_OUTPUT}"
+          echo "Combining release notes for ${from_stable_tag}..${CONTROL_CANDIDATE_TAG}." >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Setup Node.js
+        if: ${{ inputs.operation == 'promote' && steps.baseline.outputs.combine == 'true' }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+
+      - name: Install Codex CLI
+        if: ${{ inputs.operation == 'promote' && steps.baseline.outputs.combine == 'true' }}
+        run: npm i -g @openai/codex
+
+      - name: Generate combined Stable release notes
+        if: ${{ inputs.operation == 'promote' && steps.baseline.outputs.combine == 'true' }}
+        shell: bash
+        env:
+          FROM_STABLE_TAG: ${{ steps.baseline.outputs.from_stable_tag }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${CODEX_API_KEY:-}" ]]; then
+            echo "Missing CODEX_API_KEY. Add repository secret CODEX_API_KEY, or OPENAI_API_KEY as a fallback." >&2
+            exit 1
+          fi
+          mkdir -p "${STABLE_NOTES_DIR}"
+          bash workflow-support/scripts/generate-stable-release-notes.sh \
+            --candidate-tag "${CONTROL_CANDIDATE_TAG}" \
+            --from-stable-tag "${FROM_STABLE_TAG}" \
+            --model "${STABLE_RELEASE_NOTES_MODEL}" \
+            --reasoning-effort "${STABLE_RELEASE_NOTES_REASONING_EFFORT}" \
+            --output "${STABLE_NOTES_DIR}/combined-body.md"
+          bash workflow-support/scripts/append-github-release-metadata.sh \
+            --tag "${CONTROL_CANDIDATE_TAG}" \
+            --previous-tag "${FROM_STABLE_TAG}" \
+            --target "${CONTROL_CANDIDATE_TAG}" \
+            --repo "${PUBLIC_RELEASES_REPO}" \
+            --notes-file "${STABLE_NOTES_DIR}/combined-body.md"
+          bash workflow-support/scripts/append-github-release-metadata.sh \
+            --strip-only \
+            --notes-file "${STABLE_NOTES_DIR}/combined-body.md" \
+            --output "${STABLE_NOTES_DIR}/combined-updater.md"
+          for required in combined-body.md combined-updater.md; do
+            [[ -s "${STABLE_NOTES_DIR}/${required}" ]] || {
+              echo "Combined Stable notes artifact is empty: ${required}" >&2
+              exit 1
+            }
+          done
+          echo "Generated combined Stable release notes for ${FROM_STABLE_TAG}..${CONTROL_CANDIDATE_TAG}." >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload combined Stable release notes
+        if: ${{ inputs.operation == 'promote' && steps.baseline.outputs.combine == 'true' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: stable-release-notes-${{ inputs.candidate_tag }}
+          path: stable-notes/
+          if-no-files-found: error
+
+      - name: Report notes dry run
+        if: ${{ inputs.operation == 'promote' && inputs.notes_dry_run == true }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "### Notes dry run"
+            echo ""
+            echo "Combined Stable release notes were generated and uploaded as an artifact."
+            echo "No release, updater pointer, or Homebrew state was changed."
+            echo "Re-run with \`notes_dry_run=false\` to promote ${CONTROL_CANDIDATE_TAG}."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
       - name: Validate and reconcile requested Stable state
         id: control
+        if: ${{ inputs.operation != 'promote' || inputs.notes_dry_run != true }}
         shell: bash
+        env:
+          COMBINE_NOTES: ${{ steps.baseline.outputs.combine }}
         run: |
           set -euo pipefail
           [[ -n "${GH_TOKEN:-}" ]] || {
             echo "Missing GitHub token for Stable release control." >&2
             exit 1
           }
-          bash workflow-support/scripts/reconcile-stable-release-state.sh \
-            --operation "${CONTROL_OPERATION}" \
-            --candidate-tag "${CONTROL_CANDIDATE_TAG}" \
-            --bad-tag "${CONTROL_BAD_TAG}" \
-            --restore-tag "${CONTROL_RESTORE_TAG}" \
-            --repo "${PUBLIC_RELEASES_REPO}" \
-            --work-dir stable-control \
+          control_args=(
+            --operation "${CONTROL_OPERATION}"
+            --candidate-tag "${CONTROL_CANDIDATE_TAG}"
+            --bad-tag "${CONTROL_BAD_TAG}"
+            --restore-tag "${CONTROL_RESTORE_TAG}"
+            --repo "${PUBLIC_RELEASES_REPO}"
+            --work-dir stable-control
             --output stable-control/result.env
+          )
+          if [[ "${CONTROL_OPERATION}" == "promote" && "${COMBINE_NOTES:-}" == "true" ]]; then
+            control_args+=(
+              --promote-body-notes-file "${STABLE_NOTES_DIR}/combined-body.md"
+              --pointer-notes-file "${STABLE_NOTES_DIR}/combined-updater.md"
+            )
+          fi
+          bash workflow-support/scripts/reconcile-stable-release-state.sh "${control_args[@]}"
           while IFS='=' read -r key value; do
             case "${key}" in
               selected_tag|operation)
@@ -116,6 +248,7 @@ jobs:
           done < stable-control/result.env
 
       - name: Reconcile staged Stable Homebrew cask
+        if: ${{ inputs.operation != 'promote' || inputs.notes_dry_run != true }}
         shell: bash
         run: |
           set -euo pipefail
