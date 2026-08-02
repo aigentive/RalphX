@@ -65,6 +65,64 @@ fn text_item(
 }
 
 #[tokio::test]
+async fn upsert_persists_raw_payload_only_for_full_fidelity_tools() {
+    let (db, conversation_repo, timeline_repo) = setup_repos();
+    let conversation_id = create_conversation(&conversation_repo).await;
+    let message_id = ChatMessageId::from_string("assistant-message-raw-policy");
+    insert_parent_message(&db, conversation_id, &message_id);
+
+    let mut bash = ChatTimelineItem::for_message_block(
+        message_id.clone(),
+        conversation_id,
+        0,
+        MessageRole::Orchestrator,
+        ChatTimelineItemKind::ToolUse,
+    );
+    bash.tool_name = Some("bash".to_string());
+    bash.input_json = Some(r#"{"command":"cargo test"}"#.to_string());
+    bash.result_json = Some(r#""ok""#.to_string());
+    bash.raw_block_json = Some(r#"{"type":"tool_use","name":"bash"}"#.to_string());
+    let bash = timeline_repo.upsert_item(bash).await.expect("insert bash");
+
+    let mut edit = ChatTimelineItem::for_message_block(
+        message_id,
+        conversation_id,
+        1,
+        MessageRole::Orchestrator,
+        ChatTimelineItemKind::ToolUse,
+    );
+    edit.tool_name = Some("edit".to_string());
+    edit.input_json = Some(r#"{"file_path":"src/lib.rs"}"#.to_string());
+    edit.raw_block_json = Some(
+        r#"{"type":"tool_use","name":"edit","diff_context":{"file_path":"src/lib.rs"}}"#
+            .to_string(),
+    );
+    let edit = timeline_repo.upsert_item(edit).await.expect("insert edit");
+
+    db.with_connection(|conn| {
+        let bash_payload: (Option<String>, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT input_json, result_json, raw_block_json FROM chat_message_block_payloads WHERE block_id = ?1",
+                [bash.id.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("bash payload");
+        assert_eq!(bash_payload.0.as_deref(), Some(r#"{"command":"cargo test"}"#));
+        assert_eq!(bash_payload.1.as_deref(), Some(r#""ok""#));
+        assert!(bash_payload.2.is_none());
+
+        let edit_raw: Option<String> = conn
+            .query_row(
+                "SELECT raw_block_json FROM chat_message_block_payloads WHERE block_id = ?1",
+                [edit.id.as_str()],
+                |row| row.get(0),
+            )
+            .expect("edit payload");
+        assert!(edit_raw.is_some());
+    });
+}
+
+#[tokio::test]
 async fn upsert_assigns_sequences_and_preserves_existing_sequence_on_update() {
     let (db, conversation_repo, timeline_repo) = setup_repos();
     let conversation_id = create_conversation(&conversation_repo).await;

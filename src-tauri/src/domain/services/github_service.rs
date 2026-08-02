@@ -144,6 +144,8 @@ pub struct PrSearchResult {
     pub head_ref_oid: Option<String>,
     pub base_ref_name: String,
     pub is_draft: bool,
+    pub state: Option<String>,
+    pub merged_at: Option<String>,
     pub updated_at: Option<String>,
     pub author_login: Option<String>,
     #[serde(default)]
@@ -154,6 +156,26 @@ pub struct PrSearchResult {
     #[serde(default)]
     pub review_request_logins: Vec<String>,
     pub is_cross_repository: bool,
+}
+
+impl PrSearchResult {
+    pub fn is_open(&self) -> bool {
+        self.state
+            .as_deref()
+            .is_none_or(|state| state.eq_ignore_ascii_case("OPEN"))
+    }
+
+    pub fn is_merged(&self) -> bool {
+        self.state
+            .as_deref()
+            .is_some_and(|state| state.eq_ignore_ascii_case("MERGED"))
+    }
+
+    pub fn is_closed_unmerged(&self) -> bool {
+        self.state
+            .as_deref()
+            .is_some_and(|state| state.eq_ignore_ascii_case("CLOSED"))
+    }
 }
 
 /// Inline review comment attached to a GitHub pull request review.
@@ -568,6 +590,28 @@ pub trait GithubServiceTrait: Send + Sync {
         })
     }
 
+    /// Re-run only failed jobs for an authoritative GitHub Actions workflow run.
+    /// The run id must be derived from fresh PR health by the caller, never model input.
+    /// Completed check conclusions on the tip of `branch_ref`, used to tell "this PR broke it"
+    /// from "this was already broken on the base branch".
+    ///
+    /// `None` means RalphX could not determine the base branch's check state — an unimplemented
+    /// backend, an API error, or no run to read. Callers must treat `None` as unknown and fall
+    /// back to their normal behavior; it must never be read as "the base is healthy".
+    async fn list_branch_check_conclusions(
+        &self,
+        _working_dir: &Path,
+        _branch_ref: &str,
+    ) -> AppResult<Option<Vec<PrHealthCheck>>> {
+        Ok(None)
+    }
+
+    async fn rerun_failed_workflow(&self, _working_dir: &Path, _run_id: i64) -> AppResult<()> {
+        Err(AppError::Infrastructure(
+            "GitHub Actions rerun is unavailable for this runtime".to_string(),
+        ))
+    }
+
     /// Enable GitHub auto-merge for a PR with the selected merge method.
     async fn enable_pr_auto_merge(
         &self,
@@ -626,7 +670,7 @@ pub trait GithubServiceTrait: Send + Sync {
         head: &str,
     ) -> AppResult<Option<(i64, String)>>;
 
-    /// Search open pull requests for base-picker selection.
+    /// Search pull requests across all states for base-picker selection.
     async fn search_pull_requests(
         &self,
         _working_dir: &Path,

@@ -83,6 +83,12 @@ describe("settings-registry nav model", () => {
     expect(navForSection("api-keys").id).toBe("integrations");
   });
 
+  it("registers Database as an Application leaf", () => {
+    expect(sectionMeta("database")?.label).toBe("Database");
+    expect(navForSection("database").id).toBe("application");
+    expect(navForSection("database").leaves).toContain("database");
+  });
+
   it("marks the integrations nav with its hub leaf and no other nav with one", () => {
     const withHub = SETTINGS_NAV.filter((nav) => nav.hubLeaf);
     expect(withHub).toHaveLength(1);

@@ -19,6 +19,23 @@ pub struct SqliteChatTimelineRepository {
     db: DbConnection,
 }
 
+const RALPHX_TOOL_NAME_PREFIXES: [&str; 6] = [
+    "mcp__ralphx__",
+    "mcp__ralphx_internal__",
+    "ralphx::",
+    "ralphx_internal::",
+    "ralphx:",
+    "ralphx_internal:",
+];
+const DIFF_TOOL_NAMES: [&str; 2] = ["edit", "write"];
+const ASK_USER_QUESTION_TOOL_NAME: &str = "ask_user_question";
+const DELEGATION_TOOL_NAMES: [&str; 4] = [
+    "delegate_start",
+    "delegate_wait",
+    "delegate_cancel",
+    "delegate_terminal",
+];
+
 impl SqliteChatTimelineRepository {
     pub fn new(conn: Connection) -> Self {
         Self {
@@ -269,64 +286,39 @@ fn hydrate_required_tool_payloads(
 
 fn should_hydrate_full_tool_payload(item: &ChatTimelineItem) -> bool {
     item.kind == ChatTimelineItemKind::ToolUse
-        && item.tool_name.as_deref().is_some_and(|name| {
-            is_diff_tool_name(name)
-                || is_ask_user_question_tool_name(name)
-                || is_delegation_tool_name(name)
-        })
+        && item
+            .tool_name
+            .as_deref()
+            .is_some_and(retains_full_raw_tool_payload)
 }
 
-fn is_diff_tool_name(name: &str) -> bool {
-    matches!(
-        name.rsplit("::")
-            .next()
-            .unwrap_or(name)
-            .to_ascii_lowercase()
-            .as_str(),
-        "edit" | "write"
-    )
+#[doc(hidden)]
+pub(crate) fn retains_full_raw_tool_payload(tool_name: &str) -> bool {
+    let normalized = normalize_ralphx_tool_name(tool_name);
+    let leaf_name = normalized.rsplit("::").next().unwrap_or(&normalized);
+    DIFF_TOOL_NAMES.contains(&leaf_name)
+        || normalized == ASK_USER_QUESTION_TOOL_NAME
+        || DELEGATION_TOOL_NAMES.contains(&normalized.as_str())
 }
 
-fn is_ask_user_question_tool_name(name: &str) -> bool {
-    let mut normalized = name.trim().to_ascii_lowercase();
-    for prefix in [
-        "mcp__ralphx__",
-        "mcp__ralphx_internal__",
-        "ralphx::",
-        "ralphx_internal::",
-        "ralphx:",
-        "ralphx_internal:",
-    ] {
-        if let Some(stripped) = normalized.strip_prefix(prefix) {
-            normalized = stripped.to_string();
-            break;
-        }
-    }
-    normalized == "ask_user_question"
-}
-
-fn is_delegation_tool_name(name: &str) -> bool {
-    let mut normalized = name.trim().to_ascii_lowercase();
-    for prefix in [
-        "mcp__ralphx__",
-        "mcp__ralphx_internal__",
-        "ralphx::",
-        "ralphx_internal::",
-        "ralphx:",
-        "ralphx_internal:",
-    ] {
-        if let Some(stripped) = normalized.strip_prefix(prefix) {
-            normalized = stripped.to_string();
-            break;
-        }
-    }
-    matches!(
-        normalized.as_str(),
-        "delegate_start" | "delegate_wait" | "delegate_cancel" | "delegate_terminal"
-    )
+fn normalize_ralphx_tool_name(tool_name: &str) -> String {
+    let normalized = tool_name.trim().to_ascii_lowercase();
+    RALPHX_TOOL_NAME_PREFIXES
+        .iter()
+        .find_map(|prefix| normalized.strip_prefix(prefix).map(str::to_string))
+        .unwrap_or(normalized)
 }
 
 fn upsert_item(conn: &Connection, item: ChatTimelineItem) -> AppResult<ChatTimelineItem> {
+    let mut item = item;
+    if item.kind != ChatTimelineItemKind::ToolUse
+        || !item
+            .tool_name
+            .as_deref()
+            .is_some_and(retains_full_raw_tool_payload)
+    {
+        item.raw_block_json = None;
+    }
     let id = item.id.as_str().to_string();
     let conversation_id = item.conversation_id.as_str();
     let message_id = item.message_id.as_ref().map(|id| id.as_str().to_string());

@@ -144,7 +144,7 @@ pub struct CreateAgentWorkspaceRepairEffect {
 pub enum CreateAgentWorkspaceRepairEffectOutcome {
     Created(AgentWorkspaceRepairEffect),
     OpenEffectExists(AgentWorkspaceRepairEffect),
-    Stale(AgentWorkspaceRepairAttempt),
+    Stale(Box<AgentWorkspaceRepairAttempt>),
     Missing,
 }
 
@@ -165,8 +165,8 @@ pub struct CompleteAgentWorkspaceRepairEffect {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompleteAgentWorkspaceRepairEffectOutcome {
-    Applied(AgentWorkspaceRepairEffect),
-    Stale(AgentWorkspaceRepairAttempt),
+    Applied(Box<AgentWorkspaceRepairEffect>),
+    Stale(Box<AgentWorkspaceRepairAttempt>),
     Missing,
 }
 
@@ -214,6 +214,13 @@ pub trait AgentWorkspaceRepairRepository: Send + Sync {
 
     async fn list_recoverable_repair_attempts(&self)
         -> AppResult<Vec<AgentWorkspaceRepairAttempt>>;
+
+    /// Every durable generation recorded for this conversation, settled or not, newest last.
+    /// Cost accounting spans generations, so it cannot use the current-attempt view alone.
+    async fn list_repair_attempts_for_conversation(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Vec<AgentWorkspaceRepairAttempt>>;
 
     async fn start_or_join_repair_attempt(
         &self,

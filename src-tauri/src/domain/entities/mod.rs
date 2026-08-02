@@ -1,10 +1,13 @@
 pub mod memory_archive_job;
+pub mod delegation_park;
 pub mod remote_environment;
 pub mod ui_feature_flag_overrides;
 
 #[cfg(test)]
 #[path = "agent_conversation_workspace_tests.rs"]
 mod agent_conversation_workspace_tests;
+#[cfg(test)]
+mod delegation_park_tests;
 
 pub use memory_archive_job::{MemoryArchiveJobStatus, MemoryArchiveJobType};
 pub use ralphx_domain::entities::*;
@@ -18,5 +21,9 @@ pub use ralphx_domain::entities::{
 pub use remote_environment::{
     remote_environment_token_secret_ref, RemoteEnvironment, RemoteEnvironmentId,
     RemoteEnvironmentStatus,
+};
+pub use delegation_park::{
+    DelegationPark, DelegationParkId, DelegationParkJob, DelegationParkState,
+    DelegationWakeDecision, DelegationWakePolicy, DelegationWakeReason,
 };
 pub use ui_feature_flag_overrides::UiFeatureFlagOverrides;

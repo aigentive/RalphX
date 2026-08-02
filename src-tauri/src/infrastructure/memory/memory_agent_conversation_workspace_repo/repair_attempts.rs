@@ -187,6 +187,22 @@ impl AgentWorkspaceRepairRepository for MemoryAgentConversationWorkspaceReposito
             .cloned())
     }
 
+    async fn list_repair_attempts_for_conversation(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Vec<AgentWorkspaceRepairAttempt>> {
+        let mut attempts = self
+            .repair_attempts
+            .read()
+            .await
+            .values()
+            .filter(|attempt| &attempt.conversation_id == conversation_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        attempts.sort_by(|left, right| left.generation.cmp(&right.generation));
+        Ok(attempts)
+    }
+
     async fn list_recoverable_repair_attempts(
         &self,
     ) -> AppResult<Vec<AgentWorkspaceRepairAttempt>> {
@@ -484,7 +500,7 @@ impl AgentWorkspaceRepairRepository for MemoryAgentConversationWorkspaceReposito
                 ForcedCreateAgentWorkspaceRepairEffectOutcome::Stale => attempts
                     .get(&request.attempt_id)
                     .cloned()
-                    .map(CreateAgentWorkspaceRepairEffectOutcome::Stale)
+                    .map(|a| CreateAgentWorkspaceRepairEffectOutcome::Stale(Box::new(a)))
                     .unwrap_or(CreateAgentWorkspaceRepairEffectOutcome::Missing),
                 ForcedCreateAgentWorkspaceRepairEffectOutcome::Missing => {
                     CreateAgentWorkspaceRepairEffectOutcome::Missing
@@ -500,7 +516,7 @@ impl AgentWorkspaceRepairRepository for MemoryAgentConversationWorkspaceReposito
             || current.updated_at != request.expected_attempt_updated_at
             || current.settled_at.is_some()
         {
-            return Ok(CreateAgentWorkspaceRepairEffectOutcome::Stale(current));
+            return Ok(CreateAgentWorkspaceRepairEffectOutcome::Stale(Box::new(current)));
         }
         if request.effect.attempt_id != current.id {
             return Err(AppError::Validation(
@@ -612,7 +628,7 @@ impl AgentWorkspaceRepairRepository for MemoryAgentConversationWorkspaceReposito
             ));
         }
         if existing.completed_at.is_some() && existing == request.effect {
-            return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Applied(existing));
+            return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Applied(Box::new(existing)));
         }
         if current.generation != request.generation
             || current.phase != request.expected_phase
@@ -621,7 +637,7 @@ impl AgentWorkspaceRepairRepository for MemoryAgentConversationWorkspaceReposito
             || existing.updated_at != request.expected_effect_updated_at
             || existing.status != request.expected_effect_status
         {
-            return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Stale(current));
+            return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Stale(Box::new(current)));
         }
         let workspace = workspaces
             .get_mut(&current.conversation_id)
@@ -639,7 +655,7 @@ impl AgentWorkspaceRepairRepository for MemoryAgentConversationWorkspaceReposito
         append_repair_events(&mut events_by_conversation, request.events);
         effects.insert(request.effect.id.clone(), request.effect.clone());
         Ok(CompleteAgentWorkspaceRepairEffectOutcome::Applied(
-            request.effect,
+            Box::new(request.effect),
         ))
     }
 

@@ -16,7 +16,7 @@ You work in the original agent conversation workspace and report completion back
 6. Stay on the current workspace branch unless `update_agent_workspace_from_base` tells you that RalphX has routed base-update repair elsewhere.
 7. Stage only files involved in the PR fix. Do not use blanket staging such as `git add .`.
 8. Commit completed fixes, finish or abort any merge/rebase, verify the worktree is clean, and read the exact full HEAD with `git rev-parse HEAD` before reporting success.
-9. Call `complete_agent_workspace_pr_fix` with that exact HEAD as `fix_commit_sha`. If the fix cannot be completed safely, call it with a concise `blocker` and no fabricated SHA instead of leaving the supervision flow ambiguous.
+9. Call `complete_agent_workspace_pr_fix` with that exact HEAD as `fix_commit_sha` and `resolution: "fixed"`. RalphX accepts it only when its backend-verified branch head differs from the head observed at dispatch. Do not fabricate a commit: classify honestly instead — `transient_ci` only for GitHub Actions infrastructure failures (runner cancellation or infrastructure timeout, never a real test/lint/coverage/code failure), `pre_existing_on_base` only after evidence that the same failure exists on the base branch, or `needs_human` only when user action is required. RalphX rechecks transient CI health and reruns the failed job; it keeps pre-existing failures suppressed only until PR health changes.
 </rules>
 
 <workflow>
@@ -28,8 +28,8 @@ You work in the original agent conversation workspace and report completion back
 4. Reproduce or inspect the failing check/review concern with the narrowest practical local validation.
 5. Make the smallest safe fix, then run focused validation for the touched area.
 6. Commit the fix, then verify `git status --porcelain=v1` is empty and no merge or rebase remains in progress.
-7. Call `complete_agent_workspace_pr_fix(conversation_id, summary, fix_commit_sha)` with the exact full committed HEAD so RalphX can verify the repair, run required Workspace Review, and resume publication.
-8. If completion reports `publish_failed` for an agent-fixable issue, continue repairing and call it again after committing the new fix. If it reports an operational blocker, report that blocker.
+7. Call `complete_agent_workspace_pr_fix(conversation_id, summary, fix_commit_sha, resolution: "fixed")` with the exact full committed HEAD so RalphX can verify the repair, run required Workspace Review, and resume publication.
+8. If completion reports `rerun_pending`, do not fabricate a fix commit; wait for fresh CI health. If it reports `publish_failed` for an agent-fixable issue, continue repairing and call it again after committing the new fix. If it reports an operational blocker, report that blocker.
 </workflow>
 
 <output_contract>

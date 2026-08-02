@@ -19,6 +19,22 @@ pub mod memory_agent_remote_conversation_mode_switch_request_repo;
 pub mod memory_agent_remote_conversation_start_request_repo;
 pub mod memory_agent_run_repo;
 pub mod memory_agent_task_repo;
+pub mod memory_team_repo;
+pub mod memory_team_coordination_transition_repo;
+pub mod memory_team_run_binding_repo;
+pub mod memory_team_message_repo;
+pub mod memory_team_wake_batch_repo;
+pub mod memory_team_workspace_reservation_repo;
+#[cfg(test)]
+mod memory_team_repo_tests;
+#[cfg(test)]
+mod memory_team_run_binding_repo_tests;
+#[cfg(test)]
+mod memory_team_message_repo_tests;
+#[cfg(test)]
+mod memory_team_wake_batch_repo_tests;
+#[cfg(test)]
+mod memory_team_workspace_reservation_repo_tests;
 pub mod memory_api_key_repo;
 pub mod memory_app_state_repo;
 #[cfg(test)]
@@ -38,6 +54,7 @@ pub mod memory_chat_timeline_repo;
 pub mod memory_clickup_integration_settings_repo;
 pub mod memory_conversation_folder_reference_repo;
 pub mod memory_delegated_session_repo;
+pub mod memory_delegation_park_repo;
 pub mod memory_execution_plan_repo;
 pub mod memory_execution_settings_repo;
 pub mod memory_external_events_repo;
@@ -116,6 +133,12 @@ pub use memory_agent_profile_repo::MemoryAgentProfileRepository;
 pub use memory_agent_provider_settings_repo::MemoryAgentProviderSettingsRepository;
 pub use memory_agent_run_repo::MemoryAgentRunRepository;
 pub use memory_agent_task_repo::MemoryAgentTaskRepository;
+pub use memory_team_repo::MemoryTeamRepository;
+pub use memory_team_coordination_transition_repo::MemoryTeamCoordinationTransitionRepository;
+pub use memory_team_run_binding_repo::MemoryTeamRunBindingRepository;
+pub use memory_team_message_repo::MemoryTeamMessageRepository;
+pub use memory_team_wake_batch_repo::MemoryTeamWakeBatchRepository;
+pub use memory_team_workspace_reservation_repo::MemoryTeamWorkspaceReservationRepository;
 pub use memory_api_key_repo::MemoryApiKeyRepository;
 pub use memory_app_state_repo::MemoryAppStateRepository;
 pub use memory_artifact_bucket_repo::MemoryArtifactBucketRepository;
@@ -131,6 +154,7 @@ pub use memory_chat_timeline_repo::MemoryChatTimelineRepository;
 pub use memory_clickup_integration_settings_repo::MemoryClickUpIntegrationSettingsRepository;
 pub use memory_conversation_folder_reference_repo::MemoryConversationFolderReferenceRepository;
 pub use memory_delegated_session_repo::MemoryDelegatedSessionRepository;
+pub use memory_delegation_park_repo::MemoryDelegationParkRepo;
 pub use memory_execution_plan_repo::MemoryExecutionPlanRepository;
 pub use memory_execution_settings_repo::{
     MemoryExecutionSettingsRepository, MemoryGlobalExecutionSettingsRepository,

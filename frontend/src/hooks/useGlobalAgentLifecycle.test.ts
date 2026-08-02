@@ -593,6 +593,32 @@ describe("useGlobalAgentLifecycle", () => {
       "project:conv-project-1",
       "run-new",
       "claude",
+      expect.objectContaining({
+        agentName: null,
+        launchRole: null,
+      }),
+    );
+  });
+
+  it("run_started captures attribution metadata from the lifecycle payload", () => {
+    renderHook(() => useGlobalAgentLifecycle());
+
+    act(() => {
+      fireEvent("agent:run_started", {
+        ...mkRunStarted("project", "project-1"),
+        conversation_id: "conv-project-1",
+        started_at: "2026-07-31T00:00:10.000Z",
+        agent_name: "ralphx-workspace-reviewer",
+        launch_role: "workspace_reviewer",
+      });
+    });
+
+    expect(chatStoreMocks.setAgentActivityLabel).toHaveBeenCalledWith(
+      "project:conv-project-1", "Reviewer working",
+    );
+    expect(chatStoreMocks.setActiveAgentRun).toHaveBeenCalledWith(
+      "project:conv-project-1", "run-1", null,
+      { startedAt: Date.parse("2026-07-31T00:00:10.000Z"), agentName: "ralphx-workspace-reviewer", launchRole: "workspace_reviewer" },
     );
   });
 

@@ -1727,7 +1727,13 @@ pub struct DelegateStartRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct DelegateWaitRequest {
-    pub job_id: String,
+    /// Exactly one of `job_id` / `job_ids` must be present.
+    pub job_id: Option<String>,
+    /// Watch a whole delegated wave with one call; returns as soon as any member settles.
+    pub job_ids: Option<Vec<String>>,
+    /// Opt-in backend-held block. Absent means today's immediate-return behavior.
+    /// Clamped to `delegation.wait_block_max_secs`.
+    pub wait_timeout_ms: Option<u64>,
     pub include_delegated_status: Option<bool>,
     pub include_child_status: Option<bool>,
     pub include_messages: Option<bool>,
@@ -1737,6 +1743,37 @@ pub struct DelegateWaitRequest {
 #[derive(Debug, Deserialize)]
 pub struct DelegateCancelRequest {
     pub job_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DelegateParkRequest {
+    /// Delegation job IDs the coordinator is waiting on. Parent identity is transport-owned
+    /// (headers), never accepted from the model.
+    pub job_ids: Vec<String>,
+    /// `"all"` (default) or `"any"`.
+    pub wake_on: Option<String>,
+    /// Wake immediately when a watched delegate fails or is cancelled. Defaults to true.
+    pub wake_on_failure: Option<bool>,
+    /// Clamped by the backend to `delegation.park_max_secs`.
+    pub max_wait_secs: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ParkedJobSummary {
+    pub job_id: String,
+    pub delegated_session_id: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DelegateParkResponse {
+    pub park_id: String,
+    pub parked: bool,
+    pub wake_on: String,
+    pub wake_on_failure: bool,
+    pub watched_jobs: Vec<ParkedJobSummary>,
+    pub deadline_at: String,
+    /// Explicit permission to end the turn, plus the exact wake condition and deadline.
+    pub guidance: String,
 }
 
 fn default_inherit_context() -> bool {
@@ -1910,6 +1947,8 @@ pub struct ActiveStateResponse {
     pub partial_text: String,
     /// Partial text content grouped by its text-block ordinal.
     pub partial_text_segments: Vec<String>,
+    /// Partial thinking content grouped by its thinking-block ordinal.
+    pub partial_thinking_segments: Vec<String>,
 }
 
 /// A tool call in the active state response.
@@ -2579,4 +2618,132 @@ mod http_error_tests {
         let response = err.into_response();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
+}
+
+// ============================================================================
+// Request/Response Types - Managed Team (/api/managed_team/*)
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnsureManagedTeamRequest {
+    pub conversation_id: String,
+    pub project_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedTeamSessionSummary {
+    pub id: String,
+    pub project_id: String,
+    pub coordinator_conversation_id: String,
+    pub status: String,
+    pub configured_concurrency: u32,
+    pub effective_concurrency: u32,
+    pub automatic_wake_limit: u32,
+    pub version: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedTeamMemberSummary {
+    pub id: String,
+    pub team_id: String,
+    pub name: String,
+    pub normalized_name: String,
+    pub canonical_agent_name: String,
+    pub role_summary: String,
+    pub status: String,
+    pub generation: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedTeamStatusResponse {
+    pub session: ManagedTeamSessionSummary,
+    pub members: Vec<ManagedTeamMemberSummary>,
+    pub usage: ManagedTeamUsageSummary,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedTeamUsageSummary {
+    pub tokens: u64,
+    pub cost_micros: u64,
+    pub members: Vec<ManagedTeamMemberUsageSummary>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedTeamMemberUsageSummary {
+    pub member_id: Option<String>,
+    pub tokens: u64,
+    pub cost_micros: u64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AddManagedTeamMemberRequest {
+    pub name: String,
+    pub canonical_agent_name: String,
+    pub role_summary: String,
+    pub harness: Option<String>,
+    pub logical_model: Option<String>,
+    pub logical_effort: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AssignManagedTeamMemberRequest {
+    pub member_name: String,
+    pub task_ref: String,
+    pub work_classification: String,
+    #[serde(default)]
+    pub writable_paths: Vec<String>,
+    #[serde(default)]
+    pub generated_outputs: Vec<String>,
+    #[serde(default)]
+    pub resource_locks: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct StopManagedTeamMemberRequest {
+    pub member_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ExitManagedTeamRequest {
+    pub action: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedTeamAssignmentResponse {
+    pub assignment_id: String,
+    pub agent_run_id: String,
+    pub member: ManagedTeamMemberSummary,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SendManagedTeamMessageRequest {
+    pub target: String,
+    pub member_name: Option<String>,
+    pub kind: Option<String>,
+    pub content: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedTeamMessageResponse {
+    pub sequence: i64,
+    pub recipient_count: u32,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedTeamRosterEntry {
+    pub name: String,
+    pub normalized_name: String,
+    pub role_summary: String,
+    pub status: String,
 }

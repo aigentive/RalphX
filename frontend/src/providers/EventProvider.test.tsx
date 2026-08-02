@@ -44,6 +44,10 @@ vi.mock("@/hooks/useGlobalAgentLifecycle", () => ({
   useGlobalAgentLifecycle: vi.fn(),
 }));
 
+vi.mock("@/hooks/useDelegationParkAttention", () => ({
+  useDelegationParkAttention: vi.fn(),
+}));
+
 vi.mock("@/hooks/useAgentWorkflowEvents", () => ({
   useAgentWorkflowEvents: vi.fn(),
 }));

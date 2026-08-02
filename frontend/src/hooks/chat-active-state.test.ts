@@ -1,15 +1,76 @@
 import { describe, expect, it } from "vitest";
 
-import type { ActiveStreamingTaskResponse } from "@/api/chat";
+import type { ActiveStreamingTaskResponse, ChatMessageResponse } from "@/api/chat";
 import type { ToolCall } from "@/components/Chat/ToolCallIndicator";
 import type { StreamingContentBlock, StreamingTask } from "@/types/streaming-task";
 import {
-  mergeActiveStreamingContentBlocks,
-  mergePersistedStreamingAnchors,
+  applyTranscriptInput,
+  createLiveTranscriptState,
+  mergeActiveStreamingContentBlocks as mergeActiveStreamingTaskAndToolBlocks,
   mergeActiveStreamingTasks,
   mergeActiveStreamingToolCalls,
-  removePersistedStreamingPrefix,
+  preserveBlocksIfUnchanged,
+  projectPersistedStreamingContentBlocks,
+  renderTranscriptBlocks,
+  renderTranscriptSlots,
 } from "./chat-active-state";
+
+/**
+ * The three text writers these tests used to exercise separately are now one
+ * identity-keyed owner. These shims express the old entry points as the exact
+ * owner compositions the production seams use, so the original assertions keep
+ * their meaning.
+ */
+
+/** Was `removePersistedStreamingPrefix(live, persisted)` — the render seam. */
+function releaseLiveTail(
+  liveBlocks: readonly StreamingContentBlock[],
+  persistedBlocks: readonly StreamingContentBlock[],
+): StreamingContentBlock[] {
+  const seeded = applyTranscriptInput(createLiveTranscriptState(), {
+    kind: "persisted", runId: null, blocks: persistedBlocks,
+  });
+  return renderTranscriptBlocks(
+    applyTranscriptInput(seeded, { kind: "live", runId: null, blocks: liveBlocks }),
+  );
+}
+
+/** Was `mergePersistedStreamingAnchors(persisted, live)` — the recovery seam. */
+function seedPersistedAnchors(
+  persistedBlocks: readonly StreamingContentBlock[],
+  liveBlocks: readonly StreamingContentBlock[],
+): StreamingContentBlock[] {
+  let state = applyTranscriptInput(createLiveTranscriptState(), {
+    kind: "persisted", runId: null, blocks: persistedBlocks,
+  });
+  state = applyTranscriptInput(state, { kind: "live", runId: null, blocks: persistedBlocks });
+  state = applyTranscriptInput(state, { kind: "live", runId: null, blocks: liveBlocks });
+  return renderTranscriptSlots(state);
+}
+
+/** Was `mergeActiveStreamingContentBlocks` when the active state carried text. */
+function mergeActiveStreamingContentBlocks(
+  previous: StreamingContentBlock[],
+  activeState: {
+    partial_text: string;
+    partial_text_segments?: string[];
+    tool_calls: unknown[];
+    streaming_tasks: ActiveStreamingTaskResponse[];
+  },
+): StreamingContentBlock[] {
+  let state = applyTranscriptInput(createLiveTranscriptState(), {
+    kind: "live", runId: null, blocks: previous,
+  });
+  state = activeState.partial_text_segments?.length
+    ? applyTranscriptInput(state, {
+        kind: "segments", runId: null, segments: activeState.partial_text_segments,
+      })
+    : applyTranscriptInput(state, { kind: "partialText", runId: null, text: activeState.partial_text });
+  return preserveBlocksIfUnchanged(previous, mergeActiveStreamingTaskAndToolBlocks(
+    renderTranscriptSlots(state),
+    { ...activeState, partial_text: "", partial_text_segments: [] },
+  ));
+}
 
 describe("chat-active-state helpers", () => {
   function taskFixture(overrides: Partial<StreamingTask> = {}): StreamingTask {
@@ -22,6 +83,25 @@ describe("chat-active-state helpers", () => {
       status: "running",
       startedAt: 100,
       childToolCalls: [],
+      ...overrides,
+    };
+  }
+
+  function messageFixture(overrides: Partial<ChatMessageResponse>): ChatMessageResponse {
+    return {
+      id: "message-1",
+      sessionId: null,
+      projectId: null,
+      taskId: null,
+      role: "assistant",
+      content: "",
+      metadata: null,
+      parentMessageId: null,
+      conversationId: "conversation-1",
+      toolCalls: null,
+      contentBlocks: null,
+      sender: null,
+      createdAt: "2026-07-29T00:00:00Z",
       ...overrides,
     };
   }
@@ -541,13 +621,13 @@ describe("chat-active-state helpers", () => {
       },
     ];
 
-    expect(removePersistedStreamingPrefix(recovered, persisted)).toEqual([
+    expect(releaseLiveTail(recovered, persisted)).toEqual([
       {
         type: "tool_use",
         toolCall: { id: "toolu_edit", name: "Edit", arguments: {} },
       },
     ]);
-    expect(removePersistedStreamingPrefix(
+    expect(releaseLiveTail(
       [
         { type: "text", text: "Opening. " },
         { type: "text", text: "After grep. Done." },
@@ -569,7 +649,7 @@ describe("chat-active-state helpers", () => {
       { type: "text", text: "After grep. " },
     ];
 
-    expect(mergePersistedStreamingAnchors(
+    expect(seedPersistedAnchors(
       persisted,
       [
         { type: "text", text: "Late tail." },
@@ -586,5 +666,216 @@ describe("chat-active-state helpers", () => {
         toolCall: { id: "toolu_edit", name: "Edit", arguments: {} },
       },
     ]);
+  });
+
+  it("releases live text when persisted streaming text is at or ahead of it", () => {
+    expect(releaseLiveTail(
+      [{ type: "text", text: "Hello wor", blockIndex: 0 }],
+      [{ type: "text", text: "Hello world!", blockIndex: 0 }],
+    )).toEqual([]);
+
+    expect(releaseLiveTail(
+      [
+        { type: "text", text: "Hello wor", blockIndex: 0 },
+        {
+          type: "tool_use",
+          toolCall: { id: "toolu_novel", name: "Read", arguments: {} },
+        },
+      ],
+      [{ type: "text", text: "Hello world!", blockIndex: 0 }],
+    )).toEqual([
+      {
+        type: "tool_use",
+        toolCall: { id: "toolu_novel", name: "Read", arguments: {} },
+      },
+    ]);
+  });
+
+  it("releases unindexed live text against persisted text by ordinal position", () => {
+    expect(releaseLiveTail(
+      [{ type: "text", text: "Opening. More" }],
+      [{ type: "text", text: "Opening. ", blockIndex: 0 }],
+    )).toEqual([{ type: "text", text: "More" }]);
+    expect(releaseLiveTail(
+      [{ type: "text", text: "Opening. " }],
+      [{ type: "text", text: "Opening. More", blockIndex: 0 }],
+    )).toEqual([]);
+    expect(releaseLiveTail(
+      [
+        { type: "text", text: "First tail" },
+        {
+          type: "tool_use",
+          toolCall: { id: "toolu_between", name: "Read", arguments: {} },
+        },
+        { type: "text", text: "Second tail" },
+      ],
+      [
+        { type: "text", text: "First ", blockIndex: 0 },
+        {
+          type: "tool_use",
+          toolCall: { id: "toolu_persisted", name: "Grep", arguments: {} },
+        },
+        { type: "text", text: "Second ", blockIndex: 1 },
+      ],
+    )).toEqual([
+      { type: "text", text: "tail" },
+      {
+        type: "tool_use",
+        toolCall: { id: "toolu_between", name: "Read", arguments: {} },
+      },
+      { type: "text", text: "tail" },
+    ]);
+  });
+
+  it("keeps divergent live text verbatim instead of falsely releasing it", () => {
+    const live: StreamingContentBlock[] = [
+      { type: "text", text: "completely different", blockIndex: 0 },
+    ];
+
+    expect(releaseLiveTail(
+      live,
+      [{ type: "text", text: "Opening. ", blockIndex: 0 }],
+    )).toEqual(live);
+  });
+
+  it("projects streaming anchors only for the active run while retaining legacy rows", () => {
+    const messages = [
+      messageFixture({
+        id: "message-old",
+        runId: "run-old",
+        timelineStatus: "streaming",
+        contentBlocks: [
+          { type: "text", text: "Old text" },
+          { type: "tool_use", id: "toolu_old", name: "Read", arguments: {} },
+        ],
+      }),
+      messageFixture({
+        id: "message-new",
+        runId: "run-new",
+        timelineStatus: "streaming",
+        timelineBlockIndex: 0,
+        contentBlocks: [
+          { type: "text", text: "New text" },
+          { type: "tool_use", id: "toolu_new", name: "Write", arguments: {} },
+        ],
+      }),
+      messageFixture({
+        id: "message-new-after-tool",
+        runId: "run-new",
+        timelineStatus: "streaming",
+        timelineBlockIndex: 2,
+        contentBlocks: [{ type: "text", text: "New text after tool" }],
+      }),
+    ];
+
+    expect(projectPersistedStreamingContentBlocks(messages, "run-new")).toEqual([
+      { type: "text", text: "New text", blockIndex: 0 },
+      {
+        type: "tool_use",
+        toolCall: { id: "toolu_new", name: "Write", arguments: {} },
+      },
+      { type: "text", text: "New text after tool", blockIndex: 2 },
+    ]);
+    expect(projectPersistedStreamingContentBlocks([
+      messages[1],
+      messageFixture({
+        id: "message-legacy",
+        runId: null,
+        timelineStatus: "streaming",
+        contentBlocks: [{ type: "text", text: "Legacy text" }],
+      }),
+    ], "run-new")).toEqual([
+      { type: "text", text: "New text", blockIndex: 0 },
+      {
+        type: "tool_use",
+        toolCall: { id: "toolu_new", name: "Write", arguments: {} },
+      },
+      { type: "text", text: "Legacy text", blockIndex: 1 },
+    ]);
+    expect(projectPersistedStreamingContentBlocks(messages)).toEqual([
+      { type: "text", text: "Old text", blockIndex: 0 },
+      {
+        type: "tool_use",
+        toolCall: { id: "toolu_old", name: "Read", arguments: {} },
+      },
+      { type: "text", text: "New text", blockIndex: 0 },
+      {
+        type: "tool_use",
+        toolCall: { id: "toolu_new", name: "Write", arguments: {} },
+      },
+      { type: "text", text: "New text after tool", blockIndex: 2 },
+    ]);
+  });
+
+  it("projects persisted thinking at its absolute timeline ordinal", () => {
+    const messages = [
+      messageFixture({
+        id: "message-text-before",
+        runId: "run-new",
+        timelineStatus: "streaming",
+        timelineBlockIndex: 0,
+        contentBlocks: [{ type: "text", text: "Before the tool. " }],
+      }),
+      messageFixture({
+        id: "message-tool",
+        runId: "run-new",
+        timelineStatus: "streaming",
+        timelineBlockIndex: 1,
+        contentBlocks: [{ type: "tool_use", id: "toolu_read", name: "Read", arguments: {} }],
+      }),
+      messageFixture({
+        id: "message-thinking",
+        runId: "run-new",
+        timelineStatus: "streaming",
+        timelineBlockIndex: 2,
+        contentBlocks: [{ type: "thinking", text: "Checking the result", durationMs: 200, isSettled: true }],
+      }),
+      messageFixture({
+        id: "message-text-after",
+        runId: "run-new",
+        timelineStatus: "streaming",
+        timelineBlockIndex: 3,
+        contentBlocks: [{ type: "text", text: "After the tool." }],
+      }),
+    ];
+
+    expect(projectPersistedStreamingContentBlocks(messages, "run-new")).toEqual([
+      { type: "text", text: "Before the tool. ", blockIndex: 0 },
+      { type: "tool_use", toolCall: { id: "toolu_read", name: "Read", arguments: {} } },
+      { type: "thinking", text: "Checking the result", blockIndex: 2, durationMs: 200, isSettled: true },
+      { type: "text", text: "After the tool.", blockIndex: 3 },
+    ]);
+  });
+
+  it("merges indexed persisted text anchors but preserves unindexed append behavior", () => {
+    expect(seedPersistedAnchors(
+      [{ type: "text", text: "Hello wor", blockIndex: 0 }],
+      [{ type: "text", text: "Hello world", blockIndex: 0 }],
+    )).toEqual([{ type: "text", text: "Hello world", blockIndex: 0 }]);
+    expect(seedPersistedAnchors(
+      [{ type: "text", text: "Hello wor" }],
+      [
+        { type: "text", text: "Hello wor" },
+        { type: "text", text: "Hello world" },
+      ],
+    )).toEqual([
+      { type: "text", text: "Hello wor" },
+      { type: "text", text: "Hello world" },
+    ]);
+  });
+
+  it("lets the persisted anchor lead when a same-index live text is disjoint", () => {
+    const merged = seedPersistedAnchors(
+      [{ type: "text", text: "Persisted", blockIndex: 0 }],
+      [{ type: "text", text: "Live", blockIndex: 0 }],
+    );
+
+    expect(merged).toEqual([{ type: "text", text: "PersistedLive", blockIndex: 0 }]);
+    // The merged anchor must stay trimmable against the durable row, otherwise
+    // the persisted copy renders again as a live supplement.
+    expect(releaseLiveTail(
+      merged,
+      [{ type: "text", text: "Persisted", blockIndex: 0 }],
+    )).toEqual([{ type: "text", text: "Live", blockIndex: 0 }]);
   });
 });

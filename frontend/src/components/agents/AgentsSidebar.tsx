@@ -127,6 +127,7 @@ import {
   AGENT_SIDEBAR_RECENT_GROUPS,
   describeInboxLaneCount,
   formatInboxLaneCount,
+  formatParkedDelegateMeta,
   getAgeEscalation,
   laneForInboxFilter,
   shouldEscalateAge,
@@ -2134,6 +2135,7 @@ function AgentSidebarConversationRowsPanel({
           refLabel={row.refLabel}
           publicationState={row.publicationState}
           publicationLabel={publicationLabel}
+          parkedDelegateCount={row.parkedDelegateCount}
           {...(inboxLane && row.actionVerb ? { actionVerb: row.actionVerb } : {})}
           {...(inboxLane && ageEscalation ? { ageEscalation } : {})}
           isSelected={isSelected}
@@ -3501,6 +3503,7 @@ interface AgentSessionRowProps {
   refLabel: string;
   publicationState: AgentSidebarPublicationState;
   publicationLabel: string | null;
+  parkedDelegateCount: number;
   actionVerb?: string;
   ageEscalation?: AgeEscalation;
   isSelected: boolean;
@@ -3529,6 +3532,7 @@ function AgentSessionRow({
   refLabel,
   publicationState,
   publicationLabel,
+  parkedDelegateCount,
   actionVerb,
   ageEscalation,
   isSelected,
@@ -3559,6 +3563,7 @@ function AgentSessionRow({
       : null;
   const createdLabel = formatAgentConversationCreatedAt(conversation.createdAt);
   const createdTitle = formatAgentConversationCreatedAtTitle(conversation.createdAt);
+  const parkedDelegateMeta = formatParkedDelegateMeta(parkedDelegateCount);
 
   return (
     <div
@@ -3594,6 +3599,19 @@ function AgentSessionRow({
             {actionVerb && (
               <>
                 <span className="shrink-0 font-medium">{actionVerb}</span>
+                <span className="flex h-[1em] shrink-0 items-center" aria-hidden="true">
+                  ·
+                </span>
+              </>
+            )}
+            {parkedDelegateMeta && (
+              <>
+                <span
+                  className="shrink-0 font-medium"
+                  data-testid={`agents-parked-delegates-${conversation.id}`}
+                >
+                  {parkedDelegateMeta}
+                </span>
                 <span className="flex h-[1em] shrink-0 items-center" aria-hidden="true">
                   ·
                 </span>
@@ -4162,6 +4180,7 @@ function ProjectSessionGroup({
           refLabel={row.refLabel}
           publicationState={row.publicationState}
           publicationLabel={publicationLabel}
+          parkedDelegateCount={row.parkedDelegateCount}
           isSelected={isSelected}
           isPinned={isPinned}
           isMuted={row.isMuted}

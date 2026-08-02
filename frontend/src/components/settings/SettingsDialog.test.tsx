@@ -131,6 +131,12 @@ vi.mock("./UpdatesSettingsSection", () => ({
   UpdatesSettingsSection: () => <div data-testid="updates-section">Updates</div>,
 }));
 
+vi.mock("./DatabaseMaintenanceSection", () => ({
+  DatabaseMaintenanceSection: () => (
+    <div data-testid="database-maintenance-section">Database maintenance</div>
+  ),
+}));
+
 vi.mock("./HarnessProvidersSection", () => ({
   HarnessProvidersSection: () => (
     <div data-testid="providers-section">Providers</div>
@@ -282,6 +288,20 @@ describe("SettingsDialog", () => {
     render(<SettingsDialog {...defaultProps} />);
 
     expect(await screen.findByTestId("updates-section")).toBeInTheDocument();
+  });
+
+  it("registers Database under Application and renders it through the live dialog path", async () => {
+    expect(sectionMeta("database")?.label).toBe("Database");
+    expect(navForSection("database").id).toBe("application");
+    await expect(sectionModuleLoaders.database()).resolves.toHaveProperty(
+      "DatabaseMaintenanceSection",
+    );
+
+    uiState.activeModal = "settings";
+    uiState.modalContext = { section: "database" };
+    render(<SettingsDialog {...defaultProps} />);
+
+    expect(await screen.findByTestId("database-maintenance-section")).toBeInTheDocument();
   });
 
   it("consolidates the legacy agent pages into one lazy Agents section", async () => {

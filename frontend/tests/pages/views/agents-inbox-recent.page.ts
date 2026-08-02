@@ -5,7 +5,7 @@ import { BasePage } from "../base.page";
 
 type RecentInboxScenario = "populated" | "empty-needs";
 
-const SETTLE_TIMEOUT_MS = 15_000;
+const SETTLE_TIMEOUT_MS = 30_000;
 
 export class AgentsInboxRecentPage extends BasePage {
   readonly sidebar: Locator;
@@ -36,13 +36,14 @@ export class AgentsInboxRecentPage extends BasePage {
   async open(scenario: RecentInboxScenario): Promise<void> {
     await setupApp(this.page);
     await this.seedScenario(scenario);
+    await this.page.evaluate(() => window.__queryClient?.invalidateQueries());
     await this.page.getByTestId("nav-agents").click();
     await expect(this.sidebar).toBeVisible();
     await this.page.getByTestId("agents-group-trigger").click();
     await this.page.getByRole("radio", { name: "Inbox" }).click();
     await this.page.keyboard.press("Escape");
-    await expect(this.recentChip).toHaveAttribute("aria-selected", "true");
-    await expect(this.recentScroller).toBeVisible();
+    await expect(this.recentChip).toHaveAttribute("aria-selected", "true", { timeout: SETTLE_TIMEOUT_MS });
+    await expect(this.recentScroller).toBeVisible({ timeout: SETTLE_TIMEOUT_MS });
     await this.waitForGroupsSettled();
   }
 

@@ -3,6 +3,9 @@
 
 pub mod connection;
 pub mod db_connection;
+pub mod database_maintenance;
+#[cfg(test)]
+mod database_maintenance_tests;
 pub mod migrations;
 pub mod sqlite_active_plan_repo;
 pub mod sqlite_activity_event_repo;
@@ -29,6 +32,25 @@ pub mod sqlite_agent_task_repo;
 #[cfg(test)]
 mod sqlite_agent_task_repo_tests;
 pub mod sqlite_agent_workflow_repo;
+pub mod sqlite_team_repo;
+pub(crate) mod sqlite_team_support;
+pub mod sqlite_team_coordination_transition_repo;
+pub mod sqlite_team_run_binding_repo;
+pub mod sqlite_team_message_repo;
+pub mod sqlite_team_wake_batch_repo;
+pub mod sqlite_team_workspace_reservation_repo;
+#[cfg(test)]
+mod sqlite_team_repo_tests;
+#[cfg(test)]
+mod sqlite_team_coordination_transition_repo_tests;
+#[cfg(test)]
+mod sqlite_team_run_binding_repo_tests;
+#[cfg(test)]
+mod sqlite_team_message_repo_tests;
+#[cfg(test)]
+mod sqlite_team_wake_batch_repo_tests;
+#[cfg(test)]
+mod sqlite_team_workspace_reservation_repo_tests;
 #[cfg(test)]
 mod sqlite_agent_workflow_repo_tests;
 pub mod sqlite_api_key_repo;
@@ -54,6 +76,9 @@ mod sqlite_chat_conversation_repo_tests;
 pub mod sqlite_chat_message_repo;
 #[cfg(test)]
 mod sqlite_chat_message_repo_tests;
+pub mod sqlite_chat_payload_retention_repo;
+#[cfg(test)]
+mod sqlite_chat_payload_retention_repo_tests;
 pub mod sqlite_chat_timeline_repo;
 #[cfg(test)]
 mod sqlite_chat_timeline_repo_tests;
@@ -66,6 +91,9 @@ mod sqlite_conversation_folder_reference_repo_tests;
 pub mod sqlite_delegated_session_repo;
 #[cfg(test)]
 mod sqlite_delegated_session_repo_tests;
+pub mod sqlite_delegation_park_repo;
+#[cfg(test)]
+mod sqlite_delegation_park_repo_tests;
 pub mod sqlite_execution_plan_repo;
 #[cfg(test)]
 mod sqlite_execution_plan_repo_tests;
@@ -172,6 +200,12 @@ pub use sqlite_agent_provider_settings_repo::SqliteAgentProviderSettingsReposito
 pub use sqlite_agent_run_repo::SqliteAgentRunRepository;
 pub use sqlite_agent_task_repo::SqliteAgentTaskRepository;
 pub use sqlite_agent_workflow_repo::SqliteAgentWorkflowRepository;
+pub use sqlite_team_repo::SqliteTeamRepository;
+pub use sqlite_team_coordination_transition_repo::SqliteTeamCoordinationTransitionRepository;
+pub use sqlite_team_run_binding_repo::SqliteTeamRunBindingRepository;
+pub use sqlite_team_message_repo::SqliteTeamMessageRepository;
+pub use sqlite_team_wake_batch_repo::SqliteTeamWakeBatchRepository;
+pub use sqlite_team_workspace_reservation_repo::SqliteTeamWorkspaceReservationRepository;
 pub use sqlite_api_key_repo::SqliteApiKeyRepository;
 pub use sqlite_app_state_repo::SqliteAppStateRepository;
 pub use sqlite_artifact_bucket_repo::SqliteArtifactBucketRepository;
@@ -187,6 +221,7 @@ pub use sqlite_chat_timeline_repo::SqliteChatTimelineRepository;
 pub use sqlite_clickup_integration_settings_repo::SqliteClickUpIntegrationSettingsRepository;
 pub use sqlite_conversation_folder_reference_repo::SqliteConversationFolderReferenceRepository;
 pub use sqlite_delegated_session_repo::SqliteDelegatedSessionRepository;
+pub use sqlite_delegation_park_repo::SqliteDelegationParkRepo;
 pub use sqlite_execution_plan_repo::SqliteExecutionPlanRepository;
 pub use sqlite_execution_settings_repo::{
     SqliteExecutionSettingsRepository, SqliteGlobalExecutionSettingsRepository,

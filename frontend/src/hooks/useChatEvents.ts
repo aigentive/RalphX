@@ -33,6 +33,8 @@ import type { ContextType } from "@/types/chat-conversation";
 import type { AgentRunCompletedPayload } from "@/types/events";
 import type { ToolCall } from "@/components/Chat/ToolCallIndicator";
 import type { ChatMessageResponse } from "@/api/chat";
+import { ManagedTeamMemberSchema } from "@/api/managed-team";
+import { reconcileManagedTeamEvent } from "@/hooks/useManagedTeam";
 import { FileDiffSchema, transformFileDiff, type FileDiff } from "@/api/diff";
 import type { ContentBlockItem } from "@/components/Chat/MessageItem";
 import type { StreamingTask, StreamingContentBlock } from "@/types/streaming-task";
@@ -51,6 +53,8 @@ import {
   reconcileDelegationTaskMap,
   reconcileDelegationTaskMarkers,
 } from "@/components/Chat/delegation-tool-calls";
+
+const SYNTHETIC_THINKING_BLOCK_INDEX = Number.MIN_SAFE_INTEGER;
 
 function stableSerialize(value: unknown): string {
   if (value == null || typeof value !== "object") {
@@ -358,6 +362,45 @@ type AgentMessageCreatedPayload = {
   render_ready?: RenderReadyMessageCreatedPayload | null;
 };
 
+type TeamMemberEventPayload = {
+  conversation_id?: unknown;
+  conversationId?: unknown;
+  parent_run_id?: unknown;
+  parentRunId?: unknown;
+  run_id?: unknown;
+  sequence?: unknown;
+  seq?: unknown;
+  member?: unknown;
+};
+
+function reconcileTeamMemberEvent(
+  queryClient: ReturnType<typeof useQueryClient>,
+  activeConversationId: string | null,
+  activeAgentRunId: string | null | undefined,
+  payload: TeamMemberEventPayload,
+) {
+  const conversationId = payload.conversation_id ?? payload.conversationId;
+  if (typeof conversationId !== "string") return;
+  const rawParentRunId =
+    payload.parent_run_id ?? payload.parentRunId ?? payload.run_id;
+  const parentRunId =
+    typeof rawParentRunId === "string" ? rawParentRunId : null;
+  const rawSequence = payload.sequence ?? payload.seq;
+  const sequence = typeof rawSequence === "number" ? rawSequence : null;
+  const parsedMember =
+    payload.member == null
+      ? null
+      : ManagedTeamMemberSchema.safeParse(payload.member);
+  if (parsedMember && !parsedMember.success) return;
+
+  reconcileManagedTeamEvent(queryClient, activeConversationId, activeAgentRunId, {
+    conversationId,
+    parentRunId,
+    sequence,
+    member: parsedMember?.data ?? null,
+  });
+}
+
 function contentBlockFromToolCall(toolCall: ToolCall): ContentBlockItem {
   return {
     type: "tool_use",
@@ -410,6 +453,14 @@ function buildFinalizedContentBlocks(
     .map((block): ContentBlockItem | null => {
       if (block.type === "text") {
         return block.text.trim().length > 0 ? { type: "text", text: block.text } : null;
+      }
+      if (block.type === "thinking") {
+        return {
+          type: "thinking",
+          text: block.text,
+          ...(block.durationMs != null ? { durationMs: block.durationMs } : {}),
+          ...(block.isSettled != null ? { isSettled: block.isSettled } : {}),
+        };
       }
       return contentBlockFromToolCall(block.toolCall);
     })
@@ -644,6 +695,26 @@ export function useChatEvents({
       setStreamingContentBlocks(() => blocks);
       setStreamingTasks(() => reconciliation.tasks);
     };
+
+    // Team state is server state. This hook is the single realtime writer for
+    // its query cache; status consumers only read the cache. Member events are
+    // independently guarded by conversation, parent run, generation, and seq.
+    for (const eventName of [
+      "team:member_updated",
+      "team:member_status",
+      "team:roster_updated",
+    ] as const) {
+      unsubscribes.push(
+        bus.subscribe<TeamMemberEventPayload>(eventName, (payload) => {
+          reconcileTeamMemberEvent(
+            queryClient,
+            activeConversationId,
+            activeAgentRunId,
+            payload,
+          );
+        }),
+      );
+    }
 
     // ── agent:tool_call ──────────────────────────────────────────────
     // Handles tool call accumulation for streaming display.
@@ -1373,10 +1444,12 @@ export function useChatEvents({
           seq?: number;
           append_to_previous?: boolean;
           block_index?: number;
+          run_id?: string | null;
         }>(
           "agent:chunk", (payload) => {
             const receivedAt = Date.now();
             if (!isRelevant(payload)) return;
+            if (activeAgentRunId && payload.run_id && payload.run_id !== activeAgentRunId) return;
             if (
               payload.seq != null
               && lastChunkSeqRef.current != null
@@ -1386,7 +1459,6 @@ export function useChatEvents({
               lastChunkSeqRef.current = payload.seq;
             }
             setStreamingContentBlocks((prev) => {
-              const lastBlock = prev[prev.length - 1];
               const shouldAppend = payload.append_to_previous ?? true;
               // Staleness is guarded by lastChunkSeqRef above; block seq values
               // are not comparable to chunk seq — recovered anchors carry
@@ -1395,12 +1467,12 @@ export function useChatEvents({
               // If last block is text and the backend says this chunk extends it, append.
               // Codex agent_message events are already logical text blocks, so they set
               // append_to_previous=false to preserve live block boundaries.
-              const shouldAppendToIndexedBlock = hasBlockIndex
-                && lastBlock?.type === "text"
-                && lastBlock.blockIndex === payload.block_index;
-              const shouldAppendToLegacyBlock = !hasBlockIndex && lastBlock?.type === "text";
-              if (shouldAppend && (shouldAppendToIndexedBlock || shouldAppendToLegacyBlock)) {
+              const appendIndex = hasBlockIndex
+                ? prev.findIndex((block) => block.type === "text" && block.blockIndex === payload.block_index)
+                : prev[prev.length - 1]?.type === "text" ? prev.length - 1 : -1;
+              if (shouldAppend && appendIndex >= 0) {
                 const updated = [...prev];
+                const lastBlock = updated[appendIndex]! as Extract<StreamingContentBlock, { type: "text" }>;
                 const appendBlock = {
                   ...lastBlock,
                   text: lastBlock.text + payload.text,
@@ -1408,7 +1480,7 @@ export function useChatEvents({
                     seq: Math.max(lastBlock.seq ?? payload.seq, payload.seq),
                   }),
                 };
-                updated[updated.length - 1] = appendBlock;
+                updated[appendIndex] = appendBlock;
                 return updated;
               }
               // New text block: use seq from payload
@@ -1425,6 +1497,89 @@ export function useChatEvents({
         )
       );
     }
+
+    unsubscribes.push(
+      bus.subscribe<{
+        text: string; conversation_id: string; block_index?: number; duration_ms?: number;
+        is_settled?: boolean; seq?: number; append_to_previous?: boolean; run_id?: string | null;
+      }>("agent:thinking", (payload) => {
+        if (!isRelevant(payload)) return;
+        if (activeAgentRunId && payload.run_id && payload.run_id !== activeAgentRunId) return;
+        const receivedAt = Date.now();
+        setStreamingContentBlocks((prev) => {
+          const matchingBlockIndex = prev.findIndex((block) => block.type === "thinking" && block.blockIndex === payload.block_index);
+          let syntheticBlockIndex = -1;
+          for (let index = prev.length - 1; index >= 0; index -= 1) {
+            const candidate = prev[index];
+            if (
+              candidate?.type === "thinking" &&
+              candidate.blockIndex === SYNTHETIC_THINKING_BLOCK_INDEX &&
+              candidate.isSettled !== true
+            ) {
+              syntheticBlockIndex = index;
+              break;
+            }
+          }
+          const at = matchingBlockIndex >= 0 ? matchingBlockIndex : syntheticBlockIndex;
+          const existing = at >= 0 ? prev[at] : null;
+          const existingThinking = existing?.type === "thinking" ? existing : null;
+          const isAppend = existingThinking != null && (payload.append_to_previous ?? true);
+          // A settle event carries no text; never let it clear accumulated reasoning.
+          const text = isAppend
+            ? existingThinking.text + payload.text
+            : (payload.text || existingThinking?.text || "");
+          const block: StreamingContentBlock = {
+            type: "thinking", text, receivedAt,
+            ...(payload.block_index != null ? { blockIndex: payload.block_index } : {}),
+            ...(payload.duration_ms != null ? { durationMs: payload.duration_ms } : {}),
+            ...(payload.is_settled != null ? { isSettled: payload.is_settled } : {}),
+            ...(existingThinking?.estimatedTokens != null
+              ? { estimatedTokens: existingThinking.estimatedTokens } : {}),
+            ...(payload.seq != null ? { seq: payload.seq } : {}),
+          };
+          if (at < 0) {
+            if (payload.is_settled && !payload.text) return prev;
+            return [...prev, block];
+          }
+          const next = [...prev]; next[at] = block; return next;
+        });
+      }),
+    );
+
+    unsubscribes.push(
+      bus.subscribe<{
+        estimated_tokens: number; estimated_tokens_delta?: number; run_id?: string | null;
+        conversation_id: string; context_type: string; context_id: string;
+      }>("agent:thinking_progress", (payload) => {
+        if (!isRelevant(payload)) return;
+        if (activeAgentRunId && payload.run_id && payload.run_id !== activeAgentRunId) return;
+        const receivedAt = Date.now();
+        setStreamingContentBlocks((prev) => {
+          // Token progress belongs to the block that is still running. Attaching it to
+          // a settled block puts live counts on an already-finished pill.
+          let at = -1;
+          for (let i = prev.length - 1; i >= 0; i--) {
+            const candidate = prev[i];
+            if (candidate?.type === "thinking" && candidate.isSettled !== true) {
+              at = i;
+              break;
+            }
+          }
+          if (at < 0) {
+            return [...prev, {
+              type: "thinking", text: "", receivedAt,
+              blockIndex: SYNTHETIC_THINKING_BLOCK_INDEX,
+              estimatedTokens: payload.estimated_tokens,
+            }];
+          }
+          const existing = prev[at]!;
+          if (existing.type !== "thinking") return prev;
+          const next = [...prev];
+          next[at] = { ...existing, receivedAt, estimatedTokens: payload.estimated_tokens };
+          return next;
+        });
+      }),
+    );
 
     // ── agent:message_created ────────────────────────────────────────
     // Clear streaming state for assistant messages to prevent duplicate display.

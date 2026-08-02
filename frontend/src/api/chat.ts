@@ -102,6 +102,7 @@ export interface ChatMessageResponse {
   timelineStatus?: string | null;
   timelineKind?: string | null;
   timelineSequence?: number | null;
+  timelineBlockIndex?: number | null;
   runId?: string | null;
   createdAt: string;
 }
@@ -373,6 +374,8 @@ export function parseContentBlocks(raw: unknown): ContentBlockItem[] {
     const item: ContentBlockItem = {
       type: block.type,
       text: block.text,
+      durationMs: typeof block.duration_ms === "number" ? block.duration_ms : block.durationMs,
+      isSettled: typeof block.is_settled === "boolean" ? block.is_settled : block.isSettled,
       id: block.id,
       name: block.name,
       arguments: block.arguments ?? block.input,
@@ -479,6 +482,7 @@ export interface AgentSidebarConversationRow {
   publicationState: AgentSidebarPublicationState;
   publicationLabel: string | null;
   attentionLane: AgentSidebarAttentionLane;
+  parkedDelegateCount: number;
   actionVerb: string;
   isMuted: boolean;
 }
@@ -551,6 +555,7 @@ export interface ConversationActiveStateResponse {
   streaming_tasks: ActiveStreamingTaskResponse[];
   partial_text: string;
   partial_text_segments?: string[];
+  partial_thinking_segments?: string[];
 }
 
 const ConversationActiveStateResponseSchema = z.object({
@@ -571,6 +576,7 @@ const ConversationActiveStateResponseSchema = z.object({
   })).default([]),
   partial_text: z.string().default(""),
   partial_text_segments: z.array(z.string()).default([]),
+  partial_thinking_segments: z.array(z.string()).default([]),
 });
 
 /**
@@ -602,6 +608,7 @@ export async function getConversationActiveState(
       : parsed.partial_text.length > 0
         ? [parsed.partial_text]
         : [],
+    partial_thinking_segments: parsed.partial_thinking_segments,
   };
 }
 
@@ -1386,6 +1393,7 @@ function transformTimelineItem(
     timelineStatus: raw.status,
     timelineKind: raw.kind,
     timelineSequence: raw.sequence,
+    timelineBlockIndex: raw.block_index,
     runId: raw.run_id ?? null,
     content: raw.content,
     metadata: raw.metadata ?? null,
@@ -2091,9 +2099,7 @@ export type TeamMessageTargetKind = "coordinator" | "member" | "broadcast";
 
 export interface TeamMessageTarget {
   kind: TeamMessageTargetKind;
-  teamId?: string | null;
-  teamMemberId?: string | null;
-  conversationId?: string | null;
+  memberName?: string | null;
 }
 
 export interface SendAgentMessageOptions {
@@ -2170,6 +2176,13 @@ export interface AgentWorkspaceMaintenanceOperation {
   updatedAt: string;
 }
 
+export interface AgentWorkspacePrAutofixFingerprintSpend {
+  generations: number;
+  minutes: number;
+  budgetMinutes: number;
+  isExhausted: boolean;
+}
+
 export interface AgentConversationWorkspace {
   conversationId: string;
   projectId: string;
@@ -2193,6 +2206,7 @@ export interface AgentConversationWorkspace {
   publicationPrStatus: string | null;
   publicationPushStatus: string | null;
   maintenanceOperation?: AgentWorkspaceMaintenanceOperation | null;
+  prAutofixFingerprintSpend?: AgentWorkspacePrAutofixFingerprintSpend | null;
   publicationMetadataAttemptId: string | null;
   publicationMetadataPhase: AgentWorkspacePublicationMetadataPhase | null;
   publicationMetadataState: AgentWorkspacePublicationMetadataState | null;
@@ -2377,11 +2391,13 @@ export interface AgentConversationWorkspaceFreshness {
   effectiveBaseRef: string | null;
   effectiveBaseDisplayName: string | null;
   baseBlockReason: string | null;
+  recommendedActions: readonly string[];
 }
 
 export interface UpdateAgentConversationWorkspaceFromBaseResult {
   workspace: AgentConversationWorkspace;
   updated: boolean;
+  repairStarted: boolean;
   targetRef: string;
   baseCommit: string;
   baseStatus: AgentConversationWorkspaceBaseStatus;
@@ -2549,6 +2565,7 @@ export interface AgentWorkspaceReviewMonitor {
   reviewFixerRunId: string | null;
   reviewFixerConversationId: string | null;
   reviewFixerStatus: string | null;
+  reviewFixerCycleCount: number;
   lastRunId: string | null;
   lastError: string | null;
   autoMergeGuardStatus: AgentWorkspaceReviewAutoMergeGuardStatus | null;
@@ -2739,6 +2756,13 @@ export const AgentWorkspaceMaintenanceOperationResponseSchema = z.object({
   updated_at: z.string(),
 });
 
+export const AgentWorkspacePrAutofixFingerprintSpendResponseSchema = z.object({
+  generations: z.number().int().nonnegative(),
+  minutes: z.number().int().nonnegative(),
+  budget_minutes: z.number().int().nonnegative(),
+  is_exhausted: z.boolean(),
+});
+
 export const AgentConversationWorkspaceResponseSchema = z.object({
   conversation_id: z.string(),
   project_id: z.string(),
@@ -2767,6 +2791,10 @@ export const AgentConversationWorkspaceResponseSchema = z.object({
   maintenance_operation: AgentWorkspaceMaintenanceOperationResponseSchema.nullable()
     .optional()
     .default(null),
+  pr_autofix_fingerprint_spend:
+    AgentWorkspacePrAutofixFingerprintSpendResponseSchema.nullable()
+      .optional()
+      .default(null),
   publication_metadata_attempt_id: z.string().nullable().optional().default(null),
   publication_metadata_phase: z
     .enum(["prepared", "mutating", "reconciling", "settled"])
@@ -2826,6 +2854,7 @@ const AgentSidebarConversationRowResponseSchema = z.object({
   ]),
   publication_label: z.string().nullable(),
   attention_lane: z.enum(["needs", "working", "stale", "done"]),
+  parked_delegate_count: z.number().int().nonnegative(),
   action_verb: z.string(),
   is_muted: z.boolean(),
 });
@@ -2874,6 +2903,7 @@ const AgentConversationWorkspaceFreshnessResponseSchema = z.object({
   effective_base_ref: z.string().nullable().optional().default(null),
   effective_base_display_name: z.string().nullable().optional().default(null),
   base_block_reason: z.string().nullable().optional().default(null),
+  recommended_actions: z.array(z.string()).optional().default([]),
 });
 const AgentWorkspacePrReviewMonitorResponseSchema = z.object({
   conversation_id: z.string(),
@@ -3040,6 +3070,7 @@ const AgentWorkspaceReviewMonitorResponseSchema = z.object({
   review_fixer_run_id: z.string().nullable().optional().default(null),
   review_fixer_conversation_id: z.string().nullable().optional().default(null),
   review_fixer_status: z.string().nullable().optional().default(null),
+  review_fixer_cycle_count: z.number().optional().default(0),
   last_run_id: z.string().nullable(),
   last_error: z.string().nullable(),
   auto_merge_guard_status: z
@@ -3428,6 +3459,7 @@ const PrecomputeAgentConversationWorkspacePrDescriptionResponseSchema =
 const UpdateAgentConversationWorkspaceFromBaseResponseSchema = z.object({
   workspace: AgentConversationWorkspaceResponseSchema,
   updated: z.boolean(),
+  repair_started: z.boolean().optional().default(false),
   target_ref: z.string(),
   base_commit: z.string(),
   base_status: z
@@ -3568,6 +3600,14 @@ function transformAgentConversationWorkspace(
           updatedAt: raw.maintenance_operation.updated_at,
         }
       : null,
+    prAutofixFingerprintSpend: raw.pr_autofix_fingerprint_spend
+      ? {
+          generations: raw.pr_autofix_fingerprint_spend.generations,
+          minutes: raw.pr_autofix_fingerprint_spend.minutes,
+          budgetMinutes: raw.pr_autofix_fingerprint_spend.budget_minutes,
+          isExhausted: raw.pr_autofix_fingerprint_spend.is_exhausted,
+        }
+      : null,
     publicationMetadataAttemptId: raw.publication_metadata_attempt_id,
     publicationMetadataPhase: raw.publication_metadata_phase,
     publicationMetadataState: raw.publication_metadata_state,
@@ -3638,6 +3678,7 @@ function transformAgentSidebarConversationGroups(
         publicationState: row.publication_state,
         publicationLabel: row.publication_label,
         attentionLane: row.attention_lane,
+        parkedDelegateCount: row.parked_delegate_count,
         actionVerb: row.action_verb,
         isMuted: row.is_muted,
       })),
@@ -3811,6 +3852,7 @@ function transformAgentConversationWorkspaceFreshness(
     effectiveBaseRef: raw.effective_base_ref,
     effectiveBaseDisplayName: raw.effective_base_display_name,
     baseBlockReason: raw.base_block_reason,
+    recommendedActions: raw.recommended_actions,
   };
 }
 
@@ -3949,6 +3991,7 @@ function transformAgentWorkspaceReviewMonitor(
     reviewFixerRunId: raw.review_fixer_run_id,
     reviewFixerConversationId: raw.review_fixer_conversation_id,
     reviewFixerStatus: raw.review_fixer_status,
+    reviewFixerCycleCount: raw.review_fixer_cycle_count,
     lastRunId: raw.last_run_id,
     lastError: raw.last_error,
     autoMergeGuardStatus: raw.auto_merge_guard_status,
@@ -4074,6 +4117,7 @@ function transformUpdateAgentConversationWorkspaceFromBaseResponse(
   return {
     workspace: transformAgentConversationWorkspace(raw.workspace),
     updated: raw.updated,
+    repairStarted: raw.repair_started,
     targetRef: raw.target_ref,
     baseCommit: raw.base_commit,
     baseStatus: raw.base_status,

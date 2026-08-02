@@ -5,7 +5,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use super::{AgentRunId, AgentTaskDetail, AgentTaskId, AgentTaskListId, DelegatedSessionId};
+use super::{
+    AgentRunId, AgentTaskDetail, AgentTaskId, AgentTaskListId, DelegatedSessionId, TeamMemberId,
+    TeamSessionId,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AgentTaskAssignmentId(pub String);
@@ -103,6 +106,10 @@ pub struct AgentTaskAssignment {
     pub caller_agent_run_id: AgentRunId,
     pub planned_delegated_agent_run_id: Option<AgentRunId>,
     pub delegated_agent_run_id: Option<AgentRunId>,
+    /// Team linkage is additive so legacy assignments remain valid.
+    pub team_id: Option<TeamSessionId>,
+    pub team_member_id: Option<TeamMemberId>,
+    pub team_member_generation: Option<i64>,
     pub task_list_id: AgentTaskListId,
     pub task_id: AgentTaskId,
     pub delegate_agent_name: String,

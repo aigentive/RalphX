@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ConversationStatsPopover } from "@/components/Chat/ConversationStatsPopover";
 import { MessageItem, type ContentBlockItem } from "@/components/Chat/MessageItem";
+import { ThinkingGroupToggle } from "@/components/Chat/ThinkingGroupToggle";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import type { ConversationStatsResponse } from "@/api/chat";
 
@@ -115,6 +116,12 @@ function activityBlocks(provider: "claude" | "codex"): ContentBlockItem[] {
     : "ralphx::delegate_wait";
 
   return [
+    {
+      type: "thinking",
+      text: "Inspecting the live transcript ownership seam.\nKeeping reasoning separate from answer text.",
+      durationMs: 2_000,
+      isSettled: true,
+    },
     toolUse("create-component", write, { file_path: "src/ChatActivitySummary.tsx" }, {
       diffContext: {
         filePath: "src/ChatActivitySummary.tsx",
@@ -215,6 +222,38 @@ function ProviderFixture({ provider }: { provider: "claude" | "codex" }) {
   );
 }
 
+function ThinkingStateFixture({
+  testId,
+  isSettled,
+  durationMs,
+  estimatedTokens,
+}: {
+  testId: string;
+  isSettled: boolean;
+  durationMs?: number;
+  estimatedTokens?: number;
+}) {
+  return (
+    <div
+      className="rounded-lg border px-3 py-2"
+      data-testid={testId}
+      style={{
+        backgroundColor: "var(--bg-surface)",
+        borderColor: "var(--border-default)",
+      }}
+    >
+      <ThinkingGroupToggle
+        groupKey={testId}
+        isExpanded={false}
+        isSettled={isSettled}
+        {...(durationMs != null ? { durationMs } : {})}
+        {...(estimatedTokens != null ? { estimatedTokens } : {})}
+        onToggle={() => undefined}
+      />
+    </div>
+  );
+}
+
 export function ChatActivityVisualTestPage() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -263,6 +302,31 @@ export function ChatActivityVisualTestPage() {
               />
             </div>
           </header>
+
+          <section className="mb-4" aria-label="Thinking lifecycle states">
+            <p
+              className="mb-2 text-xs font-semibold uppercase tracking-[0.16em]"
+              style={{ color: "var(--text-muted)" }}
+            >
+              Thinking lifecycle
+            </p>
+            <div className="grid gap-2 md:grid-cols-3">
+              <ThinkingStateFixture
+                testId="thinking-state-streaming"
+                isSettled={false}
+              />
+              <ThinkingStateFixture
+                testId="thinking-state-token-progress"
+                isSettled={false}
+                estimatedTokens={2_000}
+              />
+              <ThinkingStateFixture
+                testId="thinking-state-settled"
+                isSettled
+                durationMs={2_000}
+              />
+            </div>
+          </section>
 
           <div className="grid gap-4 lg:grid-cols-2">
             <ProviderFixture provider="claude" />

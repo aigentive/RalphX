@@ -55,6 +55,7 @@ import {
   type CapabilityIntent,
   type SendAgentMessageResult,
   type TeamIntent,
+  type TeamMessageTarget,
 } from "@/api/chat";
 import { isVisibleChatMessage } from "@/api/chat-message-visibility";
 import type { MessageFolderReference } from "./MessageReferences.parse";
@@ -92,7 +93,9 @@ import { useChatEvents } from "@/hooks/useChatEvents";
 import { useChatRecovery } from "@/hooks/useChatRecovery";
 import {
   projectPersistedStreamingContentBlocks,
-  removePersistedStreamingPrefix,
+  applyTranscriptInput,
+  createLiveTranscriptState,
+  renderTranscriptBlocks,
 } from "@/hooks/chat-active-state";
 import { useQueuedMessagesHydration } from "@/hooks/useQueuedMessagesHydration";
 // useAgentEvents is already called inside useChat — no direct import needed
@@ -136,7 +139,6 @@ import { toast } from "sonner";
 
 // Stable empty array to avoid new reference on every render when tasks query returns undefined
 const EMPTY_TASKS: never[] = [];
-const EMPTY_PRESENTED_QUEUED_MESSAGES: never[] = [];
 const AUTOMATION_SETUP_PROPOSAL_KIND = "automation_setup_proposal";
 const AUTOMATION_SETUP_PROPOSAL_APPLY_VALUE = "apply_automation_proposal";
 
@@ -158,6 +160,7 @@ type PersonaRetryAttempt = {
         excerptReferences?: ComposerExcerptReference[];
         capabilityIntent?: CapabilityIntent | null;
         teamIntent?: TeamIntent | null;
+        teamMessageTarget?: TeamMessageTarget | null;
       }
     | undefined;
 };
@@ -285,6 +288,7 @@ export interface IntegratedChatComposerRenderProps {
       excerptReferences?: ComposerExcerptReference[];
       capabilityIntent?: CapabilityIntent | null;
       teamIntent?: TeamIntent | null;
+      teamMessageTarget?: TeamMessageTarget | null;
     },
   ) => Promise<void>;
   onStop: () => Promise<void>;
@@ -878,8 +882,9 @@ export function IntegratedChatPanel({
   const persistedStreamingContentBlocks = useMemo(
     () => projectPersistedStreamingContentBlocks(
       currentPrimaryConversationData?.messages ?? [],
+      agentRunQuery.data?.id ?? undefined,
     ),
-    [currentPrimaryConversationData?.messages],
+    [currentPrimaryConversationData?.messages, agentRunQuery.data?.id],
   );
 
   // Recovery and polling effects (extracted to hook)
@@ -986,7 +991,7 @@ export function IntegratedChatPanel({
       agentRunQuery.data?.status === "running" &&
       recoveryDelivery === "interactive");
   const presentedQueuedMessages = shouldHideQueuedMessages
-    ? EMPTY_PRESENTED_QUEUED_MESSAGES
+    ? queuedMessages.filter((message) => message.source === "backend")
     : queuedMessages;
   const hasPresentedQueuedMessages = presentedQueuedMessages.length > 0;
   const personaChipProjectName = useProjectStore(
@@ -1100,6 +1105,7 @@ export function IntegratedChatPanel({
         excerptReferences?: ComposerExcerptReference[];
         capabilityIntent?: CapabilityIntent | null;
         teamIntent?: TeamIntent | null;
+        teamMessageTarget?: TeamMessageTarget | null;
       },
     ) => {
       personaRetryAttemptRef.current = { message, options };
@@ -1370,10 +1376,12 @@ export function IntegratedChatPanel({
     (streamingContentBlocks?.length ?? 0) > 0 ||
     streamingTasks.size > 0;
   const supplementalStreamingContentBlocks = useMemo(
-    () => removePersistedStreamingPrefix(
-      streamingContentBlocks ?? [],
-      persistedStreamingContentBlocks,
-    ),
+    () => renderTranscriptBlocks(applyTranscriptInput(
+      applyTranscriptInput(createLiveTranscriptState(), {
+        kind: "persisted", runId: null, blocks: persistedStreamingContentBlocks,
+      }),
+      { kind: "live", runId: null, blocks: streamingContentBlocks ?? [] },
+    )),
     [persistedStreamingContentBlocks, streamingContentBlocks],
   );
   const persistedStreamingToolIds = useMemo(

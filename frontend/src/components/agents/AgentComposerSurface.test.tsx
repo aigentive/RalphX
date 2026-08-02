@@ -886,8 +886,12 @@ describe("AgentComposerSurface", () => {
     fireEvent.click(
       screen.getByTestId("agent-composer-capability-rx_native_team"),
     );
+    fireEvent.click(
+      screen.getByTestId("agent-composer-capability-rx_native_team"),
+    );
 
     expect(onValueChange).toHaveBeenCalledWith("rx_native_team");
+    expect(onValueChange).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("button", { name: /^Capabilities, Defaults/ })).toBeInTheDocument();
     expect(screen.getByTestId("agent-composer-runtime-capability-submenu")).toBeInTheDocument();
 
@@ -939,6 +943,97 @@ describe("AgentComposerSurface", () => {
     await waitFor(() => expect(onValueChange).toHaveBeenCalledTimes(1));
     expect(screen.getByTestId("agent-composer-runtime-capability-submenu")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^Capabilities, Defaults/ })).toBeInTheDocument();
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("agent-composer-capability-rx_native_team"),
+      ).not.toBeDisabled(),
+    );
+    fireEvent.click(
+      screen.getByTestId("agent-composer-capability-rx_native_team"),
+    );
+    await waitFor(() => expect(onValueChange).toHaveBeenCalledTimes(2));
+  });
+
+  it("returns from Persona after settlement and suppresses repeat selection", async () => {
+    let settleSelection: (() => void) | undefined;
+    const onValueChange = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          settleSelection = resolve;
+        }),
+    );
+    renderComposer({
+      persona: {
+        value: "default",
+        onValueChange,
+        options: [
+          { id: "default", label: "Default" },
+          { id: "reviewer", label: "Reviewer" },
+        ],
+      },
+    });
+
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+    fireEvent.click(screen.getByRole("button", { name: /^Persona, Default/ }));
+    const reviewer = screen.getByTestId("agent-composer-runtime-persona-reviewer");
+    fireEvent.click(reviewer);
+    fireEvent.click(reviewer);
+
+    expect(onValueChange).toHaveBeenCalledWith("reviewer");
+    expect(onValueChange).toHaveBeenCalledTimes(1);
+    expect(reviewer).toBeDisabled();
+    expect(
+      screen.getByTestId("agent-composer-runtime-persona-submenu"),
+    ).toBeInTheDocument();
+
+    settleSelection?.();
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("agent-composer-runtime-persona-submenu"),
+      ).not.toBeInTheDocument(),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /^Persona, Default/ }),
+      ).toHaveFocus(),
+    );
+  });
+
+  it("keeps a rejected Persona selection open for retry", async () => {
+    const onValueChange = vi.fn(() =>
+      Promise.reject(new Error("update failed")),
+    );
+    renderComposer({
+      persona: {
+        value: "default",
+        onValueChange,
+        options: [
+          { id: "default", label: "Default" },
+          { id: "reviewer", label: "Reviewer" },
+        ],
+      },
+    });
+
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+    fireEvent.click(screen.getByRole("button", { name: /^Persona, Default/ }));
+    fireEvent.click(
+      screen.getByTestId("agent-composer-runtime-persona-reviewer"),
+    );
+
+    await waitFor(() => expect(onValueChange).toHaveBeenCalledTimes(1));
+    expect(
+      screen.getByTestId("agent-composer-runtime-persona-submenu"),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("agent-composer-runtime-persona-reviewer"),
+      ).not.toBeDisabled(),
+    );
+    fireEvent.click(
+      screen.getByTestId("agent-composer-runtime-persona-reviewer"),
+    );
+    await waitFor(() => expect(onValueChange).toHaveBeenCalledTimes(2));
   });
 
   it("disables the integrated capability row while an update is pending", () => {
@@ -1125,7 +1220,7 @@ describe("AgentComposerSurface", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("opens the unified runtime peer rows on hover", () => {
+  it("returns successful wide runtime selections to Advanced", async () => {
     const onModelChange = vi.fn();
     const onEffortChange = vi.fn();
     const onFastModeChange = vi.fn();
@@ -1184,8 +1279,13 @@ describe("AgentComposerSurface", () => {
 
     expect(onModelChange).toHaveBeenCalledWith("gpt-5.4");
     expect(
-      screen.getByTestId("agent-composer-runtime-model-submenu"),
-    ).toBeInTheDocument();
+      screen.queryByTestId("agent-composer-runtime-model-submenu"),
+    ).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("agent-composer-runtime-model-menu-trigger"),
+      ).toHaveFocus(),
+    );
 
     fireEvent.pointerMove(screen.getByRole("button", { name: /^Effort,/ }));
 
@@ -1196,8 +1296,13 @@ describe("AgentComposerSurface", () => {
     fireEvent.click(screen.getByTestId("agent-composer-runtime-effort-low"));
     expect(onEffortChange).toHaveBeenCalledWith("low");
     expect(
-      screen.queryByRole("button", { name: /^Back to/ }),
+      screen.queryByTestId("agent-composer-runtime-effort-submenu"),
     ).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("agent-composer-runtime-effort-menu-trigger"),
+      ).toHaveFocus(),
+    );
 
     fireEvent.pointerMove(screen.getByRole("button", { name: /^Speed,/ }));
     expect(
@@ -1205,6 +1310,14 @@ describe("AgentComposerSurface", () => {
     ).toBeInTheDocument();
     fireEvent.click(screen.getByTestId("agent-composer-runtime-speed-fast"));
     expect(onFastModeChange).toHaveBeenCalledWith(true);
+    expect(
+      screen.queryByTestId("agent-composer-runtime-speed-submenu"),
+    ).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("agent-composer-runtime-speed-menu-trigger"),
+      ).toHaveFocus(),
+    );
 
     expect(screen.getByTestId("agent-composer-runtime-menu")).toBeInTheDocument();
   });
@@ -1308,13 +1421,16 @@ describe("AgentComposerSurface", () => {
     fireEvent.click(screen.getByTestId("agent-composer-runtime-provider-claude"));
 
     expect(onProviderChange).not.toHaveBeenCalled();
+    expect(
+      screen.getByTestId("agent-composer-runtime-provider-submenu"),
+    ).toBeInTheDocument();
     expect(screen.getByText("Claude is not enabled")).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /^Effort/ }),
     ).not.toBeInTheDocument();
   });
 
-  it("commits enabled provider selections from Advanced", () => {
+  it("returns enabled provider selections to Advanced", async () => {
     const onProviderChange = vi.fn();
     renderComposer({
       provider: {
@@ -1332,6 +1448,15 @@ describe("AgentComposerSurface", () => {
     fireEvent.click(screen.getByTestId("agent-composer-runtime-provider-claude"));
 
     expect(onProviderChange).toHaveBeenCalledWith("claude");
+    expect(
+      screen.queryByTestId("agent-composer-runtime-provider-submenu"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("agent-composer-runtime-menu")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("agent-composer-runtime-provider-menu-trigger"),
+      ).toHaveFocus(),
+    );
   });
 
   it("opens from the composer-scoped shortcut and resets nested state after closing", () => {
@@ -1364,6 +1489,7 @@ describe("AgentComposerSurface", () => {
   });
 
   it("uses Back-based nested drill-ins only at the compact composer breakpoint", () => {
+    const onModelChange = vi.fn();
     const rectSpy = vi
       .spyOn(HTMLElement.prototype, "getBoundingClientRect")
       .mockImplementation(function (this: HTMLElement) {
@@ -1383,7 +1509,7 @@ describe("AgentComposerSurface", () => {
     renderComposer({
       model: {
         value: "gpt-5.5",
-        onValueChange: vi.fn(),
+        onValueChange: onModelChange,
         options: [
           { id: "gpt-5.5", label: "gpt-5.5" },
           { id: "gpt-5.4", label: "gpt-5.4" },
@@ -1412,10 +1538,13 @@ describe("AgentComposerSurface", () => {
     expect(
       screen.getByTestId("agent-composer-runtime-model-gpt-5.4"),
     ).toBeInTheDocument();
-    fireEvent.click(
-      screen.getByRole("button", { name: "Back to Advanced runtime settings" }),
-    );
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-model-gpt-5.4"));
+    expect(onModelChange).toHaveBeenCalledWith("gpt-5.4");
+    expect(
+      screen.queryByTestId("agent-composer-runtime-model-submenu"),
+    ).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^Model,/ })).toBeInTheDocument();
+    expect(screen.getByTestId("agent-composer-runtime-menu")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /^Provider,/ }));
     expect(
@@ -1524,6 +1653,9 @@ describe("AgentComposerSurface", () => {
 
     expect(onModelChange).toHaveBeenCalledWith("future-model");
     expect(screen.getByTestId("agent-composer-runtime-menu")).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agent-composer-runtime-model-submenu"),
+    ).not.toBeInTheDocument();
   });
 
   it("hydrates custom model values and commits them from Enter", () => {
@@ -1547,6 +1679,10 @@ describe("AgentComposerSurface", () => {
     fireEvent.keyDown(customInput, { key: "Enter" });
 
     expect(onModelChange).toHaveBeenCalledWith("next-custom");
+    expect(
+      screen.queryByTestId("agent-composer-runtime-model-submenu"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("agent-composer-runtime-menu")).toBeInTheDocument();
   });
 
   it("filters and selects projects from the compact project line", () => {

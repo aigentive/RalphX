@@ -16,6 +16,7 @@ mod codex_stream_processor;
 mod execution_types_serde;
 mod gate1_conversation_identity;
 mod gate1_ipr_fast_path_tests;
+mod message_delivery_contract;
 mod interactive_mode_integration;
 mod ipr_cleanup_guard_tests;
 mod reconciliation_runner;

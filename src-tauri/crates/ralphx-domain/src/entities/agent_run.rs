@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::fmt;
 use uuid::Uuid;
 
@@ -83,6 +83,53 @@ pub enum AgentRunStatus {
     Failed,
     /// Agent was cancelled by user
     Cancelled,
+}
+
+/// Origin of the runtime configuration used to launch an agent run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeSource {
+    ComposerSelection,
+    ConversationOverride,
+    RoleDefault,
+    ProjectDefault,
+    HarnessFallback,
+}
+
+impl fmt::Display for RuntimeSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ComposerSelection => write!(f, "composer_selection"),
+            Self::ConversationOverride => write!(f, "conversation_override"),
+            Self::RoleDefault => write!(f, "role_default"),
+            Self::ProjectDefault => write!(f, "project_default"),
+            Self::HarnessFallback => write!(f, "harness_fallback"),
+        }
+    }
+}
+
+impl std::str::FromStr for RuntimeSource {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "composer_selection" => Ok(Self::ComposerSelection),
+            "conversation_override" => Ok(Self::ConversationOverride),
+            "role_default" => Ok(Self::RoleDefault),
+            "project_default" => Ok(Self::ProjectDefault),
+            "harness_fallback" => Ok(Self::HarnessFallback),
+            _ => Err(format!("Invalid runtime source: {value}")),
+        }
+    }
+}
+
+fn deserialize_optional_runtime_source<'de, D>(
+    deserializer: D,
+) -> Result<Option<RuntimeSource>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.and_then(|value| value.parse().ok()))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -294,6 +341,16 @@ pub struct AgentRun {
     /// Sandbox mode used for the run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sandbox_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub launch_role: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_runtime_source",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub runtime_source: Option<RuntimeSource>,
     /// Correlation ID linking all runs in a single message chain
     /// (initial run + all queue continuations via --resume)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -359,6 +416,9 @@ impl AgentRun {
             raw_usage_snapshot: None,
             approval_policy: None,
             sandbox_mode: None,
+            agent_name: None,
+            launch_role: None,
+            runtime_source: None,
             run_chain_id: Some(chain_id),
             parent_run_id: None,
             action_kind: None,
@@ -404,6 +464,9 @@ impl AgentRun {
             raw_usage_snapshot: None,
             approval_policy: None,
             sandbox_mode: None,
+            agent_name: None,
+            launch_role: None,
+            runtime_source: None,
             run_chain_id: Some(run_chain_id),
             parent_run_id: Some(parent_run_id),
             action_kind: None,
@@ -527,6 +590,11 @@ impl AgentRun {
         };
 
         self.action_kind = Some(action.kind);
+        self.launch_role = match action.kind {
+            AgentRunActionKind::WorkspaceReviewFixer => Some("workspace_repair".to_string()),
+            AgentRunActionKind::PrAutofix => Some("pr_fixer".to_string()),
+            _ => self.launch_role.take(),
+        };
         self.action_context_id = Some(action.context_id);
         self.action_target_id = Some(action.target_id);
     }

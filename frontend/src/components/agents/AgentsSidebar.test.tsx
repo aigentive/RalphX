@@ -94,7 +94,11 @@ const { publicationGroupCalls } = vi.hoisted(() => ({
 const { inboxLaneByConversationId } = vi.hoisted(() => ({
   inboxLaneByConversationId: new Map<
     string,
-    { lane: "needs" | "working" | "stale" | "done"; actionVerb: string }
+    {
+      lane: "needs" | "working" | "stale" | "done";
+      actionVerb: string;
+      parkedDelegateCount?: number;
+    }
   >(),
 }));
 const { inboxGroupCalls } = vi.hoisted(() => ({
@@ -661,6 +665,8 @@ vi.mock("./useAgentSidebarPublicationGroup", () => {
         .map((row) => ({
           ...row,
           attentionLane: lane,
+          parkedDelegateCount:
+            inboxLaneByConversationId.get(row.conversation.id)?.parkedDelegateCount ?? 0,
           actionVerb: inboxLaneByConversationId.get(row.conversation.id)?.actionVerb ?? "",
         }));
       return {
@@ -5425,5 +5431,22 @@ describe("AgentsSidebar", () => {
     });
     expect(screen.queryByText("Review")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agents-inbox-lane-chips")).not.toBeInTheDocument();
+  });
+
+  it("shows parked delegate work in the inbox row metadata", () => {
+    const parked = conversation({ id: "conversation-parked", title: "Parked coordinator" });
+    inboxLaneByConversationId.set(parked.id, {
+      lane: "working",
+      actionVerb: "Discuss",
+      parkedDelegateCount: 2,
+    });
+    conversationsByProject.set("project-1", { data: [parked], isLoading: false });
+    useAgentSessionStore.setState({ sidebarGroupBy: "inbox" });
+
+    renderSidebar();
+
+    expect(
+      screen.getByTestId("agents-parked-delegates-conversation-parked")
+    ).toHaveTextContent("Waiting on 2 delegates");
   });
 });

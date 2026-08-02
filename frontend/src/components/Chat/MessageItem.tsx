@@ -40,6 +40,8 @@ import {
 import { PersonaRunBadge } from "./PersonaRunBadge";
 import { ToolActivityGroupToggle } from "./ToolActivityGroupToggle";
 import { summarizeToolActivity } from "./tool-activity-summary";
+import { ThinkingGroupToggle } from "./ThinkingGroupToggle";
+import { ThinkingWidget } from "./tool-widgets/ThinkingWidget";
 
 // ============================================================================
 // Types
@@ -49,8 +51,10 @@ import { summarizeToolActivity } from "./tool-activity-summary";
  * Content block item - represents either text or a tool use
  */
 export interface ContentBlockItem {
-  type: "text" | "tool_use";
+  type: "text" | "tool_use" | "thinking";
   text?: string;
+  durationMs?: number;
+  isSettled?: boolean;
   id?: string;
   name?: string;
   arguments?: unknown;
@@ -440,6 +444,22 @@ export const MessageItem = React.memo(function MessageItem({
             text={block.text}
             isUser={isUser}
           />,
+        );
+        continue;
+      }
+      if (block.type === "thinking") {
+        if (!block.text?.trim()) {
+          continue;
+        }
+        const groupKey = `content-thinking-group:${index}`;
+        const isExpanded = expandedContentToolGroupKeys.has(groupKey);
+        renderedBlocks.push(
+          <div key={groupKey} className="space-y-1.5 overflow-hidden">
+            <ThinkingGroupToggle groupKey={groupKey} isExpanded={isExpanded}
+              isSettled={block.isSettled ?? true} {...(block.durationMs != null ? { durationMs: block.durationMs } : {})}
+              onToggle={() => toggleContentToolGroup(groupKey)} />
+            {isExpanded && block.text ? <ThinkingWidget text={block.text} /> : null}
+          </div>,
         );
         continue;
       }

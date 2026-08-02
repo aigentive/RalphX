@@ -1,0 +1,11 @@
+{
+  "text": "partial reasoning",
+  "run_id": "run-1",
+  "block_index": 0,
+  "conversation_id": "conversation-1",
+  "context_type": "task_execution",
+  "context_id": "task-1",
+  "seq": 7,
+  "append_to_previous": true,
+  "is_settled": false
+}

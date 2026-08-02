@@ -149,6 +149,24 @@ export type AgentWorkspaceMaintenancePresentation = {
   tone: "error" | "neutral" | "warning";
 };
 
+export type AgentWorkspacePrAutofixFingerprintSpendPresentation = {
+  summary: string;
+  exhausted: boolean;
+};
+
+export function getAgentWorkspacePrAutofixFingerprintSpendPresentation(
+  workspace: AgentConversationWorkspace | null | undefined,
+): AgentWorkspacePrAutofixFingerprintSpendPresentation | null {
+  const spend = workspace?.prAutofixFingerprintSpend;
+  if (!spend) {
+    return null;
+  }
+  return {
+    summary: `${spend.generations} generations · ${spend.minutes} min on this failure`,
+    exhausted: spend.isExhausted,
+  };
+}
+
 export function getAgentWorkspaceMaintenanceOperation(
   workspace: AgentConversationWorkspace | null | undefined,
 ): AgentWorkspaceMaintenanceOperation | null {
@@ -455,10 +473,6 @@ export function canInspectAgentWorkspaceBaseFreshness(
   workspace: AgentConversationWorkspace | null | undefined,
 ): boolean {
   if (!workspace) {
-    return false;
-  }
-
-  if (workspace.mode === "plan") {
     return false;
   }
 

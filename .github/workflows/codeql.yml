@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  merge_group:
   schedule:
     - cron: "23 4 * * 1"
   workflow_dispatch:
@@ -34,6 +35,7 @@ jobs:
 
       - name: Detect changed paths
         id: filter
+        if: github.event_name != 'merge_group'
         uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
         with:
           filters: |
@@ -133,7 +135,7 @@ jobs:
       - analyze-actions
       - analyze-javascript
       - analyze-rust
-    if: ${{ github.event_name == 'pull_request' && always() }}
+    if: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && always() }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -142,8 +144,8 @@ jobs:
       - name: Fail on open medium+ CodeQL alerts for this pull request
         env:
           GH_TOKEN: ${{ github.token }}
-          BASE_REF: refs/heads/${{ github.event.pull_request.base.ref }}
-          PR_REF: refs/pull/${{ github.event.pull_request.number }}/merge
+          BASE_REF: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_ref || format('refs/heads/{0}', github.event.pull_request.base.ref) }}
+          PR_REF: ${{ github.event_name == 'merge_group' && github.ref || format('refs/pull/{0}/merge', github.event.pull_request.number) }}
         shell: bash
         run: |
           set -euo pipefail

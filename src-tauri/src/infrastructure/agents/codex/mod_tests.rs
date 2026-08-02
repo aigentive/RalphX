@@ -582,6 +582,9 @@ fn build_codex_exec_args_defaults_to_mcp_safe_approval_and_sandbox() {
     assert!(args
         .windows(2)
         .any(|pair| pair[0] == "-c" && pair[1] == "approval_policy=\"never\""));
+    assert!(args
+        .windows(2)
+        .any(|pair| pair[0] == "-c" && pair[1] == "model_reasoning_summary=\"concise\""));
 }
 
 #[test]

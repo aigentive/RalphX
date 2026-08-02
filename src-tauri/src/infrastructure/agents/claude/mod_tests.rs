@@ -870,6 +870,110 @@ fn test_plan_profile_mcp_config_external_filters_ask_user_question() {
     drop(dir);
 }
 
+/// Regression: RX-native Team mode failed to spawn because the Rust profile-name validator
+/// rejected the `team_coordinator` underscore, so this exact call returned
+/// `Missing canonical profile Some("team_coordinator")` and became `SpawnFailed`.
+#[test]
+fn test_team_coordinator_profile_mcp_config_builds_for_rx_native_team_spawn() {
+    let (dir, root, plugin_dir) = make_temp_project_plugin_dir();
+    seed_live_agent_yaml(&root, "ralphx-general-worker");
+    let config = build_mcp_config_with_runtime_context_for_profile(
+        &plugin_dir,
+        "ralphx:ralphx-general-worker",
+        Some("team_coordinator"),
+        false,
+        None,
+    )
+    .expect("RX-native Team spawn must resolve the team_coordinator profile");
+
+    let servers = config["mcpServers"]
+        .as_object()
+        .expect("mcpServers object")
+        .clone();
+    assert_eq!(
+        servers.len(),
+        1,
+        "coordinator uses the internal stdio transport only, got: {servers:?}"
+    );
+    let server = servers.values().next().expect("mcp server entry");
+    assert!(
+        server["command"]
+            .as_str()
+            .is_some_and(|cmd| !cmd.is_empty()),
+        "mcp server entry must carry a node command, got: {server:?}"
+    );
+    let args = server["args"]
+        .as_array()
+        .expect("mcp server args")
+        .iter()
+        .filter_map(|arg| arg.as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        args.iter()
+            .any(|arg| arg.ends_with("ralphx-mcp-server/build/index.js")),
+        "mcp server entry must point at the bundled server, got: {args:?}"
+    );
+    assert!(
+        args.windows(2)
+            .any(|pair| pair == ["--agent-profile", "team_coordinator"]),
+        "spawn config must forward the active profile to the MCP server, got: {args:?}"
+    );
+
+    let allowed_tools_arg = allowed_tools_arg_from_mcp_config(&config).expect("allowed tools arg");
+    for tool in [
+        "team_add_member",
+        "team_assign",
+        "team_list",
+        "team_stop_member",
+        "team_send_message",
+    ] {
+        assert!(
+            allowed_tools_arg.contains(tool),
+            "coordinator must be granted {tool}, got: {allowed_tools_arg}"
+        );
+    }
+    assert!(
+        !allowed_tools_arg.contains("publish_agent_workspace"),
+        "coordinator grant must come from the profile, not the base agent, got: {allowed_tools_arg}"
+    );
+    drop(dir);
+}
+
+/// The coordinator profile exists to drop `Write`/`Edit`/`Bash`, so an unresolvable profile
+/// must fail the spawn rather than silently fall back to the base agent configuration.
+#[test]
+fn test_unknown_profile_fails_mcp_config_instead_of_falling_back_to_base_agent() {
+    let (dir, root, plugin_dir) = make_temp_project_plugin_dir();
+    seed_live_agent_yaml(&root, "ralphx-general-worker");
+
+    let missing = build_mcp_config_with_runtime_context_for_profile(
+        &plugin_dir,
+        "ralphx:ralphx-general-worker",
+        Some("does-not-exist"),
+        false,
+        None,
+    )
+    .expect_err("unknown profile must not fall back to the base agent config");
+    assert!(
+        missing.contains("Missing canonical profile"),
+        "unknown profile should report a missing profile, got: {missing}"
+    );
+
+    let invalid = build_mcp_config_with_runtime_context_for_profile(
+        &plugin_dir,
+        "ralphx:ralphx-general-worker",
+        Some("Team_Coordinator"),
+        false,
+        None,
+    )
+    .expect_err("malformed profile name must not fall back to the base agent config");
+    assert!(
+        invalid.contains("Invalid canonical profile name"),
+        "malformed profile name should be distinguishable from a missing profile, got: {invalid}"
+    );
+    drop(dir);
+}
+
 #[test]
 fn test_plan_profile_system_prompt_includes_runtime_profile_context() {
     let (_dir, _root, plugin_dir, _runtime_guard) = make_isolated_live_project_plugin_dir();
@@ -1745,11 +1849,15 @@ fn generated_workspace_repair_prompt_keeps_identity_transport_owned_and_tools_li
     let definition = load_canonical_agent_definition(&root, "ralphx-agent-workspace-repair")
         .expect("workspace repair canonical definition should exist");
 
+    // Only call-shaped references (`tool({ ... })`) are tool invocations. Bare backticked
+    // snake_case tokens are field names and enum literals such as `resolution` values, which
+    // must not be mistaken for a tool the prompt claims to call.
     let named_workflow_tools = body
         .split('`')
         .enumerate()
         .filter(|(index, _)| index % 2 == 1)
-        .map(|(_, segment)| segment.split_once('(').map_or(segment, |(name, _)| name))
+        .filter_map(|(_, segment)| segment.split_once('('))
+        .map(|(name, _)| name.trim())
         .filter(|name| name.contains('_'))
         .map(str::to_owned)
         .collect::<BTreeSet<_>>();

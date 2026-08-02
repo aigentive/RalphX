@@ -2,7 +2,7 @@
 
 # src-tauri/CLAUDE.md — Backend
 
-Quality standards: `../.claude/rules/code-quality-standards.md` | Rust API safety: `../.claude/rules/rust-stable-apis.md`
+Quality standards: `../.claude/rules/code-quality-standards.md` | Rust API safety: `../.claude/rules/rust-stable-apis.md` | Thinking capture: `../.claude/rules/agent-thinking-capture.md`
 
 ## Stack
 Rust 2021 | Tauri 2.0 | rusqlite 0.32 | statig 0.3 (async state machine)
@@ -87,6 +87,7 @@ New pattern → add one-liner here. Pattern name + rule only.
 
 | Pattern | Rule |
 |---|---|
+| User-message delivery contract | Queue-drain/session gates may refuse to resume a session, never to discard a user message; blocked continuations fall back to fresh-session replay (`chat_service_queue.rs`), and staleness applies only to hidden recovery messages. |
 | Backend-owned Startup Gate | `StartupCoordinator` is the sole readiness writer: window first → AppState registration → listener + safety barrier → interactive shell → owned finite recovery settlement; timers/localStorage/recurring loops never authorize readiness |
 | Reuse before invent (NON-NEGOTIABLE) | New behavior extends the seam that owns the domain — transitions → `TaskTransitionService`, publish/review gates → `agent_workspace_review*`, events → `AppState.events`, spawns → `provider_onboarding_gate` + `harness_runtime_registry`, git primitives → `git_service/`, queueing → `chat_service_queue` + durable repo, recovery → the domain's dedicated recovery module. ❌ New parallel services/engines/managers for owned concerns |
 | Validated task transitions | Normal workflow status changes use validated `TaskTransitionService::transition_task*`; corrective/recovery-only jumps use `transition_task_corrective()` / `apply_corrective_transition()`; raw `internal_status` writes are limited to canonical engine/bootstrap paths |
@@ -101,6 +102,7 @@ New pattern → add one-liner here. Pattern name + rule only.
 | Durable completion proof | Completion authority = accepted `execution_complete` tool RESULT + current attempt + current validation evidence (HEAD + execution episode, non-baseline, tests ran+passed); never call-start, process exit, or commit SHA alone |
 | Rustfmt module roots | Never run `rustfmt` on `mod.rs` or other module-root files for a surgical change; rustfmt can recurse into child modules and create unrelated diffs |
 | ExecutionState Propagation | `Arc<ExecutionState>` → `TaskTransitionService::new()` + `AgenticClientSpawner::with_execution_state()` |
+| Delegation park/wake | Park records are durable, generation-scoped, and deadline-bounded; wake is a hidden `resume_in_place` message dispatched only after `commit_terminal` accepts and a `claim_wake` CAS succeeds |
 | Agent MCP Tool Allowlist | MCP/tool changes are multi-layer: keep canonical `agents/<agent>/agent.yaml`, prompt contracts, runtime authorization, and registered handlers aligned; see `.claude/rules/agent-mcp-tools.md` |
 | Provider-native MCP policy | Third-party MCP definitions/auth/trust stay provider-owned; exact Claude user-scope `ralphx` is reserved cleanup state settled by coherent-home rediscovery, while other scopes/providers and `ralphx_internal` fail closed. See `docs/architecture/provider-native-mcp-policy.md` |
 | Backend-routed Project maintenance assignments | Only exact canonical workspace-repair and PR-fixer agents bypass the Project data envelope; render their backend-owned requests as XML-escaped executable assignments |

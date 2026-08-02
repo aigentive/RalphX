@@ -33,11 +33,14 @@ use ralphx_lib::http_server::delegation::{DelegationHistoryEntry, DelegationJobS
 use ralphx_lib::http_server::handlers::{
     build_delegated_task_completed_payload, build_delegated_task_started_payload, cancel_delegate,
     complete_delegate_assignment, get_delegate_assignment, get_delegated_session_status,
-    start_delegate, start_delegate_with_runtime_context, wait_delegate,
+    park_delegate, start_delegate, start_delegate_with_runtime_context, wait_delegate,
+};
+use ralphx_lib::http_server::native_delegation_launcher::{
+    NativeDelegationLaunchParent, NativeDelegationLaunchRequest, NativeDelegationLauncher,
 };
 use ralphx_lib::http_server::types::{
-    CompleteDelegateAssignmentRequest, DelegateCancelRequest, DelegateStartRequest,
-    DelegateWaitRequest, DelegatedRunSummary, HttpServerState,
+    CompleteDelegateAssignmentRequest, DelegateCancelRequest, DelegateParkRequest,
+    DelegateStartRequest, DelegateWaitRequest, DelegatedRunSummary, HttpServerState,
 };
 use tempfile::TempDir;
 use tokio::sync::Mutex;
@@ -114,6 +117,14 @@ if [ -n "$RALPHX_TEST_CODEX_ARGS_PATH" ]; then
 fi
 if [ -n "$RALPHX_TEST_CODEX_CWD_PATH" ]; then
   pwd -P >> "$RALPHX_TEST_CODEX_CWD_PATH"
+fi
+# Optional hold: when set, stay running until the test creates the release file. Tests that
+# need a delegate to still be `running` at a later assertion point set this; every other test
+# leaves it unset and the run completes immediately as before.
+if [ -n "$RALPHX_TEST_CODEX_HOLD_PATH" ]; then
+  while [ ! -f "$RALPHX_TEST_CODEX_HOLD_PATH" ]; do
+    sleep 0.05
+  done
 fi
 printf '%s\n' '{"type":"thread.started","thread_id":"delegation-thread-1"}'
 printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"MOCK_COMPLETION"}}'
@@ -307,6 +318,25 @@ impl AgentTaskRepository for FailBindingAgentTaskRepository {
     ) -> AppResult<Option<AgentTaskAssignmentView>> {
         self.inner
             .plan_assignment_run(assignment_id, delegated_session_id, delegated_agent_run_id)
+            .await
+    }
+
+    async fn set_assignment_team_identity(
+        &self,
+        assignment_id: &AgentTaskAssignmentId,
+        delegated_session_id: &DelegatedSessionId,
+        team_id: &ralphx_lib::domain::entities::TeamSessionId,
+        team_member_id: &ralphx_lib::domain::entities::TeamMemberId,
+        team_member_generation: i64,
+    ) -> AppResult<Option<AgentTaskAssignmentView>> {
+        self.inner
+            .set_assignment_team_identity(
+                assignment_id,
+                delegated_session_id,
+                team_id,
+                team_member_id,
+                team_member_generation,
+            )
             .await
     }
 
@@ -866,6 +896,102 @@ async fn create_project_agent_workspace_with_harness(
     (project, conversation, workspace)
 }
 
+/// Creates a project conversation parented to `parent_conversation_id`, the shape used by
+/// Workspace Review runtimes and forked agent conversations.
+async fn create_child_project_conversation(
+    app_state: &AppState,
+    project: &Project,
+    parent_conversation_id: &str,
+) -> ChatConversation {
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.parent_conversation_id = Some(parent_conversation_id.to_string());
+    conversation.provider_harness = Some(AgentHarnessKind::Codex);
+    app_state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("create child project conversation")
+}
+
+/// Attaches an agent workspace row (and a fake worktree) to an existing conversation.
+async fn attach_agent_workspace(
+    app_state: &AppState,
+    project: &Project,
+    conversation_id: &ChatConversationId,
+) -> AgentConversationWorkspace {
+    let worktree_path =
+        resolve_agent_conversation_workspace_path(project, conversation_id).unwrap();
+    let safe_worktree_path = ralphx_lib::utils::path_safety::validate_absolute_non_root_path(
+        &worktree_path,
+        "test agent workspace",
+    )
+    .unwrap();
+    fs::create_dir_all(safe_worktree_path.join(".git")).expect("create fake workspace git marker");
+    let workspace = AgentConversationWorkspace::new(
+        *conversation_id,
+        project.id.clone(),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("Project default (main)".to_string()),
+        None,
+        "ralphx/agent-workspace-delegation-child".to_string(),
+        worktree_path.to_string_lossy().to_string(),
+    );
+    app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap()
+}
+
+fn child_runtime_delegate_start_request(
+    project: &Project,
+    anchor_conversation_id: &str,
+) -> DelegateStartRequest {
+    DelegateStartRequest {
+        caller_agent_name: Some("ralphx-workspace-reviewer".to_string()),
+        caller_agent_profile: None,
+        caller_context_type: Some("project".to_string()),
+        caller_context_id: Some(project.id.as_str().to_string()),
+        parent_session_id: None,
+        parent_turn_id: None,
+        parent_message_id: None,
+        // The MCP server sends RALPHX_PARENT_CONVERSATION_ID, the workspace anchor.
+        parent_conversation_id: Some(anchor_conversation_id.to_string()),
+        parent_tool_use_id: None,
+        delegated_session_id: None,
+        child_session_id: None,
+        task_ref: None,
+        agent_name: "ralphx-general-explorer".to_string(),
+        prompt: "Inspect the reviewed surface and report findings.".to_string(),
+        title: Some("Child runtime exploration".to_string()),
+        inherit_context: true,
+        harness: Some(AgentHarnessKind::Codex),
+        model: None,
+        logical_effort: None,
+        approval_policy: None,
+        sandbox_mode: None,
+    }
+}
+
+fn runtime_identity_headers(conversation_id: &str, agent_run_id: &str) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert("x-ralphx-conversation-id", conversation_id.parse().unwrap());
+    headers.insert("x-ralphx-agent-run-id", agent_run_id.parse().unwrap());
+    headers
+}
+
+fn canonicalized_worktree(worktree_path: &str) -> PathBuf {
+    ralphx_lib::utils::path_safety::validate_absolute_non_root_path(
+        Path::new(worktree_path),
+        "expected test agent workspace",
+    )
+    .unwrap()
+    .canonicalize()
+    .expect("canonicalize expected test agent workspace")
+}
+
 fn install_runtime_plugin_dir() -> (TempDir, PathBuf) {
     let tempdir = TempDir::new().expect("tempdir");
     let plugin_dir = tempdir.path().join("plugins/app");
@@ -963,7 +1089,9 @@ async fn test_delegate_start_creates_delegated_session_and_completes_with_mock_c
             let candidate = wait_delegate(
                 State(state.clone()),
                 Json(DelegateWaitRequest {
-                    job_id: start.job_id.clone(),
+                    job_id: Some(start.job_id.clone()),
+                    job_ids: None,
+                    wait_timeout_ms: None,
                     include_delegated_status: Some(true),
                     include_child_status: None,
                     include_messages: Some(true),
@@ -1043,6 +1171,61 @@ async fn test_delegate_start_creates_delegated_session_and_completes_with_mock_c
 }
 
 #[tokio::test]
+async fn native_delegation_launcher_does_not_create_http_delegation_job_state() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (_fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let app_state = Arc::new(AppState::new_sqlite_test());
+    let state = build_state(app_state);
+    let (project, parent_conversation, workspace) = create_project_agent_workspace_with_harness(
+        state.app_state.as_ref(),
+        worktree_parent.path(),
+        AgentHarnessKind::Codex,
+    )
+    .await;
+
+    assert_eq!(state.delegation_service.job_count_for_test().await, 0);
+    let launch = NativeDelegationLauncher::new(&state)
+        .launch(NativeDelegationLaunchRequest {
+            caller_agent_name: "ralphx-general-worker".to_string(),
+            caller_agent_profile: None,
+            parent: NativeDelegationLaunchParent {
+                context_type: ChatContextType::Project,
+                context_id: project.id.as_str().to_string(),
+                project_id: project.id.as_str().to_string(),
+                working_directory: PathBuf::from(workspace.worktree_path),
+                caller_conversation_id: Some(parent_conversation.id.as_str()),
+                workspace_anchor_conversation_id: Some(parent_conversation.id.as_str()),
+                parent_conversation_id: Some(parent_conversation.id.as_str()),
+                ideation_verification: false,
+            },
+            caller_agent_run_id: None,
+            target_agent_name: "ralphx-general-explorer".to_string(),
+            reusable_delegated_session: None,
+            task_ref: None,
+            preallocated_agent_run_id: None,
+            prompt: "Inspect the project without creating a delegation job.".to_string(),
+            title: Some("Direct launcher test".to_string()),
+            parent_turn_id: None,
+            parent_message_id: None,
+            parent_tool_use_id: None,
+            harness: Some(AgentHarnessKind::Codex),
+            model: None,
+            logical_effort: None,
+            approval_policy: None,
+            sandbox_mode: None,
+        })
+        .await
+        .expect("direct application launcher should start");
+
+    assert!(!launch.delegated_session_id.is_empty());
+    assert!(!launch.delegated_conversation_id.is_empty());
+    assert!(!launch.delegated_agent_run_id.is_empty());
+    assert_eq!(state.delegation_service.job_count_for_test().await, 0);
+}
+
+#[tokio::test]
 async fn delegate_start_child_command_excludes_bound_project_persona() {
     let _env_lock = codex_cli_env_lock().lock().await;
     let (fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
@@ -1100,7 +1283,9 @@ async fn delegate_start_child_command_excludes_bound_project_persona() {
         let status = wait_delegate(
             State(state.clone()),
             Json(DelegateWaitRequest {
-                job_id: start.job_id.clone(),
+                job_id: Some(start.job_id.clone()),
+                job_ids: None,
+                wait_timeout_ms: None,
                 include_delegated_status: Some(false),
                 include_child_status: None,
                 include_messages: Some(false),
@@ -1864,7 +2049,9 @@ async fn test_delegate_start_uses_delegated_subagent_provider_defaults() {
             let candidate = wait_delegate(
                 State(state.clone()),
                 Json(DelegateWaitRequest {
-                    job_id: start.job_id.clone(),
+                    job_id: Some(start.job_id.clone()),
+                    job_ids: None,
+                    wait_timeout_ms: None,
                     include_delegated_status: Some(true),
                     include_child_status: None,
                     include_messages: Some(false),
@@ -2519,7 +2706,9 @@ async fn test_nested_delegate_preserves_original_project_agent_workspace() {
             let candidate = wait_delegate(
                 State(state.clone()),
                 Json(DelegateWaitRequest {
-                    job_id: first.job_id.clone(),
+                    job_id: Some(first.job_id.clone()),
+                    job_ids: None,
+                    wait_timeout_ms: None,
                     include_delegated_status: Some(false),
                     include_child_status: None,
                     include_messages: Some(false),
@@ -2609,6 +2798,204 @@ async fn test_nested_delegate_preserves_original_project_agent_workspace() {
             .all(|cwd| cwd != Path::new(&project.working_directory)),
         "nested delegation must never fall back to the project checkout"
     );
+}
+
+/// A nested delegate must be able to park on the sub-delegate it just started.
+///
+/// `resolve_nested_delegation_parent` deliberately keeps the job's `parent_conversation_id`
+/// pinned to the ORIGINAL non-delegated conversation, because that field is the Delegate
+/// widget / lineage anchor. It is therefore NOT the runtime that called `delegate_start`, so
+/// park ownership must be proven from the caller RUN — the identity
+/// `resolve_trusted_caller_agent_run_id` binds to the calling conversation.
+///
+/// This drives the real `delegate_start` -> `delegate_park` sequence; seeding the job registry
+/// by hand cannot reproduce the divergent shape that makes this fail.
+#[tokio::test]
+async fn nested_delegate_parks_on_the_sub_delegate_it_started() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let captured_cwd_path = fake_codex_dir.path().join("nested-park-cwds.txt");
+    let _captured_cwd_guard = crate::support::env::EnvVarGuard::set(
+        "RALPHX_TEST_CODEX_CWD_PATH",
+        captured_cwd_path.clone(),
+    );
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    seed_codex_provider_default(state.app_state.as_ref(), "gpt-5.5", LogicalEffort::XHigh).await;
+    let (project, parent_conversation, _workspace) =
+        create_project_agent_workspace(state.app_state.as_ref(), worktree_parent.path()).await;
+    let parent_conversation_id = parent_conversation.id.as_str();
+
+    let outer = start_delegate(
+        State(state.clone()),
+        Json(DelegateStartRequest {
+            caller_agent_name: Some("ralphx-general-worker".to_string()),
+            caller_agent_profile: None,
+            caller_context_type: Some("project".to_string()),
+            caller_context_id: Some(project.id.as_str().to_string()),
+            parent_session_id: None,
+            parent_turn_id: None,
+            parent_message_id: None,
+            parent_conversation_id: Some(parent_conversation_id.clone()),
+            parent_tool_use_id: None,
+            delegated_session_id: None,
+            child_session_id: None,
+            task_ref: None,
+            agent_name: "ralphx-general-worker".to_string(),
+            prompt: "Start the outer coordinator delegate.".to_string(),
+            title: None,
+            inherit_context: true,
+            harness: None,
+            model: None,
+            logical_effort: None,
+            approval_policy: None,
+            sandbox_mode: None,
+        }),
+    )
+    .await
+    .expect("outer delegate should start")
+    .0;
+    wait_for_captured_cwds(&captured_cwd_path, 1).await;
+    // The outer delegate's launch run must be terminal before the coordinator run below can be
+    // the conversation's ACTIVE run, which both `delegate_start` and `delegate_park` require.
+    let mut outer_settled = false;
+    for _ in 0..40 {
+        let candidate = wait_delegate(
+            State(state.clone()),
+            Json(DelegateWaitRequest {
+                job_id: Some(outer.job_id.clone()),
+                job_ids: None,
+                wait_timeout_ms: None,
+                include_delegated_status: Some(false),
+                include_child_status: None,
+                include_messages: Some(false),
+                message_limit: None,
+            }),
+        )
+        .await
+        .expect("outer delegate status should load")
+        .0;
+        if candidate.status != "running" {
+            outer_settled = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        outer_settled,
+        "outer delegate should settle before nested delegation"
+    );
+
+    let outer_conversation_id = outer
+        .delegated_conversation_id
+        .clone()
+        .expect("outer delegate should expose its conversation");
+    let nested_caller_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(ChatConversationId::from_string(
+            outer_conversation_id.clone(),
+        )))
+        .await
+        .expect("create active outer delegate run");
+
+    // Hold the sub-delegate open so the park observes a `running` job instead of racing its
+    // settlement. Every other test leaves this env var unset.
+    let hold_release_path = fake_codex_dir.path().join("nested-park-release");
+    let hold_guard = crate::support::env::EnvVarGuard::set(
+        "RALPHX_TEST_CODEX_HOLD_PATH",
+        hold_release_path.clone(),
+    );
+
+    let mut nested_headers = HeaderMap::new();
+    nested_headers.insert(
+        "x-ralphx-agent-run-id",
+        nested_caller_run.id.as_str().parse().unwrap(),
+    );
+    nested_headers.insert(
+        "x-ralphx-conversation-id",
+        outer_conversation_id.parse().unwrap(),
+    );
+
+    let nested = start_delegate_with_runtime_context(
+        State(state.clone()),
+        nested_headers.clone(),
+        Json(DelegateStartRequest {
+            caller_agent_name: Some("ralphx-general-worker".to_string()),
+            caller_agent_profile: None,
+            caller_context_type: Some("delegation".to_string()),
+            caller_context_id: Some(outer.delegated_session_id.clone()),
+            parent_session_id: None,
+            parent_turn_id: None,
+            parent_message_id: None,
+            parent_conversation_id: Some(parent_conversation_id.clone()),
+            parent_tool_use_id: None,
+            delegated_session_id: None,
+            child_session_id: None,
+            task_ref: None,
+            agent_name: "ralphx-general-explorer".to_string(),
+            prompt: "Inspect the workspace from the sub-delegate.".to_string(),
+            title: None,
+            inherit_context: true,
+            harness: None,
+            model: None,
+            logical_effort: None,
+            approval_policy: None,
+            sandbox_mode: None,
+        }),
+    )
+    .await
+    .expect("nested delegate should start")
+    .0;
+
+    // The shape a hand-seeded fixture cannot produce: the job's lineage anchor is the original
+    // project conversation, while its caller run belongs to the delegating runtime.
+    assert_eq!(
+        nested.parent_conversation_id.as_deref(),
+        Some(parent_conversation_id.as_str()),
+        "nested delegation keeps the original conversation as the widget/lineage anchor"
+    );
+    assert_ne!(
+        nested.parent_conversation_id.as_deref(),
+        Some(outer_conversation_id.as_str()),
+        "the lineage anchor is not the delegating runtime, so it cannot prove park ownership"
+    );
+    assert_eq!(
+        nested.parent_agent_run_id.as_deref(),
+        Some(nested_caller_run.id.as_str().as_str()),
+        "the caller run is bound to the delegating runtime and is the real ownership token"
+    );
+
+    let parked = park_delegate(
+        State(state.clone()),
+        nested_headers,
+        Json(DelegateParkRequest {
+            job_ids: vec![nested.job_id.clone()],
+            wake_on: None,
+            wake_on_failure: None,
+            max_wait_secs: Some(60),
+        }),
+    )
+    .await
+    .expect("a nested delegate must be able to park on the sub-delegate it started")
+    .0;
+    assert!(parked.parked);
+    assert_eq!(parked.watched_jobs.len(), 1);
+    assert_eq!(parked.watched_jobs[0].job_id, nested.job_id);
+
+    // Clear the park before releasing the held sub-delegate so settlement does not dispatch a
+    // background wake while the test is tearing down.
+    state
+        .app_state
+        .delegation_park_repo
+        .supersede_for_conversation(&ChatConversationId::from_string(
+            outer_conversation_id.clone(),
+        ))
+        .await
+        .expect("clear park before releasing the held sub-delegate");
+    drop(hold_guard);
+    fs::write(&hold_release_path, "release").expect("release held sub-delegate");
 }
 
 #[tokio::test]
@@ -2782,7 +3169,9 @@ async fn test_delegate_start_does_not_invent_child_model_when_model_is_omitted()
             let candidate = wait_delegate(
                 State(state.clone()),
                 Json(DelegateWaitRequest {
-                    job_id: start.job_id.clone(),
+                    job_id: Some(start.job_id.clone()),
+                    job_ids: None,
+                    wait_timeout_ms: None,
                     include_delegated_status: Some(true),
                     include_child_status: None,
                     include_messages: Some(false),
@@ -3024,6 +3413,674 @@ async fn test_delegate_start_enforces_profile_specific_allowed_targets() {
         .contains("may not delegate"));
 }
 
+/// `managed_team::members` passes `caller_agent_profile = "team_coordinator"` when a coordinator
+/// launches a member. Before the profile-name validator accepted underscores, that profile failed
+/// to resolve and this call returned `400 Unknown canonical caller agent` — the coordinator could
+/// not delegate at all. Authorization must now come from the profile's own allowed targets.
+#[tokio::test]
+async fn test_delegate_start_enforces_team_coordinator_profile_allowed_targets() {
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let parent = create_parent_session(&state).await;
+
+    let error = start_delegate(
+        State(state),
+        Json(DelegateStartRequest {
+            caller_agent_name: Some("ralphx-general-worker".to_string()),
+            caller_agent_profile: Some("team_coordinator".to_string()),
+            caller_context_type: Some("ideation".to_string()),
+            caller_context_id: Some(parent.id.as_str().to_string()),
+            parent_session_id: Some(parent.id.as_str().to_string()),
+            parent_turn_id: None,
+            parent_message_id: None,
+            parent_conversation_id: None,
+            parent_tool_use_id: None,
+            delegated_session_id: None,
+            child_session_id: None,
+            task_ref: None,
+            agent_name: "ralphx-ideation-specialist-backend".to_string(),
+            prompt: "noop".to_string(),
+            title: None,
+            inherit_context: true,
+            harness: Some(AgentHarnessKind::Codex),
+            model: None,
+            logical_effort: None,
+            approval_policy: None,
+            sandbox_mode: None,
+        }),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(
+        error.0,
+        axum::http::StatusCode::FORBIDDEN,
+        "an out-of-allowlist target must fail authorization, not caller resolution: {:?}",
+        error.1 .0
+    );
+    let message = error.1 .0["error"].as_str().unwrap_or_default().to_string();
+    assert!(
+        message.contains("may not delegate"),
+        "expected an allowlist rejection, got: {message}"
+    );
+    assert!(
+        !message.contains("Unknown canonical caller agent"),
+        "the team_coordinator profile must resolve before authorization runs, got: {message}"
+    );
+}
+
+/// Proves the positive half of the same obligation: both targets declared by the coordinator
+/// profile's `delegation.allowed_targets` actually launch from an Edit-mode agent workspace.
+#[tokio::test]
+async fn test_delegate_start_allows_team_coordinator_profile_declared_targets() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (_fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let app_state = Arc::new(AppState::new_sqlite_test());
+    let state = build_state(app_state);
+    seed_codex_provider_default(state.app_state.as_ref(), "gpt-5.5", LogicalEffort::XHigh).await;
+    let (project, parent_conversation, _workspace) =
+        create_project_agent_workspace(state.app_state.as_ref(), worktree_parent.path()).await;
+    let parent_conversation_id = parent_conversation.id.as_str();
+
+    for target in ["ralphx-general-explorer", "ralphx-general-worker"] {
+        let start = start_delegate(
+            State(state.clone()),
+            Json(DelegateStartRequest {
+                caller_agent_name: Some("ralphx-general-worker".to_string()),
+                caller_agent_profile: Some("team_coordinator".to_string()),
+                caller_context_type: Some("project".to_string()),
+                caller_context_id: Some(project.id.as_str().to_string()),
+                parent_session_id: None,
+                parent_turn_id: None,
+                parent_message_id: None,
+                parent_conversation_id: Some(parent_conversation_id.clone()),
+                parent_tool_use_id: None,
+                delegated_session_id: None,
+                child_session_id: None,
+                task_ref: None,
+                agent_name: target.to_string(),
+                prompt: "Inspect the assigned surface and report findings.".to_string(),
+                title: Some(format!("Team member {target}")),
+                inherit_context: true,
+                harness: None,
+                model: None,
+                logical_effort: None,
+                approval_policy: None,
+                sandbox_mode: None,
+            }),
+        )
+        .await
+        .unwrap_or_else(|error| {
+            panic!(
+                "team_coordinator must be allowed to delegate to {target}: {:?}",
+                error.1 .0
+            )
+        })
+        .0;
+
+        assert_eq!(start.agent_name, target);
+        assert_eq!(start.status, "running");
+    }
+}
+
+#[tokio::test]
+async fn test_delegate_start_enforces_workspace_reviewer_allowed_targets() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (_fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let app_state = Arc::new(AppState::new_sqlite_test());
+    let state = build_state(app_state);
+    seed_codex_provider_default(state.app_state.as_ref(), "gpt-5.5", LogicalEffort::XHigh).await;
+    let (project, parent_conversation, _workspace) =
+        create_project_agent_workspace(state.app_state.as_ref(), worktree_parent.path()).await;
+    let parent_conversation_id = parent_conversation.id.as_str();
+
+    let start = start_delegate(
+        State(state.clone()),
+        Json(DelegateStartRequest {
+            caller_agent_name: Some("ralphx-workspace-reviewer".to_string()),
+            caller_agent_profile: None,
+            caller_context_type: Some("project".to_string()),
+            caller_context_id: Some(project.id.as_str().to_string()),
+            parent_session_id: None,
+            parent_turn_id: None,
+            parent_message_id: None,
+            parent_conversation_id: Some(parent_conversation_id.clone()),
+            parent_tool_use_id: None,
+            delegated_session_id: None,
+            child_session_id: None,
+            task_ref: None,
+            agent_name: "ralphx-general-explorer".to_string(),
+            prompt: "Inspect the assigned surface and report findings.".to_string(),
+            title: Some("Workspace review exploration".to_string()),
+            inherit_context: true,
+            harness: None,
+            model: None,
+            logical_effort: None,
+            approval_policy: None,
+            sandbox_mode: None,
+        }),
+    )
+    .await
+    .expect("workspace reviewer must be allowed to delegate to the general explorer")
+    .0;
+
+    assert_eq!(start.agent_name, "ralphx-general-explorer");
+    assert_eq!(start.status, "running");
+
+    let error = start_delegate(
+        State(state),
+        Json(DelegateStartRequest {
+            caller_agent_name: Some("ralphx-workspace-reviewer".to_string()),
+            caller_agent_profile: None,
+            caller_context_type: Some("project".to_string()),
+            caller_context_id: Some(project.id.as_str().to_string()),
+            parent_session_id: None,
+            parent_turn_id: None,
+            parent_message_id: None,
+            parent_conversation_id: Some(parent_conversation_id),
+            parent_tool_use_id: None,
+            delegated_session_id: None,
+            child_session_id: None,
+            task_ref: None,
+            agent_name: "ralphx-general-worker".to_string(),
+            prompt: "Inspect the assigned surface and report findings.".to_string(),
+            title: Some("Workspace review implementation".to_string()),
+            inherit_context: true,
+            harness: None,
+            model: None,
+            logical_effort: None,
+            approval_policy: None,
+            sandbox_mode: None,
+        }),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.0, axum::http::StatusCode::FORBIDDEN);
+    assert!(error.1 .0["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("may not delegate"));
+}
+
+#[tokio::test]
+async fn delegate_start_from_workspace_review_child_conversation_launches_in_workspace_worktree() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let captured_cwd_path = fake_codex_dir.path().join("review-child-cwd.txt");
+    let _captured_cwd_guard = crate::support::env::EnvVarGuard::set(
+        "RALPHX_TEST_CODEX_CWD_PATH",
+        captured_cwd_path.clone(),
+    );
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    seed_codex_provider_default(state.app_state.as_ref(), "gpt-5.5", LogicalEffort::XHigh).await;
+    let (project, anchor_conversation, workspace) =
+        create_project_agent_workspace(state.app_state.as_ref(), worktree_parent.path()).await;
+
+    // The Workspace Review runtime is a child project conversation with no workspace row of
+    // its own; its worktree authority is the anchor workspace one hop up the lineage.
+    let review_conversation = create_child_project_conversation(
+        state.app_state.as_ref(),
+        &project,
+        &anchor_conversation.id.as_str(),
+    )
+    .await;
+    let review_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(review_conversation.id))
+        .await
+        .expect("create review runtime run");
+
+    let started = start_delegate_with_runtime_context(
+        State(state.clone()),
+        runtime_identity_headers(&review_conversation.id.as_str(), &review_run.id.as_str()),
+        Json(child_runtime_delegate_start_request(
+            &project,
+            &anchor_conversation.id.as_str(),
+        )),
+    )
+    .await
+    .expect("delegation must be available from a workspace review child runtime")
+    .0;
+
+    assert_eq!(started.agent_name, "ralphx-general-explorer");
+    assert_eq!(started.status, "running");
+    assert_eq!(started.parent_agent_run_id, Some(review_run.id.as_str()));
+
+    let captured_cwds = wait_for_captured_cwds(&captured_cwd_path, 1).await;
+    assert_eq!(
+        captured_cwds,
+        vec![canonicalized_worktree(&workspace.worktree_path)],
+        "delegate must launch in the reviewed workspace worktree"
+    );
+    assert_ne!(captured_cwds[0], PathBuf::from(&project.working_directory));
+}
+
+#[tokio::test]
+async fn delegate_start_from_forked_child_conversation_uses_its_own_workspace() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let captured_cwd_path = fake_codex_dir.path().join("fork-child-cwd.txt");
+    let _captured_cwd_guard = crate::support::env::EnvVarGuard::set(
+        "RALPHX_TEST_CODEX_CWD_PATH",
+        captured_cwd_path.clone(),
+    );
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    seed_codex_provider_default(state.app_state.as_ref(), "gpt-5.5", LogicalEffort::XHigh).await;
+    let (project, anchor_conversation, anchor_workspace) =
+        create_project_agent_workspace(state.app_state.as_ref(), worktree_parent.path()).await;
+
+    // A forked conversation owns its own workspace; lineage resolution must stop at self.
+    let fork_conversation = create_child_project_conversation(
+        state.app_state.as_ref(),
+        &project,
+        &anchor_conversation.id.as_str(),
+    )
+    .await;
+    let fork_workspace =
+        attach_agent_workspace(state.app_state.as_ref(), &project, &fork_conversation.id).await;
+    assert_ne!(fork_workspace.worktree_path, anchor_workspace.worktree_path);
+    let fork_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(fork_conversation.id))
+        .await
+        .expect("create fork runtime run");
+
+    let _ = start_delegate_with_runtime_context(
+        State(state.clone()),
+        runtime_identity_headers(&fork_conversation.id.as_str(), &fork_run.id.as_str()),
+        Json(child_runtime_delegate_start_request(
+            &project,
+            &anchor_conversation.id.as_str(),
+        )),
+    )
+    .await
+    .expect("delegation must be available from a forked child runtime");
+
+    let captured_cwds = wait_for_captured_cwds(&captured_cwd_path, 1).await;
+    assert_eq!(
+        captured_cwds,
+        vec![canonicalized_worktree(&fork_workspace.worktree_path)],
+        "a fork with its own workspace must not inherit the parent worktree"
+    );
+}
+
+#[tokio::test]
+async fn delegate_start_from_child_runtime_attaches_delegation_to_the_calling_conversation() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (_fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    seed_codex_provider_default(state.app_state.as_ref(), "gpt-5.5", LogicalEffort::XHigh).await;
+    let (project, anchor_conversation, _workspace) =
+        create_project_agent_workspace(state.app_state.as_ref(), worktree_parent.path()).await;
+    let review_conversation = create_child_project_conversation(
+        state.app_state.as_ref(),
+        &project,
+        &anchor_conversation.id.as_str(),
+    )
+    .await;
+    let review_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(review_conversation.id))
+        .await
+        .expect("create review runtime run");
+
+    let started = start_delegate_with_runtime_context(
+        State(state.clone()),
+        runtime_identity_headers(&review_conversation.id.as_str(), &review_run.id.as_str()),
+        Json(child_runtime_delegate_start_request(
+            &project,
+            &anchor_conversation.id.as_str(),
+        )),
+    )
+    .await
+    .expect("child runtime delegation must succeed")
+    .0;
+
+    assert_eq!(
+        started.parent_conversation_id,
+        Some(review_conversation.id.as_str()),
+        "the delegation job must belong to the calling runtime"
+    );
+
+    let delegated_conversation = state
+        .app_state
+        .chat_conversation_repo
+        .get_active_for_context(ChatContextType::Delegation, &started.delegated_session_id)
+        .await
+        .expect("load delegated conversation")
+        .expect("delegated conversation exists");
+    assert_eq!(
+        delegated_conversation.parent_conversation_id,
+        Some(review_conversation.id.as_str()),
+        "delegated conversation lineage must point at the calling runtime"
+    );
+
+    let caller_state = state
+        .app_state
+        .streaming_state_cache
+        .get(&review_conversation.id.as_str())
+        .await
+        .expect("caller streaming state exists");
+    assert_eq!(caller_state.run_id, Some(review_run.id.as_str()));
+    assert_eq!(caller_state.streaming_tasks.len(), 1);
+
+    // Forbidden effect: the workspace anchor conversation must not receive the child's run id
+    // or Delegate widget.
+    let anchor_state = state
+        .app_state
+        .streaming_state_cache
+        .get(&anchor_conversation.id.as_str())
+        .await;
+    assert!(
+        anchor_state
+            .as_ref()
+            .and_then(|cached| cached.run_id.clone())
+            .is_none()
+            && anchor_state
+                .as_ref()
+                .map(|cached| cached.streaming_tasks.is_empty())
+                .unwrap_or(true),
+        "anchor conversation streaming state must be untouched: {anchor_state:?}"
+    );
+}
+
+#[tokio::test]
+async fn delegate_start_reuses_delegated_session_created_under_the_legacy_anchor_parent() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (_fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    seed_codex_provider_default(state.app_state.as_ref(), "gpt-5.5", LogicalEffort::XHigh).await;
+    let (project, anchor_conversation, _workspace) =
+        create_project_agent_workspace(state.app_state.as_ref(), worktree_parent.path()).await;
+    let review_conversation = create_child_project_conversation(
+        state.app_state.as_ref(),
+        &project,
+        &anchor_conversation.id.as_str(),
+    )
+    .await;
+    let review_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(review_conversation.id))
+        .await
+        .expect("create review runtime run");
+
+    // Delegated sessions created before delegation was attributed to the calling runtime store
+    // the workspace anchor as their conversation parent.
+    let legacy_delegated = state
+        .app_state
+        .delegated_session_repo
+        .create(DelegatedSession::new(
+            project.id.clone(),
+            "project",
+            project.id.as_str(),
+            "ralphx-general-explorer",
+            AgentHarnessKind::Codex,
+        ))
+        .await
+        .expect("create legacy delegated session");
+    let mut legacy_conversation = ChatConversation::new_delegation(legacy_delegated.id.clone());
+    legacy_conversation.parent_conversation_id = Some(anchor_conversation.id.as_str());
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(legacy_conversation)
+        .await
+        .expect("create legacy delegated conversation");
+
+    let mut request =
+        child_runtime_delegate_start_request(&project, &anchor_conversation.id.as_str());
+    request.delegated_session_id = Some(legacy_delegated.id.as_str().to_string());
+
+    let started = start_delegate_with_runtime_context(
+        State(state.clone()),
+        runtime_identity_headers(&review_conversation.id.as_str(), &review_run.id.as_str()),
+        Json(request),
+    )
+    .await
+    .expect("reusing a legacy anchor-parented delegated session must not fail closed")
+    .0;
+
+    assert_eq!(started.delegated_session_id, legacy_delegated.id.as_str());
+}
+
+#[tokio::test]
+async fn delegate_start_rejects_conversation_outside_caller_lineage() {
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let (project, anchor_conversation, _workspace) =
+        create_project_agent_workspace(state.app_state.as_ref(), worktree_parent.path()).await;
+
+    // Same project, but not a descendant of the resolved anchor.
+    let sibling_conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project.id.clone()))
+        .await
+        .expect("create sibling conversation");
+    let sibling_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(sibling_conversation.id))
+        .await
+        .expect("create sibling run");
+
+    let error = start_delegate_with_runtime_context(
+        State(state),
+        runtime_identity_headers(&sibling_conversation.id.as_str(), &sibling_run.id.as_str()),
+        Json(child_runtime_delegate_start_request(
+            &project,
+            &anchor_conversation.id.as_str(),
+        )),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.0, axum::http::StatusCode::BAD_REQUEST);
+    assert_eq!(
+        error.1 .0["error"].as_str().unwrap_or_default(),
+        ralphx_lib::http_server::handlers::DELEGATION_CALLER_LINEAGE_ERROR,
+    );
+}
+
+#[tokio::test]
+async fn delegate_start_fails_closed_when_trusted_caller_conversation_is_missing() {
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let (project, anchor_conversation, _workspace) =
+        create_project_agent_workspace(state.app_state.as_ref(), worktree_parent.path()).await;
+
+    let error = start_delegate_with_runtime_context(
+        State(state),
+        runtime_identity_headers(
+            &ChatConversationId::new().as_str(),
+            &AgentRunId::new().as_str(),
+        ),
+        Json(child_runtime_delegate_start_request(
+            &project,
+            &anchor_conversation.id.as_str(),
+        )),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.0, axum::http::StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn delegate_start_rejects_trusted_caller_conversation_from_another_project() {
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let foreign_worktree_parent = TempDir::new().expect("foreign worktree parent");
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let (project, anchor_conversation, _workspace) =
+        create_project_agent_workspace(state.app_state.as_ref(), worktree_parent.path()).await;
+
+    // A real child runtime, but of a workspace in a different project: the project guard must
+    // reject it before ancestry is even considered.
+    let (foreign_project, foreign_anchor, _foreign_workspace) =
+        create_project_agent_workspace(state.app_state.as_ref(), foreign_worktree_parent.path())
+            .await;
+    assert_ne!(foreign_project.id, project.id);
+    let foreign_child = create_child_project_conversation(
+        state.app_state.as_ref(),
+        &foreign_project,
+        &foreign_anchor.id.as_str(),
+    )
+    .await;
+    let foreign_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(foreign_child.id))
+        .await
+        .expect("create foreign child run");
+
+    let error = start_delegate_with_runtime_context(
+        State(state),
+        runtime_identity_headers(&foreign_child.id.as_str(), &foreign_run.id.as_str()),
+        Json(child_runtime_delegate_start_request(
+            &project,
+            &anchor_conversation.id.as_str(),
+        )),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.0, axum::http::StatusCode::BAD_REQUEST);
+    assert_eq!(
+        error.1 .0["error"].as_str().unwrap_or_default(),
+        ralphx_lib::http_server::handlers::DELEGATION_CALLER_LINEAGE_ERROR,
+    );
+}
+
+#[tokio::test]
+async fn delegate_start_rejects_trusted_caller_adoption_without_a_lineage_anchor() {
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let (project, anchor_conversation, _workspace) =
+        create_project_agent_workspace(state.app_state.as_ref(), worktree_parent.path()).await;
+
+    // A genuine descendant of the workspace conversation — but the request omits the anchor, so
+    // nothing vouches for the trusted conversation. Adoption must fail closed rather than trust
+    // the transport header alone and attribute the delegation to an unproven conversation.
+    let child_conversation = create_child_project_conversation(
+        state.app_state.as_ref(),
+        &project,
+        &anchor_conversation.id.as_str(),
+    )
+    .await;
+    let child_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(child_conversation.id))
+        .await
+        .expect("create child run");
+
+    let mut request =
+        child_runtime_delegate_start_request(&project, &anchor_conversation.id.as_str());
+    request.parent_conversation_id = None;
+
+    let error = start_delegate_with_runtime_context(
+        State(state.clone()),
+        runtime_identity_headers(&child_conversation.id.as_str(), &child_run.id.as_str()),
+        Json(request),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.0, axum::http::StatusCode::BAD_REQUEST);
+    assert_eq!(
+        error.1 .0["error"].as_str().unwrap_or_default(),
+        ralphx_lib::http_server::handlers::DELEGATION_CALLER_LINEAGE_ERROR,
+    );
+    assert!(
+        state
+            .app_state
+            .delegated_session_repo
+            .get_by_parent_context("project", project.id.as_str().as_ref())
+            .await
+            .expect("load delegated sessions")
+            .is_empty(),
+        "a rejected adoption must not create a delegated session"
+    );
+}
+
+#[tokio::test]
+async fn delegate_start_climbs_past_a_workspaceless_anchor_to_the_nearest_ancestor_worktree() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let captured_cwd_path = fake_codex_dir.path().join("grandchild-cwd.txt");
+    let _captured_cwd_guard = crate::support::env::EnvVarGuard::set(
+        "RALPHX_TEST_CODEX_CWD_PATH",
+        captured_cwd_path.clone(),
+    );
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    seed_codex_provider_default(state.app_state.as_ref(), "gpt-5.5", LogicalEffort::XHigh).await;
+    let (project, workspace_conversation, workspace) =
+        create_project_agent_workspace(state.app_state.as_ref(), worktree_parent.path()).await;
+
+    // Two hops: an intermediate conversation that owns no workspace, then the runtime below it.
+    // The MCP transport sends the immediate parent as the anchor, so the anchor itself has no
+    // worktree and resolution must keep climbing instead of falling back to the project checkout
+    // — the behavior change this PR introduces for multi-hop lineages.
+    let intermediate_conversation = create_child_project_conversation(
+        state.app_state.as_ref(),
+        &project,
+        &workspace_conversation.id.as_str(),
+    )
+    .await;
+    let grandchild_conversation = create_child_project_conversation(
+        state.app_state.as_ref(),
+        &project,
+        &intermediate_conversation.id.as_str(),
+    )
+    .await;
+    let grandchild_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(grandchild_conversation.id))
+        .await
+        .expect("create grandchild runtime run");
+
+    let _ = start_delegate_with_runtime_context(
+        State(state.clone()),
+        runtime_identity_headers(
+            &grandchild_conversation.id.as_str(),
+            &grandchild_run.id.as_str(),
+        ),
+        Json(child_runtime_delegate_start_request(
+            &project,
+            &intermediate_conversation.id.as_str(),
+        )),
+    )
+    .await
+    .expect("delegation must be available from a multi-hop child runtime");
+
+    let captured_cwds = wait_for_captured_cwds(&captured_cwd_path, 1).await;
+    assert_eq!(
+        captured_cwds,
+        vec![canonicalized_worktree(&workspace.worktree_path)],
+        "a workspaceless anchor must resolve to the nearest ancestor worktree"
+    );
+    assert_ne!(captured_cwds[0], PathBuf::from(&project.working_directory));
+}
+
 #[tokio::test]
 async fn test_delegate_start_infers_parent_session_from_verification_child_context() {
     let _env_lock = codex_cli_env_lock().lock().await;
@@ -3228,7 +4285,9 @@ async fn test_legacy_verification_child_uses_ideation_subagent_harness_when_omit
             let candidate = wait_delegate(
                 State(state.clone()),
                 Json(DelegateWaitRequest {
-                    job_id: start.job_id.clone(),
+                    job_id: Some(start.job_id.clone()),
+                    job_ids: None,
+                    wait_timeout_ms: None,
                     include_delegated_status: Some(true),
                     include_child_status: None,
                     include_messages: Some(false),
@@ -3350,7 +4409,9 @@ async fn test_delegate_start_uses_ideation_subagent_harness_when_harness_is_omit
             let candidate = wait_delegate(
                 State(state.clone()),
                 Json(DelegateWaitRequest {
-                    job_id: start.job_id.clone(),
+                    job_id: Some(start.job_id.clone()),
+                    job_ids: None,
+                    wait_timeout_ms: None,
                     include_delegated_status: Some(true),
                     include_child_status: None,
                     include_messages: Some(false),
@@ -3822,7 +4883,9 @@ async fn test_delegate_wait_hydrates_the_jobs_exact_run_when_session_has_newer_r
     let waited = wait_delegate(
         State(state),
         Json(DelegateWaitRequest {
-            job_id,
+            job_id: Some(job_id),
+            job_ids: None,
+            wait_timeout_ms: None,
             include_delegated_status: Some(true),
             include_child_status: None,
             include_messages: Some(false),
@@ -3880,6 +4943,7 @@ fn test_build_delegated_task_started_payload_uses_parent_lineage_and_delegated_m
             detail: None,
         }],
         delegated_status: None,
+        timed_out: None,
     };
 
     let payload = build_delegated_task_started_payload(
@@ -3972,6 +5036,7 @@ fn test_build_delegated_task_completed_payload_uses_latest_run_attribution() {
             detail: None,
         }],
         delegated_status: None,
+        timed_out: None,
     };
     let latest_run = DelegatedRunSummary {
         agent_run_id: "run-2".to_string(),
@@ -4097,6 +5162,7 @@ fn delegated_lifecycle_payload_uses_job_correlation_without_parent_tool_id() {
         completed_at: None,
         history: vec![],
         delegated_status: None,
+        timed_out: None,
     };
 
     let started = build_delegated_task_started_payload(&snapshot, None, None, None, None, 7)
@@ -4108,4 +5174,303 @@ fn delegated_lifecycle_payload_uses_job_correlation_without_parent_tool_id() {
         Some("job-without-placement")
     );
     assert_eq!(started.conversation_id, "parent-conversation");
+}
+
+// ── Phase 1: backend-held bounded delegate_wait ──────────────────────────────
+
+/// Seeds a delegated session + conversation + running agent run, registers a running
+/// delegation job for it, and returns the job id plus the delegated run id.
+async fn seed_running_delegation_job(
+    state: &HttpServerState,
+    parent: &IdeationSession,
+    job_id: &str,
+) -> (String, AgentRunId) {
+    let delegated_session = state
+        .app_state
+        .delegated_session_repo
+        .create(DelegatedSession::new(
+            parent.project_id.clone(),
+            "ideation".to_string(),
+            parent.id.as_str().to_string(),
+            "ralphx-general-explorer".to_string(),
+            AgentHarnessKind::Codex,
+        ))
+        .await
+        .expect("create delegated session");
+    let delegated_conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_delegation(
+            delegated_session.id.clone(),
+        ))
+        .await
+        .expect("create delegated conversation");
+    let run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(delegated_conversation.id))
+        .await
+        .expect("create delegated run");
+
+    state
+        .delegation_service
+        .register_running(
+            job_id.to_string(),
+            "ideation".to_string(),
+            parent.id.as_str().to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            delegated_session.id.as_str().to_string(),
+            Some(delegated_conversation.id.as_str()),
+            Some(run.id.as_str()),
+            "ralphx-general-explorer".to_string(),
+            None,
+            "codex",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+
+    (job_id.to_string(), run.id)
+}
+
+fn wait_request(job_id: Option<&str>, job_ids: Option<Vec<&str>>) -> DelegateWaitRequest {
+    DelegateWaitRequest {
+        job_id: job_id.map(str::to_string),
+        job_ids: job_ids.map(|ids| ids.into_iter().map(str::to_string).collect()),
+        wait_timeout_ms: None,
+        include_delegated_status: Some(false),
+        include_child_status: None,
+        include_messages: None,
+        message_limit: None,
+    }
+}
+
+/// Marks the registered job terminal through the same CAS the production settlement path uses,
+/// which is the only thing allowed to fire the settlement watch signal.
+async fn commit_job_terminal(state: &HttpServerState, job_id: &str, status: &str) {
+    let candidate = state
+        .delegation_service
+        .terminal_candidate(job_id, status, Some("delegate output".to_string()), None)
+        .await
+        .expect("terminal candidate");
+    assert!(
+        state.delegation_service.commit_terminal(candidate).await,
+        "commit_terminal should accept the first terminal for {job_id}"
+    );
+}
+
+#[tokio::test]
+async fn wait_delegate_without_timeout_returns_immediately() {
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let parent = create_parent_session(&state).await;
+    let (job_id, _run) = seed_running_delegation_job(&state, &parent, "job-immediate").await;
+
+    let started = std::time::Instant::now();
+    let snapshot = wait_delegate(
+        State(state.clone()),
+        Json(wait_request(Some(&job_id), None)),
+    )
+    .await
+    .expect("wait response")
+    .0;
+
+    assert_eq!(snapshot.status, "running");
+    assert_eq!(
+        snapshot.timed_out, None,
+        "an immediate return must not report a timeout"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "default behavior must not block"
+    );
+}
+
+#[tokio::test]
+async fn wait_delegate_blocks_until_settlement() {
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let parent = create_parent_session(&state).await;
+    let (job_id, _run) = seed_running_delegation_job(&state, &parent, "job-blocking").await;
+
+    let settler_state = state.clone();
+    let settler_job = job_id.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        commit_job_terminal(&settler_state, &settler_job, "completed").await;
+    });
+
+    let mut request = wait_request(Some(&job_id), None);
+    request.wait_timeout_ms = Some(10_000);
+
+    let started = std::time::Instant::now();
+    let snapshot = wait_delegate(State(state.clone()), Json(request))
+        .await
+        .expect("wait response")
+        .0;
+    let elapsed = started.elapsed();
+
+    assert_eq!(snapshot.status, "completed");
+    assert_eq!(snapshot.timed_out, None);
+    assert!(
+        elapsed < Duration::from_secs(3),
+        "block must return promptly after settlement, took {elapsed:?}"
+    );
+    assert!(
+        elapsed >= Duration::from_millis(150),
+        "block must actually wait for the settlement signal, took {elapsed:?}"
+    );
+}
+
+#[tokio::test]
+async fn wait_delegate_returns_timed_out_at_cap() {
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let parent = create_parent_session(&state).await;
+    let (job_id, _run) = seed_running_delegation_job(&state, &parent, "job-timeout").await;
+
+    let mut request = wait_request(Some(&job_id), None);
+    request.wait_timeout_ms = Some(200);
+
+    let snapshot = wait_delegate(State(state.clone()), Json(request))
+        .await
+        .expect("wait response")
+        .0;
+
+    assert_eq!(snapshot.timed_out, Some(true));
+    assert_eq!(
+        snapshot.status, "running",
+        "a timeout must never settle the job"
+    );
+    assert_eq!(
+        state
+            .delegation_service
+            .snapshot(&job_id)
+            .await
+            .expect("job still registered")
+            .status,
+        "running"
+    );
+}
+
+#[test]
+fn wait_delegate_clamps_timeout_below_the_stream_stall_guard() {
+    let cap = ralphx_lib::infrastructure::agents::claude::delegation_config().wait_block_max_secs;
+    let stall_guard =
+        ralphx_lib::infrastructure::agents::claude::stream_timeouts().default_parse_stall_secs;
+
+    // Config invariant: a legitimate backend-held block can never outlive the stall guard that
+    // would kill the waiting coordinator's stream. This is the falsifiable guard against config
+    // drift re-introducing the "blocking wait kills the coordinator" failure mode.
+    assert!(
+        cap < stall_guard,
+        "delegation.wait_block_max_secs ({cap}) must stay below \
+         timeouts.stream.default_parse_stall_secs ({stall_guard})"
+    );
+
+    let clamped = ralphx_lib::http_server::handlers::effective_wait_block(u64::MAX);
+    assert!(
+        clamped <= Duration::from_secs(cap),
+        "an absurd caller timeout must clamp to the configured cap"
+    );
+    assert!(
+        clamped < Duration::from_secs(stall_guard),
+        "the effective block must stay strictly below the stall guard"
+    );
+
+    // A modest caller request is honored verbatim.
+    assert_eq!(
+        ralphx_lib::http_server::handlers::effective_wait_block(250),
+        Duration::from_millis(250)
+    );
+}
+
+#[tokio::test]
+async fn wait_delegate_with_job_ids_returns_first_settled() {
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let parent = create_parent_session(&state).await;
+    let (first, _) = seed_running_delegation_job(&state, &parent, "job-wave-1").await;
+    let (second, _) = seed_running_delegation_job(&state, &parent, "job-wave-2").await;
+
+    let settler_state = state.clone();
+    let settler_job = second.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        commit_job_terminal(&settler_state, &settler_job, "completed").await;
+    });
+
+    let mut request = wait_request(None, Some(vec![&first, &second]));
+    request.wait_timeout_ms = Some(10_000);
+
+    let snapshot = wait_delegate(State(state.clone()), Json(request))
+        .await
+        .expect("wait response")
+        .0;
+
+    assert_eq!(
+        snapshot.job_id, second,
+        "the wave wait must return the job that actually settled"
+    );
+    assert_eq!(snapshot.status, "completed");
+    assert_eq!(
+        state
+            .delegation_service
+            .snapshot(&first)
+            .await
+            .expect("sibling still registered")
+            .status,
+        "running",
+        "waking on one job must not settle its siblings"
+    );
+}
+
+#[tokio::test]
+async fn wait_delegate_rejects_both_job_id_and_job_ids() {
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let parent = create_parent_session(&state).await;
+    let (job_id, _run) = seed_running_delegation_job(&state, &parent, "job-ambiguous").await;
+
+    let mut request = wait_request(Some(&job_id), None);
+    request.job_ids = Some(vec![job_id.clone()]);
+
+    let error = wait_delegate(State(state.clone()), Json(request))
+        .await
+        .expect_err("ambiguous watch set must be rejected");
+    assert_eq!(error.0, axum::http::StatusCode::BAD_REQUEST);
+
+    let missing = wait_delegate(State(state.clone()), Json(wait_request(None, None)))
+        .await
+        .expect_err("empty watch set must be rejected");
+    assert_eq!(missing.0, axum::http::StatusCode::BAD_REQUEST);
+
+    let empty_list = wait_delegate(State(state), Json(wait_request(None, Some(vec![]))))
+        .await
+        .expect_err("empty job_ids must be rejected");
+    assert_eq!(empty_list.0, axum::http::StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn wait_delegate_rejects_unknown_job_in_set() {
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let parent = create_parent_session(&state).await;
+    let (job_id, _run) = seed_running_delegation_job(&state, &parent, "job-known").await;
+
+    let error = wait_delegate(
+        State(state),
+        Json(wait_request(
+            None,
+            Some(vec![&job_id, "job-does-not-exist"]),
+        )),
+    )
+    .await
+    .expect_err("unknown job in the watch set must be rejected");
+    assert_eq!(error.0, axum::http::StatusCode::NOT_FOUND);
 }

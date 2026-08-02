@@ -31,6 +31,7 @@ export const sectionModuleLoaders: Record<SettingsSectionId, () => Promise<unkno
   connections: () => import("./connections/ConnectionsSection"),
   mcp: () => import("./McpSettingsSection"),
   updates: () => import("./UpdatesSettingsSection"),
+  database: () => import("./DatabaseMaintenanceSection"),
   accessibility: () => import("./AccessibilitySection"),
   notifications: () => import("./NotificationSettingsPanel"),
 };

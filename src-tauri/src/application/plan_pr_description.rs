@@ -403,6 +403,7 @@ async fn resolve_plan_pr_describer_runtime(
             .sandbox_mode
             .or_else(|| default_sandbox_mode_for_harness(harness).map(str::to_string)),
         service_tier: resolved.service_tier.or(provider_settings.service_tier),
+        runtime_source: resolved.runtime_source,
         env: provider_env,
     };
 

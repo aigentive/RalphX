@@ -263,7 +263,7 @@ impl QueuedMessageRepository for SqliteQueuedMessageRepository {
                             age.num_seconds() > threshold_secs as i64
                         })
                         .unwrap_or(false);
-                    if is_stale {
+                    if is_stale && message.is_hidden_recovery() {
                         conn.execute("DELETE FROM queued_messages WHERE id = ?1", params![id])?;
                         stale.push(message);
                     }

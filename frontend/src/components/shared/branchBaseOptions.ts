@@ -16,6 +16,7 @@ export interface BranchBaseSelection {
   ref: string;
   displayName: string;
   sourcePullRequest?: AgentConversationSourcePullRequest | null;
+  retargetedFromPullRequest?: number | undefined;
 }
 
 export type BranchBaseOptionSource =
@@ -45,6 +46,15 @@ export interface LoadBranchBaseOptionsInput {
 export interface LoadBranchBaseOptionsResult {
   options: BranchBaseOption[];
   selectedKey: string;
+  /** Present sub-loads that failed. All-false means a complete list. */
+  degraded: BranchBaseLoadDegradation;
+  /** Every normalized git branch name observed, including `ralphx/*`. */
+  knownBranchRefs: string[];
+}
+
+export interface BranchBaseLoadDegradation {
+  planBranches: boolean;
+  agentBranches: boolean;
 }
 
 export function normalizeGitBranchName(branch: string) {
@@ -64,6 +74,24 @@ export function compareBranchNames(a: string, b: string) {
   return a.localeCompare(b, undefined, { sensitivity: "base" });
 }
 
+export function synthesizeLocalBranchOption(
+  ref: string,
+  label?: string
+): BranchBaseOption {
+  const displayName = label ?? ref;
+  return {
+    key: `local_branch:${ref}`,
+    label: displayName,
+    detail: "Local branch",
+    source: "local",
+    selection: {
+      kind: "local_branch",
+      ref,
+      displayName,
+    },
+  };
+}
+
 export async function loadBranchBaseOptions({
   projectId,
   workingDirectory,
@@ -78,10 +106,10 @@ export async function loadBranchBaseOptions({
       getGitBranches(workingDirectory),
       includePlanBranches && projectId
         ? loadPlanBranchOptions(projectId)
-        : Promise.resolve([]),
+        : Promise.resolve({ options: [], failed: false }),
       includeAgentBranches && projectId
         ? loadAgentBranchOptions(projectId)
-        : Promise.resolve([]),
+        : Promise.resolve({ options: [], failed: false }),
     ]);
 
   const configuredProjectBase = projectBaseBranch?.trim();
@@ -101,6 +129,18 @@ export async function loadBranchBaseOptions({
       ? branchesResult.value.map(normalizeGitBranchName).filter(Boolean)
       : [projectDefault];
   const branchSet = new Set(branches);
+  const planBranchLoad =
+    planOptionsResult.status === "fulfilled"
+      ? planOptionsResult.value
+      : { options: [], failed: true };
+  const agentBranchLoad =
+    agentOptionsResult.status === "fulfilled"
+      ? agentOptionsResult.value
+      : { options: [], failed: true };
+  const degraded = {
+    planBranches: planOptionsResult.status === "rejected" || planBranchLoad.failed,
+    agentBranches: agentOptionsResult.status === "rejected" || agentBranchLoad.failed,
+  };
 
   const optionMap = new Map<string, BranchBaseOption>();
   const addOption = (option: BranchBaseOption) => {
@@ -157,8 +197,8 @@ export async function loadBranchBaseOptions({
     });
 
   const knownGeneratedOptions = [
-    ...(planOptionsResult.status === "fulfilled" ? planOptionsResult.value : []),
-    ...(agentOptionsResult.status === "fulfilled" ? agentOptionsResult.value : []),
+    ...planBranchLoad.options,
+    ...agentBranchLoad.options,
   ]
     .filter((option) => branchSet.has(option.selection.ref))
     .sort((a, b) => {
@@ -171,10 +211,14 @@ export async function loadBranchBaseOptions({
   return {
     options: Array.from(optionMap.values()),
     selectedKey: `project_default:${projectDefault}`,
+    degraded,
+    knownBranchRefs: branches,
   };
 }
 
-export function fallbackBranchBaseOptions(baseBranch: string | null | undefined) {
+export function fallbackBranchBaseOptions(
+  baseBranch: string | null | undefined
+): LoadBranchBaseOptionsResult {
   const fallback = normalizeGitBranchName(baseBranch ?? "main");
   return {
     options: [
@@ -191,6 +235,8 @@ export function fallbackBranchBaseOptions(baseBranch: string | null | undefined)
       },
     ],
     selectedKey: `project_default:${fallback}`,
+    degraded: { planBranches: false, agentBranches: false },
+    knownBranchRefs: [fallback],
   };
 }
 
@@ -203,7 +249,7 @@ export async function loadPullRequestBaseOptions({
 }): Promise<BranchBaseOption[]> {
   const input = {
     projectId,
-    limit: 30,
+    limit: 50,
     ...(query !== undefined ? { query } : {}),
   };
   const pullRequests = await searchGithubPullRequests(input);
@@ -218,32 +264,56 @@ export async function loadPullRequestBaseOptions({
       continue;
     }
     const title = pullRequest.title.trim() || `Pull request #${pullRequest.number}`;
+    const mergeTarget = normalizeGitBranchName(pullRequest.baseRefName);
+    const state = pullRequest.state?.toUpperCase();
+    const isMerged = state === "MERGED";
+    const isClosed = state === "CLOSED";
+    if (isClosed) {
+      continue;
+    }
+    if (isMerged && !mergeTarget) {
+      continue;
+    }
     const draftLabel = pullRequest.isDraft ? " - Draft" : "";
+    const mergedDetail = `Merged → ${mergeTarget}`;
     options.push({
       key: `pull_request:${pullRequest.number}:${branchName}`,
       label: `#${pullRequest.number} ${title}`,
-      detail: `${branchName} -> ${pullRequest.baseRefName}${draftLabel}`,
+      detail: isMerged ? mergedDetail : `${branchName} -> ${pullRequest.baseRefName}${draftLabel}`,
       source: "pull_request",
       selection: {
         kind: "local_branch",
-        ref: branchName,
-        displayName: `PR #${pullRequest.number}: ${title}`,
-        sourcePullRequest: {
-          number: pullRequest.number,
-          url: pullRequest.url ?? null,
-          title,
-          headRefName: branchName,
-          baseRefName: pullRequest.baseRefName ?? null,
-          headRefOid: pullRequest.headRefOid ?? null,
-        },
+        ref: isMerged ? mergeTarget : branchName,
+        displayName: isMerged
+          ? `${mergeTarget} (PR #${pullRequest.number} merged)`
+          : `PR #${pullRequest.number}: ${title}`,
+        ...(isMerged ? { retargetedFromPullRequest: pullRequest.number } : {}),
+        ...(isMerged
+          ? {}
+          : {
+              sourcePullRequest: {
+                number: pullRequest.number,
+                url: pullRequest.url ?? null,
+                title,
+                headRefName: branchName,
+                baseRefName: pullRequest.baseRefName ?? null,
+                headRefOid: pullRequest.headRefOid ?? null,
+              },
+            }),
       },
     });
   }
 
-  return options;
+  return options.sort(
+    (left, right) =>
+      Number(left.selection.retargetedFromPullRequest !== undefined) -
+      Number(right.selection.retargetedFromPullRequest !== undefined),
+  );
 }
 
-async function loadPlanBranchOptions(projectId: string): Promise<BranchBaseOption[]> {
+async function loadPlanBranchOptions(
+  projectId: string
+): Promise<{ options: BranchBaseOption[]; failed: boolean }> {
   try {
     const [branches, sessions] = await Promise.all([
       planBranchApi.getByProject(projectId),
@@ -253,29 +323,34 @@ async function loadPlanBranchOptions(projectId: string): Promise<BranchBaseOptio
       sessions.map((session) => [session.id, session.title ?? `Plan ${session.id.slice(0, 8)}`])
     );
 
-    return branches
-      .filter((branch) => branch.status === "active")
-      .map((branch) => {
-        const branchName = normalizeGitBranchName(branch.branchName);
-        const title = titleBySessionId.get(branch.sessionId) ?? `Plan ${branch.sessionId.slice(0, 8)}`;
-        return {
-          key: `local_branch:${branchName}`,
-          label: title,
-          detail: branchName,
-          source: "plan" as const,
-          selection: {
-            kind: "local_branch" as const,
-            ref: branchName,
-            displayName: title,
-          },
-        };
-      });
+    return {
+      options: branches
+        .filter((branch) => branch.status === "active")
+        .map((branch) => {
+          const branchName = normalizeGitBranchName(branch.branchName);
+          const title = titleBySessionId.get(branch.sessionId) ?? `Plan ${branch.sessionId.slice(0, 8)}`;
+          return {
+            key: `local_branch:${branchName}`,
+            label: title,
+            detail: branchName,
+            source: "plan" as const,
+            selection: {
+              kind: "local_branch" as const,
+              ref: branchName,
+              displayName: title,
+            },
+          };
+        }),
+      failed: false,
+    };
   } catch {
-    return [];
+    return { options: [], failed: true };
   }
 }
 
-async function loadAgentBranchOptions(projectId: string): Promise<BranchBaseOption[]> {
+async function loadAgentBranchOptions(
+  projectId: string
+): Promise<{ options: BranchBaseOption[]; failed: boolean }> {
   try {
     const [conversations, workspaces] = await Promise.all([
       chatApi.listConversations("project", projectId, false),
@@ -285,33 +360,36 @@ async function loadAgentBranchOptions(projectId: string): Promise<BranchBaseOpti
       conversations.map((conversation) => [conversation.id, conversation])
     );
 
-    return workspaces.flatMap((workspace) => {
-      if (workspace.status === "missing" || workspace.linkedPlanBranchId) {
-        return [];
-      }
+    return {
+      options: workspaces.flatMap((workspace) => {
+        if (workspace.status === "missing" || workspace.linkedPlanBranchId) {
+          return [];
+        }
 
-      const conversation = conversationById.get(workspace.conversationId);
-      if (!conversation) {
-        return [];
-      }
+        const conversation = conversationById.get(workspace.conversationId);
+        if (!conversation) {
+          return [];
+        }
 
-      const branchName = normalizeGitBranchName(workspace.branchName);
-      return [
-        {
-          key: `local_branch:${branchName}`,
-          label: agentWorkspaceTitle(conversation),
-          detail: branchName,
-          source: "agent" as const,
-          selection: {
-            kind: "local_branch" as const,
-            ref: branchName,
-            displayName: agentWorkspaceTitle(conversation),
+        const branchName = normalizeGitBranchName(workspace.branchName);
+        return [
+          {
+            key: `local_branch:${branchName}`,
+            label: agentWorkspaceTitle(conversation),
+            detail: branchName,
+            source: "agent" as const,
+            selection: {
+              kind: "local_branch" as const,
+              ref: branchName,
+              displayName: agentWorkspaceTitle(conversation),
+            },
           },
-        },
-      ];
-    });
+        ];
+      }),
+      failed: false,
+    };
   } catch {
-    return [];
+    return { options: [], failed: true };
   }
 }
 

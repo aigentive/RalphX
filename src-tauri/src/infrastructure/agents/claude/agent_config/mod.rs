@@ -29,9 +29,10 @@ use tool_sets::canonical_claude_tool_sets;
 use process_config::{resolve_canonical_process_mapping, ProcessMapping};
 
 pub use runtime_config::{
-    validate_external_mcp_config, AllRuntimeConfig, AutomationsRuntimeConfig, ExternalMcpConfig,
-    GitRuntimeConfig, LimitsConfig, ReconciliationConfig, SchedulerConfig, SpecialistEntry,
-    StreamTimeoutsConfig, SupervisorRuntimeConfig, VerificationConfig,
+    validate_external_mcp_config, AllRuntimeConfig, AutomationsRuntimeConfig,
+    DatabaseMaintenanceConfig, DelegationConfig, ExternalMcpConfig, GitRuntimeConfig, LimitsConfig,
+    ReconciliationConfig, SchedulerConfig, SpecialistEntry, StreamTimeoutsConfig,
+    SupervisorRuntimeConfig, VerificationConfig,
 };
 
 const VALID_EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
@@ -246,6 +247,8 @@ struct RalphxConfig {
     #[serde(default)]
     timeouts: runtime_config::TimeoutsWrapper,
     #[serde(default)]
+    database_maintenance: runtime_config::DatabaseMaintenanceConfig,
+    #[serde(default)]
     reconciliation: ReconciliationConfig,
     #[serde(default)]
     git: GitRuntimeConfig,
@@ -261,6 +264,8 @@ struct RalphxConfig {
     ideation: runtime_config::IdeationConfigWrapper,
     #[serde(default)]
     external_mcp: ExternalMcpConfig,
+    #[serde(default)]
+    delegation: runtime_config::DelegationConfig,
     #[serde(default)]
     ui: Option<UiConfig>,
     #[serde(default)]
@@ -344,6 +349,14 @@ fn default_defer_merge_enabled() -> bool {
 
 fn default_file_logging() -> bool {
     true
+}
+
+fn default_file_logging_max_bytes() -> u64 {
+    1024 * 1024 * 1024
+}
+
+fn default_file_logging_keep_files() -> usize {
+    5
 }
 
 struct LoadedConfig {
@@ -654,12 +667,66 @@ fn apply_external_mcp_overlay_or_embedded_from_path(
 struct MinimalEarlyConfig {
     #[serde(default = "default_file_logging")]
     file_logging: bool,
+    #[serde(default = "default_file_logging_max_bytes")]
+    file_logging_max_bytes: u64,
+    #[serde(default = "default_file_logging_keep_files")]
+    file_logging_keep_files: usize,
 }
 
 fn parse_early_file_logging(yaml: &str) -> Option<bool> {
     serde_yaml::from_str::<MinimalEarlyConfig>(yaml)
         .ok()
         .map(|config| config.file_logging)
+}
+
+fn parse_early_file_logging_limits(yaml: &str) -> Option<(u64, usize)> {
+    serde_yaml::from_str::<MinimalEarlyConfig>(yaml)
+        .ok()
+        .map(|config| {
+            (
+                config.file_logging_max_bytes,
+                config.file_logging_keep_files,
+            )
+        })
+}
+
+fn resolve_file_logging_limits_from_sources(
+    max_bytes_environment_value: Option<&str>,
+    keep_files_environment_value: Option<&str>,
+    runtime_config_path: Option<&Path>,
+    embedded_config: &str,
+) -> (u64, usize) {
+    let embedded = parse_early_file_logging_limits(embedded_config).unwrap_or_else(|| {
+        (
+            default_file_logging_max_bytes(),
+            default_file_logging_keep_files(),
+        )
+    });
+    let configured = runtime_config_path
+        .and_then(|path| {
+            // Runtime config paths are established from RalphX-owned bundled resources.
+            // codeql[rust/path-injection]
+            std::fs::read_to_string(path)
+                .ok()
+                .and_then(|contents| parse_early_file_logging_limits(&contents))
+        })
+        .unwrap_or(embedded);
+
+    let max_bytes = max_bytes_environment_value
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(configured.0);
+    // A zero cap (from any source, including YAML) would create a writer that
+    // silently records nothing; fall back to the default instead.
+    let max_bytes = if max_bytes == 0 {
+        default_file_logging_max_bytes()
+    } else {
+        max_bytes
+    };
+    let keep_files = keep_files_environment_value
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(configured.1);
+    (max_bytes, keep_files)
 }
 
 fn resolve_file_logging_from_sources(
@@ -693,6 +760,19 @@ pub fn resolve_file_logging_early() -> bool {
     let runtime_config_path = configured_runtime_config_dir().map(|dir| dir.join("ralphx.yaml"));
     resolve_file_logging_from_sources(
         environment_value.as_deref(),
+        runtime_config_path.as_deref(),
+        EMBEDDED_CONFIG,
+    )
+}
+
+/// Resolves the file logging cap and retained previous-run file count before tracing starts.
+pub fn resolve_file_logging_limits_early() -> (u64, usize) {
+    let max_bytes_environment_value = std::env::var("RALPHX_FILE_LOGGING_MAX_BYTES").ok();
+    let keep_files_environment_value = std::env::var("RALPHX_FILE_LOGGING_KEEP_FILES").ok();
+    let runtime_config_path = configured_runtime_config_dir().map(|dir| dir.join("ralphx.yaml"));
+    resolve_file_logging_limits_from_sources(
+        max_bytes_environment_value.as_deref(),
+        keep_files_environment_value.as_deref(),
         runtime_config_path.as_deref(),
         EMBEDDED_CONFIG,
     )
@@ -1161,6 +1241,7 @@ fn resolve_loaded_config_with_lookup(
         .and_then(|u| u.feature_flags.clone())
         .unwrap_or_default();
     let mut runtime = AllRuntimeConfig {
+        database_maintenance: parsed.database_maintenance,
         stream: parsed.timeouts.stream,
         reconciliation: parsed.reconciliation,
         git: parsed.git,
@@ -1169,6 +1250,7 @@ fn resolve_loaded_config_with_lookup(
         limits: parsed.limits,
         verification: parsed.ideation.verification,
         external_mcp: parsed.external_mcp,
+        delegation: parsed.delegation,
         child_session_activity_threshold_secs: parsed
             .ideation
             .child_session_activity_threshold_secs,
@@ -1618,6 +1700,7 @@ fn load_config() -> LoadedConfig {
         })
         .unwrap_or_else(|| {
             let mut runtime = AllRuntimeConfig {
+                database_maintenance: runtime_config::DatabaseMaintenanceConfig::default(),
                 stream: StreamTimeoutsConfig::default(),
                 reconciliation: ReconciliationConfig::default(),
                 git: GitRuntimeConfig::default(),
@@ -1626,6 +1709,7 @@ fn load_config() -> LoadedConfig {
                 limits: LimitsConfig::default(),
                 verification: VerificationConfig::default(),
                 external_mcp: ExternalMcpConfig::default(),
+                delegation: runtime_config::DelegationConfig::default(),
                 child_session_activity_threshold_secs: None,
                 ui_feature_flags: UiFeatureFlagsConfig::default(),
             };
@@ -1802,6 +1886,18 @@ pub fn agent_harness_defaults_config() -> &'static AgentHarnessDefaultsConfig {
 
 pub fn stream_timeouts() -> &'static StreamTimeoutsConfig {
     &LOADED_CONFIG_CELL.get_or_init(load_config).runtime.stream
+}
+
+/// Backend-held delegation waiting settings (bounded `delegate_wait` + park/wake).
+pub fn delegation_config() -> &'static runtime_config::DelegationConfig {
+    &LOADED_CONFIG_CELL.get_or_init(load_config).runtime.delegation
+}
+
+pub fn database_maintenance_config() -> &'static runtime_config::DatabaseMaintenanceConfig {
+    &LOADED_CONFIG_CELL
+        .get_or_init(load_config)
+        .runtime
+        .database_maintenance
 }
 
 pub fn reconciliation_config() -> &'static ReconciliationConfig {

@@ -126,17 +126,23 @@ pub(crate) fn parse_line(line: &str) -> Option<ParsedLine> {
 
     // Parse either direct event objects ({type: ...}) or wrapped envelopes
     // ({message: {type: ...}}, {data: {type: ...}}, {event: {type: ...}}).
-    let message_value = if raw_value.get("type").is_some() {
-        raw_value
-    } else if let Some(inner) = raw_value.get("message").filter(|v| v.is_object()) {
-        inner.clone()
-    } else if let Some(inner) = raw_value.get("data").filter(|v| v.is_object()) {
-        inner.clone()
-    } else if let Some(inner) = raw_value.get("event").filter(|v| v.is_object()) {
-        inner.clone()
-    } else {
-        return None;
-    };
+    let message_value =
+        if raw_value.get("type").and_then(|value| value.as_str()) == Some("stream_event") {
+            raw_value
+                .get("event")
+                .filter(|value| value.is_object())?
+                .clone()
+        } else if raw_value.get("type").is_some() {
+            raw_value
+        } else if let Some(inner) = raw_value.get("message").filter(|v| v.is_object()) {
+            inner.clone()
+        } else if let Some(inner) = raw_value.get("data").filter(|v| v.is_object()) {
+            inner.clone()
+        } else if let Some(inner) = raw_value.get("event").filter(|v| v.is_object()) {
+            inner.clone()
+        } else {
+            return None;
+        };
 
     let message: StreamMessage = serde_json::from_value(message_value).ok()?;
     Some(ParsedLine {

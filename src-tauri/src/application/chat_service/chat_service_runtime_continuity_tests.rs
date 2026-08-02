@@ -162,6 +162,10 @@ async fn project_plan_action_resumes_exact_successful_codex_runtime() {
     );
     assert_eq!(launched.effective_model_id.as_deref(), Some("gpt-5.6-sol"));
     assert_eq!(launched.logical_effort, Some(LogicalEffort::High));
+    assert_eq!(
+        launched.runtime_source,
+        Some(crate::domain::entities::RuntimeSource::HarnessFallback)
+    );
 }
 
 #[tokio::test]

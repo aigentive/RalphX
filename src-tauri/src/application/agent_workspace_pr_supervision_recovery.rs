@@ -56,6 +56,25 @@ const PR_SUPERVISION_RECOVERED_SUMMARY: &str =
 static IN_FLIGHT_RECOVERIES: OnceLock<DashMap<String, ()>> = OnceLock::new();
 static RECENT_RECOVERIES: OnceLock<DashMap<String, Instant>> = OnceLock::new();
 
+/// Releases the in-flight claim and stamps the recent map even if the
+/// recovery task panics (for example inside a lazy deps factory); otherwise a
+/// single panic would permanently suppress PR supervision recovery for this
+/// workspace until restart.
+struct InFlightRecoveryClaim {
+    conversation_id: ChatConversationId,
+}
+
+impl Drop for InFlightRecoveryClaim {
+    fn drop(&mut self) {
+        RECENT_RECOVERIES
+            .get_or_init(DashMap::new)
+            .insert(self.conversation_id.as_str(), Instant::now());
+        IN_FLIGHT_RECOVERIES
+            .get_or_init(DashMap::new)
+            .remove(&self.conversation_id.as_str());
+    }
+}
+
 fn is_in_flight_durable_repair_phase(phase: AgentWorkspaceRepairPhase) -> bool {
     matches!(
         phase,
@@ -158,6 +177,20 @@ pub(crate) fn schedule_agent_workspace_pr_supervision_recovery(
     trigger: AgentWorkspacePrSupervisionRecoveryTrigger,
     force: bool,
 ) {
+    schedule_agent_workspace_pr_supervision_recovery_with_lazy_deps(
+        move || deps,
+        conversation_id,
+        trigger,
+        force,
+    );
+}
+
+pub(crate) fn schedule_agent_workspace_pr_supervision_recovery_with_lazy_deps(
+    deps_factory: impl FnOnce() -> AgentWorkspacePrSupervisionRecoveryDeps + Send + 'static,
+    conversation_id: ChatConversationId,
+    trigger: AgentWorkspacePrSupervisionRecoveryTrigger,
+    force: bool,
+) {
     if !claim_recovery(&conversation_id, force) {
         tracing::debug!(
             conversation_id = conversation_id.as_str(),
@@ -168,15 +201,16 @@ pub(crate) fn schedule_agent_workspace_pr_supervision_recovery(
     }
 
     tokio::spawn(async move {
+        let _claim = InFlightRecoveryClaim {
+            conversation_id: conversation_id.clone(),
+        };
         let started = Instant::now();
-        let result =
-            recover_agent_workspace_pr_supervision(deps, conversation_id.clone(), trigger).await;
-        RECENT_RECOVERIES
-            .get_or_init(DashMap::new)
-            .insert(conversation_id.as_str(), Instant::now());
-        IN_FLIGHT_RECOVERIES
-            .get_or_init(DashMap::new)
-            .remove(&conversation_id.as_str());
+        let result = recover_agent_workspace_pr_supervision(
+            deps_factory(),
+            conversation_id.clone(),
+            trigger,
+        )
+        .await;
 
         match result {
             Ok(outcome) => tracing::info!(

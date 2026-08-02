@@ -45,6 +45,7 @@ import type {
   SendAgentMessageOptions,
   SendAgentMessageResult,
   TeamIntent,
+  TeamMessageTarget,
 } from "@/api/chat";
 
 // ============================================================================
@@ -77,6 +78,7 @@ interface UseChatActionsProps {
       capabilityIntent?: CapabilityIntent | null;
       composerSelectionSnapshot?: ComposerSelectionSnapshot;
       teamIntent?: TeamIntent | null;
+      teamMessageTarget?: TeamMessageTarget | null;
     }) => Promise<SendAgentMessageResult>;
   };
   /** Current visible conversation ID, used by direct review/merge sends for immediate local echo. */
@@ -198,6 +200,7 @@ export function useChatActions({
         capabilityIntent?: CapabilityIntent | null;
         selectionSnapshot?: ComposerSelectionSnapshot;
         teamIntent?: TeamIntent | null;
+        teamMessageTarget?: TeamMessageTarget | null;
       },
     ) => {
       if (!content.trim() || sendMessage.isPending) return;
@@ -254,13 +257,17 @@ export function useChatActions({
               composerOptions?.excerptReferences?.length ||
               composerOptions?.capabilityIntent ||
               composerOptions?.selectionSnapshot ||
-              composerOptions?.teamIntent
+              composerOptions?.teamIntent ||
+              composerOptions?.teamMessageTarget
                 ? {
                     ...(composerOptions?.capabilityIntent
                       ? { capabilityIntent: composerOptions.capabilityIntent }
                       : {}),
                     ...(composerOptions?.teamIntent
                       ? { teamIntent: composerOptions.teamIntent }
+                      : {}),
+                    ...(composerOptions?.teamMessageTarget
+                      ? { teamMessageTarget: composerOptions.teamMessageTarget }
                       : {}),
                     ...(composerOptions?.projectReferences?.length
                       ? {
@@ -339,6 +346,7 @@ export function useChatActions({
             capabilityIntent?: CapabilityIntent | null;
             composerSelectionSnapshot?: ComposerSelectionSnapshot;
             teamIntent?: TeamIntent | null;
+            teamMessageTarget?: TeamMessageTarget | null;
           } = { content };
           if (composerOptions?.folderReferences?.length) {
             params.composerFolderReferences = composerOptions.folderReferences;
@@ -368,6 +376,9 @@ export function useChatActions({
           }
           if (composerOptions?.teamIntent) {
             params.teamIntent = composerOptions.teamIntent;
+          }
+          if (composerOptions?.teamMessageTarget) {
+            params.teamMessageTarget = composerOptions.teamMessageTarget;
           }
           const result = await sendMessage.mutateAsync(params);
           sentResult = result;

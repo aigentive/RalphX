@@ -135,6 +135,35 @@ describe('getAllowedToolNames', () => {
         expect(tools).not.toContain('create_task_proposal');
         expect(tools).not.toContain('finalize_proposals');
     });
+    it('grants coordinator and member Team tools only to their canonical roles in RX-native Team mode', () => {
+        process.env.RALPHX_COORDINATION_MODE = 'rx_native_team';
+        setAgentType(GENERAL_WORKER);
+        expect(getAllowedToolNames()).not.toContain('team_assign');
+        expect(getAllowedToolNames()).toEqual(expect.arrayContaining(['team_send_message', 'team_roster']));
+        setAgentType(GENERAL_EXPLORER);
+        expect(getAllowedToolNames()).toEqual(expect.arrayContaining(['team_send_message', 'team_roster']));
+        expect(getAllowedToolNames()).not.toContain('team_add_member');
+        setAgentType('ralphx-chat-task');
+        expect(getAllowedToolNames()).not.toContain('team_send_message');
+        process.env.RALPHX_AGENT_PROFILE = 'team_coordinator';
+        expect(getAllowedToolNames()).toEqual(expect.arrayContaining([
+            'team_add_member',
+            'team_assign',
+            'team_list',
+            'team_stop_member',
+            'team_send_message',
+        ]));
+        setAgentType(GENERAL_WORKER);
+        expect(getAllowedToolNames()).toEqual(expect.arrayContaining([
+            'team_add_member',
+            'team_assign',
+            'team_list',
+            'team_stop_member',
+            'team_send_message',
+        ]));
+        process.env.RALPHX_COORDINATION_MODE = 'rx_native_workflow';
+        expect(getAllowedToolNames()).not.toContain('team_assign');
+    });
     it('rejects canonical agent path traversal attempts', () => {
         expect(loadCanonicalMcpTools('../secrets')).toBeUndefined();
         expect(loadCanonicalMcpTools(ORCHESTRATOR_IDEATION, '../secrets')).toBeUndefined();
@@ -142,11 +171,17 @@ describe('getAllowedToolNames', () => {
     it('treats delegation-only canonical mcp_tools as canonical instead of missing', () => {
         setAgentType('qa-tester');
         const tools = getAllowedToolNames();
-        expect(tools).toEqual(['delegate_start', 'delegate_wait', 'delegate_cancel']);
+        expect(tools).toEqual([
+            'delegate_start',
+            'delegate_wait',
+            'delegate_cancel',
+            'delegate_park',
+        ]);
         expect(loadCanonicalMcpTools('qa-tester')).toEqual([
             'delegate_start',
             'delegate_wait',
             'delegate_cancel',
+            'delegate_park',
         ]);
     });
     it('resolves the PR describer legacy alias to canonical metadata', () => {
@@ -461,6 +496,7 @@ describe('getFilteredTools', () => {
             'delegate_start',
             'delegate_wait',
             'delegate_cancel',
+            'delegate_park',
         ]);
     });
     it('should return no tools for unknown agent type', () => {
@@ -887,10 +923,12 @@ describe('agent workspace repair tool', () => {
     it('should exist in ALL_TOOLS', () => {
         expect(tool).toBeDefined();
     });
-    it('should accept only a completion summary and optional blocker', () => {
+    it('should accept a completion summary, optional blocker, and classified resolution', () => {
         expect(tool?.inputSchema.type).toBe('object');
         expect(tool?.inputSchema.properties).toHaveProperty('summary');
         expect(tool?.inputSchema.properties).toHaveProperty('blocker');
+        expect(tool?.inputSchema.properties).toHaveProperty('resolution');
+        expect(tool?.inputSchema.properties).toHaveProperty('fix_commit_sha');
         expect(tool?.inputSchema.properties).not.toHaveProperty('conversation_id');
         expect(tool?.inputSchema.properties).not.toHaveProperty('repair_commit_sha');
         expect(tool?.inputSchema.properties).not.toHaveProperty('resolved_base_ref');
@@ -898,9 +936,24 @@ describe('agent workspace repair tool', () => {
         expect(tool?.inputSchema.required).toEqual(['summary']);
         expect(tool?.inputSchema.additionalProperties).toBe(false);
     });
+    it('matches the PR fix resolution enum and validates the reported fix commit SHA', () => {
+        const prFixTool = allTools.find((t) => t.name === 'complete_agent_workspace_pr_fix');
+        const repairProperties = tool?.inputSchema.properties;
+        const prFixProperties = prFixTool?.inputSchema.properties;
+        expect(repairProperties?.resolution?.enum).toEqual(prFixProperties?.resolution?.enum);
+        expect(repairProperties?.fix_commit_sha).toMatchObject({
+            pattern: '^[0-9a-f]{40}$',
+        });
+    });
     it('accepts valid repair completion objects and rejects model-supplied identity or SHA extras', () => {
         const validate = new AjvValidator().compile(tool.inputSchema);
-        expect(validate({ summary: 'Resolved conflicts', blocker: 'Needs input' })).toBe(true);
+        expect(validate({
+            summary: 'Resolved conflicts',
+            blocker: 'Needs input',
+            resolution: 'fixed',
+            fix_commit_sha: 'a'.repeat(40),
+        })).toBe(true);
+        expect(validate({ summary: 'Resolved conflicts', fix_commit_sha: 'not-a-sha' })).toBe(false);
         for (const [property, value] of Object.entries({
             conversation_id: 'conversation-from-model',
             agent_run_id: 'run-from-model',
@@ -942,7 +995,7 @@ describe('agent workspace publish tools', () => {
         process.env.RALPHX_COORDINATION_MODE = 'rx_native_workflow';
         try {
             const toolNames = getFilteredTools().map((tool) => tool.name);
-            expect(new Set(toolNames)).toEqual(new Set(loadCanonicalMcpTools(GENERAL_WORKER)));
+            expect(new Set(toolNames)).toEqual(new Set((loadCanonicalMcpTools(GENERAL_WORKER) ?? []).filter((tool) => tool !== 'team_send_message' && tool !== 'team_roster')));
             for (const toolName of publishTools) {
                 expect(toolNames).toContain(toolName);
             }
@@ -982,7 +1035,7 @@ describe('agent workspace PR fix tools', () => {
         expect(tool?.inputSchema.properties).not.toHaveProperty('orchestration_id');
         expect(tool?.inputSchema.properties).toMatchObject({
             fix_commit_sha: {
-                description: expect.stringContaining('Required when blocker is absent'),
+                description: expect.stringContaining('Required for a fixed completion'),
                 pattern: '^[0-9a-f]{40}$',
             },
         });
@@ -1626,6 +1679,7 @@ describe('agent workspace publish tool transport', () => {
             {
                 summary: 'Resolved conflicts',
                 blocker: 'Needs maintainer decision',
+                reported_fix_commit_sha: 'a'.repeat(40),
             },
         ],
         [
@@ -1704,6 +1758,8 @@ describe('agent workspace repair tool transport', () => {
         await expect(callCompleteAgentWorkspaceRepairTool(callTauri, {
             summary: 'Resolved conflicts',
             blocker: 'Needs maintainer decision',
+            resolution: 'pre_existing_on_base',
+            fix_commit_sha: 'a'.repeat(40),
         }, {
             agentRunId: 'run-1',
             parentConversationId: 'conversation-1',
@@ -1712,6 +1768,8 @@ describe('agent workspace repair tool transport', () => {
         expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-1/complete-repair', {
             summary: 'Resolved conflicts',
             blocker: 'Needs maintainer decision',
+            resolution: 'pre_existing_on_base',
+            reported_fix_commit_sha: 'a'.repeat(40),
         }, {
             headers: {
                 'x-ralphx-agent-run-id': 'run-1',
@@ -1748,7 +1806,7 @@ describe('agent workspace repair tool transport', () => {
 // ===========================================================================
 describe('delegation bridge tools', () => {
     const allTools = getAllTools();
-    it.each(['delegate_start', 'delegate_wait', 'delegate_cancel'])('%s should exist in ALL_TOOLS', (toolName) => {
+    it.each(['delegate_start', 'delegate_wait', 'delegate_cancel', 'delegate_park'])('%s should exist in ALL_TOOLS', (toolName) => {
         expect(allTools.find((tool) => tool.name === toolName)).toBeDefined();
     });
     it('delegate_start should hide session selection and require only agent_name and prompt', () => {
@@ -1775,6 +1833,29 @@ describe('delegation bridge tools', () => {
         expect(tool?.inputSchema.properties).toHaveProperty('include_messages');
         expect(tool?.inputSchema.properties).toHaveProperty('message_limit');
     });
+    it('delegate_wait should expose the backend-held bounded wait surface', () => {
+        const tool = allTools.find((entry) => entry.name === 'delegate_wait');
+        expect(tool?.inputSchema.properties).toHaveProperty('job_ids');
+        expect(tool?.inputSchema.properties).toHaveProperty('wait_timeout_ms');
+        // job_id is no longer required on its own: job_ids is the alternative watch set.
+        expect(tool?.inputSchema.required ?? []).not.toContain('job_id');
+    });
+    it('delegate_park should require job ids without exposing runtime identity', () => {
+        const tool = allTools.find((entry) => entry.name === 'delegate_park');
+        const properties = tool?.inputSchema.properties ?? {};
+        expect(tool?.inputSchema.required).toContain('job_ids');
+        expect(properties).toHaveProperty('job_ids');
+        expect(properties).toHaveProperty('wake_on');
+        expect(properties).toHaveProperty('wake_on_failure');
+        expect(properties).toHaveProperty('max_wait_secs');
+        expect(properties.wake_on.enum).toEqual(['all', 'any']);
+        expect(properties.wake_on.default).toBe('all');
+        expect(properties.wake_on_failure.default).toBe(true);
+        expect(properties).not.toHaveProperty('run_id');
+        expect(properties).not.toHaveProperty('agent_run_id');
+        expect(properties).not.toHaveProperty('conversation_id');
+        expect(properties).not.toHaveProperty('parent_conversation_id');
+    });
     it.each([
         ORCHESTRATOR_IDEATION,
         ORCHESTRATOR_IDEATION_READONLY,
@@ -1785,6 +1866,7 @@ describe('delegation bridge tools', () => {
         expect(toolsByAgent()[agent]).toContain('delegate_start');
         expect(toolsByAgent()[agent]).toContain('delegate_wait');
         expect(toolsByAgent()[agent]).toContain('delegate_cancel');
+        expect(toolsByAgent()[agent]).toContain('delegate_park');
     });
     it('PR_REVIEWER should expose get_artifact for selected plan references', () => {
         expect(toolsByAgent()[PR_REVIEWER]).toEqual(loadCanonicalMcpTools(PR_REVIEWER));
@@ -1794,6 +1876,7 @@ describe('delegation bridge tools', () => {
         expect(toolsByAgent()[agent]).toContain('delegate_start');
         expect(toolsByAgent()[agent]).toContain('delegate_wait');
         expect(toolsByAgent()[agent]).toContain('delegate_cancel');
+        expect(toolsByAgent()[agent]).toContain('delegate_park');
     });
     it.each([
         ORCHESTRATOR_IDEATION,
@@ -1815,6 +1898,17 @@ describe('delegation bridge tools', () => {
         expect(toolNames).toContain('delegate_start');
         expect(toolNames).toContain('delegate_wait');
         expect(toolNames).toContain('delegate_cancel');
+        expect(toolNames).toContain('delegate_park');
+    });
+    it('hides delegate_park from a non-delegating agent even when it is transport-granted', () => {
+        try {
+            setAgentType('ralphx-persona-extractor');
+            process.env.RALPHX_ALLOWED_MCP_TOOLS = 'delegate_park';
+            expect(getFilteredTools().map((tool) => tool.name)).not.toContain('delegate_park');
+        }
+        finally {
+            delete process.env.RALPHX_ALLOWED_MCP_TOOLS;
+        }
     });
 });
 // ===========================================================================

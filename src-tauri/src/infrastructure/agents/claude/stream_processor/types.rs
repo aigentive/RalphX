@@ -103,6 +103,10 @@ pub enum StreamMessage {
         exit_code: Option<i32>,
         #[serde(default)]
         outcome: Option<String>,
+        #[serde(default)]
+        estimated_tokens: Option<u64>,
+        #[serde(default)]
+        estimated_tokens_delta: Option<u64>,
     },
     /// User message (contains tool results when using MCP)
     #[serde(rename = "user")]
@@ -176,6 +180,7 @@ pub struct ContentBlock {
 pub struct ContentDelta {
     #[serde(rename = "type")]
     pub delta_type: String,
+    #[serde(alias = "thinking")]
     pub text: Option<String>,
     pub partial_json: Option<String>,
 }
@@ -232,6 +237,12 @@ pub struct ToolCall {
 pub enum ContentBlockItem {
     #[serde(rename = "text")]
     Text { text: String },
+    #[serde(rename = "thinking")]
+    Thinking {
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
+    },
     #[serde(rename = "tool_use")]
     ToolUse {
         id: Option<String>,
@@ -254,8 +265,20 @@ pub enum ContentBlockItem {
 pub enum StreamEvent {
     /// Text chunk received
     TextChunk(String),
-    /// Thinking block from Claude's extended reasoning
-    Thinking(String),
+    /// Thinking block from Claude's extended reasoning.
+    /// `block_index` is authoritative, so consumers do not infer it from
+    /// mutable processor state.
+    Thinking { text: String, block_index: u64 },
+    /// A thinking block was sealed with its final duration.
+    ThinkingSettled {
+        block_index: u64,
+        duration_ms: Option<u64>,
+    },
+    /// Estimated tokens consumed while Claude is thinking.
+    ThinkingProgress {
+        estimated_tokens: u64,
+        estimated_tokens_delta: Option<u64>,
+    },
     /// Tool call started (name and id available)
     ToolCallStarted {
         name: String,

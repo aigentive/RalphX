@@ -81,11 +81,11 @@ import {
   statusActionButtonStyle,
 } from "./AgentsPublishActionBar";
 import { AgentsPublishChecksTab } from "./AgentsPublishChecksTab";
+import { AgentsPublishAutomationTab } from "./AgentsPublishAutomationTab";
 import {
-  AgentsPublishAutomationTab,
   deriveAgentsPublishAutomationSnapshot,
   type AgentsPublishAutomationSnapshot,
-} from "./AgentsPublishAutomationTab";
+} from "./agentsPublishAutomationSnapshot";
 import { PublishEventLog, selectPublishHistory } from "./AgentsPublishEventLog";
 import { PublishPipelineSteps } from "./AgentsPublishPipelineSteps";
 import {
@@ -107,6 +107,7 @@ import {
   getAgentWorkspaceTerminalPublicationStatus,
   getAgentWorkspaceEffectiveBaseLabel,
   getAgentWorkspaceMaintenancePresentation,
+  getAgentWorkspacePrAutofixFingerprintSpendPresentation,
   hasPublishedWorkspacePr,
   isAgentWorkspacePublishActive,
   isAgentWorkspaceMaintenanceActive,
@@ -125,7 +126,10 @@ import {
   getAgentWorkspaceChangeFacts,
   mapReviewCommitsToDiffViewerCommits,
 } from "./useAgentWorkspaceChangeSummary";
-import { useAgentWorkspaceBaseUpdate } from "./useAgentWorkspaceBaseUpdate";
+import {
+  type RetargetedAgentWorkspaceBaseSelection,
+  useAgentWorkspaceBaseUpdate,
+} from "./useAgentWorkspaceBaseUpdate";
 import { useAgentWorkspaceFullFreshness } from "./useAgentWorkspaceFullFreshness";
 import type { AgentWorkspacePublishAttempt } from "./useAgentWorkspacePublisher";
 import {
@@ -150,6 +154,17 @@ const PUBLISH_PIPELINE_EVENT_STEPS = new Set([
   "pushed",
   "published",
 ]);
+
+function hasPublishReadinessAction(
+  freshness: { recommendedActions?: readonly string[] | undefined } | null | undefined,
+  action: string,
+) {
+  return freshness?.recommendedActions?.includes(action) ?? false;
+}
+
+function isBaseRefDriftBlocker(blocker: string | null | undefined) {
+  return /base[-_ ]ref[-_ ]drift/i.test(blocker ?? "");
+}
 
 function latestPublicationEventForActivePublish(
   events: AgentConversationWorkspacePublicationEvent[],
@@ -344,6 +359,7 @@ export function AgentPublishPanel({
     );
   }, [conversationId]);
   const maintenancePresentation = getAgentWorkspaceMaintenancePresentation(workspace);
+  const fingerprintSpend = getAgentWorkspacePrAutofixFingerprintSpendPresentation(workspace);
   const isMaintenanceActive = isAgentWorkspaceMaintenanceActive(workspace);
   const blocksGitInspection = blocksAgentWorkspaceGitInspection(workspace);
   const isPublishingWorkspace =
@@ -500,8 +516,10 @@ export function AgentPublishPanel({
       !blocksGitInspection &&
       canInspectBaseFreshness &&
       !terminalPublicationStatus,
+    isOperationActive:
+      isPublishingWorkspace || isMaintenanceActive || isUpdatingFromBase,
   });
-  const freshness = freshnessQuery.data;
+  const freshness = canInspectBaseFreshness ? freshnessQuery.data : undefined;
   const shouldAutoRefreshFromBase = shouldAutoRefreshCleanAgentWorkspaceFromBase(
     workspace,
     freshness,
@@ -837,6 +855,27 @@ export function AgentPublishPanel({
     freshness?.baseRef ??
     workspace.baseRef ??
     base;
+  const retargetedBaseRef =
+    freshness?.effectiveBaseRef ?? freshness?.baseRef ?? workspace.baseRef;
+  const hasMergedPullRequestBase =
+    hasPublishReadinessAction(freshness, "base_pr_merged") ||
+    (baseRetargeted && workspace.sourcePullRequest != null);
+  const mergedPullRequestBaseSelection: RetargetedAgentWorkspaceBaseSelection | null =
+    hasMergedPullRequestBase && retargetedBaseRef
+      ? {
+          kind: "local_branch",
+          ref: retargetedBaseRef,
+          displayName: baseActionLabel,
+          ...(workspace.sourcePullRequest
+            ? { retargetedFromPullRequest: workspace.sourcePullRequest.number }
+            : {}),
+        }
+      : null;
+  const retryRepairLabel = isBaseRefDriftBlocker(
+    workspace.maintenanceOperation?.blocker,
+  )
+    ? `Retry (retargets repair to ${mergedPullRequestBaseSelection?.displayName ?? baseActionLabel})`
+    : "Retry repair";
   const baselineAutomationSnapshot = deriveAgentsPublishAutomationSnapshot({
     workspace,
     hasPublishedPr,
@@ -1230,6 +1269,19 @@ export function AgentPublishPanel({
       workspace,
     });
   };
+  const rebaseMergedPullRequestBase = () => {
+    if (!mergedPullRequestBaseSelection) {
+      return;
+    }
+    runUpdateFromBase({
+      baseSelection: mergedPullRequestBaseSelection,
+      conversationId: workspace.conversationId,
+      detail: `From ${mergedPullRequestBaseSelection.displayName}`,
+      kind: "rebase",
+      title: `Rebasing onto ${mergedPullRequestBaseSelection.displayName}`,
+      workspace,
+    });
+  };
   const confirmClosePr = () => {
     void confirm({
       title: "Close pull request?",
@@ -1379,7 +1431,7 @@ export function AgentPublishPanel({
                   data-testid="agents-publish-retry-maintenance"
                 >
                   <AlertTriangle className="h-3.5 w-3.5" />
-                  Retry repair
+                  {retryRepairLabel}
                 </Button>
               ) : maintenancePresentation?.action === "publish" ? (
                 <Button
@@ -1413,6 +1465,17 @@ export function AgentPublishPanel({
                 >
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
                   {publishButtonLabel}
+                </Button>
+              ) : mergedPullRequestBaseSelection ? (
+                <Button
+                  type="button"
+                  className={primaryActionClassName}
+                  onClick={rebaseMergedPullRequestBase}
+                  disabled={effectivePublishing || workspace.status === "missing"}
+                  data-testid="agents-rebase-merged-pr-base"
+                >
+                  <GitBranch className="h-3.5 w-3.5" />
+                  Rebase onto {mergedPullRequestBaseSelection.displayName}
                 </Button>
               ) : hasPrConflict ? (
                 <Button
@@ -2126,6 +2189,7 @@ export function AgentPublishPanel({
         branch={branch}
         base={base}
         targetPullRequestLabel={publishTargetPullRequestLabel}
+        fingerprintSpend={fingerprintSpend}
         prSupervisionStatus={prSupervisionStatus}
         status={pipelineStatus}
         isPublishing={isPublishingThisWorkspace}

@@ -61,6 +61,7 @@ pub struct ChatResumptionRunner {
     plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
     interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
     app_handle: Option<AppHandle>,
+    managed_team_barrier: Option<Arc<crate::application::managed_team::ManagedTeamStartupBarrier>>,
 }
 
 impl ChatResumptionRunner {
@@ -88,7 +89,18 @@ impl ChatResumptionRunner {
             plan_branch_repo: None,
             interactive_process_registry: None,
             app_handle: None,
+            managed_team_barrier: None,
         }
+    }
+
+    /// Set the managed-Team startup barrier (builder pattern). Without it,
+    /// Team conversations are resumed like ordinary conversations.
+    pub fn with_managed_team_barrier(
+        mut self,
+        barrier: Arc<crate::application::managed_team::ManagedTeamStartupBarrier>,
+    ) -> Self {
+        self.managed_team_barrier = Some(barrier);
+        self
     }
 
     pub fn with_plan_branch_repo(mut self, repo: Arc<dyn PlanBranchRepository>) -> Self {
@@ -184,6 +196,21 @@ impl ChatResumptionRunner {
                         "[CHAT_RESUMPTION] Skipping - handled by task resumption"
                     );
                     continue;
+                }
+                if let Some(barrier) = self.managed_team_barrier.as_ref() {
+                    if barrier
+                        .should_fence_resumption(
+                            conv.conversation.coordination_mode,
+                            &conv.conversation.id,
+                        )
+                        .await
+                    {
+                        info!(
+                            conversation_id = conv.conversation.id.as_str(),
+                            "[CHAT_RESUMPTION] Skipping - fenced by managed-Team startup barrier"
+                        );
+                        continue;
+                    }
                 }
                 if let Some(reason) = self
                     .blocked_agent_workspace_resume_reason(&conv.conversation)

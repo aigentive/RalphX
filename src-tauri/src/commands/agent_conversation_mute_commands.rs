@@ -4,7 +4,8 @@ use tauri::State;
 
 use crate::application::AppState;
 use crate::commands::agent_sidebar_commands::{
-    attention_state_fingerprint, normalized_supervision_status, publication_state_for_workspace,
+    attention_state_fingerprint, managed_team_activity_for_conversation,
+    normalized_supervision_status, publication_state_for_workspace,
 };
 use crate::commands::unified_chat_commands::agent_workspace_response_for_state;
 use crate::domain::entities::{AgentConversationMute, ChatConversationId};
@@ -63,6 +64,10 @@ pub async fn set_agent_conversation_muted_for_app_state(
         .await
         .map_err(|error| error.to_string())?;
     let latest_run_status = latest_run.as_ref().map(|run| run.status);
+    // Same Team-activity projection as the sidebar read path; a divergent
+    // component here would produce a fingerprint the sidebar never computes.
+    let managed_team_activity =
+        managed_team_activity_for_conversation(state, &conversation_id).await?;
     let fingerprint = attention_state_fingerprint(
         conversation.is_archived(),
         publication_state_for_workspace(workspace.as_ref(), latest_run_status),
@@ -70,6 +75,9 @@ pub async fn set_agent_conversation_muted_for_app_state(
         latest_run_status,
         normalized_supervision_status(workspace.as_ref()).as_deref(),
         conversation.last_message_at,
+        managed_team_activity
+            .as_ref()
+            .map(|activity| activity.fingerprint.as_str()),
     );
     state
         .agent_conversation_mute_repo

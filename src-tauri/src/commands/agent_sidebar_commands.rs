@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+use crate::application::agent_workspace_publish_recovery::is_blocked_and_not_auto_retryable;
 use crate::application::AppState;
 use crate::commands::unified_chat_commands::{
     agent_conversation_response_for_state, agent_workspace_response_for_state,
@@ -11,10 +12,14 @@ use crate::commands::unified_chat_commands::{
     AgentConversationWorkspaceResponse,
 };
 use crate::domain::entities::{
-    AgentRunStatus, ChatContextType, ChatConversation, ChatConversationId, Project, ProjectId,
+    AgentRunStatus, ChatContextType, ChatConversation, ChatConversationId, DelegationPark, Project,
+    ProjectId, TeamMemberStatus, TeamRunBindingStatus, TeamRunTriggerKind,
 };
 
 const DEFAULT_LIMIT_PER_GROUP: u32 = 6;
+/// Queued wake batches are only sampled as an activity signal; the sidebar
+/// needs presence plus a stable fingerprint, not the full queue.
+const SIDEBAR_WAKE_BATCH_SCAN_LIMIT: u32 = 16;
 const MAX_LIMIT_PER_GROUP: u32 = 100;
 const STALE_AFTER_DAYS: i64 = 7;
 const STANDALONE_AUTOMATION_GROUP_KEY: &str = "__standalone__";
@@ -71,6 +76,7 @@ pub struct AgentSidebarConversationRowResponse {
     pub publication_state: String,
     pub publication_label: Option<String>,
     pub attention_lane: String,
+    pub parked_delegate_count: usize,
     pub is_muted: bool,
     pub action_verb: String,
 }
@@ -222,9 +228,16 @@ struct SidebarConversationRow {
     ref_label: String,
     publication_state: SidebarPublicationState,
     attention_lane: SidebarAttentionLane,
+    parked_delegate_count: usize,
     attention_state_fingerprint: String,
     is_muted: bool,
     action_verb: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ManagedTeamActivity {
+    pub(crate) is_working: bool,
+    pub(crate) fingerprint: String,
 }
 
 #[tauri::command]
@@ -354,6 +367,10 @@ async fn list_agent_sidebar_conversation_groups_from_hydrated(
         normalize_string_set(input.priority_conversation_ids.as_deref().unwrap_or(&[]))
             .into_iter()
             .collect();
+    let managed_team_activity_by_conversation =
+        managed_team_activity_by_conversation(state).await?;
+    let parked_delegate_counts_by_conversation =
+        armed_parked_delegate_counts_by_conversation(state).await?;
 
     let mut project_labels: Vec<(String, String)> = Vec::new();
     let mut automation_labels: HashMap<String, String> = HashMap::new();
@@ -418,6 +435,13 @@ async fn list_agent_sidebar_conversation_groups_from_hydrated(
                 .await
                 .map_err(|e| e.to_string())?;
             let latest_run_status = latest_run.as_ref().map(|run| run.status);
+            let blocked_exhausted_repair = state
+                .agent_workspace_repair_repo
+                .get_current_repair_attempt(&conversation.id)
+                .await
+                .map_err(|e| e.to_string())?
+                .as_ref()
+                .is_some_and(is_blocked_and_not_auto_retryable);
             let publication_state =
                 publication_state_for_workspace(workspace.as_ref(), latest_run_status);
             if !selected_state_set.contains(&publication_state) {
@@ -426,14 +450,21 @@ async fn list_agent_sidebar_conversation_groups_from_hydrated(
 
             let (ref_kind, ref_label) =
                 conversation_ref_display(workspace.as_ref(), default_ref_label.as_str());
-            let attention_lane = attention_lane_for_row(
+            let parked_delegate_count = parked_delegate_counts_by_conversation
+                .get(&conversation.id)
+                .copied()
+                .unwrap_or_default();
+            let attention_lane = attention_lane_for_row_with_armed_park(
                 conversation.is_archived(),
                 publication_state,
                 latest_run_status,
                 workspace.as_ref(),
+                blocked_exhausted_repair,
                 conversation
                     .last_message_at
                     .unwrap_or(conversation.updated_at),
+                managed_team_activity_by_conversation.get(&conversation.id),
+                parked_delegate_counts_by_conversation.contains_key(&conversation.id),
             );
             let attention_state_fingerprint = attention_state_fingerprint(
                 conversation.is_archived(),
@@ -442,6 +473,9 @@ async fn list_agent_sidebar_conversation_groups_from_hydrated(
                 latest_run_status,
                 normalized_supervision_status(workspace.as_ref()).as_deref(),
                 conversation.last_message_at,
+                managed_team_activity_by_conversation
+                    .get(&conversation.id)
+                    .map(|activity| activity.fingerprint.as_str()),
             );
             let action_verb = action_verb_for_row(
                 publication_state,
@@ -476,6 +510,7 @@ async fn list_agent_sidebar_conversation_groups_from_hydrated(
                 ref_label,
                 publication_state,
                 attention_lane,
+                parked_delegate_count,
                 attention_state_fingerprint,
                 is_muted: false,
                 action_verb,
@@ -528,14 +563,21 @@ async fn list_agent_sidebar_conversation_groups_from_hydrated(
 
         let (ref_kind, ref_label) =
             conversation_ref_display(None, standalone_default_ref_label.as_str());
-        let attention_lane = attention_lane_for_row(
+        let parked_delegate_count = parked_delegate_counts_by_conversation
+            .get(&conversation.id)
+            .copied()
+            .unwrap_or_default();
+        let attention_lane = attention_lane_for_row_with_armed_park(
             conversation.is_archived(),
             publication_state,
             latest_run_status,
             None,
+            false,
             conversation
                 .last_message_at
                 .unwrap_or(conversation.updated_at),
+            managed_team_activity_by_conversation.get(&conversation.id),
+            parked_delegate_counts_by_conversation.contains_key(&conversation.id),
         );
         let attention_state_fingerprint = attention_state_fingerprint(
             conversation.is_archived(),
@@ -544,6 +586,9 @@ async fn list_agent_sidebar_conversation_groups_from_hydrated(
             latest_run_status,
             None,
             conversation.last_message_at,
+            managed_team_activity_by_conversation
+                .get(&conversation.id)
+                .map(|activity| activity.fingerprint.as_str()),
         );
         let action_verb = action_verb_for_row(publication_state, latest_run_status, None, ref_kind);
         let sort_at = conversation
@@ -567,6 +612,7 @@ async fn list_agent_sidebar_conversation_groups_from_hydrated(
             ref_label,
             publication_state,
             attention_lane,
+            parked_delegate_count,
             attention_state_fingerprint,
             is_muted: false,
             action_verb,
@@ -780,6 +826,7 @@ pub(crate) fn attention_state_fingerprint(
     latest_run_status: Option<AgentRunStatus>,
     supervision_status: Option<&str>,
     last_message_at: Option<DateTime<Utc>>,
+    managed_team_activity: Option<&str>,
 ) -> String {
     [
         format!("archived={is_archived}"),
@@ -790,6 +837,7 @@ pub(crate) fn attention_state_fingerprint(
             latest_run_status.map_or("<none>".to_string(), |status| format!("{status:?}"))
         ),
         format!("supervision={}", supervision_status.unwrap_or("<none>")),
+        format!("managed_team={}", managed_team_activity.unwrap_or("<none>")),
         format!(
             "last_message_at={}",
             last_message_at.map_or("<none>".to_string(), |at| at.to_rfc3339())
@@ -824,12 +872,37 @@ async fn apply_current_mutes(
     Ok(())
 }
 
+#[cfg(test)]
 fn attention_lane_for_row(
     is_archived: bool,
     publication_state: SidebarPublicationState,
     latest_run_status: Option<AgentRunStatus>,
     workspace: Option<&AgentConversationWorkspaceResponse>,
+    blocked_exhausted_repair: bool,
     last_activity_at: DateTime<Utc>,
+    managed_team_activity: Option<&ManagedTeamActivity>,
+) -> SidebarAttentionLane {
+    attention_lane_for_row_with_armed_park(
+        is_archived,
+        publication_state,
+        latest_run_status,
+        workspace,
+        blocked_exhausted_repair,
+        last_activity_at,
+        managed_team_activity,
+        false,
+    )
+}
+
+fn attention_lane_for_row_with_armed_park(
+    is_archived: bool,
+    publication_state: SidebarPublicationState,
+    latest_run_status: Option<AgentRunStatus>,
+    workspace: Option<&AgentConversationWorkspaceResponse>,
+    blocked_exhausted_repair: bool,
+    last_activity_at: DateTime<Utc>,
+    managed_team_activity: Option<&ManagedTeamActivity>,
+    has_armed_delegation_park: bool,
 ) -> SidebarAttentionLane {
     if is_archived
         || matches!(
@@ -840,8 +913,14 @@ fn attention_lane_for_row(
         return SidebarAttentionLane::Done;
     }
 
+    if blocked_exhausted_repair {
+        return SidebarAttentionLane::Needs;
+    }
+
     let supervision_status = normalized_supervision_status(workspace);
     if is_in_flight_run_status(latest_run_status)
+        || managed_team_activity.is_some_and(|activity| activity.is_working)
+        || has_armed_delegation_park
         || matches!(
             supervision_status.as_deref(),
             Some("fixing" | "publishing" | "waiting" | "waiting_for_checks" | "monitoring")
@@ -855,6 +934,152 @@ fn attention_lane_for_row(
     }
 
     SidebarAttentionLane::Needs
+}
+
+async fn armed_parked_delegate_counts_by_conversation(
+    state: &AppState,
+) -> Result<HashMap<ChatConversationId, usize>, String> {
+    state
+        .delegation_park_repo
+        .list_armed()
+        .await
+        .map(parked_delegate_counts_by_conversation)
+        .map_err(|error| {
+            tracing::warn!(error = %error, "failed to load armed delegation parks for sidebar");
+            error.to_string()
+        })
+}
+
+fn parked_delegate_counts_by_conversation(
+    parks: Vec<DelegationPark>,
+) -> HashMap<ChatConversationId, usize> {
+    let mut counts_by_conversation = HashMap::new();
+    for park in parks {
+        let unsettled_count = park
+            .jobs
+            .iter()
+            .filter(|job| job.settled_status.is_none())
+            .count();
+        *counts_by_conversation
+            .entry(park.parent_conversation_id)
+            .or_default() += unsettled_count;
+    }
+    counts_by_conversation
+}
+
+async fn managed_team_activity_by_conversation(
+    state: &AppState,
+) -> Result<HashMap<ChatConversationId, ManagedTeamActivity>, String> {
+    let team_repo = state.managed_team.team_repo();
+    let mut activity_by_conversation = HashMap::new();
+
+    // TeamRepository has no bulk roster/binding projection. Load open sessions
+    // once, then one roster and binding list per open Team rather than per
+    // sidebar row; failures are propagated so a live Team cannot become idle
+    // merely because its activity read failed.
+    for session in team_repo
+        .list_open_sessions()
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        let activity = managed_team_activity_for_session(state, &session.id).await?;
+        activity_by_conversation.insert(session.coordinator_conversation_id, activity);
+    }
+    Ok(activity_by_conversation)
+}
+
+/// Activity projection for one open Team. The mute command must produce the
+/// SAME fingerprint as the sidebar read path or a saved mute never matches.
+pub(crate) async fn managed_team_activity_for_conversation(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> Result<Option<ManagedTeamActivity>, String> {
+    let session = state
+        .managed_team
+        .team_repo()
+        .get_open_session_for_conversation(conversation_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    match session {
+        Some(session) => Ok(Some(
+            managed_team_activity_for_session(state, &session.id).await?,
+        )),
+        None => Ok(None),
+    }
+}
+
+async fn managed_team_activity_for_session(
+    state: &AppState,
+    team_id: &crate::domain::entities::TeamSessionId,
+) -> Result<ManagedTeamActivity, String> {
+    let team_repo = state.managed_team.team_repo();
+    let binding_repo = state.managed_team.run_binding_repo();
+    let wake_batch_repo = state.managed_team.wake_batch_repo();
+
+    let mut member_states = team_repo
+        .list_members(team_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|member| {
+            (
+                member.id.as_str().to_string(),
+                member.generation,
+                member.status,
+            )
+        })
+        .collect::<Vec<_>>();
+    member_states.sort_by(|left, right| left.0.cmp(&right.0));
+
+    let mut bindings = binding_repo
+        .list_for_team(team_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|binding| {
+            (
+                binding.id.as_str().to_string(),
+                binding.trigger_kind,
+                binding.status,
+            )
+        })
+        .collect::<Vec<_>>();
+    bindings.sort_by(|left, right| left.0.cmp(&right.0));
+
+    let member_working = member_states.iter().any(|(_, _, status)| {
+        matches!(
+            status,
+            TeamMemberStatus::Provisioning | TeamMemberStatus::Working | TeamMemberStatus::Stopping
+        )
+    });
+    let wake_working = bindings.iter().any(|(_, trigger, status)| {
+        *trigger == TeamRunTriggerKind::WakeBatch
+            && matches!(
+                status,
+                TeamRunBindingStatus::Planned
+                    | TeamRunBindingStatus::Launching
+                    | TeamRunBindingStatus::Running
+            )
+    });
+    // Unclaimed queued wake batches have no run binding yet; a queued wake
+    // means a coordinator turn is pending, which is Working, not Needs.
+    let mut queued_wake_ids = wake_batch_repo
+        .list_queued_for_team(team_id, SIDEBAR_WAKE_BATCH_SCAN_LIMIT)
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|batch| batch.id.0)
+        .collect::<Vec<_>>();
+    queued_wake_ids.sort();
+    let wake_queued = !queued_wake_ids.is_empty();
+
+    let fingerprint = format!(
+        "members={member_states:?};wake_bindings={bindings:?};queued_wakes={queued_wake_ids:?}",
+    );
+    Ok(ManagedTeamActivity {
+        is_working: member_working || wake_working || wake_queued,
+        fingerprint,
+    })
 }
 
 fn action_verb_for_row(
@@ -1141,6 +1366,7 @@ impl From<SidebarConversationRow> for AgentSidebarConversationRowResponse {
             publication_state: row.publication_state.key().to_string(),
             publication_label,
             attention_lane: row.attention_lane.key().to_string(),
+            parked_delegate_count: row.parked_delegate_count,
             is_muted: row.is_muted,
             action_verb: row.action_verb,
         }
@@ -1261,6 +1487,10 @@ fn supervision_publication_label(
 }
 
 #[cfg(test)]
+#[path = "agent_sidebar_commands_tests.rs"]
+mod agent_sidebar_commands_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::entities::{
@@ -1364,6 +1594,47 @@ mod tests {
             .create(conversation)
             .await
             .unwrap()
+    }
+
+    #[test]
+    fn blocked_exhausted_repair_escalates_row_to_needs_lane() {
+        let now = Utc::now();
+        assert_eq!(
+            attention_lane_for_row(
+                false,
+                SidebarPublicationState::Active,
+                Some(AgentRunStatus::Running),
+                None,
+                true,
+                now,
+                None,
+            ),
+            SidebarAttentionLane::Needs
+        );
+        assert_eq!(
+            attention_lane_for_row(
+                false,
+                SidebarPublicationState::Active,
+                Some(AgentRunStatus::Running),
+                None,
+                false,
+                now,
+                None,
+            ),
+            SidebarAttentionLane::Working
+        );
+        assert_eq!(
+            attention_lane_for_row(
+                true,
+                SidebarPublicationState::Merged,
+                None,
+                None,
+                true,
+                now,
+                None
+            ),
+            SidebarAttentionLane::Done
+        );
     }
 
     #[tokio::test]
@@ -1516,6 +1787,7 @@ mod tests {
             Some(AgentRunStatus::Completed),
             Some("blocked"),
             Some(now),
+            None,
         );
         assert_eq!(
             baseline,
@@ -1525,7 +1797,8 @@ mod tests {
                 Some("run-a"),
                 Some(AgentRunStatus::Completed),
                 Some("blocked"),
-                Some(now)
+                Some(now),
+                None,
             )
         );
         assert_ne!(
@@ -1536,7 +1809,8 @@ mod tests {
                 Some("run-a"),
                 Some(AgentRunStatus::Completed),
                 Some("blocked"),
-                Some(now)
+                Some(now),
+                None,
             )
         );
         assert_ne!(
@@ -1547,7 +1821,8 @@ mod tests {
                 Some("run-a"),
                 Some(AgentRunStatus::Completed),
                 Some("blocked"),
-                Some(now)
+                Some(now),
+                None,
             )
         );
         assert_ne!(
@@ -1558,7 +1833,8 @@ mod tests {
                 Some("run-b"),
                 Some(AgentRunStatus::Completed),
                 Some("blocked"),
-                Some(now)
+                Some(now),
+                None,
             )
         );
         assert_ne!(
@@ -1569,7 +1845,8 @@ mod tests {
                 Some("run-a"),
                 Some(AgentRunStatus::Running),
                 Some("blocked"),
-                Some(now)
+                Some(now),
+                None,
             )
         );
         assert_ne!(
@@ -1580,7 +1857,8 @@ mod tests {
                 Some("run-a"),
                 Some(AgentRunStatus::Completed),
                 Some("fixing"),
-                Some(now)
+                Some(now),
+                None,
             )
         );
         assert_ne!(
@@ -1591,8 +1869,70 @@ mod tests {
                 Some("run-a"),
                 Some(AgentRunStatus::Completed),
                 Some("blocked"),
-                Some(now + chrono::Duration::seconds(1))
+                Some(now + chrono::Duration::seconds(1)),
+                None,
             )
+        );
+        assert_ne!(
+            baseline,
+            attention_state_fingerprint(
+                false,
+                SidebarPublicationState::Active,
+                Some("run-a"),
+                Some(AgentRunStatus::Completed),
+                Some("blocked"),
+                Some(now),
+                Some("members=[worker:Working]"),
+            )
+        );
+    }
+
+    #[test]
+    fn team_activity_marks_an_otherwise_idle_row_as_working() {
+        let team_activity = ManagedTeamActivity {
+            is_working: true,
+            fingerprint: "members=[worker:Working]".to_string(),
+        };
+
+        assert_eq!(
+            attention_lane_for_row(
+                false,
+                SidebarPublicationState::Active,
+                None,
+                None,
+                false,
+                Utc::now(),
+                Some(&team_activity),
+            ),
+            SidebarAttentionLane::Working,
+        );
+        assert_eq!(
+            attention_lane_for_row(
+                false,
+                SidebarPublicationState::Active,
+                None,
+                None,
+                false,
+                Utc::now(),
+                None,
+            ),
+            SidebarAttentionLane::Needs,
+        );
+        let idle_team = ManagedTeamActivity {
+            is_working: false,
+            fingerprint: "members=[worker:Idle]".to_string(),
+        };
+        assert_eq!(
+            attention_lane_for_row(
+                false,
+                SidebarPublicationState::Active,
+                None,
+                None,
+                false,
+                Utc::now(),
+                Some(&idle_team),
+            ),
+            SidebarAttentionLane::Needs,
         );
     }
 
@@ -1605,6 +1945,7 @@ mod tests {
         let fingerprint = attention_state_fingerprint(
             false,
             SidebarPublicationState::Active,
+            None,
             None,
             None,
             None,

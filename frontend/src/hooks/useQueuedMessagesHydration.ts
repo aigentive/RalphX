@@ -17,6 +17,7 @@ function toQueuedMessage(message: QueuedMessageResponse): QueuedMessage {
     content: message.content,
     createdAt: message.createdAt,
     isEditing: message.isEditing,
+    source: "backend",
     attachmentIds: [...(message.attachmentIds ?? [])],
     ...(message.composerSelectionSnapshot
       ? { composerSelectionSnapshot: message.composerSelectionSnapshot }

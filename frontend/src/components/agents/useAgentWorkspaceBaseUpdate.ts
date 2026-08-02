@@ -5,6 +5,7 @@ import {
   chatApi,
   type AgentConversationBaseSelection,
   type AgentConversationWorkspace,
+  type AgentConversationWorkspaceFreshness,
 } from "@/api/chat";
 
 import {
@@ -26,8 +27,13 @@ type WorkspaceBaseUpdateToastKind = Extract<
   "rebase" | "update-from-base"
 >;
 
+export interface RetargetedAgentWorkspaceBaseSelection
+  extends AgentConversationBaseSelection {
+  retargetedFromPullRequest?: number | undefined;
+}
+
 export interface RunAgentWorkspaceBaseUpdateInput {
-  baseSelection?: AgentConversationBaseSelection | null | undefined;
+  baseSelection?: RetargetedAgentWorkspaceBaseSelection | null | undefined;
   conversationId: string;
   detail: string;
   kind: WorkspaceBaseUpdateToastKind;
@@ -64,7 +70,7 @@ export function useAgentWorkspaceBaseUpdate({
       baseSelection,
       conversationId,
     }: {
-      baseSelection?: AgentConversationBaseSelection | null | undefined;
+      baseSelection?: RetargetedAgentWorkspaceBaseSelection | null | undefined;
       conversationId: string;
     }) =>
       baseSelection
@@ -217,10 +223,13 @@ export function useAgentWorkspaceBaseUpdate({
     }: RunAgentWorkspaceBaseUpdateInput) => {
       const requestConversationId = conversationId;
       const requestWorkspace = workspace ?? null;
+      const progressDetail = baseSelection?.retargetedFromPullRequest
+        ? `PR #${baseSelection.retargetedFromPullRequest} merged — rebasing onto ${baseSelection.ref}`
+        : detail;
       progressToastRef.current?.dismiss();
       const progressToast = startAgentWorkspaceOperationToast({
         conversationTitle: toastConversationTitle,
-        detail,
+        detail: progressDetail,
         id: agentWorkspaceOperationToastId(requestConversationId, kind),
         title,
       });
@@ -236,9 +245,48 @@ export function useAgentWorkspaceBaseUpdate({
             queryClient,
             result.workspace.conversationId,
           );
+          if (result.repairStarted) {
+            settleProgressToast(
+              progressToast,
+              "info",
+              "Repair started",
+              {
+                detail:
+                  "A new workspace repair attempt has started and will continue automatically.",
+              },
+            );
+            if (result.workspace.maintenanceOperation) {
+              syncMaintenanceOperation(result.workspace, true);
+            }
+            return;
+          }
           if (result.workspace.maintenanceOperation) {
             syncMaintenanceOperation(result.workspace, true);
             return;
+          }
+          for (const scope of ["full", "local"] as const) {
+            queryClient.setQueryData<AgentConversationWorkspaceFreshness>(
+              agentWorkspaceKeys.scopedFreshness(
+                result.workspace.conversationId,
+                scope,
+              ),
+              (previous) => {
+                if (
+                  !previous ||
+                  previous.conversationId !== result.workspace.conversationId
+                ) {
+                  return previous;
+                }
+                return {
+                  ...previous,
+                  isBaseAhead: false,
+                  capturedBaseCommit: result.baseCommit,
+                  targetBaseCommit: result.baseCommit,
+                  targetRef: result.targetRef,
+                  baseStatus: result.baseStatus,
+                };
+              },
+            );
           }
           settleProgressToast(
             progressToast,

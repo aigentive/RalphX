@@ -15,6 +15,7 @@ import {
   Square,
   Ticket,
   UserRound,
+  UsersRound,
   Workflow,
   X,
 } from "lucide-react";
@@ -102,6 +103,7 @@ import {
 import { ideationKeys } from "@/hooks/useIdeation";
 import { useIdeationSettings } from "@/hooks/useIdeationSettings";
 import { useAgentModels } from "@/hooks/useAgentModels";
+import { useFeatureFlags } from "@/hooks/useFeatureFlags";
 import { ticketingKeys } from "@/hooks/useTicketing";
 import {
   taskKeys,
@@ -130,6 +132,7 @@ import {
   type AgentConversation,
 } from "./agentConversations";
 import { AgentReviewPanel } from "./AgentReviewPanel";
+import { AgentsTeamPanel } from "./AgentsTeamPanel";
 import {
   hasWorkspaceReviewPublishAuthorization,
   isWorkspaceReviewApprovedAnyway,
@@ -460,6 +463,12 @@ const PR_TAB = {
   icon: GitPullRequestArrow,
 };
 
+const TEAM_TAB = {
+  id: "team" as const,
+  label: "Team",
+  icon: UsersRound,
+};
+
 const ALL_ARTIFACT_TAB_DEFINITIONS = [
   ...ARTIFACT_TABS,
   AUTOMATION_TAB,
@@ -469,6 +478,7 @@ const ALL_ARTIFACT_TAB_DEFINITIONS = [
   LINEAR_TAB,
   CLICKUP_TAB,
   GRANOLA_TAB,
+  TEAM_TAB,
   REVIEW_TAB,
   PUBLISH_TAB,
 ] as const;
@@ -478,6 +488,7 @@ const ARTIFACT_TAB_UNAVAILABLE_REASONS: Record<AgentArtifactTab, string> = {
   plan: "Appears when a plan can be created or already exists.",
   verification: "Appears when verification evidence is available.",
   tasks: "Appears when implementation tasks are available.",
+  team: "Appears for Team-capable conversations.",
   automation: "Appears in automation conversations.",
   persona: "Appears in persona-builder conversations.",
   pr: "Appears when this workspace has a pull request.",
@@ -516,6 +527,7 @@ function baseTabDefinition(
     LINEAR_TAB,
     CLICKUP_TAB,
     GRANOLA_TAB,
+    TEAM_TAB,
     PR_TAB,
   ].find((candidate) => candidate.id === id);
   return tab ?? AUTOMATION_TAB;
@@ -690,6 +702,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   onClose,
 }: AgentsArtifactPaneProps) {
   const queryClient = useQueryClient();
+  const { data: featureFlags } = useFeatureFlags();
   const { registry: modelRegistry } = useAgentModels();
   const ideationSettingsQuery = useIdeationSettings();
   const tasksEnabled =
@@ -777,6 +790,15 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         ? conversationData.messages
         : [],
     [conversationData, conversation?.id, shouldLoadIdeationData],
+  );
+  const teamStoreKey = conversation ? getAgentConversationStoreKey(conversation) : null;
+  const activeTeamRunId = useChatStore((state) =>
+    teamStoreKey ? state.activeAgentRunIds[teamStoreKey] ?? null : null,
+  );
+  const showTeamTab = Boolean(
+    featureFlags.agentConversationTeam &&
+      conversation?.coordinationMode === "rx_native_team" &&
+      conversationId,
   );
   const attachedSessionId = useMemo(
     () =>
@@ -1497,6 +1519,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
             ...(showLinearTab ? [visibleTab(LINEAR_TAB)] : []),
             ...(showClickUpTab ? [visibleTab(CLICKUP_TAB)] : []),
             ...(showGranolaTab ? [visibleTab(GRANOLA_TAB)] : []),
+            ...(showTeamTab ? [visibleTab(TEAM_TAB)] : []),
             ...(availableArtifactTabIds.includes("review")
               ? [visibleTab(REVIEW_TAB)]
               : []),
@@ -1514,6 +1537,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       showLinearTab,
       showPublishTab,
       showPullRequestTab,
+      showTeamTab,
     ],
   );
   const shownTabs = useMemo(
@@ -2444,6 +2468,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                 onOpenTasks={() => onTabChange("tasks")}
                 taskArtifactSelectedId={taskArtifactSelectedId}
                 onTaskArtifactSelectedIdChange={setTaskArtifactSelectedId}
+                activeTeamRunId={activeTeamRunId}
               />
             </ArtifactSelectionProvider>
           )}
@@ -2548,6 +2573,7 @@ type ArtifactContentProps = {
   onOpenTasks: () => void;
   taskArtifactSelectedId: string | null;
   onTaskArtifactSelectedIdChange: (id: string | null) => void;
+  activeTeamRunId: string | null;
 };
 
 function ArtifactContent({
@@ -2623,6 +2649,7 @@ function ArtifactContent({
   onOpenTasks,
   taskArtifactSelectedId,
   onTaskArtifactSelectedIdChange,
+  activeTeamRunId,
 }: ArtifactContentProps) {
   const reviewActionBlocker = getAgentWorkspaceReviewActionBlocker(workspace);
   const renderReviewPanel = (embedded: boolean) => (
@@ -2667,6 +2694,16 @@ function ArtifactContent({
           conversation={conversation}
         />
       </Suspense>
+    );
+  }
+
+  if (activeTab === "team" && conversationId) {
+    return (
+      <AgentsTeamPanel
+        conversationId={conversationId}
+        projectId={projectId}
+        activeAgentRunId={activeTeamRunId}
+      />
     );
   }
 

@@ -6,6 +6,8 @@ pub mod agent_composer_commands;
 pub mod agent_conversation_mute_commands;
 #[cfg(test)]
 mod agent_conversation_mute_commands_tests;
+#[cfg(test)]
+mod agent_workspace_dispatch_contract_tests;
 pub mod agent_issue_report_commands;
 #[cfg(test)]
 mod agent_issue_report_commands_tests;
@@ -36,6 +38,7 @@ pub mod clickup_commands;
 mod clickup_commands_tests;
 pub mod conversation_folder_reference_commands;
 pub mod conversation_stats_commands;
+pub mod database_maintenance_commands;
 pub mod diagnostic_commands;
 #[cfg(test)]
 mod diagnostic_commands_tests;
@@ -106,6 +109,8 @@ pub mod repository_settings_commands;
 mod repository_settings_commands_tests;
 pub mod research_commands;
 pub mod review_commands;
+#[cfg(test)]
+mod review_commands_tests;
 pub mod review_commands_types;
 #[cfg(test)]
 mod review_commands_types_tests;
@@ -388,9 +393,11 @@ pub use unified_chat_commands::{
     get_agent_conversation_runtime_index, get_agent_conversation_runtime_statuses,
     get_agent_conversation_summary, get_agent_conversation_timeline_page,
     get_agent_conversation_workspace, get_agent_conversation_workspace_freshness,
-    get_agent_message_tool_call_detail, get_agent_run_status_unified, get_agent_running_states,
-    get_agent_timeline_item_tool_call_detail, get_queued_agent_messages, is_agent_running,
-    is_chat_service_available, list_agent_conversation_workspace_publication_events,
+    get_agent_message_tool_call_detail, get_agent_run_attribution, get_agent_run_attributions,
+    get_agent_run_status_unified,
+    get_agent_running_states, get_agent_timeline_item_tool_call_detail, get_queued_agent_messages,
+    is_agent_running, is_chat_service_available,
+    list_agent_conversation_workspace_publication_events,
     list_agent_conversation_workspaces_by_project, list_agent_conversations,
     list_agent_conversations_page, precompute_agent_conversation_workspace_pr_description,
     publish_agent_conversation_workspace, queue_agent_message,

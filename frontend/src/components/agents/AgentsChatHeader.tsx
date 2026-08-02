@@ -26,6 +26,7 @@ import {
   ShieldCheck,
   Terminal as TerminalIcon,
   Ticket,
+  UsersRound,
 } from "lucide-react";
 
 import type { AgentConversationWorkspace, WorkspaceOpenTarget } from "@/api/chat";
@@ -64,7 +65,6 @@ import {
   type AgentsChatFocusTone,
   type AgentsChatFocusType,
 } from "./agentChatFocus";
-import type { IdeationArtifactTab } from "./agentArtifactTabs";
 import { resolveConversationAgentMode } from "./agentConversationMode";
 import {
   getAgentWorkspaceEffectiveBaseLabel,
@@ -78,7 +78,7 @@ import {
 } from "./agentWorkspaceQueries";
 
 const HEADER_ARTIFACT_TABS: Array<{
-  id: IdeationArtifactTab;
+  id: AgentArtifactTab;
   label: string;
   icon: ElementType;
 }> = [
@@ -87,6 +87,7 @@ const HEADER_ARTIFACT_TABS: Array<{
   { id: "plan", label: "Plan", icon: FileText },
   { id: "verification", label: "Verification", icon: CheckCircle2 },
   { id: "tasks", label: "Tasks", icon: ClipboardList },
+  { id: "team", label: "Team", icon: UsersRound },
 ];
 
 const FOCUS_TONE_STYLES: Record<
@@ -115,7 +116,7 @@ export interface AgentsChatHeaderProps {
   workspace: AgentConversationWorkspace | null;
   chatFocus?: AgentsChatFocus | undefined;
   modelDisplay?: ModelDisplay | undefined;
-  availableArtifactTabs?: readonly IdeationArtifactTab[] | undefined;
+  availableArtifactTabs?: readonly AgentArtifactTab[] | undefined;
   artifactOpen: boolean;
   activeArtifactTab: AgentArtifactTab;
   terminalOpen?: boolean;

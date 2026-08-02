@@ -224,6 +224,23 @@ async function expandAllToolGroups(container: HTMLElement): Promise<void> {
   });
 }
 
+/**
+ * Hydration reaches the transcript across separate commits — the timeline page
+ * lands before active state resolves — so a single expansion pass can miss a
+ * group that has not rendered yet. Expansion is idempotent (already-expanded
+ * groups are skipped), so retrying it alongside the assertion keeps the
+ * production expectation intact without depending on query resolution order.
+ */
+async function expandToolGroupsUntil(
+  container: HTMLElement,
+  assertion: () => void,
+): Promise<void> {
+  await waitFor(() => {
+    expandVisibleToolGroups(container);
+    assertion();
+  });
+}
+
 function liveRowKeys(container: HTMLElement): string[] {
   return Array.from(container.querySelectorAll<HTMLElement>("[data-chat-live-row-key]"))
     .map((element) => element.dataset.chatLiveRowKey ?? "");
@@ -301,8 +318,7 @@ describe("IntegratedChatPanel live replay/recovery parity", () => {
     await waitFor(() => {
       expect(within(p1.container).getAllByTestId("tool-call-group-toggle").length).toBeGreaterThan(0);
     });
-    await waitFor(() => {
-      expandVisibleToolGroups(p1.container);
+    await expandToolGroupsUntil(p1.container, () => {
       expect(within(p1.container).getByTestId("diff-tool-call-view")).toBeInTheDocument();
       expect(within(p1.container).getByTestId("task-subagent-card")).toBeInTheDocument();
     });
@@ -328,8 +344,7 @@ describe("IntegratedChatPanel live replay/recovery parity", () => {
       expect(transport.getConversationActiveState).toHaveBeenCalledWith("conversation-replay");
       expect(within(p2.container).getAllByTestId("tool-call-group-toggle").length).toBeGreaterThan(0);
     });
-    await waitFor(() => {
-      expandVisibleToolGroups(p2.container);
+    await expandToolGroupsUntil(p2.container, () => {
       expect(within(p2.container).getByTestId("diff-tool-call-view")).toBeInTheDocument();
       expect(captureTranscriptSnapshot(p2.container).filter(
         (row) => row.key === "text:Live turn two begins before remount.",

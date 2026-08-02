@@ -8,6 +8,9 @@ use futures::{stream, StreamExt as _};
 use tauri::{AppHandle, Emitter};
 
 use crate::application::agent_conversation_workspace::resolve_valid_agent_conversation_workspace_path;
+use crate::application::agent_workspace_publication_reconciliation::{
+    correct_foreign_agent_workspace_publication, PublicationCorrectionOutcome,
+};
 use crate::application::agent_workspace_terminal_cleanup::{
     terminalize_agent_workspace_after_pr, TerminalAgentWorkspaceCause,
 };
@@ -30,7 +33,7 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, AgentWorkspaceRepairRepository,
-    PlanBranchRepository, ProjectRepository,
+    ChatConversationRepository, PlanBranchRepository, ProjectRepository,
 };
 use crate::domain::services::{GithubServiceTrait, PrStatus};
 use crate::error::{AppError, AppResult};
@@ -41,6 +44,25 @@ const STARTUP_EXTERNAL_PR_RECONCILIATION_CONCURRENCY: usize = 4;
 
 static IN_FLIGHT_RECONCILIATIONS: OnceLock<DashMap<String, ()>> = OnceLock::new();
 static RECENT_RECONCILIATIONS: OnceLock<DashMap<String, Instant>> = OnceLock::new();
+
+/// Releases the in-flight claim and stamps the recent map even if the
+/// reconciliation task panics (for example inside a lazy deps factory);
+/// otherwise a single panic would permanently suppress reconciliation for
+/// this workspace until restart.
+struct InFlightReconciliationClaim {
+    conversation_id: ChatConversationId,
+}
+
+impl Drop for InFlightReconciliationClaim {
+    fn drop(&mut self) {
+        RECENT_RECONCILIATIONS
+            .get_or_init(DashMap::new)
+            .insert(self.conversation_id.as_str(), Instant::now());
+        IN_FLIGHT_RECONCILIATIONS
+            .get_or_init(DashMap::new)
+            .remove(&self.conversation_id.as_str());
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AgentWorkspaceExternalPrReconciliationTrigger {
@@ -62,6 +84,7 @@ impl AgentWorkspaceExternalPrReconciliationTrigger {
 #[derive(Clone)]
 pub(crate) struct AgentWorkspaceExternalPrReconciliationDeps {
     pub workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    pub chat_conversation_repo: Arc<dyn ChatConversationRepository>,
     pub project_repo: Arc<dyn ProjectRepository>,
     pub github: Arc<dyn GithubServiceTrait>,
     pub clickup_integration_service: Option<Arc<ClickUpIntegrationService>>,
@@ -83,8 +106,8 @@ pub(crate) enum AgentWorkspaceExternalPrReconciliationOutcome {
     Linked { pr_number: i64, pr_status: String },
 }
 
-pub(crate) fn schedule_agent_workspace_external_pr_reconciliation(
-    deps: AgentWorkspaceExternalPrReconciliationDeps,
+pub(crate) fn schedule_agent_workspace_external_pr_reconciliation_with_lazy_deps(
+    deps_factory: impl FnOnce() -> AgentWorkspaceExternalPrReconciliationDeps + Send + 'static,
     conversation_id: ChatConversationId,
     trigger: AgentWorkspaceExternalPrReconciliationTrigger,
     force: bool,
@@ -99,15 +122,13 @@ pub(crate) fn schedule_agent_workspace_external_pr_reconciliation(
     }
 
     tokio::spawn(async move {
+        let _claim = InFlightReconciliationClaim {
+            conversation_id: conversation_id.clone(),
+        };
         let started = Instant::now();
         let result =
-            reconcile_agent_workspace_external_pr(deps, conversation_id.clone(), trigger).await;
-        RECENT_RECONCILIATIONS
-            .get_or_init(DashMap::new)
-            .insert(conversation_id.as_str(), Instant::now());
-        IN_FLIGHT_RECONCILIATIONS
-            .get_or_init(DashMap::new)
-            .remove(&conversation_id.as_str());
+            reconcile_agent_workspace_external_pr(deps_factory(), conversation_id.clone(), trigger)
+                .await;
 
         match result {
             Ok(outcome) => tracing::info!(
@@ -142,6 +163,66 @@ pub(crate) async fn reconcile_agent_workspace_external_pr(
             "workspace_missing",
         ));
     };
+
+    // Archived linked workspaces are normally skipped by the gate below, but a foreign
+    // publication association must remain correctable so terminal cleanup that consumed a
+    // PR the workspace never owned can be reversed. Owned associations stay skipped so
+    // reconciliation cannot replay terminal events for archived workspaces.
+    if workspace.mode == AgentConversationWorkspaceMode::Edit
+        && workspace.linked_plan_branch_id.is_none()
+        && workspace.publication_pr_number.is_some()
+        && workspace.status == AgentConversationWorkspaceStatus::Archived
+    {
+        let project = match deps.project_repo.get_by_id(&workspace.project_id).await {
+            Ok(project) => project,
+            Err(error) => {
+                tracing::warn!(
+                    conversation_id = workspace.conversation_id.as_str(),
+                    error = %error,
+                    "Foreign publication correction skipped because project could not be read"
+                );
+                return Ok(AgentWorkspaceExternalPrReconciliationOutcome::Skipped(
+                    "foreign_publication_unverified",
+                ));
+            }
+        };
+        let Some(project) = project else {
+            return Ok(AgentWorkspaceExternalPrReconciliationOutcome::Skipped(
+                "project_missing",
+            ));
+        };
+        if project.archived_at.is_some() {
+            return Ok(AgentWorkspaceExternalPrReconciliationOutcome::Skipped(
+                "project_archived",
+            ));
+        }
+        return match correct_foreign_agent_workspace_publication(
+            Arc::clone(&deps.workspace_repo),
+            Arc::clone(&deps.chat_conversation_repo),
+            Arc::clone(&deps.github),
+            &project,
+            &workspace,
+        )
+        .await?
+        {
+            PublicationCorrectionOutcome::Corrected => {
+                emit_workspace_changed(deps.app_handle.as_ref(), &workspace.conversation_id);
+                Ok(AgentWorkspaceExternalPrReconciliationOutcome::Skipped(
+                    "foreign_publication_corrected",
+                ))
+            }
+            PublicationCorrectionOutcome::Unverified => {
+                Ok(AgentWorkspaceExternalPrReconciliationOutcome::Skipped(
+                    "foreign_publication_unverified",
+                ))
+            }
+            PublicationCorrectionOutcome::Skipped | PublicationCorrectionOutcome::NotApplicable => {
+                Ok(AgentWorkspaceExternalPrReconciliationOutcome::Skipped(
+                    "workspace_not_active",
+                ))
+            }
+        };
+    }
 
     if let Some(reason) = external_pr_reconciliation_skip_reason(&workspace) {
         return Ok(AgentWorkspaceExternalPrReconciliationOutcome::Skipped(
@@ -189,6 +270,17 @@ pub(crate) async fn reconcile_agent_workspace_external_pr(
     let Some(pr) = pr else {
         return Ok(AgentWorkspaceExternalPrReconciliationOutcome::NotFound);
     };
+
+    if pr.head_ref_name != workspace.branch_name {
+        tracing::warn!(
+            conversation_id = conversation_id.as_str(),
+            workspace_branch = workspace.branch_name.as_str(),
+            pr_number = pr.number,
+            pr_head_branch = pr.head_ref_name.as_str(),
+            "Agent workspace external PR lookup returned a mismatched head branch"
+        );
+        return Ok(AgentWorkspaceExternalPrReconciliationOutcome::NotFound);
+    }
 
     require_durable_live_pr_poller(&deps, matches!(&pr.status, PrStatus::Open))?;
 
@@ -255,6 +347,29 @@ async fn reconcile_linked_agent_workspace_pr(
             "missing_pr_number",
         ));
     };
+
+    match correct_foreign_agent_workspace_publication(
+        Arc::clone(&deps.workspace_repo),
+        Arc::clone(&deps.chat_conversation_repo),
+        Arc::clone(&deps.github),
+        project,
+        workspace,
+    )
+    .await?
+    {
+        PublicationCorrectionOutcome::Corrected => {
+            emit_workspace_changed(deps.app_handle.as_ref(), &workspace.conversation_id);
+            return Ok(AgentWorkspaceExternalPrReconciliationOutcome::Skipped(
+                "foreign_publication_corrected",
+            ));
+        }
+        PublicationCorrectionOutcome::Unverified => {
+            return Ok(AgentWorkspaceExternalPrReconciliationOutcome::Skipped(
+                "foreign_publication_unverified",
+            ));
+        }
+        PublicationCorrectionOutcome::Skipped | PublicationCorrectionOutcome::NotApplicable => {}
+    }
 
     let status = deps
         .github

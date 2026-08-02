@@ -72,6 +72,7 @@ const WORKSPACE_REVIEW_FIXER_STATUS_ROUTING: &str = "routing";
 const WORKSPACE_REVIEW_FIXER_STATUS_QUEUED: &str = "queued";
 const WORKSPACE_REVIEW_FIXER_STATUS_RUNNING: &str = "running";
 const WORKSPACE_REVIEW_FIXER_STATUS_FAILED: &str = "failed";
+const WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED: &str = "cycle_capped";
 const WORKSPACE_REVIEW_FIXER_SKIPPED_ALREADY_ACTIVE: &str = "fixer_already_active";
 const WORKSPACE_REVIEW_PLAN_CONTEXT_CHANGED_ERROR: &str =
     "The linked plan changed after this Workspace Review. Run Workspace Review again before repairing its findings.";
@@ -813,13 +814,16 @@ pub(crate) async fn start_agent_workspace_review_unlocked_with_runtime_override(
     runtime_override: Option<&crate::domain::agents::ManualRoleRuntimeOverride>,
 ) -> AppResult<AgentWorkspaceReviewStart> {
     let chat_service = state.build_chat_service();
-    start_agent_workspace_review_with_chat_service(
+    // Box::pin keeps this large review-start state machine off caller poll frames;
+    // the guarded/repair chains embed this future several levels deep and overflow
+    // debug/test stacks when it is inlined (see rule: Large async state entry).
+    Box::pin(start_agent_workspace_review_with_chat_service(
         state,
         workspace,
         force,
         runtime_override,
         &chat_service,
-    )
+    ))
     .await
 }
 
@@ -1188,6 +1192,7 @@ async fn start_agent_workspace_review_with_chat_service<S: ChatService + ?Sized>
                 preallocated_agent_run_id: Some(preallocated_agent_run_id),
                 queue_policy: SendQueuePolicy::RequireImmediateStart,
                 conversation_id_override: Some(review_conversation_id.clone()),
+                runtime_source_override: Some(runtime.runtime_source),
                 harness_override: runtime.harness,
                 agent_name_override: Some(agent_names::AGENT_WORKSPACE_REVIEWER.to_string()),
                 model_override: runtime.model,
@@ -2457,6 +2462,7 @@ pub(crate) async fn complete_agent_workspace_review_run_unlocked(
             monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
             monitor.last_error = None;
             clear_review_blocking_state(&mut monitor);
+            monitor.review_fixer_cycle_count = 0;
         }
         AgentWorkspaceReviewOutcome::Blocking if artifact_current => {
             let blocking_summary = blocker.or(summary).ok_or_else(|| {
@@ -2470,11 +2476,13 @@ pub(crate) async fn complete_agent_workspace_review_run_unlocked(
                 .map(|target| workspace_review_blocking_fingerprint(target, &blocking_summary));
             let is_new_blocking_fingerprint =
                 previous_blocking_fingerprint.as_deref() != blocking_fingerprint.as_deref();
-            let autofix_enabled =
-                workspace_review_autofix_blocking_findings_enabled(state, workspace).await;
-            let should_route_fixer = autofix_enabled
+            let (autofix_enabled, fixer_cycle_cap) =
+                workspace_review_autofix_blocking_findings_policy(state, workspace).await;
+            let would_route_fixer = autofix_enabled
                 && blocking_fingerprint.is_some()
                 && (is_new_blocking_fingerprint || previous_fixer_status.is_none());
+            let should_route_fixer =
+                would_route_fixer && monitor.review_fixer_cycle_count < fixer_cycle_cap;
             monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
             monitor.review_outcome = AgentWorkspaceReviewOutcome::Blocking;
             monitor.review_blocking_fingerprint = blocking_fingerprint;
@@ -2487,6 +2495,13 @@ pub(crate) async fn complete_agent_workspace_review_run_unlocked(
                 monitor.review_fixer_status =
                     Some(WORKSPACE_REVIEW_FIXER_STATUS_ROUTING.to_string());
                 monitor.review_fixer_attempt_id = Some(uuid::Uuid::new_v4().to_string());
+                monitor.review_fixer_cycle_count =
+                    monitor.review_fixer_cycle_count.saturating_add(1);
+                clear_review_fixer_linkage(&mut monitor);
+            } else if would_route_fixer {
+                monitor.review_fixer_status =
+                    Some(WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED.to_string());
+                monitor.review_fixer_attempt_id = None;
                 clear_review_fixer_linkage(&mut monitor);
             }
         }
@@ -2495,6 +2510,7 @@ pub(crate) async fn complete_agent_workspace_review_run_unlocked(
             monitor.review_outcome = AgentWorkspaceReviewOutcome::NoChanges;
             monitor.last_error = None;
             clear_review_blocking_state(&mut monitor);
+            monitor.review_fixer_cycle_count = 0;
         }
         AgentWorkspaceReviewOutcome::RunFailed | AgentWorkspaceReviewOutcome::None => {
             monitor.status = AgentWorkspaceReviewMonitorStatus::Blocked;
@@ -2704,12 +2720,15 @@ fn workspace_review_blocking_fingerprint(
     format!("{:x}", hasher.finalize())
 }
 
-async fn workspace_review_autofix_blocking_findings_enabled(
+async fn workspace_review_autofix_blocking_findings_policy(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
-) -> bool {
+) -> (bool, i64) {
     match state.review_settings_repo.get_settings().await {
-        Ok(settings) => settings.autofix_workspace_review_blocking_findings,
+        Ok(settings) => (
+            settings.autofix_workspace_review_blocking_findings,
+            settings.workspace_review_fixer_cycle_cap.max(0),
+        ),
         Err(error) => {
             warn!(
                 target: WORKSPACE_REVIEW_LOG_TARGET,
@@ -2720,7 +2739,7 @@ async fn workspace_review_autofix_blocking_findings_enabled(
                 error = %error,
                 "Failed to load Review settings; automatic workspace Review fixer routing is disabled for this completion"
             );
-            false
+            (false, 0)
         }
     }
 }
@@ -2768,12 +2787,15 @@ async fn start_agent_workspace_review_blocking_fixer_with_override_unlocked(
     runtime_override: Option<&crate::domain::agents::ManualRoleRuntimeOverride>,
 ) -> AppResult<AgentWorkspaceReviewFixerStart> {
     let chat_service = state.build_chat_service();
-    start_agent_workspace_review_blocking_fixer_with_chat_service(
-        state,
-        workspace,
-        confirmation,
-        runtime_override,
-        &chat_service,
+    // Box::pin: keep the large fixer-start machine off caller poll frames (stack safety).
+    Box::pin(
+        start_agent_workspace_review_blocking_fixer_with_chat_service(
+            state,
+            workspace,
+            confirmation,
+            runtime_override,
+            &chat_service,
+        ),
     )
     .await
 }
@@ -3069,7 +3091,8 @@ async fn route_workspace_review_blocking_fixer(
     target: Option<&AgentWorkspaceReviewTarget>,
 ) -> AppResult<AgentWorkspaceReviewMonitor> {
     let chat_service = state.build_chat_service();
-    route_workspace_review_blocking_fixer_with_chat_service(
+    // Box::pin: keep the large fixer-routing machine off caller poll frames (stack safety).
+    Box::pin(route_workspace_review_blocking_fixer_with_chat_service(
         state,
         workspace,
         monitor,
@@ -3078,7 +3101,7 @@ async fn route_workspace_review_blocking_fixer(
         None,
         None,
         &chat_service,
-    )
+    ))
     .await
 }
 
@@ -3181,6 +3204,7 @@ async fn route_workspace_review_blocking_fixer_with_chat_service<S: ChatService 
             SendMessageOptions {
                 conversation_id_override: Some(workspace.conversation_id.clone()),
                 agent_name_override: Some(agent_names::AGENT_WORKSPACE_REPAIR.to_string()),
+                runtime_source_override: Some(runtime.runtime_source),
                 harness_override: runtime.harness,
                 model_override: runtime.model,
                 logical_effort_override: runtime.logical_effort,
@@ -3848,6 +3872,7 @@ fn apply_review_gate_to_monitor(
             monitor.review_fixer_conversation_id = None;
             monitor.review_fixer_status = None;
             monitor.review_fixer_attempt_id = None;
+            monitor.review_fixer_cycle_count = 0;
         }
         return;
     };

@@ -4,15 +4,16 @@ use super::team_prompt_contract::{apply_rx_native_team_contract, rx_native_team_
 fn rx_native_team_contract_defines_backend_owned_delegation_boundaries() {
     let contract = rx_native_team_contract();
 
-    assert!(contract.contains("canonical allowed RalphX-native delegate targets"));
-    assert!(contract.contains("delegate_start, delegate_wait, and delegate_cancel"));
+    assert!(contract.contains("team_add_member"));
+    assert!(contract.contains("team_assign"));
+    assert!(contract.contains("team_list"));
+    assert!(contract.contains("team_stop_member"));
+    assert!(contract.contains("normalized name"));
+    assert!(contract.contains("Never pass or replay ids"));
     assert!(contract.contains("useful independent work"));
-    assert!(contract.contains("backend owns lifecycle and settlement"));
-    assert!(contract.contains("Wait for required delegated results"));
+    assert!(contract.contains("backend owns member generations, reservations, run bindings"));
+    assert!(contract.contains("Wait for required member results"));
     assert!(contract.contains("If you stay solo, briefly explain why"));
-    assert!(
-        contract.contains("Never replay job ids, timestamps, wait knobs, or backend bookkeeping")
-    );
 }
 
 #[test]

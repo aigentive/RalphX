@@ -9,6 +9,7 @@ fn test_review_settings_default() {
     assert!(!settings.require_human_review);
     assert!(settings.require_workspace_review);
     assert!(settings.autofix_workspace_review_blocking_findings);
+    assert_eq!(settings.workspace_review_fixer_cycle_cap, 3);
     assert!(settings.run_task_validations);
     assert_eq!(settings.max_fix_attempts, 3);
     assert_eq!(settings.max_revision_cycles, 5);
@@ -117,6 +118,7 @@ fn test_review_settings_serialize() {
     assert!(json.contains("\"require_human_review\":false"));
     assert!(json.contains("\"require_workspace_review\":true"));
     assert!(json.contains("\"autofix_workspace_review_blocking_findings\":true"));
+    assert!(json.contains("\"workspace_review_fixer_cycle_cap\":3"));
     assert!(json.contains("\"max_fix_attempts\":3"));
     assert!(json.contains("\"auto_create_followup_agent_conversation\":false"));
     assert!(json.contains("\"run_task_validations\":true"));
@@ -143,6 +145,7 @@ fn test_review_settings_deserialize() {
     assert!(settings.require_human_review);
     assert!(!settings.require_workspace_review);
     assert!(!settings.autofix_workspace_review_blocking_findings);
+    assert_eq!(settings.workspace_review_fixer_cycle_cap, 3);
     assert_eq!(settings.max_fix_attempts, 5);
     assert_eq!(settings.max_revision_cycles, 8);
     assert!(!settings.auto_create_followup_agent_conversation);
@@ -158,6 +161,7 @@ fn test_review_settings_roundtrip() {
         require_human_review: false,
         require_workspace_review: false,
         autofix_workspace_review_blocking_findings: false,
+        workspace_review_fixer_cycle_cap: 2,
         max_fix_attempts: 7,
         max_revision_cycles: 8,
         auto_create_followup_agent_conversation: false,

@@ -3626,7 +3626,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "ralphx"
-version = "0.85.1"
+version = "0.90.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -3645,6 +3645,7 @@ dependencies = [
  "hyper-rustls",
  "hyper-util",
  "lazy_static",
+ "libc",
  "mac-notification-sys",
  "nix 0.29.0",
  "objc2",

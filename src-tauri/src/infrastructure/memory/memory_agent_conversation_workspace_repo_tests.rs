@@ -5,8 +5,8 @@ use crate::domain::entities::{
     AgentWorkspacePrDescription, AgentWorkspacePrMetadataDecision, AgentWorkspacePrReviewAction,
     AgentWorkspacePrReviewActionKind, AgentWorkspacePrReviewActionStatus,
     AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewMonitorStatus,
-    AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation, AgentWorkspaceRepairPhase,
-    AgentWorkspaceRepairSource, AgentWorkspaceReviewApprovalSnapshot,
+    AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation, AgentWorkspaceRepairOutcome,
+    AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource, AgentWorkspaceReviewApprovalSnapshot,
     AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewAutoMergeGuardStatus,
     AgentWorkspaceReviewFixerSnapshot, AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor,
     AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
@@ -17,7 +17,9 @@ use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
     AgentWorkspacePrReviewActionMutation, AgentWorkspaceRepairRepository,
     AgentWorkspaceRepairStateGuard, AgentWorkspaceRepairStateTransition,
-    StartOrJoinAgentWorkspaceRepairAttempt, StartOrJoinAgentWorkspaceRepairAttemptOutcome,
+    SettleAndStartAgentWorkspaceRepairSuccessor,
+    SettleAndStartAgentWorkspaceRepairSuccessorOutcome, StartOrJoinAgentWorkspaceRepairAttempt,
+    StartOrJoinAgentWorkspaceRepairAttemptOutcome,
 };
 
 fn pr_review_action(
@@ -125,6 +127,7 @@ async fn workspace_review_fixer_claim_is_exact_and_single_winner() {
     monitor.review_requested_changes_artifact_id = Some(artifact_id.clone());
     monitor.review_requested_changes_artifact_version = Some(4);
     monitor.review_blocking_fingerprint = Some("blocker-claim".to_string());
+    monitor.review_fixer_cycle_count = 2;
     repo.upsert_workspace_review_monitor(monitor)
         .await
         .expect("monitor should persist");
@@ -151,6 +154,13 @@ async fn workspace_review_fixer_claim_is_exact_and_single_winner() {
         .await
         .expect("stale plan claim should be a clean rejection")
         .is_none());
+    let rejected = repo
+        .get_workspace_review_monitor(&conversation_id)
+        .await
+        .expect("monitor read should succeed")
+        .expect("rejected claim must not remove the monitor");
+    assert_eq!(rejected.review_fixer_cycle_count, 2);
+    assert!(rejected.review_fixer_attempt_id.is_none());
 
     let claimed = repo
         .claim_workspace_review_fixer(
@@ -167,6 +177,7 @@ async fn workspace_review_fixer_claim_is_exact_and_single_winner() {
         claimed.review_fixer_attempt_id.as_deref(),
         Some("attempt-one")
     );
+    assert_eq!(claimed.review_fixer_cycle_count, 3);
     assert!(repo
         .claim_workspace_review_fixer(
             &conversation_id,
@@ -1010,6 +1021,112 @@ async fn legacy_repair_cas_cannot_mutate_a_durable_generation() {
             .id,
         durable.id
     );
+}
+
+#[tokio::test]
+async fn repair_attempts_list_is_generation_ordered_and_conversation_scoped() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    // `ChatConversationId::from_string` collapses non-UUID text to the nil UUID, so scoping can
+    // only be proven with two genuinely distinct ids.
+    let conversation_id = ChatConversationId::from_string("33333333-3333-3333-3333-333333333333");
+    let other_conversation_id =
+        ChatConversationId::from_string("44444444-4444-4444-4444-444444444444");
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .unwrap();
+    repo.create_or_update(make_workspace(other_conversation_id.clone()))
+        .await
+        .unwrap();
+
+    // The in-memory repo backs a hash map, so ordering only holds because the listing sorts by
+    // generation. Fingerprint spend reads the whole history, so both ordering and scoping matter.
+    let first = start_memory_repair_attempt(&repo, &conversation_id, "first generation").await;
+    let second = match repo
+        .settle_and_start_repair_successor(SettleAndStartAgentWorkspaceRepairSuccessor {
+            attempt_id: first.id.clone(),
+            generation: first.generation,
+            expected_phase: first.phase,
+            expected_updated_at: first.updated_at,
+            outcome: AgentWorkspaceRepairOutcome::Superseded,
+            settled_at: chrono::Utc::now(),
+            successor: StartOrJoinAgentWorkspaceRepairAttempt {
+                attempt: AgentWorkspaceRepairAttempt::new(
+                    conversation_id.clone(),
+                    AgentWorkspaceRepairSource::Publish,
+                    AgentWorkspaceRepairContinuation::Publish,
+                    "main",
+                    false,
+                    true,
+                    false,
+                    None,
+                    chrono::Utc::now(),
+                ),
+                reason: "second generation".to_string(),
+                verified_newer_base: false,
+                compatibility_projection: None,
+                events: Vec::new(),
+            },
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .unwrap()
+    {
+        SettleAndStartAgentWorkspaceRepairSuccessorOutcome::Started(attempt) => attempt,
+        outcome => panic!("expected a started successor, got {outcome:?}"),
+    };
+    let foreign =
+        start_memory_repair_attempt(&repo, &other_conversation_id, "unrelated workspace").await;
+
+    assert_eq!(
+        repo.list_repair_attempts_for_conversation(&conversation_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|attempt| (attempt.id, attempt.generation))
+            .collect::<Vec<_>>(),
+        vec![(first.id, 1), (second.id, 2)]
+    );
+    assert_eq!(
+        repo.list_repair_attempts_for_conversation(&other_conversation_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|attempt| attempt.id)
+            .collect::<Vec<_>>(),
+        vec![foreign.id]
+    );
+}
+
+async fn start_memory_repair_attempt(
+    repo: &MemoryAgentConversationWorkspaceRepository,
+    conversation_id: &ChatConversationId,
+    reason: &str,
+) -> AgentWorkspaceRepairAttempt {
+    match repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                conversation_id.clone(),
+                AgentWorkspaceRepairSource::Publish,
+                AgentWorkspaceRepairContinuation::Publish,
+                "main",
+                false,
+                true,
+                false,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: reason.to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .unwrap()
+    {
+        StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(attempt) => attempt,
+        outcome => panic!("expected a started attempt, got {outcome:?}"),
+    }
 }
 
 #[tokio::test]

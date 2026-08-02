@@ -13,6 +13,8 @@ fn test_all_defaults_are_sensible() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
     assert_eq!(cfg.stream.merge_line_read_secs, 600);
     assert_eq!(cfg.stream.completion_grace_secs, 30);
@@ -20,8 +22,22 @@ fn test_all_defaults_are_sensible() {
     assert_eq!(cfg.stream.execution_attempt_start_tolerance_secs, 1);
     assert_eq!(cfg.stream.notification_retention_read_days, 30);
     assert_eq!(cfg.stream.notification_retention_max_rows, 1000);
+    assert!(cfg.stream.chat_payload_retention_enabled);
+    assert_eq!(cfg.stream.chat_payload_retention_days, 90);
+    assert_eq!(cfg.stream.chat_payload_retention_archived_days, 7);
+    assert_eq!(cfg.stream.chat_payload_retention_batch_rows, 2000);
     assert_eq!(cfg.stream.db_lock_wait_warn_ms, 100);
     assert_eq!(cfg.stream.db_lock_hold_warn_ms, 250);
+    assert!(cfg.database_maintenance.db_auto_compact_enabled);
+    assert_eq!(
+        cfg.database_maintenance.db_auto_compact_max_db_bytes,
+        2_147_483_648
+    );
+    assert_eq!(
+        cfg.database_maintenance
+            .db_auto_compact_min_freelist_percent,
+        20
+    );
     assert_eq!(cfg.reconciliation.merger_timeout_secs, 1200);
     assert_eq!(cfg.reconciliation.validation_deadline_secs, 1200);
     assert_eq!(cfg.reconciliation.branch_freshness_timeout_secs, 60);
@@ -97,6 +113,8 @@ fn test_merge_speed_env_overrides() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -130,6 +148,8 @@ fn test_env_overrides_apply() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -138,8 +158,15 @@ fn test_env_overrides_apply() {
         "RALPHX_STREAM_LAUNCH_RESERVATION_LEASE_SECS" => Some("60".to_string()),
         "RALPHX_STREAM_NOTIFICATION_RETENTION_READ_DAYS" => Some("14".to_string()),
         "RALPHX_STREAM_NOTIFICATION_RETENTION_MAX_ROWS" => Some("250".to_string()),
+        "RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_ENABLED" => Some("false".to_string()),
+        "RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_DAYS" => Some("21".to_string()),
+        "RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_ARCHIVED_DAYS" => Some("3".to_string()),
+        "RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_BATCH_ROWS" => Some("17".to_string()),
         "RALPHX_STREAM_DB_LOCK_WAIT_WARN_MS" => Some("25".to_string()),
         "RALPHX_STREAM_DB_LOCK_HOLD_WARN_MS" => Some("75".to_string()),
+        "RALPHX_DB_AUTO_COMPACT_ENABLED" => Some("false".to_string()),
+        "RALPHX_DB_AUTO_COMPACT_MAX_DB_BYTES" => Some("1048576".to_string()),
+        "RALPHX_DB_AUTO_COMPACT_MIN_FREELIST_PERCENT" => Some("35".to_string()),
         "RALPHX_RECONCILIATION_MERGER_TIMEOUT_SECS" => Some("2400".to_string()),
         "RALPHX_GIT_CMD_TIMEOUT_SECS" => Some("120".to_string()),
         "RALPHX_GIT_STARTUP_AUTH_PREFLIGHT_TIMEOUT_SECS" => Some("9".to_string()),
@@ -165,8 +192,22 @@ fn test_env_overrides_apply() {
     assert_eq!(cfg.stream.launch_reservation_lease_secs, 60);
     assert_eq!(cfg.stream.notification_retention_read_days, 14);
     assert_eq!(cfg.stream.notification_retention_max_rows, 250);
+    assert!(!cfg.stream.chat_payload_retention_enabled);
+    assert_eq!(cfg.stream.chat_payload_retention_days, 21);
+    assert_eq!(cfg.stream.chat_payload_retention_archived_days, 3);
+    assert_eq!(cfg.stream.chat_payload_retention_batch_rows, 17);
     assert_eq!(cfg.stream.db_lock_wait_warn_ms, 25);
     assert_eq!(cfg.stream.db_lock_hold_warn_ms, 75);
+    assert!(!cfg.database_maintenance.db_auto_compact_enabled);
+    assert_eq!(
+        cfg.database_maintenance.db_auto_compact_max_db_bytes,
+        1_048_576
+    );
+    assert_eq!(
+        cfg.database_maintenance
+            .db_auto_compact_min_freelist_percent,
+        35
+    );
     assert_eq!(cfg.reconciliation.merger_timeout_secs, 2400);
     // validation_deadline_secs not overridden — should keep default
     assert_eq!(cfg.reconciliation.validation_deadline_secs, 1200);
@@ -204,6 +245,8 @@ fn test_backward_compat_merger_timeout_env() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     // Old key only
@@ -227,6 +270,8 @@ fn test_new_key_takes_precedence_over_old() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     // Both keys set — new one should win (applied second)
@@ -251,6 +296,8 @@ fn test_invalid_env_values_ignored() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -277,6 +324,8 @@ fn test_validation_deadline_env_override() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -331,6 +380,8 @@ fn test_branch_freshness_timeout_env_override() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -397,6 +448,8 @@ fn test_execution_failed_max_retries_env_override() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -422,6 +475,8 @@ fn test_execution_failed_retry_base_secs_env_override() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -445,6 +500,8 @@ fn test_execution_failed_retry_max_secs_env_override() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -470,6 +527,8 @@ fn test_execution_failed_all_three_env_overrides_applied_together() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -510,6 +569,8 @@ fn test_circuit_breaker_env_overrides() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -535,6 +596,8 @@ fn test_execution_failed_invalid_env_values_keep_defaults() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -577,6 +640,8 @@ fn test_external_mcp_env_overrides_enabled_true() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -599,6 +664,8 @@ fn test_external_mcp_env_overrides_enabled_one() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -624,6 +691,8 @@ fn test_external_mcp_env_overrides_enabled_false() {
         },
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -646,6 +715,8 @@ fn test_external_mcp_env_overrides_port_and_host() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -670,6 +741,8 @@ fn test_external_mcp_env_override_node_path() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -695,6 +768,8 @@ fn test_external_mcp_env_override_human_wait_timeout() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -717,6 +792,8 @@ fn test_external_mcp_env_override_startup_timeout() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -751,6 +828,8 @@ fn test_external_mcp_invalid_port_env_keeps_default() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -888,6 +967,8 @@ fn test_git_isolation_env_overrides() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -941,6 +1022,8 @@ fn ticketing_dashboard_after_env(value: Option<&str>) -> bool {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
     apply_env_overrides_with(&mut cfg, &|name| match name {
         "RALPHX_UI_TICKETING_DASHBOARD" => value.map(str::to_string),
@@ -961,6 +1044,8 @@ fn agent_personas_after_env(value: Option<&str>) -> bool {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
     apply_env_overrides_with(&mut cfg, &|name| match name {
         "RALPHX_UI_AGENT_PERSONAS" => value.map(str::to_string),
@@ -989,6 +1074,8 @@ fn remote_environments_after_env(value: Option<&str>) -> bool {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
     apply_env_overrides_with(&mut cfg, &|name| match name {
         "RALPHX_UI_REMOTE_ENVIRONMENTS" => value.map(str::to_string),
@@ -1018,6 +1105,8 @@ fn runtime_config_env_override_persona_switch_fresh_session_fallback() {
         external_mcp: ExternalMcpConfig::default(),
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
     };
     apply_env_overrides_with(&mut cfg, &|name| match name {
         "RALPHX_UI_PERSONA_SWITCH_FORCES_FRESH_PROVIDER_SESSION" => Some("true".to_string()),

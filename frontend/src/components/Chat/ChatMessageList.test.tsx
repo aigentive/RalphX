@@ -22,9 +22,19 @@ const harness = vi.hoisted(() => ({
 }));
 
 const messageAttachments = vi.hoisted(() => vi.fn(() => ({ data: new Map() })));
+const runAttributions = vi.hoisted(() => vi.fn(() => ({
+  data: new Map(),
+  isPending: false,
+  isError: false,
+  refetch: vi.fn(),
+})));
 
 vi.mock("@/hooks/useMessageAttachments", () => ({
   useMessageAttachments: (...args: unknown[]) => messageAttachments(...args),
+}));
+
+vi.mock("@/hooks/useRunAttributions", () => ({
+  useRunAttributions: (...args: unknown[]) => runAttributions(...args),
 }));
 
 vi.mock("./MessageItem", async () => {
@@ -188,6 +198,51 @@ function renderList(overrides: Partial<React.ComponentProps<typeof ChatMessageLi
   return render(<ChatMessageList {...defaultProps} {...overrides} />);
 }
 
+it("rehydrates one completed-run widget at the end of persisted run rows", () => {
+  renderList({ messages: [
+    { id: "run-row-1", role: "assistant", content: "first", createdAt: "2026-01-01T12:00:00Z", finalizedAt: "2026-01-01T12:00:10Z", runId: "run-1" },
+    { id: "run-row-2", role: "assistant", content: "last", createdAt: "2026-01-01T12:00:02Z", finalizedAt: "2026-01-01T12:00:42Z", runId: "run-1" },
+  ] });
+
+  expect(screen.getAllByTestId("run-attribution-widget")).toHaveLength(1);
+  expect(screen.getByTestId("run-attribution-toggle")).toHaveTextContent("Agent worked for 42s");
+});
+
+it("uses settled run attribution for the transcript role and duration", () => {
+  runAttributions.mockReturnValueOnce({
+    data: new Map([["run-1", {
+      id: "run-1", conversationId: "conversation-a", status: "completed",
+      startedAt: "2026-01-01T12:00:00Z", completedAt: "2026-01-01T12:00:58Z",
+      harness: null, upstreamProvider: null, providerProfile: null, providerSessionId: null,
+      logicalModel: null, effectiveModelId: null, logicalEffort: null, effectiveEffort: null,
+      serviceTier: null, approvalPolicy: null, sandboxMode: null, inputTokens: null,
+      outputTokens: null, cacheCreationTokens: null, cacheReadTokens: null, estimatedUsd: null,
+      runChainId: null, actionKind: null, personaSlug: null, agentName: "reviewer",
+      launchRole: "workspace_reviewer", runtimeSource: "role_default",
+    }]]),
+    isPending: false,
+    isError: false,
+    refetch: vi.fn(),
+  });
+
+  renderList({ messages: [
+    { id: "run-row", role: "assistant", content: "done", createdAt: "2026-01-01T12:00:40Z", finalizedAt: "2026-01-01T12:00:42Z", runId: "run-1" },
+  ] });
+
+  expect(screen.getByTestId("run-attribution-toggle")).toHaveTextContent("Reviewer worked for 58s");
+});
+
+it("shows an unavailable detail state when a settled batch omits a persisted run", () => {
+  renderList({ messages: [
+    { id: "missing-run-row", role: "assistant", content: "done", createdAt: "2026-01-01T12:00:40Z", finalizedAt: "2026-01-01T12:00:42Z", runId: "run-missing" },
+  ] });
+
+  fireEvent.click(screen.getByTestId("run-attribution-toggle"));
+
+  expect(screen.getByText("Run attribution is unavailable.")).toBeInTheDocument();
+  expect(screen.queryByTestId("run-attribution-loading")).not.toBeInTheDocument();
+});
+
 function getScroller(): HTMLElement {
   return screen.getByTestId("mock-virtuoso");
 }
@@ -228,6 +283,7 @@ describe("ChatMessageList controller integration", () => {
     harness.componentsHistory = [];
     harness.scrollToIndex.mockReset();
     messageAttachments.mockReturnValue({ data: new Map() });
+    runAttributions.mockReturnValue({ data: new Map(), isPending: false, isError: false, refetch: vi.fn() });
     animationFrames = new Map();
     nextAnimationFrame = 1;
     scrollWrites = vi.fn();

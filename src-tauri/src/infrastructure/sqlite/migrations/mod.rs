@@ -251,6 +251,9 @@ mod v20260509090000_release_notes_seen_version_tests;
 mod v20260510185257_chat_message_blocks_timeline;
 #[cfg(test)]
 mod v20260510185257_chat_message_blocks_timeline_tests;
+mod v20260730025727_chat_message_blocks_thinking_kind;
+#[cfg(test)]
+mod v20260730025727_chat_message_blocks_thinking_kind_tests;
 mod v20260512093000_startup_local_cleanup_markers;
 #[cfg(test)]
 mod v20260512093000_startup_local_cleanup_markers_tests;
@@ -575,9 +578,33 @@ mod v20260728120000_remote_request_dedup_tests;
 mod v20260728155615_agent_conversation_mutes;
 #[cfg(test)]
 mod v20260728155615_agent_conversation_mutes_tests;
+mod v20260728162405_rx_native_team_runtime;
+#[cfg(test)]
+mod v20260728162405_rx_native_team_runtime_tests;
 mod v20260728183000_workspace_review_plan_context;
 #[cfg(test)]
 mod v20260728183000_workspace_review_plan_context_tests;
+mod v20260730000304_chat_message_blocks_created_at_index;
+#[cfg(test)]
+mod v20260730000304_chat_message_blocks_created_at_index_tests;
+mod v20260730151837_agent_workspace_repair_ci_rerun_reservations;
+#[cfg(test)]
+mod v20260730151837_agent_workspace_repair_ci_rerun_reservations_tests;
+mod v20260730161032_agent_workspace_pr_autofix_completion_evidence;
+#[cfg(test)]
+mod v20260730161032_agent_workspace_pr_autofix_completion_evidence_tests;
+mod v20260731023949_agent_run_identity;
+#[cfg(test)]
+mod v20260731023949_agent_run_identity_tests;
+mod v20260731111346_purge_empty_thinking_blocks;
+#[cfg(test)]
+mod v20260731111346_purge_empty_thinking_blocks_tests;
+mod v20260731125157_add_workspace_repair_fingerprint_state;
+#[cfg(test)]
+mod v20260731125157_add_workspace_repair_fingerprint_state_tests;
+mod v20260801021420_delegation_parks;
+#[cfg(test)]
+mod v20260801021420_delegation_parks_tests;
 mod v20260801120000_remote_conversation_start_requests;
 #[cfg(test)]
 mod v20260801120000_remote_conversation_start_requests_tests;
@@ -590,6 +617,12 @@ mod v20260801130000_remote_conversation_message_requests_tests;
 mod v20260801140000_remote_conversation_mode_switch_requests;
 #[cfg(test)]
 mod v20260801140000_remote_conversation_mode_switch_requests_tests;
+mod v20260801211636_delegation_park_wake_claimed_at;
+#[cfg(test)]
+mod v20260801211636_delegation_park_wake_claimed_at_tests;
+mod v20260802174000_workspace_review_fixer_cycle_cap;
+#[cfg(test)]
+mod v20260802174000_workspace_review_fixer_cycle_cap_tests;
 #[cfg(test)]
 pub(super) fn migrate_scripted_agent_workflows_for_test(conn: &Connection) -> AppResult<()> {
     v20260715194617_scripted_agent_workflows::migrate(conn)
@@ -684,7 +717,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260801120000;
+pub const SCHEMA_VERSION: i64 = 20260802174000;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1856,9 +1889,54 @@ const MIGRATIONS: &[Migration] = &[
         migrate: v20260728155615_agent_conversation_mutes::migrate,
     },
     Migration {
+        version: 20260728162405,
+        name: "rx_native_team_runtime",
+        migrate: v20260728162405_rx_native_team_runtime::migrate,
+    },
+    Migration {
         version: 20260728183000,
         name: "workspace_review_plan_context",
         migrate: v20260728183000_workspace_review_plan_context::migrate,
+    },
+    Migration {
+        version: 20260730000304,
+        name: "chat_message_blocks_created_at_index",
+        migrate: v20260730000304_chat_message_blocks_created_at_index::migrate,
+    },
+    Migration {
+        version: 20260730025727,
+        name: "chat_message_blocks_thinking_kind",
+        migrate: v20260730025727_chat_message_blocks_thinking_kind::migrate,
+    },
+    Migration {
+        version: 20260730151837,
+        name: "agent_workspace_repair_ci_rerun_reservations",
+        migrate: v20260730151837_agent_workspace_repair_ci_rerun_reservations::migrate,
+    },
+    Migration {
+        version: 20260730161032,
+        name: "agent_workspace_pr_autofix_completion_evidence",
+        migrate: v20260730161032_agent_workspace_pr_autofix_completion_evidence::migrate,
+    },
+    Migration {
+        version: 20260731023949,
+        name: "agent_run_identity",
+        migrate: v20260731023949_agent_run_identity::migrate,
+    },
+    Migration {
+        version: 20260731111346,
+        name: "purge_empty_thinking_blocks",
+        migrate: v20260731111346_purge_empty_thinking_blocks::migrate,
+    },
+    Migration {
+        version: 20260731125157,
+        name: "add_workspace_repair_fingerprint_state",
+        migrate: v20260731125157_add_workspace_repair_fingerprint_state::migrate,
+    },
+    Migration {
+        version: 20260801021420,
+        name: "delegation_parks",
+        migrate: v20260801021420_delegation_parks::migrate,
     },
     Migration {
         version: 20260801120000,
@@ -1879,6 +1957,16 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260801140000,
         name: "remote_conversation_mode_switch_requests",
         migrate: v20260801140000_remote_conversation_mode_switch_requests::migrate,
+    },
+    Migration {
+        version: 20260801211636,
+        name: "delegation_park_wake_claimed_at",
+        migrate: v20260801211636_delegation_park_wake_claimed_at::migrate,
+    },
+    Migration {
+        version: 20260802174000,
+        name: "workspace_review_fixer_cycle_cap",
+        migrate: v20260802174000_workspace_review_fixer_cycle_cap::migrate,
     },
 ];
 

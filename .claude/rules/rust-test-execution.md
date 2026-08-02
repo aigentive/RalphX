@@ -79,6 +79,7 @@ paths:
 | Add an integration test module | Prefer an existing `src-tauri/tests/suite_*/main.rs` target and update the suite mapping below; the existing target is already included in the integration archive |
 | Add an unavoidable top-level integration target | Add it to `FULL_INTEGRATION_TESTS` in `scripts/test-rust-fast.sh`; add a `nextest.toml` group override only when resource behavior requires one; ❌ duplicate the target list in workflow YAML |
 | Change archive execution | Keep one archive producer and partition-only consumers on the same profile/features/workspace remap; consumers must not rebuild Cargo targets |
+| Change lib coverage topology | `rust-lib-coverage-archive` is the sole archive producer; four partition-only consumers mirror the CI test archive pattern; update `scripts/tests/test-coverage-rust-shards.sh` and Codecov inputs with shard/artifact changes |
 | Add IPC/command coverage | Update the single target/filter union in `.github/workflows/coverage.yml`; keep one `cargo llvm-cov nextest` invocation so filter groups do not relink the instrumented root crate repeatedly |
 | Change shard counts or artifact names | Update the matrix, unique artifact/JUnit names, publish-time artifact validation, and every Codecov input together |
 | Validate topology changes | Run `scripts/tests/test-ci-rust-full-integration-targets.sh` and `scripts/tests/test-coverage-rust-shards.sh` plus YAML/actionlint checks; do not run broad Rust/llvm-cov suites merely to validate workflow wiring |
@@ -124,7 +125,7 @@ python3 scripts/check-test-suite-modules.py
 | `suite_ideation` | `ideation_service`, `ideation_capacity_counting`, `ideation_webhook_enrichment_test`, `ideation_model_override`, `ideation_commands`, `ideation_runtime_handlers`, `external_ideation_runtime_handlers`, `ideation_plan_delivery_test`, `ideation_handlers`, `apply_service` |
 | `suite_transition_git` | `transition_handler_freshness`, `transition_handler_freshness_integration`, `transition_handler_concurrent_freshness`, `webhook_pipeline_integration`, `reviewing_initial_recovery`, `startup_jobs_runner`, `merge_system_hardening`, `deferred_main_merge_integration`, `steps_handlers`, `reviews_handlers`, `git_handlers`, `external_handlers` |
 | `suite_pr_github` | `pr_mode_integration`, `pr_mode_fallback`, `pr_mode_acceptance_paths`, `pr_poller_tests`, `pr_reconciler_tests`, `project_pr_template` |
-| `suite_interactive_process` | `gate1_ipr_fast_path_tests`, `ipr_cleanup_guard_tests`, `interactive_mode_integration`, `team_nudge_running_count_tests`, `task_cleanup_service`, `reconciliation_runner`, `agentic_client_flows`, `supervisor_integration`, `codex_stream_processor`, `codex_cli_capabilities`, `execution_types_serde`, `task_scheduler_service` |
+| `suite_interactive_process` | `gate1_ipr_fast_path_tests`, `message_delivery_contract`, `ipr_cleanup_guard_tests`, `interactive_mode_integration`, `team_nudge_running_count_tests`, `task_cleanup_service`, `reconciliation_runner`, `agentic_client_flows`, `supervisor_integration`, `codex_stream_processor`, `codex_cli_capabilities`, `execution_types_serde`, `task_scheduler_service` |
 | `suite_agent_workspace` | `agent_workspace_publish_recovery`, `agent_workspace_repair_auto_publish`, `agent_workspace_review` |
 | `plan_selector_performance` | stays standalone under `perf-serial` |
 
@@ -222,6 +223,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --features test-utils 'infrastru
 |---|---|
 | Converting an old SQLite test | Replace `open_memory_connection() + run_migrations()` with `SqliteTestDb` first, then extract shared seed helpers |
 | Reproducing a named Rust CI failure | Run only the failing lane/target first; use `scripts/test-rust-fast.sh pr` / `main` only when the user explicitly requests full parity or the failure cannot be isolated |
+| Suspected environmental CI failure (timeout/infra/download flake, not a code signal) | First response: `gh run rerun <run-id> --failed` to re-run only red jobs without a push; a code fix still requires a push and full re-run; ❌ pushing no-op commits to re-trigger CI |
 | Seeing remaining `open_memory_connection()` calls after migration work | Check whether the suite is connection/formatting-only before converting it; optimize real migration-replay hotspots first |
 | Splitting oversized lib suites | Move them to `src-tauri/tests/<suite>.rs`, compile them as a separate integration binary, and keep the exported surface minimal and explicitly internal-facing |
 | Splitting HTTP handler suites | Make the handler/types module reachable from integration tests, import through `ralphx_lib::http_server::{handlers, types}`, and keep SQLite-only handler helpers on `AppState::new_sqlite_test()` / `new_sqlite_test_with_registry()` instead of duplicating ad hoc setup |

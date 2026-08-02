@@ -6,8 +6,8 @@ use crate::domain::entities::{
     AgentWorkspacePrMetadataDecision, AgentWorkspacePrReviewAction,
     AgentWorkspacePrReviewActionKind, AgentWorkspacePrReviewActionStatus,
     AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewMonitorStatus,
-    AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation, AgentWorkspaceRepairPhase,
-    AgentWorkspaceRepairSource, AgentWorkspaceReviewApprovalSnapshot,
+    AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation, AgentWorkspaceRepairOutcome,
+    AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource, AgentWorkspaceReviewApprovalSnapshot,
     AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewAutoMergeGuardStatus,
     AgentWorkspaceReviewFixerSnapshot, AgentWorkspaceReviewGateStatus,
     AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
@@ -20,7 +20,9 @@ use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
     AgentWorkspacePrReviewActionMutation, AgentWorkspaceRepairRepository,
     AgentWorkspaceRepairStateGuard, AgentWorkspaceRepairStateTransition,
-    StartOrJoinAgentWorkspaceRepairAttempt, StartOrJoinAgentWorkspaceRepairAttemptOutcome,
+    SettleAndStartAgentWorkspaceRepairSuccessor,
+    SettleAndStartAgentWorkspaceRepairSuccessorOutcome, StartOrJoinAgentWorkspaceRepairAttempt,
+    StartOrJoinAgentWorkspaceRepairAttemptOutcome,
 };
 use crate::testing::SqliteTestDb;
 
@@ -63,6 +65,7 @@ async fn workspace_review_fixer_claim_is_exact_and_single_winner() {
     monitor.review_requested_changes_artifact_id = Some(artifact_id.clone());
     monitor.review_requested_changes_artifact_version = Some(4);
     monitor.review_blocking_fingerprint = Some("blocker-claim".to_string());
+    monitor.review_fixer_cycle_count = 2;
     repo.upsert_workspace_review_monitor(monitor).await.unwrap();
     let snapshot = AgentWorkspaceReviewFixerSnapshot {
         target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
@@ -87,6 +90,13 @@ async fn workspace_review_fixer_claim_is_exact_and_single_winner() {
         .await
         .unwrap()
         .is_none());
+    let rejected = repo
+        .get_workspace_review_monitor(&conversation_id)
+        .await
+        .unwrap()
+        .expect("rejected claim must not remove the monitor");
+    assert_eq!(rejected.review_fixer_cycle_count, 2);
+    assert!(rejected.review_fixer_attempt_id.is_none());
 
     let claimed = repo
         .claim_workspace_review_fixer(
@@ -102,6 +112,7 @@ async fn workspace_review_fixer_claim_is_exact_and_single_winner() {
         claimed.review_fixer_attempt_id.as_deref(),
         Some("attempt-one")
     );
+    assert_eq!(claimed.review_fixer_cycle_count, 3);
     assert!(repo
         .claim_workspace_review_fixer(
             &conversation_id,
@@ -634,6 +645,170 @@ async fn legacy_repair_cas_cannot_mutate_a_durable_generation() {
             .id,
         durable.id
     );
+}
+
+#[tokio::test]
+async fn repair_attempts_list_is_generation_ordered_and_conversation_scoped() {
+    let (db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .unwrap();
+    let other_conversation_id =
+        ChatConversationId::from_string("22222222-2222-2222-2222-222222222222");
+    seed_conversation(&db, &other_conversation_id);
+    repo.create_or_update(make_workspace(other_conversation_id.clone()))
+        .await
+        .unwrap();
+
+    // Fingerprint spend sums every generation that worked on one failure identity, so the listing
+    // has to return the whole history of this conversation and nothing from any other.
+    let first = start_repair_attempt(&repo, &conversation_id, "first generation").await;
+    let second = start_successor_repair_attempt(&repo, &first, "second generation").await;
+    let foreign = start_repair_attempt(&repo, &other_conversation_id, "unrelated workspace").await;
+
+    let attempts = repo
+        .list_repair_attempts_for_conversation(&conversation_id)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        attempts
+            .iter()
+            .map(|attempt| (attempt.id.clone(), attempt.generation))
+            .collect::<Vec<_>>(),
+        vec![(first.id, 1), (second.id.clone(), 2)]
+    );
+    assert_eq!(
+        repo.list_repair_attempts_for_conversation(&other_conversation_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|attempt| attempt.id)
+            .collect::<Vec<_>>(),
+        vec![foreign.id]
+    );
+}
+
+#[tokio::test]
+async fn list_repair_attempts_for_conversation_is_empty_without_any_generation() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .unwrap();
+
+    assert!(repo
+        .list_repair_attempts_for_conversation(&conversation_id)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn blocked_pr_health_fingerprint_round_trips_and_clears() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .unwrap();
+
+    repo.set_last_blocked_pr_health_fingerprint(&conversation_id, Some("ci:Clippy:failure"))
+        .await
+        .unwrap();
+    let remembered = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        remembered.last_blocked_pr_health_fingerprint.as_deref(),
+        Some("ci:Clippy:failure")
+    );
+    assert!(remembered.last_blocked_pr_health_at.is_some());
+
+    // Clearing must drop both halves; a remembered timestamp without an identity would let a later
+    // streak think it had already compared against something.
+    repo.set_last_blocked_pr_health_fingerprint(&conversation_id, None)
+        .await
+        .unwrap();
+    let cleared = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(cleared.last_blocked_pr_health_fingerprint.is_none());
+    assert!(cleared.last_blocked_pr_health_at.is_none());
+}
+
+async fn start_repair_attempt(
+    repo: &SqliteAgentConversationWorkspaceRepository,
+    conversation_id: &ChatConversationId,
+    reason: &str,
+) -> AgentWorkspaceRepairAttempt {
+    match repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                conversation_id.clone(),
+                AgentWorkspaceRepairSource::Publish,
+                AgentWorkspaceRepairContinuation::Publish,
+                "main",
+                false,
+                true,
+                false,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: reason.to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .unwrap()
+    {
+        StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(attempt) => attempt,
+        outcome => panic!("expected a started attempt, got {outcome:?}"),
+    }
+}
+
+async fn start_successor_repair_attempt(
+    repo: &SqliteAgentConversationWorkspaceRepository,
+    current: &AgentWorkspaceRepairAttempt,
+    reason: &str,
+) -> AgentWorkspaceRepairAttempt {
+    let successor = AgentWorkspaceRepairAttempt::new(
+        current.conversation_id.clone(),
+        AgentWorkspaceRepairSource::Publish,
+        AgentWorkspaceRepairContinuation::Publish,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    match repo
+        .settle_and_start_repair_successor(SettleAndStartAgentWorkspaceRepairSuccessor {
+            attempt_id: current.id.clone(),
+            generation: current.generation,
+            expected_phase: current.phase,
+            expected_updated_at: current.updated_at,
+            outcome: AgentWorkspaceRepairOutcome::Superseded,
+            settled_at: chrono::Utc::now(),
+            successor: StartOrJoinAgentWorkspaceRepairAttempt {
+                attempt: successor,
+                reason: reason.to_string(),
+                verified_newer_base: false,
+                compatibility_projection: None,
+                events: Vec::new(),
+            },
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .unwrap()
+    {
+        SettleAndStartAgentWorkspaceRepairSuccessorOutcome::Started(attempt) => attempt,
+        outcome => panic!("expected a started successor, got {outcome:?}"),
+    }
 }
 
 #[tokio::test]
@@ -3810,6 +3985,58 @@ async fn list_active_transient_publish_status_workspaces_filters_stale_open_rows
             .map(|workspace| workspace.conversation_id)
             .collect::<Vec<_>>(),
         vec![describing.conversation_id, refreshing.conversation_id]
+    );
+}
+
+#[tokio::test]
+async fn last_blocked_pr_health_fingerprint_round_trips_and_clears() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .unwrap();
+
+    let fresh = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+    assert!(fresh.last_blocked_pr_health_fingerprint.is_none());
+    assert!(fresh.last_blocked_pr_health_at.is_none());
+
+    repo.set_last_blocked_pr_health_fingerprint(
+        &conversation_id,
+        Some("github_pr_autofix:684:checks:rust-tests"),
+    )
+    .await
+    .unwrap();
+
+    let remembered = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+    assert_eq!(
+        remembered.last_blocked_pr_health_fingerprint.as_deref(),
+        Some("github_pr_autofix:684:checks:rust-tests")
+    );
+    assert!(
+        remembered.last_blocked_pr_health_at.is_some(),
+        "a remembered failure identity records when it was observed"
+    );
+
+    repo.set_last_blocked_pr_health_fingerprint(&conversation_id, None)
+        .await
+        .unwrap();
+
+    let cleared = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+    assert!(cleared.last_blocked_pr_health_fingerprint.is_none());
+    assert!(
+        cleared.last_blocked_pr_health_at.is_none(),
+        "clearing the identity must also clear its observation time"
     );
 }
 

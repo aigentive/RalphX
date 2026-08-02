@@ -20,10 +20,68 @@ test.describe("shared chat activity presentation", () => {
     await expect(page.getByText(SUMMARY)).toHaveCount(2);
     await expect(page.getByTestId("task-tool-call-card")).toHaveCount(4);
     await expect(page.getByTestId("streaming-tool-indicator")).toHaveCount(0);
+    const providerFixtures = page.getByTestId(/chat-activity-(?:claude|codex)/);
+    await expect(providerFixtures.getByTestId("thinking-group-toggle")).toHaveCount(2);
     await expect(page).toHaveScreenshot("chat-activity-provider-parity-dark.png", {
       animations: "disabled",
       fullPage: true,
     });
+  });
+
+  test("renders a collapsed then expanded thinking viewer", async ({ page }) => {
+    await openChatActivityPage(page, { theme: "dark", width: 760 });
+    const fixture = page.getByTestId("chat-activity-claude");
+    const toggle = fixture.getByTestId("thinking-group-toggle");
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect(toggle).toHaveText("Agent thought for 2s");
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await expect(fixture.getByTestId("thinking-scroll-body")).toBeVisible();
+    await expect(page).toHaveScreenshot("chat-thinking-expanded-dark-narrow.png", {
+      animations: "disabled",
+      fullPage: true,
+    });
+  });
+
+  test("renders streaming, token-progress, and settled thinking states", async ({ page }, testInfo) => {
+    await openChatActivityPage(page, { theme: "dark", width: 1180 });
+
+    const states = [
+      {
+        testId: "thinking-state-streaming",
+        accessibleName: "Agent thinking… Expand thinking details.",
+        attachmentName: "thinking-streaming",
+        snapshotName: "chat-thinking-streaming-pill-dark.png",
+      },
+      {
+        testId: "thinking-state-token-progress",
+        accessibleName: "Agent thinking… · ~2,000 tokens Expand thinking details.",
+        attachmentName: "thinking-token-progress",
+        snapshotName: "chat-thinking-token-progress-pill-dark.png",
+      },
+      {
+        testId: "thinking-state-settled",
+        accessibleName: "Agent thought for 2s Expand thinking details.",
+        attachmentName: "thinking-settled",
+        snapshotName: "chat-thinking-settled-pill-dark.png",
+      },
+    ] as const;
+
+    for (const state of states) {
+      const fixture = page.getByTestId(state.testId);
+      await expect(fixture.getByRole("button", { name: state.accessibleName })).toHaveAttribute(
+        "aria-expanded",
+        "false",
+      );
+      const screenshot = await fixture.screenshot({ animations: "disabled" });
+      await testInfo.attach(state.attachmentName, {
+        body: screenshot,
+        contentType: "image/png",
+      });
+      await expect(fixture).toHaveScreenshot(state.snapshotName, {
+        animations: "disabled",
+      });
+    }
   });
 
   test("keeps the activity sentence stable when details expand", async ({ page }) => {

@@ -2832,19 +2832,19 @@ mod ipc_contract {
     }
 
     #[tokio::test]
-    async fn ipc_contract_workspace_freshness_rejects_plan_mode_without_repair_mutation() {
+    async fn ipc_contract_workspace_freshness_rejects_chat_mode_without_repair_mutation() {
         let state = AppState::new_test();
         let conversation_id =
             ChatConversationId::from_string("91919191-9191-9191-9191-919191919191");
         let mut workspace = sqlite_workspace(conversation_id);
-        workspace.mode = AgentConversationWorkspaceMode::Plan;
+        workspace.mode = AgentConversationWorkspaceMode::Chat;
         workspace.linked_ideation_session_id = Some(IdeationSessionId::from_string(
             "planning-session-1".to_string(),
         ));
         workspace.publication_pr_number = Some(42);
         workspace.publication_pr_status = Some("failed".to_string());
         workspace.publication_push_status = Some("needs_agent".to_string());
-        workspace.worktree_path = "/missing/plan-mode-workspace".to_string();
+        workspace.worktree_path = "/missing/chat-mode-workspace".to_string();
         state
             .agent_conversation_workspace_repo
             .create_or_update(workspace)
@@ -2861,9 +2861,9 @@ mod ipc_contract {
             app.state(),
         )
         .await
-        .expect_err("Plan-mode freshness should be rejected");
+        .expect_err("Chat-mode freshness should be rejected");
 
-        assert!(error.contains("Only edit workspaces and ideation workspaces"));
+        assert!(error.contains("Only edit and plan workspaces"));
         let persisted = app
             .state::<AppState>()
             .agent_conversation_workspace_repo
@@ -2879,7 +2879,7 @@ mod ipc_contract {
     }
 
     #[tokio::test]
-    async fn ipc_contract_workspace_freshness_rejects_plan_mode_with_stale_edit_cache() {
+    async fn ipc_contract_workspace_freshness_supports_plan_mode_after_edit_cache() {
         let (_temp, state, conversation_id, _github) = super::setup_ipc_workspace_state(
             "freshness-plan-mode-stale-cache",
             true,
@@ -2907,34 +2907,22 @@ mod ipc_contract {
             .expect("workspace lookup should succeed")
             .expect("workspace should exist");
         workspace.mode = AgentConversationWorkspaceMode::Plan;
-        workspace.publication_pr_status = Some("failed".to_string());
-        workspace.publication_push_status = Some("needs_agent".to_string());
         app.state::<AppState>()
             .agent_conversation_workspace_repo
             .create_or_update(workspace)
             .await
             .expect("Plan workspace should persist without cache invalidation");
 
-        let error = get_agent_conversation_workspace_freshness(
+        let response = get_agent_conversation_workspace_freshness(
             conversation_id.as_str(),
             Some("local".to_string()),
             app.state(),
         )
         .await
-        .expect_err("cached edit freshness must not authorize Plan mode");
+        .expect("Plan-mode workspaces support live freshness reads");
 
-        assert!(error.contains("Only edit workspaces and ideation workspaces"));
-        let persisted = app
-            .state::<AppState>()
-            .agent_conversation_workspace_repo
-            .get_by_conversation_id(&conversation_id)
-            .await
-            .expect("workspace lookup should succeed")
-            .expect("workspace should remain persisted");
-        assert_eq!(
-            persisted.publication_push_status.as_deref(),
-            Some("needs_agent")
-        );
+        assert_eq!(response.conversation_id, conversation_id.as_str());
+        assert_eq!(response.freshness_scope, "local");
     }
 
     #[tokio::test]

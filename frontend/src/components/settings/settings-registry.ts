@@ -33,6 +33,7 @@ export type SettingsSectionId =
   | "granola"
   | "mcp"
   | "updates"
+  | "database"
   | "accessibility"
   | "notifications";
 
@@ -169,6 +170,12 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
     description: "Choose which RalphX release stream to check for updates.",
   },
   {
+    id: "database",
+    label: "Database",
+    description:
+      "View local database size and schedule compaction to reclaim unused storage.",
+  },
+  {
     id: "accessibility",
     label: "Accessibility",
     description:
@@ -270,11 +277,11 @@ export const SETTINGS_NAV: SettingsNavMeta[] = [
   {
     id: "application",
     label: "Application",
-    sublabel: "Updates and accessibility",
+    sublabel: "Updates, database, accessibility",
     description:
-      "Release stream, theme, motion, and typography preferences for the whole app.",
+      "Release stream, local database maintenance, and theme, motion, and typography preferences for the whole app.",
     icon: SlidersHorizontal,
-    leaves: ["updates", "accessibility"],
+    leaves: ["updates", "database", "accessibility"],
   },
 ];
 

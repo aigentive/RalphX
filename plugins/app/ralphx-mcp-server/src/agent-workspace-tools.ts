@@ -535,11 +535,17 @@ export const AGENT_WORKSPACE_TOOLS: Tool[] = [
           type: "string",
           description: "Optional blocker explanation when the PR fix cannot be completed safely",
         },
+        resolution: {
+          type: "string",
+          enum: ["fixed", "transient_ci", "pre_existing_on_base", "needs_human"],
+          description:
+            "Use fixed only after pushing a real fix. transient_ci is only for GitHub Actions infrastructure failures; pre_existing_on_base requires evidence the failure reproduces on base; needs_human is for a blocker needing user action. Classify honestly rather than fabricating a commit.",
+        },
         fix_commit_sha: {
           type: "string",
           pattern: "^[0-9a-f]{40}$",
           description:
-            "Full 40-character SHA of the current committed workspace HEAD. Required when blocker is absent; omit it when reporting a blocker.",
+            "Full 40-character SHA of the current committed workspace HEAD. Required for a fixed completion; RalphX verifies the actual branch head changed from dispatch.",
         },
       },
       required: ["conversation_id", "summary"],
@@ -562,6 +568,18 @@ export const AGENT_WORKSPACE_TOOLS: Tool[] = [
           type: "string",
           minLength: 1,
           description: "Optional human-readable blocker when the repair cannot be completed safely",
+        },
+        resolution: {
+          type: "string",
+          enum: ["fixed", "transient_ci", "pre_existing_on_base", "needs_human"],
+          description:
+            "Classify the repair outcome honestly: fixed after a real repair, transient_ci only for GitHub Actions infrastructure failures, pre_existing_on_base with evidence the failure reproduces on base, or needs_human for a blocker requiring user action.",
+        },
+        fix_commit_sha: {
+          type: "string",
+          pattern: "^[0-9a-f]{40}$",
+          description:
+            "Full 40-character SHA of the current committed workspace HEAD. Required for a fixed repair completion; RalphX verifies the actual branch head changed from dispatch.",
         },
       },
       required: ["summary"],
@@ -1050,16 +1068,18 @@ export async function callCompleteAgentWorkspacePrFixTool(
   args: unknown,
   runtimeContext?: AgentWorkspaceToolRuntimeContext
 ): Promise<unknown> {
-  const { conversation_id, summary, blocker, fix_commit_sha } = args as {
+  const { conversation_id, summary, blocker, resolution, fix_commit_sha } = args as {
     conversation_id: string;
     summary: string;
     blocker?: string;
+    resolution?: string;
     fix_commit_sha?: string;
   };
 
   return callTauri(`agent-workspaces/${conversation_id}/complete-pr-fix`, {
     summary,
     blocker,
+    resolution,
     fix_commit_sha,
     created_by_run_id: resolveWorkspaceReviewCallerRunId(runtimeContext),
   });
@@ -1070,9 +1090,11 @@ export async function callCompleteAgentWorkspaceRepairTool(
   args: unknown,
   runtimeContext?: AgentWorkspaceToolRuntimeContext,
 ): Promise<unknown> {
-  const { summary, blocker } = (args && typeof args === "object" ? args : {}) as {
+  const { summary, blocker, resolution, fix_commit_sha } = (args && typeof args === "object" ? args : {}) as {
     summary: string;
     blocker?: string;
+    resolution?: string;
+    fix_commit_sha?: string;
   };
   const conversation_id = resolveRuntimeAgentWorkspaceConversationId(
     "complete_agent_workspace_repair",
@@ -1091,6 +1113,8 @@ export async function callCompleteAgentWorkspaceRepairTool(
   return callTauri(`agent-workspaces/${conversation_id}/complete-repair`, {
     summary,
     blocker,
+    ...(resolution === undefined ? {} : { resolution }),
+    ...(fix_commit_sha === undefined ? {} : { reported_fix_commit_sha: fix_commit_sha }),
   }, { headers });
 }
 

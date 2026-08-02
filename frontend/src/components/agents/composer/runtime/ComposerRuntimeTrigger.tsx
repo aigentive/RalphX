@@ -54,6 +54,7 @@ interface ComposerRuntimeTriggerProps
   includesCapabilities?: boolean;
   compact: boolean;
   fastMode: boolean;
+  scopeTag?: string;
   className?: string;
 }
 
@@ -72,6 +73,7 @@ export const ComposerRuntimeTrigger = forwardRef<
     includesCapabilities = false,
     compact,
     fastMode,
+    scopeTag,
     className,
     ...buttonProps
   },
@@ -102,6 +104,19 @@ export const ComposerRuntimeTrigger = forwardRef<
       <span className="truncate text-[0.8125rem] font-medium text-[var(--text-primary)]">
         {visibleLabel ?? modelLabel}
       </span>
+      {scopeTag && (
+        <span
+          className="rounded border px-1 py-0.5 text-[0.5625rem] font-semibold tracking-wide"
+          style={{
+            color: "var(--status-warning)",
+            borderColor: "var(--status-warning-border)",
+            backgroundColor: "var(--status-warning-muted)",
+          }}
+          data-testid="agent-composer-runtime-role-tag"
+        >
+          {scopeTag}
+        </span>
+      )}
       {effortOptions.length > 0 && (
         <span
           className="inline-flex shrink-0"

@@ -14,6 +14,7 @@ import {
   getAgentWorkspaceDescriptionFailurePresentation,
   getAgentWorkspacePublishReceiptPresentation,
   getAgentWorkspaceMaintenancePresentation,
+  getAgentWorkspacePrAutofixFingerprintSpendPresentation,
   isAgentWorkspaceMaintenanceActive,
   blocksAgentWorkspaceGitInspection,
   canResumeAgentWorkspacePublish,
@@ -233,6 +234,30 @@ describe("maintenance operation presentation", () => {
 
     expect(getAgentWorkspaceMaintenancePresentation(current)).toBeNull();
     expect(isAgentWorkspaceMaintenanceActive(current)).toBe(false);
+  });
+});
+
+describe("PR autofix fingerprint spend presentation", () => {
+  it("reports effort for the current failure and marks an exhausted budget", () => {
+    expect(
+      getAgentWorkspacePrAutofixFingerprintSpendPresentation(
+        workspace({
+          prAutofixFingerprintSpend: {
+            generations: 3,
+            minutes: 92,
+            budgetMinutes: 45,
+            isExhausted: true,
+          },
+        }),
+      ),
+    ).toEqual({
+      summary: "3 generations · 92 min on this failure",
+      exhausted: true,
+    });
+  });
+
+  it("omits the indicator when there is no tracked failure fingerprint", () => {
+    expect(getAgentWorkspacePrAutofixFingerprintSpendPresentation(workspace())).toBeNull();
   });
 });
 
@@ -852,7 +877,7 @@ describe("canInspectAgentWorkspaceBaseFreshness", () => {
     ).toBe(true);
   });
 
-  it("keeps plan publish and diff surfaces without base freshness inspection", () => {
+  it("keeps plan publish, diff, and base freshness surfaces inspectable", () => {
     const planWorkspace = workspace({
       mode: "plan",
       linkedIdeationSessionId: "planning-session-1",
@@ -860,7 +885,7 @@ describe("canInspectAgentWorkspaceBaseFreshness", () => {
       publicationPrStatus: "open",
     });
 
-    expect(canInspectAgentWorkspaceBaseFreshness(planWorkspace)).toBe(false);
+    expect(canInspectAgentWorkspaceBaseFreshness(planWorkspace)).toBe(true);
     expect(shouldShowAgentWorkspacePublishSurface(planWorkspace)).toBe(true);
     expect(canInspectAgentWorkspacePublishDiffs(planWorkspace)).toBe(true);
   });
@@ -882,7 +907,7 @@ describe("canInspectAgentWorkspaceBaseFreshness", () => {
     ).toBe(false);
   });
 
-  it("rejects missing plan workspaces for live base freshness inspection", () => {
+  it("keeps missing plan workspaces eligible for base freshness inspection", () => {
     expect(
       canInspectAgentWorkspaceBaseFreshness(
         workspace({
@@ -891,7 +916,7 @@ describe("canInspectAgentWorkspaceBaseFreshness", () => {
           status: "missing",
         }),
       ),
-    ).toBe(false);
+    ).toBe(true);
   });
 });
 

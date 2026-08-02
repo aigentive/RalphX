@@ -490,6 +490,8 @@ macro_rules! register_tauri_commands {
             commands::unified_chat_commands::archive_agent_conversation,
             commands::unified_chat_commands::restore_agent_conversation,
             commands::unified_chat_commands::get_agent_run_status_unified,
+            commands::unified_chat_commands::get_agent_run_attribution,
+            commands::unified_chat_commands::get_agent_run_attributions,
             commands::unified_chat_commands::is_chat_service_available,
             commands::unified_chat_commands::stop_agent,
             commands::unified_chat_commands::is_agent_running,
@@ -560,6 +562,8 @@ macro_rules! register_tauri_commands {
             commands::github_commands::get_pull_request_detail,
             commands::repository_settings_commands::get_repository_settings,
             commands::repository_settings_commands::update_repository_settings,
+            commands::database_maintenance_commands::get_database_maintenance_stats,
+            commands::database_maintenance_commands::set_database_compaction_pending,
             commands::update_channel_commands::get_update_channel,
             commands::update_channel_commands::set_update_channel,
             // Plan branch commands (Phase 85 - Feature branch for plan groups)

@@ -1,8 +1,9 @@
 use chrono::Utc;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{watch, RwLock};
 
+use crate::application::delegation_park::{DelegationJobSource, ParkJobSnapshot};
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
     AgentRunId, ChatConversationId, ChatTimelineItem, ChatTimelineItemId, ChatTimelineItemKind,
@@ -60,6 +61,10 @@ pub struct DelegationJobSnapshot {
     pub completed_at: Option<String>,
     pub history: Vec<DelegationHistoryEntry>,
     pub delegated_status: Option<DelegatedSessionStatusResponse>,
+    /// Set only when a bounded `delegate_wait` block hit its deadline without any
+    /// watched job settling. Absent on every immediate-return path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timed_out: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -67,6 +72,9 @@ struct DelegationJobRecord {
     snapshot: DelegationJobSnapshot,
     cancel_requested: bool,
     settlement_status: Option<String>,
+    /// Broadcasts the committed terminal status exactly once, after `commit_terminal`
+    /// accepts the CAS. `None` while the job is still running.
+    settled_tx: Arc<watch::Sender<Option<String>>>,
 }
 
 #[derive(Clone, Default)]
@@ -141,18 +149,37 @@ impl DelegationService {
                 detail: None,
             }],
             delegated_status: None,
+            timed_out: None,
         };
 
+        let (settled_tx, _settled_rx) = watch::channel(None);
         self.jobs.write().await.insert(
             job_id,
             DelegationJobRecord {
                 snapshot: snapshot.clone(),
                 cancel_requested: false,
                 settlement_status: None,
+                settled_tx: Arc::new(settled_tx),
             },
         );
 
         snapshot
+    }
+
+    /// Subscribes to the terminal settlement signal for `job_id`.
+    ///
+    /// The receiver observes `Some(status)` only after `commit_terminal` accepts the
+    /// terminal CAS, so a signal is proof of committed settlement, never of a
+    /// speculative `terminal_candidate`. Returns `None` for unknown jobs.
+    pub async fn subscribe_settlement(
+        &self,
+        job_id: &str,
+    ) -> Option<watch::Receiver<Option<String>>> {
+        self.jobs
+            .read()
+            .await
+            .get(job_id)
+            .map(|record| record.settled_tx.subscribe())
     }
 
     pub async fn snapshot(&self, job_id: &str) -> Option<DelegationJobSnapshot> {
@@ -161,6 +188,11 @@ impl DelegationService {
             .await
             .get(job_id)
             .map(|record| record.snapshot.clone())
+    }
+
+    #[doc(hidden)]
+    pub async fn job_count_for_test(&self) -> usize {
+        self.jobs.read().await.len()
     }
 
     pub async fn begin_cancellation(&self, job_id: &str) -> Option<DelegationJobSnapshot> {
@@ -250,10 +282,28 @@ impl DelegationService {
         {
             return false;
         }
+        let settled_status = candidate.status.clone();
         record.snapshot = candidate;
         record.cancel_requested = false;
         record.settlement_status = None;
+        // Effects strictly after authority: the wake signal fires only once the CAS above
+        // has accepted this terminal, never from `terminal_candidate`.
+        let _ = record.settled_tx.send(Some(settled_status));
         true
+    }
+}
+
+/// The live job registry is the park's source of delegate ownership and durable-run facts.
+#[async_trait::async_trait]
+impl DelegationJobSource for DelegationService {
+    async fn park_job_snapshot(&self, job_id: &str) -> Option<ParkJobSnapshot> {
+        self.snapshot(job_id).await.map(|snapshot| ParkJobSnapshot {
+            status: snapshot.status,
+            parent_conversation_id: snapshot.parent_conversation_id,
+            parent_agent_run_id: snapshot.parent_agent_run_id,
+            delegated_session_id: snapshot.delegated_session_id,
+            delegated_agent_run_id: snapshot.delegated_agent_run_id,
+        })
     }
 }
 
