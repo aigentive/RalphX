@@ -53,6 +53,8 @@ import { useUiStore, type ExecutionBarPopoverKind, type ExecutionBarRunningTab }
 interface ExecutionControlBarProps {
   /** The project ID */
   projectId: string;
+  /** Whether execution counts came from an authoritative status source. */
+  statusKnown?: boolean;
   /** Number of currently running tasks */
   runningCount: number;
   /** Maximum concurrent tasks allowed */
@@ -165,6 +167,7 @@ function StatusSeparator() {
 
 export function ExecutionControlBar({
   projectId,
+  statusKnown = true,
   runningCount,
   maxConcurrent,
   queuedCount,
@@ -238,9 +241,9 @@ export function ExecutionControlBar({
     terminalStatusByConversationId,
   ]);
   const terminalCount = terminalSessions.length;
-  const canStop = displayRunningCount > 0 && !isLoading;
+  const canStop = statusKnown && displayRunningCount > 0 && !isLoading;
   const isStopped = haltMode === "stopped";
-  const canPauseToggle = !isLoading;
+  const canPauseToggle = statusKnown && !isLoading;
   const statusColor = getStatusColor(displayRunningCount, isPaused, haltMode);
   const statusState = isStopped ? "stopped" : getStatusState(displayRunningCount, isPaused);
   const isRunning = displayRunningCount > 0 && !isPaused;
@@ -313,7 +316,7 @@ export function ExecutionControlBar({
         <div
           data-testid="execution-control-bar"
           data-paused={isPaused ? "true" : "false"}
-          data-running={displayRunningCount}
+          data-running={statusKnown ? displayRunningCount : undefined}
           data-loading={isLoading ? "true" : undefined}
           data-status={statusState}
           role="region"
@@ -331,7 +334,7 @@ export function ExecutionControlBar({
         {/* Status Section (Left) */}
         <div
           className="flex items-center gap-5"
-          aria-label={`${displayRunningCount} agents running out of ${displayMaxConcurrent}, ${workspaceActive} workspace agents, ${taskActive} task agents, ${queuedCount} queued tasks, ${queuedMessageCount} queued messages, ${terminalCount} open terminals, ${pausedCount} paused, ${mergingCount} merge tasks, ${attentionCount} escalated merge tasks`}
+          aria-label={statusKnown ? `${displayRunningCount} agents running out of ${displayMaxConcurrent}, ${workspaceActive} workspace agents, ${taskActive} task agents, ${queuedCount} queued tasks, ${queuedMessageCount} queued messages, ${terminalCount} open terminals, ${pausedCount} paused, ${mergingCount} merge tasks, ${attentionCount} escalated merge tasks` : "Execution status unavailable"}
         >
           {/* Animated Status Indicator (anchor for all popovers) */}
           <div
@@ -381,7 +384,7 @@ export function ExecutionControlBar({
                     fontWeight: 500,
                   }}
                 >
-                  {displayRunningCount}/{displayMaxConcurrent}
+                  {statusKnown ? `${displayRunningCount}/${displayMaxConcurrent}` : "—"}
                 </span>
               </button>
             </RunningProcessPopover>
@@ -442,7 +445,7 @@ export function ExecutionControlBar({
                     fontWeight: 500,
                   }}
                 >
-                  {queuedCount}
+                  {statusKnown ? queuedCount : "—"}
                 </span>
               </button>
             </QueuedTasksPopover>

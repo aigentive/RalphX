@@ -150,10 +150,9 @@ export function useAgentConversationRuntimeStatus(
     },
     enabled,
     staleTime: 2_000,
-    // Keep polling while the query is FAILING. On an error with no prior success
-    // `state.data` is undefined, which used to read as "not running" and stopped the poll
-    // permanently — so one transient backend failure froze the pane until something else
-    // invalidated the key. A failing liveness probe is exactly when polling must continue.
+    // Local probes keep polling after errors so transient backend failures self-heal.
+    // Remote registered-index errors deliberately stop this poll to avoid a doom loop;
+    // runtime events, focus refetches, and reconnect sweeps provide recovery instead.
     refetchInterval: (query) => {
       if (isRemoteEnvironment) {
         return query.state.data?.isRunning ? 5_000 : false;

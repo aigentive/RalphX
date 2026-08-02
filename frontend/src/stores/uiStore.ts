@@ -230,6 +230,8 @@ interface UiState {
   recoveryPromptSurface: "chat" | "task_detail" | null;
   /** Current execution status (pause state, running/queued counts) */
   executionStatus: ExecutionStatusResponse;
+  /** Whether executionStatus came from an authoritative read or event. */
+  executionStatusKnown: boolean;
   /** Currently open execution bar popover, if any */
   executionBarOpenPopover: ExecutionBarPopoverKind;
   /** Last selected tab inside the Running execution bar popover */
@@ -327,6 +329,8 @@ interface UiActions {
   setRecoveryPromptSurface: (surface: "chat" | "task_detail" | null) => void;
   /** Update full execution status from backend */
   setExecutionStatus: (status: ExecutionStatusResponse) => void;
+  /** Mark execution status unknown after an authoritative read fails. */
+  setExecutionStatusUnknown: () => void;
   /** Set just the paused state */
   setExecutionPaused: (isPaused: boolean) => void;
   /** Set running count */
@@ -438,13 +442,14 @@ export const useUiStore = create<UiState & UiActions>()(
       globalMaxConcurrent: 20,
       queuedCount: 0,
       queuedMessageCount: 0,
-      canStartTask: true,
+      canStartTask: false,
       ideationActive: 0,
       ideationIdle: 0,
       ideationWaiting: 0,
       ideationMaxProject: 5,
       ideationMaxGlobal: 10,
     },
+    executionStatusKnown: false,
     executionBarOpenPopover: null,
     executionBarRunningTab: "execution",
     showArchived: false,
@@ -592,6 +597,13 @@ export const useUiStore = create<UiState & UiActions>()(
     setExecutionStatus: (status) =>
       set((state) => {
         state.executionStatus = status;
+        state.executionStatusKnown = true;
+      }),
+
+    setExecutionStatusUnknown: () =>
+      set((state) => {
+        state.executionStatusKnown = false;
+        state.executionStatus.canStartTask = false;
       }),
 
     setExecutionPaused: (isPaused) =>
@@ -874,6 +886,7 @@ registerEnvIsolatedStore({
       recoveryPrompt: initial.recoveryPrompt,
       recoveryPromptSurface: initial.recoveryPromptSurface,
       executionStatus: initial.executionStatus,
+      executionStatusKnown: initial.executionStatusKnown,
       boardSearchQuery: initial.boardSearchQuery,
       isSearching: initial.isSearching,
       graphSelection: initial.graphSelection,

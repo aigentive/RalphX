@@ -1547,7 +1547,10 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
         (!isFocusedChildChat ? selectedConversationId : null);
   const queuedMessages = useChatStore(queuedMessagesSelector);
   const executionHaltState = useUiStore((s) =>
-    getAgentQueueHaltState(s.executionStatus)
+    getAgentQueueHaltState({
+      ...s.executionStatus,
+      isKnown: s.executionStatusKnown,
+    })
   );
   const queuedInitialPrompt = queuedMessages[0]?.content ?? null;
   const emptyState = useMemo(

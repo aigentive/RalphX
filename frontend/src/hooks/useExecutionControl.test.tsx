@@ -80,6 +80,7 @@ describe("useExecutionStatus", () => {
         queuedCount: 0,
         canStartTask: true,
       },
+      executionStatusKnown: true,
     });
   });
 
@@ -135,6 +136,20 @@ describe("useExecutionStatus", () => {
     await waitFor(() => {
       expect(useUiStore.getState().executionStatus).toEqual(pausedStatus);
     });
+    expect(useUiStore.getState().executionStatusKnown).toBe(true);
+  });
+
+  it("marks uiStore status unknown and fail-closed when the query errors", async () => {
+    vi.mocked(api.execution.getStatus).mockRejectedValue(
+      new Error("status unavailable"),
+    );
+
+    renderHook(() => useExecutionStatus(), { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(useUiStore.getState().executionStatusKnown).toBe(false);
+    });
+    expect(useUiStore.getState().executionStatus.canStartTask).toBe(false);
   });
 
   it("returns isPaused from data", async () => {

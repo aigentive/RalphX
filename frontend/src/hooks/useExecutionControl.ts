@@ -9,6 +9,7 @@
  * Phase 82: All hooks now accept optional projectId for per-project scoping
  */
 
+import { useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, type ExecutionStatusResponse } from "@/lib/tauri";
 import { useUiStore } from "@/stores/uiStore";
@@ -50,6 +51,9 @@ export function useExecutionStatus(
   options: UseExecutionStatusOptions = {}
 ) {
   const setExecutionStatus = useUiStore((state) => state.setExecutionStatus);
+  const setExecutionStatusUnknown = useUiStore(
+    (state) => state.setExecutionStatusUnknown,
+  );
   const enabled = options.enabled ?? true;
 
   const query = useQuery<ExecutionStatusResponse, Error>({
@@ -67,6 +71,12 @@ export function useExecutionStatus(
     refetchOnWindowFocus: options.refetchOnWindowFocus ?? enabled,
     ...(options.staleTime !== undefined ? { staleTime: options.staleTime } : {}),
   });
+
+  useEffect(() => {
+    if (enabled && query.isError) {
+      setExecutionStatusUnknown();
+    }
+  }, [enabled, query.isError, setExecutionStatusUnknown]);
 
   return {
     ...query,

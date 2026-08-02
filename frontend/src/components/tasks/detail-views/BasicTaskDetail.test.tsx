@@ -601,6 +601,32 @@ describe("BasicTaskDetail", () => {
       }
     );
 
+    it("closes the validation dialog and surfaces a resume failure", async () => {
+      const user = userEvent.setup();
+      const metadata = JSON.stringify({
+        stop_metadata: JSON.stringify({
+          stopped_from_status: "merging",
+          stopped_at: "2026-07-21T00:00:00Z",
+        }),
+      });
+      mockApiExecutionGetStatus.mockResolvedValue(stoppedExecutionStatus);
+      mockApiExecutionResume.mockRejectedValue(new Error("resume unavailable"));
+      render(
+        <BasicTaskDetail
+          task={createTestTask({ internalStatus: "stopped", metadata })}
+        />,
+        { wrapper: TestWrapper },
+      );
+
+      await user.click(screen.getByTestId("restart-button"));
+      await user.click(screen.getByTestId("force-resume-button"));
+
+      await waitFor(() => {
+        expect(screen.queryByTestId("resume-validation-dialog")).not.toBeInTheDocument();
+      });
+      expect(screen.getByText("resume unavailable")).toBeInTheDocument();
+    });
+
     it("resumes execution after restart when the project is globally stopped", async () => {
       const user = userEvent.setup();
       const task = createTestTask({ internalStatus: "failed" });

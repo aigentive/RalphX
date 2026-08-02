@@ -32,7 +32,10 @@ export function AgentsStartConversationPanel({
 }: AgentsStartConversationPanelProps) {
   const [isStartingConversation, setIsStartingConversation] = useState(false);
   const executionHaltState = useUiStore((s) =>
-    getAgentQueueHaltState(s.executionStatus)
+    getAgentQueueHaltState({
+      ...s.executionStatus,
+      isKnown: s.executionStatusKnown,
+    })
   );
 
   return (

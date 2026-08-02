@@ -127,6 +127,17 @@ describe("ExecutionControlBar", () => {
     });
   });
 
+  it("renders indeterminate counts instead of healthy zeroes when status is unknown", () => {
+    renderBar({ statusKnown: false });
+
+    expect(screen.getByTestId("running-count")).toHaveTextContent("—");
+    expect(screen.getByTestId("running-count")).not.toHaveTextContent("0/10");
+    expect(screen.getByTestId("execution-control-bar")).toHaveAttribute(
+      "aria-label",
+      "Execution controls",
+    );
+  });
+
   describe("basic rendering", () => {
     it("renders with data-testid", () => {
       renderBar({ runningCount: 1, queuedCount: 3 });

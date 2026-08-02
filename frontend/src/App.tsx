@@ -230,6 +230,7 @@ function AppContent({ backgroundSettled }: { backgroundSettled: boolean }) {
   const toggleNotificationsPanel = useUiStore((s) => s.toggleNotificationsPanel);
   const setNotificationsPanelOpen = useUiStore((s) => s.setNotificationsPanelOpen);
   const executionStatus = useUiStore((s) => s.executionStatus);
+  const executionStatusKnown = useUiStore((s) => s.executionStatusKnown);
   const setExecutionStatus = useUiStore((s) => s.setExecutionStatus);
   const currentView = useUiStore((s) => s.currentView);
   const setCurrentView = useUiStore((s) => s.setCurrentView);
@@ -1015,6 +1016,7 @@ function AppContent({ backgroundSettled }: { backgroundSettled: boolean }) {
   const executionFooter = executionProjectId ? (
     <ExecutionControlBar
       projectId={executionProjectId}
+      statusKnown={executionStatusKnown}
       runningCount={executionStatus.runningCount}
       maxConcurrent={executionStatus.maxConcurrent}
       queuedCount={executionStatus.queuedCount}

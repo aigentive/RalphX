@@ -32,9 +32,7 @@ export function hasActiveRuntimeRow(
   index: AgentConversationRuntimeIndexResponse | null | undefined,
 ) {
   return (
-    index?.rows.some(
-      (row) => row.group === "main" && isActiveRuntimeLifecycle(row.lifecycle),
-    ) ?? false
+    index?.rows.some((row) => isActiveRuntimeLifecycle(row.lifecycle)) ?? false
   );
 }
 
@@ -49,16 +47,21 @@ function runtimeSource(
 export function runtimeIndexToConversationStatus(
   index: AgentConversationRuntimeIndexResponse,
 ): AgentConversationRuntimeStatus {
-  const activeRows = index.rows.filter(
-    (row) => row.group === "main" && isActiveRuntimeLifecycle(row.lifecycle),
+  const activeRows = index.rows.filter((row) =>
+    isActiveRuntimeLifecycle(row.lifecycle),
   );
-  const waiting = activeRows.some((row) => row.lifecycle === "waiting");
-  const primary = activeRows[0];
+  const activeMainRows = activeRows.filter((row) => row.group === "main");
+  const primary = activeMainRows[0] ?? activeRows[0];
+  const agentStatus = activeMainRows.some(
+    (row) => row.lifecycle === "waiting",
+  )
+    ? "waiting_for_input"
+    : "generating";
 
   return {
     conversationId: index.conversationId,
     isRunning: activeRows.length > 0,
-    agentStatus: waiting ? "waiting_for_input" : "generating",
+    agentStatus,
     primarySource: primary ? runtimeSource(primary) : null,
     summaryLabel: primary?.statusLabel ?? null,
     items: activeRows.map((row) => ({

@@ -233,6 +233,7 @@ function ActionButtonsCard({ task }: { task: Task }) {
   const [isResuming, setIsResuming] = useState(false);
   const [restartNote, setRestartNote] = useState("");
   const [restartOutcome, setRestartOutcome] = useState<string | null>(null);
+  const [resumeError, setResumeError] = useState<string | null>(null);
   const taskId = task.id;
   const status = task.internalStatus;
 
@@ -328,11 +329,15 @@ function ActionButtonsCard({ task }: { task: Task }) {
   const handleForceResume = useCallback(async () => {
     if (!stopMetadata?.stoppedFromStatus) return;
     setIsResuming(true);
+    setResumeError(null);
     try {
       const note = restartNote.trim() || undefined;
       await api.tasks.move(taskId, stopMetadata.stoppedFromStatus, note);
       await resumeExecutionIfStopped(task.projectId);
       setRestartNote("");
+      setShowValidationDialog(false);
+    } catch (error: unknown) {
+      setResumeError(error instanceof Error ? error.message : String(error));
       setShowValidationDialog(false);
     } finally {
       queryClient.invalidateQueries({ queryKey: taskKeys.all });
@@ -344,11 +349,15 @@ function ActionButtonsCard({ task }: { task: Task }) {
   // Handle go to ready from validation dialog
   const handleGoToReady = useCallback(async () => {
     setIsResuming(true);
+    setResumeError(null);
     try {
       const note = restartNote.trim() || undefined;
       await api.tasks.move(taskId, "ready", note);
       await resumeExecutionIfStopped(task.projectId);
       setRestartNote("");
+      setShowValidationDialog(false);
+    } catch (error: unknown) {
+      setResumeError(error instanceof Error ? error.message : String(error));
       setShowValidationDialog(false);
     } finally {
       queryClient.invalidateQueries({ queryKey: taskKeys.all });
@@ -472,6 +481,11 @@ function ActionButtonsCard({ task }: { task: Task }) {
       {restartMutation.error && (
         <p className="mt-3 text-[0.75rem]" style={{ color: "var(--status-error)" }}>
           {restartMutation.error.message}
+        </p>
+      )}
+      {resumeError && (
+        <p className="mt-3 text-[0.75rem]" style={{ color: "var(--status-error)" }}>
+          {resumeError}
         </p>
       )}
       {restartOutcome && (

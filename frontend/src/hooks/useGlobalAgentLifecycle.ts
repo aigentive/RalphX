@@ -19,10 +19,7 @@
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { chatApi } from "@/api/chat";
-import { reconcileAgentConversationRuntimeStatus } from "@/components/agents/agentConversationRuntimeStore";
-import { getAgentConversationStoreKey } from "@/components/agents/agentConversations";
-import { runtimeIndexToConversationStatus } from "@/components/agents/useAgentConversationRuntimeIndex";
+import { reconcileAgentConversationRuntimeIndexes } from "@/components/agents/agentConversationRuntimeReconcile";
 import { getKnownAgentSidebarConversations } from "@/components/agents/useAgentSidebarRunningStates";
 import { isRemoteEnvironmentActive } from "@/hooks/useActiveEnvironment";
 import { useEventBus } from "@/providers/EventProvider";
@@ -40,7 +37,6 @@ import type {
 } from "@/types/events";
 import { logger } from "@/lib/logger";
 import { onRuntimeIndexReconcile } from "@/lib/remote/runtime-index-reconcile";
-import { isRemoteTransportError } from "@/lib/remote/transport-errors";
 
 type TerminalLifecyclePayload = {
   run_id?: string | null;
@@ -96,31 +92,17 @@ export function useGlobalAgentLifecycle() {
           return;
         }
 
-        void (async () => {
-          for (const conversation of getKnownAgentSidebarConversations()) {
-            try {
-              const index =
-                await chatApi.getAgentConversationRuntimeIndex(conversation.id);
-              reconcileAgentConversationRuntimeStatus(
-                conversation.id,
-                runtimeIndexToConversationStatus(index),
-                { storeKey: getAgentConversationStoreKey(conversation) },
-              );
-            } catch (error: unknown) {
-              logger.error(
-                `[GlobalAgentLifecycle] Failed to reconcile runtime index for ${conversation.id}`,
-                error,
-              );
-              toast.error("Couldn't refresh agent activity");
-              if (
-                isRemoteTransportError(error) &&
-                error.code === "REMOTE_COMMAND_UNAVAILABLE"
-              ) {
-                break;
-              }
-            }
-          }
-        })();
+        void reconcileAgentConversationRuntimeIndexes(
+          environmentId,
+          getKnownAgentSidebarConversations(),
+          (error, conversation) => {
+            logger.error(
+              `[GlobalAgentLifecycle] Failed to reconcile runtime index for ${conversation.id}`,
+              error,
+            );
+            toast.error("Couldn't refresh agent activity");
+          },
+        );
       },
     );
 

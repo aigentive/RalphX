@@ -62,7 +62,7 @@ export const STORE_ISOLATION_INVENTORY: readonly StoreInventoryEntry[] = [
   },
   {
     storeName: "useUiStore", modulePath: "src/stores/uiStore.ts", classification: "mixed", persisted: null,
-    reset: { mode: "fields", fields: ["activeModal", "modalContext", "notifications", "loading", "confirmation", "activeQuestions", "answeredQuestions", "recoveryPrompt", "recoveryPromptSurface", "executionStatus", "boardSearchQuery", "isSearching", "graphSelection", "taskHistoryState", "taskCreationContext", "preserveCurrentViewOnProjectSwitch", "activityFilter", "collapsedColumns", "viewByProject", "pendingConfirmationQueue", "autoAcceptPlans", "autoAcceptSessions"] },
+    reset: { mode: "fields", fields: ["activeModal", "modalContext", "notifications", "loading", "confirmation", "activeQuestions", "answeredQuestions", "recoveryPrompt", "recoveryPromptSurface", "executionStatus", "executionStatusKnown", "boardSearchQuery", "isSearching", "graphSelection", "taskHistoryState", "taskCreationContext", "preserveCurrentViewOnProjectSwitch", "activityFilter", "collapsedColumns", "viewByProject", "pendingConfirmationQueue", "autoAcceptPlans", "autoAcceptSessions"] },
     rationale: "Resets host-derived runtime and identifier-keyed UI while retaining presentation preferences and client-owned feature flags.",
   },
   { storeName: "useWorkflowStore", modulePath: "src/stores/workflowStore.ts", classification: "env-owned", persisted: null, reset: full, rationale: "Contains backend workflows and active workflow identifiers." },

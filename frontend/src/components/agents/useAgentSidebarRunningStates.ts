@@ -1,14 +1,15 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 
 import { chatApi } from "@/api/chat";
 import { isRemoteEnvironmentActive } from "@/hooks/useActiveEnvironment";
-import { isRemotelyAvailable } from "@/lib/remote/agent-gate";
+import { useEnvironmentStore } from "@/stores/environmentStore";
 
 import {
   getAgentConversationStoreKey,
   type AgentConversation,
 } from "./agentConversations";
 import { reconcileAgentConversationRuntimeStatus } from "./agentConversationRuntimeStore";
+import { reconcileAgentConversationRuntimeIndexes } from "./agentConversationRuntimeReconcile";
 
 const AGENT_SIDEBAR_LIVENESS_POLL_MS = 5_000;
 
@@ -57,14 +58,37 @@ export function useAgentSidebarRunningStates(
     };
   }, [agentConversations, isVisible]);
 
+  const conversationIds = agentConversations
+    .map((conversation) => conversation.id)
+    .join("\u0000");
+  const agentConversationsRef = useRef(agentConversations);
+  agentConversationsRef.current = agentConversations;
+  const lastRemoteReconcileIds = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (
+      !isVisible ||
+      agentConversations.length === 0 ||
+      !isRemoteEnvironmentActive()
+    ) {
+      lastRemoteReconcileIds.current = null;
+      return;
+    }
+    if (lastRemoteReconcileIds.current === conversationIds) return;
+    lastRemoteReconcileIds.current = conversationIds;
+
+    const environmentId = useEnvironmentStore.getState().activeEnvironmentId;
+    void reconcileAgentConversationRuntimeIndexes(
+      environmentId,
+      agentConversationsRef.current,
+    );
+  }, [conversationIds, isVisible]);
+
   useEffect(() => {
     if (!isVisible || agentConversations.length === 0) {
       return undefined;
     }
-    if (
-      isRemoteEnvironmentActive() &&
-      !isRemotelyAvailable("get_agent_conversation_runtime_statuses")
-    ) {
+    if (isRemoteEnvironmentActive()) {
       return undefined;
     }
 
