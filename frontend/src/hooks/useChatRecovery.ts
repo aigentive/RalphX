@@ -19,6 +19,8 @@ import type { ToolCall } from "@/components/Chat/ToolCallIndicator";
 import type { StreamingContentBlock, StreamingTask } from "@/types/streaming-task";
 import { MERGE_STATUSES } from "@/types/status";
 import { chatApi } from "@/api/chat";
+import { isRemoteEnvironmentActive } from "@/hooks/useActiveEnvironment";
+import { isRemotelyAvailable } from "@/lib/remote/agent-gate";
 import { useChatStore } from "@/stores/chatStore";
 import {
   mergeActiveStreamingContentBlocks,
@@ -302,6 +304,11 @@ export function useChatRecovery({
   // even though the process is still alive. Check process-level truth (IPR)
   // before clearing to avoid a race window where ChatInput takes the SEND path.
   useEffect(() => {
+    if (
+      isRemoteEnvironmentActive() &&
+      !isRemotelyAvailable("is_agent_running")
+    )
+      return;
     if (!activeConversationId || !isConversationInCurrentContext) return;
     // Wait for agentRunStatus to resolve before clearing — prevents
     // thrashing during mount when status is still undefined (loading).
@@ -378,6 +385,11 @@ export function useChatRecovery({
   // because interactive turns can leave the latest DB run completed while the
   // process is still alive between turns.
   useEffect(() => {
+    if (
+      isRemoteEnvironmentActive() &&
+      !isRemotelyAvailable("is_agent_running")
+    )
+      return undefined;
     if (!shouldPollSelectedConversationLiveness) return undefined;
 
     let cancelled = false;
@@ -426,6 +438,11 @@ export function useChatRecovery({
   // Fast path: reconcile immediately when user re-focuses the app.
   // Covers the most common user-facing case: app was backgrounded/suspended during completion.
   useEffect(() => {
+    if (
+      isRemoteEnvironmentActive() &&
+      !isRemotelyAvailable("is_agent_running")
+    )
+      return undefined;
     if (!shouldPollSelectedConversationLiveness) return undefined;
 
     function handleVisibilityChange() {

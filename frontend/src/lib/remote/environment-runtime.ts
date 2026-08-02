@@ -33,6 +33,7 @@ import { getClientOwnedFeatureFlag } from "./feature-flag-authority";
 import { NetworkEventBus } from "./network-event-bus";
 import { networkFetch } from "./network-fetch";
 import { requestPendingGateReconcile } from "./pending-gate-reconcile";
+import { requestRuntimeIndexReconcile } from "./runtime-index-reconcile";
 import { attachRemoteStreamRelay, type RemoteStreamTarget } from "./stream-relay";
 import {
   isAuthorityResetReason,
@@ -382,6 +383,7 @@ export function initializeEnvironmentRuntime(): () => void {
         // question gates live in host MEMORY, not the event log, so replaying the
         // stream cannot discover a gate raised — or resolved — while we were away.
         requestPendingGateReconcile(environmentId);
+        requestRuntimeIndexReconcile(environmentId);
       },
       onRestartRequired: (cause) => {
         // Resolved at call time, never captured: the bus outlives any single runtime.

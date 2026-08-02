@@ -1,6 +1,8 @@
 import { useEffect, useMemo } from "react";
 
 import { chatApi } from "@/api/chat";
+import { isRemoteEnvironmentActive } from "@/hooks/useActiveEnvironment";
+import { isRemotelyAvailable } from "@/lib/remote/agent-gate";
 
 import {
   getAgentConversationStoreKey,
@@ -9,6 +11,19 @@ import {
 import { reconcileAgentConversationRuntimeStatus } from "./agentConversationRuntimeStore";
 
 const AGENT_SIDEBAR_LIVENESS_POLL_MS = 5_000;
+
+const knownConversationSets = new Map<symbol, AgentConversation[]>();
+
+export function getKnownAgentSidebarConversations(): AgentConversation[] {
+  const seen = new Set<string>();
+  return [...knownConversationSets.values()].flatMap((conversations) =>
+    conversations.filter((conversation) => {
+      if (seen.has(conversation.id)) return false;
+      seen.add(conversation.id);
+      return true;
+    }),
+  );
+}
 
 export function useAgentSidebarRunningStates(
   conversations: AgentConversation[],
@@ -34,7 +49,22 @@ export function useAgentSidebarRunningStates(
   }, [conversations]);
 
   useEffect(() => {
+    if (!isVisible) return undefined;
+    const owner = Symbol("agent-sidebar-runtime-conversations");
+    knownConversationSets.set(owner, agentConversations);
+    return () => {
+      knownConversationSets.delete(owner);
+    };
+  }, [agentConversations, isVisible]);
+
+  useEffect(() => {
     if (!isVisible || agentConversations.length === 0) {
+      return undefined;
+    }
+    if (
+      isRemoteEnvironmentActive() &&
+      !isRemotelyAvailable("get_agent_conversation_runtime_statuses")
+    ) {
       return undefined;
     }
 

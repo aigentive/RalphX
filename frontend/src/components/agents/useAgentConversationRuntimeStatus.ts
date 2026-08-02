@@ -2,6 +2,11 @@ import { useEffect, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { chatApi, type AgentConversationRuntimeStatus } from "@/api/chat";
+import {
+  isRemoteEnvironmentActive,
+  useIsRemoteEnvironment,
+} from "@/hooks/useActiveEnvironment";
+import { isRemotelyAvailable } from "@/lib/remote/agent-gate";
 import type { Unsubscribe } from "@/lib/event-bus";
 import { useEventBus } from "@/providers/EventProvider";
 
@@ -10,6 +15,7 @@ import {
   type AgentConversationRuntimeStatusMirrorOption,
   type AgentConversationRuntimeStatusMirrorSelector,
 } from "./agentConversationRuntimeStore";
+import { runtimeIndexToConversationStatus } from "./useAgentConversationRuntimeIndex";
 
 export const agentConversationRuntimeStatusKeys = {
   all: ["agents", "conversation-runtime-status"] as const,
@@ -118,6 +124,7 @@ export function useAgentConversationRuntimeStatus(
 ) {
   const queryClient = useQueryClient();
   const bus = useEventBus();
+  const isRemoteEnvironment = useIsRemoteEnvironment();
   const enabled = Boolean(conversationId) && (options.enabled ?? true);
   const queryKey = useMemo(
     () => agentConversationRuntimeStatusKeys.detail(conversationId),
@@ -128,6 +135,14 @@ export function useAgentConversationRuntimeStatus(
     queryKey,
     queryFn: async () => {
       if (!conversationId) return null;
+      if (
+        isRemoteEnvironmentActive() &&
+        isRemotelyAvailable("get_agent_conversation_runtime_index")
+      ) {
+        return runtimeIndexToConversationStatus(
+          await chatApi.getAgentConversationRuntimeIndex(conversationId),
+        );
+      }
       const statuses = await chatApi.getAgentConversationRuntimeStatuses([
         conversationId,
       ]);
@@ -139,8 +154,14 @@ export function useAgentConversationRuntimeStatus(
     // `state.data` is undefined, which used to read as "not running" and stopped the poll
     // permanently — so one transient backend failure froze the pane until something else
     // invalidated the key. A failing liveness probe is exactly when polling must continue.
-    refetchInterval: (query) =>
-      query.state.data?.isRunning || query.state.status === "error" ? 5_000 : false,
+    refetchInterval: (query) => {
+      if (isRemoteEnvironment) {
+        return query.state.data?.isRunning ? 5_000 : false;
+      }
+      return query.state.data?.isRunning || query.state.status === "error"
+        ? 5_000
+        : false;
+    },
     refetchOnWindowFocus: enabled,
   });
 

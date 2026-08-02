@@ -514,10 +514,13 @@ describe("environment runtime composition", () => {
    * P-24 (b)/(c) + P-21 ordering: `goLive` fires the env-scoped sweep on EVERY reconnect,
    * warm or cold, and the gate reconcile rides the same seam — replay → sweep → gates.
    */
-  it("sweeps the env-scoped cache and announces a gate reconcile on goLive", async () => {
+  it("sweeps the env-scoped cache, then announces gate and runtime-index reconciles on goLive", async () => {
     const { initializeEnvironmentRuntime } = await import("./environment-runtime");
     const { PENDING_GATE_RECONCILE_EVENT } = await import(
       "./pending-gate-reconcile"
+    );
+    const { RUNTIME_INDEX_RECONCILE_EVENT } = await import(
+      "./runtime-index-reconcile"
     );
     useEnvironmentStore.getState().setEnvironments([summary("env-b"), summary("env-c")]);
     setFlag(true);
@@ -527,13 +530,25 @@ describe("environment runtime composition", () => {
 
     const activeInvalidate = vi.spyOn(getQueryClient("env-b"), "invalidateQueries");
     const otherInvalidate = vi.spyOn(getQueryClient("env-c"), "invalidateQueries");
-    const announced: string[] = [];
-    const listener = (event: Event) => {
+    const announced: Array<{ kind: string; environmentId: string }> = [];
+    const gateListener = (event: Event) => {
       if (event instanceof CustomEvent) {
-        announced.push((event.detail as { environmentId: string }).environmentId);
+        announced.push({
+          kind: "gate",
+          environmentId: (event.detail as { environmentId: string }).environmentId,
+        });
       }
     };
-    window.addEventListener(PENDING_GATE_RECONCILE_EVENT, listener);
+    const runtimeListener = (event: Event) => {
+      if (event instanceof CustomEvent) {
+        announced.push({
+          kind: "runtime-index",
+          environmentId: (event.detail as { environmentId: string }).environmentId,
+        });
+      }
+    };
+    window.addEventListener(PENDING_GATE_RECONCILE_EVENT, gateListener);
+    window.addEventListener(RUNTIME_INDEX_RECONCILE_EVENT, runtimeListener);
 
     try {
       await b.deps.beginStream(OUTCOME);
@@ -542,9 +557,13 @@ describe("environment runtime composition", () => {
       // A-8: env scoping is the KEYED client, so another environment's cache is
       // structurally unreachable from this sweep.
       expect(otherInvalidate).not.toHaveBeenCalled();
-      expect(announced).toEqual(["env-b"]);
+      expect(announced).toEqual([
+        { kind: "gate", environmentId: "env-b" },
+        { kind: "runtime-index", environmentId: "env-b" },
+      ]);
     } finally {
-      window.removeEventListener(PENDING_GATE_RECONCILE_EVENT, listener);
+      window.removeEventListener(PENDING_GATE_RECONCILE_EVENT, gateListener);
+      window.removeEventListener(RUNTIME_INDEX_RECONCILE_EVENT, runtimeListener);
     }
   });
 

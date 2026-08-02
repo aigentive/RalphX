@@ -62,6 +62,10 @@ import type { ContextType } from "@/types/chat-conversation";
 import type { ToolCall } from "@/components/Chat/ToolCallIndicator";
 import type { StreamingContentBlock } from "@/types/streaming-task";
 import { chatApi } from "@/api/chat";
+import {
+  LOCAL_ENVIRONMENT_ID,
+  useEnvironmentStore,
+} from "@/stores/environmentStore";
 
 const mockIsAgentRunning = vi.mocked(chatApi.isAgentRunning);
 const mockGetConversationActiveState = vi.mocked(chatApi.getConversationActiveState);
@@ -132,6 +136,12 @@ describe("useChatRecovery", () => {
       tool_calls: [],
       streaming_tasks: [],
       partial_text: "",
+    });
+    useEnvironmentStore.setState({
+      activeEnvironmentId: LOCAL_ENVIRONMENT_ID,
+      environments: [
+        { id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" },
+      ],
     });
   });
 
@@ -521,6 +531,30 @@ describe("useChatRecovery", () => {
 
       expect(mockIsAgentRunning).toHaveBeenCalledWith("task_execution", "task-1");
       expect(props.setAgentRunning).toHaveBeenCalledWith("task_execution:task-1", true);
+    });
+
+    it("never probes is_agent_running under remote over 20 seconds", async () => {
+      useEnvironmentStore.setState({
+        activeEnvironmentId: "env-remote",
+        environments: [
+          { id: "env-remote", name: "Remote", kind: "remote" },
+        ],
+      });
+      const props = makeProps({
+        agentRunStatus: "completed",
+        isAgentRunning: true,
+      });
+
+      renderHook(() => useChatRecovery(props));
+      await act(async () => {
+        vi.advanceTimersByTime(20_000);
+      });
+
+      expect(mockIsAgentRunning).not.toHaveBeenCalled();
+      expect(props.setAgentRunning).not.toHaveBeenCalledWith(
+        "task_execution:task-1",
+        false,
+      );
     });
 
     it("does not poll selected conversation liveness when panel is hidden", async () => {

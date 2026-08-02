@@ -2,6 +2,10 @@ import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useChatStore } from "@/stores/chatStore";
+import {
+  LOCAL_ENVIRONMENT_ID,
+  useEnvironmentStore,
+} from "@/stores/environmentStore";
 
 import {
   getAgentConversationStoreKey,
@@ -52,6 +56,12 @@ describe("useAgentSidebarRunningStates", () => {
       activeAgentRunIds: {},
       agentStatus: {},
       agentActivityLabels: {},
+    });
+    useEnvironmentStore.setState({
+      activeEnvironmentId: LOCAL_ENVIRONMENT_ID,
+      environments: [
+        { id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" },
+      ],
     });
   });
 
@@ -277,6 +287,35 @@ describe("useAgentSidebarRunningStates", () => {
     });
 
     expect(mockGetAgentConversationRuntimeStatuses).not.toHaveBeenCalled();
+  });
+
+  it("never invokes the refused bulk liveness command under remote", async () => {
+    useEnvironmentStore.setState({
+      activeEnvironmentId: "env-remote",
+      environments: [{ id: "env-remote", name: "Remote", kind: "remote" }],
+    });
+
+    renderHook(() =>
+      useAgentSidebarRunningStates([conversation("conv-remote")], true),
+    );
+
+    await act(async () => {
+      vi.advanceTimersByTime(20_000);
+    });
+
+    expect(mockGetAgentConversationRuntimeStatuses).not.toHaveBeenCalled();
+  });
+
+  it("keeps invoking the bulk liveness command under local", async () => {
+    renderHook(() =>
+      useAgentSidebarRunningStates([conversation("conv-local")], true),
+    );
+
+    await act(async () => {
+      vi.advanceTimersByTime(20_000);
+    });
+
+    expect(mockGetAgentConversationRuntimeStatuses).toHaveBeenCalled();
   });
 
   it("deduplicates project conversations and ignores non-project conversations", async () => {
