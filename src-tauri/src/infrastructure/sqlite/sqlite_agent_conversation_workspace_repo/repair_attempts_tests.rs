@@ -98,6 +98,56 @@ async fn repair_attempt_round_trip_and_join_preserve_explicit_publish_consent() 
 }
 
 #[tokio::test]
+async fn joining_with_explicit_publish_consent_upgrades_an_existing_repair_attempt() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(workspace(conversation_id.clone()))
+        .await
+        .expect("persist workspace");
+
+    let started = repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: repair_attempt(conversation_id.clone()),
+            reason: "background repair failure".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("start background repair attempt");
+    let StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(started) = started else {
+        panic!("background repair generation must start");
+    };
+    assert!(!started.explicit_publish_requested);
+
+    let mut explicitly_published = repair_attempt(conversation_id.clone());
+    explicitly_published.explicit_publish_requested = true;
+    explicitly_published.updated_at = started.updated_at + Duration::microseconds(1);
+    let joined = repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: explicitly_published,
+            reason: "user selected Commit & Publish".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("join explicitly published repair attempt");
+    assert!(matches!(
+        joined,
+        StartOrJoinAgentWorkspaceRepairAttemptOutcome::Joined(ref attempt)
+            if attempt.explicit_publish_requested
+    ));
+    assert!(
+        repo.get_current_repair_attempt(&conversation_id)
+            .await
+            .expect("reload joined repair attempt")
+            .expect("repair attempt exists")
+            .explicit_publish_requested,
+        "explicit user consent must be durably promoted when it joins an active repair"
+    );
+}
+
+#[tokio::test]
 async fn bind_repair_run_rejects_a_stale_same_phase_snapshot() {
     let (_db, repo, conversation_id) = setup_repo();
     repo.create_or_update(workspace(conversation_id.clone()))
