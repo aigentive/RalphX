@@ -827,6 +827,7 @@ crate::remote_commands! {
     // `get_execution_status` and `get_running_processes` (both resolve a process-inspection
     // CLI), and `set_active_project` syncs the runtime scheduler quota. All three stay
     // unregistered, pinned by `the_b1_step_and_execution_reads_are_refused_below_ui_read`.
+    // `get_remote_execution_status` is the separately audited spawn-free read twin.
     // -----------------------------------------------------------------------------------
     "get_task_steps" => crate::commands::task_step_commands::get_task_steps {
         class: Read,
@@ -1717,6 +1718,22 @@ crate::remote_commands! {
             (arg input: crate::commands::execution_commands::UpdateExecutionSettingsInput),
             (execution_state),
             (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
+    // Read/write-twin symmetry: the settings twin changes the host's scheduler configuration;
+    // this status twin reports its actual state. It omits quota sync, stale-registry pruning,
+    // and running-count caching, making the derivation process-inspection-free and write-free.
+    "get_remote_execution_status"
+        => crate::commands::remote_execution_status_commands::get_remote_execution_status {
+        class: Read,
+        caps: [],
+        params: [
+            (arg project_id: Option<String>),
+            (execution_state),
+            (app_state),
+            (active_project_state),
         ],
         call: async,
         result: fallible,

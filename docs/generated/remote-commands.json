@@ -2946,6 +2946,15 @@
       "argumentSensitive": false,
       "capabilities": [],
       "class": "read",
+      "command": "get_remote_execution_status",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::remote_execution_status_commands::get_remote_execution_status"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
       "command": "list_remote_projects",
       "pins": [],
       "scopeConfined": false,
@@ -6889,7 +6898,7 @@
       "class": "elevated",
       "command": "get_execution_status",
       "module": "execution_commands",
-      "reason": "detector-c: resolves the process-inspection CLI (resolve_tasklist_cli_path) to report live execution status",
+      "reason": "detector-c: resolves the process-inspection CLI (resolve_tasklist_cli_path) to report live execution status; get_remote_execution_status is the spawn-free read twin",
       "registered": false,
       "v1Resolution": "host-denied-spawns-process"
     },
@@ -8795,6 +8804,15 @@
       "command": "update_remote_execution_settings",
       "module": "remote_execution_settings_commands",
       "reason": "persists execution settings and syncs the in-process caps; reaches neither the scheduler kick nor the ideation drain, but a raised cap seeds work a later scheduling pass can launch",
+      "registered": true,
+      "v1Resolution": "registerable"
+    },
+    {
+      "capabilities": [],
+      "class": "read",
+      "command": "get_remote_execution_status",
+      "module": "remote_execution_status_commands",
+      "reason": "spawn-free status derivation from DB halt mode plus in-memory registry/atomics; propagates read errors, performs no process inspection, and makes no runtime writes",
       "registered": true,
       "v1Resolution": "registerable"
     },

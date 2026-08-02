@@ -16,13 +16,13 @@
   },
   "totals": {
     "invokedCommandNames": 573,
-    "remoteRegistered": 243,
+    "remoteRegistered": 244,
     "localOnlyRows": 34,
     "pluginCommandNames": 51,
     "pluginPackages": 7,
     "pluginLocal": 51,
     "pluginHostTargetedExceptions": 0,
-    "ledgerRows": 562,
+    "ledgerRows": 563,
     "unclassified": 0,
     "assignedToBatches": 0,
     "batches": 14

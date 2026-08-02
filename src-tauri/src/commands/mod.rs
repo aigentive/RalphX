@@ -93,6 +93,9 @@ pub mod remote_conversation_start_commands;
 pub mod remote_device_commands;
 pub mod remote_environment_commands;
 pub mod remote_execution_settings_commands;
+pub mod remote_execution_status_commands;
+#[cfg(test)]
+mod remote_execution_status_commands_tests;
 pub mod remote_host_commands;
 pub mod remote_transcript_commands;
 #[cfg(debug_assertions)]
@@ -294,6 +297,7 @@ pub use methodology_commands::{
     MethodologyActivationResponse, MethodologyPhaseResponse, MethodologyResponse,
     MethodologyTemplateResponse, WorkflowSchemaResponse,
 };
+pub use remote_execution_status_commands::get_remote_execution_status;
 
 #[cfg(test)]
 mod manual_role_default_commands_tests;

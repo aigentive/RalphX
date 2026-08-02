@@ -105,6 +105,7 @@ pub use status_queries::{
     __tauri_command_name_get_execution_status, __tauri_command_name_get_running_processes,
     get_execution_status, get_running_processes,
 };
+pub(crate) use status_queries::{compute_execution_status, IdeationWaitingErrorPolicy};
 
 /// Recover a task execution after a stop request
 ///

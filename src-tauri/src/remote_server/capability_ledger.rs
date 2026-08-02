@@ -972,6 +972,7 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
     //   They resolve a process-inspection CLI, and `SpawnsProcess` is expressible only
     //   under `Elevated`, so ledgering either `Read` would be the exact `list_projects`
     //   under-labelling shape. They stay above `Read` and unregistered.
+    //   `get_remote_execution_status` is the spawn-free twin that omits that cleanup path.
     // * `set_active_project` — detectors are silent, but the hand-trace disqualifies it:
     //   after persisting, it calls `sync_quota_from_project`, which writes the runtime
     //   `ExecutionState` concurrency quota. Raising a quota is how waiting `Ready` tasks
@@ -1322,6 +1323,14 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
             RiskClass::AgentControl,
             AGENT,
             "persists execution settings and syncs the in-process caps; reaches neither the scheduler kick nor the ideation drain, but a raised cap seeds work a later scheduling pass can launch",
+        ),
+    },
+    CommandOverride {
+        command: "get_remote_execution_status",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "spawn-free status derivation from DB halt mode plus in-memory registry/atomics; propagates read errors, performs no process inspection, and makes no runtime writes",
         ),
     },
     // -----------------------------------------------------------------------------------
@@ -1913,7 +1922,7 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
     process_refusal(
         "get_execution_status",
         "detector-c: resolves the process-inspection CLI (resolve_tasklist_cli_path) to report \
-         live execution status",
+         live execution status; get_remote_execution_status is the spawn-free read twin",
     ),
     process_refusal(
         "get_running_processes",

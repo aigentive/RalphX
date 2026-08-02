@@ -428,6 +428,7 @@ macro_rules! register_tauri_commands {
             commands::remote_transcript_commands::get_remote_agent_conversation_timeline_page,
             commands::remote_transcript_commands::list_remote_agent_conversations,
             commands::remote_execution_settings_commands::update_remote_execution_settings,
+            commands::remote_execution_status_commands::get_remote_execution_status,
             commands::remote_workspace_commands::list_remote_projects,
             commands::remote_workspace_commands::get_remote_project,
             commands::remote_workspace_commands::get_remote_provider_readiness,

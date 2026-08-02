@@ -934,6 +934,7 @@ async fn the_b1_task_reads_are_refused_below_ui_read() {
 // detector (c) fires on `get_execution_status` and `get_running_processes` (both resolve a
 // process-inspection CLI), so they stay above `Read` and unregistered. `set_active_project`
 // is likewise excluded — it syncs the runtime scheduler quota.
+// `get_remote_execution_status` is the separately audited spawn-free read twin.
 // ---------------------------------------------------------------------------------------
 
 /// A mock app managing the execution-side state these reads are injected with.
@@ -1109,7 +1110,8 @@ async fn the_b1_step_and_execution_reads_are_refused_below_ui_read() {
     }
 
     // The detector-(c) finding, pinned: these look like sibling getters and are NOT
-    // registered, because both resolve a process-inspection CLI.
+    // registered, because both resolve a process-inspection CLI. Their spawn-free remote status
+    // twin is a distinct command and does not weaken these local-command pins.
     for command in ["get_execution_status", "get_running_processes"] {
         assert!(
             registry::find_spec(command).is_none(),

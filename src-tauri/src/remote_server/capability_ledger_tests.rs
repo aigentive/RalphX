@@ -2162,7 +2162,8 @@ fn b1_read_reclassifications_are_reviewed_rather_than_module_defaults() {
 fn b1_sibling_getters_that_audit_dirty_stay_above_read() {
     let graph = CallGraph::build(&load_production_sources());
 
-    // Detector (c) is the mechanism, not a note: both resolve a process-inspection CLI.
+    // Detector (c) is the mechanism, not a note: both resolve a process-inspection CLI. The
+    // separately audited `get_remote_execution_status` twin omits that cleanup path.
     for command in ["get_execution_status", "get_running_processes"] {
         let tokens = graph.closure([command.to_string()]).tokens;
         assert!(
@@ -3952,6 +3953,7 @@ fn the_b2_workspace_read_refusals_are_pinned() {
 // ---------------------------------------------------------------------------------------
 
 const B2_REGISTERED_GETTERS: &[&str] = &[
+    "get_remote_execution_status",
     "get_agent_conversation_summary",
     "get_agent_conversation_runtime_index",
     "list_agent_conversation_workspace_publication_events",
@@ -3959,7 +3961,7 @@ const B2_REGISTERED_GETTERS: &[&str] = &[
     "list_agent_models",
 ];
 
-/// The five registered getters are reviewed `Read` rows, not module-default inheritance.
+/// The six registered getters are reviewed `Read` rows, not module-default inheritance.
 #[test]
 fn the_b2_getters_are_reviewed_read_rows() {
     let rows = census().into_iter().collect::<BTreeMap<_, _>>();
@@ -7432,4 +7434,3 @@ fn zz_temp_probe_loop_ids() {
         }
     }
 }
-

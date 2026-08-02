@@ -22,6 +22,43 @@ pub async fn get_execution_status(
     )
     .await?;
 
+    // Local status owns runtime maintenance: process inspection prunes stale rows before the
+    // shared read, and the computed global count is cached afterward. The remote twin does
+    // neither because both are writes and pruning also resolves process-inspection CLIs.
+    prune_stale_execution_registry_entries(&app_state, &execution_state).await;
+    let computed = compute_execution_status(
+        effective_project_id,
+        &execution_state,
+        &app_state,
+        IdeationWaitingErrorPolicy::FailOpen,
+    )
+    .await?;
+    execution_state.set_running_count(computed.global_running_count);
+
+    Ok(computed.response)
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum IdeationWaitingErrorPolicy {
+    FailOpen,
+    FailClosed,
+}
+
+pub(crate) struct ComputedExecutionStatus {
+    pub response: ExecutionStatusResponse,
+    pub global_running_count: u32,
+}
+
+/// Shared DB + in-memory status projection.
+///
+/// This helper performs no process inspection and no writes. Callers explicitly choose the
+/// legacy local fail-open behavior or the remote facade's fail-closed repository semantics.
+pub(crate) async fn compute_execution_status(
+    effective_project_id: Option<ProjectId>,
+    execution_state: &Arc<ExecutionState>,
+    app_state: &AppState,
+    ideation_waiting_error_policy: IdeationWaitingErrorPolicy,
+) -> Result<ComputedExecutionStatus, String> {
     // Count queued tasks (tasks in Ready status)
     let mut queued_count = 0u32;
 
@@ -62,9 +99,6 @@ pub async fn get_execution_status(
     let queued_message_count =
         count_slot_consuming_queued_messages(effective_project_id.as_ref(), &app_state).await?;
 
-    // Runtime GC pass to prune stale rows on every status poll.
-    prune_stale_execution_registry_entries(&app_state, &execution_state).await;
-
     let registry_entries = app_state.running_agent_registry.list_all().await;
 
     // Keep execution state synchronized to global execution contexts.
@@ -102,7 +136,6 @@ pub async fn get_execution_status(
     }
     let active_count =
         (total_with_slot.saturating_sub(execution_state.interactive_idle_count())) as u32;
-    execution_state.set_running_count(active_count);
     let global_running_count = active_count;
 
     let mut scoped_subjects = Vec::new();
@@ -156,20 +189,25 @@ pub async fn get_execution_status(
     let counts = count_execution_status(scoped_subjects, effective_project_id.as_ref());
 
     // Count sessions waiting for ideation capacity (have pending_initial_prompt set).
-    let ideation_waiting = match &effective_project_id {
-        Some(pid) => app_state
+    let ideation_waiting = match (&effective_project_id, ideation_waiting_error_policy) {
+        (Some(pid), IdeationWaitingErrorPolicy::FailOpen) => app_state
             .ideation_session_repo
             .count_pending_sessions_for_project(pid)
             .await
             .unwrap_or(0),
-        None => 0,
+        (Some(pid), IdeationWaitingErrorPolicy::FailClosed) => app_state
+            .ideation_session_repo
+            .count_pending_sessions_for_project(pid)
+            .await
+            .map_err(|error| error.to_string())?,
+        (None, _) => 0,
     };
 
     let max_concurrent = execution_state.max_concurrent();
     let global_max = execution_state.global_max_concurrent();
     let halt_mode = load_execution_halt_mode(&app_state).await?;
 
-    Ok(build_execution_status_response(ExecutionStatusInput {
+    let response = build_execution_status_response(ExecutionStatusInput {
         is_paused: execution_state.is_paused(),
         halt_mode: execution_halt_mode_str(halt_mode).to_string(),
         running_count: counts.running_count,
@@ -186,7 +224,12 @@ pub async fn get_execution_status(
         ideation_waiting,
         ideation_max_project: execution_state.project_ideation_max(),
         ideation_max_global: execution_state.global_ideation_max(),
-    }))
+    });
+
+    Ok(ComputedExecutionStatus {
+        response,
+        global_running_count,
+    })
 }
 // ========================================
 // Running Processes Query
