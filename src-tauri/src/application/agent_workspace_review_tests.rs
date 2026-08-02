@@ -3736,7 +3736,7 @@ async fn complete_blocking_review_keeps_gate_blocking_when_cycle_cap_is_reached(
     assert!(completed.review_fixer_attempt_id.is_none());
     assert_eq!(completed.review_fixer_cycle_count, 0);
     assert!(completed.review_fixer_run_id.is_none());
-    assert!(completed.review_fixer_conversation_id.is_none());
+    assert!(completed.review_fixer_conversation_id.is_some());
     assert!(completed.last_error.is_none());
 }
 
