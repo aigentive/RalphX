@@ -141,7 +141,7 @@ export function getAgentWorkspaceTerminalPublicationLabel(
 }
 
 export type AgentWorkspaceMaintenancePresentation = {
-  action: "none" | "publish" | "retry";
+  action: "hold" | "none" | "publish" | "retry";
   automaticContinuation: string | null;
   busy: boolean;
   summary: string;
@@ -152,6 +152,21 @@ export type AgentWorkspaceMaintenancePresentation = {
 export type AgentWorkspacePrAutofixFingerprintSpendPresentation = {
   summary: string;
   exhausted: boolean;
+};
+
+export type AgentWorkspaceHoldPresentation = {
+  agentStatus: string;
+  generationVerdict: string;
+  waitingOn: string;
+};
+
+const HOLD_SUMMARIES: Record<string, string> = {
+  pr_autofix_unchanged_health:
+    "The fixer ran but changed nothing, and GitHub still reports the same failing check. RalphX won't spend another generation until this PR's health changes.",
+  pr_autofix_ci_rerun_pending:
+    "RalphX asked GitHub to re-run the failed jobs and is waiting for the result.",
+  pr_autofix_pre_existing_on_base:
+    "This failure already exists on the base branch, so fixing it here wouldn't help.",
 };
 
 export function getAgentWorkspacePrAutofixFingerprintSpendPresentation(
@@ -171,6 +186,26 @@ export function getAgentWorkspaceMaintenanceOperation(
   workspace: AgentConversationWorkspace | null | undefined,
 ): AgentWorkspaceMaintenanceOperation | null {
   return workspace?.maintenanceOperation ?? null;
+}
+
+export function getAgentWorkspaceHoldPresentation(
+  workspace: AgentConversationWorkspace | null | undefined,
+): AgentWorkspaceHoldPresentation | null {
+  const operation = getAgentWorkspaceMaintenanceOperation(workspace);
+  if (operation?.stage !== "held") {
+    return null;
+  }
+  const holdSummary = operation.holdReason
+    ? HOLD_SUMMARIES[operation.holdReason]
+    : null;
+  const waitingOn =
+    holdSummary ?? "RalphX paused this repair until new PR health evidence is available.";
+  return {
+    agentStatus: "Nothing is running",
+    generationVerdict:
+      operation.summary ?? "The last repair generation did not clear this failure.",
+    waitingOn,
+  };
 }
 
 export function isAgentWorkspaceMaintenanceActive(
@@ -225,6 +260,17 @@ export function getAgentWorkspaceMaintenancePresentation(
       : null;
   const summary = operation.blocker ?? operation.summary ?? "RalphX is continuing this workspace operation.";
   switch (operation.stage) {
+    case "held": {
+      const holdPresentation = getAgentWorkspaceHoldPresentation(workspace);
+      return {
+        title: "Repair paused — waiting for new CI evidence",
+        summary: holdPresentation?.waitingOn ?? summary,
+        tone: "warning",
+        busy: false,
+        action: "hold",
+        automaticContinuation: null,
+      };
+    }
     case "updating_base":
       return {
         title: "Updating base",

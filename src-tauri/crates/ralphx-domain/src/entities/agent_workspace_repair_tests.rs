@@ -41,8 +41,25 @@ fn repair_enums_are_closed_snake_case_wire_contracts() {
         );
     }
 
+    for reason in [
+        AgentWorkspaceRepairHoldReason::UnchangedHealth,
+        AgentWorkspaceRepairHoldReason::PreExistingOnBase,
+        AgentWorkspaceRepairHoldReason::CiRerunPending,
+    ] {
+        assert_eq!(
+            reason
+                .as_str()
+                .parse::<AgentWorkspaceRepairHoldReason>()
+                .unwrap(),
+            reason
+        );
+    }
+
     assert!("unknown".parse::<AgentWorkspaceRepairSource>().is_err());
     assert!("settled".parse::<AgentWorkspaceRepairPhase>().is_err());
+    assert!("pr_autofix_unknown"
+        .parse::<AgentWorkspaceRepairHoldReason>()
+        .is_err());
 }
 
 #[test]
@@ -163,6 +180,116 @@ fn repair_operation_snapshots_project_every_terminal_and_active_stage() {
             "{phase}"
         );
     }
+}
+
+#[test]
+fn ready_repairs_with_a_durable_hold_reason_project_as_held_without_changing_phase() {
+    for reason in [
+        AgentWorkspaceRepairHoldReason::UnchangedHealth,
+        AgentWorkspaceRepairHoldReason::PreExistingOnBase,
+    ] {
+        let mut attempt = AgentWorkspaceRepairAttempt::new(
+            conversation_id(),
+            AgentWorkspaceRepairSource::PrAutofix,
+            AgentWorkspaceRepairContinuation::ResumePrSupervision,
+            "origin/main",
+            false,
+            true,
+            true,
+            None,
+            Utc::now(),
+        );
+        attempt.phase = AgentWorkspaceRepairPhase::Ready;
+        attempt.pending_reasons = vec![reason.as_str().to_string()];
+
+        let snapshot = attempt.operation_snapshot();
+
+        assert_eq!(attempt.phase, AgentWorkspaceRepairPhase::Ready);
+        assert_eq!(snapshot.stage, AgentWorkspaceRepairOperationStage::Held);
+        assert_eq!(snapshot.status, AgentWorkspaceRepairOperationStatus::Held);
+        assert_eq!(snapshot.hold_reason, Some(reason));
+        assert!(!snapshot.automatic_continuation);
+    }
+}
+
+#[test]
+fn ready_ci_rerun_projects_as_held_from_durable_rerun_evidence() {
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        conversation_id(),
+        AgentWorkspaceRepairSource::PrAutofix,
+        AgentWorkspaceRepairContinuation::ResumePrSupervision,
+        "origin/main",
+        false,
+        true,
+        true,
+        None,
+        Utc::now(),
+    );
+    attempt.phase = AgentWorkspaceRepairPhase::Ready;
+    attempt.ci_rerun_count = 1;
+    attempt.ci_rerun_fingerprint = Some("ci:clippy:failed".to_string());
+
+    let snapshot = attempt.operation_snapshot();
+
+    assert_eq!(attempt.phase, AgentWorkspaceRepairPhase::Ready);
+    assert_eq!(snapshot.stage, AgentWorkspaceRepairOperationStage::Held);
+    assert_eq!(snapshot.status, AgentWorkspaceRepairOperationStatus::Held);
+    assert_eq!(
+        snapshot.hold_reason,
+        Some(AgentWorkspaceRepairHoldReason::CiRerunPending)
+    );
+    assert!(!snapshot.automatic_continuation);
+}
+
+#[test]
+fn blocked_repair_is_not_reclassified_by_a_stale_hold_reason() {
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        conversation_id(),
+        AgentWorkspaceRepairSource::PrAutofix,
+        AgentWorkspaceRepairContinuation::ResumePrSupervision,
+        "origin/main",
+        false,
+        true,
+        true,
+        None,
+        Utc::now(),
+    );
+    attempt.phase = AgentWorkspaceRepairPhase::Blocked;
+    attempt.pending_reasons = vec![AgentWorkspaceRepairHoldReason::UnchangedHealth
+        .as_str()
+        .to_string()];
+
+    let snapshot = attempt.operation_snapshot();
+
+    assert_eq!(snapshot.stage, AgentWorkspaceRepairOperationStage::Blocked);
+    assert_eq!(
+        snapshot.status,
+        AgentWorkspaceRepairOperationStatus::Blocked
+    );
+    assert_eq!(snapshot.hold_reason, None);
+}
+
+#[test]
+fn ready_repair_without_a_hold_reason_remains_genuinely_ready() {
+    let now = Utc::now();
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        conversation_id(),
+        AgentWorkspaceRepairSource::BaseUpdate,
+        AgentWorkspaceRepairContinuation::Publish,
+        "origin/main",
+        false,
+        true,
+        false,
+        None,
+        now,
+    );
+    attempt.phase = AgentWorkspaceRepairPhase::Ready;
+
+    let snapshot = attempt.operation_snapshot();
+
+    assert_eq!(snapshot.stage, AgentWorkspaceRepairOperationStage::Ready);
+    assert_eq!(snapshot.status, AgentWorkspaceRepairOperationStatus::Ready);
+    assert_eq!(snapshot.hold_reason, None);
 }
 
 #[test]

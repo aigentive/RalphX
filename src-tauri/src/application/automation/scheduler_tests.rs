@@ -3175,6 +3175,7 @@ async fn automation_scheduler_surfaces_auto_merge_enable_warning_without_signal_
         79,
         &workspace,
         workspace_repo_trait,
+        workspace_repo.clone(),
     )
     .await
     .unwrap();

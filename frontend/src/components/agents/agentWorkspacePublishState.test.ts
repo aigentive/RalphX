@@ -226,6 +226,42 @@ describe("maintenance operation presentation", () => {
     });
   });
 
+  it("presents held repairs without allowing publish to resume", () => {
+    const held = workspace({
+      maintenanceOperation: {
+        ...maintenanceOperation,
+        source: "pr_autofix",
+        stage: "held",
+        status: "held",
+        holdReason: "pr_autofix_unchanged_health",
+        automaticContinuation: false,
+      },
+    });
+
+    expect(canResumeAgentWorkspacePublish(held)).toBe(false);
+    expect(getAgentWorkspaceMaintenancePresentation(held)).toMatchObject({
+      title: "Repair paused — waiting for new CI evidence",
+      action: "hold",
+      tone: "warning",
+    });
+  });
+
+  it("uses generic held copy for an unknown hold reason", () => {
+    const held = workspace({
+      maintenanceOperation: {
+        ...maintenanceOperation,
+        stage: "held",
+        status: "held",
+        holdReason: "unknown_future_reason",
+        automaticContinuation: false,
+      },
+    });
+
+    expect(getAgentWorkspaceMaintenancePresentation(held)?.summary).toContain(
+      "paused",
+    );
+  });
+
   it("does not let stale maintenance data mask a terminal pull request", () => {
     const current = workspace({
       maintenanceOperation,

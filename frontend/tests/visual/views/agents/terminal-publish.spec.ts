@@ -84,4 +84,27 @@ test.describe("Agents terminal publish history", () => {
       { maxDiffPixelRatio: 0.01 },
     );
   });
+
+  test("held repair renders a decision card instead of zero-change diffs", async ({ page }) => {
+    await dismissProviderCliUpdateToasts(page);
+    const publish = new AgentsPublishPage(page);
+    await publish.openHeldRepairScenario();
+
+    const actionbar = page.getByTestId("agents-publish-actionbar");
+    await expect(
+      actionbar.getByRole("heading", {
+        name: "Repair paused — waiting for new CI evidence",
+      }),
+    ).toBeVisible();
+    await expect(
+      actionbar.getByRole("button", { name: "Re-check PR health" }),
+    ).toBeVisible();
+    await expect(publish.holdCard).toContainText("Nothing is running");
+    await expect(publish.holdCard).toContainText("2 generations · 18 min");
+    await expect(publish.inlineDiffs).toHaveCount(0);
+
+    await expect(publish.holdCard).toHaveScreenshot("agents-publish-held-card.png", {
+      maxDiffPixelRatio: 0.01,
+    });
+  });
 });

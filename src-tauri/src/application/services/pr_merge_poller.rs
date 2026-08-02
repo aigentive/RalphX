@@ -82,6 +82,32 @@ const AGENT_WORKSPACE_AUTO_MERGE_DISARM_STEP: &str = "auto_merge_disabled_for_re
 const AGENT_WORKSPACE_AUTO_MERGE_DISARM_SUMMARY: &str =
     "Temporarily disabled GitHub auto-merge before starting PR repair.";
 
+async fn update_agent_workspace_pr_supervision_state(
+    workspace_repo: &dyn AgentConversationWorkspaceRepository,
+    repair_repo: Option<&dyn AgentWorkspaceRepairRepository>,
+    conversation_id: &ChatConversationId,
+    auto_merge_current: Option<bool>,
+    status: Option<&str>,
+    summary: Option<&str>,
+) -> crate::AppResult<()> {
+    let repair_owns_status = match repair_repo {
+        Some(repair_repo) => repair_repo
+            .get_current_repair_attempt(conversation_id)
+            .await?
+            .is_some_and(|attempt| attempt.is_unsettled()),
+        None => false,
+    };
+
+    workspace_repo
+        .update_pr_auto_merge_state(
+            conversation_id,
+            auto_merge_current,
+            (!repair_owns_status).then_some(status).flatten(),
+            summary,
+        )
+        .await
+}
+
 // ────────────────────────────────────────────────────────────────────
 // Rate limit state shared across all pollers in the registry
 // ────────────────────────────────────────────────────────────────────
@@ -1844,14 +1870,15 @@ async fn mark_agent_workspace_pr_merge_conflict_if_needed(
             } else {
                 "Auto Publish is paused for this PR."
             };
-            workspace_repo
-                .update_pr_auto_merge_state(
-                    conversation_id,
-                    workspace.pr_auto_merge_current,
-                    Some(status),
-                    Some(summary),
-                )
-                .await?;
+            update_agent_workspace_pr_supervision_state(
+                workspace_repo.as_ref(),
+                None,
+                conversation_id,
+                workspace.pr_auto_merge_current,
+                Some(status),
+                Some(summary),
+            )
+            .await?;
             return Ok(true);
         }
         return Ok(false);
@@ -1869,14 +1896,15 @@ async fn mark_agent_workspace_pr_merge_conflict_if_needed(
         && workspace.pr_supervision_summary.as_deref() == Some(summary.as_str());
 
     if !already_blocked {
-        workspace_repo
-            .update_pr_auto_merge_state(
-                conversation_id,
-                workspace.pr_auto_merge_current,
-                Some("blocked"),
-                Some(&summary),
-            )
-            .await?;
+        update_agent_workspace_pr_supervision_state(
+            workspace_repo.as_ref(),
+            None,
+            conversation_id,
+            workspace.pr_auto_merge_current,
+            Some("blocked"),
+            Some(&summary),
+        )
+        .await?;
     }
 
     if !already_recorded {
@@ -2148,6 +2176,7 @@ async fn route_agent_workspace_pr_conflict_repair_if_needed_with_repair_repo(
         conversation_id,
         health,
         Arc::clone(&workspace_repo),
+        Some(repair_repo.as_ref()),
     )
     .await
     {
@@ -2332,6 +2361,7 @@ async fn route_agent_workspace_pr_conflict_repair_legacy(
         conversation_id,
         health,
         Arc::clone(&workspace_repo),
+        None,
     )
     .await?
     else {
@@ -2570,6 +2600,7 @@ async fn prepare_agent_workspace_pr_repair_auto_merge_state(
     conversation_id: &ChatConversationId,
     health: &PrHealth,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    repair_repo: Option<&dyn AgentWorkspaceRepairRepository>,
 ) -> crate::AppResult<Option<bool>> {
     if health.auto_merge_request.is_none() {
         return Ok(Some(false));
@@ -2577,14 +2608,15 @@ async fn prepare_agent_workspace_pr_repair_auto_merge_state(
 
     match github.disable_pr_auto_merge(working_dir, pr_number).await {
         Ok(()) => {
-            workspace_repo
-                .update_pr_auto_merge_state(
-                    conversation_id,
-                    Some(false),
-                    None,
-                    Some(AGENT_WORKSPACE_AUTO_MERGE_DISARM_SUMMARY),
-                )
-                .await?;
+            update_agent_workspace_pr_supervision_state(
+                workspace_repo.as_ref(),
+                repair_repo,
+                conversation_id,
+                Some(false),
+                None,
+                Some(AGENT_WORKSPACE_AUTO_MERGE_DISARM_SUMMARY),
+            )
+            .await?;
             workspace_repo
                 .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
                     conversation_id.clone(),
@@ -2598,14 +2630,15 @@ async fn prepare_agent_workspace_pr_repair_auto_merge_state(
         }
         Err(error) => {
             let summary = auto_merge_disable_failure_summary(error);
-            workspace_repo
-                .update_pr_auto_merge_state(
-                    conversation_id,
-                    Some(true),
-                    Some(AUTO_MERGE_SUPERVISION_STATUS_WAITING),
-                    Some(&summary),
-                )
-                .await?;
+            update_agent_workspace_pr_supervision_state(
+                workspace_repo.as_ref(),
+                repair_repo,
+                conversation_id,
+                Some(true),
+                Some(AUTO_MERGE_SUPERVISION_STATUS_WAITING),
+                Some(&summary),
+            )
+            .await?;
             workspace_repo
                 .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
                     conversation_id.clone(),
@@ -3088,6 +3121,7 @@ async fn route_agent_workspace_pr_autofix_for_target(
             &workspace,
             &health,
             Arc::clone(&workspace_repo),
+            repair_repo.as_deref(),
         )
         .await?;
         let auto_merge_guard_blocks_enable = workspace_review_auto_merge_guard_blocks_enable(
@@ -3103,28 +3137,28 @@ async fn route_agent_workspace_pr_autofix_for_target(
             && (workspace.pr_supervision_status.as_deref() != Some("monitoring")
                 || workspace.pr_auto_merge_current != Some(auto_merge_current))
         {
-            workspace_repo
-                .update_pr_auto_merge_state(
-                    conversation_id,
-                    Some(auto_merge_current),
-                    Some("monitoring"),
-                    Some("RalphX is monitoring PR health."),
-                )
-                .await?;
+            update_agent_workspace_pr_supervision_state(
+                workspace_repo.as_ref(),
+                repair_repo.as_deref(),
+                conversation_id,
+                Some(auto_merge_current),
+                Some("monitoring"),
+                Some("RalphX is monitoring PR health."),
+            )
+            .await?;
         }
         return Ok(false);
     };
     if !agent_workspace_pr_health_has_head(&health) {
-        workspace_repo
-            .update_pr_auto_merge_state(
-                conversation_id,
-                workspace.pr_auto_merge_current,
-                Some("blocked"),
-                Some(
-                    "PR autofix is blocked because GitHub did not report the current head commit.",
-                ),
-            )
-            .await?;
+        update_agent_workspace_pr_supervision_state(
+            workspace_repo.as_ref(),
+            repair_repo.as_deref(),
+            conversation_id,
+            workspace.pr_auto_merge_current,
+            Some("blocked"),
+            Some("PR autofix is blocked because GitHub did not report the current head commit."),
+        )
+        .await?;
         return Ok(false);
     }
 
@@ -3152,14 +3186,15 @@ async fn route_agent_workspace_pr_autofix_for_target(
         .await?;
         if !attempt_decision.allows_start() {
             if let Some(summary) = attempt_decision.manual_summary() {
-                workspace_repo
-                    .update_pr_auto_merge_state(
-                        conversation_id,
-                        workspace.pr_auto_merge_current,
-                        Some("blocked"),
-                        Some(summary),
-                    )
-                    .await?;
+                update_agent_workspace_pr_supervision_state(
+                    workspace_repo.as_ref(),
+                    repair_repo.as_deref(),
+                    conversation_id,
+                    workspace.pr_auto_merge_current,
+                    Some("blocked"),
+                    Some(summary),
+                )
+                .await?;
             }
             return Ok(false);
         }
@@ -3212,6 +3247,7 @@ async fn route_agent_workspace_pr_autofix_for_target(
             conversation_id,
             &health,
             Arc::clone(&workspace_repo),
+            repair_repo.as_deref(),
         )
         .await
         {
@@ -3537,9 +3573,15 @@ async fn record_agent_workspace_pr_autofix_pre_start_failure(
             Some("failed"),
         )
         .await?;
-    workspace_repo
-        .update_pr_auto_merge_state(conversation_id, Some(false), Some("blocked"), Some(summary))
-        .await?;
+    update_agent_workspace_pr_supervision_state(
+        workspace_repo,
+        None,
+        conversation_id,
+        Some(false),
+        Some("blocked"),
+        Some(summary),
+    )
+    .await?;
 
     if !restore_auto_merge || !workspace.pr_auto_merge_desired {
         return Ok(());
@@ -3555,14 +3597,15 @@ async fn record_agent_workspace_pr_autofix_pre_start_failure(
             format!("{summary} {}", auto_merge_enable_failure_summary(&error)),
         ),
     };
-    workspace_repo
-        .update_pr_auto_merge_state(
-            conversation_id,
-            Some(auto_merge_current),
-            Some("blocked"),
-            Some(&final_summary),
-        )
-        .await
+    update_agent_workspace_pr_supervision_state(
+        workspace_repo,
+        None,
+        conversation_id,
+        Some(auto_merge_current),
+        Some("blocked"),
+        Some(&final_summary),
+    )
+    .await
 }
 
 async fn settle_agent_workspace_pr_autofix_dispatch_failure(
@@ -3809,6 +3852,7 @@ async fn dispatch_agent_workspace_pr_autofix(
         conversation_id,
         health,
         Arc::clone(&workspace_repo),
+        Some(repair_repo.as_ref()),
     )
     .await
     {
@@ -4350,6 +4394,7 @@ async fn sync_agent_workspace_auto_merge_preference(
     workspace: &AgentConversationWorkspace,
     health: &PrHealth,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    repair_repo: Option<&dyn AgentWorkspaceRepairRepository>,
 ) -> crate::AppResult<bool> {
     let remote_current = health.auto_merge_request.is_some();
     let mut current = remote_current;
@@ -4363,14 +4408,15 @@ async fn sync_agent_workspace_auto_merge_preference(
         if remote_current {
             github.disable_pr_auto_merge(working_dir, pr_number).await?;
         }
-        workspace_repo
-            .update_pr_auto_merge_state(
-                &workspace.conversation_id,
-                Some(false),
-                Some("review_paused"),
-                Some("GitHub auto-merge is paused while the workspace Review is authoritative."),
-            )
-            .await?;
+        update_agent_workspace_pr_supervision_state(
+            workspace_repo.as_ref(),
+            repair_repo,
+            &workspace.conversation_id,
+            Some(false),
+            Some("review_paused"),
+            Some("GitHub auto-merge is paused while the workspace Review is authoritative."),
+        )
+        .await?;
         return Ok(false);
     }
 
@@ -4388,59 +4434,64 @@ async fn sync_agent_workspace_auto_merge_preference(
         match enable_result {
             Ok(()) => {
                 current = true;
-                workspace_repo
-                    .update_pr_auto_merge_state(
-                        &workspace.conversation_id,
-                        Some(true),
-                        Some("monitoring"),
-                        Some("GitHub auto-merge is enabled; RalphX is monitoring PR health."),
-                    )
-                    .await?;
+                update_agent_workspace_pr_supervision_state(
+                    workspace_repo.as_ref(),
+                    repair_repo,
+                    &workspace.conversation_id,
+                    Some(true),
+                    Some("monitoring"),
+                    Some("GitHub auto-merge is enabled; RalphX is monitoring PR health."),
+                )
+                .await?;
             }
             Err(error) => {
-                workspace_repo
-                    .update_pr_auto_merge_state(
-                        &workspace.conversation_id,
-                        Some(false),
-                        Some(AUTO_MERGE_SUPERVISION_STATUS_WAITING),
-                        Some(&auto_merge_enable_failure_summary(&error)),
-                    )
-                    .await?;
+                update_agent_workspace_pr_supervision_state(
+                    workspace_repo.as_ref(),
+                    repair_repo,
+                    &workspace.conversation_id,
+                    Some(false),
+                    Some(AUTO_MERGE_SUPERVISION_STATUS_WAITING),
+                    Some(&auto_merge_enable_failure_summary(&error)),
+                )
+                .await?;
             }
         }
     } else if !workspace.pr_auto_merge_desired && remote_current {
         match github.disable_pr_auto_merge(working_dir, pr_number).await {
             Ok(()) => {
                 current = false;
-                workspace_repo
-                    .update_pr_auto_merge_state(
-                        &workspace.conversation_id,
-                        Some(false),
-                        None,
-                        Some("GitHub auto-merge is disabled."),
-                    )
-                    .await?;
+                update_agent_workspace_pr_supervision_state(
+                    workspace_repo.as_ref(),
+                    repair_repo,
+                    &workspace.conversation_id,
+                    Some(false),
+                    None,
+                    Some("GitHub auto-merge is disabled."),
+                )
+                .await?;
             }
             Err(error) => {
-                workspace_repo
-                    .update_pr_auto_merge_state(
-                        &workspace.conversation_id,
-                        Some(true),
-                        Some(AUTO_MERGE_SUPERVISION_STATUS_WAITING),
-                        Some(&auto_merge_disable_failure_summary(&error)),
-                    )
-                    .await?;
+                update_agent_workspace_pr_supervision_state(
+                    workspace_repo.as_ref(),
+                    repair_repo,
+                    &workspace.conversation_id,
+                    Some(true),
+                    Some(AUTO_MERGE_SUPERVISION_STATUS_WAITING),
+                    Some(&auto_merge_disable_failure_summary(&error)),
+                )
+                .await?;
             }
         }
     } else if workspace.pr_auto_merge_current != Some(remote_current) {
-        workspace_repo
-            .update_pr_auto_merge_state(
-                &workspace.conversation_id,
-                Some(remote_current),
-                None,
-                None,
-            )
-            .await?;
+        update_agent_workspace_pr_supervision_state(
+            workspace_repo.as_ref(),
+            repair_repo,
+            &workspace.conversation_id,
+            Some(remote_current),
+            None,
+            None,
+        )
+        .await?;
     }
 
     Ok(current)
@@ -4452,6 +4503,7 @@ pub async fn sync_agent_workspace_auto_merge_preference_for_workspace(
     pr_number: i64,
     workspace: &AgentConversationWorkspace,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
 ) -> crate::AppResult<bool> {
     if !workspace.allows_owned_pr_mutation() {
         let message = if workspace.mode == AgentConversationWorkspaceMode::ReviewPr {
@@ -4469,6 +4521,7 @@ pub async fn sync_agent_workspace_auto_merge_preference_for_workspace(
         workspace,
         &health,
         workspace_repo,
+        Some(repair_repo.as_ref()),
     )
     .await
 }
@@ -4977,16 +5030,15 @@ async fn route_agent_workspace_review_feedback_if_present_with_repair_repo(
     let health = github.fetch_pr_health(working_dir, pr_number).await?;
     let issue = agent_workspace_pr_review_issue(pr_number, &health);
     if !agent_workspace_pr_health_has_head(&health) {
-        workspace_repo
-            .update_pr_auto_merge_state(
-                conversation_id,
-                workspace.pr_auto_merge_current,
-                Some("blocked"),
-                Some(
-                    "PR autofix is blocked because GitHub did not report the current head commit.",
-                ),
-            )
-            .await?;
+        update_agent_workspace_pr_supervision_state(
+            workspace_repo.as_ref(),
+            repair_repo.as_deref(),
+            conversation_id,
+            workspace.pr_auto_merge_current,
+            Some("blocked"),
+            Some("PR autofix is blocked because GitHub did not report the current head commit."),
+        )
+        .await?;
         return Ok(false);
     }
     let Some(agent_run_repo) = agent_run_repo.as_ref() else {
@@ -5022,14 +5074,15 @@ async fn route_agent_workspace_review_feedback_if_present_with_repair_repo(
         .await?;
         if !attempt_decision.allows_start() {
             if let Some(summary) = attempt_decision.manual_summary() {
-                workspace_repo
-                    .update_pr_auto_merge_state(
-                        conversation_id,
-                        workspace.pr_auto_merge_current,
-                        Some("blocked"),
-                        Some(summary),
-                    )
-                    .await?;
+                update_agent_workspace_pr_supervision_state(
+                    workspace_repo.as_ref(),
+                    repair_repo.as_deref(),
+                    conversation_id,
+                    workspace.pr_auto_merge_current,
+                    Some("blocked"),
+                    Some(summary),
+                )
+                .await?;
             }
             return Ok(false);
         }
@@ -5055,6 +5108,7 @@ async fn route_agent_workspace_review_feedback_if_present_with_repair_repo(
             conversation_id,
             &health,
             Arc::clone(&workspace_repo),
+            repair_repo.as_deref(),
         )
         .await?
         else {

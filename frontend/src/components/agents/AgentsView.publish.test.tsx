@@ -56,6 +56,8 @@ const {
   listAgentConversationWorkspacePublicationEventsMock,
   preloadAgentsArtifactPaneMock,
   publishAgentConversationWorkspaceMock,
+  recheckAgentConversationWorkspacePrHealthMock,
+  retryAgentConversationWorkspacePrAutofixOverrideMock,
   realPublishPanelState,
   sendAgentMessageMock,
   toastDismissMock,
@@ -958,6 +960,58 @@ describe("AgentsView publish", () => {
       within(actionbar).getByTestId("agents-publish-retry-maintenance"),
     ).toBeEnabled();
     expect(within(actionbar).queryByTestId("agents-publish-confirm")).not.toBeInTheDocument();
+  });
+
+  it("renders held repair controls instead of zero-change facts", async () => {
+    configurePublishPane({
+      workspace: {
+        publicationPrNumber: 78,
+        maintenanceOperation: {
+          operationId: "maintenance-held",
+          generation: 2,
+          source: "pr_autofix",
+          stage: "held",
+          status: "held",
+          holdReason: "pr_autofix_unchanged_health",
+          summary: "The fixer made no changes.",
+          blocker: null,
+          automaticContinuation: false,
+          startedAt: "2026-08-02T10:00:00Z",
+          updatedAt: "2026-08-02T10:01:00Z",
+        },
+        prAutofixFingerprintSpend: {
+          generations: 2,
+          minutes: 18,
+          budgetMinutes: 45,
+          isExhausted: false,
+        },
+      },
+      changes: [],
+    });
+
+    const actionbar = await openPublishPane();
+    const card = await screen.findByTestId("agents-publish-hold-card");
+    expect(card).toHaveTextContent("Nothing is running");
+    expect(within(actionbar).getByRole("button", { name: "Re-check PR health" })).toBeEnabled();
+    expect(within(actionbar).queryByTestId("agents-publish-change-facts")).not.toBeInTheDocument();
+
+    fireEvent.click(within(actionbar).getByRole("button", { name: "Re-check PR health" }));
+    await waitFor(() =>
+      expect(recheckAgentConversationWorkspacePrHealthMock).toHaveBeenCalledWith(
+        "conversation-1",
+      ),
+    );
+    fireEvent.click(within(card).getByRole("button", { name: /Retry repair anyway/i }));
+    await waitFor(() =>
+      expect(retryAgentConversationWorkspacePrAutofixOverrideMock).toHaveBeenCalledWith(
+        "conversation-1",
+        {
+          attemptId: "maintenance-held",
+          generation: 2,
+          updatedAt: "2026-08-02T10:01:00Z",
+        },
+      ),
+    );
   });
 
   it("rebases directly onto a merged pull request's resolved base", async () => {

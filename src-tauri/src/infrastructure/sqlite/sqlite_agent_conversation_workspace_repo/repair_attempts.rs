@@ -371,7 +371,9 @@ fn apply_compatibility_projection(
              pr_supervision_updated_at = ?5,
              pr_auto_merge_current = ?6,
              base_commit = ?7,
-             updated_at = ?8
+             pr_autofix_enabled = COALESCE(?8, pr_autofix_enabled),
+             pr_auto_merge_desired = COALESCE(?9, pr_auto_merge_desired),
+             updated_at = ?10
          WHERE conversation_id = ?1",
         rusqlite::params![
             conversation_id.as_str(),
@@ -383,6 +385,8 @@ fn apply_compatibility_projection(
                 .map(|value| value.to_rfc3339()),
             projection.pr_auto_merge_current,
             projection.base_commit,
+            projection.pr_autofix_enabled,
+            projection.pr_auto_merge_desired,
             updated_at.to_rfc3339(),
         ],
     )?;
@@ -947,7 +951,9 @@ impl AgentWorkspaceRepairRepository for SqliteAgentConversationWorkspaceReposito
                     || current.updated_at != request.expected_attempt_updated_at
                     || current.settled_at.is_some()
                 {
-                    return Ok(CreateAgentWorkspaceRepairEffectOutcome::Stale(Box::new(current)));
+                    return Ok(CreateAgentWorkspaceRepairEffectOutcome::Stale(Box::new(
+                        current,
+                    )));
                 }
                 if request.effect.attempt_id != current.id {
                     return Err(AppError::Validation(
@@ -1065,7 +1071,9 @@ impl AgentWorkspaceRepairRepository for SqliteAgentConversationWorkspaceReposito
                     ));
                 }
                 if existing.completed_at.is_some() && existing == request.effect {
-                    return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Applied(Box::new(existing)));
+                    return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Applied(
+                        Box::new(existing),
+                    ));
                 }
                 if current.generation != request.generation
                     || current.phase != request.expected_phase
@@ -1074,7 +1082,9 @@ impl AgentWorkspaceRepairRepository for SqliteAgentConversationWorkspaceReposito
                     || existing.updated_at != request.expected_effect_updated_at
                     || existing.status != request.expected_effect_status
                 {
-                    return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Stale(Box::new(current)));
+                    return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Stale(Box::new(
+                        current,
+                    )));
                 }
                 if !update_repair_effect(
                     conn,
@@ -1093,9 +1103,13 @@ impl AgentWorkspaceRepairRepository for SqliteAgentConversationWorkspaceReposito
                             AppError::NotFound(format!("repair effect {}", request.effect.id))
                         })?;
                     if latest.completed_at.is_some() && latest == request.effect {
-                        return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Applied(Box::new(latest)));
+                        return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Applied(
+                            Box::new(latest),
+                        ));
                     }
-                    return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Stale(Box::new(current)));
+                    return Ok(CompleteAgentWorkspaceRepairEffectOutcome::Stale(Box::new(
+                        current,
+                    )));
                 }
                 apply_compatibility_projection(
                     conn,

@@ -14,7 +14,7 @@ macro_rules! repair_string_enum {
         pub enum $name { $($variant),+ }
 
         impl $name {
-            pub fn as_str(self) -> &'static str {
+            pub const fn as_str(self) -> &'static str {
                 match self { $(Self::$variant => $wire),+ }
             }
         }
@@ -146,12 +146,20 @@ repair_string_enum!(AgentWorkspaceRepairOperationStage {
     Publishing => "publishing",
     Ready => "ready",
     Blocked => "blocked",
+    Held => "held",
 });
 
 repair_string_enum!(AgentWorkspaceRepairOperationStatus {
     Active => "active",
     Ready => "ready",
     Blocked => "blocked",
+    Held => "held",
+});
+
+repair_string_enum!(AgentWorkspaceRepairHoldReason {
+    UnchangedHealth => "pr_autofix_unchanged_health",
+    PreExistingOnBase => "pr_autofix_pre_existing_on_base",
+    CiRerunPending => "pr_autofix_ci_rerun_pending",
 });
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -246,26 +254,52 @@ impl AgentWorkspaceRepairAttempt {
     }
 
     pub fn operation_snapshot(&self) -> AgentWorkspaceRepairOperationSnapshot {
-        let stage = match self.phase {
-            AgentWorkspaceRepairPhase::Requested | AgentWorkspaceRepairPhase::Dispatching => {
-                AgentWorkspaceRepairOperationStage::UpdatingBase
-            }
-            AgentWorkspaceRepairPhase::Repairing => AgentWorkspaceRepairOperationStage::Repairing,
-            AgentWorkspaceRepairPhase::Validating => AgentWorkspaceRepairOperationStage::Validating,
-            AgentWorkspaceRepairPhase::AwaitingReview => {
-                AgentWorkspaceRepairOperationStage::Reviewing
-            }
-            AgentWorkspaceRepairPhase::ContinuationPending
-            | AgentWorkspaceRepairPhase::Continuing => {
-                AgentWorkspaceRepairOperationStage::Publishing
-            }
-            AgentWorkspaceRepairPhase::Ready => AgentWorkspaceRepairOperationStage::Ready,
-            AgentWorkspaceRepairPhase::Blocked => AgentWorkspaceRepairOperationStage::Blocked,
+        let hold_reason = if self.phase == AgentWorkspaceRepairPhase::Ready {
+            self.pending_reasons
+                .iter()
+                .find_map(|reason| AgentWorkspaceRepairHoldReason::from_str(reason).ok())
+                .or(
+                    if self.ci_rerun_count > 0 && self.ci_rerun_fingerprint.is_some() {
+                        Some(AgentWorkspaceRepairHoldReason::CiRerunPending)
+                    } else {
+                        None
+                    },
+                )
+        } else {
+            None
         };
-        let status = match self.phase {
-            AgentWorkspaceRepairPhase::Ready => AgentWorkspaceRepairOperationStatus::Ready,
-            AgentWorkspaceRepairPhase::Blocked => AgentWorkspaceRepairOperationStatus::Blocked,
-            _ => AgentWorkspaceRepairOperationStatus::Active,
+        let stage = if hold_reason.is_some() {
+            AgentWorkspaceRepairOperationStage::Held
+        } else {
+            match self.phase {
+                AgentWorkspaceRepairPhase::Requested | AgentWorkspaceRepairPhase::Dispatching => {
+                    AgentWorkspaceRepairOperationStage::UpdatingBase
+                }
+                AgentWorkspaceRepairPhase::Repairing => {
+                    AgentWorkspaceRepairOperationStage::Repairing
+                }
+                AgentWorkspaceRepairPhase::Validating => {
+                    AgentWorkspaceRepairOperationStage::Validating
+                }
+                AgentWorkspaceRepairPhase::AwaitingReview => {
+                    AgentWorkspaceRepairOperationStage::Reviewing
+                }
+                AgentWorkspaceRepairPhase::ContinuationPending
+                | AgentWorkspaceRepairPhase::Continuing => {
+                    AgentWorkspaceRepairOperationStage::Publishing
+                }
+                AgentWorkspaceRepairPhase::Ready => AgentWorkspaceRepairOperationStage::Ready,
+                AgentWorkspaceRepairPhase::Blocked => AgentWorkspaceRepairOperationStage::Blocked,
+            }
+        };
+        let status = if hold_reason.is_some() {
+            AgentWorkspaceRepairOperationStatus::Held
+        } else {
+            match self.phase {
+                AgentWorkspaceRepairPhase::Ready => AgentWorkspaceRepairOperationStatus::Ready,
+                AgentWorkspaceRepairPhase::Blocked => AgentWorkspaceRepairOperationStatus::Blocked,
+                _ => AgentWorkspaceRepairOperationStatus::Active,
+            }
         };
 
         AgentWorkspaceRepairOperationSnapshot {
@@ -274,6 +308,7 @@ impl AgentWorkspaceRepairAttempt {
             source: self.source,
             stage,
             status,
+            hold_reason,
             summary: self.summary.clone(),
             blocker: self.blocker.clone(),
             automatic_continuation: self.continuation.is_automatic()
@@ -358,6 +393,7 @@ pub struct AgentWorkspaceRepairOperationSnapshot {
     pub source: AgentWorkspaceRepairSource,
     pub stage: AgentWorkspaceRepairOperationStage,
     pub status: AgentWorkspaceRepairOperationStatus,
+    pub hold_reason: Option<AgentWorkspaceRepairHoldReason>,
     pub summary: Option<String>,
     pub blocker: Option<String>,
     pub automatic_continuation: bool,

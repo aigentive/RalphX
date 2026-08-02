@@ -2,7 +2,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { chatApi } from "@/api/chat";
+import { chatApi, type AgentConversationWorkspacePublicationEvent } from "@/api/chat";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { createTestQueryClient } from "@/test/store-utils";
 import { conversationWorkspaceFixture } from "./agentsTestFixtures";
@@ -18,6 +18,7 @@ function renderAutomationTab(
     mode: "edit",
     autoPublishInitialPrEnabled: false,
   }),
+  publicationEvents: AgentConversationWorkspacePublicationEvent[] = [],
 ) {
   const onSnapshotChange = vi.fn();
   render(
@@ -30,6 +31,7 @@ function renderAutomationTab(
           canConfigurePrSupervision
           hasUncommittedChanges={false}
           terminalPrLabel="This pull request"
+          publicationEvents={publicationEvents}
           onSnapshotChange={onSnapshotChange}
         />
       </TooltipProvider>
@@ -148,6 +150,49 @@ describe("AgentsPublishAutomationTab", () => {
           prAutofixEnabled: true,
         }),
       ),
+    );
+  });
+
+  it("shows the current repair budget and durable repair-generation ledger", () => {
+    const workspace = conversationWorkspaceFixture({
+      prAutofixFingerprintSpend: {
+        generations: 2,
+        minutes: 18,
+        budgetMinutes: 45,
+        isExhausted: false,
+      },
+    });
+    renderAutomationTab(workspace, [
+      {
+        id: "repair-1",
+        conversationId: workspace.conversationId,
+        step: "repair_sent",
+        status: "succeeded",
+        summary: "Repair generation 2 sent",
+        classification: null,
+        attemptId: null,
+        createdAt: "2026-08-02T10:00:00Z",
+      },
+      {
+        id: "repair-held",
+        conversationId: workspace.conversationId,
+        step: "repair_fingerprint_hold",
+        status: "held",
+        summary: "Repair paused for unchanged CI evidence",
+        classification: null,
+        attemptId: null,
+        createdAt: "2026-08-02T10:01:00Z",
+      },
+    ]);
+
+    expect(screen.getByTestId("agents-pr-autofix-budget")).toHaveTextContent(
+      "18 / 45 min",
+    );
+    expect(screen.getByTestId("agents-pr-autofix-ledger")).toHaveTextContent(
+      "Repair generation 2 sent",
+    );
+    expect(screen.getByTestId("agents-pr-autofix-ledger")).toHaveTextContent(
+      "Repair paused for unchanged CI evidence",
     );
   });
 });

@@ -442,7 +442,7 @@ async fn scheduled_recovery_claims_conversation_once_until_background_task_finis
         },
         conversation_id,
         AgentWorkspacePrSupervisionRecoveryTrigger::WorkspaceLoad,
-        false,
+        true,
     );
 
     wait_for_sync_state_calls(&github, 1).await;

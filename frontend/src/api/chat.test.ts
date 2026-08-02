@@ -43,6 +43,9 @@ import {
   precomputeAgentConversationWorkspacePrDescription,
   setAgentConversationWorkspaceAutoPublish,
   setAgentConversationWorkspacePrSupervision,
+  recheckAgentConversationWorkspacePrHealth,
+  retryAgentConversationWorkspacePrAutofixOverride,
+  stopAgentConversationWorkspacePrAutofixForFailure,
   startAgentConversation,
   startAgentConversationInvokeInput,
   transformStartAgentConversationResponse,
@@ -65,6 +68,7 @@ import {
   chatApi,
   getConversationActiveState,
   getChildSessionStatus,
+  AgentWorkspaceMaintenanceOperationResponseSchema,
   AgentConversationWorkspaceResponseSchema,
 } from "./chat";
 import type { ConversationActiveStateResponse } from "./chat";
@@ -1672,6 +1676,81 @@ describe("chat api", () => {
       AgentConversationWorkspaceResponseSchema.parse(planSeedWorkspaceResponse())
         .maintenance_operation,
     ).toBeNull();
+  });
+
+  it("parses and transforms held maintenance operations", async () => {
+    mockInvoke.mockResolvedValue([
+      {
+        ...planSeedWorkspaceResponse(),
+        maintenance_operation: {
+          operation_id: "maintenance-held",
+          generation: 3,
+          source: "pr_autofix",
+          stage: "held",
+          status: "held",
+          hold_reason: "pr_autofix_unchanged_health",
+          summary: "The same check is still failing.",
+          blocker: null,
+          automatic_continuation: false,
+          started_at: "2026-01-24T10:00:00Z",
+          updated_at: "2026-01-24T10:01:00Z",
+        },
+      },
+    ]);
+
+    await expect(listAgentConversationWorkspacesByProject("project-1")).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          maintenanceOperation: expect.objectContaining({
+            stage: "held",
+            status: "held",
+            holdReason: "pr_autofix_unchanged_health",
+          }),
+        }),
+      ]),
+    );
+  });
+
+  it("keeps a missing hold reason compatible with older backend payloads", () => {
+    expect(
+      AgentWorkspaceMaintenanceOperationResponseSchema.parse({
+        operation_id: "maintenance-1",
+        generation: 1,
+        source: "base_update",
+        stage: "ready",
+        status: "ready",
+        summary: null,
+        blocker: null,
+        automatic_continuation: false,
+        started_at: "2026-01-24T10:00:00Z",
+        updated_at: "2026-01-24T10:01:00Z",
+      }).hold_reason,
+    ).toBeNull();
+  });
+
+  it("sends the exact held repair version for retry and stop actions", async () => {
+    const input = {
+      attemptId: "repair-attempt-1",
+      generation: 2,
+      updatedAt: "2026-08-02T10:01:00Z",
+    };
+    mockInvoke.mockResolvedValue(planSeedWorkspaceResponse());
+
+    await retryAgentConversationWorkspacePrAutofixOverride("conversation-1", input);
+    expect(mockInvoke).toHaveBeenLastCalledWith("retry_pr_autofix_override", {
+      input: { conversationId: "conversation-1", ...input },
+    });
+
+    await stopAgentConversationWorkspacePrAutofixForFailure("conversation-1", input);
+    expect(mockInvoke).toHaveBeenLastCalledWith("stop_pr_autofix_for_failure", {
+      input: { conversationId: "conversation-1", ...input },
+    });
+
+    mockInvoke.mockResolvedValue(undefined);
+    await recheckAgentConversationWorkspacePrHealth("conversation-1");
+    expect(mockInvoke).toHaveBeenLastCalledWith("recheck_pr_health", {
+      conversationId: "conversation-1",
+    });
   });
 
   it("rejects an unknown maintenance operation stage", () => {

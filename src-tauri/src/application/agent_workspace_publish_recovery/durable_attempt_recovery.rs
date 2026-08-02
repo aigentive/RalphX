@@ -1552,6 +1552,8 @@ fn legacy_projection(
         pr_supervision_summary: Some(summary.to_string()),
         pr_supervision_updated_at: Some(attempt.updated_at),
         pr_auto_merge_current: None,
+        pr_autofix_enabled: None,
+        pr_auto_merge_desired: None,
         base_commit: attempt.target_base_commit.clone(),
     }
 }

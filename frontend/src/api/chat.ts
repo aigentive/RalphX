@@ -1882,6 +1882,9 @@ export const chatApi = {
   updateAgentConversationWorkspaceFromBase,
   precomputeAgentConversationWorkspacePrDescription,
   publishAgentConversationWorkspace,
+  recheckAgentConversationWorkspacePrHealth,
+  retryAgentConversationWorkspacePrAutofixOverride,
+  stopAgentConversationWorkspacePrAutofixForFailure,
   commitAgentConversationWorkspaceLocally,
   setAgentConversationWorkspaceAutoPublish,
   setAgentConversationWorkspacePrSupervision,
@@ -2083,10 +2086,12 @@ export type AgentWorkspaceMaintenanceOperationStage =
   | "reviewing"
   | "publishing"
   | "ready"
+  | "held"
   | "blocked";
 export type AgentWorkspaceMaintenanceOperationStatus =
   | "active"
   | "ready"
+  | "held"
   | "blocked";
 
 export interface AgentWorkspaceMaintenanceOperation {
@@ -2095,6 +2100,7 @@ export interface AgentWorkspaceMaintenanceOperation {
   source: AgentWorkspaceMaintenanceOperationSource;
   stage: AgentWorkspaceMaintenanceOperationStage;
   status: AgentWorkspaceMaintenanceOperationStatus;
+  holdReason?: string | null;
   summary: string | null;
   blocker: string | null;
   automaticContinuation: boolean;
@@ -2107,6 +2113,12 @@ export interface AgentWorkspacePrAutofixFingerprintSpend {
   minutes: number;
   budgetMinutes: number;
   isExhausted: boolean;
+}
+
+export interface AgentWorkspaceRepairHoldActionInput {
+  attemptId: string;
+  generation: number;
+  updatedAt: string;
 }
 
 export interface AgentConversationWorkspace {
@@ -2671,9 +2683,11 @@ export const AgentWorkspaceMaintenanceOperationResponseSchema = z.object({
     "reviewing",
     "publishing",
     "ready",
+    "held",
     "blocked",
   ]),
-  status: z.enum(["active", "ready", "blocked"]),
+  status: z.enum(["active", "ready", "held", "blocked"]),
+  hold_reason: z.string().nullable().optional().default(null),
   summary: z.string().nullable(),
   blocker: z.string().nullable(),
   automatic_continuation: z.boolean(),
@@ -3322,6 +3336,7 @@ function transformAgentConversationWorkspace(
           source: raw.maintenance_operation.source,
           stage: raw.maintenance_operation.stage,
           status: raw.maintenance_operation.status,
+          holdReason: raw.maintenance_operation.hold_reason,
           summary: raw.maintenance_operation.summary,
           blocker: raw.maintenance_operation.blocker,
           automaticContinuation: raw.maintenance_operation.automatic_continuation,
@@ -4504,6 +4519,36 @@ export async function publishAgentConversationWorkspace(
     PublishAgentConversationWorkspaceResponseSchema,
   );
   return transformPublishAgentConversationWorkspaceResponse(raw);
+}
+
+export async function recheckAgentConversationWorkspacePrHealth(
+  conversationId: string,
+): Promise<void> {
+  await typedInvoke("recheck_pr_health", { conversationId }, z.void());
+}
+
+export async function retryAgentConversationWorkspacePrAutofixOverride(
+  conversationId: string,
+  input: AgentWorkspaceRepairHoldActionInput,
+): Promise<AgentConversationWorkspace> {
+  const raw = await typedInvoke(
+    "retry_pr_autofix_override",
+    { input: { conversationId, ...input } },
+    AgentConversationWorkspaceResponseSchema,
+  );
+  return transformAgentConversationWorkspace(raw);
+}
+
+export async function stopAgentConversationWorkspacePrAutofixForFailure(
+  conversationId: string,
+  input: AgentWorkspaceRepairHoldActionInput,
+): Promise<AgentConversationWorkspace> {
+  const raw = await typedInvoke(
+    "stop_pr_autofix_for_failure",
+    { input: { conversationId, ...input } },
+    AgentConversationWorkspaceResponseSchema,
+  );
+  return transformAgentConversationWorkspace(raw);
 }
 
 export async function commitAgentConversationWorkspaceLocally(
