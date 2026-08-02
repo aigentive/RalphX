@@ -71,15 +71,18 @@ export function QueuedMessage({ message, onEdit, onDelete, onSendNow }: QueuedMe
   // `delete_queued_agent_message` is not a facade op, so both of these resolve `unavailable`
   // on a paired device. Rendering the buttons anyway is what made a "deleted" turn still
   // arrive and an "edited" one arrive twice — the control looked live, the host never dropped
-  // the original. Hidden, with the gate's own hint in their place; Send now stays because its
-  // path (`send_remote_chat_message`) IS registered.
+  // the original. Send now is also an unregistered queue mutation, so all three are hidden
+  // with the gate's shared hint until spawn-free queue twins register.
   const deleteGate = useAgentGate("queuedMessageDelete");
   const editGate = useAgentGate("queuedMessageEdit");
+  const sendNowGate = useAgentGate("queuedMessageSendNow");
   const queueMutationHint = deleteGate.gated
     ? deleteGate.reason
     : editGate.gated
       ? editGate.reason
-      : null;
+      : sendNowGate.gated
+        ? sendNowGate.reason
+        : null;
   const [isEditing, setIsEditing] = useState(message.isEditing);
   const [editContent, setEditContent] = useState(message.content);
   const previewContent = formatQueuedMessageExcerpt(message.content);
@@ -255,7 +258,7 @@ export function QueuedMessage({ message, onEdit, onDelete, onSendNow }: QueuedMe
               </>
             ) : (
               <>
-                {onSendNow && (
+                {onSendNow && !sendNowGate.gated && (
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <button

@@ -105,11 +105,11 @@ describe("queued-message affordances on a paired device", () => {
     expect(screen.queryByTestId("queued-message-delete")).toBeNull();
   });
 
-  it("keeps Send now, whose path the host does serve", () => {
+  it("hides Send now remotely because its queue mutation is unavailable", () => {
     useRemoteEnvironment();
     renderQueued(vi.fn());
 
-    expect(screen.getByTestId("queued-message-send-now")).toBeInTheDocument();
+    expect(screen.queryByTestId("queued-message-send-now")).toBeNull();
   });
 
   it("still shows the queued turn itself — hiding it would hide real state", () => {
@@ -127,6 +127,7 @@ describe("queued-message affordances on a paired device", () => {
 
     expect(screen.getByTestId("queued-message-edit")).toBeInTheDocument();
     expect(screen.getByTestId("queued-message-delete")).toBeInTheDocument();
+    expect(screen.getByTestId("queued-message-send-now")).toBeInTheDocument();
     expect(screen.queryByTestId("queued-message-unavailable-hint")).toBeNull();
   });
 });
@@ -142,5 +143,7 @@ describe("the gate rows are derived from absence", () => {
       "delete_queued_agent_message",
     );
     expect(REMOTE_FACADE_OPS["delete_queued_agent_message"]).toBeUndefined();
+    expect(AGENT_GATED_AFFORDANCES.queuedMessageSendNow).toBe("send_queued_agent_message_now");
+    expect(REMOTE_FACADE_OPS["send_queued_agent_message_now"]).toBeUndefined();
   });
 });

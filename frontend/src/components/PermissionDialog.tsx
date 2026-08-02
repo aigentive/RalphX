@@ -18,6 +18,7 @@ import {
 } from "@/lib/remote/pending-gate-reconcile";
 import { useEnvironmentStore } from "@/stores/environmentStore";
 import { remoteErrorBannerProps } from "@/lib/remote/agent-gate";
+import { isRemoteTransportError } from "@/lib/remote/transport-errors";
 import { reconcileUnknownOutcome } from "@/lib/remote/unknown-outcome";
 import { Button } from "@/components/ui/button";
 import { AlertTriangle, Shield, Terminal } from "lucide-react";
@@ -357,14 +358,13 @@ export function PermissionDialog() {
       }
       // D4: normalize error and split on "not found"
       const message = error instanceof Error ? error.message : String(error);
-      if (message.includes("not found")) {
+      if (isRemoteTransportError(error) || remoteErrorBannerProps(error) !== null) {
+        // A transport/capability failure is not evidence that the live request expired.
+        setResolveError(error);
+      } else if (message.includes("not found")) {
         // Request was already expired/removed — remove from queue, show info
         setRequests((prev) => prev.slice(1));
         toast.info("Permission request expired");
-      } else if (remoteErrorBannerProps(error) !== null) {
-        // A remote refusal the mapper can explain: keep the request in the queue and
-        // say WHY inline. No "please retry" toast — retrying cannot change the answer.
-        setResolveError(error);
       } else {
         // Transport or unexpected error — keep in queue for retry
         toast.error("Failed to resolve permission request, please retry");

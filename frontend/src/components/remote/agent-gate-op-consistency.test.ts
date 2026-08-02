@@ -50,7 +50,9 @@ import {
 import {
   AFFORDANCE_CONSUMPTION_ALIASES,
   GATE_CALLSITE_INDIRECTIONS,
+  GATE_WIRED_FILES,
   KNOWN_GATE_GAPS,
+  orphanedWiringGapIds,
   quarantinedIds,
 } from "./agent-gate-guard-manifest";
 
@@ -409,13 +411,13 @@ describe("a resolved affordance names the op its file invokes", () => {
  * unreachable at every scope remotely — and, for deny, takes a brake away from a
  * default-paired device.
  *
- * Only `invoke(` shapes count: naming the raw commands in a `LOCAL_ONLY_COMMANDS`-style
+ * Only transport call shapes count: naming the raw commands in a `LOCAL_ONLY_COMMANDS`-style
  * declaration or a comment is how the routing policy is expressed, not a defect.
  */
 const RAW_TWINS = ["resolve_permission_request", "resolve_user_question"] as const;
 
 const RAW_TWIN_PATTERN = new RegExp(
-  `\\b(?:invoke|typedInvoke|typedInvokeWithTransform|typedInvokeVoid|networkInvoke)\\s*(?:<[^>()]*>)?\\(\\s*["'\`](${RAW_TWINS.join(
+  `\\b(?:invoke|typedInvoke|typedInvokeWithTransform|typedInvokeVoid|networkInvoke|backendFetch)\\s*(?:<[^>()]*>)?\\(\\s*["'\`](${RAW_TWINS.join(
     "|"
   )})["'\`]`,
   "g"
@@ -443,11 +445,42 @@ describe("the facade-split raw commands are never invoked from production", () =
   });
 });
 
+describe("raw-twin call syntax matching", () => {
+  it("matches backendFetch calls but not declarations or comments", () => {
+    expect([
+      ...`backendFetch("resolve_user_question")`.matchAll(RAW_TWIN_PATTERN),
+    ]).toHaveLength(1);
+    expect([
+      ...`const command = "resolve_user_question";`.matchAll(RAW_TWIN_PATTERN),
+    ]).toHaveLength(0);
+    expect([
+      ...`// backendFetch names resolve_user_question here`.matchAll(RAW_TWIN_PATTERN),
+    ]).toHaveLength(0);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Quarantine hygiene
 // ---------------------------------------------------------------------------
 
 describe("the quarantine itself", () => {
+  it("rejects orphaned wiring quarantine rows and accepts the real manifest", () => {
+    expect(orphanedWiringGapIds(KNOWN_GATE_GAPS, GATE_WIRED_FILES)).toEqual([]);
+    expect(
+      orphanedWiringGapIds(
+        [
+          {
+            kind: "wiring",
+            id: "wiring:src/components/renamed/Orphan.tsx",
+            owner: 4,
+            why: "Synthetic orphan proves a typo cannot silently escape the wiring ratchet.",
+          },
+        ],
+        ["src/components/ActuallyWired.tsx"]
+      )
+    ).toEqual(["wiring:src/components/renamed/Orphan.tsx"]);
+  });
+
   it("has unique ids", () => {
     const ids = KNOWN_GATE_GAPS.map((gap) => gap.id);
     expect(new Set(ids).size).toBe(ids.length);

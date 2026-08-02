@@ -15,6 +15,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ChatInput } from "./ChatInput";
+import { LOCAL_ENVIRONMENT_ID, useEnvironmentStore } from "@/stores/environmentStore";
 
 vi.mock("@tauri-apps/api/webview", () => ({
   getCurrentWebview: () => ({
@@ -34,6 +35,12 @@ describe("ChatInput", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    useEnvironmentStore.setState({
+      activeEnvironmentId: LOCAL_ENVIRONMENT_ID,
+      environments: [{ id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" }],
+      effectiveScopes: {},
+      connectionPresentations: {},
+    });
   });
 
   const makeDropEvent = (files: File[]) => ({
@@ -473,6 +480,38 @@ describe("ChatInput", () => {
       await user.keyboard("{ArrowUp}");
 
       expect(onEditLastQueued).toHaveBeenCalled();
+    });
+
+    it("does not enter queued edit from ArrowUp when remote editing is unavailable", async () => {
+      useEnvironmentStore.setState({
+        activeEnvironmentId: "remote-studio",
+        environments: [
+          { id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" },
+          { id: "remote-studio", name: "Studio Mac", kind: "remote" },
+        ],
+        effectiveScopes: { "remote-studio": ["ui:read", "ui:operate", "ui:agent"] },
+        connectionPresentations: {
+          "remote-studio": {
+            presentation: "connected",
+            blockedFailure: null,
+            blockedMessage: null,
+          },
+        },
+      });
+      const user = userEvent.setup();
+      const onEditLastQueued = vi.fn();
+      render(
+        <ChatInput
+          {...defaultProps}
+          hasQueuedMessages={true}
+          onEditLastQueued={onEditLastQueued}
+        />
+      );
+
+      screen.getByTestId("chat-input-textarea").focus();
+      await user.keyboard("{ArrowUp}");
+
+      expect(onEditLastQueued).not.toHaveBeenCalled();
     });
 
     it("does NOT call onEditLastQueued when Up arrow pressed with text in input", async () => {

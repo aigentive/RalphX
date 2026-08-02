@@ -279,6 +279,8 @@ export function ChatInput({
     questionMode,
   ]);
 
+  const queuedEditGate = useAgentGate("queuedMessageEdit");
+
   // Handle keyboard shortcuts
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -288,13 +290,18 @@ export function ChatInput({
       } else if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         handleSend();
-      } else if (e.key === "ArrowUp" && !value && hasQueuedMessages) {
+      } else if (
+        e.key === "ArrowUp" &&
+        !value &&
+        hasQueuedMessages &&
+        !queuedEditGate.gated
+      ) {
         // Up arrow in empty input: edit last queued message
         e.preventDefault();
         onEditLastQueued?.();
       }
     },
-    [handleSend, value, hasQueuedMessages, onEditLastQueued]
+    [handleSend, value, hasQueuedMessages, onEditLastQueued, queuedEditGate.gated]
   );
 
   // Track focus state for unified container border highlight

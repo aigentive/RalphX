@@ -16,6 +16,7 @@ import { AlertTriangle } from "lucide-react";
 
 import { NoticeBanner } from "@/components/ui/notice-banner";
 import { remoteErrorBannerProps } from "@/lib/remote/agent-gate";
+import { isRemoteTransportError } from "@/lib/remote/transport-errors";
 
 export interface RemoteErrorBannerProps {
   error: unknown;
@@ -30,6 +31,19 @@ export function RemoteErrorBanner({
 }: RemoteErrorBannerProps) {
   const props = remoteErrorBannerProps(error);
   if (props === null) {
+    if (isRemoteTransportError(error)) {
+      return (
+        <NoticeBanner
+          tone="error"
+          icon={<AlertTriangle size={14} aria-hidden="true" />}
+          title="Remote connection failed"
+          testId={testId ?? "remote-error-banner"}
+          {...(className === undefined ? {} : { className })}
+        >
+          {error.message}
+        </NoticeBanner>
+      );
+    }
     return null;
   }
   return (

@@ -9,6 +9,9 @@
  * gated by `automationResume` (an op it never invokes), and `PlanEditor`'s gate
  * resolving `update_artifact` while its save path POSTs `update_plan_artifact`. A guard
  * that cannot see the op↔callsite relationship cannot catch either one.
+ * Op reach is file-granular: once `automationRunNow` is consumed in
+ * `AgentsAutomationPanel.tsx`, its legitimate `resume_automation` call can hide a same-file
+ * wrong-op regression. Phase 4 must add a mounted behavioral test for Run now.
  *
  * `agent-gate-op-consistency.test.ts` adds that relationship. This module holds the
  * three hand-maintained lists both guards read, so the file list and the quarantine
@@ -57,11 +60,9 @@ import type { AgentGatedAffordance } from "@/lib/remote/agent-gate";
  * gating at all. Every one of those five entries is quarantined below as an expected
  * failure and is Phase 4's worklist.
  *
- * The fork's other eight files (`CompletedTaskDetail`, `ExecutionTaskDetail`,
- * `MergedTaskDetail`, `MergePhaseTimeline`, `MergingTaskDetail`, `ReviewingTaskDetail`,
- * `RevisionTaskDetail`, `WaitingTaskDetail`) carry no steering affordance today — their
- * buttons navigate, expand, or copy. Phase 4 must re-check them when it ports the gate
- * wiring, and add them here if any of them grows a mutating control.
+ * The non-mutating remainder is `MergedTaskDetail` (opens the PR URL only),
+ * `MergePhaseTimeline`, `RevisionTaskDetail`, and `WaitingTaskDetail`; they only present,
+ * navigate, expand, or copy state, so they are excluded until they gain a mutation.
  */
 export const GATE_WIRED_FILES: readonly string[] = [
   "src/components/agents/AgentComposerSurface.tsx",
@@ -89,6 +90,16 @@ export const GATE_WIRED_FILES: readonly string[] = [
   "src/components/agents/task-details/detail-views/HumanReviewTaskDetail.tsx",
   "src/components/agents/task-details/detail-views/MergeConflictTaskDetail.tsx",
   "src/components/agents/task-details/detail-views/MergeIncompleteTaskDetail.tsx",
+  "src/components/agents/task-details/detail-views/ExecutionTaskDetail.tsx",
+  "src/components/agents/task-details/detail-views/MergingTaskDetail.tsx",
+  "src/components/agents/task-details/detail-views/ReviewingTaskDetail.tsx",
+  "src/components/agents/task-details/detail-views/CompletedTaskDetail.tsx",
+  "src/components/tasks/detail-views/ExecutionTaskDetail.tsx",
+  "src/components/tasks/detail-views/MergingTaskDetail.tsx",
+  "src/components/tasks/detail-views/ReviewingTaskDetail.tsx",
+  "src/components/tasks/detail-views/CompletedTaskDetail.tsx",
+  "src/components/tasks/detail-views/MergeConflictTaskDetail.tsx",
+  "src/components/tasks/detail-views/MergeIncompleteTaskDetail.tsx",
 ];
 
 // ---------------------------------------------------------------------------
@@ -136,6 +147,16 @@ export const GATE_CALLSITE_INDIRECTIONS: readonly {
     file: "src/components/Chat/QueuedMessage.tsx",
     affordance: "queuedMessageEdit",
     reason: "Chip renders the gate; the edit invoke lives in useChatActions and arrives as the `onEdit` prop.",
+  },
+  {
+    file: "src/components/Chat/QueuedMessage.tsx",
+    affordance: "queuedMessageSendNow",
+    reason: "Chip renders the gate; the invoke lives in useChatActions and arrives as the `onSendNow` prop.",
+  },
+  {
+    file: "src/components/Chat/ChatInput.tsx",
+    affordance: "queuedMessageEdit",
+    reason: "ArrowUp enters edit through `onEditLastQueued`; the delete invoke lives in useChatActions.",
   },
   {
     file: "src/components/tasks/TaskContextMenuItems.tsx",
@@ -273,13 +294,13 @@ export const KNOWN_GATE_GAPS: readonly KnownGateGap[] = [
     kind: "raw-twin",
     id: "raw-twin:src/api/permission.ts::resolve_permission_request",
     owner: 1,
-    why: "Approve/deny must route to the pinned approve_/deny_permission_request ops under a remote environment.",
+    why: "The local transport branch legitimately invokes resolve_permission_request; the remote branch routes to the pinned approve_/deny_permission_request twins.",
   },
   {
     kind: "raw-twin",
     id: "raw-twin:src/api/ask-user-question.ts::resolve_user_question",
     owner: 1,
-    why: "The requestId branch must route to the registered answer_user_question remotely; resolve_user_question is unreachable at every scope.",
+    why: "The local transport branch legitimately invokes resolve_user_question; the remote branch uses the honest gate because this wire cannot signal the MCP long-poll.",
   },
 
   // --- ungated wiring (the Agents-pane detail-view fork) ---------------------
@@ -313,7 +334,78 @@ export const KNOWN_GATE_GAPS: readonly KnownGateGap[] = [
     owner: 4,
     why: "retry_merge / resolve_merge_conflict have no affordance row in either copy and no gate here.",
   },
+  {
+    kind: "wiring",
+    id: "wiring:src/components/agents/task-details/detail-views/ExecutionTaskDetail.tsx",
+    owner: 4,
+    why: "Invokes stop_task through api.tasks.stop and move_task through api.tasks.move without gates.",
+  },
+  {
+    kind: "wiring",
+    id: "wiring:src/components/agents/task-details/detail-views/MergingTaskDetail.tsx",
+    owner: 4,
+    why: "Invokes stop_task through api.tasks.stop without consulting an affordance gate.",
+  },
+  {
+    kind: "wiring",
+    id: "wiring:src/components/agents/task-details/detail-views/ReviewingTaskDetail.tsx",
+    owner: 4,
+    why: "Invokes stop_task and request_task_changes_from_reviewing without affordance gates.",
+  },
+  {
+    kind: "wiring",
+    id: "wiring:src/components/agents/task-details/detail-views/CompletedTaskDetail.tsx",
+    owner: 4,
+    why: "Invokes move_task and resume_execution through the rerun path without affordance gates.",
+  },
+  {
+    kind: "wiring",
+    id: "wiring:src/components/tasks/detail-views/ExecutionTaskDetail.tsx",
+    owner: 4,
+    why: "Invokes stop_task through api.tasks.stop and move_task through api.tasks.move without gates.",
+  },
+  {
+    kind: "wiring",
+    id: "wiring:src/components/tasks/detail-views/MergingTaskDetail.tsx",
+    owner: 4,
+    why: "Invokes stop_task through api.tasks.stop without consulting an affordance gate.",
+  },
+  {
+    kind: "wiring",
+    id: "wiring:src/components/tasks/detail-views/ReviewingTaskDetail.tsx",
+    owner: 4,
+    why: "Invokes stop_task and request_task_changes_from_reviewing without affordance gates.",
+  },
+  {
+    kind: "wiring",
+    id: "wiring:src/components/tasks/detail-views/CompletedTaskDetail.tsx",
+    owner: 4,
+    why: "Invokes move_task and resume_execution through the rerun path without affordance gates.",
+  },
+  {
+    kind: "wiring",
+    id: "wiring:src/components/tasks/detail-views/MergeConflictTaskDetail.tsx",
+    owner: 4,
+    why: "Invokes resolve_merge_conflict, retry_merge, and move_task without affordance gates.",
+  },
+  {
+    kind: "wiring",
+    id: "wiring:src/components/tasks/detail-views/MergeIncompleteTaskDetail.tsx",
+    owner: 4,
+    why: "Invokes retry_merge, resolve_merge_conflict, and move_task without affordance gates.",
+  },
 ];
+
+export function orphanedWiringGapIds(
+  gaps: readonly KnownGateGap[],
+  wiredFiles: readonly string[]
+): string[] {
+  const wired = new Set(wiredFiles);
+  return gaps
+    .filter((gap) => gap.kind === "wiring")
+    .filter((gap) => !wired.has(gap.id.slice("wiring:".length)))
+    .map((gap) => gap.id);
+}
 
 /** The quarantined ids of one kind, as a set — the guards diff against these. */
 export function quarantinedIds(kind: GateGapKind): ReadonlySet<string> {

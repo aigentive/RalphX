@@ -170,6 +170,8 @@ export const AGENT_GATED_AFFORDANCES = {
   // (`get/delete/update_queued_agent_message`) are the real fix and need host registrations.
   queuedMessageDelete: "delete_queued_agent_message",
   queuedMessageEdit: "delete_queued_agent_message",
+  // Unavailable until a spawn-free queue twin registers; Phase 6 is the candidate owner.
+  queuedMessageSendNow: "send_queued_agent_message_now",
   automationResume: "resume_automation",
   automationRunNow: "trigger_automation_run_now",
   automationRestart: "restart_automation",

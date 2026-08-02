@@ -495,6 +495,28 @@ describe("PermissionDialog", () => {
     });
   });
 
+  it("keeps a remote not-found transport failure queued and renders it inline", async () => {
+    mockResolveRequest.mockRejectedValue(
+      new RemoteTransportError({
+        code: "REMOTE_UNREACHABLE",
+        message: "remote environment not found: studio-mac",
+        environmentId: "studio-mac",
+      })
+    );
+
+    const user = userEvent.setup();
+    render(<PermissionDialog />);
+    await act(async () => { await Promise.resolve(); });
+    emitEvent("permission:request", makeRequest());
+
+    await user.click(await screen.findByText("Allow"));
+
+    expect(await screen.findByTestId("permission-remote-error")).toBeInTheDocument();
+    expect(screen.getByText("Permission Required")).toBeInTheDocument();
+    expect(mockToastInfo).not.toHaveBeenCalledWith("Permission request expired");
+    expect(mockToastError).not.toHaveBeenCalled();
+  });
+
   it("non-Error thrown object is normalized correctly in error handling", async () => {
     // Simulate Tauri throwing a plain string (not an Error object)
     mockResolveRequest.mockRejectedValue("Permission request 'test-123' not found");
