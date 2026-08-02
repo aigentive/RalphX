@@ -138,6 +138,22 @@ timeouts:
     db_lock_wait_warn_ms: 100 # Env: RALPHX_STREAM_DB_LOCK_WAIT_WARN_MS
     db_lock_hold_warn_ms: 250 # Env: RALPHX_STREAM_DB_LOCK_HOLD_WARN_MS
 
+# Backend-held delegation waiting. Coordinators stop burning tokens on model-side polling:
+# short waits block inside `delegate_wait`, long waits park and are woken by delegate signals.
+delegation:
+  # native_delegation.rs — default bounded block when a caller waits without naming a duration
+  wait_block_secs: 120 # Env: RALPHX_DELEGATION_WAIT_BLOCK_SECS
+  # native_delegation.rs — hard cap on any caller-supplied wait_timeout_ms.
+  # MUST stay strictly below timeouts.stream.default_parse_stall_secs (180) so a blocking
+  # wait is never mistaken for a stalled stream and kills the waiting coordinator.
+  wait_block_max_secs: 150 # Env: RALPHX_DELEGATION_WAIT_BLOCK_MAX_SECS
+  # delegation_park — upper bound on how long a coordinator may stay parked before force-wake
+  park_max_secs: 3600 # Env: RALPHX_DELEGATION_PARK_MAX_SECS
+  # delegation_park — wake-enqueue attempts before the park is marked failed
+  park_wake_retry_max: 5 # Env: RALPHX_DELEGATION_PARK_WAKE_RETRY_MAX
+  # delegation_park — backoff between wake-enqueue attempts
+  park_wake_retry_backoff_secs: 30 # Env: RALPHX_DELEGATION_PARK_WAKE_RETRY_BACKOFF_SECS
+
 reconciliation:
   # reconciliation.rs — overall deadline for merger agent; triggers MergeIncomplete + auto-retry if exceeded
   merger_timeout_secs: 1200 # Env: RALPHX_RECONCILIATION_MERGER_TIMEOUT_SECS

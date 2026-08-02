@@ -171,11 +171,17 @@ describe('getAllowedToolNames', () => {
     it('treats delegation-only canonical mcp_tools as canonical instead of missing', () => {
         setAgentType('qa-tester');
         const tools = getAllowedToolNames();
-        expect(tools).toEqual(['delegate_start', 'delegate_wait', 'delegate_cancel']);
+        expect(tools).toEqual([
+            'delegate_start',
+            'delegate_wait',
+            'delegate_cancel',
+            'delegate_park',
+        ]);
         expect(loadCanonicalMcpTools('qa-tester')).toEqual([
             'delegate_start',
             'delegate_wait',
             'delegate_cancel',
+            'delegate_park',
         ]);
     });
     it('resolves the PR describer legacy alias to canonical metadata', () => {
@@ -490,6 +496,7 @@ describe('getFilteredTools', () => {
             'delegate_start',
             'delegate_wait',
             'delegate_cancel',
+            'delegate_park',
         ]);
     });
     it('should return no tools for unknown agent type', () => {
@@ -1799,7 +1806,7 @@ describe('agent workspace repair tool transport', () => {
 // ===========================================================================
 describe('delegation bridge tools', () => {
     const allTools = getAllTools();
-    it.each(['delegate_start', 'delegate_wait', 'delegate_cancel'])('%s should exist in ALL_TOOLS', (toolName) => {
+    it.each(['delegate_start', 'delegate_wait', 'delegate_cancel', 'delegate_park'])('%s should exist in ALL_TOOLS', (toolName) => {
         expect(allTools.find((tool) => tool.name === toolName)).toBeDefined();
     });
     it('delegate_start should hide session selection and require only agent_name and prompt', () => {
@@ -1826,6 +1833,29 @@ describe('delegation bridge tools', () => {
         expect(tool?.inputSchema.properties).toHaveProperty('include_messages');
         expect(tool?.inputSchema.properties).toHaveProperty('message_limit');
     });
+    it('delegate_wait should expose the backend-held bounded wait surface', () => {
+        const tool = allTools.find((entry) => entry.name === 'delegate_wait');
+        expect(tool?.inputSchema.properties).toHaveProperty('job_ids');
+        expect(tool?.inputSchema.properties).toHaveProperty('wait_timeout_ms');
+        // job_id is no longer required on its own: job_ids is the alternative watch set.
+        expect(tool?.inputSchema.required ?? []).not.toContain('job_id');
+    });
+    it('delegate_park should require job ids without exposing runtime identity', () => {
+        const tool = allTools.find((entry) => entry.name === 'delegate_park');
+        const properties = tool?.inputSchema.properties ?? {};
+        expect(tool?.inputSchema.required).toContain('job_ids');
+        expect(properties).toHaveProperty('job_ids');
+        expect(properties).toHaveProperty('wake_on');
+        expect(properties).toHaveProperty('wake_on_failure');
+        expect(properties).toHaveProperty('max_wait_secs');
+        expect(properties.wake_on.enum).toEqual(['all', 'any']);
+        expect(properties.wake_on.default).toBe('all');
+        expect(properties.wake_on_failure.default).toBe(true);
+        expect(properties).not.toHaveProperty('run_id');
+        expect(properties).not.toHaveProperty('agent_run_id');
+        expect(properties).not.toHaveProperty('conversation_id');
+        expect(properties).not.toHaveProperty('parent_conversation_id');
+    });
     it.each([
         ORCHESTRATOR_IDEATION,
         ORCHESTRATOR_IDEATION_READONLY,
@@ -1836,6 +1866,7 @@ describe('delegation bridge tools', () => {
         expect(toolsByAgent()[agent]).toContain('delegate_start');
         expect(toolsByAgent()[agent]).toContain('delegate_wait');
         expect(toolsByAgent()[agent]).toContain('delegate_cancel');
+        expect(toolsByAgent()[agent]).toContain('delegate_park');
     });
     it('PR_REVIEWER should expose get_artifact for selected plan references', () => {
         expect(toolsByAgent()[PR_REVIEWER]).toEqual(loadCanonicalMcpTools(PR_REVIEWER));
@@ -1845,6 +1876,7 @@ describe('delegation bridge tools', () => {
         expect(toolsByAgent()[agent]).toContain('delegate_start');
         expect(toolsByAgent()[agent]).toContain('delegate_wait');
         expect(toolsByAgent()[agent]).toContain('delegate_cancel');
+        expect(toolsByAgent()[agent]).toContain('delegate_park');
     });
     it.each([
         ORCHESTRATOR_IDEATION,
@@ -1866,6 +1898,17 @@ describe('delegation bridge tools', () => {
         expect(toolNames).toContain('delegate_start');
         expect(toolNames).toContain('delegate_wait');
         expect(toolNames).toContain('delegate_cancel');
+        expect(toolNames).toContain('delegate_park');
+    });
+    it('hides delegate_park from a non-delegating agent even when it is transport-granted', () => {
+        try {
+            setAgentType('ralphx-persona-extractor');
+            process.env.RALPHX_ALLOWED_MCP_TOOLS = 'delegate_park';
+            expect(getFilteredTools().map((tool) => tool.name)).not.toContain('delegate_park');
+        }
+        finally {
+            delete process.env.RALPHX_ALLOWED_MCP_TOOLS;
+        }
     });
 });
 // ===========================================================================

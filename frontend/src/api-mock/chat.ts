@@ -385,6 +385,7 @@ export async function mockListAgentSidebarConversations(
             publicationLabel: getMockPublicationLabel(workspace, publicationState),
             attentionLane:
               isMuted && attentionLane === "needs" ? "stale" : attentionLane,
+            parkedDelegateCount: 0,
             actionVerb: getMockInboxActionVerb(workspace, publicationState),
             isMuted,
           };

@@ -55,6 +55,7 @@ pub mod memory_persona_repo;
 mod memory_persona_repo_tests;
 pub mod memory_clickup_integration_settings_repo;
 pub mod memory_delegated_session_repo;
+pub mod memory_delegation_park_repo;
 pub mod memory_execution_plan_repo;
 pub mod memory_execution_settings_repo;
 pub mod memory_external_events_repo;
@@ -143,6 +144,7 @@ pub use memory_chat_timeline_repo::MemoryChatTimelineRepository;
 pub use memory_persona_repo::MemoryPersonaRepository;
 pub use memory_clickup_integration_settings_repo::MemoryClickUpIntegrationSettingsRepository;
 pub use memory_delegated_session_repo::MemoryDelegatedSessionRepository;
+pub use memory_delegation_park_repo::MemoryDelegationParkRepo;
 pub use memory_execution_plan_repo::MemoryExecutionPlanRepository;
 pub use memory_execution_settings_repo::{
     MemoryExecutionSettingsRepository, MemoryGlobalExecutionSettingsRepository,

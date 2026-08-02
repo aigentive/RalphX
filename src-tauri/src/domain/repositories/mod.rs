@@ -2,6 +2,7 @@
 // These traits define the contract; implementations live in infrastructure layer
 
 pub mod orphan_worktree_cleanup_marker_repository;
+pub mod delegation_park_repository;
 pub mod permission_repository;
 pub mod question_repository;
 pub mod queued_message_repository;
@@ -11,6 +12,7 @@ pub use orphan_worktree_cleanup_marker_repository::{
     OrphanWorktreeCleanupMarker, OrphanWorktreeCleanupMarkerKey,
     OrphanWorktreeCleanupMarkerRepository,
 };
+pub use delegation_park_repository::DelegationParkRepository;
 pub use permission_repository::PermissionRepository;
 pub use question_repository::QuestionRepository;
 pub use queued_message_repository::QueuedMessageRepository;

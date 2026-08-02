@@ -5,6 +5,7 @@ import {
   AGENT_SIDEBAR_RECENT_GROUPS,
   describeInboxLaneCount,
   formatInboxLaneCount,
+  formatParkedDelegateMeta,
   getAgeEscalation,
   laneForInboxFilter,
   shouldEscalateAge,
@@ -119,11 +120,22 @@ describe("getAgeEscalation", () => {
 });
 
 describe("shouldEscalateAge", () => {
-  it("exempts working and done lanes from age escalation", () => {
+  it("keeps working parked coordinators out of stale age escalation", () => {
     expect(shouldEscalateAge("needs")).toBe(true);
     expect(shouldEscalateAge("stale")).toBe(true);
     expect(shouldEscalateAge("working")).toBe(false);
     expect(shouldEscalateAge("done")).toBe(false);
+  });
+});
+
+describe("formatParkedDelegateMeta", () => {
+  it("uses singular and plural delegate copy for parked coordinators", () => {
+    expect(formatParkedDelegateMeta(1)).toBe("Waiting on 1 delegate");
+    expect(formatParkedDelegateMeta(2)).toBe("Waiting on 2 delegates");
+  });
+
+  it("omits parked delegate copy when no delegates remain", () => {
+    expect(formatParkedDelegateMeta(0)).toBeNull();
   });
 });
 

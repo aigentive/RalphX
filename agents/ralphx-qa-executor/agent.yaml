@@ -6,6 +6,7 @@ capabilities:
     - delegate_start
     - delegate_wait
     - delegate_cancel
+    - delegate_park
 harnesses:
   claude:
     model: sonnet

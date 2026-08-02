@@ -272,6 +272,8 @@ pub struct StartupJobRunner {
     git_startup_blocked_project_ids: Arc<HashSet<ProjectId>>,
     notification_repo: Option<Arc<dyn NotificationRepository>>,
     chat_payload_retention_repo: Option<Arc<SqliteChatPayloadRetentionRepository>>,
+    delegation_park_service:
+        Option<Arc<crate::application::delegation_park::DelegationParkService>>,
 }
 
 struct StartupSafetyNet {
@@ -405,6 +407,7 @@ impl StartupJobRunner {
             git_startup_blocked_project_ids: Arc::new(HashSet::new()),
             notification_repo: None,
             chat_payload_retention_repo: None,
+            delegation_park_service: None,
         }
     }
 
@@ -700,6 +703,16 @@ impl StartupJobRunner {
         self
     }
 
+    /// Provide the durable delegation-park reconciler so coordinators parked across a restart
+    /// are woken from durable state rather than stranded.
+    pub fn with_delegation_park_service(
+        mut self,
+        service: Arc<crate::application::delegation_park::DelegationParkService>,
+    ) -> Self {
+        self.delegation_park_service = Some(service);
+        self
+    }
+
     pub fn spawn_post_ready_safety_net(&self, delay: Duration) {
         let runner = self.clone_for_safety_net();
         tauri::async_runtime::spawn(async move {
@@ -746,6 +759,28 @@ impl StartupJobRunner {
                 tracing::warn!(error = %error, "Failed to prune durable notifications at startup");
             }
             startup_job_step_completed("notification_retention_prune", step_started_at);
+        }
+
+        if let Some(park_service) = &self.delegation_park_service {
+            let step_started_at = startup_job_step_started("delegation_park_reconcile");
+            match park_service
+                .reconcile_all(self.agent_run_repo.as_ref())
+                .await
+            {
+                Ok(summary) => {
+                    if summary.parks_examined > 0 {
+                        info!(
+                            parks_examined = summary.parks_examined,
+                            "Reconciled durable delegation parks at startup"
+                        );
+                    }
+                }
+                Err(error) => tracing::warn!(
+                    error = %error,
+                    "Failed to reconcile delegation parks at startup; parked coordinators may wait until their deadline"
+                ),
+            }
+            startup_job_step_completed("delegation_park_reconcile", step_started_at);
         }
 
         if let Some(payload_repo) = &self.chat_payload_retention_repo {

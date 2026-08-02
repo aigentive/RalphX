@@ -19,12 +19,12 @@ use crate::domain::repositories::{
     AgentProviderSettingsRepository, AgentRunRepository, ArtifactRepository,
     AutomationRunRepository, BranchUpdateRepository, ChatAttachmentRepository,
     ChatConversationRepository, ChatMessageRepository, ChatTimelineRepository,
-    ConversationFolderReferenceRepository, DelegatedSessionRepository, ExecutionPlanRepository,
-    ExecutionSettingsRepository, ExternalEventsRepository, IdeationEffortSettingsRepository,
-    IdeationModelSettingsRepository, IdeationSessionRepository, MemoryEventRepository,
-    PersonaRepository, PlanBranchRepository, ProjectRepository, QueuedMessageRepository,
-    ReviewRepository, TaskDependencyRepository, TaskProposalRepository, TaskRepository,
-    TaskStepRepository, ValidationRunRepository,
+    ConversationFolderReferenceRepository, DelegatedSessionRepository, DelegationParkRepository,
+    ExecutionPlanRepository, ExecutionSettingsRepository, ExternalEventsRepository,
+    IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
+    MemoryEventRepository, PersonaRepository, PlanBranchRepository, ProjectRepository,
+    QueuedMessageRepository, ReviewRepository, TaskDependencyRepository, TaskProposalRepository,
+    TaskRepository, TaskStepRepository, ValidationRunRepository,
 };
 use crate::domain::services::{
     GithubServiceTrait, MessageQueue, PlanPrDescriptionDrafter, RunningAgentRegistry,
@@ -293,6 +293,7 @@ pub(crate) struct ChatRuntimeFactoryDeps {
     pub ideation_session_repo: Arc<dyn IdeationSessionRepository>,
     pub persona_repo: Option<Arc<dyn PersonaRepository>>,
     pub delegated_session_repo: Option<Arc<dyn DelegatedSessionRepository>>,
+    pub delegation_park_repo: Option<Arc<dyn DelegationParkRepository>>,
     pub activity_event_repo: Arc<dyn ActivityEventRepository>,
     pub message_queue: Arc<MessageQueue>,
     pub queued_message_repo: Option<Arc<dyn QueuedMessageRepository>>,
@@ -363,6 +364,7 @@ impl ChatRuntimeFactoryDeps {
             ideation_session_repo,
             persona_repo: None,
             delegated_session_repo: None,
+            delegation_park_repo: None,
             activity_event_repo,
             message_queue,
             queued_message_repo: None,
@@ -565,6 +567,14 @@ impl ChatRuntimeFactoryDeps {
         self
     }
 
+    pub(crate) fn with_delegation_park_repo(
+        mut self,
+        repo: Arc<dyn DelegationParkRepository>,
+    ) -> Self {
+        self.delegation_park_repo = Some(repo);
+        self
+    }
+
     pub(crate) fn with_atlassian_integration_service(
         mut self,
         service: Arc<AtlassianIntegrationService>,
@@ -720,6 +730,7 @@ impl ChatRuntimeFactoryDeps {
         .with_queued_message_repo(Arc::clone(&state.queued_message_repo))
         .with_notification_service(state.notification_service())
         .with_delegated_session_repo(Arc::clone(&state.delegated_session_repo))
+        .with_delegation_park_repo(Arc::clone(&state.delegation_park_repo))
         .with_persona_repo(Arc::clone(&state.persona_repo))
         .with_conversation_folder_reference_context(
             Arc::clone(&state.conversation_folder_reference_repo),
@@ -792,6 +803,9 @@ pub(crate) fn build_chat_service_from_deps<R: Runtime>(
         Arc::clone(&deps.memory_event_repo),
     );
 
+    if let Some(repo) = deps.delegation_park_repo.as_ref() {
+        service = service.with_delegation_park_repo(Arc::clone(repo));
+    }
     if let Some(repo) = deps.persona_repo.as_ref() {
         service = service.with_persona_repo(Arc::clone(repo));
     }
