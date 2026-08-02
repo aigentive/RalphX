@@ -249,15 +249,15 @@ fn built_in_registry_exposes_expected_defaults_for_each_provider() {
     assert_eq!(
         claude_models,
         vec![
-            "sonnet",
-            "claude-sonnet-4-6",
-            "claude-sonnet-5",
-            "opus",
-            "claude-opus-4-7",
-            "claude-opus-4-8",
-            "claude-opus-5",
-            "haiku",
             "fable",
+            "claude-opus-5",
+            "claude-opus-4-8",
+            "claude-opus-4-7",
+            "opus",
+            "claude-sonnet-5",
+            "claude-sonnet-4-6",
+            "sonnet",
+            "haiku",
         ]
     );
     assert_eq!(
