@@ -64,6 +64,7 @@ const mockReviewSettings = {
   require_fix_approval: false,
   auto_create_followup_agent_conversation: false,
   autofix_workspace_review_blocking_findings: true,
+  workspace_review_fixer_cycle_cap: 3,
   run_task_validations: true,
 };
 
@@ -3345,6 +3346,7 @@ const commandHandlers: Record<
       maxRevisionCycles?: number;
       autoCreateFollowupAgentConversation?: boolean;
       autofixWorkspaceReviewBlockingFindings?: boolean;
+      workspaceReviewFixerCycleCap?: number;
       runTaskValidations?: boolean;
     };
     if (input.requireHumanReview !== undefined) {
@@ -3367,6 +3369,12 @@ const commandHandlers: Record<
     if (input.autofixWorkspaceReviewBlockingFindings !== undefined) {
       mockReviewSettings.autofix_workspace_review_blocking_findings =
         input.autofixWorkspaceReviewBlockingFindings;
+    }
+    if (input.workspaceReviewFixerCycleCap !== undefined) {
+      mockReviewSettings.workspace_review_fixer_cycle_cap = Math.max(
+        0,
+        input.workspaceReviewFixerCycleCap,
+      );
     }
     if (input.runTaskValidations !== undefined) {
       mockReviewSettings.run_task_validations = input.runTaskValidations;

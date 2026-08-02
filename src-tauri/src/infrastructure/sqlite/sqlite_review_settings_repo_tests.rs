@@ -13,6 +13,7 @@ async fn test_get_default_settings() {
     assert!(!settings.require_human_review);
     assert!(settings.require_workspace_review);
     assert!(settings.autofix_workspace_review_blocking_findings);
+    assert_eq!(settings.workspace_review_fixer_cycle_cap, 3);
     assert!(settings.run_task_validations);
     assert_eq!(settings.max_fix_attempts, 3);
     assert_eq!(settings.max_revision_cycles, 5);
@@ -31,6 +32,7 @@ async fn test_update_settings() {
         require_human_review: true,
         require_workspace_review: false,
         autofix_workspace_review_blocking_findings: false,
+        workspace_review_fixer_cycle_cap: 2,
         max_fix_attempts: 5,
         max_revision_cycles: 10,
         auto_create_followup_agent_conversation: false,
@@ -44,6 +46,7 @@ async fn test_update_settings() {
     assert!(updated.require_human_review);
     assert!(!updated.require_workspace_review);
     assert!(!updated.autofix_workspace_review_blocking_findings);
+    assert_eq!(updated.workspace_review_fixer_cycle_cap, 2);
     assert_eq!(updated.max_fix_attempts, 5);
     assert_eq!(updated.max_revision_cycles, 10);
     assert!(!updated.auto_create_followup_agent_conversation);
@@ -57,6 +60,7 @@ async fn test_update_settings() {
     assert!(retrieved.require_human_review);
     assert!(!retrieved.require_workspace_review);
     assert!(!retrieved.autofix_workspace_review_blocking_findings);
+    assert_eq!(retrieved.workspace_review_fixer_cycle_cap, 2);
     assert_eq!(retrieved.max_fix_attempts, 5);
     assert_eq!(retrieved.max_revision_cycles, 10);
     assert!(!retrieved.auto_create_followup_agent_conversation);
