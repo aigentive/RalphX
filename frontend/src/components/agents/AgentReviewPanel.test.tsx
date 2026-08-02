@@ -378,6 +378,27 @@ describe("AgentReviewPanel", () => {
     ).toBeInTheDocument();
   });
 
+  it("explains that automatic fixing is disabled when the cap is zero", () => {
+    renderPanel({
+      reviewContext: reviewContext({
+        isCurrent: true,
+        isOutdated: false,
+        monitor: reviewMonitor({
+          reviewOutcome: "blocking",
+          reviewGateStatus: "blocking",
+          reviewFixerStatus: "cycle_capped",
+          reviewFixerCycleCount: 0,
+        }),
+      }),
+    });
+
+    expect(
+      screen.getByText(
+        "Automatic fixes are disabled by the cycle limit. Fix Issues manually to continue.",
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("cancels cleanly and prevents duplicate approval while confirmation is pending", async () => {
     const user = userEvent.setup();
     let finishApproval: (() => void) | undefined;
