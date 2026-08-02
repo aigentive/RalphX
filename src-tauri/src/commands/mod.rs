@@ -91,6 +91,8 @@ pub mod repository_settings_commands;
 mod repository_settings_commands_tests;
 pub mod research_commands;
 pub mod review_commands;
+#[cfg(test)]
+mod review_commands_tests;
 pub mod review_commands_types;
 #[cfg(test)]
 mod review_commands_types_tests;

@@ -2503,6 +2503,7 @@ export interface AgentWorkspaceReviewMonitor {
   reviewFixerRunId: string | null;
   reviewFixerConversationId: string | null;
   reviewFixerStatus: string | null;
+  reviewFixerCycleCount: number;
   lastRunId: string | null;
   lastError: string | null;
   autoMergeGuardStatus: AgentWorkspaceReviewAutoMergeGuardStatus | null;
@@ -3009,6 +3010,7 @@ const AgentWorkspaceReviewMonitorResponseSchema = z.object({
   review_fixer_run_id: z.string().nullable().optional().default(null),
   review_fixer_conversation_id: z.string().nullable().optional().default(null),
   review_fixer_status: z.string().nullable().optional().default(null),
+  review_fixer_cycle_count: z.number().optional().default(0),
   last_run_id: z.string().nullable(),
   last_error: z.string().nullable(),
   auto_merge_guard_status: z
@@ -3735,6 +3737,7 @@ function transformAgentWorkspaceReviewMonitor(
     reviewFixerRunId: raw.review_fixer_run_id,
     reviewFixerConversationId: raw.review_fixer_conversation_id,
     reviewFixerStatus: raw.review_fixer_status,
+    reviewFixerCycleCount: raw.review_fixer_cycle_count,
     lastRunId: raw.last_run_id,
     lastError: raw.last_error,
     autoMergeGuardStatus: raw.auto_merge_guard_status,

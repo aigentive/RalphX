@@ -581,6 +581,7 @@ mod v20260731111346_purge_empty_thinking_blocks;
 mod v20260731125157_add_workspace_repair_fingerprint_state;
 mod v20260801021420_delegation_parks;
 mod v20260801211636_delegation_park_wake_claimed_at;
+mod v20260802174000_workspace_review_fixer_cycle_cap;
 #[cfg(test)]
 mod v20260730161032_agent_workspace_pr_autofix_completion_evidence_tests;
 #[cfg(test)]
@@ -593,6 +594,8 @@ mod v20260731125157_add_workspace_repair_fingerprint_state_tests;
 mod v20260801021420_delegation_parks_tests;
 #[cfg(test)]
 mod v20260801211636_delegation_park_wake_claimed_at_tests;
+#[cfg(test)]
+mod v20260802174000_workspace_review_fixer_cycle_cap_tests;
 #[cfg(test)]
 pub(super) fn migrate_scripted_agent_workflows_for_test(conn: &Connection) -> AppResult<()> {
     v20260715194617_scripted_agent_workflows::migrate(conn)
@@ -687,7 +690,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260801211636;
+pub const SCHEMA_VERSION: i64 = 20260802174000;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1887,6 +1890,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260801211636,
         name: "delegation_park_wake_claimed_at",
         migrate: v20260801211636_delegation_park_wake_claimed_at::migrate,
+    },
+    Migration {
+        version: 20260802174000,
+        name: "workspace_review_fixer_cycle_cap",
+        migrate: v20260802174000_workspace_review_fixer_cycle_cap::migrate,
     },
 ];
 

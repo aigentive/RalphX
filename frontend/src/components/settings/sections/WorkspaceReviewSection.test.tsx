@@ -185,6 +185,7 @@ describe("WorkspaceReviewSection", () => {
         require_fix_approval: false,
         auto_create_followup_agent_conversation: true,
         autofix_workspace_review_blocking_findings: true,
+        workspace_review_fixer_cycle_cap: 3,
         run_task_validations: true,
       },
       isLoading: false,
@@ -237,6 +238,24 @@ describe("WorkspaceReviewSection", () => {
 
     expect(updateReviewSettings).toHaveBeenCalledWith({
       autofixWorkspaceReviewBlockingFindings: false,
+    });
+
+    const fixerCycleCap = screen.getByLabelText(
+      "Maximum automatic fixer cycles",
+    );
+    expect(fixerCycleCap).toHaveAttribute(
+      "aria-describedby",
+      "workspace-review-fixer-cycle-cap-desc",
+    );
+    expect(fixerCycleCap).toHaveAttribute("min", "0");
+    expect(
+      screen.getByText(/Set 0 to turn off automatic fixing/),
+    ).toBeInTheDocument();
+
+    fireEvent.change(fixerCycleCap, { target: { value: "0" } });
+
+    expect(updateReviewSettings).toHaveBeenLastCalledWith({
+      workspaceReviewFixerCycleCap: 0,
     });
   });
 

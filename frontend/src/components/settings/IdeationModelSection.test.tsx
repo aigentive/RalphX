@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -60,7 +60,7 @@ describe("IdeationModelSection", () => {
       providers: [
         {
           provider: "claude",
-          supportedModelAliases: ["sonnet", "opus", "haiku", "fable", "claude-opus-4-7"],
+          supportedModelAliases: ["fable", "claude-opus-4-7", "opus", "sonnet", "haiku"],
         },
       ],
     } as ReturnType<typeof useHarnessProviders>);
@@ -97,6 +97,45 @@ describe("IdeationModelSection", () => {
       expect(screen.getByText("Claude Opus 4.8, requires Claude Code 2.1.154+")).toBeInTheDocument();
       fireEvent.keyDown(document.activeElement!, { key: "Escape", code: "Escape" });
     }
+  });
+
+  it("shows Claude model options in canonical picker order", () => {
+    vi.mocked(useHarnessProviders).mockReturnValue({
+      providers: [
+        {
+          provider: "claude",
+          supportedModelAliases: [
+            "fable",
+            "claude-opus-5",
+            "claude-opus-4-8",
+            "claude-opus-4-7",
+            "opus",
+            "sonnet",
+            "haiku",
+          ],
+        },
+      ],
+    } as ReturnType<typeof useHarnessProviders>);
+    render(<IdeationModelSection />);
+
+    openSelect("global-primary-model");
+
+    const optionLabels = [
+      "Inherit",
+      "Fable",
+      "Claude Opus 5",
+      "Claude Opus 4.8",
+      "Claude Opus 4.7",
+      "Opus",
+      "Sonnet",
+      "Haiku",
+    ];
+    const options = screen.getAllByRole("option");
+
+    expect(options).toHaveLength(optionLabels.length);
+    optionLabels.forEach((label, index) => {
+      expect(within(options[index]!).getByText(label)).toBeInTheDocument();
+    });
   });
 
   it("persists supported exact selections and rejects disabled exact choices", async () => {
@@ -151,7 +190,7 @@ describe("IdeationModelSection", () => {
       providers: [
         {
           provider: "claude",
-          supportedModelAliases: ["sonnet", "opus", "haiku", "fable", "claude-opus-4-7"],
+          supportedModelAliases: ["fable", "claude-opus-4-7", "opus", "sonnet", "haiku"],
         },
       ],
     } as ReturnType<typeof useHarnessProviders>);

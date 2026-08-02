@@ -64,6 +64,7 @@ const mockReviewSettings = {
   require_fix_approval: false,
   auto_create_followup_agent_conversation: false,
   autofix_workspace_review_blocking_findings: true,
+  workspace_review_fixer_cycle_cap: 3,
   run_task_validations: true,
 };
 
@@ -340,15 +341,15 @@ const mockAgentProviderSettings = {
       error: null,
       missingCoreExecFeatures: [],
       supportedModelAliases: [
-        "sonnet",
-        "claude-sonnet-4-6",
-        "opus",
-        "claude-opus-4-7",
-        "claude-opus-4-8",
-        "claude-opus-5",
-        "haiku",
         "fable",
+        "claude-opus-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7",
+        "opus",
         "claude-sonnet-5",
+        "claude-sonnet-4-6",
+        "sonnet",
+        "haiku",
       ],
       supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
       updatedAt: "2026-05-08T00:00:00Z",
@@ -530,23 +531,10 @@ const mockAgentModels = [
   },
   {
     provider: "claude",
-    modelId: "claude-sonnet-4-6",
-    label: "Claude Sonnet 4.6",
-    menuLabel: "Claude Sonnet 4.6",
-    description: "Pinned Claude Sonnet 4.6 model for stable agent work.",
-    supportedEfforts: ["low", "medium", "high", "max"],
-    defaultEffort: "high",
-    source: "built_in",
-    enabled: true,
-    createdAt: null,
-    updatedAt: null,
-  },
-  {
-    provider: "claude",
-    modelId: "claude-opus-4-7",
-    label: "Claude Opus 4.7",
-    menuLabel: "Claude Opus 4.7",
-    description: "Exact Claude Opus 4.7 model id; requires Claude Code 2.1.111 or newer.",
+    modelId: "claude-opus-5",
+    label: "Claude Opus 5",
+    menuLabel: "Claude Opus 5",
+    description: "Exact Claude Opus 5 model id; requires Claude Code 2.1.219 or newer.",
     supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
     defaultEffort: "high",
     source: "built_in",
@@ -569,10 +557,10 @@ const mockAgentModels = [
   },
   {
     provider: "claude",
-    modelId: "claude-opus-5",
-    label: "Claude Opus 5",
-    menuLabel: "Claude Opus 5",
-    description: "Exact Claude Opus 5 model id; requires Claude Code 2.1.219 or newer.",
+    modelId: "claude-opus-4-7",
+    label: "Claude Opus 4.7",
+    menuLabel: "Claude Opus 4.7",
+    description: "Exact Claude Opus 4.7 model id; requires Claude Code 2.1.111 or newer.",
     supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
     defaultEffort: "high",
     source: "built_in",
@@ -587,6 +575,19 @@ const mockAgentModels = [
     menuLabel: "Claude Sonnet 5",
     description: "Balanced Claude model for agent work.",
     supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
+    defaultEffort: "high",
+    source: "built_in",
+    enabled: true,
+    createdAt: null,
+    updatedAt: null,
+  },
+  {
+    provider: "claude",
+    modelId: "claude-sonnet-4-6",
+    label: "Claude Sonnet 4.6",
+    menuLabel: "Claude Sonnet 4.6",
+    description: "Pinned Claude Sonnet 4.6 model for stable agent work.",
+    supportedEfforts: ["low", "medium", "high", "max"],
     defaultEffort: "high",
     source: "built_in",
     enabled: true,
@@ -3345,6 +3346,7 @@ const commandHandlers: Record<
       maxRevisionCycles?: number;
       autoCreateFollowupAgentConversation?: boolean;
       autofixWorkspaceReviewBlockingFindings?: boolean;
+      workspaceReviewFixerCycleCap?: number;
       runTaskValidations?: boolean;
     };
     if (input.requireHumanReview !== undefined) {
@@ -3367,6 +3369,12 @@ const commandHandlers: Record<
     if (input.autofixWorkspaceReviewBlockingFindings !== undefined) {
       mockReviewSettings.autofix_workspace_review_blocking_findings =
         input.autofixWorkspaceReviewBlockingFindings;
+    }
+    if (input.workspaceReviewFixerCycleCap !== undefined) {
+      mockReviewSettings.workspace_review_fixer_cycle_cap = Math.max(
+        0,
+        input.workspaceReviewFixerCycleCap,
+      );
     }
     if (input.runTaskValidations !== undefined) {
       mockReviewSettings.run_task_validations = input.runTaskValidations;
