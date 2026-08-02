@@ -597,6 +597,7 @@ mod v20260801021420_delegation_parks_tests;
 mod v20260801211636_delegation_park_wake_claimed_at_tests;
 #[cfg(test)]
 mod v20260802174000_workspace_review_fixer_cycle_cap_tests;
+#[cfg(test)]
 mod v20260802194326_agent_workspace_repair_explicit_publish_consent_tests;
 #[cfg(test)]
 pub(super) fn migrate_scripted_agent_workflows_for_test(conn: &Connection) -> AppResult<()> {
