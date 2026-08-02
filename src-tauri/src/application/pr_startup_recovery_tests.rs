@@ -1404,6 +1404,13 @@ impl AgentConversationWorkspaceRepository for WorkspaceLoadErrorRepository {
     ) -> AppResult<()> {
         Ok(())
     }
+    async fn set_review_automation_override(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _value: Option<bool>,
+    ) -> AppResult<()> {
+        Err(repo_error())
+    }
     async fn create_or_update(
         &self,
         _workspace: AgentConversationWorkspace,

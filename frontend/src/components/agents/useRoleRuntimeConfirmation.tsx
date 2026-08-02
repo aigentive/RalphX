@@ -1,3 +1,4 @@
+import { Repeat } from "lucide-react";
 import { useCallback, useRef } from "react";
 
 import { manualRoleDefaultsApi } from "@/api/manual-role-defaults";
@@ -8,6 +9,7 @@ import { useConfirmation, type ConfirmOptions } from "@/hooks/useConfirmation";
 import { usePersonas } from "@/hooks/usePersonas";
 import { extractErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
+import { Switch } from "@/components/ui/switch";
 import {
   useAgentSessionStore,
   type LaunchRuntimeRoleKey,
@@ -82,6 +84,7 @@ export function useRoleRuntimeConfirmation({
     projectId ? { type: "globalAndProject", projectId } : { type: "all" },
   );
   const latestSelectionRef = useRef<ManualRoleRuntimeSelection | null>(null);
+  const latestOptInEnabledRef = useRef(false);
 
   const confirmRoleRuntime = useCallback(
     ({
@@ -93,6 +96,7 @@ export function useRoleRuntimeConfirmation({
       prepareDescription,
       recoverFromPrepareError,
       recoverFromError,
+      optIn,
       onConfirm,
     }: {
       role: LaunchRuntimeRoleKey;
@@ -137,7 +141,16 @@ export function useRoleRuntimeConfirmation({
             >
           >
         | null;
-      onConfirm: (selection: ManualRoleRuntimeSelection) => Promise<unknown>;
+      optIn?: {
+        title: string;
+        description: string;
+        initialValue: boolean;
+        hidden?: boolean;
+      };
+      onConfirm: (
+        selection: ManualRoleRuntimeSelection,
+        optInEnabled?: boolean,
+      ) => Promise<unknown>;
     }) => {
       if (!conversationId) return Promise.resolve(false);
       const totalStartedAt = timingNow();
@@ -149,6 +162,7 @@ export function useRoleRuntimeConfirmation({
         "completed",
       );
       latestSelectionRef.current = null;
+      latestOptInEnabledRef.current = optIn?.initialValue ?? false;
       return confirm({
         title,
         description,
@@ -212,29 +226,62 @@ export function useRoleRuntimeConfirmation({
             confirmDisabled: Boolean(initialIssue),
             ...(preparedDescription ? { description: preparedDescription } : {}),
             body: (
-              <RoleRuntimeConfirmationBody
-                entry={entry}
-                initialValue={initial}
-                hasSavedOverride={Boolean(saved)}
-                modelRegistry={registry}
-                personas={personas}
-                providerOptions={providerOptions}
-                onChange={(selection) => {
-                  latestSelectionRef.current = selection;
-                  useAgentSessionStore
-                    .getState()
-                    .setRoleRuntimeOverride(conversationId, role, selection);
-                }}
-                onReset={(selection) => {
-                  latestSelectionRef.current = selection;
-                  useAgentSessionStore
-                    .getState()
-                    .clearRoleRuntimeOverride(conversationId, role);
-                }}
-                onValidityChange={(issue) => {
-                  controller.update({ confirmDisabled: Boolean(issue) });
-                }}
-              />
+              <div className="space-y-3">
+                <RoleRuntimeConfirmationBody
+                  entry={entry}
+                  initialValue={initial}
+                  hasSavedOverride={Boolean(saved)}
+                  modelRegistry={registry}
+                  personas={personas}
+                  providerOptions={providerOptions}
+                  onChange={(selection) => {
+                    latestSelectionRef.current = selection;
+                    useAgentSessionStore
+                      .getState()
+                      .setRoleRuntimeOverride(conversationId, role, selection);
+                  }}
+                  onReset={(selection) => {
+                    latestSelectionRef.current = selection;
+                    useAgentSessionStore
+                      .getState()
+                      .clearRoleRuntimeOverride(conversationId, role);
+                  }}
+                  onValidityChange={(issue) => {
+                    controller.update({ confirmDisabled: Boolean(issue) });
+                  }}
+                />
+                {optIn && !optIn.hidden && (
+                  <div
+                    className="rounded-lg border p-3"
+                    style={{
+                      backgroundColor: "var(--bg-subtle)",
+                      borderColor: "var(--border-subtle)",
+                    }}
+                  >
+                    <div className="flex items-start gap-3">
+                      <Repeat
+                        className="mt-0.5 h-4 w-4 shrink-0 text-[var(--accent-primary)]"
+                        aria-hidden="true"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <label className="flex min-h-8 items-center justify-between gap-3 text-sm font-medium text-[var(--text-primary)]">
+                          <span>{optIn.title}</span>
+                          <Switch
+                            defaultChecked={optIn.initialValue}
+                            onCheckedChange={(enabled) => {
+                              latestOptInEnabledRef.current = enabled;
+                            }}
+                            aria-label={optIn.title}
+                          />
+                        </label>
+                        <p className="mt-1 text-xs leading-relaxed text-[var(--text-secondary)]">
+                          {optIn.description}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
             ),
           };
           logRoleRuntimeTiming(
@@ -261,7 +308,10 @@ export function useRoleRuntimeConfirmation({
             role,
             "confirm_action",
             totalStartedAt,
-            () => onConfirm({ ...selection }),
+            () =>
+              optIn
+                ? onConfirm({ ...selection }, latestOptInEnabledRef.current)
+                : onConfirm({ ...selection }),
           );
         },
         recoverFromError: async (error) =>

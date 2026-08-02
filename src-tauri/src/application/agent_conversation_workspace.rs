@@ -528,6 +528,7 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode_defaults_and_b
         auto_publish_paused_pr_autofix_enabled: None,
         auto_publish_paused_pr_auto_merge_desired: None,
         pr_autofix_enabled: pr_automation_defaults.autofix_enabled,
+        review_automation_override: None,
         pr_auto_merge_desired: pr_automation_defaults.auto_merge_desired,
         pr_auto_merge_method: crate::domain::entities::DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD
             .to_string(),

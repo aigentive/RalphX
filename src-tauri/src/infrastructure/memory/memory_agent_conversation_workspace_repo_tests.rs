@@ -788,6 +788,67 @@ fn make_workspace(conversation_id: ChatConversationId) -> AgentConversationWorks
 }
 
 #[tokio::test]
+async fn review_automation_override_round_trips_and_rearms_only_a_capped_monitor() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("review-automation-memory");
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .expect("workspace should persist");
+    let mut capped = AgentWorkspaceReviewMonitor::new(
+        conversation_id.clone(),
+        ProjectId::from_string("project-memory".to_string()),
+    );
+    capped.review_fixer_cycle_count = 3;
+    capped.review_fixer_status = Some("cycle_capped".to_string());
+    capped.review_fixer_attempt_id = Some("capped-attempt".to_string());
+    repo.upsert_workspace_review_monitor(capped)
+        .await
+        .expect("capped monitor should persist");
+
+    repo.set_review_automation_override(&conversation_id, Some(true))
+        .await
+        .expect("rearm should persist");
+    assert_eq!(
+        repo.get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace should load")
+            .expect("workspace should exist")
+            .review_automation_override,
+        Some(true)
+    );
+    let rearmed = repo
+        .get_workspace_review_monitor(&conversation_id)
+        .await
+        .expect("monitor should load")
+        .expect("monitor should exist");
+    assert_eq!(rearmed.review_fixer_cycle_count, 0);
+    assert!(rearmed.review_fixer_status.is_none());
+    assert!(rearmed.review_fixer_attempt_id.is_none());
+
+    let mut active = rearmed;
+    active.review_fixer_cycle_count = 2;
+    active.review_fixer_status = Some("running".to_string());
+    active.review_fixer_attempt_id = Some("active-attempt".to_string());
+    repo.upsert_workspace_review_monitor(active)
+        .await
+        .expect("active monitor should persist");
+    repo.set_review_automation_override(&conversation_id, Some(true))
+        .await
+        .expect("preference should persist");
+    let active = repo
+        .get_workspace_review_monitor(&conversation_id)
+        .await
+        .expect("active monitor should load")
+        .expect("active monitor should exist");
+    assert_eq!(active.review_fixer_cycle_count, 2);
+    assert_eq!(active.review_fixer_status.as_deref(), Some("running"));
+    assert_eq!(
+        active.review_fixer_attempt_id.as_deref(),
+        Some("active-attempt")
+    );
+}
+
+#[tokio::test]
 async fn repair_state_cas_is_atomic_and_rejects_a_stale_guard() {
     let repo = MemoryAgentConversationWorkspaceRepository::new();
     let conversation_id = ChatConversationId::from_string("repair-state-memory");

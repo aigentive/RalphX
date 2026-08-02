@@ -38,6 +38,7 @@ use super::{
     send_agent_workspace_publish_repair_message_for_target,
     set_agent_conversation_workspace_auto_publish_for_state,
     set_agent_conversation_workspace_pr_supervision_for_state,
+    set_agent_conversation_workspace_review_automation_for_state,
     should_defer_agent_workspace_repair_message_for_registry,
     spawn_deferred_agent_workspace_repair_message, store_agent_workspace_freshness,
     switch_agent_conversation_mode_for_state,
@@ -51,14 +52,14 @@ use super::{
     AgentConversationWorkspaceAutoPublishInput, AgentConversationWorkspaceFreshnessResponse,
     AgentConversationWorkspacePrSupervisionInput, AgentConversationWorkspacePublishTarget,
     AgentConversationWorkspaceRepairTarget, AgentConversationWorkspaceResponse,
-    AgentTimelineItemResponse, AgentWorkspaceExternalPrReconciliationTrigger,
-    AgentWorkspaceFreshnessCacheEntry, AgentWorkspaceFreshnessCacheStatus,
-    AgentWorkspaceFreshnessInvalidationGuard, AgentWorkspaceFreshnessScope,
-    AgentWorkspacePostRepairAction, AgentWorkspacePrDescriptionInvalidationGuard,
-    AgentWorkspaceRepairRuntimeOverrides, AgentWorkspaceSourcePullRequestInput,
-    CommitAgentConversationWorkspaceLocallyResponse, CreateAgentConversationInput,
-    DelegatedToolRuntimeSnapshot, ForkAgentConversationInput, ForkAgentConversationResponse,
-    ModeSwitchInitiator, SwitchAgentConversationModeInput,
+    AgentConversationWorkspaceReviewAutomationInput, AgentTimelineItemResponse,
+    AgentWorkspaceExternalPrReconciliationTrigger, AgentWorkspaceFreshnessCacheEntry,
+    AgentWorkspaceFreshnessCacheStatus, AgentWorkspaceFreshnessInvalidationGuard,
+    AgentWorkspaceFreshnessScope, AgentWorkspacePostRepairAction,
+    AgentWorkspacePrDescriptionInvalidationGuard, AgentWorkspaceRepairRuntimeOverrides,
+    AgentWorkspaceSourcePullRequestInput, CommitAgentConversationWorkspaceLocallyResponse,
+    CreateAgentConversationInput, DelegatedToolRuntimeSnapshot, ForkAgentConversationInput,
+    ForkAgentConversationResponse, ModeSwitchInitiator, SwitchAgentConversationModeInput,
     UpdateAgentConversationCoordinationModeInput, AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE,
     MAX_ATTRIBUTION_BATCH, STANDALONE_TEAM_INTENT_REJECTED_ERROR,
 };
@@ -90,7 +91,8 @@ use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
     AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent, AgentRun,
-    AgentRunId, AgentRunStatus, AgentTaskAssignmentState, AgentTaskCreate, AgentTaskScope,
+    AgentConversationWorkspaceStatus, AgentRunId, AgentRunStatus, AgentTaskAssignmentState,
+    AgentTaskCreate, AgentTaskScope,
     AgentWorkspacePrMetadataDecision, AgentWorkspaceRepairAttempt,
     AgentWorkspaceRepairContinuation, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
     AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewAutoMergeGuardStatus,
@@ -1708,6 +1710,7 @@ fn linked_plan_branch_publication_is_projected_into_workspace_response() {
         auto_publish_paused_pr_autofix_enabled: None,
         auto_publish_paused_pr_auto_merge_desired: None,
         pr_autofix_enabled: false,
+        review_automation_override: None,
         pr_auto_merge_desired: false,
         pr_auto_merge_method: DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD.to_string(),
         pr_auto_merge_current: None,
@@ -1779,6 +1782,7 @@ fn linked_plan_branch_publication_overrides_stale_workspace_publication_response
         auto_publish_paused_pr_autofix_enabled: None,
         auto_publish_paused_pr_auto_merge_desired: None,
         pr_autofix_enabled: false,
+        review_automation_override: None,
         pr_auto_merge_desired: false,
         pr_auto_merge_method: DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD.to_string(),
         pr_auto_merge_current: None,
@@ -3980,6 +3984,73 @@ fn command_test_workspace() -> AgentConversationWorkspace {
         "ralphx/test/agent-command".to_string(),
         "/tmp/agent-command-workspace".to_string(),
     )
+}
+
+#[tokio::test]
+async fn review_automation_command_updates_the_full_workspace_response() {
+    let state = AppState::new_test();
+    let workspace = command_test_workspace();
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+
+    let response = set_agent_conversation_workspace_review_automation_for_state(
+        workspace.conversation_id.as_str(),
+        AgentConversationWorkspaceReviewAutomationInput {
+            enabled: Some(true),
+        },
+        &state,
+    )
+    .await
+    .expect("review automation should update");
+
+    assert_eq!(response.review_automation_override, Some(true));
+    assert_eq!(
+        state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&workspace.conversation_id)
+            .await
+            .expect("workspace should load")
+            .expect("workspace should exist")
+            .review_automation_override,
+        Some(true)
+    );
+}
+
+#[tokio::test]
+async fn review_automation_command_rejects_archived_workspaces_without_mutation() {
+    let state = AppState::new_test();
+    let mut workspace = command_test_workspace();
+    workspace.status = AgentConversationWorkspaceStatus::Archived;
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("archived workspace should persist");
+
+    let error = set_agent_conversation_workspace_review_automation_for_state(
+        workspace.conversation_id.as_str(),
+        AgentConversationWorkspaceReviewAutomationInput {
+            enabled: Some(true),
+        },
+        &state,
+    )
+    .await
+    .expect_err("archived workspaces must reject automation changes");
+
+    assert!(error.contains("archived workspace"));
+    assert_eq!(
+        state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&workspace.conversation_id)
+            .await
+            .expect("workspace should load")
+            .expect("workspace should exist")
+            .review_automation_override,
+        None
+    );
 }
 
 fn command_test_workspace_with_git_target() -> (

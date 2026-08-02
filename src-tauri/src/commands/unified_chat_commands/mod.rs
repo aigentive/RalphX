@@ -150,16 +150,17 @@ use crate::domain::entities::plan_branch::PrPushStatus;
 use crate::domain::entities::task_step::StepProgressSummary;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
-    AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent, AgentRun,
-    AgentRunId, AgentRunStatus, AgentWorkspacePrDescription, AgentWorkspacePrMetadataDecision,
-    AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation, AgentWorkspaceRepairPhase,
-    AgentWorkspaceRepairSource, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceSourcePullRequest,
-    ArtifactContent, ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId,
-    ChatMessage, ChatMessageId, ChatTimelineItem, CoordinationMode, DelegatedSessionId,
-    ExecutionPlanStatus, GitTargetIdentity, IdeationAnalysisBaseRefKind, IdeationSession,
-    IdeationSessionFlow, IdeationSessionId, InternalStatus, PersonaId, PlanBranch,
-    PlanBranchStatus, Project, ProjectId, RuntimeSource, Task, TaskCategory, TeamIntent,
-    TeamMessageTarget, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent,
+    AgentConversationWorkspaceStatus, AgentRun, AgentRunId, AgentRunStatus,
+    AgentWorkspacePrDescription, AgentWorkspacePrMetadataDecision, AgentWorkspaceRepairAttempt,
+    AgentWorkspaceRepairContinuation, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
+    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceSourcePullRequest, ArtifactContent,
+    ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId, ChatMessage,
+    ChatMessageId, ChatTimelineItem, CoordinationMode, DelegatedSessionId, ExecutionPlanStatus,
+    GitTargetIdentity, IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow,
+    IdeationSessionId, InternalStatus, PersonaId, PlanBranch, PlanBranchStatus, Project, ProjectId,
+    RuntimeSource, Task, TaskCategory, TeamIntent, TeamMessageTarget,
+    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::execution::{
     build_running_ideation_session, build_running_process, context_matches_running_status,
@@ -439,6 +440,7 @@ pub struct AgentConversationWorkspaceResponse {
     pub auto_publish_paused_pr_autofix_enabled: Option<bool>,
     pub auto_publish_paused_pr_auto_merge_desired: Option<bool>,
     pub pr_autofix_enabled: bool,
+    pub review_automation_override: Option<bool>,
     pub pr_auto_merge_desired: bool,
     pub pr_auto_merge_method: String,
     pub pr_auto_merge_current: Option<bool>,
@@ -469,6 +471,12 @@ pub struct AgentConversationWorkspacePrSupervisionInput {
     pub auto_fix_enabled: bool,
     pub auto_merge_desired: bool,
     pub auto_merge_method: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentConversationWorkspaceReviewAutomationInput {
+    pub enabled: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -539,6 +547,7 @@ impl From<AgentConversationWorkspace> for AgentConversationWorkspaceResponse {
             auto_publish_paused_pr_auto_merge_desired: workspace
                 .auto_publish_paused_pr_auto_merge_desired,
             pr_autofix_enabled: workspace.pr_autofix_enabled,
+            review_automation_override: workspace.review_automation_override,
             pr_auto_merge_desired: workspace.pr_auto_merge_desired,
             pr_auto_merge_method: workspace.pr_auto_merge_method,
             pr_auto_merge_current: workspace.pr_auto_merge_current,
@@ -5247,6 +5256,53 @@ pub async fn set_agent_conversation_workspace_pr_supervision_for_state(
     agent_workspace_response_for_state(state, updated).await
 }
 
+/// Set the durable Auto Review & Fix override for a project-backed agent workspace.
+#[tauri::command]
+pub async fn set_agent_conversation_workspace_review_automation(
+    conversation_id: String,
+    input: AgentConversationWorkspaceReviewAutomationInput,
+    state: State<'_, AppState>,
+) -> Result<AgentConversationWorkspaceResponse, String> {
+    set_agent_conversation_workspace_review_automation_for_state(
+        conversation_id,
+        input,
+        state.inner(),
+    )
+    .await
+}
+
+pub async fn set_agent_conversation_workspace_review_automation_for_state(
+    conversation_id: String,
+    input: AgentConversationWorkspaceReviewAutomationInput,
+    state: &AppState,
+) -> Result<AgentConversationWorkspaceResponse, String> {
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let Some(workspace) = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+    else {
+        return Err("Agent conversation workspace not found".to_string());
+    };
+    if workspace.status == AgentConversationWorkspaceStatus::Archived {
+        return Err("Review automation cannot be changed for an archived workspace".to_string());
+    }
+
+    state
+        .agent_conversation_workspace_repo
+        .set_review_automation_override(&conversation_id, input.enabled)
+        .await
+        .map_err(|error| error.to_string())?;
+    let updated = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Agent conversation workspace not found".to_string())?;
+    agent_workspace_response_for_state(state, updated).await
+}
+
 /// Enable or pause automatic publish behavior for a project-backed agent workspace.
 #[tauri::command]
 pub async fn set_agent_conversation_workspace_auto_publish(
@@ -6283,27 +6339,25 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
                 &explicit_base.base_ref,
             )
             .await;
-        let selected_base_commit = match GitService::get_branch_sha(
-            &publish_target.worktree_path,
-            &selected_base_target,
-        )
-        .await
-        {
-            Ok(commit) => commit,
-            Err(error) => {
-                let message = format!("Failed to resolve selected base branch: {error}");
-                mark_agent_workspace_update_failure_with_target(
-                    state,
-                    &workspace,
-                    &message,
-                    None,
-                    &repair_service,
-                    &publish_target.repair_target(),
-                )
-                .await;
-                return Err(message);
-            }
-        };
+        let selected_base_commit =
+            match GitService::get_branch_sha(&publish_target.worktree_path, &selected_base_target)
+                .await
+            {
+                Ok(commit) => commit,
+                Err(error) => {
+                    let message = format!("Failed to resolve selected base branch: {error}");
+                    mark_agent_workspace_update_failure_with_target(
+                        state,
+                        &workspace,
+                        &message,
+                        None,
+                        &repair_service,
+                        &publish_target.repair_target(),
+                    )
+                    .await;
+                    return Err(message);
+                }
+            };
         let previous_base_ref = workspace.base_ref.clone();
         // Persist before any retry so start_attempt_from_workspace captures the new target.
         workspace.base_ref_kind = explicit_base.kind;
@@ -8273,10 +8327,12 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
         )
         .await
         {
-            Ok(RepairPrHandoffVerification::Ok(freshness)) => PublishBranchFreshnessOutcome::AlreadyFresh {
-                base_commit: freshness.target_base_commit,
-                target_ref: freshness.target_ref,
-            },
+            Ok(RepairPrHandoffVerification::Ok(freshness)) => {
+                PublishBranchFreshnessOutcome::AlreadyFresh {
+                    base_commit: freshness.target_base_commit,
+                    target_ref: freshness.target_ref,
+                }
+            }
             Ok(RepairPrHandoffVerification::Retargetable { reason })
             | Ok(RepairPrHandoffVerification::Fatal(reason)) => {
                 PublishBranchFreshnessOutcome::OperationalError { message: reason }
@@ -9411,7 +9467,9 @@ where
             }
         };
     let mut retry_workspace = workspace.clone();
-    if let Some(base_commit) = resolve_current_base_commit(&resolved.path, &workspace.base_ref).await {
+    if let Some(base_commit) =
+        resolve_current_base_commit(&resolved.path, &workspace.base_ref).await
+    {
         if retry_workspace.base_commit.as_deref() != Some(base_commit.as_str()) {
             retry_workspace.base_commit = Some(base_commit);
             retry_workspace.updated_at = chrono::Utc::now();
@@ -9460,13 +9518,14 @@ where
 /// generation is still allowed when origin cannot be read; it retains its persisted base commit.
 async fn resolve_current_base_commit(worktree_path: &Path, base_ref: &str) -> Option<String> {
     let _ = GitService::fetch_origin(worktree_path).await;
-    let target =
-        crate::application::publish_resilience::resolve_publish_freshness_target(
-            worktree_path,
-            base_ref,
-        )
-        .await;
-    GitService::get_branch_sha(worktree_path, &target).await.ok()
+    let target = crate::application::publish_resilience::resolve_publish_freshness_target(
+        worktree_path,
+        base_ref,
+    )
+    .await;
+    GitService::get_branch_sha(worktree_path, &target)
+        .await
+        .ok()
 }
 
 fn repair_handoff_verification_result(

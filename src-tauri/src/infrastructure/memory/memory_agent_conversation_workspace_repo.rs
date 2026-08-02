@@ -32,6 +32,8 @@ use crate::domain::repositories::{
 };
 use crate::error::{AppError, AppResult};
 
+const WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED: &str = "cycle_capped";
+
 #[cfg(test)]
 #[path = "memory_agent_conversation_workspace_repo_tests.rs"]
 mod memory_agent_conversation_workspace_repo_tests;
@@ -1307,6 +1309,36 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             let now = Utc::now();
             workspace.pr_supervision_updated_at = Some(now);
             workspace.updated_at = now;
+        }
+        Ok(())
+    }
+
+    async fn set_review_automation_override(
+        &self,
+        conversation_id: &ChatConversationId,
+        value: Option<bool>,
+    ) -> AppResult<()> {
+        let now = Utc::now();
+        if let Some(workspace) = self.workspaces.write().await.get_mut(conversation_id) {
+            workspace.review_automation_override = value;
+            workspace.updated_at = now;
+        }
+        if value == Some(true) {
+            if let Some(monitor) = self
+                .workspace_review_monitors
+                .write()
+                .await
+                .get_mut(conversation_id)
+            {
+                if monitor.review_fixer_status.as_deref()
+                    == Some(WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED)
+                {
+                    monitor.review_fixer_cycle_count = 0;
+                    monitor.review_fixer_status = None;
+                    monitor.review_fixer_attempt_id = None;
+                    monitor.updated_at = now;
+                }
+            }
         }
         Ok(())
     }
