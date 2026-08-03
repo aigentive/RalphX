@@ -330,7 +330,28 @@ fn publication_event(
 
 #[tokio::test]
 async fn repair_attempt_cas_effect_and_successor_share_one_sqlite_transaction_boundary() {
-    let (_db, repo, conversation_id) = setup_repo();
+    let (db, repo, conversation_id) = setup_repo();
+    let conn = db.new_connection();
+    conn.execute_batch(
+        "PRAGMA recursive_triggers = OFF;
+         CREATE TRIGGER simulate_equivalent_effect_completion
+         BEFORE UPDATE ON agent_workspace_repair_effects
+         BEGIN
+           UPDATE agent_workspace_repair_effects
+           SET kind = NEW.kind, status = NEW.status,
+               idempotency_key = NEW.idempotency_key,
+               intended_head_oid = NEW.intended_head_oid,
+               expected_remote_oid = NEW.expected_remote_oid,
+               expected_pr_number = NEW.expected_pr_number,
+               expected_remote_absent = NEW.expected_remote_absent,
+               receipt_json = NEW.receipt_json, last_error = NEW.last_error,
+               updated_at = NEW.updated_at, completed_at = NEW.completed_at
+           WHERE id = OLD.id;
+           SELECT RAISE(IGNORE);
+         END;",
+    )
+    .expect("install equivalent concurrent completion trigger");
+    let cas_repo = SqliteAgentConversationWorkspaceRepository::new(conn);
     repo.create_or_update(workspace(conversation_id.clone()))
         .await
         .expect("persist workspace");
@@ -462,7 +483,7 @@ async fn repair_attempt_cas_effect_and_successor_share_one_sqlite_transaction_bo
     observed.completed_at = Some(effect.created_at + Duration::seconds(1));
     observed.updated_at = observed.completed_at.expect("completion timestamp");
     let settled_at = observed.updated_at + Duration::seconds(1);
-    let completed = repo
+    let completed = cas_repo
         .complete_repair_effect(CompleteAgentWorkspaceRepairEffect {
             attempt_id: dispatching.id.clone(),
             generation: dispatching.generation,
@@ -470,16 +491,20 @@ async fn repair_attempt_cas_effect_and_successor_share_one_sqlite_transaction_bo
             expected_attempt_updated_at: dispatching.updated_at,
             expected_effect_updated_at: effect.updated_at,
             expected_effect_status: AgentWorkspaceRepairEffectStatus::Pending,
-            effect: observed,
+            effect: observed.clone(),
             compatibility_projection: None,
             events: Vec::new(),
         })
         .await
         .expect("complete repair effect");
-    assert!(matches!(
-        completed,
-        CompleteAgentWorkspaceRepairEffectOutcome::Applied(_)
-    ));
+    let CompleteAgentWorkspaceRepairEffectOutcome::Applied(completed) = completed else {
+        panic!("an equivalent concurrent completion must be idempotently accepted");
+    };
+    assert_eq!(*completed, observed);
+    db.with_connection(|conn| {
+        conn.execute_batch("DROP TRIGGER simulate_equivalent_effect_completion;")
+            .expect("remove equivalent concurrent completion trigger");
+    });
     assert!(repo
         .get_open_repair_effect(&dispatching.id)
         .await
