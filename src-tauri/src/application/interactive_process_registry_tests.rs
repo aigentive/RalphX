@@ -158,6 +158,8 @@ async fn capture_owner_returns_current_token_run_id_and_cloned_metadata() {
         provider_session_id: Some("thread-123".to_string()),
         persona_id: Some("planner".to_string()),
         persona_content_hash: Some("content-hash".to_string()),
+        agent_name: Some("ralphx-ideation".to_string()),
+        agent_profile: Some("plan".to_string()),
     };
     let token = registry
         .register_with_metadata(key.clone(), stdin, metadata.clone())
@@ -504,6 +506,37 @@ async fn stale_retire_after_turn_owner_is_rejected_without_affecting_current_ent
     assert_eq!(
         registry.state_for_test(&key).await,
         Some(InteractiveProcessState::Idle)
+    );
+}
+
+#[tokio::test]
+async fn plan_to_edit_stale_direct_idle_retirement_preserves_the_current_owner() {
+    let registry = InteractiveProcessRegistry::new();
+    let key = InteractiveProcessKey::new("project", "direct-retire-stale");
+    let (stdin, _child) = create_test_stdin().await;
+    let token = registry
+        .register_with_metadata(
+            key.clone(),
+            stdin,
+            InteractiveProcessMetadata {
+                agent_run_id: Some("current-run".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+    assert!(registry.mark_idle_if_token(&key, token).await);
+
+    assert!(registry
+        .retire_unarmed_idle_if_owner(&key, token, "stale-run")
+        .await
+        .is_none());
+    assert_eq!(
+        registry
+            .capture_owner(&key)
+            .await
+            .expect("current owner must remain after stale retirement")
+            .agent_run_id,
+        "current-run"
     );
 }
 
@@ -954,6 +987,8 @@ async fn test_register_with_metadata_persists_harness_metadata() {
                 provider_session_id: Some("thread-123".to_string()),
                 persona_id: None,
                 persona_content_hash: None,
+                agent_name: Some("ralphx-ideation".to_string()),
+                agent_profile: Some("plan".to_string()),
             },
         )
         .await;
@@ -961,6 +996,8 @@ async fn test_register_with_metadata_persists_harness_metadata() {
     let metadata = registry.get_metadata(&key).await.unwrap();
     assert_eq!(metadata.harness, Some(AgentHarnessKind::Codex));
     assert_eq!(metadata.provider_session_id.as_deref(), Some("thread-123"));
+    assert_eq!(metadata.agent_name.as_deref(), Some("ralphx-ideation"));
+    assert_eq!(metadata.agent_profile.as_deref(), Some("plan"));
 }
 
 #[tokio::test]
