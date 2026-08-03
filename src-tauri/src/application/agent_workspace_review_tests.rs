@@ -222,6 +222,9 @@ async fn seed_conversation(state: &AppState, workspace: &AgentConversationWorksp
         .create(conversation)
         .await
         .expect("conversation should persist");
+}
+
+async fn persist_workspace(state: &AppState, workspace: &AgentConversationWorkspace) {
     state
         .agent_conversation_workspace_repo
         .create_or_update(workspace.clone())
@@ -3816,6 +3819,7 @@ async fn review_automation_explicit_opt_out_suppresses_global_blocking_fixer() {
     );
     workspace.review_automation_override = Some(false);
     seed_conversation(&state, &workspace).await;
+    persist_workspace(&state, &workspace).await;
     persist_active_review_for_current_target(
         &state,
         &workspace,
@@ -3866,6 +3870,7 @@ async fn review_automation_explicit_opt_in_routes_fixer_when_global_autofix_is_o
     );
     workspace.review_automation_override = Some(true);
     seed_conversation(&state, &workspace).await;
+    persist_workspace(&state, &workspace).await;
     persist_active_review_for_current_target(
         &state,
         &workspace,
@@ -3921,6 +3926,7 @@ async fn review_automation_opt_in_does_not_enable_the_publish_gate() {
     );
     workspace.review_automation_override = Some(true);
     seed_conversation(&state, &workspace).await;
+    persist_workspace(&state, &workspace).await;
 
     assert_eq!(
         load_workspace_review_publish_blocker(&state, &workspace)
@@ -4208,6 +4214,7 @@ async fn review_automation_explicit_opt_in_uses_default_cap_when_settings_are_un
     );
     workspace.review_automation_override = Some(true);
     seed_conversation(&state, &workspace).await;
+    persist_workspace(&state, &workspace).await;
     persist_active_review_for_current_target(
         &state,
         &workspace,
