@@ -98,6 +98,35 @@ describe("ChatMessageList live transcript rows", () => {
     }]);
   });
 
+  it("keeps live thinking grouped across a hidden tool call", () => {
+    const first = { type: "thinking" as const, text: "First", blockIndex: 1, isSettled: false };
+    const second = { type: "thinking" as const, text: "Second", blockIndex: 3, isSettled: false };
+    const rows = buildLiveTranscriptRows(
+      [first, toolBlock(2, "hidden"), second],
+      new Map(),
+      (toolCall) => toolCall.name === "hidden",
+    );
+
+    expect(rows.map((row) => row.kind)).toEqual(["thinking_group"]);
+    expect(rows[0]).toMatchObject({
+      kind: "thinking_group",
+      blocks: [{ block: first }, { block: second }],
+    });
+  });
+
+  it("keeps live thinking grouped across an interleaved settled-empty segment", () => {
+    const first = { type: "thinking" as const, text: "First", blockIndex: 1, isSettled: false };
+    const empty = { type: "thinking" as const, text: "", blockIndex: 2, isSettled: true };
+    const second = { type: "thinking" as const, text: "Second", blockIndex: 3, isSettled: false };
+    const rows = buildLiveTranscriptRows([first, empty, second], new Map());
+
+    expect(rows.map((row) => row.kind)).toEqual(["thinking_group"]);
+    expect(rows[0]).toMatchObject({
+      kind: "thinking_group",
+      blocks: [{ block: first }, { block: second }],
+    });
+  });
+
   it("stops a tool scan at thinking so the thinking block is not swallowed", () => {
     const rows = buildLiveTranscriptRows([
       toolBlock(1),
