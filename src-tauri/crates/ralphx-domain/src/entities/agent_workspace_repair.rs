@@ -168,6 +168,8 @@ pub struct AgentWorkspaceRepairAttempt {
     pub pending_reasons: Vec<String>,
     pub review_required: bool,
     pub auto_publish_enabled: bool,
+    #[serde(default)]
+    pub explicit_publish_requested: bool,
     pub auto_merge_desired: bool,
     pub auto_merge_method: Option<String>,
     pub dispatch_count: u32,
@@ -219,6 +221,7 @@ impl AgentWorkspaceRepairAttempt {
             pending_reasons: Vec::new(),
             review_required,
             auto_publish_enabled,
+            explicit_publish_requested: false,
             auto_merge_desired,
             auto_merge_method,
             dispatch_count: 0,

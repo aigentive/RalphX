@@ -95,7 +95,7 @@ use crate::application::agent_workspace_publish_repair_state::{
     settle_agent_workspace_repair_dispatch_outcome, start_or_join_agent_workspace_repair,
     AgentWorkspaceRepairDispatchOutcome, AgentWorkspaceRepairDispatchSettlement,
     AgentWorkspaceRepairPublishResumeOutcome, AgentWorkspaceRepairStartOutcome,
-    AgentWorkspaceRepairStartRequest, AgentWorkspaceRepairTransitionOutcome,
+    AgentWorkspaceRepairStartRequest, AgentWorkspaceRepairTransitionOutcome, PublishAuthority,
     DEFERRED_REPAIR_WAIT_TIMEOUT_SECS,
 };
 use crate::application::agent_workspace_review::{
@@ -5266,6 +5266,7 @@ async fn resume_ready_publish_repair_after_auto_publish_enabled(
         state,
         attempt,
         "Auto Publish was enabled; resuming the durable workspace repair continuation.",
+        PublishAuthority::UserExplicit,
     )
     .await
     {
@@ -7202,6 +7203,7 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
     mut workspace: AgentConversationWorkspace,
     route_fixable_failures_to_agent: bool,
     repair_handoff: Option<&AgentWorkspaceRepairPrHandoff>,
+    explicit_user_publish: bool,
 ) -> Result<PublishAgentConversationWorkspaceResponse, String> {
     let branch_already_pushed = repair_handoff.is_some();
     let publish_started = Instant::now();
@@ -7294,6 +7296,7 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
                 &repair_service,
                 route_fixable_failures_to_agent,
                 &repair_target,
+                explicit_user_publish,
             )
             .await;
             return Err(error);
@@ -7312,6 +7315,7 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
                 &repair_service,
                 route_fixable_failures_to_agent,
                 &repair_target,
+                explicit_user_publish,
             )
             .await;
             return Err(error);
@@ -7330,6 +7334,7 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
             &repair_service,
             false,
             &repair_target,
+            explicit_user_publish,
         )
         .await;
         return Err(error);
@@ -7355,6 +7360,7 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
                 &repair_service,
                 false,
                 &repair_target,
+                explicit_user_publish,
             )
             .await;
             return Err(error);
@@ -7378,6 +7384,7 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
                     &repair_service,
                     route_fixable_failures_to_agent,
                     &repair_target,
+                    explicit_user_publish,
                 )
                 .await;
                 return Err(error);
@@ -7403,6 +7410,7 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
                     &repair_service,
                     route_fixable_failures_to_agent,
                     &repair_target,
+                    explicit_user_publish,
                 )
                 .await;
                 return Err(error);
@@ -7434,6 +7442,7 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
                 &repair_service,
                 route_fixable_failures_to_agent,
                 &repair_target,
+                explicit_user_publish,
             )
             .await;
             return Err(error);
@@ -7452,6 +7461,7 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
             &repair_service,
             false,
             &repair_target,
+            explicit_user_publish,
         )
         .await;
         return Err(error);
@@ -7486,6 +7496,7 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
                 &repair_service,
                 route_fixable_failures_to_agent,
                 &repair_target,
+                explicit_user_publish,
             )
             .await;
             return Err(error);
@@ -7519,6 +7530,7 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
                 &repair_service,
                 false,
                 &repair_target,
+                explicit_user_publish,
             )
             .await;
             return Err(error);
@@ -7555,6 +7567,7 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
                 &repair_service,
                 route_fixable_failures_to_agent,
                 &repair_target,
+                explicit_user_publish,
             )
             .await;
             return Err(error);
@@ -7770,6 +7783,7 @@ pub async fn publish_agent_conversation_workspace_for_app_state_with_repair_inte
         conversation_id,
         route_fixable_failures_to_agent,
         None,
+        explicit_repair_publish,
     )
     .await
 }
@@ -7784,6 +7798,11 @@ pub(crate) async fn resume_durable_agent_workspace_repair_publish(
         conversation_id,
         "Resuming the durable workspace repair continuation for publish.",
         explicit_publish,
+        if explicit_publish {
+            PublishAuthority::UserExplicit
+        } else {
+            PublishAuthority::VerifiedAutomation
+        },
     )
     .await
     .map_err(|error| error.to_string())?;
@@ -7892,6 +7911,7 @@ pub(crate) async fn publish_agent_conversation_workspace_after_repair_push(
         conversation_id,
         false,
         Some(repair_handoff),
+        false,
     ))
     .await
 }
@@ -7902,6 +7922,7 @@ async fn publish_agent_conversation_workspace_for_app_state_inner(
     conversation_id: ChatConversationId,
     route_fixable_failures_to_agent: bool,
     repair_handoff: Option<AgentWorkspaceRepairPrHandoff>,
+    explicit_user_publish: bool,
 ) -> Result<PublishAgentConversationWorkspaceResponse, String> {
     let _publish_guard = try_acquire_agent_workspace_publish_guard(&conversation_id)?;
     let _workspace_review_lifecycle_guard = lock_workspace_review_lifecycle(&conversation_id).await;
@@ -7911,6 +7932,7 @@ async fn publish_agent_conversation_workspace_for_app_state_inner(
         conversation_id,
         route_fixable_failures_to_agent,
         repair_handoff,
+        explicit_user_publish,
     )
     .await
 }
@@ -7921,6 +7943,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
     conversation_id: ChatConversationId,
     route_fixable_failures_to_agent: bool,
     repair_handoff: Option<AgentWorkspaceRepairPrHandoff>,
+    explicit_user_publish: bool,
 ) -> Result<PublishAgentConversationWorkspaceResponse, String> {
     let branch_already_pushed = repair_handoff.is_some();
     let _freshness_invalidation = AgentWorkspaceFreshnessInvalidationGuard::new(&conversation_id);
@@ -7952,6 +7975,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
             workspace,
             route_fixable_failures_to_agent,
             repair_handoff.as_ref(),
+            explicit_user_publish,
         )
         .await;
     }
@@ -8061,6 +8085,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
                 &repair_service,
                 false,
                 &repair_target,
+                explicit_user_publish,
             )
             .await;
             return Err(error);
@@ -8079,6 +8104,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
                 &repair_service,
                 route_fixable_failures_to_agent,
                 &repair_target,
+                explicit_user_publish,
             )
             .await;
             return Err(error);
@@ -8102,6 +8128,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
             &repair_service,
             route_fixable_failures_to_agent,
             &repair_target,
+            explicit_user_publish,
         )
         .await;
         return Err(error);
@@ -8130,6 +8157,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
             &repair_service,
             route_fixable_failures_to_agent,
             &repair_target,
+            explicit_user_publish,
         )
         .await;
         return Err(error);
@@ -8154,6 +8182,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
                 &repair_service,
                 route_fixable_failures_to_agent,
                 &repair_target,
+                explicit_user_publish,
             )
             .await;
             return Err(error);
@@ -8177,6 +8206,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
                     &repair_service,
                     route_fixable_failures_to_agent,
                     &repair_target,
+                    explicit_user_publish,
                 )
                 .await;
                 return Err(error);
@@ -8197,6 +8227,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
             &repair_service,
             route_fixable_failures_to_agent,
             &repair_target,
+            explicit_user_publish,
         )
         .await;
         return Err(error);
@@ -8252,6 +8283,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
                 &repair_service,
                 route_fixable_failures_to_agent,
                 &repair_target,
+                explicit_user_publish,
             )
             .await;
             return Err(message);
@@ -8265,6 +8297,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
                 &repair_service,
                 route_fixable_failures_to_agent,
                 &repair_target,
+                explicit_user_publish,
             )
             .await;
             return Err(message);
@@ -8292,6 +8325,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
                     &repair_service,
                     route_fixable_failures_to_agent,
                     &repair_target,
+                    explicit_user_publish,
                 )
                 .await;
                 return Err(error);
@@ -8317,6 +8351,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
                     &repair_service,
                     route_fixable_failures_to_agent,
                     &repair_target,
+                    explicit_user_publish,
                 )
                 .await;
                 return Err(error);
@@ -8341,6 +8376,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
                     &repair_service,
                     route_fixable_failures_to_agent,
                     &repair_target,
+                    explicit_user_publish,
                 )
                 .await;
                 return Err(error);
@@ -8466,6 +8502,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
             &repair_service,
             route_fixable_failures_to_agent,
             &repair_target,
+            explicit_user_publish,
         )
         .await;
         return Err(error);
@@ -8498,6 +8535,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
                 &repair_service,
                 route_fixable_failures_to_agent,
                 &repair_target,
+                explicit_user_publish,
             )
             .await;
             return Err(error);
@@ -8634,6 +8672,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
                 &repair_service,
                 false,
                 &repair_target,
+                explicit_user_publish,
             )
             .await;
             return Err(error);
@@ -8755,6 +8794,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
                 &repair_service,
                 route_fixable_failures_to_agent,
                 &repair_target,
+                explicit_user_publish,
             )
             .await;
             return Err(error);
@@ -9174,6 +9214,7 @@ pub async fn mark_agent_workspace_publish_failure<S>(
     workspace: &AgentConversationWorkspace,
     error: &str,
     pr_status_override: Option<&str>,
+    explicit_user_publish: bool,
     repair_service: &S,
 ) where
     S: ChatService + ?Sized,
@@ -9187,6 +9228,7 @@ pub async fn mark_agent_workspace_publish_failure<S>(
         repair_service,
         true,
         &target,
+        explicit_user_publish,
     )
     .await;
 }
@@ -9197,6 +9239,7 @@ pub async fn mark_agent_workspace_publish_failure_with_target<S>(
     workspace: &AgentConversationWorkspace,
     error: &str,
     pr_status_override: Option<&str>,
+    explicit_user_publish: bool,
     repair_service: &S,
     target: &AgentConversationWorkspaceRepairTarget,
 ) where
@@ -9210,6 +9253,7 @@ pub async fn mark_agent_workspace_publish_failure_with_target<S>(
         repair_service,
         true,
         target,
+        explicit_user_publish,
     )
     .await;
 }
@@ -9233,6 +9277,7 @@ async fn mark_agent_workspace_update_failure_with_target<S>(
         true,
         target,
         AgentWorkspacePostRepairAction::UpdateOnly,
+        false,
     )
     .await;
 }
@@ -9245,6 +9290,7 @@ async fn mark_agent_workspace_publish_failure_with_routing<S>(
     repair_service: &S,
     route_fixable_failures_to_agent: bool,
     target: &AgentConversationWorkspaceRepairTarget,
+    explicit_user_publish: bool,
 ) where
     S: ChatService + ?Sized,
 {
@@ -9257,6 +9303,7 @@ async fn mark_agent_workspace_publish_failure_with_routing<S>(
         route_fixable_failures_to_agent,
         target,
         AgentWorkspacePostRepairAction::Publish,
+        explicit_user_publish,
     )
     .await;
 }
@@ -9270,6 +9317,7 @@ async fn mark_agent_workspace_failure_with_routing_and_action<S>(
     route_fixable_failures_to_agent: bool,
     target: &AgentConversationWorkspaceRepairTarget,
     post_repair_action: AgentWorkspacePostRepairAction,
+    explicit_user_publish: bool,
 ) where
     S: ChatService + ?Sized,
 {
@@ -9285,6 +9333,7 @@ async fn mark_agent_workspace_failure_with_routing_and_action<S>(
         post_repair_action,
         failure_class,
         false,
+        explicit_user_publish,
     )
     .await;
 }
@@ -9376,6 +9425,7 @@ where
         post_repair_action,
         PublishFailureClass::AgentFixable,
         true,
+        matches!(post_repair_action, AgentWorkspacePostRepairAction::Publish),
     )
     .await;
     true
@@ -9442,6 +9492,7 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
     post_repair_action: AgentWorkspacePostRepairAction,
     failure_class: PublishFailureClass,
     retry_blocked: bool,
+    explicit_user_publish: bool,
 ) where
     S: ChatService + ?Sized,
 {
@@ -9496,6 +9547,8 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
             reason: error.to_string(),
             summary: post_repair_action.repair_requested_summary().to_string(),
             auto_merge_current: workspace.pr_auto_merge_current,
+            explicit_publish_requested: explicit_user_publish
+                && matches!(post_repair_action, AgentWorkspacePostRepairAction::Publish),
             retry_blocked,
             carryover_pr_autofix_evidence: None,
         },
