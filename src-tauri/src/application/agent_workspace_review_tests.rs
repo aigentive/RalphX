@@ -5623,6 +5623,7 @@ async fn complete_review_run_preserves_blocking_outcome_after_same_pr_merges() {
         .to_string();
     workspace.publication_pr_number = Some(483);
     workspace.publication_pr_status = Some("merged".to_string());
+    persist_workspace(&state, &workspace).await;
 
     let completed = complete_agent_workspace_review_run(
         &state,
