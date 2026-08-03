@@ -6,7 +6,7 @@ use tauri::State;
 
 use crate::application::{
     harness_runtime_registry::{
-        clear_harness_runtime_caches_for_harness, refresh_harness_runtime_probe,
+        clear_harness_runtime_caches_for_harness, refresh_harness_runtime_probe_with_force,
         refresh_supported_harnesses_with_force, HarnessRuntimeProbe,
     },
     AppState, AGENT_LANES,
@@ -727,7 +727,7 @@ pub async fn update_agent_provider_settings(
         {
             probe
         } else {
-            refresh_harness_runtime_probe(provider)
+            refresh_harness_runtime_probe_with_force(provider, true)
         };
         probes.insert(provider, probe);
     }
