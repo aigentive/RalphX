@@ -1,5 +1,8 @@
 use super::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
-use super::agent_workspace_publish_recovery::recover_agent_workspace_repair_attempts_for_state;
+use super::agent_workspace_publish_recovery::{
+    recover_agent_workspace_repair_attempts_for_state, recover_agent_workspace_repair_continuation,
+    DurableRepairRecoveryOutcome,
+};
 use super::agent_workspace_publish_repair_state::AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION;
 use super::git_mutation_recovery::{
     recover_in_flight_git_mutations_for_state, recover_repair_owned_in_flight_git_mutations,
@@ -1772,6 +1775,66 @@ async fn startup_recovery_reacquires_after_same_owner_fencing_epoch_drift() {
         .expect("healed target lease remains auditable");
     assert_eq!(lease.owner(), &owner);
     assert!(lease.fencing_epoch() >= fencing_epoch);
+}
+
+#[tokio::test]
+async fn failed_publish_continuation_heals_a_released_lease_and_retries_once() {
+    let fixture = setup_workspace_push(RepairPushRemoteHistory::FastForward).await;
+    let (mut state, identity) = state_with_recoverable_repair_continuation(&fixture).await;
+    let github = Arc::new(MockGithubService::new());
+    github.state().perform_real_git_pushes = true;
+    state.github_service = Some(github.clone());
+    let owner = GitTargetLeaseOwner::agent_workspace_repair(fixture.attempt.id.as_str());
+    let failed_attempt = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&fixture.workspace.conversation_id)
+        .await
+        .expect("read continuation before simulating its stale lease")
+        .expect("repair continuation remains current");
+    let original_epoch = failed_attempt
+        .target_lease_epoch
+        .expect("recoverable continuation has a durable lease epoch");
+    state
+        .branch_update_repo
+        .release_target_lease(&identity, &owner, original_epoch)
+        .await
+        .expect("release the lease between recovery validation and publication");
+
+    let outcome = recover_agent_workspace_repair_continuation(&state, failed_attempt, false)
+        .await
+        .expect("the continuation heals its stale lease and retries");
+
+    assert_eq!(outcome, DurableRepairRecoveryOutcome::Continued);
+    assert_eq!(remote_branch_oid(&fixture), fixture.local_head);
+    {
+        let github_state = github.state();
+        assert_eq!(
+            github_state.push_branch_calls, 1,
+            "lease healing must retry the ordinary publisher exactly once"
+        );
+        assert_eq!(
+            github_state.push_branch_with_expected_remote_oid_lease_calls, 0,
+            "a fast-forward repair must stay on the ordinary push route after healing"
+        );
+    }
+    let healed = state
+        .agent_workspace_repair_repo
+        .get_latest_repair_attempt_for_conversation(&fixture.workspace.conversation_id)
+        .await
+        .expect("read healed continuation")
+        .expect("healed continuation remains auditable");
+    assert!(healed
+        .pending_reasons
+        .iter()
+        .all(|reason| !reason.starts_with("continuation_recovery_failure:")));
+    let lease = state
+        .branch_update_repo
+        .get_target_lease(&identity)
+        .await
+        .expect("read healed target lease")
+        .expect("healed target lease remains auditable");
+    assert!(lease.fencing_epoch() > original_epoch);
+    assert_eq!(lease.owner(), &owner);
 }
 
 async fn assert_repair_continuation_converged_after_lease_heal(

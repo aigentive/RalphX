@@ -143,7 +143,7 @@ async fn active_exact_pr_autofix_owns_legacy_projection(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DurableRepairRecoveryOutcome {
+pub(crate) enum DurableRepairRecoveryOutcome {
     Noop,
     Active,
     Continued,
@@ -1490,7 +1490,7 @@ async fn recover_clean_interrupted_repair(
     outcome
 }
 
-async fn recover_agent_workspace_repair_continuation(
+pub(crate) async fn recover_agent_workspace_repair_continuation(
     state: &AppState,
     attempt: AgentWorkspaceRepairAttempt,
     block_when_publish_runtime_is_missing: bool,
