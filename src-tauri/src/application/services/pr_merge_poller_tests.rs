@@ -7724,6 +7724,7 @@ async fn agent_workspace_closed_pr_polling_removes_worktree_and_branch() {
     let memory_workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
         memory_workspace_repo.clone();
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = memory_workspace_repo.clone();
     workspace_repo
         .create_or_update(workspace)
         .await
@@ -7742,13 +7743,14 @@ async fn agent_workspace_closed_pr_polling_removes_worktree_and_branch() {
         Arc::new(MemoryPlanBranchRepository::new()),
     );
 
-    registry.start_agent_workspace_polling(
+    registry.start_agent_workspace_polling_with_repair_repo(
         conversation_id.clone(),
         101,
         project,
         repo.path().to_path_buf(),
         Arc::clone(&workspace_repo),
         Arc::new(MemoryAgentRunRepository::new()),
+        repair_repo,
         Arc::new(MockChatService::new()),
     );
     tokio::time::timeout(Duration::from_secs(20), async {
