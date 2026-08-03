@@ -196,11 +196,11 @@ fn github_rerun_error_is_transient(error: &AppError) -> bool {
     let message = error.to_string().to_ascii_lowercase();
     let rate_limited = message.contains("rate limit") || message.contains("secondary rate");
     if message.contains("not found")
-        || message.contains("404")
+        || mentions_http_status(&message, "404")
         || message.contains("no such run")
         || message.contains("authentication")
         || message.contains("unauthorized")
-        || message.contains("401")
+        || mentions_http_status(&message, "401")
         || (message.contains("403 forbidden") && !rate_limited)
         || message.contains("gh auth")
         || message.contains("workflow file")
@@ -216,10 +216,25 @@ fn github_rerun_error_is_transient(error: &AppError) -> bool {
         || message.contains("connection")
         || message.contains("network")
         || message.contains("temporarily")
-        || message.contains("502")
-        || message.contains("503")
-        || message.contains("504")
+        || mentions_http_status(&message, "502")
+        || mentions_http_status(&message, "503")
+        || mentions_http_status(&message, "504")
         || message.contains("server error")
+}
+
+/// True when `code` appears as an HTTP status token rather than as a substring of an
+/// unrelated number such as a workflow run id echoed in a `gh` API URL.
+fn mentions_http_status(message: &str, code: &str) -> bool {
+    message.match_indices(code).any(|(start, _)| {
+        let bytes = message.as_bytes();
+        let before_is_digit = start
+            .checked_sub(1)
+            .is_some_and(|index| bytes[index].is_ascii_digit());
+        let after_is_digit = bytes
+            .get(start + code.len())
+            .is_some_and(|byte| byte.is_ascii_digit());
+        !before_is_digit && !after_is_digit
+    })
 }
 
 async fn block_transient_ci_rerun(

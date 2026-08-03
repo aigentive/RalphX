@@ -2039,6 +2039,89 @@ async fn transient_ci_completion_parks_on_transient_github_rerun_error() {
 }
 
 #[tokio::test]
+async fn transient_ci_completion_parks_when_a_rate_limit_error_names_a_404_run_id() {
+    let fixture = setup_transient_ci_rerun_fixture("rerun-rate-limit-404-run-id").await;
+    fixture.github.state().fetch_pr_health_result = Some(Ok(failed_ci_pr_health(
+        "rate-limit-404-head",
+        30_840_412_345,
+    )));
+    fixture.github.state().rerun_failed_workflow_result = Some(Err(
+        crate::error::AppError::Infrastructure(
+            "gh exited with code 1: HTTP 403: You have exceeded a secondary rate limit (https://api.github.com/repos/o/r/actions/runs/30840412345/rerun-failed-jobs)"
+                .to_string(),
+        ),
+    ));
+
+    let response = complete_transient_ci_failure(&fixture).await;
+
+    assert_eq!(response.status, "rerun_pending");
+    let attempt = fixture
+        .app_state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("load rate-limited attempt")
+        .expect("rate-limited attempt stays current");
+    assert!(attempt.blocker.is_none());
+    assert!(attempt.pending_reasons.iter().any(|reason| {
+        reason
+            == crate::application::agent_workspace_publish_repair_state::AWAITING_CI_REPAIR_REASON
+    }));
+}
+
+#[tokio::test]
+async fn transient_ci_completion_blocks_on_a_real_http_404() {
+    let fixture = setup_transient_ci_rerun_fixture("rerun-real-http-404").await;
+    fixture.github.state().fetch_pr_health_result =
+        Some(Ok(failed_ci_pr_health("real-http-404-head", 800)));
+    fixture.github.state().rerun_failed_workflow_result =
+        Some(Err(crate::error::AppError::Infrastructure(
+            "gh exited with code 1: HTTP 404: Not Found".to_string(),
+        )));
+
+    let response = complete_transient_ci_failure(&fixture).await;
+
+    assert_eq!(response.status, "blocked");
+    let attempt = fixture
+        .app_state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("load HTTP 404 attempt")
+        .expect("HTTP 404 attempt stays durable");
+    assert!(attempt
+        .blocker
+        .as_deref()
+        .is_some_and(|blocker| blocker.contains("HTTP 404: Not Found")));
+}
+
+#[tokio::test]
+async fn transient_ci_completion_blocks_an_unknown_error_naming_a_503_run_id() {
+    let fixture = setup_transient_ci_rerun_fixture("rerun-unknown-503-run-id").await;
+    fixture.github.state().fetch_pr_health_result =
+        Some(Ok(failed_ci_pr_health("unknown-503-head", 30_850_312_345)));
+    fixture.github.state().rerun_failed_workflow_result =
+        Some(Err(crate::error::AppError::Infrastructure(
+            "gh exited with code 1: unexpected failure for run 30850312345".to_string(),
+        )));
+
+    let response = complete_transient_ci_failure(&fixture).await;
+
+    assert_eq!(response.status, "blocked");
+    let attempt = fixture
+        .app_state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("load unknown rerun error attempt")
+        .expect("unknown rerun error attempt stays durable");
+    assert!(attempt
+        .blocker
+        .as_deref()
+        .is_some_and(|blocker| blocker.contains("unexpected failure for run 30850312345")));
+}
+
+#[tokio::test]
 async fn transient_ci_completion_rejects_when_health_has_no_head() {
     let fixture = setup_transient_ci_rerun_fixture("rerun-missing-head").await;
     let repair_repo = Arc::clone(&fixture.app_state.agent_workspace_repair_repo);
