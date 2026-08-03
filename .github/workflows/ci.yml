@@ -32,6 +32,7 @@ jobs:
       run_rust: ${{ steps.decide.outputs.run_rust }}
       run_frontend: ${{ steps.decide.outputs.run_frontend }}
       run_visual: ${{ steps.decide.outputs.run_visual }}
+      run_tauri_alignment: ${{ steps.decide.outputs.run_tauri_alignment }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -42,52 +43,76 @@ jobs:
         if: github.event_name != 'merge_group'
         uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
         with:
+          predicate-quantifier: every
           filters: |
             automation:
-              - '.github/workflows/**'
-              - '.github/actions/**'
-              - '.github/codeql/**'
-              - '.github/dependabot.yml'
-              - 'scripts/test-rust-fast.sh'
-              - 'scripts/tests/test-ci-rust-full-integration-targets.sh'
-              - 'scripts/tests/test-coverage-rust-shards.sh'
-              - 'scripts/build-prod-release.sh'
-              - 'scripts/render-homebrew-cask.sh'
-              - 'scripts/reconcile-homebrew-cask.sh'
-              - 'scripts/render-updater-channel-manifests.sh'
-              - 'scripts/validate-release-promotion.sh'
-              - 'scripts/reconcile-stable-release-state.sh'
-              - 'scripts/reconcile-nightly-updater-pointers.sh'
-              - 'scripts/verify-public-updater-pointers.sh'
-              - 'scripts/tests/test-daily-release-notes-from-override.sh'
-              - 'scripts/tests/test-updater-channel-manifests.sh'
-              - 'scripts/tests/test-release-promotion.sh'
-              - 'scripts/tests/test-reconcile-homebrew-cask.sh'
-              - 'scripts/tests/test-stable-release-state.sh'
+              - added|modified|deleted:
+                  - '.github/workflows/**'
+                  - '.github/actions/**'
+                  - '.github/codeql/**'
+                  - '.github/dependabot.yml'
+                  - 'CLAUDE.md'
+                  - '**/CLAUDE.md'
+                  - '.claude/rules/**'
+                  - 'scripts/test-rust-fast.sh'
+                  - 'scripts/claude_rule_utils.py'
+                  - 'scripts/validate-claude-rules.py'
+                  - 'scripts/tests/test-ci-rust-full-integration-targets.sh'
+                  - 'scripts/tests/test-coverage-rust-shards.sh'
+                  - 'scripts/tests/test-ci-path-filters.py'
+                  - 'scripts/tests/test-claude-rule-utils.py'
+                  - 'scripts/tests/test-claude-rules-activation.py'
+                  - 'scripts/build-prod-release.sh'
+                  - 'scripts/render-homebrew-cask.sh'
+                  - 'scripts/reconcile-homebrew-cask.sh'
+                  - 'scripts/render-updater-channel-manifests.sh'
+                  - 'scripts/validate-release-promotion.sh'
+                  - 'scripts/reconcile-stable-release-state.sh'
+                  - 'scripts/reconcile-nightly-updater-pointers.sh'
+                  - 'scripts/verify-public-updater-pointers.sh'
+                  - 'scripts/tests/test-daily-release-notes-from-override.sh'
+                  - 'scripts/tests/test-updater-channel-manifests.sh'
+                  - 'scripts/tests/test-release-promotion.sh'
+                  - 'scripts/tests/test-reconcile-homebrew-cask.sh'
+                  - 'scripts/tests/test-stable-release-state.sh'
             plugins:
-              - 'plugins/app/ralphx-external-mcp/**'
-              - 'plugins/app/ralphx-mcp-server/**'
-              - 'scripts/prepare-release-runtime.sh'
+              - added|modified|deleted:
+                  - 'plugins/app/ralphx-external-mcp/**'
+                  - 'plugins/app/ralphx-mcp-server/**'
+                  - 'scripts/prepare-release-runtime.sh'
+              - '!**/CLAUDE.md'
             rust:
-              - '.cargo/**'
-              - '.github/actions/**'
-              - 'src-tauri/**'
-              - 'rust-toolchain.toml'
-              - 'scripts/bench-rust-build.sh'
-              - 'scripts/baselines/layering.json'
-              - 'scripts/ci-install-linux-deps.sh'
-              - 'scripts/check-layering.py'
-              - 'scripts/check-rust-test-features.py'
-              - 'scripts/test-rust-fast.sh'
-              - 'scripts/validate_sqlite_migrations.py'
+              - added|modified|deleted:
+                  - '.cargo/**'
+                  - '.github/actions/**'
+                  - 'src-tauri/**'
+                  - 'rust-toolchain.toml'
+                  - 'scripts/bench-rust-build.sh'
+                  - 'scripts/baselines/layering.json'
+                  - 'scripts/ci-install-linux-deps.sh'
+                  - 'scripts/check-layering.py'
+                  - 'scripts/check-rust-test-features.py'
+                  - 'scripts/test-rust-fast.sh'
+                  - 'scripts/validate_sqlite_migrations.py'
+              - '!**/CLAUDE.md'
             frontend:
               - 'frontend/**'
+              - '!**/CLAUDE.md'
             visual:
-              - 'frontend/**'
-              - 'src-tauri/Cargo.lock'
-              - 'src-tauri/Cargo.toml'
-              - 'src-tauri/src/application/runtime_wiring.rs'
-              - 'src-tauri/tauri.conf.json'
+              - added|modified|deleted:
+                  - 'frontend/**'
+                  - 'src-tauri/Cargo.lock'
+                  - 'src-tauri/Cargo.toml'
+                  - 'src-tauri/src/application/runtime_wiring.rs'
+                  - 'src-tauri/tauri.conf.json'
+              - '!**/CLAUDE.md'
+            tauri_alignment:
+              - added|modified|deleted:
+                  - 'scripts/check-tauri-package-alignment.mjs'
+                  - 'frontend/package.json'
+                  - 'frontend/package-lock.json'
+                  - 'src-tauri/Cargo.toml'
+                  - 'src-tauri/Cargo.lock'
 
       - name: Decide CI scope
         id: decide
@@ -102,6 +127,7 @@ jobs:
               echo "run_rust=true"
               echo "run_frontend=true"
               echo "run_visual=true"
+              echo "run_tauri_alignment=true"
             } >> "${GITHUB_OUTPUT}"
             exit 0
           fi
@@ -113,6 +139,7 @@ jobs:
               echo "run_rust=true"
               echo "run_frontend=true"
               echo "run_visual=true"
+              echo "run_tauri_alignment=true"
             } >> "${GITHUB_OUTPUT}"
             exit 0
           fi
@@ -123,6 +150,7 @@ jobs:
             echo "run_rust=${{ steps.filter.outputs.rust }}"
             echo "run_frontend=${{ steps.filter.outputs.frontend }}"
             echo "run_visual=${{ steps.filter.outputs.visual }}"
+            echo "run_tauri_alignment=${{ steps.filter.outputs.tauri_alignment }}"
           } >> "${GITHUB_OUTPUT}"
 
   automation-config:
@@ -178,6 +206,18 @@ jobs:
         shell: bash
         run: bash scripts/tests/test-coverage-rust-shards.sh
 
+      - name: Validate CI path filters
+        shell: bash
+        run: python3 scripts/tests/test-ci-path-filters.py
+
+      - name: Validate Claude rule loading
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/tests/test-claude-rule-utils.py
+          python3 scripts/validate-claude-rules.py
+          python3 scripts/tests/test-claude-rules-activation.py
+
       - name: Validate release scripts
         shell: bash
         run: |
@@ -198,6 +238,8 @@ jobs:
 
   tauri-package-alignment:
     name: Tauri Package Alignment
+    needs: changes
+    if: needs.changes.outputs.run_tauri_alignment == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
