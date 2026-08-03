@@ -390,6 +390,12 @@ describe("AgentReviewPanel", () => {
     expect(
       screen.getByText("Auto Review & Fix · cycle 2 — fixing…"),
     ).toBeInTheDocument();
+    await user.hover(
+      screen.getByRole("button", { name: "About Auto Review & Fix" }),
+    );
+    expect(
+      await screen.findAllByText(/If the Review finds blocking issues/i),
+    ).not.toHaveLength(0);
     await user.click(screen.getByRole("switch", { name: "Auto Review & Fix" }));
 
     expect(update).toHaveBeenCalledWith(workspace.conversationId, {

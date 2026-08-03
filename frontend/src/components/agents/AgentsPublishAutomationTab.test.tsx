@@ -147,6 +147,28 @@ describe("AgentsPublishAutomationTab", () => {
     );
   });
 
+  it("returns Auto Review & Fix to the global preference", async () => {
+    const user = userEvent.setup();
+    const workspace = conversationWorkspaceFixture({
+      reviewAutomationOverride: true,
+    });
+    const mutation = vi
+      .spyOn(chatApi, "setAgentConversationWorkspaceReviewAutomation")
+      .mockResolvedValue({ ...workspace, reviewAutomationOverride: null });
+    renderAutomationTab(workspace);
+
+    await user.click(screen.getByRole("button", { name: "Inherit" }));
+    await user.click(
+      screen.getByRole("button", { name: "Use global Review settings" }),
+    );
+
+    await waitFor(() =>
+      expect(mutation).toHaveBeenCalledWith(workspace.conversationId, {
+        enabled: null,
+      }),
+    );
+  });
+
   it("marks automation active only for an explicit review override", () => {
     const base = deriveAgentsPublishAutomationSnapshot({
       workspace: conversationWorkspaceFixture({
