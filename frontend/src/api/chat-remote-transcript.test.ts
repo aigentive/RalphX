@@ -447,6 +447,26 @@ describe("agent sidebar inbox read routing", () => {
     expect(remoteArgs).not.toHaveProperty("priorityConversationIds");
   });
 
+  it("names a missing conversation instead of dumping a schema error (messages page)", async () => {
+    useRemoteEnvironment();
+    // The host answers `null` for a conversation id it does not have; the page schema used
+    // to be required, so this surfaced as a raw "expected object, received null" dump.
+    remoteOk(null);
+
+    await expect(
+      getConversationMessagesPage(CONVERSATION_ID, 20),
+    ).rejects.toThrow(/was not found on this host/);
+  });
+
+  it("names a missing conversation instead of dumping a schema error (timeline page)", async () => {
+    useRemoteEnvironment();
+    remoteOk(null);
+
+    await expect(
+      getConversationTimelinePage(CONVERSATION_ID, 20),
+    ).rejects.toThrow(/was not found on this host/);
+  });
+
   it("still sends the local pins/priorities to the local command off a remote environment", async () => {
     primitiveInvoke.mockResolvedValue({ groups: [] });
 

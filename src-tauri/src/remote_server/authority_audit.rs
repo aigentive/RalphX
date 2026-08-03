@@ -1448,6 +1448,9 @@ fn test_only_module_gates(root: &Path, dir: &Path) -> BTreeMap<String, String> {
     let mut gates = BTreeMap::new();
     for owner in owners {
         let path = dir.join(owner);
+        // Compile-time root (`crate_src_root` / `CARGO_MANIFEST_DIR`) walked downward; the
+        // only child component is a fixed owner name from the `owners` list above.
+        // codeql[rust/path-injection]
         let Ok(source) = std::fs::read_to_string(&path) else {
             continue;
         };
@@ -1519,6 +1522,9 @@ fn collect_test_gated_module_files(root: &Path, dir: &Path, out: &mut BTreeMap<S
 /// verdicts in either direction.
 pub fn collect_rs_files(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
     let test_only = test_only_module_gates(root, dir);
+    // `dir` is the compile-time crate root or a descendant discovered by this same walk;
+    // no runtime, env, request, or config value reaches it.
+    // codeql[rust/path-injection]
     let entries = std::fs::read_dir(dir).unwrap_or_else(|error| {
         panic!(
             "authority audit could not read directory {}: {error}",
@@ -1559,6 +1565,9 @@ pub fn collect_rs_files(root: &Path, dir: &Path, out: &mut Vec<(String, String)>
         if test_only.contains_key(name.trim_end_matches(".rs")) {
             continue;
         }
+        // `path` is a `read_dir` entry under the compile-time crate root — the walk never
+        // joins a runtime-supplied component.
+        // codeql[rust/path-injection]
         let source = std::fs::read_to_string(&path).unwrap_or_else(|error| {
             panic!("authority audit could not read {}: {error}", path.display())
         });

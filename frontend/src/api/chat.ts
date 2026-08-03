@@ -1614,17 +1614,24 @@ export async function getConversationMessagesPage(
   offset = 0,
 ): Promise<ConversationMessagesPageResponse> {
   const args = { conversationId, limit: wirePageLimit(limit), offset };
+  // Both commands return `Option`, so an unknown conversation id answers `null` on the
+  // wire. Parsing it as a required object turned that into a raw schema dump; name the
+  // condition instead. Null is NOT coerced to an empty page — that would render a real
+  // conversation as empty and hide the mismatch.
   const raw = remoteTranscriptReadsEnabled()
     ? await typedInvoke(
         "get_remote_agent_conversation_messages_page",
         args,
-        ConversationMessagesPageResponseSchema,
+        ConversationMessagesPageResponseSchema.nullable(),
       )
     : await typedInvoke(
         "get_agent_conversation_messages_page",
         args,
-        ConversationMessagesPageResponseSchema,
+        ConversationMessagesPageResponseSchema.nullable(),
       );
+  if (raw === null) {
+    throw new Error(`Conversation ${conversationId} was not found on this host.`);
+  }
 
   return transformConversationMessagesPage(raw);
 }
@@ -1639,17 +1646,22 @@ export async function getConversationTimelinePage(
   beforeSequence: number | null = null,
 ): Promise<ConversationTimelinePageResponse> {
   const args = { conversationId, limit: wirePageLimit(limit), beforeSequence };
+  // `Option` on both sides — see `getConversationMessagesPage` for why null is named
+  // rather than coerced into an empty page.
   const raw = remoteTranscriptReadsEnabled()
     ? await typedInvoke(
         "get_remote_agent_conversation_timeline_page",
         args,
-        ConversationTimelinePageResponseSchema,
+        ConversationTimelinePageResponseSchema.nullable(),
       )
     : await typedInvoke(
         "get_agent_conversation_timeline_page",
         args,
-        ConversationTimelinePageResponseSchema,
+        ConversationTimelinePageResponseSchema.nullable(),
       );
+  if (raw === null) {
+    throw new Error(`Conversation ${conversationId} was not found on this host.`);
+  }
 
   return transformConversationTimelinePage(raw);
 }

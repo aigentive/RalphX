@@ -208,8 +208,16 @@ export const projectsApi = {
       ? typedInvokeWithTransform(
           "get_remote_project",
           { id: projectId },
-          ProjectResponseSchema,
-          transformProject
+          // The host answers `null` for a project id it does not have — common on a client
+          // whose selection predates the environment switch. Name it instead of dumping a
+          // schema error.
+          ProjectResponseSchema.nullable(),
+          (raw) => {
+            if (raw === null) {
+              throw new Error(`Project ${projectId} was not found on this host.`);
+            }
+            return transformProject(raw);
+          }
         )
       : // `id`, not `projectId`: the local command's param is `id: String`, and Tauri binds a
         // flat param by its exact name or its camelCase form — `projectId` matches neither and
