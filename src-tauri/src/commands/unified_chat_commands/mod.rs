@@ -92,7 +92,8 @@ use crate::application::agent_workspace_publish_recovery::{
     pr_autofix_fingerprint_spend, recover_stale_publish_repair_for_workspace_in_state,
 };
 use crate::application::agent_workspace_publish_repair_state::{
-    classify_agent_workspace_repair_delivery, reserve_agent_workspace_repair_dispatch,
+    classify_agent_workspace_repair_delivery, last_human_repair_reason,
+    reserve_agent_workspace_repair_dispatch,
     resume_current_agent_workspace_repair_publish, resume_ready_agent_workspace_repair_for_publish,
     settle_agent_workspace_repair_dispatch_outcome, start_or_join_agent_workspace_repair,
     AgentWorkspaceRepairDispatchOutcome, AgentWorkspaceRepairDispatchSettlement,
@@ -9431,11 +9432,11 @@ where
         worktree_path: Some(resolved.path),
     };
 
-    let error = last_meaningful_agent_workspace_repair_reason(&attempt);
+    let error = compose_blocked_repair_retry_context(&attempt, &target.base_ref);
     mark_agent_workspace_failure_with_routing_and_action_classified(
         state,
         &retry_workspace,
-        error,
+        &error,
         None,
         repair_service,
         true,
@@ -9472,31 +9473,43 @@ fn repair_handoff_verification_result(
     }
 }
 
-/// Delivery retries append `auto_retry_*` streak markers to the durable reason history. Those
-/// markers describe recovery bookkeeping rather than the publish failure the repair agent needs.
-fn last_meaningful_agent_workspace_repair_reason(attempt: &AgentWorkspaceRepairAttempt) -> &str {
-    attempt
-        .pending_reasons
-        .iter()
-        .rev()
-        .map(String::as_str)
-        .find(|reason| {
-            let trimmed = reason.trim();
-            !trimmed.is_empty()
-                && !trimmed.starts_with(
-                    crate::application::agent_workspace_publish_recovery::AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX,
-                )
-                && !trimmed.starts_with(
-                    crate::application::agent_workspace_publish_recovery::AUTO_RETRY_READY_REPAIR_REASON_PREFIX,
-                )
-        })
+/// Successor context for a user-directed retry of a blocked repair. Prefer the previous fixer's
+/// blocker and human-authored reason before the durable delivery summary; machine markers in
+/// `pending_reasons` must never become the successor's only context.
+fn compose_blocked_repair_retry_context(
+    attempt: &AgentWorkspaceRepairAttempt,
+    new_base_ref: &str,
+) -> String {
+    let core = attempt
+        .blocker
+        .as_deref()
+        .filter(|blocker| !blocker.trim().is_empty())
+        .or_else(|| last_human_repair_reason(attempt))
         .or_else(|| {
             attempt
                 .summary
                 .as_deref()
                 .filter(|summary| !summary.trim().is_empty())
         })
-        .unwrap_or("Retrying blocked workspace repair.")
+        .unwrap_or("Retrying blocked workspace repair.");
+
+    let mut context = format!("Previous repair attempt was blocked: {core}");
+    if let Some(repair_head_commit) = attempt
+        .repair_head_commit
+        .as_deref()
+        .filter(|commit| !commit.trim().is_empty())
+    {
+        context.push_str(&format!(
+            " The previous repair agent committed {repair_head_commit} before blocking; inspect that commit rather than redoing its work."
+        ));
+    }
+    if attempt.target_base_ref != new_base_ref {
+        context.push_str(&format!(
+            " The base has since been updated from {} to {new_base_ref}; verify the workspace against the new base.",
+            attempt.target_base_ref
+        ));
+    }
+    context
 }
 
 async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
