@@ -5,8 +5,10 @@ import {
   agentWorkspaceMaintenanceOperationToastId,
   agentWorkspaceOperationResultDetail,
   agentWorkspaceOperationToastId,
+  isAgentWorkspaceOperationToastDismissed,
   publishPipelineToastLabel,
   maintenanceOperationToastLabel,
+  resetAgentWorkspaceOperationToastStateForTests,
   startAgentWorkspaceOperationToast,
 } from "./agentWorkspaceOperationToast";
 
@@ -16,12 +18,16 @@ const {
   toastInfoMock,
   toastLoadingMock,
   toastSuccessMock,
+  navigateToAgentConversationMock,
+  visibleAgentScopeMock,
 } = vi.hoisted(() => ({
   toastDismissMock: vi.fn(),
   toastErrorMock: vi.fn(),
   toastInfoMock: vi.fn(),
   toastLoadingMock: vi.fn(),
   toastSuccessMock: vi.fn(),
+  navigateToAgentConversationMock: vi.fn(),
+  visibleAgentScopeMock: vi.fn(),
 }));
 
 vi.mock("sonner", () => ({
@@ -34,6 +40,17 @@ vi.mock("sonner", () => ({
   },
 }));
 
+vi.mock("@/lib/navigation", () => ({
+  navigateToAgentConversation: (...args: unknown[]) =>
+    navigateToAgentConversationMock(...args),
+}));
+
+vi.mock("@/stores/agentSessionStore", () => ({
+  useAgentSessionStore: {
+    getState: () => ({ visibleAgentScope: visibleAgentScopeMock() }),
+  },
+}));
+
 describe("agentWorkspaceOperationToast", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -43,9 +60,12 @@ describe("agentWorkspaceOperationToast", () => {
     toastInfoMock.mockClear();
     toastLoadingMock.mockClear();
     toastSuccessMock.mockClear();
+    navigateToAgentConversationMock.mockClear();
+    visibleAgentScopeMock.mockReturnValue(null);
   });
 
   afterEach(() => {
+    resetAgentWorkspaceOperationToastStateForTests();
     vi.useRealTimers();
   });
 
@@ -171,6 +191,70 @@ describe("agentWorkspaceOperationToast", () => {
     expect(toastLoadingMock).toHaveBeenCalledTimes(loadingCallCount);
   });
 
+  it("adds no action to an operation toast without a target conversation", () => {
+    startAgentWorkspaceOperationToast({
+      id: agentWorkspaceOperationToastId("conversation-1", "update-from-base"),
+      title: "Updating branch",
+    });
+
+    const loadingOptions = toastLoadingMock.mock.calls.at(-1)?.[1] as
+      | { action?: unknown }
+      | undefined;
+    expect(loadingOptions?.action).toBeUndefined();
+  });
+
+  it("opens the target conversation from loading and result toast actions", () => {
+    const progress = startAgentWorkspaceOperationToast({
+      id: agentWorkspaceOperationToastId("conversation-1", "publish"),
+      targetConversation: {
+        conversationId: "conversation-1",
+        projectId: "project-1",
+      },
+      title: "Publishing workspace",
+    });
+
+    const loadingOptions = toastLoadingMock.mock.calls.at(-1)?.[1] as
+      | { action?: { label?: string; onClick?: () => void } }
+      | undefined;
+    expect(loadingOptions?.action).toEqual(
+      expect.objectContaining({ label: "Open conversation" }),
+    );
+    loadingOptions?.action?.onClick?.();
+    expect(navigateToAgentConversationMock).toHaveBeenCalledWith(
+      "project-1",
+      "conversation-1",
+    );
+
+    progress.success("Published branch");
+    const resultOptions = toastSuccessMock.mock.calls.at(-1)?.[1] as
+      | { action?: { label?: string; onClick?: () => void } }
+      | undefined;
+    expect(resultOptions?.action).toEqual(
+      expect.objectContaining({ label: "Open conversation" }),
+    );
+    resultOptions?.action?.onClick?.();
+    expect(navigateToAgentConversationMock).toHaveBeenLastCalledWith(
+      "project-1",
+      "conversation-1",
+    );
+  });
+
+  it("truncates verbose progress detail without truncating terminal detail", () => {
+    startAgentWorkspaceOperationToast({
+      conversationTitle: "Agent conversation",
+      detail: "x".repeat(100),
+      id: agentWorkspaceOperationToastId("conversation-1", "update-from-base"),
+      title: "Updating branch",
+    });
+
+    expect(toastLoadingMock).toHaveBeenLastCalledWith(
+      "Updating branch",
+      expect.objectContaining({
+        description: `Agent conversation • ${"x".repeat(79)}… • 0s`,
+      }),
+    );
+  });
+
   it("updates the persistent toast before ignoring updates after settlement", () => {
     const progress = startAgentWorkspaceOperationToast({
       conversationTitle: "Agent conversation",
@@ -244,6 +328,7 @@ describe("agentWorkspaceOperationToast", () => {
       duration: 8_000,
       id: toastId,
     });
+    expect(isAgentWorkspaceOperationToastDismissed(toastId)).toBe(false);
   });
 
   it("replaces the persistent loading toast with an error result", () => {
@@ -311,6 +396,179 @@ describe("agentWorkspaceOperationToast", () => {
       },
     );
     loadingOptions?.onDismiss?.();
+  });
+
+  it("keeps a user dismissal until settlement clears the shared registry", () => {
+    const toastId = agentWorkspaceMaintenanceOperationToastId(
+      "conversation-1",
+      "operation-1",
+    );
+    const first = startAgentWorkspaceOperationToast({
+      id: toastId,
+      targetConversation: {
+        conversationId: "conversation-1",
+        projectId: "project-1",
+      },
+      title: "First writer",
+    });
+
+    const loadingOptions = toastLoadingMock.mock.calls.at(-1)?.[1] as
+      | { onDismiss?: () => void }
+      | undefined;
+    loadingOptions?.onDismiss?.();
+    expect(isAgentWorkspaceOperationToastDismissed(toastId)).toBe(true);
+
+    const loadingCallCount = toastLoadingMock.mock.calls.length;
+    const replacement = startAgentWorkspaceOperationToast({
+      id: toastId,
+      targetConversation: {
+        conversationId: "conversation-1",
+        projectId: "project-1",
+      },
+      title: "Replacement writer",
+    });
+    vi.advanceTimersByTime(1_000);
+
+    expect(toastLoadingMock).toHaveBeenCalledTimes(loadingCallCount);
+    replacement.error("Replacement must stay hidden");
+    expect(toastErrorMock).not.toHaveBeenCalled();
+    expect(isAgentWorkspaceOperationToastDismissed(toastId)).toBe(false);
+
+    first.success("Dismissed operation must stay hidden");
+    expect(toastSuccessMock).not.toHaveBeenCalled();
+
+    const nextOperation = startAgentWorkspaceOperationToast({
+      id: toastId,
+      targetConversation: {
+        conversationId: "conversation-1",
+        projectId: "project-1",
+      },
+      title: "Next operation",
+    });
+    expect(toastLoadingMock).toHaveBeenLastCalledWith(
+      "Next operation",
+      expect.objectContaining({ id: toastId }),
+    );
+    nextOperation.dismiss();
+  });
+
+  it("suppresses loading and settlement while its target conversation is visible", () => {
+    visibleAgentScopeMock.mockReturnValue({
+      visibleConversationId: "conversation-1",
+      workspaceConversationId: "conversation-1",
+    });
+    const progress = startAgentWorkspaceOperationToast({
+      id: agentWorkspaceOperationToastId("conversation-1", "publish"),
+      targetConversation: {
+        conversationId: "conversation-1",
+        projectId: "project-1",
+      },
+      title: "Publishing workspace",
+    });
+
+    expect(toastLoadingMock).not.toHaveBeenCalled();
+    progress.success("Published branch");
+    expect(toastSuccessMock).not.toHaveBeenCalled();
+  });
+
+  it("re-shows after reversible visibility suppression without recording a dismissal", () => {
+    const toastId = agentWorkspaceMaintenanceOperationToastId(
+      "conversation-1",
+      "operation-1",
+    );
+    visibleAgentScopeMock.mockReturnValue({
+      visibleConversationId: "conversation-1",
+      workspaceConversationId: "conversation-1",
+    });
+    startAgentWorkspaceOperationToast({
+      id: toastId,
+      targetConversation: {
+        conversationId: "conversation-1",
+        projectId: "project-1",
+      },
+      title: "Repairing workspace",
+    });
+
+    expect(toastLoadingMock).not.toHaveBeenCalled();
+
+    visibleAgentScopeMock.mockReturnValue({
+      visibleConversationId: "conversation-2",
+      workspaceConversationId: "conversation-2",
+    });
+    vi.advanceTimersByTime(1_000);
+    const loadingOptions = toastLoadingMock.mock.calls.at(-1)?.[1] as
+      | { onDismiss?: () => void }
+      | undefined;
+    expect(toastLoadingMock).toHaveBeenCalledTimes(1);
+
+    visibleAgentScopeMock.mockReturnValue({
+      visibleConversationId: "conversation-1",
+      workspaceConversationId: "conversation-1",
+    });
+    vi.advanceTimersByTime(1_000);
+    expect(toastDismissMock).toHaveBeenCalledWith(toastId);
+    loadingOptions?.onDismiss?.();
+    expect(isAgentWorkspaceOperationToastDismissed(toastId)).toBe(false);
+
+    visibleAgentScopeMock.mockReturnValue({
+      visibleConversationId: "conversation-2",
+      workspaceConversationId: "conversation-2",
+    });
+    vi.advanceTimersByTime(1_000);
+    expect(toastLoadingMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("rechecks target visibility when an operation converts to a new toast id", () => {
+    const firstId = agentWorkspaceOperationToastId("conversation-1", "publish");
+    const secondId = agentWorkspaceMaintenanceOperationToastId(
+      "conversation-2",
+      "operation-1",
+    );
+    const progress = startAgentWorkspaceOperationToast({
+      id: firstId,
+      title: "Publishing workspace",
+    });
+    visibleAgentScopeMock.mockReturnValue({
+      visibleConversationId: "conversation-2",
+      workspaceConversationId: "conversation-2",
+    });
+
+    progress.update({
+      id: secondId,
+      targetConversation: {
+        conversationId: "conversation-2",
+        projectId: "project-1",
+      },
+    });
+
+    expect(toastDismissMock).toHaveBeenCalledWith(firstId);
+    expect(toastLoadingMock).toHaveBeenCalledTimes(1);
+    progress.error("Repair blocked");
+    expect(toastErrorMock).not.toHaveBeenCalled();
+  });
+
+  it("does not treat an internal id conversion as a user dismissal", () => {
+    const firstId = agentWorkspaceOperationToastId("conversation-1", "publish");
+    const secondId = agentWorkspaceOperationToastId("conversation-2", "publish");
+    const progress = startAgentWorkspaceOperationToast({
+      id: firstId,
+      title: "Publishing workspace",
+    });
+    const firstLoadingOptions = toastLoadingMock.mock.calls.at(-1)?.[1] as
+      | { onDismiss?: () => void }
+      | undefined;
+
+    progress.update({ id: secondId });
+    firstLoadingOptions?.onDismiss?.();
+    const loadingCallCount = toastLoadingMock.mock.calls.length;
+    vi.advanceTimersByTime(1_000);
+
+    expect(toastDismissMock).toHaveBeenCalledWith(firstId);
+    expect(toastLoadingMock).toHaveBeenCalledTimes(loadingCallCount + 1);
+    expect(toastLoadingMock).toHaveBeenLastCalledWith(
+      "Publishing workspace",
+      expect.objectContaining({ id: secondId }),
+    );
   });
 
   it("supersedes an existing controller for the same toast id", () => {
