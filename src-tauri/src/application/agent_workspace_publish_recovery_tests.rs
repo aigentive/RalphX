@@ -21,7 +21,8 @@ use crate::application::agent_workspace_publish_recovery::{
     recover_stale_publish_repair_for_workspace_with_project_repo_outcome,
     recover_stale_transient_publish_statuses, PrAutofixSuccessorDecision,
     StalePublishRepairRecoveryOutcome, AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX,
-    AUTO_RETRY_READY_REPAIR_REASON_PREFIX, STALE_NEEDS_AGENT_CLASSIFICATION,
+    AUTO_RETRY_READY_REPAIR_REASON_PREFIX, EXHAUSTED_PUBLISH_REDRIVE_CHECKED_REASON_PREFIX,
+    STALE_NEEDS_AGENT_CLASSIFICATION,
     STALE_REPAIR_BLOCKED_SUMMARY, STALE_REPAIR_RECOVERED_STEP, STALE_TRANSIENT_CLASSIFICATION,
     STALE_TRANSIENT_RECOVERED_STEP,
 };
@@ -80,6 +81,7 @@ fn generic_repair_redelivery_uses_default_context_when_only_machine_markers_rema
         UNCHANGED_HEALTH_REPAIR_REASON.to_string(),
         format!("{AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX}3"),
         format!("{AUTO_RETRY_READY_REPAIR_REASON_PREFIX}2"),
+        format!("{EXHAUSTED_PUBLISH_REDRIVE_CHECKED_REASON_PREFIX}bba066f"),
     ];
 
     for marker in markers {

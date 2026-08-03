@@ -65,7 +65,8 @@ pub(crate) const AUTO_RETRY_READY_REPAIR_REASON_PREFIX: &str = "auto_retry_ready
 const AUTO_RETRY_READY_REPAIR_BASE_DELAY_SECS: i64 = 60;
 const AUTO_RETRY_READY_REPAIR_MAX_DELAY_SECS: i64 = 15 * 60;
 const MAX_AUTO_RETRY_READY_REPAIR_STREAK: u32 = 3;
-const EXHAUSTED_PUBLISH_REDRIVE_CHECKED_REASON_PREFIX: &str = "exhausted_publish_redrive_checked:";
+pub(crate) const EXHAUSTED_PUBLISH_REDRIVE_CHECKED_REASON_PREFIX: &str =
+    "exhausted_publish_redrive_checked:";
 const CONTINUATION_RECOVERY_FAILURE_REASON_PREFIX: &str = "continuation_recovery_failure:";
 const CONTINUATION_OPEN_EFFECT_RECOVERY_REASON_PREFIX: &str = "continuation_open_effect_recovery:";
 const CONTINUATION_OPEN_EFFECT_ATTENTION_REASON: &str =

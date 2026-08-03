@@ -88,6 +88,8 @@ pub(crate) fn is_machine_repair_reason_marker(reason: &str) -> bool {
         crate::application::agent_workspace_publish_recovery::AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX,
     ) || trimmed.starts_with(
         crate::application::agent_workspace_publish_recovery::AUTO_RETRY_READY_REPAIR_REASON_PREFIX,
+    ) || trimmed.starts_with(
+        crate::application::agent_workspace_publish_recovery::EXHAUSTED_PUBLISH_REDRIVE_CHECKED_REASON_PREFIX,
     )
 }
 

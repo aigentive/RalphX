@@ -6,6 +6,7 @@ use std::sync::Arc;
 use crate::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
 use crate::application::agent_workspace_publish_recovery::{
     AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX, AUTO_RETRY_READY_REPAIR_REASON_PREFIX,
+    EXHAUSTED_PUBLISH_REDRIVE_CHECKED_REASON_PREFIX,
 };
 use crate::application::agent_workspace_publish_repair_state::{
     abort_agent_workspace_pr_fix_review_handoff, block_agent_workspace_pr_fix_claim,
@@ -84,10 +85,11 @@ fn repair_reason_helpers_exclude_every_machine_marker_and_preserve_latest_human_
         UNCHANGED_HEALTH_REPAIR_REASON.to_string(),
         format!("{AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX}2"),
         format!("{AUTO_RETRY_READY_REPAIR_REASON_PREFIX}1"),
+        format!("{EXHAUSTED_PUBLISH_REDRIVE_CHECKED_REASON_PREFIX}bba066f"),
         newer_human_context.clone(),
     ];
 
-    for marker in &attempt.pending_reasons[1..6] {
+    for marker in &attempt.pending_reasons[1..7] {
         assert!(
             is_machine_repair_reason_marker(marker),
             "{marker:?} must remain internal scheduling state"
@@ -126,6 +128,7 @@ fn repair_reason_helpers_return_no_context_when_only_machine_markers_remain() {
         UNCHANGED_HEALTH_REPAIR_REASON.to_string(),
         format!("{AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX}3"),
         format!("{AUTO_RETRY_READY_REPAIR_REASON_PREFIX}2"),
+        format!("{EXHAUSTED_PUBLISH_REDRIVE_CHECKED_REASON_PREFIX}bba066f"),
         "   ".to_string(),
     ];
 
