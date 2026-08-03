@@ -479,8 +479,8 @@ mod tests {
         }
         if !exited {
             let _ = child.kill();
-            let _ = child.wait();
         }
+        let _ = child.wait();
         assert!(
             exited,
             "isolated process group should exit within the bound"
