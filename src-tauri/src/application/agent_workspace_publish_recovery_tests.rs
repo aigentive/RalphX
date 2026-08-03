@@ -22,9 +22,8 @@ use crate::application::agent_workspace_publish_recovery::{
     recover_stale_transient_publish_statuses, PrAutofixSuccessorDecision,
     StalePublishRepairRecoveryOutcome, AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX,
     AUTO_RETRY_READY_REPAIR_REASON_PREFIX, EXHAUSTED_PUBLISH_REDRIVE_CHECKED_REASON_PREFIX,
-    STALE_NEEDS_AGENT_CLASSIFICATION,
-    STALE_REPAIR_BLOCKED_SUMMARY, STALE_REPAIR_RECOVERED_STEP, STALE_TRANSIENT_CLASSIFICATION,
-    STALE_TRANSIENT_RECOVERED_STEP,
+    STALE_NEEDS_AGENT_CLASSIFICATION, STALE_REPAIR_BLOCKED_SUMMARY, STALE_REPAIR_RECOVERED_STEP,
+    STALE_TRANSIENT_CLASSIFICATION, STALE_TRANSIENT_RECOVERED_STEP,
 };
 use crate::application::agent_workspace_publish_repair_state::{
     reserve_agent_workspace_repair_dispatch, start_or_join_agent_workspace_repair,
