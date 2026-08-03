@@ -1,3 +1,9 @@
+---
+paths:
+  - "src-tauri/**/*.rs"
+  - "plugins/app/**/*.{ts,js}"
+---
+
 > **Maintainer note:** Keep this file compact. Prefer one-line rules, links to source docs, and explicit non-negotiables over prose.
 
 # CodeQL Path Safety

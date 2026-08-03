@@ -1,13 +1,9 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ChatMessageList } from "./ChatMessageList";
-import {
-  buildLiveTranscriptRows,
-  liveThinkingGroupKey,
-  synchronizeThinkingGroupExpansion,
-} from "./ChatMessageList.liveRows";
 import { createWrapper } from "@/test/store-utils";
 import type { StreamingContentBlock } from "@/types/streaming-task";
+import type { ChatMessageData } from "./ChatMessageList";
 
 vi.mock("@/hooks/useMessageAttachments", () => ({
   useMessageAttachments: () => ({ data: new Map() }),
@@ -32,14 +28,17 @@ function thinking(blockIndex: number, text: string, isSettled = false): Streamin
   return { type: "thinking", blockIndex, text, isSettled, durationMs: 2_000 };
 }
 
-function renderList(streamingContentBlocks: StreamingContentBlock[]) {
-  return render(<ChatMessageList {...defaultProps} streamingContentBlocks={streamingContentBlocks} />, {
+function renderList(
+  streamingContentBlocks: StreamingContentBlock[],
+  messages: ChatMessageData[] = [],
+) {
+  return render(<ChatMessageList {...defaultProps} messages={messages} streamingContentBlocks={streamingContentBlocks} />, {
     wrapper: createWrapper(),
   });
 }
 
 describe("ChatMessageList thinking lifecycle", () => {
-  it("collapses a thinking group when it settles", () => {
+  it("keeps a live thinking group expanded when it settles", () => {
     const { rerender } = renderList([thinking(1, "first thought"), thinking(2, "second thought")]);
 
     expect(screen.getByTestId("thinking-content")).toHaveTextContent("first thought");
@@ -52,7 +51,8 @@ describe("ChatMessageList thinking lifecycle", () => {
       />,
     );
 
-    expect(screen.queryByTestId("thinking-content")).not.toBeInTheDocument();
+    expect(screen.getByTestId("thinking-content")).toHaveTextContent("first thought");
+    expect(screen.getByTestId("thinking-content")).toHaveTextContent("second thought");
   });
 
   it("keeps an empty live thinking block pill-only while showing token progress", () => {
@@ -85,7 +85,7 @@ describe("ChatMessageList thinking lifecycle", () => {
     expect(screen.getByText("settled thought updated")).toBeInTheDocument();
   });
 
-  it("collapses an earlier thinking group when a newer group starts after visible tool activity", () => {
+  it("keeps earlier thinking expanded when a newer group starts after visible tool activity", () => {
     const { rerender } = renderList([thinking(1, "first thought")]);
 
     expect(screen.getByText("first thought")).toBeInTheDocument();
@@ -101,7 +101,7 @@ describe("ChatMessageList thinking lifecycle", () => {
       />,
     );
 
-    expect(screen.queryByText("first thought")).not.toBeInTheDocument();
+    expect(screen.getByText("first thought")).toBeInTheDocument();
     expect(screen.getByText("second thought")).toBeInTheDocument();
   });
 
@@ -122,10 +122,72 @@ describe("ChatMessageList thinking lifecycle", () => {
     expect(screen.queryByTestId("thinking-content")).not.toBeInTheDocument();
   });
 
-  it("keeps the same Set when an equivalent delta needs no expansion change", () => {
-    const rows = buildLiveTranscriptRows([thinking(1, "live thought")], new Map());
-    const current = new Set([liveThinkingGroupKey(thinking(1, "live thought"), 0)]);
+  it.each(["claude", "codex", "other"])("renders a finalized persisted %s thinking run expanded", (providerHarness) => {
+    const messages: ChatMessageData[] = [
+      {
+        id: "thinking-1", role: "assistant", content: "", createdAt: "2026-08-03T00:00:00Z",
+        parentMessageId: "message-1", timelineSequence: 4, providerHarness,
+        contentBlocks: [{ type: "thinking", text: "First persisted", durationMs: 1_000 }],
+      },
+      {
+        id: "thinking-2", role: "assistant", content: "", createdAt: "2026-08-03T00:00:01Z",
+        parentMessageId: "message-1", timelineSequence: 5, providerHarness,
+        contentBlocks: [{ type: "thinking", text: "Second persisted", durationMs: 2_000 }],
+      },
+    ];
 
-    expect(synchronizeThinkingGroupExpansion(current, rows, new Map())).toBe(current);
+    renderList([], messages);
+
+    expect(screen.getAllByTestId("thinking-group-toggle")).toHaveLength(1);
+    expect(screen.getByTestId("thinking-content")).toHaveTextContent("First persisted");
+    expect(screen.getByTestId("thinking-content")).toHaveTextContent("Second persisted");
+
+    fireEvent.click(screen.getByTestId("thinking-group-toggle"));
+    expect(screen.queryByTestId("thinking-content")).not.toBeInTheDocument();
+  });
+
+  it("preserves an in-message thinking collapse when its virtualized row remounts", () => {
+    const message: ChatMessageData = {
+      id: "message-with-thinking",
+      role: "assistant",
+      content: "",
+      createdAt: "2026-08-03T00:00:00Z",
+      contentBlocks: [
+        { type: "thinking", text: "First in-message thought", isSettled: true },
+        { type: "thinking", text: "Second in-message thought", isSettled: true },
+      ],
+    };
+    const { rerender } = render(
+      <ChatMessageList
+        {...defaultProps}
+        isAgentRunning={false}
+        messages={[message]}
+        streamingContentBlocks={[]}
+      />,
+      { wrapper: createWrapper() },
+    );
+
+    expect(screen.getByTestId("thinking-content")).toHaveTextContent("First in-message thought");
+    fireEvent.click(screen.getByTestId("thinking-group-toggle"));
+    expect(screen.queryByTestId("thinking-content")).not.toBeInTheDocument();
+
+    rerender(
+      <ChatMessageList
+        {...defaultProps}
+        isAgentRunning={false}
+        messages={[]}
+        streamingContentBlocks={[]}
+      />,
+    );
+    rerender(
+      <ChatMessageList
+        {...defaultProps}
+        isAgentRunning={false}
+        messages={[message]}
+        streamingContentBlocks={[]}
+      />,
+    );
+
+    expect(screen.queryByTestId("thinking-content")).not.toBeInTheDocument();
   });
 });

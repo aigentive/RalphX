@@ -2,10 +2,10 @@
 
 # frontend/src/CLAUDE.md — Frontend
 
-Quality standards: @../../.claude/rules/code-quality-standards.md
-Task detail views: @../../.claude/rules/task-detail-views.md
-Interaction performance: @../../.claude/rules/frontend-interaction-performance.md
-Thinking capture: @../../.claude/rules/agent-thinking-capture.md
+Quality standards: `.claude/rules/code-quality-standards.md`
+Task detail views: `.claude/rules/task-detail-views.md`
+Interaction performance: `.claude/rules/frontend-interaction-performance.md`
+Thinking capture: `.claude/rules/agent-thinking-capture.md`
 
 ## Stack
 React 19.2 | TS 6.0 | Zustand 5.0+immer | TanStack Query 5.100 | Tailwind 4.1 | Zod 4.4
@@ -114,13 +114,13 @@ Component does ONE of: Display UI | Manage State | Coordinate children
 
 ### Document Patterns Inline
 When introducing a new architectural pattern, add a one-liner here. Pattern name + rule only.
-Example: "View Registry Pattern" — see @../../.claude/rules/task-detail-views.md
+Example: "View Registry Pattern" — see `.claude/rules/task-detail-views.md`
 
 - **Reuse Before Invent (NON-NEGOTIABLE)** — new chat/agents behavior extends the existing owning surface: context derivation → chat-context-registry, send/queue/stop → `useChatActions`, streaming → `useChatEvents`, hydration → `useChatRecovery`, scrolling → `ChatScrollController`, per-conversation state → the conversation-keyed stores. ❌ Parallel stores/hooks/scroll writers for owned concerns.
 - **Chat Context Registry** — `src/lib/chat-context-registry.ts`. Use `buildStoreKey()`, `resolveContextType()`, `getContextConfig()` for all chat context derivations. New context type = add to registry + `CONTEXT_TYPE_VALUES`.
 - **Unified Chat Hooks** — `useChatActions` (send/queue/stop), `useChatEvents` (streaming/tool calls), `useChatRecovery` (polling/sync). Both panels use these.
-- **Backend-Owned Thinking Lifecycle** — `useChatEvents` consumes authoritative `block_index`/`is_settled`/`duration_ms`; visibly adjacent thinking renders under one collapse, and automatic expansion stays in `synchronizeThinkingGroupExpansion`. See @../../docs/architecture/agent-thinking-capture.md
-- **First-Paint Shells** — heavy panes/drawers/widgets render a lightweight shell immediately, then lazy-load/hydrate content after paint. See @../../.claude/rules/frontend-interaction-performance.md
+- **Backend-Owned Thinking Lifecycle** — `useChatEvents` consumes authoritative `block_index`/`is_settled`/`duration_ms`; visibly adjacent thinking renders under one default-expanded collapse, and `ChatMessageList` is the single manual-intent owner. See `docs/architecture/agent-thinking-capture.md`
+- **First-Paint Shells** — heavy panes/drawers/widgets render a lightweight shell immediately, then lazy-load/hydrate content after paint. See `.claude/rules/frontend-interaction-performance.md`
 - **Backend-owned Startup Readiness** — `StartupRoot` polls the typed startup snapshot and is the only frontend mount gate; time, localStorage, and root-query settlement never authorize the real App.
 - **Provider MCP Settings** — Harness → MCP uses refreshed enabled/available provider readiness, provider-scoped query keys, redacted catalogs, and global/project tri-state deny controls; provider definitions/auth/trust never enter frontend state.
 - **Async Confirmations** — pass backend work through `useConfirmation({ onConfirm, pendingText })` so dialogs stay open with disabled actions until settlement.

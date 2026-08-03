@@ -9,11 +9,11 @@ use super::{
     apply_base_resolution_to_publish_target, archive_agent_conversation,
     build_agent_workspace_publish_repair_message_for_target,
     build_agent_workspace_repair_message_for_target, cached_agent_workspace_freshness,
-    create_agent_conversation, emit_agent_conversation_fork_events,
-    ensure_plan_workspace_planning_session_link_for_send, existing_pr_retarget_block_reason,
-    filter_agent_list_visible_conversations, fork_agent_conversation,
-    fork_agent_conversation_response_for_state, fork_terminal_agent_conversation_for_send,
-    get_agent_conversation_runtime_index_for_app_state,
+    compose_blocked_repair_retry_context, create_agent_conversation,
+    emit_agent_conversation_fork_events, ensure_plan_workspace_planning_session_link_for_send,
+    existing_pr_retarget_block_reason, filter_agent_list_visible_conversations,
+    fork_agent_conversation, fork_agent_conversation_response_for_state,
+    fork_terminal_agent_conversation_for_send, get_agent_conversation_runtime_index_for_app_state,
     get_agent_conversation_runtime_statuses_for_app_state,
     get_agent_conversation_summary_for_app_state,
     get_agent_conversation_timeline_page_for_app_state, get_agent_conversation_workspace_freshness,
@@ -4115,6 +4115,190 @@ async fn seed_blocked_command_repair_attempt(
     }
 }
 
+#[test]
+fn blocked_workspace_repair_retry_context_carries_blocker_commit_and_base_retarget() {
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        ChatConversationId::from_string("retry-context-blocker".to_string()),
+        AgentWorkspaceRepairSource::BaseUpdate,
+        AgentWorkspaceRepairContinuation::UpdateOnly,
+        "ralphx/old",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    attempt.blocker = Some("old base ref was deleted after its PR merged".to_string());
+    attempt.repair_head_commit = Some("bba066f".to_string());
+    attempt.pending_reasons = vec![
+        "real repair failure".to_string(),
+        crate::application::agent_workspace_publish_repair_state::NEEDS_HUMAN_REPAIR_REASON
+            .to_string(),
+    ];
+
+    let context = compose_blocked_repair_retry_context(&attempt, "main");
+
+    assert!(context.contains("old base ref was deleted after its PR merged"));
+    assert!(context.contains("bba066f"));
+    assert!(context.contains("ralphx/old"));
+    assert!(context.contains("main"));
+    assert!(!context.contains(
+        crate::application::agent_workspace_publish_repair_state::NEEDS_HUMAN_REPAIR_REASON
+    ));
+}
+
+#[test]
+fn blocked_workspace_repair_retry_context_uses_summary_when_no_human_reason_exists() {
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        ChatConversationId::from_string("retry-context-summary".to_string()),
+        AgentWorkspaceRepairSource::BaseUpdate,
+        AgentWorkspaceRepairContinuation::UpdateOnly,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    attempt.pending_reasons = vec![
+        crate::application::agent_workspace_publish_repair_state::NEEDS_HUMAN_REPAIR_REASON
+            .to_string(),
+    ];
+    attempt.summary = Some("repair summary retained for retry".to_string());
+
+    let context = compose_blocked_repair_retry_context(&attempt, "main");
+
+    assert!(context.contains("repair summary retained for retry"));
+    assert!(!context.contains(
+        crate::application::agent_workspace_publish_repair_state::NEEDS_HUMAN_REPAIR_REASON
+    ));
+}
+
+#[test]
+fn blocked_workspace_repair_retry_context_prefers_human_reason_over_summary() {
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        ChatConversationId::from_string("retry-context-human-reason".to_string()),
+        AgentWorkspaceRepairSource::BaseUpdate,
+        AgentWorkspaceRepairContinuation::UpdateOnly,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    attempt.pending_reasons = vec!["real reason".to_string()];
+    attempt.summary = Some("internal delivery message".to_string());
+
+    let context = compose_blocked_repair_retry_context(&attempt, "main");
+
+    assert!(context.contains("real reason"));
+    assert!(!context.contains("internal delivery message"));
+}
+
+#[test]
+fn blocked_workspace_repair_retry_context_uses_default_without_human_context() {
+    let attempt = AgentWorkspaceRepairAttempt::new(
+        ChatConversationId::from_string("retry-context-default".to_string()),
+        AgentWorkspaceRepairSource::BaseUpdate,
+        AgentWorkspaceRepairContinuation::UpdateOnly,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+
+    let context = compose_blocked_repair_retry_context(&attempt, "main");
+
+    assert!(context.contains("Retrying blocked workspace repair."));
+}
+
+#[test]
+fn blocked_workspace_repair_retry_context_omits_retarget_details_for_same_base() {
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        ChatConversationId::from_string("retry-context-same-base".to_string()),
+        AgentWorkspaceRepairSource::BaseUpdate,
+        AgentWorkspaceRepairContinuation::UpdateOnly,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    attempt.blocker = Some("still needs a repair".to_string());
+
+    let context = compose_blocked_repair_retry_context(&attempt, "main");
+
+    assert!(context.contains("still needs a repair"));
+    assert!(!context.contains("The base has since been updated"));
+}
+
+#[tokio::test]
+async fn explicit_workspace_repair_retry_prompt_carries_predecessor_blocker_and_commit() {
+    let (_temp, state, conversation_id, _github) = setup_publish_command_state(
+        "retry-blocker-context",
+        true,
+        None,
+        Arc::new(MockGithubService::new()),
+    )
+    .await;
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    let blocked = seed_blocked_command_repair_attempt(&state, &workspace).await;
+    let mut enriched = blocked.clone();
+    enriched.blocker = Some("old base ref was deleted after its PR merged".to_string());
+    enriched.repair_head_commit = Some("bba066f".to_string());
+    enriched.pending_reasons.push(
+        crate::application::agent_workspace_publish_repair_state::NEEDS_HUMAN_REPAIR_REASON
+            .to_string(),
+    );
+    enriched.updated_at += chrono::Duration::microseconds(1);
+    match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: enriched,
+            expected_phase: blocked.phase,
+            expected_updated_at: blocked.updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Blocked,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("persist predecessor repair context")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_) => {}
+        outcome => panic!("expected enriched blocked repair attempt, got {outcome:?}"),
+    }
+    let service = MockChatService::new();
+
+    assert!(
+        retry_blocked_agent_workspace_repair_for_explicit_user_action(
+            &state,
+            &workspace,
+            &service,
+            AgentWorkspacePostRepairAction::UpdateOnly,
+        )
+        .await
+    );
+
+    let messages = service.get_sent_messages().await;
+    assert_eq!(messages.len(), 1);
+    assert!(messages[0].contains(
+        "Error: Previous repair attempt was blocked: old base ref was deleted after its PR merged"
+    ));
+    assert!(messages[0].contains("bba066f"));
+    assert!(!messages[0].contains(
+        crate::application::agent_workspace_publish_repair_state::NEEDS_HUMAN_REPAIR_REASON
+    ));
+}
+
 #[tokio::test]
 async fn explicit_workspace_repair_retry_prompt_uses_root_pending_reason_not_delivery_summary() {
     let (_temp, state, conversation_id, _github) = setup_publish_command_state(
@@ -4145,7 +4329,7 @@ async fn explicit_workspace_repair_retry_prompt_uses_root_pending_reason_not_del
 
     let messages = service.get_sent_messages().await;
     assert_eq!(messages.len(), 1);
-    assert!(messages[0].contains("Error: publish rejected: protected branch requires approval"));
+    assert!(messages[0].contains("publish rejected: protected branch requires approval"));
     assert!(!messages[0].contains("Automatic repair delivery retries are exhausted"));
 }
 
@@ -11133,7 +11317,7 @@ fn timeline_item_response_builds_text_message_block() {
 }
 
 #[test]
-fn timeline_item_response_builds_thinking_block_with_duration() {
+fn timeline_item_response_builds_thinking_block_with_duration_and_reasoning_tokens() {
     let conversation_id = ChatConversationId::new();
     let message_id = ChatMessageId::from_string("assistant-message-thinking");
     let mut item = ChatTimelineItem::for_message_block(
@@ -11144,7 +11328,7 @@ fn timeline_item_response_builds_thinking_block_with_duration() {
         ChatTimelineItemKind::Thinking,
     );
     item.text = Some("Considering the request".to_string());
-    item.metadata = Some(r#"{"duration_ms":1234}"#.to_string());
+    item.metadata = Some(r#"{"duration_ms":1234,"reasoning_tokens":321}"#.to_string());
 
     let response = AgentTimelineItemResponse::from(item);
 
@@ -11154,7 +11338,8 @@ fn timeline_item_response_builds_thinking_block_with_duration() {
         json!([{
             "type": "thinking",
             "text": "Considering the request",
-            "duration_ms": 1234
+            "duration_ms": 1234,
+            "reasoning_tokens": 321
         }])
     );
 }
@@ -11200,7 +11385,7 @@ async fn conversation_timeline_page_hydrates_persisted_thinking_item() {
         ChatTimelineItemKind::Thinking,
     );
     item.text = Some("Persisted reasoning".to_string());
-    item.metadata = Some(r#"{"duration_ms":1234}"#.to_string());
+    item.metadata = Some(r#"{"duration_ms":1234,"reasoning_tokens":321}"#.to_string());
     state
         .chat_timeline_repo
         .upsert_item(item)
@@ -11218,7 +11403,8 @@ async fn conversation_timeline_page_hydrates_persisted_thinking_item() {
         json!([{
             "type": "thinking",
             "text": "Persisted reasoning",
-            "duration_ms": 1234
+            "duration_ms": 1234,
+            "reasoning_tokens": 321
         }])
     );
     assert!(page.items[0].tool_call.is_none());

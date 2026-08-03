@@ -1194,19 +1194,34 @@ export function IntegratedChatPanel({
     storeKey: storeContextKey,
   });
 
-  const bridgedQuestionSessionId = useMemo(
-    () =>
-      additionalQuestionSessionIds?.find((id) => id && id !== currentContextId),
-    [additionalQuestionSessionIds, currentContextId],
-  );
+  const bridgedQuestionSessionIds = useMemo(() => {
+    const unique: string[] = [];
+    for (const id of additionalQuestionSessionIds ?? []) {
+      if (id && id !== currentContextId && !unique.includes(id)) {
+        unique.push(id);
+      }
+    }
+    return unique.slice(0, 2);
+  }, [additionalQuestionSessionIds, currentContextId]);
 
-  // Ask user question state — scoped to current context plus an attached child run when present.
+  // Ask-user-question hooks keep a fixed order so the conversation and planning
+  // bridges can appear or disappear without changing the hook call count.
   const primaryQuestionState = useAskUserQuestion(currentContextId);
-  const bridgedQuestionState = useAskUserQuestion(bridgedQuestionSessionId);
+  const conversationQuestionState = useAskUserQuestion(
+    bridgedQuestionSessionIds[0],
+  );
+  const planningQuestionState = useAskUserQuestion(
+    bridgedQuestionSessionIds[1],
+  );
+  const questionCandidates = [
+    primaryQuestionState,
+    conversationQuestionState,
+    planningQuestionState,
+  ];
   const questionState =
-    primaryQuestionState.activeQuestion || primaryQuestionState.answeredQuestion
-      ? primaryQuestionState
-      : bridgedQuestionState;
+    questionCandidates.find((state) => state.activeQuestion) ??
+    questionCandidates.find((state) => state.answeredQuestion) ??
+    primaryQuestionState;
   const {
     activeQuestion,
     answeredQuestion,

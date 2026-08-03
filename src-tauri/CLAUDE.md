@@ -146,8 +146,6 @@ New pattern → add one-liner here. Pattern name + rule only.
 | Artifacts test quiesce | `artifacts_handlers` plan-mutation tests that create a plan first must quiesce auto-verify (reset parent + archive/unregister verification children) unless the test is explicitly asserting freeze/bypass behavior |
 | Plan bundle authority | `plan_artifact_id` remains the Overview compatibility anchor; v2 plan actions derive authority from the exact Overview + `plan_blueprint_artifact_id` pair and fail closed when either member is missing |
 | SQLite write transactions | `DbConnection::run_transaction()` uses `BEGIN IMMEDIATE`; keep read-then-write sync-helper flows inside it to avoid WAL upgrade failures surfaced as `database is locked` |
-| Tokio spawn | `tokio::spawn` → async fn ONLY. Sync code → `std::thread::spawn` \| `tauri::async_runtime::spawn`. See `.claude/rules/tokio-runtime-safety.md` |
-| Rust std API stability | Avoid unstable std APIs in production code (e.g., `is_multiple_of`) — use stable equivalents (e.g., `%`). See `.claude/rules/rust-stable-apis.md` |
 
 ## Code Quality
 Keep work inside the requested feature/refactor/polish scope. File limits + migration rules: `.claude/rules/code-quality-standards.md`.
@@ -175,12 +173,12 @@ Shared helpers: `transition_handler/tests/helpers.rs` — `setup_real_git_repo()
 |------|-------|------|--------|
 | `tests/suite_transition_git/merge_system_hardening.rs` | 22 | git, MemoryTaskRepo | — |
 | `tests/suite_transition_git/deferred_main_merge_integration.rs` | 8 | MemoryTaskRepo | git/merge side effects |
-| `transition_handler/tests/real_git_integration.rs` | 11 | git, merge dispatch | MockChatService |
-| `transition_handler/tests/orchestration_chain_tests.rs` | 3 | git, full state machine | MockChatService |
-| `transition_handler/tests/plan_update_from_main.rs` | 9 | git, pure fn | — |
-| `transition_handler/tests/source_update_from_target.rs` | 8 | git, pure fn | — |
-| `transition_handler/tests/rc12_rc13_stale_worktree.rs` | 5 | git worktrees | — |
-| `transition_handler/tests/merge_cleanup.rs` | 12 | transitions | TaskServices::new_mock() |
+| `src/domain/state_machine/transition_handler/tests/real_git_integration.rs` | 11 | git, merge dispatch | MockChatService |
+| `src/domain/state_machine/transition_handler/tests/orchestration_chain_tests.rs` | 3 | git, full state machine | MockChatService |
+| `src/domain/state_machine/transition_handler/tests/plan_update_from_main.rs` | 9 | git, pure fn | — |
+| `src/domain/state_machine/transition_handler/tests/source_update_from_target.rs` | 8 | git, pure fn | — |
+| `src/domain/state_machine/transition_handler/tests/rc12_rc13_stale_worktree.rs` | 5 | git worktrees | — |
+| `src/domain/state_machine/transition_handler/tests/merge_cleanup.rs` | 12 | transitions | TaskServices::new_mock() |
 
 ## Allowed Clippy Lints
 Crate-level `#![allow(clippy::...)]` list lives at the top of `src/lib.rs` (currently 18 lints) — that file is the source of truth; keep new allows there, not per-module.

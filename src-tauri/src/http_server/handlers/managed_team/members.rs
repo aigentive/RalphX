@@ -215,6 +215,8 @@ pub async fn assign_managed_team_member(
         harness,
     );
     delegated.status = "pending".to_string();
+    delegated.delegate_context_authorized = true;
+    delegated.caller_conversation_id = Some(authority.conversation_id.as_str());
     delegated.parent_message_id = None;
     delegated.title = Some(format!("Team assignment: {}", member.name));
     let delegated = state
@@ -313,6 +315,7 @@ pub async fn assign_managed_team_member(
                 parent_conversation_id: Some(authority.conversation_id.as_str()),
                 ideation_verification: false,
             },
+            inherit_context: true,
             caller_agent_run_id: Some(authority.run_id.as_str()),
             target_agent_name: plan.member.canonical_agent_name.clone(),
             reusable_delegated_session: Some(delegated.clone()),

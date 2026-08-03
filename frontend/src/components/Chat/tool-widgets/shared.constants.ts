@@ -38,6 +38,8 @@ export interface ToolCall {
   name: string;
   /** Arguments passed to the tool (can be any JSON value) */
   arguments: unknown;
+  /** Backend logical content-block position, present on recovered snapshots only. */
+  blockIndex?: number;
   /** Result returned from the tool (can be any JSON value) */
   result?: unknown;
   /** True when result contains only a lightweight preview and full output must be lazy-loaded */

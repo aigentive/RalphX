@@ -64,6 +64,7 @@ pub struct NativeDelegationLaunchRequest {
     pub caller_agent_name: String,
     pub caller_agent_profile: Option<String>,
     pub parent: NativeDelegationLaunchParent,
+    pub inherit_context: bool,
     pub caller_agent_run_id: Option<String>,
     pub target_agent_name: String,
     pub reusable_delegated_session: Option<DelegatedSession>,
@@ -192,6 +193,8 @@ impl<'a> NativeDelegationLauncher<'a> {
                 harness,
             );
             session.status = "pending".to_string();
+            session.delegate_context_authorized = req.inherit_context;
+            session.caller_conversation_id = parent.caller_conversation_id.clone();
             session.parent_turn_id = req.parent_turn_id.clone();
             session.parent_message_id = req.parent_message_id.clone();
             session.title = req.title.clone();

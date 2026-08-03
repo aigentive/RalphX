@@ -1,7 +1,7 @@
 use ralphx_lib::infrastructure::agents::{
     extract_codex_agent_message, extract_codex_command_execution, extract_codex_error_message,
-    extract_codex_thread_id, extract_codex_tool_call_snapshot, extract_codex_usage,
-    parse_codex_event_line, CodexToolCallPhase,
+    extract_codex_thread_id, extract_codex_tool_call_snapshot, extract_codex_turn_reasoning_tokens,
+    extract_codex_usage, parse_codex_event_line, CodexToolCallPhase,
 };
 
 #[test]
@@ -33,6 +33,66 @@ fn extract_codex_thread_id_reads_thread_started_events() {
     assert_eq!(
         extract_codex_thread_id(&event).as_deref(),
         Some("019d6078-21bc-73c1-a1cf-b415c8dab35b")
+    );
+}
+
+#[test]
+fn extract_codex_usage_reads_provider_reported_reasoning_total() {
+    let event = parse_codex_event_line(
+        r#"{
+            "type":"turn.completed",
+            "usage":{
+                "input_tokens":53565,
+                "cached_input_tokens":30208,
+                "output_tokens":558,
+                "reasoning_output_tokens":170
+            }
+        }"#,
+    )
+    .expect("event should parse");
+
+    let usage = extract_codex_usage(&event).expect("turn usage should extract");
+
+    assert_eq!(usage.usage.reasoning_output_tokens, Some(170));
+    assert_eq!(extract_codex_turn_reasoning_tokens(&event), Some(170));
+}
+
+#[test]
+fn extract_codex_turn_reasoning_tokens_prefers_the_turn_delta() {
+    let event = parse_codex_event_line(
+        r#"{
+            "type":"turn.completed",
+            "usage":{
+                "reasoning_output_tokens":999,
+                "last_token_usage":{"reasoning_output_tokens":170},
+                "total_token_usage":{"reasoning_output_tokens":1169}
+            }
+        }"#,
+    )
+    .expect("event should parse");
+
+    assert_eq!(extract_codex_turn_reasoning_tokens(&event), Some(170));
+}
+
+#[test]
+fn extract_codex_turn_reasoning_tokens_rejects_session_total_only_usage() {
+    let event = parse_codex_event_line(
+        r#"{
+            "type":"turn.completed",
+            "usage":{
+                "total_token_usage":{"reasoning_output_tokens":1169}
+            }
+        }"#,
+    )
+    .expect("event should parse");
+
+    assert_eq!(extract_codex_turn_reasoning_tokens(&event), None);
+    assert_eq!(
+        extract_codex_usage(&event)
+            .expect("accounting should still retain cumulative usage")
+            .usage
+            .reasoning_output_tokens,
+        Some(1169),
     );
 }
 
@@ -137,7 +197,10 @@ fn extract_codex_command_execution_captures_output_and_exit_code() {
 
     assert_eq!(execution.id.as_deref(), Some("item_2"));
     assert_eq!(execution.status.as_deref(), Some("completed"));
-    assert_eq!(execution.aggregated_output.as_deref(), Some("cargo test ok"));
+    assert_eq!(
+        execution.aggregated_output.as_deref(),
+        Some("cargo test ok")
+    );
     assert_eq!(execution.exit_code, Some(0));
 }
 
