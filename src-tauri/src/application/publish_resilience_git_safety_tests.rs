@@ -36,7 +36,7 @@ use crate::domain::entities::{
 use crate::domain::repositories::{
     AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, AgentConversationWorkspaceRepository,
     AgentWorkspaceRepairAttemptTransition, AgentWorkspaceRepairAttemptTransitionOutcome,
-    AgentWorkspaceRepairRepository, BeginGitMutation, BranchUpdateRepository,
+    AgentWorkspaceRepairRepository, BeginGitMutation, BranchUpdateRepository, CompleteGitMutation,
     CreateAgentWorkspaceRepairEffect, CreateAgentWorkspaceRepairEffectOutcome,
     StartOrJoinAgentWorkspaceRepairAttempt, StartOrJoinAgentWorkspaceRepairAttemptOutcome,
 };
@@ -1384,6 +1384,21 @@ async fn state_with_in_flight_repair_push(
     (state, continuing, effect)
 }
 
+async fn state_with_recoverable_repair_continuation(
+    fixture: &RepairPushFixture,
+) -> (AppState, crate::domain::entities::GitTargetIdentity) {
+    let mut state = AppState::new_test();
+    state
+        .project_repo
+        .create(fixture.project.clone())
+        .await
+        .expect("persist repair project");
+    state.agent_conversation_workspace_repo = fixture.memory_repair_repo.clone();
+    state.agent_workspace_repair_repo = fixture.memory_repair_repo.clone();
+    state.branch_update_repo = fixture.state.branch_update_repo.clone();
+    (state, workspace_target_identity(fixture).await)
+}
+
 #[tokio::test]
 async fn busy_repair_push_returns_before_touching_the_workspace_git_path() {
     let fixture = setup_rewritten_workspace_push().await;
@@ -1587,6 +1602,225 @@ async fn startup_recovery_leaves_a_busy_repair_continuation_untouched() {
             .state()
             .push_branch_with_expected_remote_oid_lease_calls,
         0
+    );
+}
+
+#[tokio::test]
+async fn startup_recovery_reacquires_a_released_repair_target_lease_before_retrying() {
+    let fixture = setup_workspace_push(RepairPushRemoteHistory::FastForward).await;
+    let (mut state, identity) = state_with_recoverable_repair_continuation(&fixture).await;
+    state.github_service = Some(Arc::new(MockGithubService::new()));
+    let owner = GitTargetLeaseOwner::agent_workspace_repair(fixture.attempt.id.as_str());
+    let original_epoch = fixture
+        .attempt
+        .target_lease_epoch
+        .expect("fixture has a durable target lease epoch");
+    state
+        .branch_update_repo
+        .release_target_lease(&identity, &owner, original_epoch)
+        .await
+        .expect("release the stale repair lease");
+
+    recover_agent_workspace_repair_attempts_for_state(&state)
+        .await
+        .expect("recovery retries after reacquiring its released lease");
+
+    let lease = state
+        .branch_update_repo
+        .get_target_lease(&identity)
+        .await
+        .expect("read recovered target lease")
+        .expect("repair target lease remains auditable");
+    assert!(
+        lease.fencing_epoch() > original_epoch,
+        "healing must acquire a fresh fencing epoch before the retry"
+    );
+    assert_eq!(lease.owner(), &owner);
+}
+
+#[tokio::test]
+async fn startup_recovery_reacquires_after_same_owner_fencing_epoch_drift() {
+    let fixture = setup_workspace_push(RepairPushRemoteHistory::FastForward).await;
+    let (mut state, identity) = state_with_recoverable_repair_continuation(&fixture).await;
+    state.github_service = Some(Arc::new(MockGithubService::new()));
+    let owner = GitTargetLeaseOwner::agent_workspace_repair(fixture.attempt.id.as_str());
+    let persisted_epoch = fixture
+        .attempt
+        .target_lease_epoch
+        .expect("fixture has a durable target lease epoch");
+    state
+        .branch_update_repo
+        .release_target_lease(&identity, &owner, persisted_epoch)
+        .await
+        .expect("release old same-owner lease");
+    let AcquireGitTargetLeaseOutcome::Acquired { fencing_epoch } = state
+        .branch_update_repo
+        .acquire_target_lease(AcquireGitTargetLease {
+            identity: identity.clone(),
+            owner: owner.clone(),
+        })
+        .await
+        .expect("same owner acquires a newer epoch")
+    else {
+        panic!("released target must acquire a fresh same-owner epoch");
+    };
+    assert!(fencing_epoch > persisted_epoch);
+
+    recover_agent_workspace_repair_attempts_for_state(&state)
+        .await
+        .expect("recovery retries after healing same-owner epoch drift");
+
+    let lease = state
+        .branch_update_repo
+        .get_target_lease(&identity)
+        .await
+        .expect("read healed target lease")
+        .expect("healed target lease remains auditable");
+    assert_eq!(lease.owner(), &owner);
+    assert!(lease.fencing_epoch() >= fencing_epoch);
+}
+
+#[tokio::test]
+async fn startup_recovery_never_steals_a_foreign_target_lease_and_blocks_after_three_failures() {
+    let fixture = setup_workspace_push(RepairPushRemoteHistory::FastForward).await;
+    let (mut state, identity) = state_with_recoverable_repair_continuation(&fixture).await;
+    state.github_service = Some(Arc::new(MockGithubService::new()));
+    let repair_owner = GitTargetLeaseOwner::agent_workspace_repair(fixture.attempt.id.as_str());
+    let repair_epoch = fixture
+        .attempt
+        .target_lease_epoch
+        .expect("fixture has a durable target lease epoch");
+    state
+        .branch_update_repo
+        .release_target_lease(&identity, &repair_owner, repair_epoch)
+        .await
+        .expect("release stale repair lease before foreign ownership");
+    let foreign_owner = GitTargetLeaseOwner::agent_workspace_repair("foreign-attempt");
+    assert!(matches!(
+        state
+            .branch_update_repo
+            .acquire_target_lease(AcquireGitTargetLease {
+                identity: identity.clone(),
+                owner: foreign_owner.clone(),
+            })
+            .await
+            .expect("foreign owner acquires canonical target"),
+        AcquireGitTargetLeaseOutcome::Acquired { .. }
+    ));
+
+    for expected_streak in 1..=3 {
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("foreign lease recovery failure stays durable");
+        let current = state
+            .agent_workspace_repair_repo
+            .get_current_repair_attempt(&fixture.workspace.conversation_id)
+            .await
+            .expect("read current repair after foreign lease conflict")
+            .expect("repair remains durable");
+        assert!(current.pending_reasons.iter().any(|reason| {
+            reason == &format!("continuation_recovery_failure:{expected_streak}")
+        }));
+        if expected_streak < 3 {
+            assert!(matches!(
+                current.phase,
+                AgentWorkspaceRepairPhase::ContinuationPending
+                    | AgentWorkspaceRepairPhase::Continuing
+            ));
+        } else {
+            assert_eq!(current.phase, AgentWorkspaceRepairPhase::Blocked);
+            assert!(current
+                .blocker
+                .as_deref()
+                .is_some_and(|blocker| blocker.contains("canonical Git target lease")));
+            assert!(current.blocker.as_deref().is_some_and(
+                |blocker| blocker.contains("workspace repair continuation target is owned")
+            ));
+        }
+    }
+    let lease = state
+        .branch_update_repo
+        .get_target_lease(&identity)
+        .await
+        .expect("read foreign target lease")
+        .expect("foreign lease remains auditable");
+    assert_eq!(
+        lease.owner(),
+        &foreign_owner,
+        "recovery must not steal a foreign lease"
+    );
+    assert!(lease.active_mutation().is_none());
+}
+
+#[tokio::test]
+async fn startup_recovery_does_not_reacquire_while_a_push_effect_is_open() {
+    let fixture = setup_rewritten_workspace_push().await;
+    let (mut state, continuing, effect) = state_with_in_flight_repair_push(&fixture).await;
+    state.github_service = Some(Arc::new(MockGithubService::new()));
+    let identity = workspace_target_identity(&fixture).await;
+    let owner = GitTargetLeaseOwner::agent_workspace_repair(continuing.id.as_str());
+    let fencing_epoch = continuing
+        .target_lease_epoch
+        .expect("continuing attempt has a lease epoch");
+    assert!(matches!(
+        state
+            .branch_update_repo
+            .complete_git_mutation(CompleteGitMutation {
+                identity: identity.clone(),
+                owner: owner.clone(),
+                fencing_epoch,
+                claim_id: format!("{}:push", effect.id),
+            })
+            .await
+            .expect("complete the abandoned mutation claim"),
+        crate::domain::repositories::GitAuthorityCasOutcome::Applied { .. }
+    ));
+    assert!(matches!(
+        state
+            .branch_update_repo
+            .release_target_lease(&identity, &owner, fencing_epoch)
+            .await
+            .expect("release stale continuation lease"),
+        crate::domain::repositories::GitAuthorityCasOutcome::Applied { .. }
+    ));
+    assert!(
+        state
+            .branch_update_repo
+            .get_target_lease(&identity)
+            .await
+            .expect("read released lease before recovery")
+            .expect("released lease remains auditable")
+            .is_released(),
+        "the fixture must prove a stale lease before recovery begins"
+    );
+
+    recover_agent_workspace_repair_attempts_for_state(&state)
+        .await
+        .expect("open push effect keeps recovery in reconciliation");
+
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&fixture.workspace.conversation_id)
+        .await
+        .expect("read continuing attempt")
+        .expect("continuing attempt remains current");
+    assert_eq!(current.id, continuing.id);
+    assert_eq!(current.generation, continuing.generation);
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Continuing);
+    assert_eq!(current.target_lease_epoch, continuing.target_lease_epoch);
+    assert!(current
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == "continuation_recovery_failure:1"));
+    assert!(
+        state
+            .branch_update_repo
+            .get_target_lease(&identity)
+            .await
+            .expect("read released lease")
+            .expect("lease remains auditable")
+            .is_released(),
+        "recovery must not reacquire while the external effect remains open"
     );
 }
 

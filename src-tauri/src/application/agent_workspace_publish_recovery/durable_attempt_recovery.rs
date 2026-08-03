@@ -13,7 +13,9 @@ use crate::application::agent_workspace_publish_repair_state::{
     agent_workspace_repair_dispatch_is_due, agent_workspace_repair_is_health_held,
     block_agent_workspace_repair_completion, block_agent_workspace_repair_needs_human,
     classify_agent_workspace_repair_delivery, continue_agent_workspace_repair_at_boundary,
-    inspect_agent_workspace_repair_completion, record_agent_workspace_repair_validation,
+    inspect_agent_workspace_repair_completion,
+    reacquire_agent_workspace_repair_target_lease_for_continuation,
+    record_agent_workspace_repair_validation,
     release_and_clear_agent_workspace_repair_target_lease,
     reserve_agent_workspace_repair_completion_validation, reserve_agent_workspace_repair_dispatch,
     reserve_agent_workspace_unchanged_health_hold, resume_current_agent_workspace_repair_publish,
@@ -60,6 +62,8 @@ pub(crate) const AUTO_RETRY_READY_REPAIR_REASON_PREFIX: &str = "auto_retry_ready
 const AUTO_RETRY_READY_REPAIR_BASE_DELAY_SECS: i64 = 60;
 const AUTO_RETRY_READY_REPAIR_MAX_DELAY_SECS: i64 = 15 * 60;
 const MAX_AUTO_RETRY_READY_REPAIR_STREAK: u32 = 3;
+const CONTINUATION_RECOVERY_FAILURE_REASON_PREFIX: &str = "continuation_recovery_failure:";
+const MAX_CONTINUATION_RECOVERY_FAILURE_STREAK: u32 = 3;
 
 pub(crate) async fn recover_stale_publish_repair_for_workspace_in_state_result(
     state: &AppState,
@@ -313,31 +317,7 @@ async fn reconcile_agent_workspace_repair_attempt(
             }
         }
         AgentWorkspaceRepairPhase::ContinuationPending | AgentWorkspaceRepairPhase::Continuing => {
-            match crate::application::publish_resilience::continue_agent_workspace_repair_publish(
-                state,
-                current.clone(),
-            )
-            .await
-            {
-                Ok(Some(
-                    crate::application::publish_resilience::AgentWorkspaceRepairPushOutcome::Busy,
-                )) => Ok(DurableRepairRecoveryOutcome::Active),
-                Ok(Some(
-                    crate::application::publish_resilience::AgentWorkspaceRepairPushOutcome::Stale,
-                )) => Ok(DurableRepairRecoveryOutcome::Stale),
-                Ok(Some(_)) => Ok(DurableRepairRecoveryOutcome::Continued),
-                Ok(None) => {
-                    block_recovery_attempt(
-                        state,
-                        current,
-                        "Workspace repair continuation could not prove a publish runtime. Retry the blocked operation.",
-                    )
-                    .await
-                }
-                Err(error) => {
-                    record_continuation_recovery_failure(state, current, &error).await
-                }
-            }
+            recover_agent_workspace_repair_continuation(state, current, true).await
         }
         AgentWorkspaceRepairPhase::AwaitingReview => {
             match resume_current_agent_workspace_repair_publish(
@@ -1210,33 +1190,131 @@ async fn recover_clean_interrupted_repair(
     if continuation.phase == AgentWorkspaceRepairPhase::Blocked {
         return Ok(DurableRepairRecoveryOutcome::Blocked);
     }
-    match crate::application::publish_resilience::continue_agent_workspace_repair_publish(
-        state,
-        continuation.clone(),
-    )
-    .await
-    {
+    let outcome = recover_agent_workspace_repair_continuation(state, continuation, false).await;
+    if let Err(error) = &outcome {
+        tracing::warn!(
+            conversation_id = conversation_id.as_str(),
+            error = %error,
+            "Clean workspace repair recovery left its durable continuation pending"
+        );
+    }
+    outcome
+}
+
+async fn recover_agent_workspace_repair_continuation(
+    state: &AppState,
+    attempt: AgentWorkspaceRepairAttempt,
+    block_when_publish_runtime_is_missing: bool,
+) -> AppResult<DurableRepairRecoveryOutcome> {
+    let continuation =
+        crate::application::publish_resilience::continue_agent_workspace_repair_publish(
+            state,
+            attempt.clone(),
+        )
+        .await;
+    let continuation = match continuation {
+        Err(initial_error) => {
+            match retry_agent_workspace_repair_continuation_after_lease_healing(state, &attempt)
+                .await?
+            {
+                Some(retry) => retry,
+                None => Err(initial_error),
+            }
+        }
+        continuation => continuation,
+    };
+
+    match continuation {
         Ok(Some(crate::application::publish_resilience::AgentWorkspaceRepairPushOutcome::Busy)) => {
             Ok(DurableRepairRecoveryOutcome::Active)
         }
-        Ok(Some(
-            crate::application::publish_resilience::AgentWorkspaceRepairPushOutcome::Stale,
-        )) => Ok(DurableRepairRecoveryOutcome::Stale),
+        Ok(Some(crate::application::publish_resilience::AgentWorkspaceRepairPushOutcome::Stale)) => {
+            Ok(DurableRepairRecoveryOutcome::Stale)
+        }
         Ok(Some(_)) => Ok(DurableRepairRecoveryOutcome::Continued),
+        Ok(None) if block_when_publish_runtime_is_missing => {
+            block_recovery_attempt(
+                state,
+                attempt,
+                "Workspace repair continuation could not prove a publish runtime. Retry the blocked operation.",
+            )
+            .await
+        }
         Ok(None) => {
             let error = AppError::Conflict(
                 "workspace repair continuation could not prove a publish runtime".to_string(),
             );
-            record_continuation_recovery_failure(state, continuation, &error).await
+            record_continuation_recovery_failure(state, attempt, &error).await
         }
-        Err(error) => {
-            tracing::warn!(
-                conversation_id = conversation_id.as_str(),
-                error = %error,
-                "Clean workspace repair recovery left its durable continuation pending"
-            );
-            record_continuation_recovery_failure(state, continuation, &error).await
-        }
+        Err(error) => record_continuation_recovery_failure(state, attempt, &error).await,
+    }
+}
+
+/// A continuation can be fenced by a stale persisted lease after a crash even though its durable
+/// generation is still the sole current owner. Heal that exact snapshot once, never while a
+/// receipt is open, then let the ordinary publisher revalidate every Git-side invariant.
+async fn retry_agent_workspace_repair_continuation_after_lease_healing(
+    state: &AppState,
+    failed_attempt: &AgentWorkspaceRepairAttempt,
+) -> AppResult<
+    Option<
+        AppResult<Option<crate::application::publish_resilience::AgentWorkspaceRepairPushOutcome>>,
+    >,
+> {
+    let Some(current) = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&failed_attempt.conversation_id)
+        .await?
+    else {
+        return Ok(None);
+    };
+    if current.id != failed_attempt.id
+        || current.generation != failed_attempt.generation
+        || current.updated_at != failed_attempt.updated_at
+        || current.phase != failed_attempt.phase
+        || state
+            .agent_workspace_repair_repo
+            .get_open_repair_effect(&current.id)
+            .await?
+            .is_some()
+    {
+        return Ok(None);
+    }
+    match validate_agent_workspace_repair_target_lease(state.branch_update_repo.as_ref(), &current)
+        .await
+    {
+        Err(AppError::Conflict(_)) => {}
+        Ok(_) | Err(_) => return Ok(None),
+    }
+    let Some(workspace) = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&current.conversation_id)
+        .await?
+    else {
+        return Ok(None);
+    };
+    let healed = match reacquire_agent_workspace_repair_target_lease_for_continuation(
+        state,
+        &workspace,
+        current.clone(),
+        current.phase,
+    )
+    .await
+    {
+        Ok(healed) => healed,
+        Err(error) => return Ok(Some(Err(error))),
+    };
+    match healed {
+        AgentWorkspaceRepairTransitionOutcome::Applied(healed) => Ok(Some(
+            crate::application::publish_resilience::continue_agent_workspace_repair_publish(
+                state, healed,
+            )
+            .await,
+        )),
+        AgentWorkspaceRepairTransitionOutcome::Stale(_)
+        | AgentWorkspaceRepairTransitionOutcome::Missing => Ok(Some(Ok(Some(
+            crate::application::publish_resilience::AgentWorkspaceRepairPushOutcome::Stale,
+        )))),
     }
 }
 
@@ -1270,6 +1348,22 @@ async fn record_continuation_recovery_failure(
         return Ok(DurableRepairRecoveryOutcome::Stale);
     }
 
+    let next_streak = continuation_recovery_failure_streak(&current).saturating_add(1);
+    let marker = format!("{CONTINUATION_RECOVERY_FAILURE_REASON_PREFIX}{next_streak}");
+    let mut current = current;
+    if !current
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == &marker)
+    {
+        current.pending_reasons.push(marker);
+    }
+    if next_streak >= MAX_CONTINUATION_RECOVERY_FAILURE_STREAK {
+        let blocker = format!(
+            "Workspace repair continuation could not restore its canonical Git target lease after {next_streak} recovery attempts ({error}). Retry the blocked operation."
+        );
+        return block_recovery_attempt(state, current, &blocker).await;
+    }
     let summary = format!(
         "Workspace repair continuation is pending reconciliation after recovery error: {error}"
     );
@@ -1288,6 +1382,16 @@ async fn record_continuation_recovery_failure(
         AgentWorkspaceRepairTransitionOutcome::Stale(_)
         | AgentWorkspaceRepairTransitionOutcome::Missing => Ok(DurableRepairRecoveryOutcome::Stale),
     }
+}
+
+fn continuation_recovery_failure_streak(attempt: &AgentWorkspaceRepairAttempt) -> u32 {
+    attempt
+        .pending_reasons
+        .iter()
+        .filter_map(|reason| reason.strip_prefix(CONTINUATION_RECOVERY_FAILURE_REASON_PREFIX))
+        .filter_map(|streak| streak.parse::<u32>().ok())
+        .max()
+        .unwrap_or_default()
 }
 
 async fn block_recovery_attempt(
