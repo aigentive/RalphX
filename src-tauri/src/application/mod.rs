@@ -55,6 +55,7 @@ pub(crate) mod agent_workspace_terminal_cleanup;
 mod agent_workspace_terminal_cleanup_tests;
 pub(crate) mod agent_workspace_pr_supervision_recovery;
 pub mod agent_workspace_publish_recovery;
+pub(crate) mod agent_workspace_ci_rerun;
 pub(crate) mod agent_workspace_publish_repair_state;
 pub mod agent_workspace_review;
 pub(crate) mod agent_workspace_review_approval;
@@ -435,6 +436,9 @@ mod agent_workspace_pr_metadata_reconciliation_tests;
 mod agent_workspace_pr_supervision_recovery_tests;
 #[cfg(test)]
 mod agent_workspace_publish_recovery_tests;
+#[cfg(test)]
+#[path = "agent_workspace_ci_rerun_tests.rs"]
+mod agent_workspace_ci_rerun_tests;
 #[cfg(test)]
 mod agent_workspace_publish_repair_state_tests;
 #[cfg(test)]
