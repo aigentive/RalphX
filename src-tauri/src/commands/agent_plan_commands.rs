@@ -17,6 +17,9 @@ use crate::commands::ideation_commands::{
 };
 use crate::commands::unified_chat_commands::{
     agent_workspace_response_for_state, ensure_plan_workspace_planning_session_link_for_send,
+    plan_edit_handoff::{
+        finish_plan_to_edit_handoff_after_commit, stop_plan_to_edit_handoff_before_commit,
+    },
     switch_agent_conversation_mode_for_state_allowing_running, AgentConversationResponse,
     AgentConversationWorkspaceResponse, ModeSwitchInitiator, SwitchAgentConversationModeInput,
 };
@@ -287,6 +290,29 @@ pub(crate) async fn activate_agent_plan_direct_implementation_for_state(
     let tx_session_id = input.session_id;
     let response_session_id = IdeationSessionId::from_string(tx_session_id.clone());
     let retry = input.retry;
+    let preflight_conversation_id = tx_conversation_id.clone();
+    let preflight_session_id = tx_session_id.clone();
+    state
+        .db
+        .run(move |conn| {
+            validate_direct_implementation_authority_sync(
+                conn,
+                &preflight_conversation_id,
+                &preflight_session_id,
+                retry,
+            )
+            .map(|_| ())
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+    let handoff_conversation = state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("Conversation not found: {conversation_id}"))?;
+    let chat_service = state.build_chat_service();
+    stop_plan_to_edit_handoff_before_commit(state, &chat_service, &handoff_conversation).await?;
     let approved_bundle = state
         .db
         .run_transaction(move |conn| {
@@ -335,6 +361,15 @@ pub(crate) async fn activate_agent_plan_direct_implementation_for_state(
         })
         .await
         .map_err(|error| error.to_string())?;
+
+    let mut handoff_conversation = state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("Conversation not found after activation: {conversation_id}"))?;
+    finish_plan_to_edit_handoff_after_commit(state, &chat_service, &mut handoff_conversation)
+        .await?;
 
     let workspace = state
         .agent_conversation_workspace_repo
