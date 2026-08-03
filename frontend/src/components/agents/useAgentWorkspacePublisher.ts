@@ -267,6 +267,10 @@ export function useAgentWorkspacePublisher({
               startedAtMs: new Date(
                 result.workspace.maintenanceOperation.startedAt,
               ).getTime(),
+              targetConversation: {
+                conversationId: result.workspace.conversationId,
+                projectId: result.workspace.projectId,
+              },
               title: maintenanceOperationToastLabel(
                 result.workspace.maintenanceOperation.stage,
               ),
@@ -321,6 +325,10 @@ export function useAgentWorkspacePublisher({
               startedAtMs: new Date(
                 refreshedWorkspace.maintenanceOperation.startedAt,
               ).getTime(),
+              targetConversation: {
+                conversationId: refreshedWorkspace.conversationId,
+                projectId: refreshedWorkspace.projectId,
+              },
               title: maintenanceOperationToastLabel(
                 refreshedWorkspace.maintenanceOperation.stage,
               ),

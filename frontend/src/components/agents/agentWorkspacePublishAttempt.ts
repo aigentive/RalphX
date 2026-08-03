@@ -149,6 +149,10 @@ export async function readAgentWorkspaceDurablePublishResult(
         maintenanceOperation.operationId,
       ),
       startedAtMs: new Date(maintenanceOperation.startedAt).getTime(),
+      targetConversation: {
+        conversationId: workspace.conversationId,
+        projectId: workspace.projectId,
+      },
       title: maintenanceOperationToastLabel(maintenanceOperation.stage),
     });
     return null;
