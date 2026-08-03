@@ -458,6 +458,39 @@ async fn terminalize_stops_active_run_and_records_archive_reason_before_cleanup(
 }
 
 #[tokio::test]
+async fn terminalize_reports_missing_workspace_without_claiming_cleanup() {
+    let repository_dir = tempfile::tempdir().expect("repository tempdir");
+    let worktree_parent = tempfile::tempdir().expect("worktree parent tempdir");
+    setup_repo(repository_dir.path());
+    let project = project_for(repository_dir.path(), worktree_parent.path());
+    let conversation_id =
+        ChatConversationId::from_string("69696969-6969-6969-6969-696969696969".to_string());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+
+    let outcome = terminalize_agent_workspace_after_pr(
+        workspace_repo,
+        Arc::new(MemoryAgentRunRepository::new()),
+        None,
+        None,
+        &conversation_id,
+        &project,
+        TerminalAgentWorkspaceCause::ClosedPr,
+    )
+    .await;
+
+    assert!(outcome.runtime_shutdown_succeeded);
+    assert_eq!(outcome.cleanup_claim, TerminalCleanupClaimState::NotClaimed);
+    assert_eq!(
+        outcome.local_cleanup,
+        TerminalLocalCleanupResult::FailedOperational
+    );
+    assert!(outcome
+        .message
+        .as_deref()
+        .is_some_and(|message| message.contains("disappeared before local cleanup")));
+}
+
+#[tokio::test]
 async fn terminalize_releases_the_observed_operation_owned_publish_lease() {
     let repository_dir = tempfile::tempdir().expect("repository tempdir");
     let worktree_parent = tempfile::tempdir().expect("worktree parent tempdir");

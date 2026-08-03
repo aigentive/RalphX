@@ -23,6 +23,26 @@ use crate::domain::repositories::{
 };
 
 #[tokio::test]
+async fn publish_lease_claim_rejects_a_missing_workspace() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("19191919-1919-1919-1919-191919191919");
+
+    let error = repo
+        .claim_publish_lease(
+            &conversation_id,
+            "run-one",
+            "token-one",
+            chrono::Utc::now(),
+            None,
+            false,
+        )
+        .await
+        .expect_err("missing workspace must fail closed");
+
+    assert!(matches!(error, crate::error::AppError::NotFound(_)));
+}
+
+#[tokio::test]
 async fn publish_lease_rejects_live_owner_and_fences_stale_token() {
     let repo = MemoryAgentConversationWorkspaceRepository::new();
     let conversation_id = ChatConversationId::from_string("conversation-publish-lease");

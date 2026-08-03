@@ -26,6 +26,27 @@ use crate::domain::repositories::{
 };
 
 #[tokio::test]
+async fn publish_lease_claim_rejects_a_missing_workspace() {
+    let (_db, repo, _seeded_conversation_id) = setup_repo();
+    let missing_conversation_id =
+        ChatConversationId::from_string("29292929-2929-2929-2929-292929292929");
+
+    let error = repo
+        .claim_publish_lease(
+            &missing_conversation_id,
+            "run-one",
+            "token-one",
+            chrono::Utc::now(),
+            None,
+            false,
+        )
+        .await
+        .expect_err("missing workspace must fail closed");
+
+    assert!(matches!(error, crate::error::AppError::NotFound(_)));
+}
+
+#[tokio::test]
 async fn publish_lease_reclaims_dead_owner_and_fences_stale_token() {
     let (_db, repo, conversation_id) = setup_repo();
     repo.create_or_update(make_workspace(conversation_id.clone()))
