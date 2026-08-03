@@ -152,11 +152,11 @@ Migration `20260731111346_purge_empty_thinking_blocks` removes legacy empty/ASCI
 
 Presentation ownership:
 
-- `buildLiveTranscriptRows` hides only settled-and-empty blocks; running/token-only blocks remain visible.
-- `synchronizeThinkingGroupExpansion` is the sole automatic expansion writer: latest running block expands, settled/older blocks collapse, explicit user intent wins.
+- `buildLiveTranscriptRows` hides settled-and-empty blocks, keeps running/token-only blocks visible, and coalesces visibly adjacent thinking blocks into `thinking_group` rows. Its tool-activity scan stops at thinking blocks so they cannot be consumed by a tool run.
+- `synchronizeThinkingGroupExpansion` is the sole automatic expansion writer: the latest running group expands, settled/older groups collapse, and explicit user intent wins. Group keys stay anchored to the first segment as later segments append.
 - Live rows treat missing `isSettled` as running for backward compatibility.
-- `MessageItem` drops empty persisted blocks and treats historical blocks without `isSettled` as settled.
-- `ThinkingGroupToggle` owns labels such as “Agent thinking…”, token progress, and “Agent thought for …”.
+- `MessageItem` drops empty persisted blocks, groups visibly adjacent thinking segments, and treats historical blocks without `isSettled` as settled. Hidden tool blocks do not split a group; visible transcript elements do.
+- `ThinkingGroupToggle` owns aggregate labels such as “Agent thinking…”, token progress, and “Agent thought for … · N steps”; expanded groups reuse one bounded `ThinkingWidget` body.
 
 ## Failure and recovery edges
 
@@ -207,7 +207,7 @@ Do not synthesize provider duration from run duration, tool timing, or frontend 
 | Rust wire shape | `chat_service_types_tests.rs` + `tests/fixtures/agent_thinking_payload.*.json` |
 | Frontend merge, stale-run, progress targeting | `frontend/src/hooks/useChatEvents.test.ts` |
 | Empty live/persisted rendering | `ChatMessageList.liveRows.test.ts`, `MessageItem.test.tsx` |
-| Collapse ownership | `ChatMessageList.thinkingLifecycle.test.tsx` |
+| Grouping and collapse ownership | `thinking-group.test.ts`, `ChatMessageList.liveRows.test.ts`, `ChatMessageList.thinkingLifecycle.test.tsx`, `MessageItem.test.tsx` |
 | UI states | `frontend/tests/visual/views/chat/chat-widget-matrix.spec.ts` |
 
 Use the narrow validation commands routed by `src-tauri/CLAUDE.md`, `frontend/src/CLAUDE.md`, and `.claude/rules/rust-test-execution.md`; do not broaden to full suites for documentation-adjacent changes.
