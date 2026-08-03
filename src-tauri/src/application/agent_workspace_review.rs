@@ -847,6 +847,7 @@ pub(crate) async fn start_agent_workspace_review_unlocked_with_revalidated_targe
     .await
 }
 
+#[cfg(test)]
 async fn start_agent_workspace_review_with_chat_service<S: ChatService + ?Sized>(
     state: Arc<AppState>,
     workspace: &AgentConversationWorkspace,
