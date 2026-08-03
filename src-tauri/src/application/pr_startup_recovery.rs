@@ -1385,8 +1385,16 @@ pub(crate) async fn recover_one_agent_workspace_pr_poller(
         } else {
             "Pull request closed without merging"
         };
+        let Some(repair_repo) = agent_workspace_repair_repo.as_ref().map(Arc::clone) else {
+            tracing::error!(
+                conversation_id = workspace.conversation_id.as_str(),
+                "Terminal workspace recovery requires durable repair authority"
+            );
+            return;
+        };
         match settle_review_pr_terminal_observation(
             Arc::clone(&workspace_repo),
+            repair_repo,
             Arc::clone(&agent_run_repo),
             Some(Arc::clone(&plan_branch_repo)),
             Some(Arc::clone(&chat_service)),
@@ -1516,8 +1524,16 @@ pub(crate) async fn recover_one_agent_workspace_pr_poller(
                     PrStatus::Closed => ("closed", "Pull request closed without merging"),
                     PrStatus::Open => unreachable!(),
                 };
+                let Some(repair_repo) = agent_workspace_repair_repo.as_ref().map(Arc::clone) else {
+                    tracing::error!(
+                        conversation_id = workspace.conversation_id.as_str(),
+                        "Terminal workspace recovery requires durable repair authority"
+                    );
+                    return;
+                };
                 match settle_review_pr_terminal_observation(
                     Arc::clone(&workspace_repo),
+                    repair_repo,
                     Arc::clone(&agent_run_repo),
                     Some(Arc::clone(&plan_branch_repo)),
                     Some(Arc::clone(&chat_service)),

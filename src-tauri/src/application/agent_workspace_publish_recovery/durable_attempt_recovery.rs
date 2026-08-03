@@ -93,6 +93,7 @@ pub(crate) async fn recover_stale_publish_repair_for_workspace_in_state_result(
                 if is_legacy_pr_fix_review_projection(&workspace) {
                     return super::recover_stale_publish_repair_for_workspace_with_project_repo_outcome(
                         Arc::clone(&state.agent_conversation_workspace_repo),
+                        Arc::clone(&state.agent_workspace_repair_repo),
                         Arc::clone(&state.agent_run_repo),
                         Arc::clone(&state.project_repo),
                         workspace,

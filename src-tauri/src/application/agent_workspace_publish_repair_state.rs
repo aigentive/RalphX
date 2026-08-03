@@ -5,6 +5,8 @@ use std::sync::Arc;
 use chrono::{DateTime, Duration, Utc};
 
 use crate::application::agent_conversation_workspace::resolve_effective_agent_conversation_workspace_path;
+#[cfg(any(test, feature = "test-utils"))]
+use crate::application::agent_workspace_fixer_conversation::agent_workspace_fixer_runtime_conversations;
 use crate::application::agent_workspace_review::{
     load_agent_workspace_review_context, load_workspace_review_publish_blocker,
     review_gate_publish_blocker, AgentWorkspaceReviewStart,
@@ -562,9 +564,7 @@ pub(crate) async fn block_agent_workspace_repair_needs_human(
 /// True while a PR autofix generation is parked against a backend-derived health fingerprint.
 /// Only the poller may end such a hold, and only after GitHub reports different health; no other
 /// retry path may consume the hold's budget or settle it on a timer.
-pub(crate) fn agent_workspace_repair_is_health_held(
-    attempt: &AgentWorkspaceRepairAttempt,
-) -> bool {
+pub(crate) fn agent_workspace_repair_is_health_held(attempt: &AgentWorkspaceRepairAttempt) -> bool {
     attempt.pending_reasons.iter().any(|reason| {
         reason == PRE_EXISTING_ON_BASE_REPAIR_REASON || reason == UNCHANGED_HEALTH_REPAIR_REASON
     })
@@ -2379,6 +2379,7 @@ pub(crate) async fn settle_terminal_agent_workspace_repair(
 #[cfg(any(test, feature = "test-utils"))]
 pub(crate) async fn reconcile_active_agent_workspace_repair(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
     workspace: &AgentConversationWorkspace,
 ) -> AppResult<bool> {
@@ -2387,18 +2388,31 @@ pub(crate) async fn reconcile_active_agent_workspace_repair(
     {
         return Ok(false);
     }
-    let Some(active_run) = agent_run_repo
-        .get_active_for_conversation(&workspace.conversation_id)
-        .await?
-    else {
-        return Ok(false);
-    };
+    let runtime_conversations = agent_workspace_fixer_runtime_conversations(
+        workspace,
+        workspace_repo.as_ref(),
+        repair_repo.as_ref(),
+    )
+    .await?;
     let events = workspace_repo
         .list_publication_events(&workspace.conversation_id)
         .await?;
-    if !repair_event_authorizes_active_run(&events, &active_run) {
-        return Ok(false);
+    let mut active_run = None;
+    for runtime_conversation_id in runtime_conversations {
+        if let Some(run) = agent_run_repo
+            .get_active_for_conversation(&runtime_conversation_id)
+            .await?
+        {
+            if repair_event_authorizes_active_run(&events, &run) {
+                active_run = Some(run);
+                break;
+            }
+        }
     }
+    let Some(active_run) = active_run else {
+        return Ok(false);
+    };
+    let _active_run = active_run;
 
     let transition = AgentWorkspaceRepairStateTransition {
         publication_push_status: Some("needs_agent".to_string()),
@@ -2420,6 +2434,7 @@ pub(crate) async fn reconcile_active_agent_workspace_repair(
 #[cfg(test)]
 pub(crate) async fn current_agent_workspace_repair_claim_for_completion(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
     workspace: &AgentConversationWorkspace,
 ) -> AppResult<Option<AgentWorkspaceRepairClaim>> {
@@ -2428,21 +2443,34 @@ pub(crate) async fn current_agent_workspace_repair_claim_for_completion(
     {
         return Ok(None);
     }
-    let Some(active_run) = agent_run_repo
-        .get_active_for_conversation(&workspace.conversation_id)
-        .await?
-    else {
-        return Ok(None);
-    };
+    let runtime_conversations = agent_workspace_fixer_runtime_conversations(
+        workspace,
+        workspace_repo.as_ref(),
+        repair_repo.as_ref(),
+    )
+    .await?;
     let events = workspace_repo
         .list_publication_events(&workspace.conversation_id)
         .await?;
     let Some(claim_started_at) = workspace.pr_supervision_updated_at else {
         return Ok(None);
     };
-    if !successful_send_authorizes_completion(&events, &active_run, claim_started_at) {
-        return Ok(None);
+    let mut active_run = None;
+    for runtime_conversation_id in runtime_conversations {
+        if let Some(run) = agent_run_repo
+            .get_active_for_conversation(&runtime_conversation_id)
+            .await?
+        {
+            if successful_send_authorizes_completion(&events, &run, claim_started_at) {
+                active_run = Some(run);
+                break;
+            }
+        }
     }
+    let Some(active_run) = active_run else {
+        return Ok(None);
+    };
+    let _active_run = active_run;
     Ok(Some(AgentWorkspaceRepairClaim {
         conversation_id: workspace.conversation_id.clone(),
         guard: AgentWorkspaceRepairStateGuard::from_workspace(workspace),

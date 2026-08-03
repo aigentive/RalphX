@@ -49,9 +49,9 @@ use crate::domain::entities::{
 use crate::domain::repositories::{
     AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, AgentConversationWorkspaceRepository,
     AgentRunRepository, AgentWorkspaceRepairAttemptTransition,
-    AgentWorkspaceRepairAttemptTransitionOutcome, CreateAgentWorkspaceRepairEffect,
-    CreateAgentWorkspaceRepairEffectOutcome, StartOrJoinAgentWorkspaceRepairAttempt,
-    StartOrJoinAgentWorkspaceRepairAttemptOutcome,
+    AgentWorkspaceRepairAttemptTransitionOutcome, AgentWorkspaceRepairRepository,
+    CreateAgentWorkspaceRepairEffect, CreateAgentWorkspaceRepairEffectOutcome,
+    StartOrJoinAgentWorkspaceRepairAttempt, StartOrJoinAgentWorkspaceRepairAttemptOutcome,
 };
 use crate::infrastructure::memory::{
     MemoryAgentConversationWorkspaceRepository, MemoryAgentProviderSettingsRepository,
@@ -611,7 +611,8 @@ async fn startup_recovery_wrappers_finish_on_empty_repositories() {
     let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
 
     recover_stale_agent_workspace_publish_repairs_on_startup(
-        workspace_repo as Arc<dyn AgentConversationWorkspaceRepository>,
+        workspace_repo.clone() as Arc<dyn AgentConversationWorkspaceRepository>,
+        workspace_repo as Arc<dyn AgentWorkspaceRepairRepository>,
         agent_run_repo as Arc<dyn AgentRunRepository>,
     )
     .await;
@@ -3033,6 +3034,7 @@ async fn failed_exact_pr_autofix_is_classified_as_retry_eligible() {
     let (_workspace, outcome) =
         recover_stale_publish_repair_for_workspace_with_project_repo_outcome(
             Arc::clone(&state.agent_conversation_workspace_repo),
+            Arc::clone(&state.agent_workspace_repair_repo),
             Arc::clone(&state.agent_run_repo),
             Arc::clone(&state.project_repo),
             workspace,
@@ -3165,6 +3167,7 @@ async fn recovery_correlates_the_exact_pr_autofix_attempt_not_a_newer_unrelated_
     let (updated, outcome) =
         recover_stale_publish_repair_for_workspace_and_reload_with_review_target(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+            Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>,
             Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
             workspace,
             None,
@@ -3212,6 +3215,7 @@ async fn recovery_with_review_target_preserves_current_reviewing_handoff() {
     let (refreshed, outcome) =
         recover_stale_publish_repair_for_workspace_and_reload_with_review_target(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+            Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>,
             Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
             workspace,
             Some(&target),
@@ -3265,6 +3269,7 @@ async fn stale_review_handoff_without_matching_target_is_recovered_and_reloaded(
 
     let refreshed = recover_stale_publish_repair_for_workspace_and_reload(
         Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>,
         Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
         workspace,
     )
@@ -3306,6 +3311,7 @@ async fn batch_recovery_counts_only_recovered_workspaces() {
 
     let recovered = recover_stale_agent_workspace_publish_repairs(
         Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>,
         Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
     )
     .await
@@ -3352,6 +3358,7 @@ async fn recovery_heals_only_an_active_current_repair_to_fixing() {
 
     let refreshed = recover_stale_publish_repair_for_workspace_and_reload(
         Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>,
         Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
         workspace,
     )
@@ -3399,6 +3406,7 @@ async fn recovery_restores_blocked_state_only_for_the_current_pr_autofix_replace
     let (refreshed, outcome) =
         recover_stale_publish_repair_for_workspace_and_reload_with_review_target(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+            Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>,
             Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
             workspace,
             None,
@@ -3452,6 +3460,7 @@ async fn recovery_does_not_treat_an_unrelated_active_run_as_a_pr_autofix_replace
     let (refreshed, outcome) =
         recover_stale_publish_repair_for_workspace_and_reload_with_review_target(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+            Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>,
             Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
             workspace,
             None,
@@ -3522,6 +3531,7 @@ mod extracted_inline_tests {
 
         let recovered = recover_stale_agent_workspace_publish_repairs(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+            Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>,
             Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
         )
         .await
@@ -3593,6 +3603,7 @@ mod extracted_inline_tests {
 
         let recovered = recover_stale_agent_workspace_publish_repairs(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+            Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>,
             Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
         )
         .await
@@ -3622,6 +3633,7 @@ mod extracted_inline_tests {
 
         recover_stale_agent_workspace_publish_repairs_on_startup(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+            Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>,
             Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
         )
         .await;
@@ -3635,6 +3647,7 @@ mod extracted_inline_tests {
 
         recover_stale_agent_workspace_publish_repairs_on_startup(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+            Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>,
             Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
         )
         .await;
@@ -3665,6 +3678,7 @@ mod extracted_inline_tests {
 
         let recovered = recover_stale_publish_repair_for_workspace(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+            Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>,
             Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
             workspace,
         )
@@ -3702,6 +3716,7 @@ mod extracted_inline_tests {
 
         let recovered = recover_stale_publish_repair_for_workspace(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+            Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>,
             agent_run_repo,
             workspace,
         )
@@ -3721,6 +3736,7 @@ mod extracted_inline_tests {
 
         let recovered = recover_stale_publish_repair_for_workspace(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+            Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>,
             agent_run_repo,
             workspace,
         )
@@ -3746,10 +3762,14 @@ mod extracted_inline_tests {
         run.completed_at = None;
         agent_run_repo.create(run).await.expect("seed run");
 
-        let recovered =
-            recover_stale_publish_repair_for_workspace(workspace_repo, agent_run_repo, workspace)
-                .await
-                .expect("check repair state");
+        let recovered = recover_stale_publish_repair_for_workspace(
+            workspace_repo.clone(),
+            workspace_repo,
+            agent_run_repo,
+            workspace,
+        )
+        .await
+        .expect("check repair state");
 
         assert!(recovered);
     }
@@ -3770,6 +3790,7 @@ mod extracted_inline_tests {
 
         let recovered = recover_stale_publish_repair_for_workspace(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+            Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>,
             agent_run_repo,
             workspace,
         )
@@ -3822,6 +3843,7 @@ mod extracted_inline_tests {
 
         let recovered = recover_stale_publish_repair_for_workspace(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+            Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>,
             agent_run_repo,
             workspace,
         )
@@ -4596,7 +4618,8 @@ wait "$stdin_drain_pid" 2>/dev/null || true
         .await
         .expect("load current attempt after recovery")
         .expect("current attempt exists after recovery");
-    let message = latest_sent_repair_message(&state, current_attempt.runtime_conversation_id()).await;
+    let message =
+        latest_sent_repair_message(&state, current_attempt.runtime_conversation_id()).await;
     assert!(
         message.contains("redelivering an interrupted PR fix"),
         "PR autofix redelivery must use the PR fixer assignment, got: {message}"
@@ -4650,7 +4673,8 @@ wait "$stdin_drain_pid" 2>/dev/null || true
         .await
         .expect("load current attempt after recovery")
         .expect("current attempt exists after recovery");
-    let message = latest_sent_repair_message(&state, current_attempt.runtime_conversation_id()).await;
+    let message =
+        latest_sent_repair_message(&state, current_attempt.runtime_conversation_id()).await;
     assert!(
         message.contains("complete_agent_workspace_repair"),
         "a publish repair must name the repairer's own completion tool: {message}"

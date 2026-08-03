@@ -2,7 +2,10 @@ use crate::application::AppState;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentWorkspaceRepairSource, ChatConversation, ChatConversationId,
 };
-use crate::domain::repositories::ChatConversationRepository;
+use crate::domain::repositories::{
+    AgentConversationWorkspaceRepository, AgentWorkspaceRepairRepository,
+    ChatConversationRepository,
+};
 use crate::error::AppResult;
 use crate::infrastructure::agents::claude::agent_names::{
     AGENT_WORKSPACE_PR_FIXER, AGENT_WORKSPACE_REPAIR,
@@ -74,6 +77,36 @@ pub(crate) async fn ensure_agent_workspace_fixer_conversation_with_repo(
     .await
 }
 
+/// Conversations that can host an active workspace-linked fixer. The parent remains in the set
+/// for legacy attempts; durable repair and Review-fixer children are added from recorded linkage.
+pub(crate) async fn agent_workspace_fixer_runtime_conversations(
+    workspace: &AgentConversationWorkspace,
+    workspace_repo: &dyn AgentConversationWorkspaceRepository,
+    repair_repo: &dyn AgentWorkspaceRepairRepository,
+) -> AppResult<Vec<ChatConversationId>> {
+    let mut conversations = vec![workspace.conversation_id];
+    if let Some(attempt) = repair_repo
+        .get_current_repair_attempt(&workspace.conversation_id)
+        .await?
+    {
+        let runtime_conversation_id = *attempt.runtime_conversation_id();
+        if !conversations.contains(&runtime_conversation_id) {
+            conversations.push(runtime_conversation_id);
+        }
+    }
+    if let Some(monitor) = workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await?
+    {
+        if let Some(runtime_conversation_id) = monitor.review_fixer_conversation_id {
+            if !conversations.contains(&runtime_conversation_id) {
+                conversations.push(runtime_conversation_id);
+            }
+        }
+    }
+    Ok(conversations)
+}
+
 pub async fn create_agent_workspace_fixer_conversation(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
@@ -128,11 +161,15 @@ fn agent_workspace_fixer_conversation_title(
             "Fix PR conflict".to_string()
         }
         (_, AgentWorkspaceFixerTitleContext::Repair(_)) => "Fix workspace".to_string(),
-        (AgentWorkspaceFixerKind::WorkspaceRepair, AgentWorkspaceFixerTitleContext::PullRequest(Some(number))) => {
+        (
+            AgentWorkspaceFixerKind::WorkspaceRepair,
+            AgentWorkspaceFixerTitleContext::PullRequest(Some(number)),
+        ) => {
             format!("Fix PR #{number}")
         }
-        (AgentWorkspaceFixerKind::WorkspaceRepair, AgentWorkspaceFixerTitleContext::PullRequest(None)) => {
-            "Fix workspace".to_string()
-        }
+        (
+            AgentWorkspaceFixerKind::WorkspaceRepair,
+            AgentWorkspaceFixerTitleContext::PullRequest(None),
+        ) => "Fix workspace".to_string(),
     }
 }

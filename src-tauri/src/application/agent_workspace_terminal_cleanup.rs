@@ -10,6 +10,7 @@ use crate::application::agent_conversation_workspace::{
     resolve_agent_conversation_workspace_path_from_record_identity,
     resolve_linked_plan_branch_agent_worktree_path, validate_workspace_linked_plan_branch,
 };
+use crate::application::agent_workspace_fixer_conversation::agent_workspace_fixer_runtime_conversations;
 use crate::application::chat_service::ChatService;
 use crate::application::git_artifact_cleanup::{
     cleanup_terminal_agent_workspace_local_artifacts,
@@ -25,7 +26,7 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, AgentWorkspaceLocalCleanupClaim,
-    PlanBranchRepository,
+    AgentWorkspaceRepairRepository, PlanBranchRepository,
 };
 use crate::domain::services::kill_worktree_processes_async;
 use crate::infrastructure::agents::claude::git_runtime_config;
@@ -118,6 +119,7 @@ enum TerminalCleanupTarget {
 
 pub(crate) async fn terminalize_agent_workspace_after_pr(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
     plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
     chat_service: Option<Arc<dyn ChatService>>,
@@ -125,36 +127,88 @@ pub(crate) async fn terminalize_agent_workspace_after_pr(
     project: &Project,
     cause: TerminalAgentWorkspaceCause,
 ) -> TerminalAgentWorkspaceOutcome {
-    let active_run = match agent_run_repo
-        .get_active_for_conversation(conversation_id)
-        .await
-    {
-        Ok(run) => run,
+    let workspace = match workspace_repo.get_by_conversation_id(conversation_id).await {
+        Ok(Some(workspace)) => workspace,
+        Ok(None) => {
+            return TerminalAgentWorkspaceOutcome::runtime_blocked(
+                "Agent workspace disappeared before terminal runtime cleanup".to_string(),
+            );
+        }
         Err(error) => {
             return TerminalAgentWorkspaceOutcome::runtime_blocked(format!(
-                "Failed to inspect the active workspace run: {error}"
+                "Failed to load the workspace before terminal runtime cleanup: {error}"
             ));
         }
     };
+    let mut runtime_conversations = match agent_workspace_fixer_runtime_conversations(
+        &workspace,
+        workspace_repo.as_ref(),
+        repair_repo.as_ref(),
+    )
+    .await
+    {
+        Ok(conversations) => conversations,
+        Err(error) => {
+            return TerminalAgentWorkspaceOutcome::runtime_blocked(format!(
+                "Failed to resolve workspace fixer runtimes: {error}"
+            ));
+        }
+    };
+    match workspace_repo
+        .get_workspace_review_monitor(conversation_id)
+        .await
+    {
+        Ok(Some(monitor)) => {
+            if let Some(review_conversation_id) = monitor.review_conversation_id {
+                if !runtime_conversations.contains(&review_conversation_id) {
+                    runtime_conversations.push(review_conversation_id);
+                }
+            }
+        }
+        Ok(None) => {}
+        Err(error) => {
+            return TerminalAgentWorkspaceOutcome::runtime_blocked(format!(
+                "Failed to resolve the Workspace Review runtime: {error}"
+            ));
+        }
+    }
 
-    if active_run.is_some() || chat_service.is_some() {
+    let mut active_runs = Vec::new();
+    for runtime_conversation_id in &runtime_conversations {
+        match agent_run_repo
+            .get_active_for_conversation(runtime_conversation_id)
+            .await
+        {
+            Ok(Some(run)) => active_runs.push(run),
+            Ok(None) => {}
+            Err(error) => {
+                return TerminalAgentWorkspaceOutcome::runtime_blocked(format!(
+                    "Failed to inspect an active workspace runtime: {error}"
+                ));
+            }
+        }
+    }
+
+    if !active_runs.is_empty() || chat_service.is_some() {
         let Some(chat_service) = chat_service.as_ref() else {
             return TerminalAgentWorkspaceOutcome::runtime_blocked(
                 "An active workspace run could not be stopped because no chat runtime was available"
                     .to_string(),
             );
         };
-        if let Err(error) = chat_service
-            .stop_agent(ChatContextType::Project, &conversation_id.as_str())
-            .await
-        {
-            return TerminalAgentWorkspaceOutcome::runtime_blocked(format!(
-                "Failed to stop the workspace runtime: {error}"
-            ));
+        for runtime_conversation_id in &runtime_conversations {
+            if let Err(error) = chat_service
+                .stop_agent(ChatContextType::Project, &runtime_conversation_id.as_str())
+                .await
+            {
+                return TerminalAgentWorkspaceOutcome::runtime_blocked(format!(
+                    "Failed to stop the workspace runtime: {error}"
+                ));
+            }
         }
     }
 
-    if let Some(run) = active_run {
+    for run in active_runs {
         if let Err(error) = agent_run_repo.fail(&run.id, &cause.stop_reason()).await {
             return TerminalAgentWorkspaceOutcome::runtime_blocked(format!(
                 "Failed to persist the terminal workspace run result: {error}"
@@ -162,21 +216,23 @@ pub(crate) async fn terminalize_agent_workspace_after_pr(
         }
     }
 
-    match agent_run_repo
-        .get_active_for_conversation(conversation_id)
-        .await
-    {
-        Ok(None) => {}
-        Ok(Some(run)) => {
-            return TerminalAgentWorkspaceOutcome::runtime_blocked(format!(
-                "Workspace run {} remained active after stop",
-                run.id.as_str()
-            ));
-        }
-        Err(error) => {
-            return TerminalAgentWorkspaceOutcome::runtime_blocked(format!(
-                "Failed to verify the stopped workspace runtime: {error}"
-            ));
+    for runtime_conversation_id in &runtime_conversations {
+        match agent_run_repo
+            .get_active_for_conversation(runtime_conversation_id)
+            .await
+        {
+            Ok(None) => {}
+            Ok(Some(run)) => {
+                return TerminalAgentWorkspaceOutcome::runtime_blocked(format!(
+                    "Workspace run {} remained active after stop",
+                    run.id.as_str()
+                ));
+            }
+            Err(error) => {
+                return TerminalAgentWorkspaceOutcome::runtime_blocked(format!(
+                    "Failed to verify the stopped workspace runtime: {error}"
+                ));
+            }
         }
     }
 
@@ -192,6 +248,7 @@ pub(crate) async fn terminalize_agent_workspace_after_pr(
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn settle_review_pr_terminal_observation(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
     plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
     chat_service: Option<Arc<dyn ChatService>>,
@@ -219,6 +276,7 @@ pub(crate) async fn settle_review_pr_terminal_observation(
 
     Ok(terminalize_agent_workspace_after_pr(
         workspace_repo,
+        repair_repo,
         agent_run_repo,
         plan_branch_repo,
         chat_service,

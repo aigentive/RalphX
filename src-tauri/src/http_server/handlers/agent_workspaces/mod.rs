@@ -830,6 +830,8 @@ pub struct AgentWorkspaceReviewContextResponse {
     pub events: Vec<AgentConversationWorkspacePublicationEventResponse>,
     pub target: Option<AgentWorkspaceReviewTargetResponse>,
     pub monitor: AgentWorkspaceReviewMonitorResponse,
+    pub repair_runtime_conversation_id: Option<String>,
+    pub repair_fixer_kind: Option<&'static str>,
     pub goal_context: AgentWorkspaceReviewGoalContext,
     pub is_current: bool,
     pub is_outdated: bool,

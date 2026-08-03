@@ -320,6 +320,7 @@ async fn terminal_cleanup_blocks_deletion_while_an_active_run_cannot_be_stopped(
 
     let outcome = terminalize_agent_workspace_after_pr(
         workspace_repo.clone(),
+        workspace_repo.clone(),
         run_repo,
         None,
         None,
@@ -418,6 +419,7 @@ async fn terminalize_stops_active_run_and_records_archive_reason_before_cleanup(
     let chat_service = Arc::new(MockChatService::new());
 
     let outcome = terminalize_agent_workspace_after_pr(
+        workspace_repo.clone(),
         workspace_repo.clone(),
         run_repo.clone(),
         None,
@@ -705,6 +707,7 @@ async fn terminalize_blocks_cleanup_when_active_run_lookup_fails() {
 
     let outcome = terminalize_agent_workspace_after_pr(
         workspace_repo.clone(),
+        workspace_repo.clone(),
         run_repo,
         None,
         None,
@@ -750,6 +753,7 @@ async fn terminalize_blocks_cleanup_when_runtime_stop_fails() {
     chat_service.fail_next_stop_agent_calls(1).await;
 
     let outcome = terminalize_agent_workspace_after_pr(
+        workspace_repo.clone(),
         workspace_repo.clone(),
         run_repo,
         None,
@@ -801,6 +805,7 @@ async fn terminalize_blocks_cleanup_when_failed_run_cannot_be_persisted() {
 
     let outcome = terminalize_agent_workspace_after_pr(
         workspace_repo.clone(),
+        workspace_repo.clone(),
         run_repo,
         None,
         Some(chat_service),
@@ -846,6 +851,7 @@ async fn terminalize_blocks_cleanup_when_active_run_remains_after_stop() {
 
     let outcome = terminalize_agent_workspace_after_pr(
         workspace_repo.clone(),
+        workspace_repo.clone(),
         run_repo,
         None,
         Some(chat_service),
@@ -890,6 +896,7 @@ async fn terminalize_blocks_cleanup_when_post_stop_run_lookup_fails() {
     let chat_service = Arc::new(MockChatService::new());
 
     let outcome = terminalize_agent_workspace_after_pr(
+        workspace_repo.clone(),
         workspace_repo.clone(),
         run_repo,
         None,

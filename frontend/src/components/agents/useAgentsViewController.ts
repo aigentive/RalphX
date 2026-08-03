@@ -962,6 +962,12 @@ export function useAgentsViewController({
         : null,
     [repairFixerKind, repairRuntimeConversationId],
   );
+  const reviewFixerIsActive = ["routing", "queued", "running"].includes(
+    workspaceReviewContext?.monitor.reviewFixerStatus ?? "",
+  );
+  const repairAttemptIsActive = Boolean(
+    repairRuntimeConversationId && repairFixerKind,
+  );
   useEffect(() => {
     if (
       workspaceReviewContext?.monitor.status !== "reviewing" ||
@@ -980,23 +986,34 @@ export function useAgentsViewController({
     );
   }, [workspaceReviewChildConversationId, workspaceReviewContext?.monitor.status]);
   useEffect(() => {
-    if (!workspaceRepairFocusTarget) return;
+    if (
+      !workspaceRepairFocusTarget ||
+      (!reviewFixerIsActive &&
+        !(repairAttemptIsActive && repairFixerKind === "workspace_repair"))
+    ) {
+      return;
+    }
     setChatFocus((current) =>
       current.type === "workspace_repair" &&
       current.conversationId === workspaceRepairFocusTarget.conversationId
         ? current
         : workspaceRepairFocusTarget,
     );
-  }, [workspaceRepairFocusTarget]);
+  }, [
+    repairAttemptIsActive,
+    repairFixerKind,
+    reviewFixerIsActive,
+    workspaceRepairFocusTarget,
+  ]);
   useEffect(() => {
-    if (!prFixerFocusTarget) return;
+    if (!prFixerFocusTarget || !repairAttemptIsActive) return;
     setChatFocus((current) =>
       current.type === "pr_fixer" &&
       current.conversationId === prFixerFocusTarget.conversationId
         ? current
         : prFixerFocusTarget,
     );
-  }, [prFixerFocusTarget]);
+  }, [prFixerFocusTarget, repairAttemptIsActive]);
   const chatFocusOptions = useMemo(() => {
     return getAgentChatFocusSwitchOptions({
       mode: activeConversationMode,

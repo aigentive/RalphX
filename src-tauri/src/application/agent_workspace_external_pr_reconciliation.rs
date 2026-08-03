@@ -318,6 +318,14 @@ pub(crate) async fn reconcile_agent_workspace_external_pr(
     } else {
         let terminalized = terminalize_agent_workspace_after_pr(
             Arc::clone(&deps.workspace_repo),
+            deps.agent_workspace_repair_repo
+                .as_ref()
+                .map(Arc::clone)
+                .ok_or_else(|| {
+                    AppError::Infrastructure(
+                        "terminal workspace cleanup requires durable repair authority".to_string(),
+                    )
+                })?,
             Arc::clone(&deps.agent_run_repo),
             Some(Arc::clone(&deps.plan_branch_repo)),
             deps.chat_service.as_ref().map(Arc::clone),
@@ -420,6 +428,14 @@ async fn reconcile_linked_agent_workspace_pr(
     emit_workspace_changed(deps.app_handle.as_ref(), &workspace.conversation_id);
     let terminalized = terminalize_agent_workspace_after_pr(
         Arc::clone(&deps.workspace_repo),
+        deps.agent_workspace_repair_repo
+            .as_ref()
+            .map(Arc::clone)
+            .ok_or_else(|| {
+                AppError::Infrastructure(
+                    "terminal workspace cleanup requires durable repair authority".to_string(),
+                )
+            })?,
         Arc::clone(&deps.agent_run_repo),
         Some(Arc::clone(&deps.plan_branch_repo)),
         deps.chat_service.as_ref().map(Arc::clone),

@@ -5,9 +5,15 @@ use ralphx_lib::commands::unified_chat_commands::AgentConversationWorkspaceRespo
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun,
-    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
-    AgentWorkspaceReviewOutcome, AgentWorkspaceReviewTargetScope, ArtifactContent, ArtifactId,
-    ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind, Project,
+    AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation, AgentWorkspaceRepairOutcome,
+    AgentWorkspaceRepairSource, AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor,
+    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+    AgentWorkspaceReviewTargetScope, ArtifactContent, ArtifactId, ChatConversation,
+    ChatConversationId, IdeationAnalysisBaseRefKind, Project,
+};
+use ralphx_lib::domain::repositories::{
+    SettleAgentWorkspaceRepairAttempt, SettleAgentWorkspaceRepairAttemptOutcome,
+    StartOrJoinAgentWorkspaceRepairAttempt, StartOrJoinAgentWorkspaceRepairAttemptOutcome,
 };
 use ralphx_lib::http_server::handlers::agent_workspaces::{
     get_agent_workspace_review_context, get_agent_workspace_review_start_preview,
@@ -624,4 +630,183 @@ async fn presentation_context_get_does_not_create_a_review_monitor() {
         .await
         .expect("read monitor")
         .is_none());
+}
+
+#[tokio::test]
+async fn workspace_review_context_surfaces_active_repair_runtime_and_kind() {
+    let repo = tempfile::TempDir::new().expect("repo tempdir");
+    let worktree = tempfile::TempDir::new().expect("worktree tempdir");
+    let state = test_state();
+    let conversation_id = ChatConversationId::new();
+    let project = Project::new(
+        "Repair runtime context".to_string(),
+        repo.path().to_string_lossy().to_string(),
+    );
+    state
+        .app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .expect("seed project");
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.id = conversation_id;
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("seed conversation");
+    let workspace = AgentConversationWorkspace::new(
+        conversation_id,
+        project.id,
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("Project default (main)".to_string()),
+        None,
+        "ralphx/test/repair-runtime-context".to_string(),
+        worktree.path().to_string_lossy().to_string(),
+    );
+    state
+        .app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("seed workspace");
+    let parent_attempt = AgentWorkspaceRepairAttempt::new(
+        conversation_id,
+        AgentWorkspaceRepairSource::Publish,
+        AgentWorkspaceRepairContinuation::ResumePrSupervision,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    let parent_attempt = match state
+        .app_state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: parent_attempt,
+            reason: "surface parent-hosted fixer runtime".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("start parent-hosted repair attempt")
+    {
+        StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(attempt) => attempt,
+        outcome => panic!("expected parent-hosted attempt, got {outcome:?}"),
+    };
+
+    let axum::Json(parent_context) = get_agent_workspace_review_context(
+        State(state.clone()),
+        Path(conversation_id.to_string()),
+        HeaderMap::new(),
+        Query(AgentWorkspaceReviewContextQuery::default()),
+    )
+    .await
+    .expect("load parent-hosted repair context");
+    assert_eq!(
+        parent_context.repair_runtime_conversation_id,
+        Some(conversation_id.as_str())
+    );
+    assert_eq!(
+        parent_context.repair_fixer_kind.as_deref(),
+        Some("workspace_repair")
+    );
+    assert!(matches!(
+        state
+            .app_state
+            .agent_workspace_repair_repo
+            .settle_repair_attempt(SettleAgentWorkspaceRepairAttempt {
+                attempt_id: parent_attempt.id,
+                generation: parent_attempt.generation,
+                expected_phase: parent_attempt.phase,
+                expected_updated_at: parent_attempt.updated_at,
+                outcome: AgentWorkspaceRepairOutcome::Succeeded,
+                settled_at: parent_attempt.updated_at + chrono::Duration::microseconds(1),
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("settle parent-hosted attempt"),
+        SettleAgentWorkspaceRepairAttemptOutcome::Applied(_)
+    ));
+
+    let runtime_conversation_id = ChatConversationId::new();
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        conversation_id,
+        AgentWorkspaceRepairSource::PrAutofix,
+        AgentWorkspaceRepairContinuation::ResumePrSupervision,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    attempt.runtime_conversation_id = Some(runtime_conversation_id);
+    let child_attempt = match state
+        .app_state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt,
+            reason: "surface fixer runtime".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("start repair attempt")
+    {
+        StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(attempt) => attempt,
+        outcome => panic!("expected child-hosted attempt, got {outcome:?}"),
+    };
+
+    let axum::Json(context) = get_agent_workspace_review_context(
+        State(state.clone()),
+        Path(conversation_id.to_string()),
+        HeaderMap::new(),
+        Query(AgentWorkspaceReviewContextQuery::default()),
+    )
+    .await
+    .expect("load presentation context");
+
+    assert_eq!(
+        context.repair_runtime_conversation_id,
+        Some(runtime_conversation_id.as_str())
+    );
+    assert_eq!(context.repair_fixer_kind.as_deref(), Some("pr_fixer"));
+
+    assert!(matches!(
+        state
+            .app_state
+            .agent_workspace_repair_repo
+            .settle_repair_attempt(SettleAgentWorkspaceRepairAttempt {
+                attempt_id: child_attempt.id,
+                generation: child_attempt.generation,
+                expected_phase: child_attempt.phase,
+                expected_updated_at: child_attempt.updated_at,
+                outcome: AgentWorkspaceRepairOutcome::Succeeded,
+                settled_at: child_attempt.updated_at + chrono::Duration::microseconds(1),
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("settle child-hosted attempt"),
+        SettleAgentWorkspaceRepairAttemptOutcome::Applied(_)
+    ));
+    let axum::Json(settled_context) = get_agent_workspace_review_context(
+        State(state),
+        Path(conversation_id.to_string()),
+        HeaderMap::new(),
+        Query(AgentWorkspaceReviewContextQuery::default()),
+    )
+    .await
+    .expect("load settled repair context");
+    assert_eq!(settled_context.repair_runtime_conversation_id, None);
+    assert_eq!(settled_context.repair_fixer_kind, None);
 }

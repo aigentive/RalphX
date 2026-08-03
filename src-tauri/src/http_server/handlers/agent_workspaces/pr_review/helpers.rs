@@ -114,6 +114,7 @@ pub(in crate::http_server::handlers::agent_workspaces) async fn reconcile_termin
         Arc::new(state.build_chat_service());
     let outcome = crate::application::agent_workspace_terminal_cleanup::settle_review_pr_terminal_observation(
         Arc::clone(&state.agent_conversation_workspace_repo),
+        Arc::clone(&state.agent_workspace_repair_repo),
         Arc::clone(&state.agent_run_repo),
         Some(Arc::clone(&state.plan_branch_repo)),
         Some(chat_service),

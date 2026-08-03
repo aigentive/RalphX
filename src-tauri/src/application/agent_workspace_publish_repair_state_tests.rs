@@ -2726,6 +2726,7 @@ async fn active_reconciliation_requires_current_successful_lifecycle_evidence() 
         .unwrap();
     assert!(!reconcile_active_agent_workspace_repair(
         Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>,
         Arc::clone(&run_repo) as Arc<dyn AgentRunRepository>,
         &workspace,
     )
@@ -2744,6 +2745,7 @@ async fn active_reconciliation_requires_current_successful_lifecycle_evidence() 
         .unwrap();
     assert!(reconcile_active_agent_workspace_repair(
         Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>,
         Arc::clone(&run_repo) as Arc<dyn AgentRunRepository>,
         &workspace,
     )
@@ -2789,6 +2791,7 @@ async fn stale_completion_claim_cannot_overwrite_a_failed_attempt() {
         .unwrap();
     let claim = current_agent_workspace_repair_claim_for_completion(
         Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>,
         Arc::clone(&run_repo) as Arc<dyn AgentRunRepository>,
         &workspace,
     )
@@ -2866,6 +2869,7 @@ async fn completion_requires_dispatch_evidence_for_the_current_claim() {
 
     assert!(current_agent_workspace_repair_claim_for_completion(
         Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>,
         Arc::clone(&run_repo) as Arc<dyn AgentRunRepository>,
         &claimed_workspace,
     )
@@ -2885,7 +2889,8 @@ async fn completion_requires_dispatch_evidence_for_the_current_claim() {
         .unwrap();
     assert_eq!(
         current_agent_workspace_repair_claim_for_completion(
-            workspace_repo as Arc<dyn AgentConversationWorkspaceRepository>,
+            workspace_repo.clone() as Arc<dyn AgentConversationWorkspaceRepository>,
+            workspace_repo as Arc<dyn AgentWorkspaceRepairRepository>,
             run_repo as Arc<dyn AgentRunRepository>,
             &claimed_workspace,
         )

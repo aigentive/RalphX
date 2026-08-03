@@ -16,6 +16,7 @@ use crate::application::agent_workspace_review::{
 use crate::application::agent_workspace_review_context::{
     load_agent_workspace_review_presentation_context, AgentWorkspaceReviewContextReadMode,
 };
+use crate::domain::entities::{AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource};
 
 /// GET /api/agent-workspaces/{conversation_id}/workspace-review-context
 pub async fn get_agent_workspace_review_context(
@@ -88,6 +89,23 @@ pub async fn get_agent_workspace_review_context(
         has_artifact = context.monitor.review_artifact_id.is_some(),
         "Served workspace Review context"
     );
+    let repair_attempt = state
+        .app_state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
+        .filter(|attempt| attempt.phase != AgentWorkspaceRepairPhase::Blocked);
+    let repair_runtime_conversation_id = repair_attempt
+        .as_ref()
+        .map(|attempt| attempt.runtime_conversation_id().as_str());
+    let repair_fixer_kind = repair_attempt.as_ref().map(|attempt| {
+        if attempt.source == AgentWorkspaceRepairSource::PrAutofix {
+            "pr_fixer"
+        } else {
+            "workspace_repair"
+        }
+    });
 
     Ok(Json(AgentWorkspaceReviewContextResponse {
         success: true,
@@ -97,6 +115,8 @@ pub async fn get_agent_workspace_review_context(
             AgentWorkspaceReviewTargetResponse::from_target(target, include_review_packet)
         }),
         monitor: AgentWorkspaceReviewMonitorResponse::from(context.monitor),
+        repair_runtime_conversation_id,
+        repair_fixer_kind,
         goal_context: context.goal_context,
         is_current: context.is_current,
         is_outdated: context.is_outdated,

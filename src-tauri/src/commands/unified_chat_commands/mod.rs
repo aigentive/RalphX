@@ -9096,6 +9096,7 @@ pub async fn send_agent_workspace_publish_repair_message<S>(
     workspace: &AgentConversationWorkspace,
     error: &str,
     runtime_overrides: AgentWorkspaceRepairRuntimeOverrides,
+    runtime_conversation_id: &ChatConversationId,
 ) -> Result<SendResult, ChatServiceError>
 where
     S: ChatService + ?Sized,
@@ -9106,6 +9107,7 @@ where
         error,
         runtime_overrides,
         &AgentConversationWorkspaceRepairTarget::from_workspace(workspace),
+        runtime_conversation_id,
     )
     .await
 }
@@ -9117,6 +9119,7 @@ pub async fn send_agent_workspace_publish_repair_message_for_target<S>(
     error: &str,
     runtime_overrides: AgentWorkspaceRepairRuntimeOverrides,
     target: &AgentConversationWorkspaceRepairTarget,
+    runtime_conversation_id: &ChatConversationId,
 ) -> Result<SendResult, ChatServiceError>
 where
     S: ChatService + ?Sized,
@@ -9129,7 +9132,7 @@ where
         target,
         AgentWorkspacePostRepairAction::Publish,
         None,
-        &workspace.conversation_id,
+        runtime_conversation_id,
     )
     .await
 }

@@ -13,7 +13,9 @@ use ralphx_lib::domain::entities::{
     AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, ChatConversationId,
     IdeationAnalysisBaseRefKind, Project, ProjectId,
 };
-use ralphx_lib::domain::repositories::{AgentConversationWorkspaceRepository, AgentRunRepository};
+use ralphx_lib::domain::repositories::{
+    AgentConversationWorkspaceRepository, AgentRunRepository, AgentWorkspaceRepairRepository,
+};
 use ralphx_lib::infrastructure::memory::{
     MemoryAgentConversationWorkspaceRepository, MemoryAgentRunRepository,
 };
@@ -74,6 +76,7 @@ async fn recovers_needs_agent_workspace_when_no_agent_run_is_active() {
 
     let recovered = recover_stale_agent_workspace_publish_repairs(
         Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>,
         Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
     )
     .await
@@ -115,6 +118,7 @@ async fn keeps_needs_agent_workspace_locked_while_agent_run_is_active() {
 
     let recovered = recover_stale_publish_repair_for_workspace(
         Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>,
         Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
         workspace,
     )

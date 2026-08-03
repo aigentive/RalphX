@@ -1568,6 +1568,7 @@ async fn publish_repair_message_routes_spawn_to_effective_target_worktree() {
         "merge conflict",
         AgentWorkspaceRepairRuntimeOverrides::default(),
         &target,
+        &workspace.conversation_id,
     )
     .await
     .expect("repair message should send");
@@ -6785,7 +6786,10 @@ async fn publish_workspace_clears_terminal_pr_identity_and_creates_a_fresh_draft
             .any(|event| event.step == "terminal_publication_identity_cleared"),
         "clearing the terminal identity must leave a durable event"
     );
-    assert_eq!(response.workspace.publication_pr_number, stored.publication_pr_number);
+    assert_eq!(
+        response.workspace.publication_pr_number,
+        stored.publication_pr_number
+    );
 }
 
 #[tokio::test]
