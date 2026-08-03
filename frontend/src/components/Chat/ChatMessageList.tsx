@@ -399,6 +399,10 @@ function persistedThinkingGroupKey(messages: ChatMessageData[]): string {
   return `thinking-msg-group:${first?.parentMessageId ?? first?.id ?? "empty"}:${first?.timelineSequence ?? "start"}:${last?.timelineSequence ?? "end"}:${messages.length}`;
 }
 
+function isThinkingGroupKey(groupKey: string): boolean {
+  return isLiveThinkingGroupKey(groupKey) || groupKey.startsWith("thinking-msg-group:");
+}
+
 interface RunAttributionTiming {
   runId: string;
   startedAt: string;
@@ -691,6 +695,7 @@ function LiveTranscriptRowItem({
   providerHarness,
   providerSessionId,
   expandedToolGroupKeys,
+  isThinkingGroupExpanded,
   contentWidthClassName,
   rowRef,
   onToggleToolCallGroup,
@@ -704,6 +709,7 @@ function LiveTranscriptRowItem({
   providerHarness: string | null | undefined;
   providerSessionId: string | null | undefined;
   expandedToolGroupKeys: Set<string>;
+  isThinkingGroupExpanded: (groupKey: string) => boolean;
   contentWidthClassName?: string | undefined;
   rowRef?: React.Ref<HTMLDivElement> | undefined;
   onToggleToolCallGroup: (groupKey: string, anchor: HTMLElement | null) => void;
@@ -734,7 +740,7 @@ function LiveTranscriptRowItem({
     }
     if (row.kind === "thinking_group") {
       const groupKey = row.key;
-      const isExpanded = expandedToolGroupKeys.has(groupKey);
+      const isExpanded = isThinkingGroupExpanded(groupKey);
       const aggregate = aggregateThinkingSegments(row.blocks.map(({ block }) => block), false);
       const text = joinThinkingSegmentTexts(row.blocks.map(({ block }) => block.text));
       return (
@@ -1042,7 +1048,9 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       () => new Set(),
     );
     const expandedToolGroupConversationRef = useRef<string | undefined>(conversationId);
-    const thinkingIntentRef = useRef<Map<string, ThinkingGroupIntent>>(new Map());
+    const [thinkingIntentByGroupKey, setThinkingIntentByGroupKey] = useState<Map<string, ThinkingGroupIntent>>(
+      () => new Map(),
+    );
     const transcriptRootRef = useRef<HTMLDivElement | null>(null);
     const initialPaintReadyFrameRef = useRef<number | null>(null);
     const initialPaintReadyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1052,7 +1060,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         return;
       }
       expandedToolGroupConversationRef.current = conversationId;
-      thinkingIntentRef.current.clear();
+      setThinkingIntentByGroupKey(new Map());
       setExpandedToolGroupKeys(new Set());
     }, [conversationId]);
 
@@ -1137,22 +1145,33 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
 
     const toggleToolCallGroup = useCallback((groupKey: string, toggleElement?: HTMLElement | null) => {
       scrollController?.captureAnchor(toggleElement ?? undefined);
+      const isThinkingGroup = isThinkingGroupKey(groupKey);
+      const isThinkingGroupExpanded = thinkingIntentByGroupKey.get(groupKey) !== "collapsed";
+      if (isThinkingGroup) {
+        setThinkingIntentByGroupKey((current) => {
+          const next = new Map(current);
+          next.set(groupKey, isThinkingGroupExpanded ? "collapsed" : "expanded");
+          return next;
+        });
+      }
       setExpandedToolGroupKeys((current) => {
         const next = new Set(current);
-        if (next.has(groupKey)) {
+        const isExpanded = isThinkingGroup ? isThinkingGroupExpanded : next.has(groupKey);
+        if (isExpanded) {
           next.delete(groupKey);
-          if (isLiveThinkingGroupKey(groupKey)) {
-            thinkingIntentRef.current.set(groupKey, "collapsed");
-          }
         } else {
           next.add(groupKey);
-          if (isLiveThinkingGroupKey(groupKey)) {
-            thinkingIntentRef.current.set(groupKey, "expanded");
-          }
         }
         return next;
       });
-    }, [scrollController]);
+    }, [scrollController, thinkingIntentByGroupKey]);
+
+    const isThinkingGroupExpanded = useCallback(
+      (groupKey: string) => isThinkingGroupKey(groupKey)
+        ? thinkingIntentByGroupKey.get(groupKey) !== "collapsed"
+        : expandedToolGroupKeys.has(groupKey),
+      [expandedToolGroupKeys, thinkingIntentByGroupKey],
+    );
 
     const cancelInitialPaintReadyJob = useCallback(() => {
       if (initialPaintReadyFrameRef.current !== null) {
@@ -1350,9 +1369,9 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
 
     useEffect(() => {
       setExpandedToolGroupKeys((current) =>
-        synchronizeThinkingGroupExpansion(current, liveTranscriptRows, thinkingIntentRef.current),
+        synchronizeThinkingGroupExpansion(current, liveTranscriptRows, thinkingIntentByGroupKey),
       );
-    }, [liveTranscriptRows]);
+    }, [liveTranscriptRows, thinkingIntentByGroupKey]);
 
     const hasRenderableStreamingBlocks = useMemo(
       () => liveTranscriptRows.length > 0,
@@ -1983,6 +2002,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
             providerHarness={providerHarness}
             providerSessionId={providerSessionId}
             expandedToolGroupKeys={expandedToolGroupKeys}
+            isThinkingGroupExpanded={isThinkingGroupExpanded}
             contentWidthClassName={contentWidthClassName}
             rowRef={isLastVisibleTimelineItem ? handleLastRenderedRowRef : undefined}
             onToggleToolCallGroup={toggleToolCallGroup}
@@ -2016,7 +2036,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       const isExpandedToolCallGroup =
         toolCallGroup != null && expandedToolGroupKeys.has(toolCallGroup.key);
       const isExpandedThinkingGroup =
-        thinkingGroup != null && expandedToolGroupKeys.has(thinkingGroup.key);
+        thinkingGroup != null && isThinkingGroupExpanded(thinkingGroup.key);
       if (thinkingGroup?.position === "toggle") {
         return (
           <PersistedThinkingGroupToggleRow
@@ -2121,6 +2141,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       agentRun,
       personaRuns,
       expandedToolGroupKeys,
+      isThinkingGroupExpanded,
       firstItemIndex,
       footerContent,
       handleLastRenderedRowRef,
@@ -2189,6 +2210,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
                   providerHarness={providerHarness}
                   providerSessionId={providerSessionId}
                   expandedToolGroupKeys={expandedToolGroupKeys}
+                  isThinkingGroupExpanded={isThinkingGroupExpanded}
                   contentWidthClassName={contentWidthClassName}
                   onToggleToolCallGroup={toggleToolCallGroup}
                   renderStreamingToolCallBlock={renderStreamingToolCallBlock}
@@ -2222,7 +2244,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
               toolCallGroup != null && expandedToolGroupKeys.has(toolCallGroup.key);
             const isLastVisibleTimelineItem = index === lastVisibleTimelineIndex;
             const isExpandedThinkingGroup =
-              thinkingGroup != null && expandedToolGroupKeys.has(thinkingGroup.key);
+              thinkingGroup != null && isThinkingGroupExpanded(thinkingGroup.key);
             if (thinkingGroup?.position === "toggle") {
               return (
                 <PersistedThinkingGroupToggleRow

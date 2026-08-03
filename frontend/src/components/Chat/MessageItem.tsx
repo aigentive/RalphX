@@ -354,8 +354,20 @@ export const MessageItem = React.memo(function MessageItem({
     return ids;
   }, [parsedContentBlocks, parsedToolCallsById]);
   const [expandedContentToolGroupKeys, setExpandedContentToolGroupKeys] = useState<Set<string>>(() => new Set());
+  const [collapsedContentThinkingGroupKeys, setCollapsedContentThinkingGroupKeys] = useState<Set<string>>(() => new Set());
   const toggleContentToolGroup = useCallback((groupKey: string) => {
     setExpandedContentToolGroupKeys((previousKeys) => {
+      const nextKeys = new Set(previousKeys);
+      if (nextKeys.has(groupKey)) {
+        nextKeys.delete(groupKey);
+      } else {
+        nextKeys.add(groupKey);
+      }
+      return nextKeys;
+    });
+  }, []);
+  const toggleContentThinkingGroup = useCallback((groupKey: string) => {
+    setCollapsedContentThinkingGroupKeys((previousKeys) => {
       const nextKeys = new Set(previousKeys);
       if (nextKeys.has(groupKey)) {
         nextKeys.delete(groupKey);
@@ -441,7 +453,7 @@ export const MessageItem = React.memo(function MessageItem({
         return;
       }
       const groupKey = `content-thinking-group:${first.index}`;
-      const isExpanded = expandedContentToolGroupKeys.has(groupKey);
+      const isExpanded = !collapsedContentThinkingGroupKeys.has(groupKey);
       const aggregate = aggregateThinkingSegments(pendingThinking.map(({ block }) => block), true);
       const text = joinThinkingSegmentTexts(pendingThinking.map(({ block }) => block.text));
       renderedBlocks.push(
@@ -450,7 +462,7 @@ export const MessageItem = React.memo(function MessageItem({
             isSettled={aggregate.isSettled} segmentCount={aggregate.segmentCount}
             {...(aggregate.totalDurationMs != null ? { durationMs: aggregate.totalDurationMs } : {})}
             {...(aggregate.reasoningTokens != null ? { reasoningTokens: aggregate.reasoningTokens } : {})}
-            onToggle={() => toggleContentToolGroup(groupKey)} />
+            onToggle={() => toggleContentThinkingGroup(groupKey)} />
           {isExpanded && text ? <ThinkingWidget text={text} /> : null}
         </div>,
       );
@@ -544,10 +556,12 @@ export const MessageItem = React.memo(function MessageItem({
     return renderedBlocks;
   }, [
     buildContentBlockToolCall,
+    collapsedContentThinkingGroupKeys,
     expandedContentToolGroupKeys,
     groupContentBlockToolCalls,
     isUser,
     parsedContentBlocks,
+    toggleContentThinkingGroup,
     toggleContentToolGroup,
   ]);
 

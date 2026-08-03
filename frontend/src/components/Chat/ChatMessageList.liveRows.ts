@@ -86,10 +86,10 @@ export function isLiveThinkingGroupKey(groupKey: string): boolean {
 export type ThinkingGroupIntent = "expanded" | "collapsed";
 
 /**
- * Sole owner of automatic thinking-group expansion: the latest running group is
- * open and every other one is closed. A recorded user intent always wins, so a
- * manual collapse is not undone by the next streaming delta. Returns `current`
- * unchanged when nothing moved, keeping the Set identity stable across deltas.
+ * Sole owner of automatic live thinking-group expansion. Thinking defaults open
+ * throughout its lifecycle; only a recorded manual collapse closes a group.
+ * Returns `current` unchanged when nothing moved, keeping the Set identity
+ * stable across deltas.
  */
 export function synchronizeThinkingGroupExpansion(
   current: Set<string>,
@@ -97,17 +97,12 @@ export function synchronizeThinkingGroupExpansion(
   intentByGroupKey: ReadonlyMap<string, ThinkingGroupIntent>,
 ): Set<string> {
   const thinkingRows = rows.filter((row) => row.kind === "thinking_group");
-  const latestRunningThinking = [...thinkingRows].reverse().find((row) => (
-    row.blocks.some(({ block }) => block.isSettled !== true)
-  ));
   let next = current;
 
   for (const row of thinkingRows) {
     const groupKey = row.key;
     const intent = intentByGroupKey.get(groupKey);
-    const shouldExpand = intent === "expanded" || (
-      intent === undefined && latestRunningThinking === row
-    );
+    const shouldExpand = intent !== "collapsed";
     if (current.has(groupKey) === shouldExpand) {
       continue;
     }
