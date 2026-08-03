@@ -1,6 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
-use std::{collections::HashMap, time::Instant};
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant, SystemTime},
+};
 
 use crate::domain::agents::{
     plan_judge_model_for_provider, standard_harness_map, standard_harness_registry,
@@ -8,9 +11,9 @@ use crate::domain::agents::{
 };
 use crate::infrastructure::agents::claude::{
     agent_harness_defaults_config, automations_config, clear_claude_cli_capability_cache,
-    execution_defaults_config, external_mcp_config, find_claude_cli, node_utils,
-    probe_claude_cli_cached, reconciliation_config, resolve_plugin_dir, scheduler_config,
-    ui_feature_flags_config, validate_external_mcp_config, verification_config,
+    execution_defaults_config, external_mcp_config, find_claude_cli, git_runtime_config,
+    node_utils, probe_claude_cli_cached, reconciliation_config, resolve_plugin_dir,
+    scheduler_config, ui_feature_flags_config, validate_external_mcp_config, verification_config,
     AgentHarnessDefaultsConfig, ExecutionDefaultsConfig, ExternalMcpConfig, SchedulerConfig,
     UiFeatureFlagsConfig,
 };
@@ -273,9 +276,14 @@ static CODEX_CLI_CAPABILITY_CACHE: OnceLock<
 static HARNESS_RUNTIME_PROBE_CACHE: OnceLock<
     Mutex<HashMap<AgentHarnessKind, HarnessRuntimeProbe>>,
 > = OnceLock::new();
+static HARNESS_RUNTIME_REFRESH_CACHE: OnceLock<
+    Mutex<HashMap<AgentHarnessKind, CachedHarnessRuntimeProbe>>,
+> = OnceLock::new();
 static HARNESS_RUNTIME_PROBE_IN_FLIGHT: OnceLock<
     Mutex<HashMap<AgentHarnessKind, Arc<HarnessRuntimeProbeInFlight>>>,
 > = OnceLock::new();
+#[cfg(test)]
+pub(crate) static HARNESS_RUNTIME_TEST_MUTEX: Mutex<()> = Mutex::new(());
 static CHAT_HARNESS_CLI_CACHE: OnceLock<
     Mutex<HashMap<(AgentHarnessKind, PathBuf), Result<ResolvedChatHarnessCli, String>>>,
 > = OnceLock::new();
@@ -293,6 +301,15 @@ impl HarnessRuntimeProbeInFlight {
             completed: Condvar::new(),
         }
     }
+}
+
+#[derive(Debug, Clone)]
+struct CachedHarnessRuntimeProbe {
+    binary_path: PathBuf,
+    binary_size: u64,
+    binary_modified: SystemTime,
+    refreshed_at: Instant,
+    probe: HarnessRuntimeProbe,
 }
 
 fn resolve_codex_cli_cached() -> Result<ResolvedCodexCli, String> {
@@ -576,12 +593,102 @@ fn complete_in_flight_harness_probe(
 }
 
 pub(crate) fn refresh_harness_runtime_probe(harness: AgentHarnessKind) -> HarnessRuntimeProbe {
+    refresh_harness_runtime_probe_with_force(harness, false)
+}
+
+pub(crate) fn refresh_harness_runtime_probe_with_force(
+    harness: AgentHarnessKind,
+    force: bool,
+) -> HarnessRuntimeProbe {
+    if force {
+        tracing::info!(
+            operation = "harness_runtime_probe_cache",
+            outcome = "forced",
+            harness = %harness,
+            "Harness runtime probe cache bypassed"
+        );
+    } else if let Some(probe) = cached_harness_runtime_refresh_probe(harness) {
+        tracing::info!(
+            operation = "harness_runtime_probe_cache",
+            outcome = "hit",
+            harness = %harness,
+            "Harness runtime probe cache hit"
+        );
+        return probe;
+    } else {
+        tracing::info!(
+            operation = "harness_runtime_probe_cache",
+            outcome = "miss",
+            harness = %harness,
+            "Harness runtime probe cache miss"
+        );
+    }
+
     clear_harness_runtime_caches_for_harness(harness);
-    probe_harness(harness)
+    let probe = probe_harness(harness);
+    cache_successful_harness_runtime_refresh_probe(harness, &probe);
+    probe
+}
+
+fn cached_harness_runtime_refresh_probe(harness: AgentHarnessKind) -> Option<HarnessRuntimeProbe> {
+    let binary_path = resolved_harness_binary_path(harness)?;
+    let metadata = std::fs::metadata(&binary_path).ok()?;
+    let binary_modified = metadata.modified().ok()?;
+    let binary_size = metadata.len();
+    let cache = HARNESS_RUNTIME_REFRESH_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let cached = cache.lock().ok()?.get(&harness)?.clone();
+    let ttl = Duration::from_secs(git_runtime_config().provider_probe_cache_ttl_secs);
+
+    (cached.binary_path == binary_path
+        && cached.binary_size == binary_size
+        && cached.binary_modified == binary_modified
+        && cached.refreshed_at.elapsed() <= ttl)
+        .then_some(cached.probe)
+}
+
+fn cache_successful_harness_runtime_refresh_probe(
+    harness: AgentHarnessKind,
+    probe: &HarnessRuntimeProbe,
+) {
+    if !probe.probe_succeeded || !probe.available {
+        return;
+    }
+
+    let Some(binary_path) = probe.binary_path.as_deref().map(PathBuf::from) else {
+        return;
+    };
+    let Ok(metadata) = std::fs::metadata(&binary_path) else {
+        return;
+    };
+    let Ok(binary_modified) = metadata.modified() else {
+        return;
+    };
+
+    let cache = HARNESS_RUNTIME_REFRESH_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    cache.lock().expect("lock harness refresh cache").insert(
+        harness,
+        CachedHarnessRuntimeProbe {
+            binary_path,
+            binary_size: metadata.len(),
+            binary_modified,
+            refreshed_at: Instant::now(),
+            probe: probe.clone(),
+        },
+    );
+}
+
+fn resolved_harness_binary_path(harness: AgentHarnessKind) -> Option<PathBuf> {
+    match harness {
+        AgentHarnessKind::Claude => find_claude_cli(),
+        AgentHarnessKind::Codex => find_codex_cli(),
+    }
 }
 
 pub(crate) fn clear_harness_runtime_caches_for_harness(harness: AgentHarnessKind) {
     if let Some(cache) = HARNESS_RUNTIME_PROBE_CACHE.get() {
+        cache.lock().unwrap().remove(&harness);
+    }
+    if let Some(cache) = HARNESS_RUNTIME_REFRESH_CACHE.get() {
         cache.lock().unwrap().remove(&harness);
     }
     if let Some(cache) = CHAT_HARNESS_CLI_CACHE.get() {
@@ -962,13 +1069,25 @@ pub(crate) fn probe_supported_harnesses() -> HashMap<AgentHarnessKind, HarnessRu
 }
 
 pub(crate) fn refresh_supported_harnesses() -> HashMap<AgentHarnessKind, HarnessRuntimeProbe> {
-    probe_standard_harnesses_with(refresh_harness_runtime_probe, "refresh")
+    refresh_supported_harnesses_with_force(false)
 }
 
-fn probe_standard_harnesses_with(
-    probe_fn: fn(AgentHarnessKind) -> HarnessRuntimeProbe,
-    operation: &'static str,
+pub(crate) fn refresh_supported_harnesses_with_force(
+    force: bool,
 ) -> HashMap<AgentHarnessKind, HarnessRuntimeProbe> {
+    probe_standard_harnesses_with(
+        |harness| refresh_harness_runtime_probe_with_force(harness, force),
+        "refresh",
+    )
+}
+
+fn probe_standard_harnesses_with<F>(
+    probe_fn: F,
+    operation: &'static str,
+) -> HashMap<AgentHarnessKind, HarnessRuntimeProbe>
+where
+    F: Fn(AgentHarnessKind) -> HarnessRuntimeProbe + Copy + Send + Sync,
+{
     let started = Instant::now();
     let harnesses = standard_harness_runtime_adapters()
         .into_keys()

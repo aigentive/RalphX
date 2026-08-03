@@ -9,8 +9,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use crate::domain::services::github_service::{
-    validate_pr_metadata_patch, GithubConnectionStatus, GithubServiceTrait, PrBranchMatch,
-    PrDetail, PrDiffAnnotations, PrHealth, PrHealthCheck, PrReviewFeedback,
+    validate_pr_metadata_patch, GithubConnectionStatus, GithubServiceTrait, PrAutoMergeRequest,
+    PrBranchMatch, PrDetail, PrDiffAnnotations, PrHealth, PrHealthCheck, PrReviewFeedback,
     PrReviewSubmissionEvent, PrReviewThread, PrSearchResult, PrStatus, PrSubmittedReview,
     PrSyncState,
 };
@@ -82,6 +82,7 @@ pub struct MockGithubState {
     pub fetch_pr_detail_calls: u32,
     pub fetch_pr_review_thread_calls: u32,
     pub fetch_github_connection_status_calls: u32,
+    pub fetch_pr_auto_merge_state_calls: u32,
     pub fetch_pr_health_calls: u32,
     pub rerun_failed_workflow_calls: u32,
     pub rerun_failed_workflow_ids: Vec<i64>,
@@ -116,6 +117,7 @@ pub struct MockGithubState {
     pub last_fetch_pr_diff_annotations_number: Option<i64>,
     pub last_fetch_pr_detail_number: Option<i64>,
     pub last_fetch_pr_review_thread_number: Option<i64>,
+    pub last_fetch_pr_auto_merge_state_number: Option<i64>,
     pub last_fetch_pr_health_number: Option<i64>,
     pub last_rerun_failed_workflow_id: Option<i64>,
     pub last_mark_pr_ready_working_dir: Option<String>,
@@ -537,6 +539,21 @@ impl GithubServiceTrait for MockGithubService {
         s.fetch_github_connection_status_result
             .take()
             .unwrap_or_else(|| Ok(GithubConnectionStatus::unavailable()))
+    }
+
+    async fn fetch_pr_auto_merge_state(
+        &self,
+        _working_dir: &Path,
+        pr_number: i64,
+    ) -> AppResult<Option<PrAutoMergeRequest>> {
+        let mut s = self.state.lock().expect("lock poisoned");
+        s.fetch_pr_auto_merge_state_calls += 1;
+        s.last_fetch_pr_auto_merge_state_number = Some(pr_number);
+        match s.fetch_pr_health_result.take() {
+            Some(Ok(health)) => Ok(health.auto_merge_request),
+            Some(Err(error)) => Err(error),
+            None => Ok(None),
+        }
     }
 
     async fn fetch_pr_health(&self, working_dir: &Path, pr_number: i64) -> AppResult<PrHealth> {

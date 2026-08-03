@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useEffect, useRef } from "react";
 
 import {
   AgentWorkspaceHttpError,
@@ -9,6 +9,12 @@ import {
   type AgentWorkspaceReviewFixerConfirmation,
 } from "@/api/chat";
 import type { ManualRoleRuntimeSelection } from "@/api/manual-role-defaults.types";
+import { extractErrorMessage } from "@/lib/errors";
+import {
+  agentWorkspaceOperationToastId,
+  startAgentWorkspaceOperationToast,
+  type AgentWorkspaceOperationToast,
+} from "./agentWorkspaceOperationToast";
 import { useRoleRuntimeConfirmation } from "./useRoleRuntimeConfirmation";
 
 function reviewTargetLabel(preview: AgentWorkspaceReviewStartPreview): string {
@@ -93,60 +99,128 @@ export function useWorkspaceReviewActions({
 }) {
   const { confirmRoleRuntime, confirmationDialogProps, ConfirmationDialog } =
     useRoleRuntimeConfirmation({ conversationId, projectId });
+  const reviewPreviewRef = useRef<{
+    conversationId: string;
+    promise: Promise<AgentWorkspaceReviewStartPreview>;
+  } | null>(null);
+  const reviewToastRef = useRef<AgentWorkspaceOperationToast | null>(null);
+  const startReviewRef = useRef<(force: boolean) => void>(() => undefined);
+
+  const loadReviewPreview = useCallback(() => {
+    if (!conversationId) {
+      return Promise.reject(new Error("Workspace Review is unavailable"));
+    }
+    const current = reviewPreviewRef.current;
+    if (current?.conversationId === conversationId) {
+      return current.promise;
+    }
+    const promise = chatApi.getAgentWorkspaceReviewStartPreview(conversationId);
+    reviewPreviewRef.current = { conversationId, promise };
+    void promise.catch(() => {
+      if (reviewPreviewRef.current?.promise === promise) {
+        reviewPreviewRef.current = null;
+      }
+    });
+    return promise;
+  }, [conversationId]);
+
+  const clearReviewPreview = useCallback(() => {
+    if (reviewPreviewRef.current?.conversationId === conversationId) {
+      reviewPreviewRef.current = null;
+    }
+  }, [conversationId]);
+
+  const startReviewToast = useCallback(
+    (detail: string) => {
+      if (!conversationId) return null;
+      reviewToastRef.current?.dismiss();
+      const nextToast = startAgentWorkspaceOperationToast({
+        detail,
+        id: agentWorkspaceOperationToastId(conversationId, "workspace-review"),
+        title: "Starting Workspace Review",
+      });
+      reviewToastRef.current = nextToast;
+      return nextToast;
+    },
+    [conversationId],
+  );
 
   const startReview = useCallback(
     (force: boolean) => {
       if (!conversationId) return;
-      let preview: AgentWorkspaceReviewStartPreview | null = null;
       void confirmRoleRuntime({
         role: "workspace_reviewer",
         title: "Start Workspace Review?",
-        description: "Checking the current review target and GitHub auto-merge state…",
+        description: "Preparing the reviewer runtime…",
         confirmText: "Start review",
-        pendingText: "Starting review…",
+        pendingText: "Checking review details…",
         prepareDescription: async () => {
-          preview = await chatApi.getAgentWorkspaceReviewStartPreview(conversationId);
+          const preview = await loadReviewPreview();
           return reviewStartDescription(preview);
         },
         recoverFromPrepareError: (error) => {
           const description = blockedWorkspaceReviewCopy(error);
           return description ? { description, confirmDisabled: true } : null;
         },
+        closeOnConfirm: true,
+        onIntent: () => {
+          startReviewToast("Checking the current review target and auto-merge state");
+        },
         onConfirm: async (runtimeOverride) => {
-          if (!preview) {
-            throw new Error("Workspace Review preparation did not finish");
-          }
+          const preview = await loadReviewPreview();
+          const reviewToast = reviewToastRef.current;
+          reviewToast?.update({
+            detail: "Submitting the current review receipt",
+            title: "Starting Workspace Review",
+          });
           await onStartReview({
             force,
             confirmation: preview.confirmation,
             runtimeOverride,
           });
+          if (reviewToastRef.current === reviewToast) {
+            reviewToastRef.current = null;
+          }
+          reviewToast?.success("Workspace Review started");
         },
-        recoverFromError: async (error) => {
+        onErrorAfterClose: (error) => {
+          const reviewToast = reviewToastRef.current;
+          if (reviewToastRef.current === reviewToast) {
+            reviewToastRef.current = null;
+          }
           if (!isWorkspaceReviewStartConflict(error)) {
-            return null;
+            reviewToast?.error("Workspace Review did not start", {
+              detail: extractErrorMessage(
+                error,
+                "Check the Review tab and try again.",
+              ),
+            });
+            return;
           }
-          try {
-            const refreshedPreview =
-              await chatApi.getAgentWorkspaceReviewStartPreview(conversationId);
-            preview = refreshedPreview;
-            return {
-              description: `The review target changed. ${reviewStartDescription(refreshedPreview)} Confirm the updated details to start the review.`,
-              confirmDisabled: false,
-            };
-          } catch (refreshError) {
-            preview = null;
-            return {
-              description:
-                blockedWorkspaceReviewCopy(refreshError) ?? GENERIC_PREPARATION_ERROR,
-              confirmDisabled: true,
-            };
-          }
+          reviewToast?.info("Review details changed", {
+            detail: "Refreshing the confirmation before retrying.",
+          });
+          clearReviewPreview();
+          startReviewRef.current(force);
         },
       });
     },
-    [confirmRoleRuntime, conversationId, onStartReview],
+    [
+      clearReviewPreview,
+      confirmRoleRuntime,
+      conversationId,
+      loadReviewPreview,
+      onStartReview,
+      startReviewToast,
+    ],
   );
+  useEffect(() => {
+    startReviewRef.current = startReview;
+  }, [startReview]);
+
+  const prefetchStartReview = useCallback(() => {
+    void loadReviewPreview().catch(() => undefined);
+  }, [loadReviewPreview]);
 
   const startFixer = useCallback(
     (context: AgentWorkspaceReviewContext) => {
@@ -202,6 +276,7 @@ export function useWorkspaceReviewActions({
 
   return {
     startReview,
+    prefetchStartReview,
     startFixer,
     confirmationDialogProps,
     ConfirmationDialog,

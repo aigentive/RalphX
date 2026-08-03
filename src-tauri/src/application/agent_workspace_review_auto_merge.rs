@@ -9,8 +9,8 @@ use crate::application::agent_conversation_workspace::resolve_valid_agent_conver
 use crate::application::agent_workspace_review::{
     apply_current_target_to_monitor, load_current_workspace_review_eligible,
     load_or_create_monitor, lock_workspace_review_lifecycle, resolve_review_target,
-    start_agent_workspace_review_unlocked_with_runtime_override, workspace_review_mode_is_eligible,
-    AgentWorkspaceReviewStart, AgentWorkspaceReviewTarget,
+    resolve_review_target_for_user, start_agent_workspace_review_unlocked_with_revalidated_target,
+    workspace_review_mode_is_eligible, AgentWorkspaceReviewStart, AgentWorkspaceReviewTarget,
 };
 use crate::application::publish_resilience::count_unpublished_publish_commits;
 use crate::application::{AppState, GitService};
@@ -90,6 +90,14 @@ pub async fn preview_manual_workspace_review_start(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
 ) -> AppResult<WorkspaceReviewManualStartPreview> {
+    preview_workspace_review_start(state, workspace, true).await
+}
+
+async fn preview_workspace_review_start(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    user_initiated: bool,
+) -> AppResult<WorkspaceReviewManualStartPreview> {
     let total_started = Instant::now();
     let phase_started = Instant::now();
     let workspace = load_current_workspace_review_eligible(state, workspace).await?;
@@ -102,7 +110,11 @@ pub async fn preview_manual_workspace_review_start(
         total_started,
     );
     let phase_started = Instant::now();
-    let target = resolve_current_target(state, workspace).await?;
+    let target = if user_initiated {
+        resolve_current_target_for_user(state, workspace).await?
+    } else {
+        resolve_current_target(state, workspace).await?
+    };
     log_workspace_review_auto_merge_phase(
         "workspace_review_start_preview_phase",
         workspace,
@@ -122,22 +134,22 @@ pub async fn preview_manual_workspace_review_start(
                         .to_string(),
                 )
             })?;
-            let health = github
-                .fetch_pr_health(&target.working_directory, pr_number)
-                .await?;
-            health.auto_merge_request.map(|request| {
-                let merge_method = request
-                    .merge_method
-                    .filter(|method| !method.trim().is_empty())
-                    .unwrap_or_else(|| workspace.pr_auto_merge_method.clone());
-                WorkspaceReviewAutoMergePreview {
-                    target: target.clone(),
-                    pr_number,
-                    merge_method,
-                    restore_after_publish: target.scope
-                        == AgentWorkspaceReviewTargetScope::WorkspaceDelta,
-                }
-            })
+            github
+                .fetch_pr_auto_merge_state(&target.working_directory, pr_number)
+                .await?
+                .map(|request| {
+                    let merge_method = request
+                        .merge_method
+                        .filter(|method| !method.trim().is_empty())
+                        .unwrap_or_else(|| workspace.pr_auto_merge_method.clone());
+                    WorkspaceReviewAutoMergePreview {
+                        target: target.clone(),
+                        pr_number,
+                        merge_method,
+                        restore_after_publish: target.scope
+                            == AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+                    }
+                })
         }
         _ => None,
     };
@@ -184,7 +196,7 @@ pub async fn preview_workspace_review_auto_merge_guard(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
 ) -> AppResult<Option<WorkspaceReviewAutoMergePreview>> {
-    Ok(preview_manual_workspace_review_start(state, workspace)
+    Ok(preview_workspace_review_start(state, workspace, false)
         .await?
         .auto_merge)
 }
@@ -239,7 +251,7 @@ pub async fn start_guarded_agent_workspace_review_with_runtime_override(
         total_started,
     );
     let phase_started = Instant::now();
-    let preview = match origin {
+    let (preview, revalidated_target) = match origin {
         WorkspaceReviewStartOrigin::Manual => {
             let manual_preview =
                 preview_manual_workspace_review_start(state.as_ref(), workspace).await?;
@@ -254,11 +266,12 @@ pub async fn start_guarded_agent_workspace_review_with_runtime_override(
                         .to_string(),
                 ));
             }
-            manual_preview.auto_merge
+            (manual_preview.auto_merge, manual_preview.target)
         }
-        WorkspaceReviewStartOrigin::Automated => {
-            preview_workspace_review_auto_merge_guard(state.as_ref(), workspace).await?
-        }
+        WorkspaceReviewStartOrigin::Automated => (
+            preview_workspace_review_auto_merge_guard(state.as_ref(), workspace).await?,
+            None,
+        ),
     };
     log_workspace_review_auto_merge_phase(
         "workspace_review_guarded_start_phase",
@@ -269,11 +282,12 @@ pub async fn start_guarded_agent_workspace_review_with_runtime_override(
     );
     let Some(preview) = preview else {
         let phase_started = Instant::now();
-        let start = start_agent_workspace_review_unlocked_with_runtime_override(
+        let start = start_agent_workspace_review_unlocked_with_revalidated_target(
             Arc::clone(&state),
             workspace,
             force,
             runtime_override,
+            revalidated_target.clone(),
         )
         .await?;
         log_workspace_review_auto_merge_phase(
@@ -334,11 +348,12 @@ pub async fn start_guarded_agent_workspace_review_with_runtime_override(
                         .to_string(),
                 ));
             }
-            let start = start_agent_workspace_review_unlocked_with_runtime_override(
+            let start = start_agent_workspace_review_unlocked_with_revalidated_target(
                 Arc::clone(&state),
                 workspace,
                 force,
                 runtime_override,
+                revalidated_target.clone(),
             )
             .await?;
             return settle_skipped_guarded_workspace_review_start(
@@ -517,11 +532,12 @@ pub async fn start_guarded_agent_workspace_review_with_runtime_override(
     );
 
     let phase_started = Instant::now();
-    let started = start_agent_workspace_review_unlocked_with_runtime_override(
+    let started = start_agent_workspace_review_unlocked_with_revalidated_target(
         Arc::clone(&state),
         workspace,
         force,
         runtime_override,
+        revalidated_target,
     )
     .await;
     log_workspace_review_auto_merge_phase(
@@ -1110,6 +1126,18 @@ async fn resolve_current_target(
         .await?
         .ok_or_else(|| AppError::NotFound("Project not found".to_string()))?;
     resolve_review_target(workspace, &project).await
+}
+
+async fn resolve_current_target_for_user(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+) -> AppResult<Option<AgentWorkspaceReviewTarget>> {
+    let project = state
+        .project_repo
+        .get_by_id(&workspace.project_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Project not found".to_string()))?;
+    resolve_review_target_for_user(workspace, &project).await
 }
 
 async fn resolve_workspace_working_directory(

@@ -683,7 +683,7 @@ export function HarnessProvidersSection() {
               type="button"
               variant="outline"
               size="sm"
-              onClick={() => void refetchProviders()}
+              onClick={() => void refetchProviders({ forceRuntime: true })}
             >
               <RefreshCw className="mr-2 h-4 w-4" />
               Re-check

@@ -237,6 +237,8 @@ git:
   retry_backoff_secs: [1, 2, 4]
   # side_effects.rs — age threshold for removing a stale .git/index.lock file
   index_lock_stale_secs: 5 # Env: RALPHX_GIT_INDEX_LOCK_STALE_SECS
+  # harness_runtime_registry.rs — TTL for unchanged provider CLI availability probes
+  provider_probe_cache_ttl_secs: 300 # Env: RALPHX_GIT_PROVIDER_PROBE_CACHE_TTL_SECS
   # unified_chat_commands.rs — short backend TTL for repeated workspace freshness checks
   workspace_freshness_cache_ttl_ms: 2000 # Env: RALPHX_GIT_WORKSPACE_FRESHNESS_CACHE_TTL_MS
   # diff_commands.rs — short backend TTL for workspace review context/payload reuse

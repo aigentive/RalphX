@@ -2067,6 +2067,46 @@ async fn start_review_blocks_monitor_when_child_chat_send_fails() {
 }
 
 #[tokio::test]
+async fn start_review_reuses_revalidated_target_without_resolving_git_again() {
+    let (_temp, repo, base_sha) = init_repo();
+    committed_workspace_delta(&repo);
+
+    let agent_client: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let state = Arc::new(AppState::new_test().with_agent_client(agent_client));
+    let chat_service = MockChatService::new();
+    let project = seed_project(&state, &repo).await;
+    let workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    seed_conversation(&state, &workspace).await;
+    let target = resolve_review_target(&workspace, &project)
+        .await
+        .expect("target resolution should succeed")
+        .expect("workspace delta target should exist");
+
+    let parked_repo = repo.with_extension("parked-after-confirmation");
+    std::fs::rename(&repo, &parked_repo).expect("park confirmed repository");
+
+    let start = start_agent_workspace_review_with_revalidated_target_and_chat_service(
+        Arc::clone(&state),
+        &workspace,
+        true,
+        None,
+        Some(target),
+        &chat_service,
+    )
+    .await
+    .expect("revalidated target should avoid a second git resolution");
+
+    assert!(start.started);
+    assert_eq!(chat_service.get_sent_messages().await.len(), 1);
+}
+
+#[tokio::test]
 async fn start_review_blocks_monitor_when_child_chat_breaks_reserved_identity() {
     let (_temp, repo, base_sha) = init_repo();
     committed_workspace_delta(&repo);

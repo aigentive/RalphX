@@ -13,8 +13,19 @@ use super::{
     apply_provider_to_global_lanes, merge_input, parse_effort, parse_provider,
     provider_settings_snapshot_probe, provider_status, read_provider_settings,
     read_provider_settings_with_probes, snapshot_probes_from_provider_settings, to_lane_settings,
-    to_response, update_provider_settings_with_probes, UpdateAgentProviderSettingsInput,
+    to_response, update_provider_settings_with_probes, GetAgentProviderSettingsInput,
+    UpdateAgentProviderSettingsInput,
 };
+
+#[test]
+fn provider_settings_refresh_input_defaults_force_runtime_to_false() {
+    let input: GetAgentProviderSettingsInput =
+        serde_json::from_value(serde_json::json!({ "refreshRuntime": true }))
+            .expect("deserialize refresh input");
+
+    assert!(input.refresh_runtime);
+    assert!(!input.force_runtime);
+}
 
 fn input(provider: &str) -> UpdateAgentProviderSettingsInput {
     UpdateAgentProviderSettingsInput {
@@ -630,7 +641,7 @@ fn lane_settings_inherit_provider_defaults() {
 #[tokio::test]
 async fn read_settings_returns_ordered_provider_defaults() {
     let state = AppState::new_test();
-    let response = read_provider_settings(&state, false)
+    let response = read_provider_settings(&state, false, false)
         .await
         .expect("read provider settings");
 

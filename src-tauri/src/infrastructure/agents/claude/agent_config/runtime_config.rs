@@ -628,6 +628,8 @@ pub struct GitRuntimeConfig {
     pub max_retries: u64,
     pub retry_backoff_secs: Vec<u64>,
     pub index_lock_stale_secs: u64,
+    /// TTL for reusable provider CLI runtime probes, in seconds.
+    pub provider_probe_cache_ttl_secs: u64,
     /// Short TTL for agent workspace freshness responses, in milliseconds.
     pub workspace_freshness_cache_ttl_ms: u64,
     /// Short TTL for agent workspace review context and payload cache, in milliseconds.
@@ -677,6 +679,7 @@ impl Default for GitRuntimeConfig {
             max_retries: 3,
             retry_backoff_secs: vec![1, 2, 4],
             index_lock_stale_secs: 5,
+            provider_probe_cache_ttl_secs: 300,
             workspace_freshness_cache_ttl_ms: 2_000,
             workspace_review_cache_ttl_ms: 2_000,
             workspace_pr_description_cache_ttl_ms: 300_000,
@@ -1180,6 +1183,10 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
     env_u64!(
         cfg.git.index_lock_stale_secs,
         "RALPHX_GIT_INDEX_LOCK_STALE_SECS"
+    );
+    env_u64!(
+        cfg.git.provider_probe_cache_ttl_secs,
+        "RALPHX_GIT_PROVIDER_PROBE_CACHE_TTL_SECS"
     );
     env_u64!(
         cfg.git.workspace_freshness_cache_ttl_ms,
