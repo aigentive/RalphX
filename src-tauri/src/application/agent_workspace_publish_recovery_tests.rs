@@ -1721,6 +1721,7 @@ wait "$stdin_drain_pid" 2>/dev/null || true
             reason: "retry blocked repair".to_string(),
             summary: "Retry blocked repair.".to_string(),
             auto_merge_current: None,
+            explicit_publish_requested: false,
             retry_blocked: true,
             carryover_pr_autofix_evidence: None,
         },
@@ -2158,6 +2159,70 @@ async fn ready_manual_repair_remains_untouched_by_automatic_recovery() {
         .expect("manual ready repair remains current");
     assert_eq!(current.id, ready.id);
     assert_eq!(current.phase, AgentWorkspaceRepairPhase::Ready);
+}
+
+#[tokio::test]
+async fn ready_publish_repair_without_consent_or_auto_publish_remains_untouched() {
+    let state = AppState::new_test();
+    let conversation_id = conversation_id(121);
+    let mut workspace = needs_agent_workspace(conversation_id.clone());
+    workspace.auto_publish_enabled = false;
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("seed disabled-auto-publish workspace");
+    state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                conversation_id.clone(),
+                AgentWorkspaceRepairSource::Publish,
+                AgentWorkspaceRepairContinuation::Publish,
+                "main",
+                false,
+                false,
+                false,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: "background publish repair".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("start background repair");
+    let ready = park_repair_attempt_ready_after(
+        &state,
+        &conversation_id,
+        AgentWorkspaceRepairPhase::Requested,
+        61,
+    )
+    .await;
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("disabled automatic publish must be safe to recover"),
+        0
+    );
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload parked repair")
+        .expect("parked repair remains current");
+    assert_eq!(current.id, ready.id);
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Ready);
+    assert!(!current.explicit_publish_requested);
+    assert!(
+        !current
+            .pending_reasons
+            .iter()
+            .any(|reason| reason.starts_with("auto_retry_ready_repair:")),
+        "automatic recovery must not spend a retry without durable publish authority"
+    );
 }
 
 #[tokio::test]
