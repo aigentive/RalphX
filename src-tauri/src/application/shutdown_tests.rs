@@ -14,12 +14,13 @@
 //! Also covers the Ready (no-op) arm via `handle_run_event` to prove benign
 //! events don't accidentally fire shutdown.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::timeout;
 
 use crate::application::shutdown::{
-    handle_run_event, trigger_http_shutdown, trigger_startup_cancellation,
+    handle_run_event, trigger_http_shutdown, trigger_startup_cancellation, ExitWatchdog,
 };
 use crate::application::startup_status::StartupCoordinator;
 use crate::application::HttpShutdownHandle;
@@ -96,4 +97,31 @@ fn early_shutdown_cancels_startup_before_app_state_registration() {
     trigger_startup_cancellation(app.handle());
 
     assert!(coordinator.is_cancelled());
+}
+
+#[test]
+fn exit_watchdog_fires_after_deadline() {
+    let fired = Arc::new(AtomicBool::new(false));
+    let fired_on_timeout = Arc::clone(&fired);
+    let _watchdog = ExitWatchdog::arm_with(Duration::from_millis(50), move || {
+        fired_on_timeout.store(true, Ordering::SeqCst);
+    });
+
+    std::thread::sleep(Duration::from_millis(200));
+
+    assert!(fired.load(Ordering::SeqCst));
+}
+
+#[test]
+fn exit_watchdog_disarm_prevents_fire() {
+    let fired = Arc::new(AtomicBool::new(false));
+    let fired_on_timeout = Arc::clone(&fired);
+    let watchdog = ExitWatchdog::arm_with(Duration::from_millis(50), move || {
+        fired_on_timeout.store(true, Ordering::SeqCst);
+    });
+
+    watchdog.disarm();
+    std::thread::sleep(Duration::from_millis(200));
+
+    assert!(!fired.load(Ordering::SeqCst));
 }

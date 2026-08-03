@@ -1,15 +1,18 @@
 #[cfg(test)]
 mod tests {
     use std::net::TcpListener;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     use crate::infrastructure::agents::claude::ExternalMcpConfig;
     use crate::infrastructure::external_mcp_supervisor::{
-        command_matches_external_mcp_process_for_port, command_mentions_external_mcp_runtime,
-        external_mcp_pid_file_name, external_mcp_pid_file_path,
-        external_mcp_process_matches_expected_port, is_external_mcp_process,
-        is_test_environment_for_test, process_listens_on_port, stderr_indicates_address_in_use,
-        ExternalMcpHandle, ExternalMcpReadinessState,
+        clear_child_pid, command_matches_external_mcp_process_for_port,
+        command_mentions_external_mcp_runtime, current_child_pid, external_mcp_pid_file_name,
+        external_mcp_pid_file_path, external_mcp_process_matches_expected_port,
+        is_external_mcp_process, is_test_environment_for_test, process_group_exists,
+        process_listens_on_port, register_child_pid, stderr_indicates_address_in_use,
+        terminate_process_group, terminate_process_group_with, ExternalMcpHandle,
+        ExternalMcpReadinessState, TerminateOutcome,
     };
 
     // ── Helper ────────────────────────────────────────────────────────────
@@ -21,6 +24,7 @@ mod tests {
             host: "127.0.0.1".to_string(),
             max_restart_attempts: 3,
             restart_delay_ms: 100,
+            shutdown_grace_ms: 2000,
             startup_timeout_secs: 30,
             human_wait_timeout_secs: 285,
             auth_token: None,
@@ -343,6 +347,148 @@ mod tests {
         assert!(cfg.enabled);
         assert_eq!(cfg.port, 3848);
         assert_eq!(cfg.restart_delay_ms, 100);
+    }
+
+    #[test]
+    fn terminate_process_group_stops_after_clean_term_exit() {
+        let signals = Mutex::new(Vec::new());
+        let probes = std::sync::atomic::AtomicUsize::new(0);
+
+        let outcome = terminate_process_group_with(
+            Some(42),
+            Duration::from_millis(10),
+            Duration::ZERO,
+            |pid| signals.lock().unwrap().push((pid, "term")),
+            |pid| signals.lock().unwrap().push((pid, "kill")),
+            |_| probes.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0,
+        );
+
+        assert_eq!(outcome, TerminateOutcome::ExitedAfterTerm);
+        assert_eq!(*signals.lock().unwrap(), vec![(42, "term")]);
+    }
+
+    #[test]
+    fn terminate_process_group_bounds_oversized_grace_without_overflow() {
+        let outcome = terminate_process_group_with(
+            Some(42),
+            Duration::MAX,
+            Duration::ZERO,
+            |_| {},
+            |_| panic!("clean TERM exit must not escalate"),
+            |_| false,
+        );
+
+        assert_eq!(outcome, TerminateOutcome::ExitedAfterTerm);
+    }
+
+    #[test]
+    fn terminate_process_group_escalates_once_after_grace() {
+        let signals = Mutex::new(Vec::new());
+
+        let outcome = terminate_process_group_with(
+            Some(84),
+            Duration::ZERO,
+            Duration::ZERO,
+            |pid| signals.lock().unwrap().push((pid, "term")),
+            |pid| signals.lock().unwrap().push((pid, "kill")),
+            |_| true,
+        );
+
+        assert_eq!(outcome, TerminateOutcome::Killed);
+        assert_eq!(*signals.lock().unwrap(), vec![(84, "term"), (84, "kill")]);
+    }
+
+    #[test]
+    fn terminate_process_group_is_no_op_without_pid() {
+        let signals = Mutex::new(Vec::new());
+
+        let outcome = terminate_process_group_with(
+            None,
+            Duration::from_millis(10),
+            Duration::ZERO,
+            |pid| signals.lock().unwrap().push((pid, "term")),
+            |pid| signals.lock().unwrap().push((pid, "kill")),
+            |_| true,
+        );
+
+        assert_eq!(outcome, TerminateOutcome::NoProcess);
+        assert!(signals.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn terminate_process_group_rejects_process_group_zero_and_init() {
+        let signals = Mutex::new(Vec::new());
+
+        for pid in [0, 1] {
+            let outcome = terminate_process_group_with(
+                Some(pid),
+                Duration::ZERO,
+                Duration::ZERO,
+                |pid| signals.lock().unwrap().push((pid, "term")),
+                |pid| signals.lock().unwrap().push((pid, "kill")),
+                |_| true,
+            );
+            assert_eq!(outcome, TerminateOutcome::NoProcess);
+        }
+
+        assert!(signals.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn child_pid_slot_registers_and_clears_process_identity() {
+        let slot = Mutex::new(None);
+
+        register_child_pid(&slot, 1234);
+        assert_eq!(current_child_pid(&slot), Some(1234));
+
+        clear_child_pid(&slot);
+        assert_eq!(current_child_pid(&slot), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "requires process spawn/kill capability"]
+    fn real_process_group_termination_reaps_isolated_child() {
+        use std::os::unix::process::CommandExt;
+
+        let mut command = std::process::Command::new("/bin/sh");
+        command.args(["-c", "sleep 60 & wait"]);
+        unsafe {
+            command.pre_exec(|| {
+                nix::unistd::setsid().map_err(std::io::Error::other)?;
+                Ok(())
+            });
+        }
+        let mut child = command.spawn().expect("spawn isolated sleep process");
+
+        let child_pid = child.id();
+        let outcome = terminate_process_group(Some(child_pid), Duration::from_millis(100));
+        assert!(matches!(
+            outcome,
+            TerminateOutcome::ExitedAfterTerm | TerminateOutcome::Killed
+        ));
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        let mut exited = false;
+        while std::time::Instant::now() < deadline {
+            if child.try_wait().expect("probe child exit").is_some() {
+                exited = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if !exited {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        assert!(
+            exited,
+            "isolated process group should exit within the bound"
+        );
+        assert!(
+            !process_group_exists(child_pid as i32),
+            "TERM/KILL escalation should leave no surviving descendant in the group"
+        );
     }
 
     // ── Test 8: ExternalMcpHandle Default impl ────────────────────────────
