@@ -3528,6 +3528,7 @@ async fn complete_review_run_sets_typed_outcome_and_gate_statuses() {
         Some(base_sha),
     );
     seed_conversation(&state, &workspace).await;
+    persist_workspace(&state, &workspace).await;
 
     let context = load_agent_workspace_review_context(&state, &workspace)
         .await
@@ -3680,6 +3681,7 @@ async fn complete_blocking_review_keeps_gate_blocking_when_cycle_cap_is_reached(
         Some(base_sha),
     );
     seed_conversation(&state, &workspace).await;
+    persist_workspace(&state, &workspace).await;
 
     let context = load_agent_workspace_review_context(&state, &workspace)
         .await
@@ -3961,6 +3963,7 @@ async fn automatic_workspace_review_fixers_stop_after_the_configured_fresh_finge
         Some(base_sha),
     );
     seed_conversation(&state, &workspace).await;
+    persist_workspace(&state, &workspace).await;
 
     persist_active_review_for_current_target(&state, &workspace, "review-one", "artifact-one", 0)
         .await;
@@ -4270,6 +4273,7 @@ async fn manual_blocking_review_fixer_routes_hidden_repair_message_when_cycle_is
         Some(base_sha),
     );
     seed_conversation(&state, &workspace).await;
+    persist_workspace(&state, &workspace).await;
 
     let context = load_agent_workspace_review_context(&state, &workspace)
         .await
@@ -5587,6 +5591,7 @@ async fn complete_review_run_preserves_blocking_outcome_after_same_pr_merges() {
         Some(base_sha),
     );
     seed_conversation(&state, &workspace).await;
+    persist_workspace(&state, &workspace).await;
 
     let initial = load_agent_workspace_review_context(&state, &workspace)
         .await
