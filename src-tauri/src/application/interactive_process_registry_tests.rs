@@ -510,6 +510,37 @@ async fn stale_retire_after_turn_owner_is_rejected_without_affecting_current_ent
 }
 
 #[tokio::test]
+async fn plan_to_edit_stale_direct_idle_retirement_preserves_the_current_owner() {
+    let registry = InteractiveProcessRegistry::new();
+    let key = InteractiveProcessKey::new("project", "direct-retire-stale");
+    let (stdin, _child) = create_test_stdin().await;
+    let token = registry
+        .register_with_metadata(
+            key.clone(),
+            stdin,
+            InteractiveProcessMetadata {
+                agent_run_id: Some("current-run".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+    assert!(registry.mark_idle_if_token(&key, token).await);
+
+    assert!(registry
+        .retire_unarmed_idle_if_owner(&key, token, "stale-run")
+        .await
+        .is_none());
+    assert_eq!(
+        registry
+            .capture_owner(&key)
+            .await
+            .expect("current owner must remain after stale retirement")
+            .agent_run_id,
+        "current-run"
+    );
+}
+
+#[tokio::test]
 async fn disarming_retire_after_turn_restores_writes_and_idle_disposition() {
     let registry = InteractiveProcessRegistry::new();
     let key = InteractiveProcessKey::new("project", "retire-disarm");

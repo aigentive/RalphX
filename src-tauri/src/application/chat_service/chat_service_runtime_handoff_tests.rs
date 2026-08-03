@@ -2,8 +2,9 @@ use super::chat_service_runtime_handoff::{
     activate_runtime_handoff_watchdog, cancel_armed_runtime_handoff_owner,
     capture_runtime_handoff_owner, finalize_idle_runtime_handoff,
     map_runtime_handoff_kick_send_result, release_no_owner_runtime_handoff,
-    reserve_no_owner_runtime_handoff, stage_runtime_handoff, RuntimeHandoffCapture,
-    RuntimeHandoffKickOutcome, RuntimeHandoffOutcome, RuntimeHandoffReleaseOutcome,
+    reserve_no_owner_runtime_handoff, retire_unarmed_idle_runtime_owner, stage_runtime_handoff,
+    RuntimeHandoffCapture, RuntimeHandoffKickOutcome, RuntimeHandoffOutcome,
+    RuntimeHandoffReleaseOutcome,
 };
 use super::chat_service_streaming::is_armed_mode_handoff_disposition;
 use super::{ChatService, MockChatService, SendResult};
@@ -385,6 +386,50 @@ async fn retire_idle_interactive_process_preserves_idle_owner_on_registry_disagr
             .expect("foreign running owner must remain")
             .agent_run_id,
         "running-run"
+    );
+}
+
+#[tokio::test]
+async fn plan_to_edit_direct_idle_retirement_preserves_owner_replaced_after_capture() {
+    let running = Arc::new(MemoryRunningAgentRegistry::new());
+    let running_trait: Arc<dyn RunningAgentRegistry> = running.clone();
+    let interactive = InteractiveProcessRegistry::new();
+    let context_id = "handoff-retire-replaced-after-capture";
+    let key = RunningAgentKey::new("project", context_id);
+    let interactive_key = InteractiveProcessKey::new("project", context_id);
+    let (token, _child) = register_interactive(&interactive, context_id, "captured-run").await;
+    assert!(
+        interactive
+            .mark_idle_if_token(&interactive_key, token)
+            .await
+    );
+    register_running(&running, context_id, "captured-run", None).await;
+    let RuntimeHandoffCapture::Captured(owner) = capture_runtime_handoff_owner(
+        &running_trait,
+        &interactive,
+        ChatContextType::Project,
+        context_id,
+    )
+    .await
+    else {
+        panic!("matching registries should yield an exact owner");
+    };
+    running.unregister(&key, "captured-run").await;
+    register_running(&running, context_id, "replacement-run", None).await;
+
+    assert!(
+        retire_unarmed_idle_runtime_owner(&running_trait, &interactive, &owner)
+            .await
+            .is_none()
+    );
+    assert!(interactive.has_process(&interactive_key).await);
+    assert_eq!(
+        running
+            .get(&key)
+            .await
+            .expect("replacement running owner must remain")
+            .agent_run_id,
+        "replacement-run"
     );
 }
 
