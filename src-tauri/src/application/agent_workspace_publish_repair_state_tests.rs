@@ -24,7 +24,7 @@ use crate::application::agent_workspace_publish_repair_state::{
     AgentWorkspaceRepairDispatchSettlement, AgentWorkspaceRepairPublishResumeOutcome,
     AgentWorkspaceRepairStartOutcome, AgentWorkspaceRepairStartRequest,
     AgentWorkspaceRepairTransitionOutcome, DurableRepairWorkspaceReviewStartFuture,
-    DurableRepairWorkspaceReviewStarter, PrAutofixCarryover,
+    DurableRepairWorkspaceReviewStarter, PrAutofixCarryover, PublishAuthority,
     AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION, DEFERRED_REPAIR_WAIT_TIMEOUT_SECS,
     MAX_AGENT_WORKSPACE_CI_RERUN_RETRIES, MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES,
     NEEDS_HUMAN_REPAIR_REASON, PRE_EXISTING_ON_BASE_REPAIR_REASON, REPAIR_SENT_STEP,
@@ -853,6 +853,7 @@ async fn publish_resume_phase_guards_preserve_current_durable_authority() {
             &ready.conversation_id,
             "background publish probe",
             false,
+            PublishAuthority::VerifiedAutomation,
         )
         .await
         .expect("background probe leaves Ready parked"),
@@ -863,6 +864,7 @@ async fn publish_resume_phase_guards_preserve_current_durable_authority() {
         &ready.conversation_id,
         "explicit publish",
         true,
+        PublishAuthority::UserExplicit,
     )
     .await
     .expect_err("explicit resume requires its canonical project");
@@ -880,6 +882,7 @@ async fn publish_resume_phase_guards_preserve_current_durable_authority() {
         &awaiting.conversation_id,
         "resume review",
         false,
+        PublishAuthority::VerifiedAutomation,
     )
     .await
     .expect_err("review resume requires its canonical workspace");
@@ -893,6 +896,7 @@ async fn publish_resume_phase_guards_preserve_current_durable_authority() {
             &blocked.conversation_id,
             "blocked probe",
             false,
+            PublishAuthority::VerifiedAutomation,
         )
         .await
         .expect("blocked repair remains blocked"),
@@ -907,6 +911,7 @@ async fn publish_resume_phase_guards_preserve_current_durable_authority() {
             &requested.conversation_id,
             "requested probe",
             false,
+            PublishAuthority::VerifiedAutomation,
         )
         .await
         .expect("live requested repair remains busy"),
@@ -1226,6 +1231,7 @@ async fn continuation_boundary_re_reads_auto_publish_preference_before_leaving_r
         AgentWorkspaceRepairPhase::Requested,
         "repair completed",
         false,
+        PublishAuthority::VerifiedAutomation,
     )
     .await
     .expect("continuation boundary should use current preferences");
@@ -1288,6 +1294,7 @@ async fn continuation_boundary_honors_persisted_explicit_publish_consent() {
         AgentWorkspaceRepairPhase::Requested,
         "repair completed",
         false,
+        PublishAuthority::VerifiedAutomation,
     )
     .await
     .expect("persisted consent should authorize the continuation");
@@ -1317,6 +1324,7 @@ async fn inactive_repair_lease_review_wait_restart_and_pass_are_fenced_once() {
         AgentWorkspaceRepairPhase::Requested,
         "repair completed",
         false,
+        PublishAuthority::VerifiedAutomation,
         &starter,
     )
     .await
@@ -1361,6 +1369,7 @@ async fn inactive_repair_lease_review_wait_restart_and_pass_are_fenced_once() {
         AgentWorkspaceRepairPhase::AwaitingReview,
         "recovery replay",
         false,
+        PublishAuthority::VerifiedAutomation,
         &starter,
     )
     .await
@@ -1415,6 +1424,7 @@ async fn inactive_repair_lease_review_wait_restart_and_pass_are_fenced_once() {
         &awaiting_review.conversation_id,
         "resume after persisted review pass",
         false,
+        PublishAuthority::VerifiedAutomation,
     )
     .await
     .expect("passed review must reacquire the canonical target before continuation");
@@ -1448,6 +1458,7 @@ async fn inactive_repair_lease_review_wait_restart_and_pass_are_fenced_once() {
         &resumed.conversation_id,
         "duplicate resume after persisted review pass",
         false,
+        PublishAuthority::VerifiedAutomation,
     )
     .await
     .expect("duplicate review resume should remain side-effect free");
@@ -1471,6 +1482,7 @@ async fn inactive_repair_lease_review_wait_restart_and_pass_are_fenced_once() {
         AgentWorkspaceRepairPhase::Requested,
         "stale completion",
         false,
+        PublishAuthority::VerifiedAutomation,
         &starter,
     )
     .await
@@ -1531,6 +1543,7 @@ async fn workspace_review_start_outcomes_keep_or_block_the_exact_repair_generati
             AgentWorkspaceRepairPhase::Requested,
             "repair completed",
             false,
+            PublishAuthority::VerifiedAutomation,
             &starter,
         )
         .await
@@ -1599,6 +1612,7 @@ async fn inactive_repair_lease_ready_manual_publish_reacquires_before_continuati
         AgentWorkspaceRepairPhase::Requested,
         "repair is ready for user-selected publication",
         false,
+        PublishAuthority::VerifiedAutomation,
     )
     .await
     .expect("disabled Auto Publish should park the exact repair generation at Ready");
@@ -1627,6 +1641,7 @@ async fn inactive_repair_lease_ready_manual_publish_reacquires_before_continuati
         &ready.conversation_id,
         "user selected Commit & Publish",
         true,
+        PublishAuthority::UserExplicit,
     )
     .await
     .expect("manual publication should reacquire its canonical target authority");
@@ -1664,6 +1679,7 @@ async fn inactive_repair_lease_ready_manual_publish_reacquires_before_continuati
         &resumed.conversation_id,
         "duplicate manual Commit & Publish",
         true,
+        PublishAuthority::UserExplicit,
     )
     .await
     .expect("duplicate manual publish must not take a second target lease or effect");
@@ -1704,6 +1720,7 @@ async fn inactive_repair_lease_ready_resume_rejects_open_effect_without_reacquir
         AgentWorkspaceRepairPhase::Requested,
         "repair is ready while a previous external effect remains unresolved",
         false,
+        PublishAuthority::VerifiedAutomation,
     )
     .await
     .expect("ready boundary should settle before the open effect is observed");
@@ -1741,6 +1758,7 @@ async fn inactive_repair_lease_ready_resume_rejects_open_effect_without_reacquir
         &ready.conversation_id,
         "manual publish must not overtake an open effect",
         true,
+        PublishAuthority::UserExplicit,
     )
     .await
     .expect_err("an open effect must block Ready resume before target reacquisition");
@@ -1797,6 +1815,7 @@ async fn inactive_repair_lease_ready_resume_fails_closed_for_successor_target() 
         AgentWorkspaceRepairPhase::Requested,
         "repair is ready for user-selected publication",
         false,
+        PublishAuthority::VerifiedAutomation,
     )
     .await
     .expect("ready boundary should settle before the foreign writer arrives");
@@ -1826,6 +1845,7 @@ async fn inactive_repair_lease_ready_resume_fails_closed_for_successor_target() 
         &ready.conversation_id,
         "manual publish must not overtake a successor",
         true,
+        PublishAuthority::UserExplicit,
     )
     .await
     .expect_err("a busy canonical target must block the stale Ready resume before effects");

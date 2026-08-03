@@ -95,7 +95,7 @@ use crate::application::agent_workspace_publish_repair_state::{
     settle_agent_workspace_repair_dispatch_outcome, start_or_join_agent_workspace_repair,
     AgentWorkspaceRepairDispatchOutcome, AgentWorkspaceRepairDispatchSettlement,
     AgentWorkspaceRepairPublishResumeOutcome, AgentWorkspaceRepairStartOutcome,
-    AgentWorkspaceRepairStartRequest, AgentWorkspaceRepairTransitionOutcome,
+    AgentWorkspaceRepairStartRequest, AgentWorkspaceRepairTransitionOutcome, PublishAuthority,
     DEFERRED_REPAIR_WAIT_TIMEOUT_SECS,
 };
 use crate::application::agent_workspace_review::{
@@ -5266,6 +5266,7 @@ async fn resume_ready_publish_repair_after_auto_publish_enabled(
         state,
         attempt,
         "Auto Publish was enabled; resuming the durable workspace repair continuation.",
+        PublishAuthority::UserExplicit,
     )
     .await
     {
@@ -7797,6 +7798,11 @@ pub(crate) async fn resume_durable_agent_workspace_repair_publish(
         conversation_id,
         "Resuming the durable workspace repair continuation for publish.",
         explicit_publish,
+        if explicit_publish {
+            PublishAuthority::UserExplicit
+        } else {
+            PublishAuthority::VerifiedAutomation
+        },
     )
     .await
     .map_err(|error| error.to_string())?;

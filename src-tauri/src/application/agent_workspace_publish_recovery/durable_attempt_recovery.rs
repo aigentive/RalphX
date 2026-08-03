@@ -21,7 +21,7 @@ use crate::application::agent_workspace_publish_repair_state::{
     transition_agent_workspace_repair_attempt, validate_agent_workspace_repair_target_lease,
     AgentWorkspaceRepairDispatchOutcome, AgentWorkspaceRepairDispatchSettlement,
     AgentWorkspaceRepairPublishResumeOutcome, AgentWorkspaceRepairStartOutcome,
-    AgentWorkspaceRepairStartRequest, AgentWorkspaceRepairTransitionOutcome,
+    AgentWorkspaceRepairStartRequest, AgentWorkspaceRepairTransitionOutcome, PublishAuthority,
     ORPHANED_REPAIR_DISPATCH_RESCUE_GRACE_SECS,
 };
 use crate::application::chat_service::{ChatService, SendMessageOptions, SendQueuePolicy};
@@ -345,6 +345,7 @@ async fn reconcile_agent_workspace_repair_attempt(
                 &current.conversation_id,
                 "Resuming the durable workspace repair continuation after Workspace Review.",
                 false,
+                PublishAuthority::VerifiedAutomation,
             )
             .await?
             {
@@ -467,13 +468,14 @@ async fn retry_safe_ready_agent_workspace_repair_publish(
 
     // A failed re-drive must not abort the whole recovery sweep for other workspaces; the
     // persisted streak marker keeps this attempt on backoff until it re-drives or settles.
-    // The authority gate above proves this timer redrive represents durable user consent,
-    // current Auto Publish policy, or supervision of an already-created PR.
+    // The authority gate above proves re-drive authority from durable consent, current Auto
+    // Publish policy, or supervision of an already-created PR; it does not grant user consent.
     let resumed = match resume_current_agent_workspace_repair_publish(
         state,
         &marked.conversation_id,
         "Resuming a parked durable workspace repair publish continuation.",
         true,
+        PublishAuthority::VerifiedAutomation,
     )
     .await
     {
@@ -1218,6 +1220,7 @@ async fn recover_clean_interrupted_repair(
         AgentWorkspaceRepairPhase::Validating,
         "Continuing the durable workspace repair after recovery validation.",
         false,
+        PublishAuthority::VerifiedAutomation,
     )
     .await?
     {
