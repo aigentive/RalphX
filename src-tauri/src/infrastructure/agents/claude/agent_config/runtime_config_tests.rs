@@ -621,10 +621,52 @@ fn test_external_mcp_config_defaults() {
     assert_eq!(cfg.host, "127.0.0.1");
     assert_eq!(cfg.max_restart_attempts, 3);
     assert_eq!(cfg.restart_delay_ms, 2000);
+    assert_eq!(cfg.shutdown_grace_ms, 2000);
     assert_eq!(cfg.startup_timeout_secs, 30);
     assert_eq!(cfg.human_wait_timeout_secs, 285);
     assert!(cfg.auth_token.is_none());
     assert!(cfg.node_path.is_none());
+}
+
+#[test]
+fn test_external_mcp_env_override_shutdown_grace() {
+    let mut cfg = AllRuntimeConfig {
+        stream: StreamTimeoutsConfig::default(),
+        reconciliation: ReconciliationConfig::default(),
+        git: GitRuntimeConfig::default(),
+        scheduler: SchedulerConfig::default(),
+        supervisor: SupervisorRuntimeConfig::default(),
+        limits: LimitsConfig::default(),
+        verification: VerificationConfig::default(),
+        external_mcp: ExternalMcpConfig::default(),
+        child_session_activity_threshold_secs: None,
+        ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
+    };
+
+    apply_env_overrides_with(&mut cfg, &|name| match name {
+        "RALPHX_EXTERNAL_MCP_SHUTDOWN_GRACE_MS" => Some("750".to_string()),
+        _ => None,
+    });
+
+    assert_eq!(cfg.external_mcp.shutdown_grace_ms, 750);
+}
+
+#[test]
+fn shutdown_watchdog_config_defaults_and_accepts_env_override() {
+    let mut config = ShutdownConfig::default();
+    assert_eq!(config.watchdog_deadline_secs, 20);
+
+    apply_shutdown_env_overrides_with_lookup(&mut config, &|name| match name {
+        "RALPHX_SHUTDOWN_WATCHDOG_DEADLINE_SECS" => Some("35".to_string()),
+        _ => None,
+    });
+
+    assert_eq!(config.watchdog_deadline_secs, 35);
+    assert_eq!(bounded_shutdown_watchdog_deadline_secs(0), 20);
+    assert_eq!(bounded_shutdown_watchdog_deadline_secs(u64::MAX), 300);
+    assert_eq!(bounded_external_mcp_shutdown_grace_ms(u64::MAX), 30_000);
 }
 
 #[test]
