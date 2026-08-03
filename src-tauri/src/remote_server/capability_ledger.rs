@@ -265,6 +265,7 @@ pub const MODULE_DEFAULTS: &[ModuleDefault] = &[
         "remote environment authority",
     ),
     elevated_default("remote_host_commands", HOST, "remote listener authority"),
+    agent_default("remote_question_commands"),
     elevated_default(
         "remote_transport_spike_commands",
         HOST,
@@ -1543,7 +1544,19 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
             PROCESS,
             "detector-c: steering-question — answering a live gate resumes the agent turn, so the \
              closure resolves resolve_git_cli_path, resolve_node_cli_path and \
-             find_codex_cli_candidates",
+             find_codex_cli_candidates; the registered resolve_remote_user_question twin omits \
+             handle_accepted_plan_mode_proposal/create_chat_service/kick_runtime_handoff and \
+             refuses Plan-mode acceptance fail-closed",
+        ),
+    },
+    CommandOverride {
+        command: "resolve_remote_user_question",
+        policy: policy(
+            RiskClass::AgentControl,
+            AGENT,
+            "declared membership: steering-question; spawn-free answer twin omits \
+             handle_accepted_plan_mode_proposal, create_chat_service, and kick_runtime_handoff, \
+             and refuses Plan-mode acceptance fail-closed before committing the claim",
         ),
     },
     // The approve half of the pinned permission split. Its sibling `deny_permission_request`
@@ -3977,6 +3990,7 @@ pub const DECLARED_MEMBERSHIPS: &[(&str, &str)] = &[
         "request_remote_agent_conversation_mode_switch",
         "prepares-workspace-for-later-agent-run",
     ),
+    ("resolve_remote_user_question", "steering-question"),
 ];
 
 /// Expands the module policy and command overrides into one effective command row.

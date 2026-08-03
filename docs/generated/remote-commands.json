@@ -2230,6 +2230,10 @@
     {
       "command": "request_remote_agent_conversation_mode_switch",
       "reason": "prepares-workspace-for-later-agent-run"
+    },
+    {
+      "command": "resolve_remote_user_question",
+      "reason": "steering-question"
     }
   ],
   "facade_ops": [
@@ -2295,6 +2299,17 @@
       "pins": [],
       "scopeConfined": false,
       "target": "crate::commands::question_commands::list_pending_question_gates"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "resolve_remote_user_question",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::remote_question_commands::resolve_remote_user_question"
     },
     {
       "argumentSensitive": false,
@@ -8771,7 +8786,7 @@
       "class": "elevated",
       "command": "resolve_user_question",
       "module": "question_commands",
-      "reason": "detector-c: steering-question — answering a live gate resumes the agent turn, so the closure resolves resolve_git_cli_path, resolve_node_cli_path and find_codex_cli_candidates",
+      "reason": "detector-c: steering-question — answering a live gate resumes the agent turn, so the closure resolves resolve_git_cli_path, resolve_node_cli_path and find_codex_cli_candidates; the registered resolve_remote_user_question twin omits handle_accepted_plan_mode_proposal/create_chat_service/kick_runtime_handoff and refuses Plan-mode acceptance fail-closed",
       "registered": false,
       "v1Resolution": "host-denied-spawns-process"
     },
@@ -8797,6 +8812,17 @@
       "command": "list_pending_question_gates",
       "module": "question_commands",
       "reason": "pending question-gate enumeration: fail-closed read of the pending repository plus the in-memory gate map; answers no question and arms no scheduling",
+      "registered": true,
+      "v1Resolution": "registerable"
+    },
+    {
+      "capabilities": [
+        "agentControl"
+      ],
+      "class": "agentControl",
+      "command": "resolve_remote_user_question",
+      "module": "remote_question_commands",
+      "reason": "declared membership: steering-question; spawn-free answer twin omits handle_accepted_plan_mode_proposal, create_chat_service, and kick_runtime_handoff, and refuses Plan-mode acceptance fail-closed before committing the claim",
       "registered": true,
       "v1Resolution": "registerable"
     },

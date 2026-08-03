@@ -712,9 +712,10 @@ crate::remote_commands! {
     // which is what makes them safe to expose: the remote client can never be told "no
     // gates are open" because a read failed.
     //
-    // Both are enumerations, not resolutions. The sibling commands that ANSWER a gate
-    // (`resolve_permission_request`, `resolve_user_question`,
-    // `approve_permission_request`) stay at `AgentControl` — see the overrides below.
+    // Both are enumerations, not resolutions. Answering still requires AgentControl. The local
+    // `resolve_user_question` remains denied because accepted Plan-mode proposals can prepare a
+    // workspace and kick a runtime; `resolve_remote_user_question` is the separately audited
+    // twin that omits those branches and refuses Plan-mode acceptance fail-closed.
     // -----------------------------------------------------------------------------------
     "list_pending_permission_gates"
         => crate::commands::permission_commands::list_pending_permission_gates {
@@ -729,6 +730,19 @@ crate::remote_commands! {
         class: Read,
         caps: [],
         params: [(app_state)],
+        call: async,
+        result: fallible,
+    },
+    // Spawn-free answer twin: intentionally omits the local accepted Plan-mode workspace and
+    // runtime-handoff branch; that acceptance is refused before the question claim is committed.
+    "resolve_remote_user_question"
+        => crate::commands::remote_question_commands::resolve_remote_user_question {
+        class: AgentControl,
+        caps: [AgentControl],
+        params: [
+            (arg input: crate::commands::remote_question_commands::ResolveRemoteUserQuestionInput),
+            (app_state),
+        ],
         call: async,
         result: fallible,
     },

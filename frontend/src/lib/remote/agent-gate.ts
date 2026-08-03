@@ -129,21 +129,17 @@ export const AGENT_GATED_AFFORDANCES = {
   personaSwitch: "switch_agent_conversation_persona",
   attachmentUpload: "upload_chat_attachment",
   permissionApprove: "approve_permission_request",
-  // Answering the MCP `ask_user_question` gate — the ONLY question shape the Agents surface
-  // raises (`http_server/handlers/questions.rs` emits `requestId` + `sessionId` and no task).
-  // The op named here is `resolve_user_question`, which is ABSENT from `REMOTE_FACADE_OPS`, so
-  // the affordance resolves `unavailable` — derived from absence, never hardcoded.
-  //
-  // This row used to name `answer_user_question`, which IS registered, and that was the whole
-  // bug: the gate rendered enabled while every submit named the unregistered command. The two
-  // are NOT twins. `answer_user_question` takes a non-optional `taskId` and performs a
-  // Blocked→Ready TASK transition (`task_commands::mutation`); it never signals the MCP
-  // long-poll keyed by `requestId`, and no `taskId` exists on this wire to call it with.
-  // Pointing the answer path at it would return `answerRecorded: true` over an agent that is
-  // still blocked — a false terminal, which is worse than an honest unavailable control.
-  // A `requestId`-capable spawn-free twin is the fix; until the host registers one this stays
-  // absent and says so.
-  questionAnswer: "resolve_user_question",
+  // Answering the MCP `ask_user_question` gate uses the registered, spawn-free remote twin.
+  // It is `agentControl`, so a remote needs `ui:agent`; older hosts without the manifest row
+  // resolve unavailable from absence. `answer_user_question` remains background history, not
+  // a twin: it requires `taskId`, performs a Blocked→Ready task transition, and never signals
+  // the MCP long-poll keyed by `requestId`. The twin instead resolves that pending request.
+  // Accepted plan-mode proposals are refused host-side before commit because they prepare a
+  // workspace; the claim is released fail-closed so the still-pending banner remains retryable.
+  // Ordinary late answers still commit with `deliveredToWaitingAgent: false`; the client then
+  // compensates through `formatLateQuestionAnswer`, whose chat send uses the registered
+  // `send_remote_chat_message` remote command.
+  questionAnswer: "resolve_remote_user_question",
   taskMove: "move_task",
   // Task-level stop is registered as agentControl, so default-paired remotes must not invoke it.
   taskStop: "stop_task",

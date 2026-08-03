@@ -100,6 +100,9 @@ pub mod remote_execution_status_commands;
 #[cfg(test)]
 mod remote_execution_status_commands_tests;
 pub mod remote_host_commands;
+pub mod remote_question_commands;
+#[cfg(test)]
+mod remote_question_commands_tests;
 pub mod remote_transcript_commands;
 #[cfg(debug_assertions)]
 pub mod remote_transport_spike_commands;
@@ -303,6 +306,7 @@ pub use methodology_commands::{
     MethodologyTemplateResponse, WorkflowSchemaResponse,
 };
 pub use remote_execution_status_commands::get_remote_execution_status;
+pub use remote_question_commands::resolve_remote_user_question;
 
 #[cfg(test)]
 mod manual_role_default_commands_tests;

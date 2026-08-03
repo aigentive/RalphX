@@ -17,9 +17,14 @@ import {
   onPendingGateReconcile,
 } from "@/lib/remote/pending-gate-reconcile";
 import { remoteErrorBannerProps } from "@/lib/remote/agent-gate";
+import {
+  getTransportEnvironmentId,
+  isRemoteEnvironmentId,
+} from "@/lib/remote/active-environment";
 import { isRemoteTransportError } from "@/lib/remote/transport-errors";
 import {
   AskUserQuestionPayloadSchema,
+  type AskUserQuestionPayload,
   type AskUserQuestionResponse,
 } from "@/types/ask-user-question";
 
@@ -41,6 +46,27 @@ export interface SubmitQuestionAnswerResult {
  */
 const answeredRequestIds = new Map<string, number>();
 const ANSWERED_TTL_MS = 5 * 60 * 1000;
+const PLAN_MODE_PROPOSAL_KIND = "plan_mode_proposal";
+const PLAN_MODE_PROPOSAL_ACCEPT_VALUE = "switch_to_plan";
+const REMOTE_PLAN_MODE_PROPOSAL_REQUIRES_HOST =
+  "accepting a plan-mode proposal prepares a workspace on the host — answer it from the host";
+
+function isRemotePlanModeProposalAcceptance(
+  question: AskUserQuestionPayload,
+  response: AskUserQuestionResponse,
+): boolean {
+  return (
+    isRemoteEnvironmentId(getTransportEnvironmentId()) &&
+    question.metadata?.kind === PLAN_MODE_PROPOSAL_KIND &&
+    response.skipped !== true &&
+    response.selectedOptions.includes(PLAN_MODE_PROPOSAL_ACCEPT_VALUE)
+  );
+}
+
+function isRemotePlanModeProposalRefusal(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes(REMOTE_PLAN_MODE_PROPOSAL_REQUIRES_HOST);
+}
 
 function pruneAnsweredRequestIds() {
   const cutoff = Date.now() - ANSWERED_TTL_MS;
@@ -275,6 +301,11 @@ export function useAskUserQuestion(currentSessionId: string | undefined) {
       let deliveredToWaitingAgent = true;
       let planModeProposalHandled = false;
 
+      if (isRemotePlanModeProposalAcceptance(activeQuestion, response)) {
+        toast.error(REMOTE_PLAN_MODE_PROPOSAL_REQUIRES_HOST, { duration: 8000 });
+        return { success: false, deliveredToWaitingAgent: false };
+      }
+
       setIsLoading(true);
       try {
         if (response.requestId) {
@@ -337,6 +368,11 @@ export function useAskUserQuestion(currentSessionId: string | undefined) {
               duration: 8000,
             });
           }
+          return { success: false, deliveredToWaitingAgent: false };
+        }
+
+        if (isRemotePlanModeProposalRefusal(error)) {
+          toast.error(REMOTE_PLAN_MODE_PROPOSAL_REQUIRES_HOST, { duration: 8000 });
           return { success: false, deliveredToWaitingAgent: false };
         }
 

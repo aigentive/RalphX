@@ -341,7 +341,7 @@ export const KNOWN_GATE_GAPS: readonly KnownGateGap[] = [
     kind: "raw-twin",
     id: "raw-twin:src/api/ask-user-question.ts::resolve_user_question",
     owner: 1,
-    why: "The local transport branch legitimately invokes resolve_user_question; the remote branch uses the honest gate because this wire cannot signal the MCP long-poll.",
+    why: "The local transport branch legitimately invokes resolve_user_question; the remote branch invokes the registered resolve_remote_user_question twin.",
   },
 
 ];

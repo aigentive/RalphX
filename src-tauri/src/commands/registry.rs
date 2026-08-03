@@ -420,6 +420,7 @@ macro_rules! register_tauri_commands {
             commands::question_commands::resolve_user_question,
             commands::question_commands::get_pending_questions,
             commands::question_commands::list_pending_question_gates,
+            commands::remote_question_commands::resolve_remote_user_question,
             // Spawn-free remote chat send (facade-registrable; see remote_chat_commands)
             commands::remote_chat_commands::send_remote_chat_message,
             // Spawn-free remote conversation reads (see remote_transcript_commands)

@@ -1036,7 +1036,10 @@ fn detector_b_is_calibrated_and_floor_enforced() {
         //     (`WritesArbitraryPath`) and neither is remotely registrable. Detector silence is not
         //     a licence here; the file-scope disposition is.
         // A census-count change in both halves, not a detector change.
-        567,
+        // 567 -> 568: `resolve_remote_user_question`, the spawn-free question answer twin.
+        // Measured a=b=c=false at 455 nodes; its source-level no-authority-carriers test
+        // independently protects the seam omitted by the detector-silent closure.
+        568,
         "review the detector against the full command census"
     );
     let flagged = spawn_triggering_writers(
@@ -3690,6 +3693,44 @@ fn the_spawn_free_remote_agent_stop_module_carries_no_authority_carriers() {
     }
 }
 
+/// The remote question twin stays below the local resolver's workspace/process authority by
+/// construction. Comments may name the omitted carriers; executable source may not.
+#[test]
+fn the_spawn_free_remote_question_module_carries_no_authority_carriers() {
+    let sources = load_production_sources();
+    let (_, module) = sources
+        .iter()
+        .find(|(file, _)| file == "commands/remote_question_commands.rs")
+        .expect("the spawn-free remote question module must exist");
+    let code = module
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        code.contains("pub async fn resolve_remote_user_question"),
+        "comment stripping ate the module body; this assertion would be vacuous"
+    );
+
+    for carrier in [
+        "AppHandle",
+        "ExecutionState",
+        "create_chat_service",
+        "build_chat_service",
+        "kick_runtime_handoff",
+        "stage_runtime_handoff",
+        "switch_agent_conversation_mode",
+        "handle_accepted_plan_mode_proposal",
+    ] {
+        assert!(
+            !code.contains(carrier),
+            "`remote_question_commands` mentions `{carrier}` in executable source; the remote \
+             answer twin must refuse Plan-mode acceptance without acquiring host process or \
+             workspace authority"
+        );
+    }
+}
+
 /// The brake is registered at `Operate` and the sibling it replaces stays unregistered.
 ///
 /// Both halves matter. Registering the intent while `stop_agent` also became reachable would
@@ -5708,10 +5749,10 @@ fn the_registered_twin_pairings_that_justified_the_batch10_registrations_hold() 
             "list_agent_conversations",
             "list_remote_agent_conversations",
         ),
-        // Host-denied, and still the standing proof that a denial needs a MECHANISM: this pair
-        // sits at the same declared membership, and only the detector-(c) launch path separates
-        // them.
-        ("resolve_user_question", "answer_user_question"),
+        // Host-denied locally, with a dedicated twin that omits the Plan-mode workspace/runtime
+        // branch and refuses that acceptance fail-closed. `answer_user_question` answers a task
+        // workflow question and is a different role, not this gate-resolution twin.
+        ("resolve_user_question", "resolve_remote_user_question"),
     ] {
         assert!(
             find_spec(refused).is_none(),

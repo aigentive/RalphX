@@ -20,6 +20,10 @@ import { renderHook, act } from "@testing-library/react";
 import { useAskUserQuestion } from "./useAskUserQuestion";
 import { useUiStore } from "@/stores/uiStore";
 import { LOCAL_ENVIRONMENT_ID } from "@/stores/environmentStore";
+import {
+  resetTransportEnvironmentId,
+  setTransportEnvironmentId,
+} from "@/lib/remote/active-environment";
 import { RemoteTransportError } from "@/lib/remote/transport-errors";
 import type { AskUserQuestionPayload } from "@/types/ask-user-question";
 
@@ -114,9 +118,68 @@ beforeEach(() => {
 
 afterEach(() => {
   mockSubscribers.clear();
+  resetTransportEnvironmentId();
 });
 
 describe("submitAnswer — transport refusal is not authority over the gate", () => {
+  it("blocks remote plan-mode acceptance before invoke and keeps the question pending", async () => {
+    setTransportEnvironmentId("env-remote");
+    const question = {
+      ...nextQuestion(),
+      metadata: { kind: "plan_mode_proposal" },
+    };
+    const { result } = renderHook(() => useAskUserQuestion(SESSION));
+    act(() => emit(question));
+
+    await act(async () => {
+      await result.current.submitAnswer({
+        requestId: question.requestId,
+        selectedOptions: ["switch_to_plan"],
+      });
+    });
+
+    expect(mockResolve).not.toHaveBeenCalled();
+    expect(useUiStore.getState().activeQuestions[SESSION]).toEqual(question);
+    expect(mockToastError).toHaveBeenCalledWith(
+      "accepting a plan-mode proposal prepares a workspace on the host — answer it from the host",
+      expect.any(Object),
+    );
+  });
+
+  it("keeps the banner and retry eligibility on the host refusal backstop", async () => {
+    const question = {
+      ...nextQuestion(),
+      metadata: { kind: "plan_mode_proposal" },
+    };
+    const { result } = renderHook(() => useAskUserQuestion(SESSION));
+    act(() => emit(question));
+    mockResolve.mockRejectedValueOnce(
+      "accepting a plan-mode proposal prepares a workspace on the host — answer it from the host",
+    );
+
+    await act(async () => {
+      await result.current.submitAnswer({
+        requestId: question.requestId,
+        selectedOptions: ["switch_to_plan"],
+      });
+    });
+
+    expect(useUiStore.getState().activeQuestions[SESSION]).toEqual(question);
+    expect(expiredToastFired()).toBe(false);
+    mockResolve.mockResolvedValueOnce({
+      success: true,
+      message: null,
+      deliveredToWaitingAgent: true,
+    });
+    await act(async () => {
+      await result.current.submitAnswer({
+        requestId: question.requestId,
+        selectedOptions: ["keep_edit"],
+      });
+    });
+    expect(mockResolve).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps the banner up and never claims the session expired", async () => {
     const question = nextQuestion();
     const { result } = renderHook(() => useAskUserQuestion(SESSION));
@@ -333,7 +396,7 @@ describe("dismissQuestion — a refused dismiss must not suppress the live gate"
 });
 
 describe("the questionAnswer gate names an op the host actually serves", () => {
-  it("resolves unavailable remotely — the answer path has no registered twin", async () => {
+  it("uses the registered twin and distinguishes scope gating from older-host absence", async () => {
     const { AGENT_GATED_AFFORDANCES, REMOTE_FACADE_OPS, resolveAffordanceGate } =
       await import("@/lib/remote/agent-gate");
 
@@ -342,17 +405,27 @@ describe("the questionAnswer gate names an op the host actually serves", () => {
     // MCP long-poll keyed by `requestId` — and the question event
     // (`http_server/handlers/questions.rs`) carries no taskId to call it with. A gate pointed at
     // it renders ENABLED over a submit that cannot land.
-    expect(AGENT_GATED_AFFORDANCES.questionAnswer).toBe("resolve_user_question");
-    expect(REMOTE_FACADE_OPS["resolve_user_question"]).toBeUndefined();
+    expect(AGENT_GATED_AFFORDANCES.questionAnswer).toBe("resolve_remote_user_question");
+    expect(REMOTE_FACADE_OPS["resolve_remote_user_question"]?.opClass).toBe("agentControl");
+    expect(resolveAffordanceGate("questionAnswer", true, ["ui:read", "ui:operate"])).toMatchObject({
+      status: "gated",
+      gated: true,
+    });
+    expect(resolveAffordanceGate("questionAnswer", true, ["ui:read", "ui:operate", "ui:agent"])).toMatchObject({
+      status: "enabled",
+      gated: false,
+    });
 
-    // Unavailable at every scope, including a fully granted one — absence, not scope.
-    for (const scopes of [
-      ["ui:read", "ui:operate"],
-      ["ui:read", "ui:operate", "ui:agent"],
-    ]) {
-      expect(resolveAffordanceGate("questionAnswer", true, scopes).status).toBe(
-        "unavailable",
-      );
+    const twin = REMOTE_FACADE_OPS["resolve_remote_user_question"];
+    delete (REMOTE_FACADE_OPS as Record<string, unknown>)["resolve_remote_user_question"];
+    try {
+      expect(resolveAffordanceGate("questionAnswer", true, ["ui:agent"])).toMatchObject({
+        status: "unavailable",
+        gated: true,
+        reason: "This action runs only on the host — it is not available remotely.",
+      });
+    } finally {
+      (REMOTE_FACADE_OPS as Record<string, unknown>)["resolve_remote_user_question"] = twin;
     }
     // Local is untouched.
     expect(

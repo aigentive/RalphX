@@ -1208,6 +1208,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: ["mutatesAgentConsumedContent"],
     pins: [],
   },
+  "resolve_remote_user_question": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["agentControl"],
+    pins: [],
+  },
   "restart_automation": {
     opClass: "agentControl",
     argumentSensitive: false,

@@ -50,6 +50,7 @@ const ANCHORS: &[&str] = &[
     "resume_automation",
     "approve_permission_request",
     "resolve_user_question",
+    "resolve_remote_user_question",
     "answer_user_question",
     "unblock_task",
 ];

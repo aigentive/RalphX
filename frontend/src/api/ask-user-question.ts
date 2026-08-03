@@ -6,6 +6,10 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
+import {
+  getTransportEnvironmentId,
+  isRemoteEnvironmentId,
+} from "@/lib/remote/active-environment";
 import type { AskUserQuestionPayload, AskUserQuestionResponse } from "@/types/ask-user-question";
 
 // ============================================================================
@@ -64,6 +68,16 @@ export const askUserQuestionApi = {
    * @param input The resolution including requestId and selected options
    */
   resolveQuestion: async (input: ResolveQuestionInput): Promise<ResolveQuestionResult> => {
+    if (isRemoteEnvironmentId(getTransportEnvironmentId())) {
+      return await invoke<ResolveQuestionResult>("resolve_remote_user_question", {
+        input: {
+          requestId: input.requestId,
+          selectedOptions: input.selectedOptions,
+          customResponse: input.customResponse,
+          skipped: input.skipped ?? false,
+        },
+      });
+    }
     return await invoke<ResolveQuestionResult>("resolve_user_question", {
       args: {
         requestId: input.requestId,
