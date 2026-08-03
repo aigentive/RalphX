@@ -22,6 +22,7 @@ use crate::domain::entities::{
     AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewTargetScope, ArtifactId, ChatConversationId, IdeationSessionId,
     PlanBranchId, ProjectId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
@@ -31,8 +32,6 @@ use crate::domain::repositories::{
     AgentWorkspacePublicationUpdate, ImportLegacyAgentWorkspaceRepairAttemptOutcome,
 };
 use crate::error::{AppError, AppResult};
-
-const WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED: &str = "cycle_capped";
 
 #[cfg(test)]
 #[path = "memory_agent_conversation_workspace_repo_tests.rs"]
@@ -1330,12 +1329,18 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
                 .await
                 .get_mut(conversation_id)
             {
-                if monitor.review_fixer_status.as_deref()
-                    == Some(WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED)
-                {
+                let fixer_is_active = matches!(
+                    monitor.review_fixer_status.as_deref(),
+                    Some("routing" | "queued" | "running")
+                );
+                if !fixer_is_active {
                     monitor.review_fixer_cycle_count = 0;
-                    monitor.review_fixer_status = None;
-                    monitor.review_fixer_attempt_id = None;
+                    if monitor.review_fixer_status.as_deref()
+                        == Some(WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED)
+                    {
+                        monitor.review_fixer_status = None;
+                        monitor.review_fixer_attempt_id = None;
+                    }
                     monitor.updated_at = now;
                 }
             }

@@ -25,8 +25,8 @@ use crate::domain::entities::plan_branch::{
     PrPushStatus as PlanPrPushStatus, PrStatus as PlanPrStatus,
 };
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunId,
-    AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
+    AgentRun, AgentRunId, AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
     AgentWorkspacePrMetadataDecision, AgentWorkspaceReviewGateStatus,
     AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewRuntimeState, AgentWorkspaceSourcePullRequest, ArtifactId, ChatContextType,
@@ -173,6 +173,89 @@ async fn review_automation_start_opt_in_persists_before_the_review_decision() {
             .review_automation_override,
         Some(true)
     );
+}
+
+#[tokio::test]
+async fn review_automation_start_rejects_archived_workspace_without_side_effects() {
+    let repo = tempfile::TempDir::new().expect("repo tempdir");
+    git(repo.path(), &["init", "-b", "main"]);
+    git(repo.path(), &["config", "user.email", "test@example.com"]);
+    git(repo.path(), &["config", "user.name", "RalphX Test"]);
+    std::fs::write(repo.path().join("README.md"), "base\n").expect("write base file");
+    git(repo.path(), &["add", "README.md"]);
+    git(repo.path(), &["commit", "-m", "base"]);
+    let base_sha = git(repo.path(), &["rev-parse", "HEAD"]);
+
+    let app_state = Arc::new(AppState::new_test());
+    let mut project = Project::new(
+        "Archived review start".to_string(),
+        repo.path().to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .expect("project should persist");
+
+    let conversation_id = ChatConversationId::new();
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.id = conversation_id.clone();
+    conversation.agent_mode = Some(AgentConversationWorkspaceMode::Edit);
+    app_state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("conversation should persist");
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation_id.clone(),
+        project.id,
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("Project default (main)".to_string()),
+        Some(base_sha),
+        "main".to_string(),
+        repo.path().to_string_lossy().to_string(),
+    );
+    workspace.status = AgentConversationWorkspaceStatus::Archived;
+    app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("archived workspace should persist");
+
+    let error = start_agent_workspace_review_run(
+        State(test_http_state(Arc::clone(&app_state))),
+        Path(conversation_id.as_str()),
+        Json(StartAgentWorkspaceReviewRequest {
+            force: Some(false),
+            enable_review_automation: Some(true),
+            confirmation: None,
+            runtime_override: None,
+        }),
+    )
+    .await
+    .expect_err("archived workspace review start should fail closed");
+
+    assert_eq!(error.0, StatusCode::CONFLICT);
+    assert_eq!(
+        error.1["error"].as_str(),
+        Some("Workspace Review cannot be started for an archived workspace")
+    );
+    let workspace = app_state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace should load")
+        .expect("workspace should exist");
+    assert_eq!(workspace.review_automation_override, None);
+    assert!(app_state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&conversation_id)
+        .await
+        .expect("review monitor lookup should succeed")
+        .is_none());
 }
 
 /// Legacy fixture coverage remains isolated from the production compatibility endpoint, which

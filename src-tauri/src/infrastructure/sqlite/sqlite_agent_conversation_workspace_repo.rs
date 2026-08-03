@@ -22,7 +22,7 @@ use crate::domain::entities::{
     AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest, ArtifactId,
     ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
-    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD, WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
@@ -33,7 +33,6 @@ use crate::domain::repositories::{
 };
 use crate::error::{AppError, AppResult};
 
-const WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED: &str = "cycle_capped";
 use crate::infrastructure::agents::claude::git_runtime_config;
 use crate::infrastructure::sqlite::DbConnection;
 
@@ -2666,11 +2665,18 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                     conn.execute(
                         "UPDATE agent_workspace_review_monitors
                          SET review_fixer_cycle_count = 0,
-                             review_fixer_status = NULL,
-                             review_fixer_attempt_id = NULL,
+                             review_fixer_status = CASE
+                                 WHEN review_fixer_status = ?3 THEN NULL
+                                 ELSE review_fixer_status
+                             END,
+                             review_fixer_attempt_id = CASE
+                                 WHEN review_fixer_status = ?3 THEN NULL
+                                 ELSE review_fixer_attempt_id
+                             END,
                              updated_at = ?2
                          WHERE conversation_id = ?1
-                           AND review_fixer_status = ?3",
+                           AND (review_fixer_status IS NULL
+                                OR review_fixer_status NOT IN ('routing', 'queued', 'running'))",
                         rusqlite::params![
                             conversation_id,
                             now,

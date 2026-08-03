@@ -136,7 +136,7 @@ pub use agent_conversation_workspace::{
     AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewRuntimeState,
     AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest,
-    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD, WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED,
 };
 pub use agent_workspace_repair::{
     AgentWorkspaceRepairAttempt, AgentWorkspaceRepairAttemptId,
