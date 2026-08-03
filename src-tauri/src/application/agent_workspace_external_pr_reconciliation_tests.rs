@@ -225,7 +225,7 @@ async fn deps_with_workspace(
             pr_poller_registry: None,
             chat_service: None,
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
-            agent_workspace_repair_repo: None,
+            agent_workspace_repair_repo: Some(workspace_repo.clone()),
             plan_branch_repo: Arc::new(MemoryPlanBranchRepository::new()),
             app_handle: None,
         },

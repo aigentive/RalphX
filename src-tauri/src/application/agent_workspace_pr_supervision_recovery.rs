@@ -40,8 +40,8 @@ use crate::domain::entities::{
     ProjectId,
 };
 use crate::domain::repositories::{
-    AgentConversationWorkspaceRepository, AgentRunRepository, PlanBranchRepository,
-    ProjectRepository,
+    AgentConversationWorkspaceRepository, AgentRunRepository, AgentWorkspaceRepairRepository,
+    PlanBranchRepository, ProjectRepository,
 };
 use crate::domain::services::{GithubServiceTrait, PrStatus as GithubPrStatus, PrSyncState};
 use crate::error::{AppError, AppResult};
@@ -115,6 +115,9 @@ pub(crate) struct AgentWorkspacePrSupervisionRecoveryDeps {
     pub transition_service: Option<Arc<TaskTransitionService>>,
     pub chat_service: Option<Arc<dyn ChatService>>,
     pub agent_run_repo: Arc<dyn AgentRunRepository>,
+    /// Canonical durable repair authority. Production supplies the same repository owned by
+    /// `durable_recovery_state`; focused compatibility tests supply it without a full state.
+    pub agent_workspace_repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
     pub app_handle: Option<AppHandle>,
     pub pr_fix_review_publish_resumer: Option<Arc<dyn AgentWorkspacePrFixReviewPublishResumer>>,
     /// Production recovery reuses AppState so one canonical durable repair reconciler owns
@@ -140,6 +143,7 @@ pub(crate) fn build_agent_workspace_pr_supervision_recovery_deps(
         transition_service,
         chat_service,
         agent_run_repo: Arc::clone(&state.agent_run_repo),
+        agent_workspace_repair_repo: Arc::clone(&state.agent_workspace_repair_repo),
         app_handle,
         pr_fix_review_publish_resumer,
         durable_recovery_state: Some(Arc::new(state.clone())),
@@ -283,13 +287,7 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
             let (recovered_workspace, repair_outcome) =
                 recover_stale_publish_repair_for_workspace_with_project_repo_outcome(
                     Arc::clone(&deps.workspace_repo),
-                    Arc::clone(
-                        &deps
-                            .durable_recovery_state
-                            .as_ref()
-                            .expect("durable recovery state checked above")
-                            .agent_workspace_repair_repo,
-                    ),
+                    Arc::clone(&deps.agent_workspace_repair_repo),
                     Arc::clone(&deps.agent_run_repo),
                     Arc::clone(&deps.project_repo),
                     workspace,
@@ -432,15 +430,7 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
                 emit_workspace_changed(deps.app_handle.as_ref(), &conversation_id);
                 let terminalized = terminalize_agent_workspace_after_pr(
                     Arc::clone(&deps.workspace_repo),
-                    deps.durable_recovery_state
-                        .as_ref()
-                        .map(|state| Arc::clone(&state.agent_workspace_repair_repo))
-                        .ok_or_else(|| {
-                            AppError::Infrastructure(
-                                "terminal workspace cleanup requires durable repair authority"
-                                    .to_string(),
-                            )
-                        })?,
+                    Arc::clone(&deps.agent_workspace_repair_repo),
                     Arc::clone(&deps.agent_run_repo),
                     Some(Arc::clone(&deps.plan_branch_repo)),
                     deps.chat_service.as_ref().map(Arc::clone),
@@ -503,14 +493,7 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
         emit_workspace_changed(deps.app_handle.as_ref(), &conversation_id);
         let terminalized = terminalize_agent_workspace_after_pr(
             Arc::clone(&deps.workspace_repo),
-            deps.durable_recovery_state
-                .as_ref()
-                .map(|state| Arc::clone(&state.agent_workspace_repair_repo))
-                .ok_or_else(|| {
-                    AppError::Infrastructure(
-                        "terminal workspace cleanup requires durable repair authority".to_string(),
-                    )
-                })?,
+            Arc::clone(&deps.agent_workspace_repair_repo),
             Arc::clone(&deps.agent_run_repo),
             Some(Arc::clone(&deps.plan_branch_repo)),
             deps.chat_service.as_ref().map(Arc::clone),

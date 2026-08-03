@@ -238,13 +238,16 @@ async fn setup_review_pr_poller_recovery_fixture(
 async fn recover_review_pr_poller_fixture(fixture: &ReviewPrPollerRecoveryFixture) {
     let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
         fixture.workspace_repo.clone();
-    recover_agent_workspace_pr_pollers(
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = fixture.workspace_repo.clone();
+    recover_agent_workspace_pr_pollers_with_notifications(
         workspace_repo,
         Arc::clone(&fixture.project_repo),
         Arc::clone(&fixture.plan_branch_repo),
         Arc::clone(&fixture.registry),
         Arc::new(MemoryAgentRunRepository::new()),
         Arc::new(MockChatService::new()),
+        None,
+        Some(repair_repo),
         Arc::new(HashSet::new()),
     )
     .await;
