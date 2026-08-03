@@ -12421,7 +12421,14 @@ pub async fn update_agent_conversation_coordination_mode(
     if conversation.coordination_mode == CoordinationMode::RxNativeTeam
         && coordination_mode != CoordinationMode::RxNativeTeam
     {
-        exit_team_before_capability_change(state.inner(), &conversation.id).await?;
+        state
+            .managed_team
+            .exit_team_before_coordination_change(
+                &crate::application::AgentTaskService::new(state.agent_task_repo.clone()),
+                &conversation.id,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
     }
 
     state
@@ -12437,36 +12444,6 @@ pub async fn update_agent_conversation_coordination_mode(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Conversation not found".to_string())?;
     agent_conversation_response_for_state(state.inner(), conversation).await
-}
-
-async fn exit_team_before_capability_change(
-    state: &AppState,
-    conversation_id: &ChatConversationId,
-) -> Result<(), String> {
-    let Some(session) = state
-        .managed_team
-        .team_repo()
-        .get_open_session_for_conversation(conversation_id)
-        .await
-        .map_err(|error| error.to_string())?
-    else {
-        return Ok(());
-    };
-    let action = match session.pending_exit_action.as_deref() {
-        Some(raw) => crate::application::managed_team::TeamExitAction::parse(raw)
-            .map_err(|error| error.to_string())?,
-        None => crate::application::managed_team::TeamExitAction::DrainAndClose,
-    };
-    state
-        .managed_team
-        .exit_team(
-            &crate::application::AgentTaskService::new(state.agent_task_repo.clone()),
-            &session.id,
-            action,
-        )
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(())
 }
 
 /// Update an existing conversation title.

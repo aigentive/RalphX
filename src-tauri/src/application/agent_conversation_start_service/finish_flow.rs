@@ -18,16 +18,21 @@ async fn abort_new_conversation_after_failure(
 async fn restore_existing_conversation_after_failure(
     state: &AppState,
     previous: &ChatConversation,
+    restore_coordination_mode: bool,
     failed_phase: &'static str,
 ) {
     let mode_result = state
         .chat_conversation_repo
         .update_agent_mode(&previous.id, previous.agent_mode)
         .await;
-    let coordination_result = state
-        .chat_conversation_repo
-        .update_coordination_mode(&previous.id, previous.coordination_mode)
-        .await;
+    let coordination_result = if restore_coordination_mode {
+        state
+            .chat_conversation_repo
+            .update_coordination_mode(&previous.id, previous.coordination_mode)
+            .await
+    } else {
+        Ok(())
+    };
     if let Err(cleanup_error) = mode_result.and(coordination_result) {
         tracing::error!(
             conversation_id = %previous.id,
@@ -208,6 +213,7 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                 return Err(error.to_string());
             }
         }
+        let mut team_exit_committed = false;
         if let Some(previous) = persisted_before_start.as_ref() {
             if let Err(error) = self
                 .deps
@@ -226,6 +232,53 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                 return Err(error.to_string());
             }
             if let Some(coordination_mode) = requested_coordination_mode {
+                if previous.coordination_mode == CoordinationMode::RxNativeTeam
+                    && coordination_mode != CoordinationMode::RxNativeTeam
+                {
+                    match self
+                        .deps
+                        .state
+                        .managed_team
+                        .exit_team_before_coordination_change(
+                            &crate::application::AgentTaskService::new(
+                                self.deps.state.agent_task_repo.clone(),
+                            ),
+                            &conversation.id,
+                        )
+                        .await
+                    {
+                        Ok(exited) => team_exit_committed = exited,
+                        Err(error) => {
+                            let rollback_error = self
+                                .deps
+                                .state
+                                .chat_conversation_repo
+                                .update_agent_mode(&conversation.id, previous.agent_mode)
+                                .await
+                                .err();
+                            if let Some(rollback_error) = rollback_error.as_ref() {
+                                tracing::error!(
+                                    conversation_id = %conversation.id,
+                                    %rollback_error,
+                                    "Failed to restore conversation mode after Team exit failed"
+                                );
+                            }
+                            remove_new_private_workspace_after_failure(
+                                self.deps.state,
+                                &conversation.id,
+                                private_workspace_existed,
+                                "exit_team_before_coordination_mode",
+                            )
+                            .await;
+                            return match rollback_error {
+                                Some(rollback_error) => Err(format!(
+                                    "{error}; failed to restore prior conversation mode: {rollback_error}"
+                                )),
+                                None => Err(error.to_string()),
+                            };
+                        }
+                    }
+                }
                 if let Err(error) = self
                     .deps
                     .state
@@ -293,6 +346,7 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                     restore_existing_conversation_after_failure(
                         self.deps.state,
                         previous,
+                        !team_exit_committed,
                         "seed_persona_draft",
                     )
                     .await;
