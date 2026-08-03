@@ -30,11 +30,11 @@ pub use claude::{StreamEvent, StreamingSpawnResult};
 pub use codex::stream_processor::{
     extract_codex_agent_message, extract_codex_command_execution, extract_codex_error,
     extract_codex_error_message, extract_codex_file_change_snapshot, extract_codex_reasoning,
-    extract_codex_thread_id, extract_codex_tool_call_snapshot, extract_codex_usage,
-    parse_codex_event_line, CodexCommandExecution, CodexErrorMessage, CodexErrorSource,
-    CodexFileChange, CodexFileChangeSnapshot, CodexItem, CodexItemError, CodexStreamEvent,
-    CodexToolCallPhase, CodexToolCallSnapshot, CodexUsage, CodexUsagePayload, CodexUsageSnapshot,
-    CodexUsageSource,
+    extract_codex_thread_id, extract_codex_tool_call_snapshot,
+    extract_codex_turn_reasoning_tokens, extract_codex_usage, parse_codex_event_line,
+    CodexCommandExecution, CodexErrorMessage, CodexErrorSource, CodexFileChange,
+    CodexFileChangeSnapshot, CodexItem, CodexItemError, CodexStreamEvent, CodexToolCallPhase,
+    CodexToolCallSnapshot, CodexUsage, CodexUsagePayload, CodexUsageSnapshot, CodexUsageSource,
 };
 pub use codex::{
     build_codex_exec_args, build_codex_exec_resume_args, build_codex_mcp_overrides,

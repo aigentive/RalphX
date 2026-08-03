@@ -38,6 +38,8 @@ export function projectPersistedStreamingContentBlocks(
           blockIndex: message.timelineBlockIndex ?? legacyBlockIndex,
           ...(block.durationMs != null ? { durationMs: block.durationMs } : {}),
           ...(block.isSettled != null ? { isSettled: block.isSettled } : {}),
+          ...(block.estimatedTokens != null ? { estimatedTokens: block.estimatedTokens } : {}),
+          ...(block.reasoningTokens != null ? { reasoningTokens: block.reasoningTokens } : {}),
           ...(seq != null ? { seq } : {}),
         }];
       }

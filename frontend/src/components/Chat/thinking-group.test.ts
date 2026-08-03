@@ -32,8 +32,19 @@ describe("thinking group helpers", () => {
     ], false)).not.toHaveProperty("estimatedTokens");
   });
 
+  it("retains settled reasoning tokens while duration stays available for label precedence", () => {
+    expect(aggregateThinkingSegments([
+      { isSettled: true, durationMs: 1_000, reasoningTokens: 400 },
+    ], true)).toMatchObject({
+      isSettled: true,
+      totalDurationMs: 1_000,
+      reasoningTokens: 400,
+    });
+  });
+
   it("joins non-empty segments with a visible separator", () => {
     expect(joinThinkingSegmentTexts([" first ", undefined, "", "second "]))
       .toBe("first\n\n···\n\nsecond");
   });
+
 });

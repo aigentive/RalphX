@@ -240,7 +240,7 @@ describe("MessageItem - Attachment Integration", () => {
     expect(screen.getByText("The answer remains visible.")).toBeInTheDocument();
   });
 
-  it("groups adjacent persisted thinking blocks into one expandable toggle", async () => {
+  it("renders adjacent finalized thinking blocks expanded and keeps a deliberate collapse", async () => {
     const user = userEvent.setup();
     renderMessageItem(
       <MessageItem
@@ -256,9 +256,11 @@ describe("MessageItem - Attachment Integration", () => {
 
     expect(screen.getAllByTestId("thinking-group-toggle")).toHaveLength(1);
     expect(screen.getByRole("button", { name: /Agent thought for 3s · 2 steps/ })).toBeInTheDocument();
-    await user.click(screen.getByTestId("thinking-group-toggle"));
     expect(screen.getByText(/First thought/)).toBeInTheDocument();
     expect(screen.getByText(/Second thought/)).toBeInTheDocument();
+    await user.click(screen.getByTestId("thinking-group-toggle"));
+    expect(screen.queryByText(/First thought/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Second thought/)).not.toBeInTheDocument();
   });
 
   it("keeps thinking adjacent across hidden child tool calls but splits it at visible tools", () => {

@@ -98,4 +98,14 @@ describe("ThinkingWidget", () => {
 
     expect(body.scrollTop).toBe(40);
   });
+
+  it("renders exposed bold markers semantically without changing surrounding text", async () => {
+    render(<ThinkingWidget text="Consider **this path** before continuing." />);
+
+    await act(() => flushHydration());
+    expect(screen.getByText("this path").tagName).toBe("STRONG");
+    expect(screen.getByTestId("thinking-scroll-body")).toHaveTextContent(
+      "Consider this path before continuing.",
+    );
+  });
 });
