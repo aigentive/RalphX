@@ -32,7 +32,10 @@ use crate::application::agent_workspace_publish_repair_state::{
 use crate::application::agent_workspace_review::{
     resolve_review_target, AgentWorkspaceReviewPacket, AgentWorkspaceReviewTarget,
 };
-use crate::application::publish_resilience::try_acquire_agent_workspace_repair_publish_continuation_guard;
+use crate::application::publish_resilience::{
+    reconcile_open_agent_workspace_repair_push_effect,
+    try_acquire_agent_workspace_repair_publish_continuation_guard,
+};
 use crate::application::{AppState, GitService};
 use crate::domain::agents::{AgentHarnessKind, AgentProviderSettings};
 use crate::domain::entities::{
@@ -6030,4 +6033,99 @@ async fn observed_open_push_effect_is_reconciled_before_lease_reacquire() {
     .is_empty());
     drop(project_dir);
     drop(remote);
+}
+
+#[tokio::test]
+async fn open_push_effect_reconciliation_requires_its_workspace_and_project() {
+    let state = AppState::new_test();
+    let conversation_id = conversation_id(89);
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        conversation_id.clone(),
+        AgentWorkspaceRepairSource::Publish,
+        AgentWorkspaceRepairContinuation::Publish,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    attempt.phase = AgentWorkspaceRepairPhase::Continuing;
+    let mut effect = AgentWorkspaceRepairEffect::new(
+        attempt.id.clone(),
+        AgentWorkspaceRepairEffectKind::PushBranch,
+        "missing-reconciliation-context",
+        chrono::Utc::now(),
+    );
+    effect.status = AgentWorkspaceRepairEffectStatus::InFlight;
+    effect.intended_head_oid = Some("intended-head".to_string());
+    effect.expected_remote_absent = true;
+
+    assert!(matches!(
+        reconcile_open_agent_workspace_repair_push_effect(&state, &attempt, effect.clone()).await,
+        Err(crate::error::AppError::NotFound(_))
+    ));
+
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(needs_agent_workspace(conversation_id.clone()))
+        .await
+        .expect("seed reconciliation workspace without its project");
+    assert!(state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("reload reconciliation workspace")
+        .is_some());
+    assert!(matches!(
+        reconcile_open_agent_workspace_repair_push_effect(&state, &attempt, effect).await,
+        Err(crate::error::AppError::NotFound(_))
+    ));
+    assert!(state
+        .agent_workspace_repair_repo
+        .get_open_repair_effect(&attempt.id)
+        .await
+        .expect("verify missing reconciliation context did not create an effect")
+        .is_none());
+}
+
+#[tokio::test]
+async fn open_push_effect_reconciliation_requires_persisted_canonical_identity() {
+    let (state, conversation_id, _worktree_parent, _project_dir, identity, _owner, _epoch) =
+        seed_publish_continuation_with_lease(90).await;
+    let mut attempt = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load identity reconciliation continuation")
+        .expect("identity reconciliation continuation exists");
+    attempt.phase = AgentWorkspaceRepairPhase::Continuing;
+    let mut effect = AgentWorkspaceRepairEffect::new(
+        attempt.id.clone(),
+        AgentWorkspaceRepairEffectKind::PushBranch,
+        "missing-reconciliation-identity",
+        chrono::Utc::now(),
+    );
+    effect.status = AgentWorkspaceRepairEffectStatus::InFlight;
+    effect.intended_head_oid = Some("intended-head".to_string());
+    effect.expected_remote_absent = true;
+
+    attempt.git_common_dir = None;
+    assert!(matches!(
+        reconcile_open_agent_workspace_repair_push_effect(&state, &attempt, effect.clone()).await,
+        Err(crate::error::AppError::Conflict(_))
+    ));
+
+    attempt.git_common_dir = Some(identity.git_common_dir().to_string_lossy().into_owned());
+    attempt.target_ref = None;
+    assert!(matches!(
+        reconcile_open_agent_workspace_repair_push_effect(&state, &attempt, effect).await,
+        Err(crate::error::AppError::Conflict(_))
+    ));
+    assert!(state
+        .agent_workspace_repair_repo
+        .get_open_repair_effect(&attempt.id)
+        .await
+        .expect("verify invalid reconciliation identity did not create an effect")
+        .is_none());
 }
