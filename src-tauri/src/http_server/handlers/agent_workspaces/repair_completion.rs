@@ -28,6 +28,7 @@ use crate::domain::entities::{
     AgentWorkspaceRepairCompletionAuthority, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
 };
 use crate::domain::services::github_service::PrHealth;
+use crate::domain::services::github_service::WorkflowRunLifecycle;
 
 #[cfg(feature = "test-utils")]
 mod reservation_test_hook {
@@ -741,11 +742,40 @@ async fn request_transient_ci_rerun(
         )
         .await;
     }
+    let lifecycle = match github
+        .fetch_workflow_run_status(&target.working_dir, workflow_run_id)
+        .await
+    {
+        Ok(lifecycle) => lifecycle,
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = %conversation_id,
+                run_id = workflow_run_id,
+                error = %error,
+                "Could not determine workflow run lifecycle before transient CI rerun"
+            );
+            None
+        }
+    };
+    let (pending_run_id, reservation_summary) = match lifecycle {
+        Some(WorkflowRunLifecycle::Concluded) => (
+            None,
+            "Transient CI failure accepted; RalphX is rerunning failed GitHub Actions jobs."
+                .to_string(),
+        ),
+        Some(WorkflowRunLifecycle::Active) | None => (
+            Some(workflow_run_id),
+            format!(
+                "Transient CI failure accepted; RalphX will rerun the failed GitHub Actions jobs once workflow run {workflow_run_id} finishes."
+            ),
+        ),
+    };
     let reserved = match reserve_agent_workspace_ci_rerun(
         Arc::clone(&state.app_state.agent_workspace_repair_repo),
         attempt,
         &fingerprint,
-        "Transient CI failure accepted; RalphX is rerunning failed GitHub Actions jobs.",
+        pending_run_id,
+        &reservation_summary,
         workspace.pr_auto_merge_current,
     )
     .await
@@ -757,6 +787,12 @@ async fn request_transient_ci_rerun(
             return stale_completion_transition_response(state, conversation_id, run_id).await
         }
     };
+    if pending_run_id.is_some() {
+        return Ok(completion_response(
+            "rerun_pending",
+            "RalphX accepted the transient CI classification. GitHub only allows rerunning failed jobs after the workflow run finishes, so RalphX parked the rerun and will issue it automatically when the run concludes.",
+        ));
+    }
     if let Err(error) = github
         .rerun_failed_workflow(&target.working_dir, workflow_run_id)
         .await

@@ -1967,6 +1967,69 @@ cat >/dev/null
 #[cfg(unix)]
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
+async fn deferred_ci_rerun_attempt_is_not_redriven_by_recovery() {
+    let _environment_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("lock test environment");
+    let _spawn_permission = TestEnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let (state, conversation_id, _worktree_parent, _project_dir) = seed_orphaned_repair_dispatch(
+        122,
+        r#"#!/bin/sh
+cat >/dev/null
+"#,
+    )
+    .await;
+    let ready = park_repair_attempt_ready_after(
+        &state,
+        &conversation_id,
+        AgentWorkspaceRepairPhase::Requested,
+        61,
+    )
+    .await;
+    let mut deferred = ready.clone();
+    deferred.ci_rerun_pending_run_id = Some(123);
+    deferred.ci_rerun_deferred_since = Some(chrono::Utc::now());
+    deferred.updated_at += chrono::Duration::microseconds(1);
+    assert!(matches!(
+        state
+            .agent_workspace_repair_repo
+            .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+                attempt: deferred,
+                expected_phase: AgentWorkspaceRepairPhase::Ready,
+                expected_updated_at: ready.updated_at,
+                next_phase: AgentWorkspaceRepairPhase::Ready,
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("persist deferred rerun"),
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_)
+    ));
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("deferred rerun recovery sweep"),
+        0
+    );
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload deferred rerun")
+        .expect("deferred rerun remains current");
+    assert_eq!(current.id, ready.id);
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Ready);
+    assert_eq!(current.ci_rerun_pending_run_id, Some(123));
+    assert!(!current
+        .pending_reasons
+        .iter()
+        .any(|reason| reason.starts_with("auto_retry_ready_repair:")));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn ready_automatic_repair_busy_publish_guard_remains_re_drivable() {
     let _environment_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
         .lock()

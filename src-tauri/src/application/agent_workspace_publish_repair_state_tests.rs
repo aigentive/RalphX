@@ -8,8 +8,8 @@ use crate::application::agent_workspace_publish_repair_state::{
     abort_agent_workspace_pr_fix_review_handoff, block_agent_workspace_pr_fix_claim,
     block_agent_workspace_repair_needs_human, claim_agent_workspace_repair,
     classify_agent_workspace_repair_completion_authority, classify_agent_workspace_repair_delivery,
-    complete_agent_workspace_pr_fix_claim, complete_agent_workspace_repair_claim,
-    continue_agent_workspace_repair_at_boundary,
+    clear_agent_workspace_ci_rerun_deferral, complete_agent_workspace_pr_fix_claim,
+    complete_agent_workspace_repair_claim, continue_agent_workspace_repair_at_boundary,
     continue_agent_workspace_repair_at_boundary_with_review_starter,
     current_agent_workspace_repair_claim_for_completion, inspect_agent_workspace_repair_completion,
     reconcile_active_agent_workspace_repair,
@@ -3325,6 +3325,7 @@ async fn reserve_ci_rerun_increments_count_and_settles_to_ready() {
         Arc::clone(&repair_repo),
         attempt,
         "fp-ci-abc",
+        None,
         "rerunning failed CI jobs",
         None,
     )
@@ -3337,7 +3338,116 @@ async fn reserve_ci_rerun_increments_count_and_settles_to_ready() {
     assert_eq!(rerun.phase, AgentWorkspaceRepairPhase::Ready);
     assert_eq!(rerun.ci_rerun_count, 1);
     assert_eq!(rerun.ci_rerun_fingerprint.as_deref(), Some("fp-ci-abc"));
+    assert!(rerun.ci_rerun_pending_run_id.is_none());
+    assert!(rerun.ci_rerun_deferred_since.is_none());
     assert!(rerun.blocker.is_none());
+}
+
+#[tokio::test]
+async fn reserve_ci_rerun_records_pending_run_when_deferred() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let repair_repo = Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>;
+    let conversation_id = ChatConversationId::from_string("ci-rerun-deferred");
+    workspace_repo
+        .create_or_update(repair_workspace(conversation_id.clone()))
+        .await
+        .expect("persist workspace");
+    let attempt = start_or_join_agent_workspace_repair(
+        Arc::clone(&repair_repo),
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        repair_start_request(
+            conversation_id,
+            AgentWorkspaceRepairSource::Publish,
+            AgentWorkspaceRepairContinuation::Publish,
+            "deferred ci rerun",
+        ),
+    )
+    .await
+    .expect("start repair")
+    .into_attempt();
+
+    let AgentWorkspaceRepairTransitionOutcome::Applied(rerun) = reserve_agent_workspace_ci_rerun(
+        Arc::clone(&repair_repo),
+        attempt,
+        "fp-ci-deferred",
+        Some(42),
+        "waiting for CI run",
+        None,
+    )
+    .await
+    .expect("reserve deferred ci rerun") else {
+        panic!("deferred ci rerun reservation must apply");
+    };
+
+    assert_eq!(rerun.ci_rerun_count, 1);
+    assert_eq!(rerun.ci_rerun_pending_run_id, Some(42));
+    assert!(rerun.ci_rerun_deferred_since.is_some());
+}
+
+#[tokio::test]
+async fn clear_ci_rerun_deferral_applies_once_and_preserves_fingerprint() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let repair_repo = Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>;
+    let conversation_id = ChatConversationId::from_string("ci-rerun-clear");
+    workspace_repo
+        .create_or_update(repair_workspace(conversation_id.clone()))
+        .await
+        .expect("persist workspace");
+    let attempt = start_or_join_agent_workspace_repair(
+        Arc::clone(&repair_repo),
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        repair_start_request(
+            conversation_id,
+            AgentWorkspaceRepairSource::Publish,
+            AgentWorkspaceRepairContinuation::Publish,
+            "clear deferred ci rerun",
+        ),
+    )
+    .await
+    .expect("start repair")
+    .into_attempt();
+    let AgentWorkspaceRepairTransitionOutcome::Applied(deferred) =
+        reserve_agent_workspace_ci_rerun(
+            Arc::clone(&repair_repo),
+            attempt,
+            "fp-ci-clear",
+            Some(42),
+            "waiting for CI run",
+            None,
+        )
+        .await
+        .expect("reserve deferred ci rerun")
+    else {
+        panic!("deferred ci rerun reservation must apply");
+    };
+
+    let cleared = clear_agent_workspace_ci_rerun_deferral(
+        Arc::clone(&repair_repo),
+        deferred.clone(),
+        "rerunning failed CI jobs",
+        None,
+    )
+    .await
+    .expect("clear deferred ci rerun");
+    let AgentWorkspaceRepairTransitionOutcome::Applied(cleared) = cleared else {
+        panic!("first deferred ci rerun clear must apply");
+    };
+    assert_eq!(cleared.ci_rerun_fingerprint.as_deref(), Some("fp-ci-clear"));
+    assert!(cleared.ci_rerun_pending_run_id.is_none());
+    assert!(cleared.ci_rerun_deferred_since.is_none());
+
+    let stale = clear_agent_workspace_ci_rerun_deferral(
+        repair_repo,
+        deferred,
+        "rerunning failed CI jobs",
+        None,
+    )
+    .await
+    .expect("second clear returns stale");
+    assert!(matches!(
+        stale,
+        AgentWorkspaceRepairTransitionOutcome::Stale(_)
+    ));
 }
 
 #[tokio::test]
@@ -3368,6 +3478,7 @@ async fn reserve_ci_rerun_rejects_after_max_retries() {
         Arc::clone(&repair_repo),
         attempt,
         "fp-ci-exhausted",
+        None,
         "should reject",
         None,
     )

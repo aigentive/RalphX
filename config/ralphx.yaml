@@ -249,6 +249,8 @@ git:
   workspace_pr_annotations_check_run_fetch_limit: 10 # Env: RALPHX_GIT_WORKSPACE_PR_ANNOTATIONS_CHECK_RUN_FETCH_LIMIT
   # agent_workspace_external_pr_reconciliation.rs — TTL for external PR lookup attempts on unlinked agent workspaces
   agent_workspace_pr_reconciliation_cache_ttl_ms: 30000 # Env: RALPHX_GIT_AGENT_WORKSPACE_PR_RECONCILIATION_CACHE_TTL_MS
+  # pr_merge_poller.rs — maximum wait for a workflow run to conclude before a deferred rerun blocks
+  agent_workspace_ci_rerun_deferral_deadline_secs: 3600 # Env: RALPHX_GIT_AGENT_WORKSPACE_CI_RERUN_DEFERRAL_DEADLINE_SECS
   # pr_startup_recovery.rs — periodic retry cadence for terminal PR local branch/worktree cleanup
   terminal_pr_local_cleanup_interval_secs: 900 # Env: RALPHX_GIT_TERMINAL_PR_LOCAL_CLEANUP_INTERVAL_SECS
   # pr_startup_recovery.rs — retry window for retryable terminal PR cleanup markers

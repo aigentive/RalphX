@@ -177,6 +177,10 @@ pub struct AgentWorkspaceRepairAttempt {
     pub ci_rerun_count: u32,
     /// PR-health fingerprint for the currently requested rerun; never model supplied.
     pub ci_rerun_fingerprint: Option<String>,
+    /// GitHub Actions run whose rerun is parked until the run concludes; never model supplied.
+    pub ci_rerun_pending_run_id: Option<i64>,
+    /// When the pending rerun was parked, used to bound the wait for a conclusion.
+    pub ci_rerun_deferred_since: Option<DateTime<Utc>>,
     /// Exact PR head observed by the poller before dispatching a PR autofix run.
     pub pr_autofix_dispatch_head_commit: Option<String>,
     /// Stable failing PR-health identity observed by the poller before dispatching a PR autofix.
@@ -227,6 +231,8 @@ impl AgentWorkspaceRepairAttempt {
             dispatch_count: 0,
             ci_rerun_count: 0,
             ci_rerun_fingerprint: None,
+            ci_rerun_pending_run_id: None,
+            ci_rerun_deferred_since: None,
             pr_autofix_dispatch_head_commit: None,
             pr_autofix_health_fingerprint: None,
             next_dispatch_at: None,

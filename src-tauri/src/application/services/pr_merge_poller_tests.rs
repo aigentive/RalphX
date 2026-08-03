@@ -300,6 +300,38 @@ async fn reserve_pending_ci_rerun_attempt(
     }
 }
 
+async fn defer_pending_ci_rerun_attempt(
+    repair_repo: &dyn AgentWorkspaceRepairRepository,
+    conversation_id: &ChatConversationId,
+    fingerprint: &str,
+    pending_run_id: i64,
+) -> AgentWorkspaceRepairAttempt {
+    use crate::domain::repositories::{
+        AgentWorkspaceRepairAttemptTransition, AgentWorkspaceRepairAttemptTransitionOutcome,
+    };
+
+    let current = reserve_pending_ci_rerun_attempt(repair_repo, conversation_id, fingerprint).await;
+    let mut deferred = current.clone();
+    deferred.ci_rerun_pending_run_id = Some(pending_run_id);
+    deferred.ci_rerun_deferred_since = Some(Utc::now());
+    deferred.updated_at += chrono::Duration::microseconds(1);
+    match repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: deferred,
+            expected_phase: AgentWorkspaceRepairPhase::Ready,
+            expected_updated_at: current.updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Ready,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("deferred rerun reservation should persist")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("expected deferred rerun reservation, got {outcome:?}"),
+    }
+}
+
 async fn reserve_pre_existing_on_base_attempt(
     repair_repo: &dyn AgentWorkspaceRepairRepository,
     conversation_id: &ChatConversationId,
@@ -5867,7 +5899,8 @@ async fn live_pr_autofix_suppresses_same_fingerprint_while_ci_rerun_is_pending()
     let fingerprint =
         "pending-head:Rust tests:failure:https://github.com/owner/repo/actions/runs/901";
     let pending =
-        reserve_pending_ci_rerun_attempt(repair_repo.as_ref(), &conversation_id, fingerprint).await;
+        defer_pending_ci_rerun_attempt(repair_repo.as_ref(), &conversation_id, fingerprint, 901)
+            .await;
     let mut health = open_pr_health("pending-head");
     health.checks.push(PrHealthCheck {
         name: "Rust tests".to_string(),
@@ -5876,29 +5909,34 @@ async fn live_pr_autofix_suppresses_same_fingerprint_while_ci_rerun_is_pending()
         details_url: Some("https://github.com/owner/repo/actions/runs/901".to_string()),
     });
     let github = Arc::new(MockGithubService::new());
-    github.state().fetch_pr_health_result = Some(Ok(health));
     let chat = Arc::new(MockChatService::with_agent_run_repo(Arc::clone(
         &agent_run_repo,
     )));
 
-    let routed = super::route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
-        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
-        worktree.path(),
-        101,
-        &conversation_id,
-        workspace_repo,
-        Some(agent_run_repo),
-        Some(Arc::clone(&repair_repo)),
-        Some(branch_update_repo),
-        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
-    )
-    .await
-    .expect("same pending CI fingerprint should be handled without an error");
+    for _ in 0..3 {
+        github.state().fetch_pr_health_result = Some(Ok(health.clone()));
+        github.state().fetch_workflow_run_status_result = Some(Ok(Some(
+            crate::domain::services::github_service::WorkflowRunLifecycle::Active,
+        )));
+        let routed = super::route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
+            Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+            worktree.path(),
+            101,
+            &conversation_id,
+            workspace_repo.clone(),
+            Some(Arc::clone(&agent_run_repo)),
+            Some(Arc::clone(&repair_repo)),
+            Some(Arc::clone(&branch_update_repo)),
+            chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        )
+        .await
+        .expect("same pending CI fingerprint should be handled without an error");
 
-    assert!(
-        !routed,
-        "pending rerun must suppress a duplicate autofix dispatch"
-    );
+        assert!(
+            !routed,
+            "pending rerun must suppress a duplicate autofix dispatch"
+        );
+    }
     assert!(chat.get_sent_messages().await.is_empty());
     let current = repair_repo
         .get_current_repair_attempt(&conversation_id)
@@ -5908,6 +5946,247 @@ async fn live_pr_autofix_suppresses_same_fingerprint_while_ci_rerun_is_pending()
     assert_eq!(current.id, pending.id);
     assert_eq!(current.phase, AgentWorkspaceRepairPhase::Ready);
     assert_eq!(current.ci_rerun_fingerprint.as_deref(), Some(fingerprint));
+    assert_eq!(current.ci_rerun_pending_run_id, Some(901));
+    assert_eq!(github.state().fetch_workflow_run_status_calls, 3);
+    assert_eq!(github.state().rerun_failed_workflow_calls, 0);
+}
+
+#[tokio::test]
+async fn deferred_ci_rerun_fires_exactly_once_after_run_concludes() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let mut workspace = supervised_workspace(
+        "deferred-rerun-success",
+        "project-deferred-rerun-success",
+        worktree.path(),
+    );
+    init_repair_dispatch_repo(worktree.path(), &workspace.branch_name);
+    workspace.base_commit = Some("base-deferred-rerun-success".to_string());
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
+    let branch_update_repo: Arc<dyn BranchUpdateRepository> =
+        Arc::new(MemoryBranchUpdateRepository::new());
+    let agent_run_repo = seeded_latest_pr_fixer_run_repo(&conversation_id).await;
+    let fingerprint =
+        "deferred-head:Rust tests:failure:https://github.com/owner/repo/actions/runs/906";
+    let pending =
+        defer_pending_ci_rerun_attempt(repair_repo.as_ref(), &conversation_id, fingerprint, 906)
+            .await;
+    let mut health = open_pr_health("deferred-head");
+    health.checks.push(PrHealthCheck {
+        name: "Rust tests".to_string(),
+        status: Some("completed".to_string()),
+        conclusion: Some("failure".to_string()),
+        details_url: Some("https://github.com/owner/repo/actions/runs/906".to_string()),
+    });
+    let github = Arc::new(MockGithubService::new());
+    let chat = Arc::new(MockChatService::with_agent_run_repo(Arc::clone(
+        &agent_run_repo,
+    )));
+
+    for tick in 0..2 {
+        github.state().fetch_pr_health_result = Some(Ok(health.clone()));
+        if tick == 0 {
+            github.state().fetch_workflow_run_status_result = Some(Ok(Some(
+                crate::domain::services::github_service::WorkflowRunLifecycle::Concluded,
+            )));
+        }
+        let routed = super::route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
+            Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+            worktree.path(),
+            101,
+            &conversation_id,
+            workspace_repo.clone(),
+            Some(Arc::clone(&agent_run_repo)),
+            Some(Arc::clone(&repair_repo)),
+            Some(Arc::clone(&branch_update_repo)),
+            chat.clone(),
+        )
+        .await
+        .expect("deferred rerun poll tick should complete");
+        assert!(!routed);
+    }
+
+    assert_eq!(github.state().fetch_workflow_run_status_calls, 1);
+    assert_eq!(github.state().rerun_failed_workflow_calls, 1);
+    assert_eq!(github.state().last_rerun_failed_workflow_id, Some(906));
+    let current = repair_repo
+        .get_repair_attempt(&pending.id)
+        .await
+        .expect("repair attempt should load")
+        .expect("repair attempt should remain durable");
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Ready);
+    assert_eq!(current.ci_rerun_pending_run_id, None);
+    assert_eq!(current.ci_rerun_fingerprint.as_deref(), Some(fingerprint));
+}
+
+#[tokio::test]
+async fn deferred_ci_rerun_failure_after_clear_blocks_without_a_second_attempt() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let mut workspace = supervised_workspace(
+        "deferred-rerun-concluded",
+        "project-deferred-rerun-concluded",
+        worktree.path(),
+    );
+    init_repair_dispatch_repo(worktree.path(), &workspace.branch_name);
+    workspace.base_commit = Some("base-deferred-rerun-concluded".to_string());
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
+    let branch_update_repo: Arc<dyn BranchUpdateRepository> =
+        Arc::new(MemoryBranchUpdateRepository::new());
+    let agent_run_repo = seeded_latest_pr_fixer_run_repo(&conversation_id).await;
+    let fingerprint =
+        "deferred-head:Rust tests:failure:https://github.com/owner/repo/actions/runs/904";
+    let pending =
+        defer_pending_ci_rerun_attempt(repair_repo.as_ref(), &conversation_id, fingerprint, 904)
+            .await;
+    let mut health = open_pr_health("deferred-head");
+    health.checks.push(PrHealthCheck {
+        name: "Rust tests".to_string(),
+        status: Some("completed".to_string()),
+        conclusion: Some("failure".to_string()),
+        details_url: Some("https://github.com/owner/repo/actions/runs/904".to_string()),
+    });
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    github.state().fetch_workflow_run_status_result = Some(Ok(Some(
+        crate::domain::services::github_service::WorkflowRunLifecycle::Concluded,
+    )));
+    github.state().rerun_failed_workflow_result = Some(Err(AppError::Infrastructure(
+        "gh run rerun exited 1".to_string(),
+    )));
+    let chat = Arc::new(MockChatService::with_agent_run_repo(Arc::clone(
+        &agent_run_repo,
+    )));
+
+    for _ in 0..2 {
+        let routed = super::route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
+            Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+            worktree.path(),
+            101,
+            &conversation_id,
+            workspace_repo.clone(),
+            Some(Arc::clone(&agent_run_repo)),
+            Some(Arc::clone(&repair_repo)),
+            Some(Arc::clone(&branch_update_repo)),
+            chat.clone(),
+        )
+        .await
+        .expect("deferred rerun poll tick should complete");
+        assert!(!routed);
+    }
+
+    assert_eq!(github.state().rerun_failed_workflow_calls, 1);
+    let blocked = repair_repo
+        .get_repair_attempt(&pending.id)
+        .await
+        .expect("repair attempt should load")
+        .expect("repair attempt should remain durable");
+    assert_eq!(blocked.phase, AgentWorkspaceRepairPhase::Blocked);
+    assert_eq!(blocked.ci_rerun_pending_run_id, None);
+    assert_eq!(blocked.ci_rerun_fingerprint.as_deref(), Some(fingerprint));
+    assert!(blocked
+        .blocker
+        .as_deref()
+        .is_some_and(|blocker| blocker.contains("gh run rerun exited 1")));
+}
+
+#[tokio::test]
+async fn deferred_ci_rerun_blocks_after_its_deadline() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let mut workspace = supervised_workspace(
+        "deferred-rerun-deadline",
+        "project-deferred-rerun-deadline",
+        worktree.path(),
+    );
+    init_repair_dispatch_repo(worktree.path(), &workspace.branch_name);
+    workspace.base_commit = Some("base-deferred-rerun-deadline".to_string());
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
+    let branch_update_repo: Arc<dyn BranchUpdateRepository> =
+        Arc::new(MemoryBranchUpdateRepository::new());
+    let agent_run_repo = seeded_latest_pr_fixer_run_repo(&conversation_id).await;
+    let fingerprint =
+        "deadline-head:Rust tests:failure:https://github.com/owner/repo/actions/runs/905";
+    let pending =
+        defer_pending_ci_rerun_attempt(repair_repo.as_ref(), &conversation_id, fingerprint, 905)
+            .await;
+    let mut expired = pending.clone();
+    expired.ci_rerun_deferred_since = Some(Utc::now() - chrono::Duration::seconds(3_601));
+    expired.updated_at += chrono::Duration::microseconds(1);
+    use crate::domain::repositories::{
+        AgentWorkspaceRepairAttemptTransition, AgentWorkspaceRepairAttemptTransitionOutcome,
+    };
+    assert!(matches!(
+        repair_repo
+            .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+                attempt: expired,
+                expected_phase: AgentWorkspaceRepairPhase::Ready,
+                expected_updated_at: pending.updated_at,
+                next_phase: AgentWorkspaceRepairPhase::Ready,
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("expired deferral should persist"),
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_)
+    ));
+    let mut health = open_pr_health("deadline-head");
+    health.checks.push(PrHealthCheck {
+        name: "Rust tests".to_string(),
+        status: Some("completed".to_string()),
+        conclusion: Some("failure".to_string()),
+        details_url: Some("https://github.com/owner/repo/actions/runs/905".to_string()),
+    });
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    github.state().fetch_workflow_run_status_result = Some(Ok(Some(
+        crate::domain::services::github_service::WorkflowRunLifecycle::Active,
+    )));
+    let chat = Arc::new(MockChatService::with_agent_run_repo(Arc::clone(
+        &agent_run_repo,
+    )));
+
+    let routed = super::route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
+        github.clone() as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        workspace_repo,
+        Some(agent_run_repo),
+        Some(Arc::clone(&repair_repo)),
+        Some(branch_update_repo),
+        chat,
+    )
+    .await
+    .expect("expired deferred rerun should be handled");
+
+    assert!(!routed);
+    assert_eq!(github.state().rerun_failed_workflow_calls, 0);
+    let blocked = repair_repo
+        .get_repair_attempt(&pending.id)
+        .await
+        .expect("repair attempt should load")
+        .expect("repair attempt should remain durable");
+    assert_eq!(blocked.phase, AgentWorkspaceRepairPhase::Blocked);
+    assert!(blocked
+        .blocker
+        .as_deref()
+        .is_some_and(|blocker| blocker.contains("905")));
 }
 
 #[tokio::test]

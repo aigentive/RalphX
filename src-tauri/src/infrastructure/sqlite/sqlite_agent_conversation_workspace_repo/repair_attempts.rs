@@ -72,6 +72,10 @@ fn row_to_repair_attempt(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentWorks
         ci_rerun_count: u32::try_from(row.get::<_, i64>("ci_rerun_count")?)
             .map_err(|error| invalid_repair_row_value(16, rusqlite::types::Type::Integer, error))?,
         ci_rerun_fingerprint: row.get("ci_rerun_fingerprint")?,
+        ci_rerun_pending_run_id: row.get("ci_rerun_pending_run_id")?,
+        ci_rerun_deferred_since: row
+            .get::<_, Option<String>>("ci_rerun_deferred_since")?
+            .map(|value| parse_datetime(&value)),
         pr_autofix_dispatch_head_commit: row.get("pr_autofix_dispatch_head_commit")?,
         pr_autofix_health_fingerprint: row.get("pr_autofix_health_fingerprint")?,
         repair_head_commit: row.get("repair_head_commit")?,
@@ -196,6 +200,7 @@ fn write_repair_attempt(conn: &Connection, attempt: &AgentWorkspaceRepairAttempt
             reserved_agent_run_id, target_base_ref, target_base_commit, pending_reasons_json,
             review_required, auto_publish_enabled, auto_merge_desired, auto_merge_method,
             dispatch_count, next_dispatch_at, ci_rerun_count, ci_rerun_fingerprint,
+            ci_rerun_pending_run_id, ci_rerun_deferred_since,
             pr_autofix_dispatch_head_commit, pr_autofix_health_fingerprint,
             repair_head_commit, summary, blocker,
             git_common_dir, target_ref, target_identity_version, target_lease_epoch, outcome,
@@ -203,7 +208,7 @@ fn write_repair_attempt(conn: &Connection, attempt: &AgentWorkspaceRepairAttempt
          ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
             ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31,
-            ?32
+            ?32, ?33, ?34
          )",
         rusqlite::params![
             attempt.id.as_str(),
@@ -227,6 +232,10 @@ fn write_repair_attempt(conn: &Connection, attempt: &AgentWorkspaceRepairAttempt
             attempt.next_dispatch_at.map(|value| value.to_rfc3339()),
             i64::from(attempt.ci_rerun_count),
             attempt.ci_rerun_fingerprint,
+            attempt.ci_rerun_pending_run_id,
+            attempt
+                .ci_rerun_deferred_since
+                .map(|value| value.to_rfc3339()),
             attempt.pr_autofix_dispatch_head_commit,
             attempt.pr_autofix_health_fingerprint,
             attempt.repair_head_commit,
@@ -283,24 +292,26 @@ fn update_repair_attempt(
              auto_merge_method = ?13,
              dispatch_count = ?14,
              next_dispatch_at = ?15,
-             ci_rerun_count = ?16,
-             ci_rerun_fingerprint = ?17,
-             pr_autofix_dispatch_head_commit = ?18,
-             pr_autofix_health_fingerprint = ?19,
-             repair_head_commit = ?20,
-             summary = ?21,
-             blocker = ?22,
-             git_common_dir = ?23,
-             target_ref = ?24,
-             target_identity_version = ?25,
-             target_lease_epoch = ?26,
-             outcome = ?27,
-             updated_at = ?28,
-             settled_at = ?29,
-             explicit_publish_requested = ?30
+            ci_rerun_count = ?16,
+            ci_rerun_fingerprint = ?17,
+            ci_rerun_pending_run_id = ?18,
+            ci_rerun_deferred_since = ?19,
+            pr_autofix_dispatch_head_commit = ?20,
+            pr_autofix_health_fingerprint = ?21,
+            repair_head_commit = ?22,
+            summary = ?23,
+            blocker = ?24,
+            git_common_dir = ?25,
+            target_ref = ?26,
+            target_identity_version = ?27,
+            target_lease_epoch = ?28,
+            outcome = ?29,
+            updated_at = ?30,
+            settled_at = ?31,
+            explicit_publish_requested = ?32
          WHERE id = ?1 AND generation = ?2 AND phase = ?3
-           AND (?31 IS NULL OR updated_at = ?31)
-           AND (?32 = 0 OR settled_at IS NULL)",
+           AND (?33 IS NULL OR updated_at = ?33)
+           AND (?34 = 0 OR settled_at IS NULL)",
         rusqlite::params![
             attempt.id.as_str(),
             i64::try_from(attempt.generation).map_err(|_| {
@@ -322,6 +333,10 @@ fn update_repair_attempt(
             attempt.next_dispatch_at.map(|value| value.to_rfc3339()),
             i64::from(attempt.ci_rerun_count),
             attempt.ci_rerun_fingerprint,
+            attempt.ci_rerun_pending_run_id,
+            attempt
+                .ci_rerun_deferred_since
+                .map(|value| value.to_rfc3339()),
             attempt.pr_autofix_dispatch_head_commit,
             attempt.pr_autofix_health_fingerprint,
             attempt.repair_head_commit,

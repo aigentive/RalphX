@@ -583,6 +583,9 @@ mod v20260801021420_delegation_parks;
 mod v20260801211636_delegation_park_wake_claimed_at;
 mod v20260802174000_workspace_review_fixer_cycle_cap;
 mod v20260802194326_agent_workspace_repair_explicit_publish_consent;
+mod v20260803105827_agent_workspace_repair_ci_rerun_deferral;
+#[cfg(test)]
+mod v20260803105827_agent_workspace_repair_ci_rerun_deferral_tests;
 #[cfg(test)]
 mod v20260730161032_agent_workspace_pr_autofix_completion_evidence_tests;
 #[cfg(test)]
@@ -693,7 +696,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260802194326;
+pub const SCHEMA_VERSION: i64 = 20260803105827;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1903,6 +1906,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260802194326,
         name: "agent_workspace_repair_explicit_publish_consent",
         migrate: v20260802194326_agent_workspace_repair_explicit_publish_consent::migrate,
+    },
+    Migration {
+        version: 20260803105827,
+        name: "agent_workspace_repair_ci_rerun_deferral",
+        migrate: v20260803105827_agent_workspace_repair_ci_rerun_deferral::migrate,
     },
 ];
 

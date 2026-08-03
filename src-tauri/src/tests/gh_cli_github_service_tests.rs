@@ -3,7 +3,9 @@
 // These tests exercise the pure functions (parsers, sanitizer) without
 // spawning real `gh` or `git` processes.
 
-use crate::domain::services::github_service::{PrMergeStateStatus, PrMergeableState, PrStatus};
+use crate::domain::services::github_service::{
+    PrMergeStateStatus, PrMergeableState, PrStatus, WorkflowRunLifecycle,
+};
 use crate::error::AppError;
 use crate::infrastructure::services::gh_cli_github_service::{
     parse_branch_check_conclusions, parse_check_run_annotations_output, parse_check_runs_output,
@@ -13,7 +15,7 @@ use crate::infrastructure::services::gh_cli_github_service::{
     parse_pr_review_comment_annotations_output, parse_pr_review_decision_output,
     parse_pr_review_feedback_output, parse_pr_review_thread_output, parse_pr_search_output,
     parse_pr_status_output, parse_pr_sync_state_output, parse_submit_pr_review_output,
-    sanitize_stderr_line, scrub_token_urls, CheckRunAnnotationSource,
+    parse_workflow_run_lifecycle, sanitize_stderr_line, scrub_token_urls, CheckRunAnnotationSource,
 };
 
 // ── parse_pr_create_output ─────────────────────────────────────────────────
@@ -1012,6 +1014,35 @@ fn parse_branch_check_conclusions_returns_empty_for_unparseable_output() {
     assert!(parse_branch_check_conclusions("{}").is_empty());
 }
 
+// ── parse_workflow_run_lifecycle ───────────────────────────────────────────
+
+#[test]
+fn parse_workflow_run_lifecycle_recognizes_concluded_and_active_states() {
+    assert_eq!(
+        parse_workflow_run_lifecycle(r#"{"status":"completed"}"#),
+        Some(WorkflowRunLifecycle::Concluded)
+    );
+    for status in ["queued", "in_progress", "waiting", "requested", "pending"] {
+        assert_eq!(
+            parse_workflow_run_lifecycle(&format!(r#"{{"status":"{status}"}}"#)),
+            Some(WorkflowRunLifecycle::Active),
+            "{status} must not authorize a rerun"
+        );
+    }
+}
+
+#[test]
+fn parse_workflow_run_lifecycle_fails_closed_for_unknown_or_invalid_payloads() {
+    assert_eq!(parse_workflow_run_lifecycle(r#"{"status":"paused"}"#), None);
+    assert_eq!(
+        parse_workflow_run_lifecycle(r#"{"status":"  COMPLETED  "}"#),
+        Some(WorkflowRunLifecycle::Concluded)
+    );
+    assert_eq!(parse_workflow_run_lifecycle(""), None);
+    assert_eq!(parse_workflow_run_lifecycle("not json"), None);
+    assert_eq!(parse_workflow_run_lifecycle(r#"{"status":null}"#), None);
+}
+
 // ── MockGithubService round-trip ───────────────────────────────────────────
 
 mod mock_roundtrip {
@@ -1027,7 +1058,7 @@ mod mock_roundtrip {
     use crate::domain::services::github_service::{
         GithubConnectionDiagnostic, GithubConnectionState, GithubConnectionStatus,
         GithubServiceTrait, PrMergeStateStatus, PrMergeableState, PrReviewSubmissionEvent,
-        PrStatus,
+        PrStatus, WorkflowRunLifecycle,
     };
     use crate::error::AppError;
     use crate::infrastructure::services::gh_cli_github_service::{
@@ -1816,6 +1847,42 @@ mod mock_roundtrip {
             .await
             .unwrap()
             .is_none());
+        assert!(runner.gh_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn fetch_workflow_run_status_uses_gh_run_view_status() {
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![Ok(vec![
+            r#"{"status":"completed"}"#.to_string(),
+        ])]));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        let lifecycle = service
+            .fetch_workflow_run_status(Path::new("/tmp"), 42)
+            .await
+            .expect("workflow status should parse");
+
+        assert_eq!(lifecycle, Some(WorkflowRunLifecycle::Concluded));
+        assert_eq!(
+            runner.gh_calls(),
+            vec![vec!["run", "view", "42", "--json", "status"]
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>()]
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_workflow_run_status_rejects_non_positive_run_ids_before_gh() {
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(Vec::new()));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        let error = service
+            .fetch_workflow_run_status(Path::new("/tmp"), 0)
+            .await
+            .expect_err("non-positive run ids are invalid");
+
+        assert!(matches!(error, AppError::Validation(_)));
         assert!(runner.gh_calls().is_empty());
     }
 

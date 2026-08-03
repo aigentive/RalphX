@@ -668,6 +668,7 @@ pub(crate) async fn reserve_agent_workspace_ci_rerun(
     repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
     mut attempt: AgentWorkspaceRepairAttempt,
     fingerprint: &str,
+    pending_run_id: Option<i64>,
     summary: &str,
     auto_merge_current: Option<bool>,
 ) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
@@ -678,8 +679,40 @@ pub(crate) async fn reserve_agent_workspace_ci_rerun(
     let expected_updated_at = attempt.updated_at;
     attempt.ci_rerun_count += 1;
     attempt.ci_rerun_fingerprint = Some(fingerprint.to_string());
+    attempt.ci_rerun_pending_run_id = pending_run_id;
+    attempt.ci_rerun_deferred_since = pending_run_id.map(|_| Utc::now());
     // Ready is deliberately non-terminal: startup/recovery sees a settled boundary, while the
     // poller owns observation of the next CI conclusion rather than replaying this agent run.
+    attempt.phase = AgentWorkspaceRepairPhase::Ready;
+    attempt.summary = Some(summary.to_string());
+    attempt.blocker = None;
+    attempt.updated_at = next_transition_at(Some(expected_updated_at));
+    let projection = repair_attempt_projection(&attempt, summary, auto_merge_current);
+    repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Ready,
+            compatibility_projection: Some(projection),
+            events: Vec::new(),
+        })
+        .await
+        .map(repair_attempt_transition_outcome)
+}
+
+/// CAS-clear a parked rerun before the poller invokes GitHub. The clear is the authority check
+/// that prevents overlapping poll ticks from issuing duplicate reruns for the same run.
+pub(crate) async fn clear_agent_workspace_ci_rerun_deferral(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    mut attempt: AgentWorkspaceRepairAttempt,
+    summary: &str,
+    auto_merge_current: Option<bool>,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    let expected_phase = attempt.phase;
+    let expected_updated_at = attempt.updated_at;
+    attempt.ci_rerun_pending_run_id = None;
+    attempt.ci_rerun_deferred_since = None;
     attempt.phase = AgentWorkspaceRepairPhase::Ready;
     attempt.summary = Some(summary.to_string());
     attempt.blocker = None;

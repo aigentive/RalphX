@@ -19,18 +19,19 @@ use crate::application::agent_conversation_workspace::{
 use crate::application::agent_workspace_pr_autofix_attempt::{
     load_pr_autofix_attempt_decision, pr_autofix_action_metadata,
 };
-#[cfg(test)]
 use crate::application::agent_workspace_publish_repair_state::{
-    claim_agent_workspace_repair, repair_run_event_classification,
-    settle_agent_workspace_repair_failure, AgentWorkspaceRepairClaim,
-};
-use crate::application::agent_workspace_publish_repair_state::{
-    classify_agent_workspace_repair_delivery, reserve_agent_workspace_repair_dispatch,
+    block_agent_workspace_repair_completion, classify_agent_workspace_repair_delivery,
+    clear_agent_workspace_ci_rerun_deferral, reserve_agent_workspace_repair_dispatch,
     settle_agent_workspace_repair_dispatch_outcome, start_or_join_agent_workspace_repair,
     start_or_join_agent_workspace_repair_without_projection,
     validate_agent_workspace_repair_target_lease, AgentWorkspaceRepairDispatchOutcome,
     AgentWorkspaceRepairDispatchSettlement, AgentWorkspaceRepairStartOutcome,
-    AgentWorkspaceRepairStartRequest,
+    AgentWorkspaceRepairStartRequest, AgentWorkspaceRepairTransitionOutcome,
+};
+#[cfg(test)]
+use crate::application::agent_workspace_publish_repair_state::{
+    claim_agent_workspace_repair, repair_run_event_classification,
+    settle_agent_workspace_repair_failure, AgentWorkspaceRepairClaim,
 };
 use crate::application::agent_workspace_terminal_cleanup::{
     settle_review_pr_terminal_observation, terminalize_agent_workspace_after_pr,
@@ -64,13 +65,14 @@ use crate::domain::repositories::{
 };
 use crate::domain::services::github_service::{
     PrHealth, PrHealthCheck, PrMergeStateStatus, PrMergeableState, PrReviewCommentFeedback,
-    PrReviewFeedback,
+    PrReviewFeedback, WorkflowRunLifecycle,
 };
 use crate::domain::services::{GithubServiceTrait, PrStatus};
 use crate::error::AppError;
 use crate::infrastructure::agents::claude::agent_names::{
     AGENT_WORKSPACE_PR_FIXER, AGENT_WORKSPACE_REPAIR,
 };
+use crate::infrastructure::agents::claude::git_runtime_config;
 
 #[cfg(test)]
 const AGENT_WORKSPACE_REPAIR_REQUESTED_STEP: &str = "repair_requested";
@@ -2999,6 +3001,102 @@ async fn route_agent_workspace_pr_autofix_for_target(
             .await?
         {
             if attempt.phase == AgentWorkspaceRepairPhase::Ready {
+                if let Some(pending_run_id) = attempt.ci_rerun_pending_run_id {
+                    match github
+                        .fetch_workflow_run_status(working_dir, pending_run_id)
+                        .await
+                    {
+                        Ok(Some(WorkflowRunLifecycle::Concluded)) => {
+                            match clear_agent_workspace_ci_rerun_deferral(
+                                Arc::clone(repair_repo),
+                                attempt.clone(),
+                                "Workflow run concluded; RalphX is rerunning the failed GitHub Actions jobs.",
+                                workspace.pr_auto_merge_current,
+                            )
+                            .await?
+                            {
+                                AgentWorkspaceRepairTransitionOutcome::Applied(cleared) => {
+                                    if let Err(error) = github
+                                        .rerun_failed_workflow(working_dir, pending_run_id)
+                                        .await
+                                    {
+                                        tracing::warn!(
+                                            conversation_id = %conversation_id,
+                                            run_id = pending_run_id,
+                                            error = %error,
+                                            "Deferred GitHub Actions rerun failed after the run concluded"
+                                        );
+                                        let Some(branch_update_repo) = branch_update_repo.as_ref()
+                                        else {
+                                            return Err(AppError::Infrastructure(
+                                                "deferred CI rerun requires canonical Git target authority"
+                                                    .to_string(),
+                                            ));
+                                        };
+                                        let blocker = format!(
+                                            "GitHub Actions rerun failed after workflow run {pending_run_id} concluded: {error}"
+                                        );
+                                        let _ = block_agent_workspace_repair_completion(
+                                            Arc::clone(repair_repo),
+                                            Arc::clone(branch_update_repo),
+                                            cleared,
+                                            "Deferred GitHub Actions rerun failed.",
+                                            &blocker,
+                                            workspace.pr_auto_merge_current,
+                                        )
+                                        .await?;
+                                    }
+                                }
+                                AgentWorkspaceRepairTransitionOutcome::Stale(_)
+                                | AgentWorkspaceRepairTransitionOutcome::Missing => {}
+                            }
+                            return Ok(false);
+                        }
+                        Ok(Some(WorkflowRunLifecycle::Active)) | Ok(None) => {}
+                        Err(error) => {
+                            tracing::warn!(
+                                conversation_id = %conversation_id,
+                                run_id = pending_run_id,
+                                error = %error,
+                                "Could not determine lifecycle for deferred GitHub Actions rerun"
+                            );
+                        }
+                    }
+
+                    if attempt
+                        .ci_rerun_deferred_since
+                        .is_some_and(|deferred_since| {
+                            chrono::Utc::now() - deferred_since
+                                > chrono::Duration::seconds(
+                                    i64::try_from(
+                                        git_runtime_config()
+                                            .agent_workspace_ci_rerun_deferral_deadline_secs,
+                                    )
+                                    .unwrap_or(i64::MAX),
+                                )
+                        })
+                    {
+                        let Some(branch_update_repo) = branch_update_repo.as_ref() else {
+                            return Err(AppError::Infrastructure(
+                                "deferred CI rerun requires canonical Git target authority"
+                                    .to_string(),
+                            ));
+                        };
+                        let blocker = format!(
+                            "RalphX waited for GitHub Actions run {pending_run_id} to finish so it could rerun the failed jobs, but the run has not concluded. Check the run on GitHub."
+                        );
+                        let _ = block_agent_workspace_repair_completion(
+                            Arc::clone(repair_repo),
+                            Arc::clone(branch_update_repo),
+                            attempt,
+                            "Deferred GitHub Actions rerun timed out.",
+                            &blocker,
+                            workspace.pr_auto_merge_current,
+                        )
+                        .await?;
+                    }
+                    return Ok(false);
+                }
                 // Both hold kinds — pre-existing-on-base and unchanged-health — park a generation
                 // against an exact observed failure identity, and neither may be ended by anything
                 // other than GitHub reporting different health.
