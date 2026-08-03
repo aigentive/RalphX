@@ -60,6 +60,8 @@ pub(crate) const DEFERRED_REPAIR_WAIT_TIMEOUT_SECS: u64 = 300;
 const REPAIR_RUN_CLASSIFICATION_PREFIX: &str = "agent_fixable:run:";
 pub(crate) const AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION: u64 = 1;
 pub(crate) const MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES: u32 = 3;
+pub(crate) const CONTINUATION_RECOVERY_FAILURE_REASON_PREFIX: &str =
+    "continuation_recovery_failure:";
 /// A deliberately small cap: transient runner failures must not create an unbounded CI loop.
 pub(crate) const MAX_AGENT_WORKSPACE_CI_RERUN_RETRIES: u32 = 3;
 pub(crate) const NEEDS_HUMAN_REPAIR_REASON: &str = "pr_autofix_needs_human";
@@ -562,9 +564,7 @@ pub(crate) async fn block_agent_workspace_repair_needs_human(
 /// True while a PR autofix generation is parked against a backend-derived health fingerprint.
 /// Only the poller may end such a hold, and only after GitHub reports different health; no other
 /// retry path may consume the hold's budget or settle it on a timer.
-pub(crate) fn agent_workspace_repair_is_health_held(
-    attempt: &AgentWorkspaceRepairAttempt,
-) -> bool {
+pub(crate) fn agent_workspace_repair_is_health_held(attempt: &AgentWorkspaceRepairAttempt) -> bool {
     attempt.pending_reasons.iter().any(|reason| {
         reason == PRE_EXISTING_ON_BASE_REPAIR_REASON || reason == UNCHANGED_HEALTH_REPAIR_REASON
     })
@@ -1331,7 +1331,7 @@ pub(crate) async fn reacquire_agent_workspace_repair_target_lease_for_continuati
     attempt: AgentWorkspaceRepairAttempt,
     expected_phase: AgentWorkspaceRepairPhase,
 ) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
-    let attempt = if has_agent_workspace_repair_target_authority(&attempt) {
+    let mut attempt = if has_agent_workspace_repair_target_authority(&attempt) {
         match release_and_clear_agent_workspace_repair_target_lease(
             state.agent_workspace_repair_repo.as_ref(),
             state.branch_update_repo.as_ref(),
@@ -1399,6 +1399,12 @@ pub(crate) async fn reacquire_agent_workspace_repair_target_lease_for_continuati
             )));
         }
     };
+    // Acquiring a fresh canonical epoch is authoritative progress. Clear the old consecutive
+    // failure budget only now, so a busy/foreign target cannot reset its own escalation streak;
+    // the checkpoint below persists the reset atomically with the new fencing epoch.
+    attempt
+        .pending_reasons
+        .retain(|reason| !reason.starts_with(CONTINUATION_RECOVERY_FAILURE_REASON_PREFIX));
     match checkpoint_agent_workspace_repair_target_lease(
         state.agent_workspace_repair_repo.as_ref(),
         attempt,

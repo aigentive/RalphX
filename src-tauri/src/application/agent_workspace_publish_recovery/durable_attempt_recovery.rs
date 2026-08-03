@@ -24,7 +24,7 @@ use crate::application::agent_workspace_publish_repair_state::{
     AgentWorkspaceRepairDispatchOutcome, AgentWorkspaceRepairDispatchSettlement,
     AgentWorkspaceRepairPublishResumeOutcome, AgentWorkspaceRepairStartOutcome,
     AgentWorkspaceRepairStartRequest, AgentWorkspaceRepairTransitionOutcome,
-    ORPHANED_REPAIR_DISPATCH_RESCUE_GRACE_SECS,
+    CONTINUATION_RECOVERY_FAILURE_REASON_PREFIX, ORPHANED_REPAIR_DISPATCH_RESCUE_GRACE_SECS,
 };
 use crate::application::chat_service::{ChatService, SendMessageOptions, SendQueuePolicy};
 use crate::application::{AppState, GitService};
@@ -62,7 +62,6 @@ pub(crate) const AUTO_RETRY_READY_REPAIR_REASON_PREFIX: &str = "auto_retry_ready
 const AUTO_RETRY_READY_REPAIR_BASE_DELAY_SECS: i64 = 60;
 const AUTO_RETRY_READY_REPAIR_MAX_DELAY_SECS: i64 = 15 * 60;
 const MAX_AUTO_RETRY_READY_REPAIR_STREAK: u32 = 3;
-const CONTINUATION_RECOVERY_FAILURE_REASON_PREFIX: &str = "continuation_recovery_failure:";
 const MAX_CONTINUATION_RECOVERY_FAILURE_STREAK: u32 = 3;
 
 pub(crate) async fn recover_stale_publish_repair_for_workspace_in_state_result(
@@ -1360,7 +1359,7 @@ async fn record_continuation_recovery_failure(
     }
     if next_streak >= MAX_CONTINUATION_RECOVERY_FAILURE_STREAK {
         let blocker = format!(
-            "Workspace repair continuation could not restore its canonical Git target lease after {next_streak} recovery attempts ({error}). Retry the blocked operation."
+            "Workspace repair continuation repeatedly failed reconciliation after {next_streak} recovery attempts: {error}. Retry the blocked operation."
         );
         return block_recovery_attempt(state, current, &blocker).await;
     }
