@@ -52,9 +52,11 @@ jobs:
               - '**/CLAUDE.md'
               - '.claude/rules/**'
               - 'scripts/test-rust-fast.sh'
+              - 'scripts/claude_rule_utils.py'
               - 'scripts/validate-claude-rules.py'
               - 'scripts/tests/test-ci-rust-full-integration-targets.sh'
               - 'scripts/tests/test-coverage-rust-shards.sh'
+              - 'scripts/tests/test-claude-rule-utils.py'
               - 'scripts/tests/test-claude-rules-activation.py'
               - 'scripts/build-prod-release.sh'
               - 'scripts/render-homebrew-cask.sh'
@@ -187,6 +189,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          python3 scripts/tests/test-claude-rule-utils.py
           python3 scripts/validate-claude-rules.py
           python3 scripts/tests/test-claude-rules-activation.py
 

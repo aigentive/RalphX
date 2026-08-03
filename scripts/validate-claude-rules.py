@@ -3,25 +3,24 @@
 
 from __future__ import annotations
 
-import ast
-import os
 import re
 import subprocess
 import sys
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path
+
+from claude_rule_utils import (
+    ALWAYS_ON_ALLOWLIST,
+    GENERATED_PATH_EXEMPLARS,
+    matching_paths,
+    parse_paths,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
 RULES_DIR = ROOT / ".claude" / "rules"
 ROOT_CLAUDE = ROOT / "CLAUDE.md"
-ALWAYS_ON_ALLOWLIST = {"git-workflow.md"}
 ALWAYS_ON_BUDGET_BYTES = 17_000
-# Some rule scopes target process-generated, gitignored files that are absent from
-# clean CI checkouts. Keep explicit exemplars so those scopes remain validated
-# without weakening dead-glob detection for the rest of the repository.
-GENERATED_PATH_EXEMPLARS = {".artifacts/specs/example/tracker.md"}
 MARKDOWN_IMPORT_RE = re.compile(
     r"(?:^|[\s(])@[A-Za-z0-9_~./-]+\.(?:md|mdc)", re.MULTILINE
 )
@@ -34,10 +33,10 @@ class Rule:
     paths: tuple[str, ...] | None
 
 
-def git_files(*arguments: str) -> set[str]:
+def git_files(*arguments: str, root: Path = ROOT) -> set[str]:
     result = subprocess.run(
         ["git", "ls-files", *arguments],
-        cwd=ROOT,
+        cwd=root,
         check=True,
         capture_output=True,
         text=True,
@@ -45,109 +44,16 @@ def git_files(*arguments: str) -> set[str]:
     return {line for line in result.stdout.splitlines() if line}
 
 
-def repository_files() -> set[str]:
-    files = git_files("--cached", "--others", "--exclude-standard")
-    files.difference_update(git_files("--deleted"))
-    for parent, directory_names, file_names in os.walk(ROOT):
-        directory_names[:] = [
-            name
-            for name in directory_names
-            if name not in {".git", "dist", "node_modules", "target"}
-        ]
-        parent_path = Path(parent)
-        files.update(
-            (parent_path / name).relative_to(ROOT).as_posix() for name in file_names
-        )
-    files.update(GENERATED_PATH_EXEMPLARS)
+def tracked_repository_files(root: Path = ROOT) -> set[str]:
+    files = git_files("--cached", root=root)
+    files.difference_update(git_files("--deleted", root=root))
     return files
 
 
-def parse_yaml_scalar(value: str) -> str:
-    value = value.strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-        if value[0] == '"':
-            return ast.literal_eval(value)
-        return value[1:-1].replace("''", "'")
-    return value
-
-
-def parse_paths(text: str) -> tuple[str, ...] | None:
-    lines = text.splitlines()
-    if not lines or lines[0] != "---":
-        return None
-
-    try:
-        closing_index = lines.index("---", 1)
-    except ValueError:
-        return None
-
-    frontmatter = lines[1:closing_index]
-    paths_index = next(
-        (index for index, line in enumerate(frontmatter) if re.fullmatch(r"paths:\s*", line)),
-        None,
-    )
-    if paths_index is None:
-        return None
-
-    paths: list[str] = []
-    for line in frontmatter[paths_index + 1 :]:
-        match = re.fullmatch(r"\s+-\s+(.+?)\s*", line)
-        if match:
-            paths.append(parse_yaml_scalar(match.group(1)))
-            continue
-        if line and not line[0].isspace():
-            break
-
-    return tuple(paths)
-
-
-@lru_cache(maxsize=None)
-def expand_braces(pattern: str) -> tuple[str, ...]:
-    start = pattern.find("{")
-    if start == -1:
-        return (pattern,)
-    end = pattern.find("}", start + 1)
-    if end == -1:
-        return (pattern,)
-
-    alternatives = pattern[start + 1 : end].split(",")
-    return tuple(
-        expanded
-        for alternative in alternatives
-        for expanded in expand_braces(pattern[:start] + alternative + pattern[end + 1 :])
-    )
-
-
-@lru_cache(maxsize=None)
-def glob_regex(pattern: str) -> re.Pattern[str]:
-    parts: list[str] = []
-    index = 0
-    while index < len(pattern):
-        character = pattern[index]
-        if character == "*" and index + 1 < len(pattern) and pattern[index + 1] == "*":
-            index += 2
-            if index < len(pattern) and pattern[index] == "/":
-                parts.append(r"(?:.*/)?")
-                index += 1
-            else:
-                parts.append(r".*")
-            continue
-        if character == "*":
-            parts.append(r"[^/]*")
-        elif character == "?":
-            parts.append(r"[^/]")
-        else:
-            parts.append(re.escape(character))
-        index += 1
-    return re.compile("^" + "".join(parts) + "$")
-
-
-def matches(pattern: str, candidate: str) -> bool:
-    return any(glob_regex(expanded).match(candidate) for expanded in expand_braces(pattern))
-
-
-def matching_paths(pattern: str, candidates: set[str]) -> list[str]:
-    return [candidate for candidate in candidates if matches(pattern, candidate)]
+def repository_files(root: Path = ROOT) -> set[str]:
+    files = tracked_repository_files(root)
+    files.update(GENERATED_PATH_EXEMPLARS)
+    return files
 
 
 def broadest_glob(paths: tuple[str, ...] | None, candidates: set[str]) -> str:
@@ -191,7 +97,8 @@ def print_report(rules: list[Rule], candidates: set[str]) -> None:
 
 
 def main() -> None:
-    candidates = repository_files()
+    tracked_files = tracked_repository_files()
+    candidates = tracked_files | GENERATED_PATH_EXEMPLARS
     rules: list[Rule] = []
     errors: list[str] = []
 
@@ -217,7 +124,7 @@ def main() -> None:
         for pattern in paths:
             if not matching_paths(pattern, candidates):
                 errors.append(
-                    f"{relative_path}: glob matches no tracked, real, or generated path: {pattern}"
+                    f"{relative_path}: glob matches no tracked or generated path: {pattern}"
                 )
 
     for allowlisted_name in ALWAYS_ON_ALLOWLIST:
@@ -225,7 +132,7 @@ def main() -> None:
             errors.append(f"allowlisted rule is missing: .claude/rules/{allowlisted_name}")
 
     for claude_path in sorted(
-        path for path in candidates if Path(path).name == "CLAUDE.md"
+        path for path in tracked_files if Path(path).name == "CLAUDE.md"
     ):
         text = (ROOT / claude_path).read_text(encoding="utf-8")
         if MARKDOWN_IMPORT_RE.search(text):
