@@ -27,6 +27,7 @@ impl Drop for PublishOperationScopeGuard {
 }
 
 impl PublishOperationScopeGuard {
+    #[cfg(test)]
     pub(crate) fn nested(&self) -> Self {
         let scope_key = self.scope_key();
         publish_operation_scopes()
@@ -76,6 +77,7 @@ pub(crate) fn publish_operation_lease_is_live(
             .is_some_and(|count| *count > 0)
 }
 
+#[cfg(test)]
 pub(crate) fn spawn_publish_operation_lease_heartbeat(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     conversation_id: ChatConversationId,

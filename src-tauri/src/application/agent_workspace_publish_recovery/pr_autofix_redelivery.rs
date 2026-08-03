@@ -210,7 +210,7 @@ pub(crate) async fn evaluate_pr_autofix_successor(
         return PrAutofixSuccessorDecision::Withhold("pr_issue_resolved");
     };
     if current.pr_autofix_health_fingerprint.as_deref() == Some(issue.classification.as_str()) {
-        if held_repair_has_unpublished_head(&current, health.sync_state.head_ref_oid.as_deref()) {
+        if held_repair_has_unpublished_head(current, health.sync_state.head_ref_oid.as_deref()) {
             return PrAutofixSuccessorDecision::RedrivePublish;
         }
         return PrAutofixSuccessorDecision::HoldUnchanged;
