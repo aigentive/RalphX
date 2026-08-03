@@ -998,6 +998,7 @@ async fn redrive_blocked_repair_publish(
         AgentWorkspaceRepairPhase::Blocked,
         summary,
         false,
+        PublishAuthority::VerifiedAutomation,
     )
     .await?
     {
