@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 #[cfg(unix)]
@@ -7,8 +8,8 @@ use std::os::unix::fs::PermissionsExt;
 
 use crate::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
 use crate::application::agent_workspace_publish_recovery::{
-    due_repair_dispatch_message, evaluate_pr_autofix_successor, is_blocked_and_not_auto_retryable,
-    recover_agent_workspace_repair_after_terminal_run,
+    claim_pending_redrive_delivery, due_repair_dispatch_message, evaluate_pr_autofix_successor,
+    is_blocked_and_not_auto_retryable, recover_agent_workspace_repair_after_terminal_run,
     recover_agent_workspace_repair_attempts_for_state,
     recover_stale_agent_workspace_publish_repairs,
     recover_stale_agent_workspace_publish_repairs_for_state,
@@ -19,17 +20,21 @@ use crate::application::agent_workspace_publish_recovery::{
     recover_stale_publish_repair_for_workspace_and_reload_with_review_target,
     recover_stale_publish_repair_for_workspace_in_state,
     recover_stale_publish_repair_for_workspace_with_project_repo_outcome,
-    recover_stale_transient_publish_statuses, PrAutofixSuccessorDecision,
-    StalePublishRepairRecoveryOutcome, AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX,
-    AUTO_RETRY_READY_REPAIR_REASON_PREFIX, EXHAUSTED_PUBLISH_REDRIVE_CHECKED_REASON_PREFIX,
+    recover_stale_transient_publish_statuses, recover_stale_transient_publish_statuses_for_state,
+    recover_stale_transient_publish_statuses_for_state_with_redrive_emitter,
+    settle_redrive_delivery, PrAutofixSuccessorDecision, StalePublishRepairRecoveryOutcome,
+    AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX, AUTO_RETRY_READY_REPAIR_REASON_PREFIX,
+    AGENT_WORKSPACE_PUBLISH_REDRIVE_DELIVERING_STATUS,
+    AGENT_WORKSPACE_PUBLISH_REDRIVE_PENDING_STATUS, EXHAUSTED_PUBLISH_REDRIVE_CHECKED_REASON_PREFIX,
     STALE_NEEDS_AGENT_CLASSIFICATION, STALE_REPAIR_BLOCKED_SUMMARY, STALE_REPAIR_RECOVERED_STEP,
     STALE_TRANSIENT_CLASSIFICATION, STALE_TRANSIENT_RECOVERED_STEP,
 };
 use crate::application::agent_workspace_publish_repair_state::{
-    reserve_agent_workspace_repair_dispatch, start_or_join_agent_workspace_repair,
-    AgentWorkspaceRepairDispatchOutcome, AgentWorkspaceRepairStartOutcome,
-    AgentWorkspaceRepairStartRequest, MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES,
-    NEEDS_HUMAN_REPAIR_REASON, PRE_EXISTING_ON_BASE_REPAIR_REASON, UNCHANGED_HEALTH_REPAIR_REASON,
+    held_repair_has_unpublished_head, reserve_agent_workspace_repair_dispatch,
+    start_or_join_agent_workspace_repair, AgentWorkspaceRepairDispatchOutcome,
+    AgentWorkspaceRepairStartOutcome, AgentWorkspaceRepairStartRequest,
+    MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES, NEEDS_HUMAN_REPAIR_REASON,
+    PRE_EXISTING_ON_BASE_REPAIR_REASON, UNCHANGED_HEALTH_REPAIR_REASON,
 };
 use crate::application::agent_workspace_review::{
     resolve_review_target, AgentWorkspaceReviewPacket, AgentWorkspaceReviewTarget,
@@ -4021,7 +4026,10 @@ mod extracted_inline_tests {
             .await
             .expect("load workspace")
             .expect("workspace exists");
-        assert_eq!(refreshed.publication_push_status.as_deref(), Some("failed"));
+        assert_eq!(
+            refreshed.publication_push_status.as_deref(),
+            Some("refreshed")
+        );
 
         let events = workspace_repo
             .list_publication_events(&conversation_id)
@@ -4032,6 +4040,332 @@ mod extracted_inline_tests {
                 && e.status == "succeeded"
                 && e.classification.as_deref() == Some(STALE_TRANSIENT_CLASSIFICATION)
         }));
+    }
+
+    #[tokio::test]
+    async fn stale_transient_recovery_preserves_live_owner_then_recovers_terminal_owner() {
+        let state = AppState::new_test();
+        let conversation_id =
+            ChatConversationId::from_string("abababab-abab-abab-abab-abababababab");
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(transient_workspace(conversation_id.clone(), "refreshing"))
+            .await
+            .expect("seed workspace");
+        let run = state
+            .agent_run_repo
+            .create(AgentRun::new(conversation_id.clone()))
+            .await
+            .expect("seed live owner run");
+        let run_id = run.id.as_str();
+        state
+            .agent_conversation_workspace_repo
+            .claim_publish_lease(
+                &conversation_id,
+                &run_id,
+                "owned-transient-token",
+                chrono::Utc::now(),
+                None,
+                false,
+            )
+            .await
+            .expect("claim owner lease");
+
+        assert_eq!(
+            recover_stale_transient_publish_statuses_for_state(&state, 0)
+                .await
+                .expect("live-owner recovery sweep"),
+            0,
+            "a stale timestamp must not override live run authority"
+        );
+        let live_owned = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("load live-owned workspace")
+            .expect("workspace exists");
+        assert_eq!(
+            live_owned.publish_lease_token.as_deref(),
+            Some("owned-transient-token")
+        );
+        assert_eq!(
+            live_owned.publication_push_status.as_deref(),
+            Some("refreshing")
+        );
+
+        state
+            .agent_run_repo
+            .fail(&run.id, "owner terminated")
+            .await
+            .expect("terminalize owner run");
+        assert_eq!(
+            recover_stale_transient_publish_statuses_for_state(&state, 0)
+                .await
+                .expect("terminal-owner recovery sweep"),
+            1
+        );
+        let recovered = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("load recovered workspace")
+            .expect("workspace exists");
+        assert_eq!(recovered.publish_lease_owner_run_id, None);
+        assert_eq!(recovered.publish_lease_token, None);
+        assert_eq!(
+            recovered.publication_push_status.as_deref(),
+            Some(AGENT_WORKSPACE_PUBLISH_REDRIVE_PENDING_STATUS)
+        );
+        let events = state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("load recovery events");
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.step == STALE_TRANSIENT_RECOVERED_STEP)
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_immediately_reclaims_fresh_orphaned_operation_lease() {
+        let state = AppState::new_test();
+        let conversation_id =
+            ChatConversationId::from_string("acacacac-acac-acac-acac-acacacacacac");
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(transient_workspace(conversation_id.clone(), "refreshing"))
+            .await
+            .expect("seed workspace");
+        state
+            .agent_conversation_workspace_repo
+            .claim_publish_lease(
+                &conversation_id,
+                &format!("publish-operation:{conversation_id}"),
+                "orphaned-operation-token",
+                chrono::Utc::now(),
+                None,
+                false,
+            )
+            .await
+            .expect("seed operation lease from a prior process");
+
+        assert_eq!(
+            recover_stale_transient_publish_statuses_for_state(&state, 300)
+                .await
+                .expect("startup recovery sweep"),
+            1,
+            "missing process-local liveness must reclaim without the legacy five-minute wait"
+        );
+        let recovered = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("load workspace")
+            .expect("workspace exists");
+        assert_eq!(recovered.publish_lease_token, None);
+        assert_eq!(
+            recovered.publication_push_status.as_deref(),
+            Some(AGENT_WORKSPACE_PUBLISH_REDRIVE_PENDING_STATUS)
+        );
+        assert_eq!(
+            recover_stale_transient_publish_statuses_for_state(&state, 300)
+                .await
+                .expect("pending re-drive remains eligible without duplicating recovery state"),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_pending_redrive_sweeps_emit_once() {
+        let state = AppState::new_test();
+        let conversation_id =
+            ChatConversationId::from_string("acacacac-acac-acac-acac-acacacacacbd");
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(transient_workspace(
+                conversation_id.clone(),
+                AGENT_WORKSPACE_PUBLISH_REDRIVE_PENDING_STATUS,
+            ))
+            .await
+            .expect("seed pending redrive workspace");
+        let emitted = Arc::new(AtomicUsize::new(0));
+        let emit_redrive = {
+            let emitted = Arc::clone(&emitted);
+            move |_conversation_id: &ChatConversationId| {
+                emitted.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        };
+
+        let (first, second) = tokio::join!(
+            recover_stale_transient_publish_statuses_for_state_with_redrive_emitter(
+                &state,
+                0,
+                &emit_redrive,
+            ),
+            recover_stale_transient_publish_statuses_for_state_with_redrive_emitter(
+                &state,
+                0,
+                &emit_redrive,
+            )
+        );
+
+        assert_eq!(
+            first.expect("first recovery") + second.expect("second recovery"),
+            1
+        );
+        assert_eq!(
+            emitted.load(Ordering::SeqCst),
+            1,
+            "only the worker that atomically claims the pending re-drive may emit it"
+        );
+        let recovered = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("load recovered workspace")
+            .expect("workspace exists");
+        assert_eq!(
+            recovered.publication_push_status.as_deref(),
+            Some("refreshed")
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_pending_redrive_emit_restores_the_durable_pending_marker() {
+        let state = AppState::new_test();
+        let conversation_id =
+            ChatConversationId::from_string("acacacac-acac-acac-acac-acacacacacbe");
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(transient_workspace(
+                conversation_id.clone(),
+                AGENT_WORKSPACE_PUBLISH_REDRIVE_PENDING_STATUS,
+            ))
+            .await
+            .expect("seed pending redrive workspace");
+
+        assert_eq!(
+            recover_stale_transient_publish_statuses_for_state_with_redrive_emitter(
+                &state,
+                0,
+                &|_conversation_id| Err("event bus unavailable".to_string()),
+            )
+            .await
+            .expect("failed emit recovery"),
+            0
+        );
+        let recovered = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("load restored workspace")
+            .expect("workspace exists");
+        assert_eq!(
+            recovered.publication_push_status.as_deref(),
+            Some(AGENT_WORKSPACE_PUBLISH_REDRIVE_PENDING_STATUS),
+            "an emit failure must return the claimed row to the durable retry queue"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_redrive_settlement_cannot_overwrite_newer_publication_state() {
+        let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+        let conversation_id =
+            ChatConversationId::from_string("acacacac-acac-acac-acac-acacacacacbf");
+        workspace_repo
+            .create_or_update(transient_workspace(
+                conversation_id.clone(),
+                AGENT_WORKSPACE_PUBLISH_REDRIVE_PENDING_STATUS,
+            ))
+            .await
+            .expect("seed pending redrive workspace");
+        let pending = workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("load pending workspace")
+            .expect("workspace exists");
+        let delivering = claim_pending_redrive_delivery(workspace_repo.as_ref(), &pending)
+            .await
+            .expect("claim pending delivery")
+            .expect("pending delivery claim applies");
+        assert_eq!(
+            delivering.publication_push_status.as_deref(),
+            Some(AGENT_WORKSPACE_PUBLISH_REDRIVE_DELIVERING_STATUS)
+        );
+
+        workspace_repo
+            .update_publication(&conversation_id, None, None, None, Some("pushed"))
+            .await
+            .expect("persist newer publication state after emit");
+
+        assert!(
+            !settle_redrive_delivery(workspace_repo.as_ref(), &delivering)
+                .await
+                .expect("fenced stale settlement"),
+            "the post-emit write must reject a stale delivery owner"
+        );
+        let current = workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("load current workspace")
+            .expect("workspace exists");
+        assert_eq!(current.publication_push_status.as_deref(), Some("pushed"));
+    }
+
+    #[tokio::test]
+    async fn recovery_preserves_a_live_process_owned_operation_lease() {
+        let state = AppState::new_test();
+        let conversation_id =
+            ChatConversationId::from_string("adadadad-adad-adad-adad-adadadadadad");
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(transient_workspace(conversation_id.clone(), "refreshing"))
+            .await
+            .expect("seed workspace");
+        state
+            .agent_conversation_workspace_repo
+            .claim_publish_lease(
+                &conversation_id,
+                &format!("publish-operation:{conversation_id}"),
+                "live-operation-token",
+                chrono::Utc::now(),
+                None,
+                false,
+            )
+            .await
+            .expect("claim operation lease");
+        let _operation_scope =
+            crate::application::agent_workspace_publish_lease::begin_publish_operation_scope(
+                &conversation_id,
+            );
+        crate::application::agent_workspace_publish_lease::spawn_publish_operation_lease_heartbeat(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            conversation_id.clone(),
+            "live-operation-token".to_string(),
+        );
+
+        assert_eq!(
+            recover_stale_transient_publish_statuses_for_state(&state, 0)
+                .await
+                .expect("live operation recovery sweep"),
+            0
+        );
+        let live = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("load workspace")
+            .expect("workspace exists");
+        assert_eq!(
+            live.publish_lease_token.as_deref(),
+            Some("live-operation-token")
+        );
+        assert_eq!(live.publication_push_status.as_deref(), Some("refreshing"));
     }
 
     #[tokio::test]
@@ -4928,6 +5262,188 @@ async fn blocked_pr_autofix_with_unchanged_health_parks_without_spawning() {
     assert!(still_held.settled_at.is_none());
 }
 
+#[tokio::test]
+async fn ready_health_hold_with_unpublished_head_marks_one_durable_redrive_without_spawning() {
+    let (mut state, conversation_id, _worktree_parent, _project_dir) =
+        seed_pr_autofix_health_workspace(124).await;
+    start_blocked_pr_autofix_generation(&state, &conversation_id).await;
+    let health = failing_check_pr_health("remote-ready-head", "Rust Tests");
+    let fingerprint = health_fingerprint(684, &health);
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health.clone()));
+    state.github_service =
+        Some(Arc::clone(&github) as Arc<dyn crate::domain::services::GithubServiceTrait>);
+    block_pr_autofix_attempt_with_fingerprint(&state, &conversation_id, Some(fingerprint)).await;
+
+    recover_agent_workspace_repair_attempts_for_state(&state)
+        .await
+        .expect("park unchanged health");
+    let held = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load health-held attempt")
+        .expect("health-held attempt exists");
+    assert_eq!(held.phase, AgentWorkspaceRepairPhase::Ready);
+
+    let expected_updated_at = held.updated_at;
+    let mut unpublished = held.clone();
+    unpublished.repair_head_commit = Some("validated-local-ready-head".to_string());
+    unpublished.updated_at += chrono::Duration::microseconds(1);
+    let unpublished = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: unpublished,
+            expected_phase: AgentWorkspaceRepairPhase::Ready,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Ready,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("persist unpublished ready head")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("unpublished ready-head checkpoint must apply, got {outcome:?}"),
+    };
+    let busy_guard =
+        try_acquire_agent_workspace_repair_publish_continuation_guard(&conversation_id)
+            .expect("reserve durable publisher guard");
+    github.state().fetch_pr_health_result = Some(Err(crate::error::AppError::Infrastructure(
+        "GitHub health unavailable".to_string(),
+    )));
+
+    recover_agent_workspace_repair_attempts_for_state(&state)
+        .await
+        .expect("unreadable health must hold closed");
+    let unreadable = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload unreadable-health hold")
+        .expect("unreadable-health hold remains current");
+    assert_eq!(unreadable.phase, AgentWorkspaceRepairPhase::Ready);
+    assert!(!unreadable
+        .pending_reasons
+        .iter()
+        .any(|reason| reason.starts_with("pr_autofix_head_redrive:")));
+    github.state().fetch_pr_health_result = Some(Ok(health));
+
+    recover_agent_workspace_repair_attempts_for_state(&state)
+        .await
+        .expect("authorize one held-head redrive");
+
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload held-head redrive")
+        .expect("redriven attempt remains current");
+    assert_eq!(current.id, unpublished.id);
+    assert_eq!(current.generation, unpublished.generation);
+    assert!(current
+        .pending_reasons
+        .iter()
+        .any(|reason| { reason == "pr_autofix_head_redrive:validated-local-ready-head" }));
+    assert!(
+        state
+            .agent_run_repo
+            .get_by_conversation(&conversation_id)
+            .await
+            .expect("list repair runs")
+            .is_empty(),
+        "a publish re-drive must not start a fixer generation"
+    );
+
+    recover_agent_workspace_repair_attempts_for_state(&state)
+        .await
+        .expect("repeat held-head recovery is idempotent");
+    let repeated = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload repeat held-head redrive")
+        .expect("repeat attempt remains current");
+    assert_eq!(
+        repeated
+            .pending_reasons
+            .iter()
+            .filter(|reason| reason.as_str() == "pr_autofix_head_redrive:validated-local-ready-head")
+            .count(),
+        1,
+        "the exact-head marker prevents duplicate re-drives"
+    );
+    let messages_before = state
+        .chat_message_repo
+        .get_by_conversation(&conversation_id)
+        .await
+        .expect("load baseline held-head messages")
+        .len();
+    drop(busy_guard);
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("later recovery retries the authorized held-head continuation"),
+        0
+    );
+    let resumed = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload released held-head continuation")
+        .expect("released held-head continuation remains current");
+    assert_eq!(resumed.id, unpublished.id);
+    assert_eq!(resumed.generation, unpublished.generation);
+    assert!(matches!(
+        resumed.phase,
+        AgentWorkspaceRepairPhase::ContinuationPending | AgentWorkspaceRepairPhase::Continuing
+    ));
+
+    assert_eq!(
+        resumed
+            .pending_reasons
+            .iter()
+            .filter(|reason| reason.as_str()
+                == "pr_autofix_head_redrive:validated-local-ready-head")
+            .count(),
+        1,
+        "successful retry never duplicates the authorization marker"
+    );
+    let first_effect = state
+        .agent_workspace_repair_repo
+        .get_open_repair_effect(&resumed.id)
+        .await
+        .expect("load held-head repair effects")
+        .expect("resumed publish continuation should own one durable effect");
+    recover_agent_workspace_repair_attempts_for_state(&state)
+        .await
+        .expect("in-flight held-head continuation remains idempotent");
+    let repeated_effect = state
+        .agent_workspace_repair_repo
+        .get_open_repair_effect(&resumed.id)
+        .await
+        .expect("reload held-head repair effects")
+        .expect("in-flight publish effect remains open");
+    assert_eq!(repeated_effect.id, first_effect.id);
+    assert!(state
+        .agent_run_repo
+        .get_by_conversation(&conversation_id)
+        .await
+        .expect("load held-head repair runs")
+        .is_empty());
+    assert_eq!(
+        state
+            .chat_message_repo
+            .get_by_conversation(&conversation_id)
+            .await
+            .expect("load held-head repair messages")
+            .len(),
+        messages_before,
+        "held-head resume retries must not enqueue another fixer assignment"
+    );
+}
+
 /// Retry caps count attempts, not cost. A conversation that has already burned its agent-minutes
 /// budget on one failure identity must hand the failure to a human instead of buying another
 /// generation, and the handover must be visible rather than a silent stop.
@@ -5309,6 +5825,47 @@ async fn unchanged_pr_health_with_unpublished_repair_head_redrives_publish() {
         evaluate_successor_with_heads(75, Some("remote-head"), Some("local-head"), true).await,
         PrAutofixSuccessorDecision::RedrivePublish
     );
+}
+
+#[test]
+fn unpublished_repair_head_predicate_trims_and_fails_closed() {
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        conversation_id(74),
+        AgentWorkspaceRepairSource::PrAutofix,
+        AgentWorkspaceRepairContinuation::Publish,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+
+    attempt.repair_head_commit = Some(" local-head ".to_string());
+    assert!(held_repair_has_unpublished_head(
+        &attempt,
+        Some("remote-head")
+    ));
+    assert!(!held_repair_has_unpublished_head(
+        &attempt,
+        Some(" local-head ")
+    ));
+    assert!(held_repair_has_unpublished_head(
+        &attempt,
+        Some("local-head")
+    ));
+    assert!(!held_repair_has_unpublished_head(&attempt, Some("   ")));
+
+    attempt.repair_head_commit = Some("   ".to_string());
+    assert!(!held_repair_has_unpublished_head(
+        &attempt,
+        Some("remote-head")
+    ));
+    attempt.repair_head_commit = None;
+    assert!(!held_repair_has_unpublished_head(
+        &attempt,
+        Some("remote-head")
+    ));
 }
 
 #[tokio::test]

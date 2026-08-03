@@ -15,12 +15,97 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
-    AgentWorkspacePrReviewActionMutation, AgentWorkspaceRepairRepository,
-    AgentWorkspaceRepairStateGuard, AgentWorkspaceRepairStateTransition,
-    SettleAndStartAgentWorkspaceRepairSuccessor,
+    AgentWorkspacePrReviewActionMutation, AgentWorkspacePublishLeaseClaim,
+    AgentWorkspaceRepairRepository, AgentWorkspaceRepairStateGuard,
+    AgentWorkspaceRepairStateTransition, SettleAndStartAgentWorkspaceRepairSuccessor,
     SettleAndStartAgentWorkspaceRepairSuccessorOutcome, StartOrJoinAgentWorkspaceRepairAttempt,
     StartOrJoinAgentWorkspaceRepairAttemptOutcome,
 };
+
+#[tokio::test]
+async fn publish_lease_rejects_live_owner_and_fences_stale_token() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("conversation-publish-lease");
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .expect("workspace should persist");
+    let now = chrono::Utc::now();
+
+    assert_eq!(
+        repo.claim_publish_lease(&conversation_id, "run-one", "token-one", now, None, false)
+            .await
+            .expect("first lease should claim"),
+        AgentWorkspacePublishLeaseClaim::Claimed
+    );
+    assert_eq!(
+        repo.claim_publish_lease(
+            &conversation_id,
+            "run-two",
+            "token-two",
+            now,
+            Some("token-one"),
+            false
+        )
+        .await
+        .expect("live owner must hold lease"),
+        AgentWorkspacePublishLeaseClaim::HeldByLiveOwner
+    );
+    assert!(!repo
+        .release_publish_lease(&conversation_id, "stale-token", None, now)
+        .await
+        .expect("stale release is a clean rejection"));
+    let held = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("read should succeed")
+        .expect("workspace should remain");
+    assert_eq!(held.publish_lease_token.as_deref(), Some("token-one"));
+}
+
+#[tokio::test]
+async fn publish_lease_immediately_reclaims_a_dead_owner() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("conversation-publish-reclaim");
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .expect("workspace should persist");
+    let now = chrono::Utc::now();
+    repo.claim_publish_lease(&conversation_id, "dead-run", "dead-token", now, None, false)
+        .await
+        .expect("initial claim should succeed");
+
+    assert_eq!(
+        repo.claim_publish_lease(
+            &conversation_id,
+            "live-run",
+            "fresh-token",
+            now,
+            Some("dead-token"),
+            true,
+        )
+        .await
+        .expect("dead owner should be reclaimed"),
+        AgentWorkspacePublishLeaseClaim::Reclaimed
+    );
+    assert!(repo
+        .heartbeat_publish_lease(&conversation_id, "fresh-token", now)
+        .await
+        .expect("current owner heartbeat should succeed"));
+
+    assert_eq!(
+        repo.claim_publish_lease(
+            &conversation_id,
+            "late-run",
+            "late-token",
+            now,
+            Some("dead-token"),
+            true,
+        )
+        .await
+        .expect("stale reclaim proof should be rejected"),
+        AgentWorkspacePublishLeaseClaim::HeldByLiveOwner
+    );
+}
 
 fn pr_review_action(
     conversation_id: ChatConversationId,
@@ -2471,6 +2556,18 @@ mod tests {
         refreshing.publication_push_status = Some("refreshing".to_string());
         refreshing.updated_at = stale;
 
+        let mut pending = candidate_workspace("redrive-pending");
+        pending.publication_pr_number = Some(22);
+        pending.publication_pr_status = Some("open".to_string());
+        pending.publication_push_status = Some("redrive_pending".to_string());
+        pending.updated_at = stale;
+
+        let mut delivering = candidate_workspace("redrive-delivering");
+        delivering.publication_pr_number = Some(25);
+        delivering.publication_pr_status = Some("open".to_string());
+        delivering.publication_push_status = Some("redrive_delivering".to_string());
+        delivering.updated_at = stale;
+
         let mut closed = candidate_workspace("closed");
         closed.publication_pr_number = Some(23);
         closed.publication_pr_status = Some("closed".to_string());
@@ -2484,7 +2581,13 @@ mod tests {
         archived.publication_push_status = Some("describing".to_string());
         archived.updated_at = stale;
 
-        for workspace in [refreshing.clone(), closed, archived] {
+        for workspace in [
+            refreshing.clone(),
+            pending.clone(),
+            delivering.clone(),
+            closed,
+            archived,
+        ] {
             repo.create_or_update(workspace).await.unwrap();
         }
 
@@ -2493,8 +2596,16 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(workspaces.len(), 1);
-        assert_eq!(workspaces[0].conversation_id, refreshing.conversation_id);
+        assert_eq!(workspaces.len(), 3);
+        assert!(workspaces
+            .iter()
+            .any(|workspace| workspace.conversation_id == refreshing.conversation_id));
+        assert!(workspaces
+            .iter()
+            .any(|workspace| workspace.conversation_id == pending.conversation_id));
+        assert!(workspaces
+            .iter()
+            .any(|workspace| workspace.conversation_id == delivering.conversation_id));
     }
 
     #[tokio::test]

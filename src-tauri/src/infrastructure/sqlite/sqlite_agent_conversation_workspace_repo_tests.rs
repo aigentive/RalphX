@@ -18,12 +18,70 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
-    AgentWorkspacePrReviewActionMutation, AgentWorkspaceRepairRepository,
-    AgentWorkspaceRepairStateGuard, AgentWorkspaceRepairStateTransition,
-    SettleAndStartAgentWorkspaceRepairSuccessor,
+    AgentWorkspacePrReviewActionMutation, AgentWorkspacePublishLeaseClaim,
+    AgentWorkspaceRepairRepository, AgentWorkspaceRepairStateGuard,
+    AgentWorkspaceRepairStateTransition, SettleAndStartAgentWorkspaceRepairSuccessor,
     SettleAndStartAgentWorkspaceRepairSuccessorOutcome, StartOrJoinAgentWorkspaceRepairAttempt,
     StartOrJoinAgentWorkspaceRepairAttemptOutcome,
 };
+
+#[tokio::test]
+async fn publish_lease_reclaims_dead_owner_and_fences_stale_token() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .expect("workspace should persist");
+    let now = chrono::Utc::now();
+    assert_eq!(
+        repo.claim_publish_lease(&conversation_id, "run-one", "token-one", now, None, false)
+            .await
+            .expect("claim should succeed"),
+        AgentWorkspacePublishLeaseClaim::Claimed
+    );
+    assert_eq!(
+        repo.claim_publish_lease(
+            &conversation_id,
+            "run-two",
+            "token-two",
+            now,
+            Some("token-one"),
+            false
+        )
+        .await
+        .expect("live owner must hold lease"),
+        AgentWorkspacePublishLeaseClaim::HeldByLiveOwner
+    );
+    assert!(!repo
+        .release_publish_lease(&conversation_id, "wrong-token", None, now)
+        .await
+        .expect("stale release should be rejected"));
+    assert_eq!(
+        repo.claim_publish_lease(
+            &conversation_id,
+            "run-two",
+            "token-two",
+            now,
+            Some("token-one"),
+            true,
+        )
+        .await
+        .expect("dead owner should be reclaimed"),
+        AgentWorkspacePublishLeaseClaim::Reclaimed
+    );
+    assert_eq!(
+        repo.claim_publish_lease(
+            &conversation_id,
+            "late-run",
+            "late-token",
+            now,
+            Some("token-one"),
+            true,
+        )
+        .await
+        .expect("stale reclaim proof should be rejected"),
+        AgentWorkspacePublishLeaseClaim::HeldByLiveOwner
+    );
+}
 use crate::testing::SqliteTestDb;
 
 use super::SqliteAgentConversationWorkspaceRepository;
@@ -3938,6 +3996,32 @@ async fn list_active_transient_publish_status_workspaces_filters_stale_open_rows
     repo.create_or_update(describing.clone()).await.unwrap();
     set_workspace_updated_at(&db, &describing.conversation_id, older);
 
+    let pending_id = ChatConversationId::from_string("abababab-abab-abab-abab-abababababab");
+    seed_conversation(&db, &pending_id);
+    let mut pending = make_workspace(pending_id);
+    pending.publication_pr_number = Some(97);
+    pending.publication_pr_status = Some("open".to_string());
+    pending.publication_push_status = Some("redrive_pending".to_string());
+    repo.create_or_update(pending.clone()).await.unwrap();
+    set_workspace_updated_at(
+        &db,
+        &pending.conversation_id,
+        chrono::Utc::now() - chrono::Duration::minutes(30),
+    );
+
+    let delivering_id = ChatConversationId::from_string("acacacac-acac-acac-acac-acacacacacac");
+    seed_conversation(&db, &delivering_id);
+    let mut delivering = make_workspace(delivering_id);
+    delivering.publication_pr_number = Some(98);
+    delivering.publication_pr_status = Some("open".to_string());
+    delivering.publication_push_status = Some("redrive_delivering".to_string());
+    repo.create_or_update(delivering.clone()).await.unwrap();
+    set_workspace_updated_at(
+        &db,
+        &delivering.conversation_id,
+        chrono::Utc::now() - chrono::Duration::minutes(40),
+    );
+
     let recent_id = ChatConversationId::from_string("cccccccc-cccc-cccc-cccc-cccccccccccc");
     seed_conversation(&db, &recent_id);
     let mut recent = make_workspace(recent_id);
@@ -3984,7 +4068,12 @@ async fn list_active_transient_publish_status_workspaces_filters_stale_open_rows
             .into_iter()
             .map(|workspace| workspace.conversation_id)
             .collect::<Vec<_>>(),
-        vec![describing.conversation_id, refreshing.conversation_id]
+        vec![
+            delivering.conversation_id,
+            pending.conversation_id,
+            describing.conversation_id,
+            refreshing.conversation_id,
+        ]
     );
 }
 

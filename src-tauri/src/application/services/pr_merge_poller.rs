@@ -20,6 +20,8 @@ use crate::application::agent_workspace_ci_rerun::ci_rerun_hold_still_pending;
 use crate::application::agent_workspace_pr_autofix_attempt::{
     load_pr_autofix_attempt_decision, pr_autofix_action_metadata,
 };
+use crate::application::agent_workspace_publish_recovery::recover_stale_publish_repair_for_workspace_in_state;
+use crate::application::agent_workspace_publish_repair_state::held_repair_has_unpublished_head;
 use crate::application::agent_workspace_publish_repair_state::{
     agent_workspace_repair_is_ci_held, agent_workspace_repair_is_health_held,
     classify_agent_workspace_repair_delivery, reserve_agent_workspace_repair_dispatch,
@@ -201,7 +203,7 @@ pub async fn start_review_pr_lifecycle_polling(
     let chat_service: Arc<dyn ChatService> = Arc::new(state.build_chat_service());
     Ok(state
         .pr_poller_registry
-        .start_agent_workspace_polling_with_repair_repo(
+        .start_agent_workspace_polling_with_repair_repo_and_recovery_state(
             workspace.conversation_id.clone(),
             pr_number,
             project,
@@ -210,6 +212,7 @@ pub async fn start_review_pr_lifecycle_polling(
             Arc::clone(&state.agent_run_repo),
             Arc::clone(&state.agent_workspace_repair_repo),
             chat_service,
+            Some(Arc::new(state.clone())),
         ))
 }
 
@@ -272,6 +275,7 @@ impl PrPollerRegistry {
             agent_run_repo,
             None,
             chat_service,
+            None,
         )
     }
 
@@ -286,6 +290,31 @@ impl PrPollerRegistry {
         repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
         chat_service: Arc<dyn ChatService>,
     ) -> AgentWorkspacePrPollerStart {
+        self.start_agent_workspace_polling_with_repair_repo_and_recovery_state(
+            conversation_id,
+            pr_number,
+            project,
+            working_dir,
+            workspace_repo,
+            agent_run_repo,
+            repair_repo,
+            chat_service,
+            None,
+        )
+    }
+
+    pub(crate) fn start_agent_workspace_polling_with_repair_repo_and_recovery_state(
+        &self,
+        conversation_id: ChatConversationId,
+        pr_number: i64,
+        project: Project,
+        working_dir: PathBuf,
+        workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+        agent_run_repo: Arc<dyn AgentRunRepository>,
+        repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+        chat_service: Arc<dyn ChatService>,
+        recovery_state: Option<Arc<AppState>>,
+    ) -> AgentWorkspacePrPollerStart {
         self.start_agent_workspace_polling_with_optional_repair_repo(
             conversation_id,
             pr_number,
@@ -295,6 +324,7 @@ impl PrPollerRegistry {
             agent_run_repo,
             Some(repair_repo),
             chat_service,
+            recovery_state,
         )
     }
 
@@ -308,6 +338,7 @@ impl PrPollerRegistry {
         agent_run_repo: Arc<dyn AgentRunRepository>,
         repair_repo: Option<Arc<dyn AgentWorkspaceRepairRepository>>,
         chat_service: Arc<dyn ChatService>,
+        recovery_state: Option<Arc<AppState>>,
     ) -> AgentWorkspacePrPollerStart {
         use dashmap::mapref::entry::Entry;
 
@@ -367,6 +398,7 @@ impl PrPollerRegistry {
                 plan_branch_repo,
                 chat_service,
                 notification_service,
+                recovery_state,
             )
             .await;
         });
@@ -1075,6 +1107,7 @@ async fn agent_workspace_poll_loop(
     plan_branch_repo: Arc<dyn PlanBranchRepository>,
     chat_service: Arc<dyn ChatService>,
     notification_service: Option<Arc<NotificationService>>,
+    recovery_state: Option<Arc<AppState>>,
 ) {
     let interval = Duration::from_secs(60);
     let mut first_poll = true;
@@ -1217,6 +1250,36 @@ async fn agent_workspace_poll_loop(
                                 error = %error,
                                 "Agent workspace PR poller: failed to import PR comment evidence"
                             );
+                        }
+
+                        if let Some(recovery_state) = recovery_state.as_deref() {
+                            match re_drive_held_unpublished_agent_workspace_repair(
+                                recovery_state,
+                                &workspace_repo,
+                                &conversation_id,
+                                &health,
+                            )
+                            .await
+                            {
+                                Ok(true) => {
+                                    tracing::info!(
+                                        conversation_id = conversation_id.as_str(),
+                                        pr_number,
+                                        "Agent workspace PR poller re-drove the existing unpublished repair continuation"
+                                    );
+                                    continue;
+                                }
+                                Ok(false) => {}
+                                Err(error) => {
+                                    tracing::warn!(
+                                        conversation_id = conversation_id.as_str(),
+                                        pr_number,
+                                        error = %error,
+                                        "Agent workspace PR poller refused unpublished repair re-drive after an authority read failed"
+                                    );
+                                    continue;
+                                }
+                            }
                         }
 
                         if repair_repo.is_none() {
@@ -1392,6 +1455,41 @@ async fn agent_workspace_poll_loop(
             }
         }
     }
+}
+
+/// A successful PR-health read is the poller's authority to re-enter a held Ready attempt, but
+/// only the durable reconciler may acquire its target lease, transition it, and invoke the
+/// command-composed publisher. Missing or stale evidence deliberately leaves the hold intact.
+async fn re_drive_held_unpublished_agent_workspace_repair(
+    state: &AppState,
+    workspace_repo: &Arc<dyn AgentConversationWorkspaceRepository>,
+    conversation_id: &ChatConversationId,
+    health: &PrHealth,
+) -> crate::AppResult<bool> {
+    let Some(attempt) = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(conversation_id)
+        .await?
+    else {
+        return Ok(false);
+    };
+    if attempt.phase != AgentWorkspaceRepairPhase::Ready
+        || !crate::application::agent_workspace_publish_repair_state::agent_workspace_repair_is_health_held(&attempt)
+        || !held_repair_has_unpublished_head(&attempt, health.sync_state.head_ref_oid.as_deref())
+    {
+        return Ok(false);
+    }
+    let workspace = workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!(
+                "Agent conversation workspace not found for unpublished repair continuation {}",
+                conversation_id
+            ))
+        })?;
+    recover_stale_publish_repair_for_workspace_in_state(state, workspace).await?;
+    Ok(true)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2027,6 +2125,25 @@ async fn route_agent_workspace_pr_conflict_repair_if_needed_with_repair_repo(
         || !workspace.auto_publish_enabled
     {
         return Ok(false);
+    }
+
+    // GitHub can continue to report Dirty while the current repair has already produced a local
+    // rebased head. That head must enter its durable publish continuation before the poller can
+    // consider another repair generation; starting or joining here would waste a fixer turn and
+    // inject a false "fix the workspace" instruction into an already-clean workspace.
+    if let Some(current) = repair_repo
+        .get_current_repair_attempt(conversation_id)
+        .await?
+    {
+        if held_repair_has_unpublished_head(&current, health.sync_state.head_ref_oid.as_deref()) {
+            tracing::info!(
+                conversation_id = conversation_id.as_str(),
+                pr_number,
+                attempt_id = current.id.as_str(),
+                "PR merge-conflict signal deferred to the existing unpublished repair head"
+            );
+            return Ok(false);
+        }
     }
 
     let repair_summary =
@@ -2945,7 +3062,7 @@ async fn route_agent_workspace_pr_autofix_for_target(
     github: Arc<dyn GithubServiceTrait>,
     working_dir: &Path,
     target: AgentWorkspacePrAutofixTarget,
-    workspace: AgentConversationWorkspace,
+    mut workspace: AgentConversationWorkspace,
     conversation_id: &ChatConversationId,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     agent_run_repo: Option<Arc<dyn AgentRunRepository>>,
@@ -2992,6 +3109,7 @@ async fn route_agent_workspace_pr_autofix_for_target(
         .fetch_pr_health(working_dir, target.pr_number)
         .await?;
     let current_issue = classify_agent_workspace_pr_autofix_issue(target.pr_number, &health);
+    let mut superseding_base_commit = None;
     // A durable completion may have already reserved a rerun or classified this exact state as
     // pre-existing on base. Neither outcome authorizes a new fixer until GitHub changes health.
     // Do not launch a new fixer generation until GitHub reports a different conclusion.
@@ -3003,6 +3121,20 @@ async fn route_agent_workspace_pr_autofix_for_target(
             if attempt.phase == AgentWorkspaceRepairPhase::Ready {
                 let health_suppressed = agent_workspace_repair_is_health_held(&attempt);
                 let ci_held = agent_workspace_repair_is_ci_held(&attempt);
+                let advanced_base_commit = attempt
+                    .target_base_commit
+                    .as_deref()
+                    .filter(|commit| !commit.trim().is_empty())
+                    .zip(
+                        health
+                            .sync_state
+                            .base_ref_oid
+                            .as_deref()
+                            .filter(|commit| !commit.trim().is_empty()),
+                    )
+                    .and_then(|(targeted, observed)| {
+                        (targeted != observed).then(|| observed.to_string())
+                    });
                 if ci_held {
                     if ci_rerun_hold_still_pending(&health, attempt.ci_rerun_fingerprint.as_deref())
                     {
@@ -3013,10 +3145,23 @@ async fn route_agent_workspace_pr_autofix_for_target(
                         attempt.pr_autofix_health_fingerprint.as_deref()
                             == Some(issue.classification.as_str())
                     })
+                    && advanced_base_commit.is_none()
                 {
+                    if held_repair_has_unpublished_head(
+                        &attempt,
+                        health.sync_state.head_ref_oid.as_deref(),
+                    ) {
+                        tracing::info!(
+                            conversation_id = conversation_id.as_str(),
+                            pr_number = target.pr_number,
+                            attempt_id = attempt.id.as_str(),
+                            "PR health hold retained while durable recovery re-drives its unpublished repair head"
+                        );
+                    }
                     return Ok(false);
                 }
                 if health_suppressed || ci_held {
+                    superseding_base_commit = advanced_base_commit;
                     // A changed conclusion ends the rerun-pending generation. The next normal
                     // dispatch below creates a fresh, independently fenced repair attempt.
                     match repair_repo
@@ -3040,6 +3185,11 @@ async fn route_agent_workspace_pr_autofix_for_target(
                 }
             }
         }
+    }
+    if let Some(base_commit) = superseding_base_commit {
+        workspace.base_commit = Some(base_commit);
+        workspace.updated_at = chrono::Utc::now();
+        workspace = workspace_repo.create_or_update(workspace).await?;
     }
     import_agent_workspace_pr_comment_evidence(
         Arc::clone(&workspace_repo),

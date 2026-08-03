@@ -5869,6 +5869,102 @@ async fn live_pr_conflict_repair_repo_route_preserves_durable_authority_on_stale
 }
 
 #[tokio::test]
+async fn conflict_router_defers_unpublished_repair_head_without_join_or_agent_instruction() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let mut workspace = supervised_workspace(
+        "conflict-unpublished-head",
+        "project-conflict-unpublished-head",
+        worktree.path(),
+    );
+    init_repair_dispatch_repo(worktree.path(), &workspace.branch_name);
+    workspace.base_commit = Some("base-before-unpublished-conflict".to_string());
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
+    let branch_update_repo: Arc<dyn BranchUpdateRepository> =
+        Arc::new(MemoryBranchUpdateRepository::new());
+    let fingerprint = "github_pr_autofix:101:conflict";
+    let held = reserve_health_held_attempt(
+        repair_repo.as_ref(),
+        &conversation_id,
+        fingerprint,
+        crate::application::agent_workspace_publish_repair_state::UNCHANGED_HEALTH_REPAIR_REASON,
+    )
+    .await;
+    let expected_updated_at = held.updated_at;
+    let mut unpublished = held.clone();
+    unpublished.repair_head_commit = Some("validated-local-conflict-head".to_string());
+    unpublished.updated_at += chrono::Duration::microseconds(1);
+    let unpublished = match repair_repo
+        .transition_repair_attempt(
+            crate::domain::repositories::AgentWorkspaceRepairAttemptTransition {
+                attempt: unpublished,
+                expected_phase: AgentWorkspaceRepairPhase::Ready,
+                expected_updated_at,
+                next_phase: AgentWorkspaceRepairPhase::Ready,
+                compatibility_projection: None,
+                events: Vec::new(),
+            },
+        )
+        .await
+        .expect("persist unpublished conflict repair head")
+    {
+        crate::domain::repositories::AgentWorkspaceRepairAttemptTransitionOutcome::Applied(
+            attempt,
+        ) => attempt,
+        outcome => panic!("unpublished conflict checkpoint must apply, got {outcome:?}"),
+    };
+    let github = Arc::new(MockGithubService::new());
+    let chat = Arc::new(MockChatService::new());
+    let mut health = open_pr_health("remote-conflict-head");
+    health.sync_state.merge_state_status = Some(PrMergeStateStatus::Dirty);
+    health.sync_state.mergeable = Some(PrMergeableState::Conflicting);
+
+    let routed = super::route_agent_workspace_pr_conflict_repair_if_needed_with_repair_repo(
+        github as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &health,
+        &conversation_id,
+        workspace_repo.clone(),
+        None,
+        Some(Arc::clone(&repair_repo)),
+        Some(branch_update_repo),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("unpublished conflict head should defer safely");
+
+    assert!(
+        !routed,
+        "the conflict router must not start or join a new repair"
+    );
+    assert!(
+        chat.get_sent_messages().await.is_empty(),
+        "no false repair instruction"
+    );
+    let current = repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload unpublished conflict repair")
+        .expect("unpublished conflict repair remains current");
+    assert_eq!(current.id, unpublished.id);
+    assert_eq!(current.generation, unpublished.generation);
+    assert!(
+        workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("list publication events")
+            .is_empty(),
+        "the guard must not record a joined repair event"
+    );
+}
+
+#[tokio::test]
 async fn live_pr_autofix_suppresses_same_fingerprint_while_ci_rerun_is_pending() {
     let worktree = tempfile::tempdir().expect("worktree path");
     let mut workspace = supervised_workspace(
@@ -6726,6 +6822,110 @@ async fn live_pr_autofix_unchanged_health_hold_suppresses_same_fingerprint_then_
         .expect("new repair generation should load")
         .expect("changed fingerprint should create a new generation");
     assert_eq!(current.generation, held.generation + 1);
+}
+
+#[tokio::test]
+async fn live_pr_autofix_new_base_evidence_supersedes_same_fingerprint_health_hold() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let mut workspace = supervised_workspace(
+        "same-health-new-base",
+        "project-same-health-new-base",
+        worktree.path(),
+    );
+    init_repair_dispatch_repo(worktree.path(), &workspace.branch_name);
+    workspace.base_commit = Some("base-before-hold".to_string());
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
+    let branch_update_repo: Arc<dyn BranchUpdateRepository> =
+        Arc::new(MemoryBranchUpdateRepository::new());
+    let agent_run_repo = seeded_latest_pr_fixer_run_repo(&conversation_id).await;
+    let mut health = open_pr_health("same-health-head");
+    health.sync_state.base_ref_oid = Some("base-before-hold".to_string());
+    health.checks.push(PrHealthCheck {
+        name: "Rust tests".to_string(),
+        status: Some("completed".to_string()),
+        conclusion: Some("failure".to_string()),
+        details_url: Some("https://github.com/owner/repo/actions/runs/922".to_string()),
+    });
+    let fingerprint = super::classify_agent_workspace_pr_autofix_issue(101, &health)
+        .expect("failed check should classify")
+        .classification;
+    let held = reserve_health_held_attempt(
+        repair_repo.as_ref(),
+        &conversation_id,
+        &fingerprint,
+        crate::application::agent_workspace_publish_repair_state::UNCHANGED_HEALTH_REPAIR_REASON,
+    )
+    .await;
+    let mut targeted = held.clone();
+    targeted.target_base_commit = Some("base-before-hold".to_string());
+    targeted.updated_at += chrono::Duration::microseconds(1);
+    let targeted = match repair_repo
+        .transition_repair_attempt(
+            crate::domain::repositories::AgentWorkspaceRepairAttemptTransition {
+                attempt: targeted,
+                expected_phase: AgentWorkspaceRepairPhase::Ready,
+                expected_updated_at: held.updated_at,
+                next_phase: AgentWorkspaceRepairPhase::Ready,
+                compatibility_projection: None,
+                events: Vec::new(),
+            },
+        )
+        .await
+        .expect("persist held base authority")
+    {
+        crate::domain::repositories::AgentWorkspaceRepairAttemptTransitionOutcome::Applied(
+            attempt,
+        ) => attempt,
+        outcome => panic!("held base authority must apply, got {outcome:?}"),
+    };
+    health.sync_state.base_ref_oid = Some("base-after-hold".to_string());
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    let chat = Arc::new(MockChatService::with_agent_run_repo(Arc::clone(
+        &agent_run_repo,
+    )));
+
+    let routed = super::route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
+        github as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        workspace_repo.clone(),
+        Some(agent_run_repo),
+        Some(Arc::clone(&repair_repo)),
+        Some(branch_update_repo),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("new base evidence should supersede the hold");
+
+    assert!(routed, "a moved authoritative base must release the hold");
+    assert_eq!(chat.get_sent_messages().await.len(), 1);
+    let current = repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load successor")
+        .expect("successor exists");
+    assert_eq!(current.generation, targeted.generation + 1);
+    assert_eq!(
+        current.target_base_commit.as_deref(),
+        Some("base-after-hold")
+    );
+    let updated_workspace = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load updated workspace")
+        .expect("workspace exists");
+    assert_eq!(
+        updated_workspace.base_commit.as_deref(),
+        Some("base-after-hold")
+    );
 }
 
 #[tokio::test]

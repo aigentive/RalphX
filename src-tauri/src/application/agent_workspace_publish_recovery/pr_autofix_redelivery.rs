@@ -6,7 +6,9 @@
 //! of inside it.
 
 use crate::application::agent_conversation_workspace::resolve_effective_agent_conversation_workspace_path;
-use crate::application::agent_workspace_publish_repair_state::PrAutofixCarryover;
+use crate::application::agent_workspace_publish_repair_state::{
+    held_repair_has_unpublished_head, PrAutofixCarryover,
+};
 use crate::application::services::pr_merge_poller::classify_agent_workspace_pr_autofix_issue;
 use crate::application::AppState;
 use crate::domain::entities::{AgentConversationWorkspace, AgentWorkspaceRepairAttempt};
@@ -208,14 +210,7 @@ pub(crate) async fn evaluate_pr_autofix_successor(
         return PrAutofixSuccessorDecision::Withhold("pr_issue_resolved");
     };
     if current.pr_autofix_health_fingerprint.as_deref() == Some(issue.classification.as_str()) {
-        if current.repair_head_commit.as_deref().is_some_and(|head| {
-            !head.trim().is_empty()
-                && health
-                    .sync_state
-                    .head_ref_oid
-                    .as_deref()
-                    .is_some_and(|remote_head| head != remote_head)
-        }) {
+        if held_repair_has_unpublished_head(&current, health.sync_state.head_ref_oid.as_deref()) {
             return PrAutofixSuccessorDecision::RedrivePublish;
         }
         return PrAutofixSuccessorDecision::HoldUnchanged;

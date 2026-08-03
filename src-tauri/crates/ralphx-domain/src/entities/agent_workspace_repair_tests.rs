@@ -166,6 +166,37 @@ fn repair_operation_snapshots_project_every_terminal_and_active_stage() {
 }
 
 #[test]
+fn health_held_ready_repair_projects_typed_hold_reason() {
+    let now = Utc::now();
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        conversation_id(),
+        AgentWorkspaceRepairSource::PrAutofix,
+        AgentWorkspaceRepairContinuation::ResumePrSupervision,
+        "origin/main",
+        false,
+        true,
+        false,
+        None,
+        now,
+    );
+    attempt.phase = AgentWorkspaceRepairPhase::Ready;
+    attempt
+        .pending_reasons
+        .push("pr_autofix_unchanged_health".to_string());
+
+    let held = attempt.operation_snapshot();
+
+    assert_eq!(
+        held.hold_reason,
+        Some(AgentWorkspaceRepairOperationHoldReason::HealthEvidence)
+    );
+    assert!(!held.automatic_continuation);
+
+    attempt.pending_reasons.clear();
+    assert_eq!(attempt.operation_snapshot().hold_reason, None);
+}
+
+#[test]
 fn repair_effect_completion_requires_an_observed_receipt() {
     let now = Utc::now();
     let effect = AgentWorkspaceRepairEffect::new(
