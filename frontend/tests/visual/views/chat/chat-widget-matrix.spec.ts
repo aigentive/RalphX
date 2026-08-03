@@ -65,6 +65,12 @@ test.describe("shared chat activity presentation", () => {
         attachmentName: "thinking-settled",
         snapshotName: "chat-thinking-settled-pill-dark.png",
       },
+      {
+        testId: "thinking-state-grouped",
+        accessibleName: "Agent thought for 6s · 3 steps Expand thinking details.",
+        attachmentName: "thinking-grouped",
+        snapshotName: "chat-thinking-grouped-pill-dark.png",
+      },
     ] as const;
 
     for (const state of states) {
