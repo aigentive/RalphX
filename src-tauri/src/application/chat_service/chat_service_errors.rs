@@ -650,7 +650,7 @@ pub fn classify_codex_stream_failure(
             .contains(VALIDATION_FAILED_ERROR_CODE)
     }) {
         return Some(StreamError::ValidationFailed {
-            message: local_error_message,
+            message: bounded_diagnostic(&local_error_message),
         });
     }
 
@@ -663,24 +663,50 @@ pub fn classify_codex_stream_failure(
             .join("; ");
         return Some(StreamError::AgentExit {
             exit_code,
-            stderr: error_message,
+            stderr: bounded_diagnostic(&error_message),
         });
     }
 
-    let error_message = runtime_errors
-        .iter()
-        .copied()
-        .chain((!local_error_message.is_empty()).then_some(local_error_message.as_str()))
-        .collect::<Vec<_>>()
-        .join("; ");
-
-    if error_message.is_empty() {
-        None
-    } else {
-        Some(StreamError::LocalToolFailed {
-            message: error_message,
-        })
+    if local_error_message.is_empty() {
+        return None;
     }
+
+    // No runtime error, no completion signal: the stream itself ended before the
+    // turn finished. Local tool diagnostics collected earlier in the turn are
+    // supporting evidence, not the terminal cause — a mid-turn `rg` exit code must
+    // not be reported as the reason the run failed. State the terminal fact first
+    // and keep only a bounded excerpt of the diagnostics.
+    Some(StreamError::LocalToolFailed {
+        message: format!(
+            "{STREAM_ENDED_WITHOUT_COMPLETION}; local tool diagnostics from this turn: {}",
+            bounded_diagnostic(&local_error_message)
+        ),
+    })
+}
+
+/// Terminal fact reported when a Codex stream stops without a completion signal
+/// and without a runtime error of its own.
+pub(super) const STREAM_ENDED_WITHOUT_COMPLETION: &str =
+    "Codex stream ended without a completion signal";
+
+/// Bound an accumulated diagnostic blob so terminal error records stay readable.
+/// Keeps head and tail because the terminal detail is usually last, and tool
+/// transcripts can reach six figures of bytes.
+fn bounded_diagnostic(message: &str) -> String {
+    const MAX_DIAGNOSTIC_BYTES: usize = 4_000;
+    if message.len() <= MAX_DIAGNOSTIC_BYTES {
+        return message.to_string();
+    }
+
+    let half = MAX_DIAGNOSTIC_BYTES / 2;
+    let head = truncate_str(message, half);
+    let mut tail_start = message.len().saturating_sub(half);
+    while tail_start < message.len() && !message.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+    let tail = &message[tail_start..];
+    let elided = message.len() - head.len() - tail.len();
+    format!("{head}\n... {elided} bytes elided ...\n{tail}")
 }
 
 fn summarize_agent_exit_stderr(stderr: &str) -> String {
