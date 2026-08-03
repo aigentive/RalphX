@@ -8,6 +8,49 @@ use tracing::warn;
 
 // ── Top-level wrapper ────────────────────────────────────────────────────
 
+pub const DEFAULT_SHUTDOWN_WATCHDOG_DEADLINE_SECS: u64 = 20;
+pub const MAX_SHUTDOWN_WATCHDOG_DEADLINE_SECS: u64 = 300;
+pub const MAX_EXTERNAL_MCP_SHUTDOWN_GRACE_MS: u64 = 30_000;
+
+pub fn bounded_shutdown_watchdog_deadline_secs(configured: u64) -> u64 {
+    if configured == 0 {
+        DEFAULT_SHUTDOWN_WATCHDOG_DEADLINE_SECS
+    } else {
+        configured.min(MAX_SHUTDOWN_WATCHDOG_DEADLINE_SECS)
+    }
+}
+
+pub fn bounded_external_mcp_shutdown_grace_ms(configured: u64) -> u64 {
+    configured.min(MAX_EXTERNAL_MCP_SHUTDOWN_GRACE_MS)
+}
+
+/// Whole-process exit cleanup deadline. The watchdog is intentionally independent
+/// of async runtimes because it protects teardown after Tauri begins exiting.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ShutdownConfig {
+    pub watchdog_deadline_secs: u64,
+}
+
+impl Default for ShutdownConfig {
+    fn default() -> Self {
+        Self {
+            watchdog_deadline_secs: DEFAULT_SHUTDOWN_WATCHDOG_DEADLINE_SECS,
+        }
+    }
+}
+
+pub(crate) fn apply_shutdown_env_overrides_with_lookup(
+    config: &mut ShutdownConfig,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) {
+    if let Some(value) = lookup("RALPHX_SHUTDOWN_WATCHDOG_DEADLINE_SECS") {
+        if let Ok(deadline) = value.parse::<u64>() {
+            config.watchdog_deadline_secs = deadline;
+        }
+    }
+}
+
 /// All runtime configuration collected from config/ralphx.yaml + env overrides.
 #[derive(Debug, Clone)]
 pub struct AllRuntimeConfig {
@@ -189,6 +232,9 @@ pub struct ExternalMcpConfig {
     pub max_restart_attempts: u32,
     /// Delay between restart attempts in milliseconds. Default: 2000.
     pub restart_delay_ms: u64,
+    /// Grace period for synchronous TERM-to-KILL escalation during app exit.
+    /// Default: 2000 milliseconds.
+    pub shutdown_grace_ms: u64,
     /// Deadline for required MCP server startup and external bridge readiness.
     pub startup_timeout_secs: u64,
     /// Backend deadline for human-in-the-loop MCP waits (question/team-plan).
@@ -235,6 +281,7 @@ impl Default for ExternalMcpConfig {
             host: "127.0.0.1".to_string(),
             max_restart_attempts: 3,
             restart_delay_ms: 2000,
+            shutdown_grace_ms: 2000,
             startup_timeout_secs: 30,
             human_wait_timeout_secs: 285,
             auth_token: None,
@@ -1317,6 +1364,10 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
     env_u64!(
         cfg.external_mcp.human_wait_timeout_secs,
         "RALPHX_EXTERNAL_MCP_HUMAN_WAIT_TIMEOUT_SECS"
+    );
+    env_u64!(
+        cfg.external_mcp.shutdown_grace_ms,
+        "RALPHX_EXTERNAL_MCP_SHUTDOWN_GRACE_MS"
     );
     if let Some(v) = lookup("RALPHX_NODE_PATH") {
         cfg.external_mcp.node_path = Some(v);

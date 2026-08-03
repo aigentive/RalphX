@@ -163,7 +163,12 @@ case "${command_name}" in
         log_mutation "edit:${tag}"
         while [[ $# -gt 0 ]]; do
           case "$1" in
-            --repo|--title|--notes-file)
+            --repo|--title)
+              shift 2
+              ;;
+            --notes-file)
+              cp "$2" "${state}/releases/${tag}/body.md"
+              log_mutation "body:${tag}"
               shift 2
               ;;
             --prerelease)
@@ -209,6 +214,11 @@ case "${command_name}" in
               ;;
             *)
               cp "$1" "${destination}/$(basename "$1")"
+              # Fault injection: simulate a release asset that does not match what was uploaded.
+              if [[ "${FAKE_GH_CORRUPT_UPLOAD_TAG:-}" == "${tag}" \
+                && "$(basename "$1")" == "latest.json" ]]; then
+                printf 'corrupted\n' >>"${destination}/latest.json"
+              fi
               shift
               ;;
           esac
@@ -367,6 +377,7 @@ reset_state() {
   TEST_GH_FAIL_CREATE_TAG=""
   TEST_GH_CREATE_IMMUTABLE_TAG=""
   TEST_SHASUM_FAIL="false"
+  TEST_GH_CORRUPT_UPLOAD_TAG=""
 }
 
 make_release() {
@@ -534,6 +545,81 @@ run_control() {
       --repo example/ralphx \
       --work-dir "${TEST_TMP}/control-${operation}" \
       --output "${TEST_TMP}/result-${operation}.env"
+}
+
+run_control_with_notes() {
+  local operation="$1"
+  local candidate="$2"
+  local bad="$3"
+  local restore="$4"
+  local body_notes="$5"
+  local pointer_notes="$6"
+  local extra_args=()
+  [[ -z "${body_notes}" ]] || extra_args+=(--promote-body-notes-file "${body_notes}")
+  [[ -z "${pointer_notes}" ]] || extra_args+=(--pointer-notes-file "${pointer_notes}")
+  FAKE_GH_STATE="${STATE_DIR}" \
+    FAKE_GH_FAIL_CREATE_TAG="${TEST_GH_FAIL_CREATE_TAG}" \
+    FAKE_GH_CREATE_IMMUTABLE_TAG="${TEST_GH_CREATE_IMMUTABLE_TAG}" \
+    FAKE_GH_CORRUPT_UPLOAD_TAG="${TEST_GH_CORRUPT_UPLOAD_TAG}" \
+    FAKE_SHASUM_FAIL="${TEST_SHASUM_FAIL}" \
+    REAL_SHASUM="${REAL_SHASUM}" \
+    FAKE_CURL_MODE="${TEST_CURL_MODE}" \
+    RELEASE_PUBLIC_VERIFY_ATTEMPTS="${TEST_ATTEMPTS}" \
+    RELEASE_PUBLIC_VERIFY_DELAY_SECONDS="${TEST_DELAY_SECONDS}" \
+    PATH="${FAKE_BIN}:${PATH}" \
+    bash "${ROOT_DIR}/scripts/reconcile-stable-release-state.sh" \
+      --operation "${operation}" \
+      --candidate-tag "${candidate}" \
+      --bad-tag "${bad}" \
+      --restore-tag "${restore}" \
+      --repo example/ralphx \
+      --work-dir "${TEST_TMP}/control-notes-${operation}-$$-${RANDOM}" \
+      --output "${TEST_TMP}/result-notes-${operation}.env" \
+      "${extra_args[@]}"
+}
+
+write_combined_notes() {
+  local stem="$1"
+  printf 'Combined %s body.\n\n## User-Facing Changes\n- Merged bullet.\n' "${stem}" \
+    >"${TEST_TMP}/${stem}-body.md"
+  printf 'Combined %s updater.\n' "${stem}" >"${TEST_TMP}/${stem}-updater.md"
+}
+
+assert_release_body() {
+  local tag="$1"
+  local expected_file="$2"
+  cmp -s "${STATE_DIR}/releases/${tag}/body.md" "${expected_file}" \
+    || fail "release body for ${tag} does not match ${expected_file}"
+}
+
+assert_manifest_notes() {
+  local manifest="$1"
+  local expected_file="$2"
+  local actual="${TEST_TMP}/actual-notes.$$"
+  jq -jr '.notes' "${manifest}" >"${actual}"
+  cmp -s "${actual}" "${expected_file}" \
+    || fail "notes in ${manifest} do not match ${expected_file}"
+  rm -f "${actual}"
+}
+
+# Pointer notes derived by reading a manifest back (every halt, and every promotion without
+# combined-notes overrides) pass through `jq -r '.notes'`, which appends one trailing newline.
+# That is long-standing behavior on those paths, so compare notes content rather than bytes there.
+assert_manifest_notes_content() {
+  local manifest="$1"
+  local expected_file="$2"
+  local actual="${TEST_TMP}/actual-notes-content.$$"
+  jq -jr '.notes' "${manifest}" | sed -e :a -e '/^\n*$/{$d;N;};/\n$/ba' >"${actual}"
+  diff <(sed -e :a -e '/^\n*$/{$d;N;};/\n$/ba' "${expected_file}") "${actual}" >/dev/null \
+    || fail "notes content in ${manifest} does not match ${expected_file}"
+  rm -f "${actual}"
+}
+
+assert_manifest_identical_except_notes() {
+  local left="$1"
+  local right="$2"
+  diff <(jq -S 'del(.notes)' "${left}") <(jq -S 'del(.notes)' "${right}") >/dev/null \
+    || fail "${left} and ${right} differ outside .notes"
 }
 
 run_fake_gh() {
@@ -849,6 +935,114 @@ make_nightly_pointers v1.0.0
 set_nightly_pointer_arch aarch64 v1.1.0
 assert_fails rejects_unrelated_nightly_pointer_split run_nightly_control v1.2.0
 assert_no_mutations
+fi
+
+# Combined-notes promotion: presentation-only overrides on the promoted release and both pointers.
+if [[ "${pointer_test_scope}" == "all" || "${pointer_test_scope}" == "stable" || "${pointer_test_scope}" == "stable-core" ]]; then
+  # Flag validation fails closed before any gh call. Each case runs against a state where the
+  # requested operation would otherwise succeed, so only the guard can explain the rejection.
+  write_combined_notes flagcheck
+  : >"${TEST_TMP}/flagcheck-empty.md"
+
+  setup_promotable_pair
+  assert_fails rejects_pointer_notes_without_body \
+    run_control_with_notes promote v1.1.0 "" "" "" "${TEST_TMP}/flagcheck-updater.md"
+  assert_no_mutations
+  setup_promotable_pair
+  assert_fails rejects_body_notes_without_pointer \
+    run_control_with_notes promote v1.1.0 "" "" "${TEST_TMP}/flagcheck-body.md" ""
+  assert_no_mutations
+  setup_promotable_pair
+  assert_fails rejects_empty_notes_override \
+    run_control_with_notes promote v1.1.0 "" "" "${TEST_TMP}/flagcheck-body.md" "${TEST_TMP}/flagcheck-empty.md"
+  assert_no_mutations
+  setup_promotable_pair
+  assert_fails rejects_missing_notes_override \
+    run_control_with_notes promote v1.1.0 "" "" "${TEST_TMP}/flagcheck-body.md" "${TEST_TMP}/absent-notes.md"
+  assert_no_mutations
+
+  # Control: this exact promote state succeeds without the notes flags.
+  setup_promotable_pair
+  run_control promote v1.1.0 "" ""
+  assert_release_state v1.1.0 $'false\tfalse\ttrue'
+
+  # Halt rejects the overrides even from a state where halt would otherwise converge.
+  setup_haltable_state
+  make_release updater-nightly false false
+  assert_fails rejects_notes_overrides_on_halt \
+    run_control_with_notes halt "" v1.2.0 v1.1.0 "${TEST_TMP}/flagcheck-body.md" "${TEST_TMP}/flagcheck-updater.md"
+  assert_no_mutations
+  # Control: the same halt state converges once the overrides are dropped.
+  run_control halt "" v1.2.0 v1.1.0
+  assert_release_state v1.1.0 $'false\tfalse\ttrue'
+
+  # A promotion carrying combined notes rewrites the body, the versioned manifest, and both pointers.
+  setup_promotable_pair
+  write_combined_notes promote11
+  cp "${STATE_DIR}/releases/v1.1.0/assets/latest.json" "${TEST_TMP}/pre-promote-latest-v1.1.0.json"
+  run_control_with_notes promote v1.1.0 "" "" \
+    "${TEST_TMP}/promote11-body.md" "${TEST_TMP}/promote11-updater.md"
+  assert_release_state v1.1.0 $'false\tfalse\ttrue'
+  assert_pointer_versions v1.1.0
+  assert_release_body v1.1.0 "${TEST_TMP}/promote11-body.md"
+  assert_manifest_notes "${STATE_DIR}/releases/v1.1.0/assets/latest.json" "${TEST_TMP}/promote11-updater.md"
+  assert_manifest_notes "${STATE_DIR}/releases/updater-stable/assets/latest-aarch64.json" "${TEST_TMP}/promote11-updater.md"
+  assert_manifest_notes "${STATE_DIR}/releases/updater-stable/assets/latest-x86_64.json" "${TEST_TMP}/promote11-updater.md"
+  # Only .notes changed: version, fixed URLs, and signature bytes survive the clobber.
+  assert_manifest_identical_except_notes \
+    "${TEST_TMP}/pre-promote-latest-v1.1.0.json" "${STATE_DIR}/releases/v1.1.0/assets/latest.json"
+  # Presentation must follow proven GitHub authority, never precede it.
+  assert_mutation_precedes edit:v1.1.0 body:v1.1.0
+  assert_mutation_precedes body:v1.1.0 upload:updater-stable
+
+  # An exact rerun regenerates and reapplies the same presentation idempotently.
+  run_control_with_notes promote v1.1.0 "" "" \
+    "${TEST_TMP}/promote11-body.md" "${TEST_TMP}/promote11-updater.md"
+  assert_release_state v1.1.0 $'false\tfalse\ttrue'
+  assert_pointer_versions v1.1.0
+  assert_release_body v1.1.0 "${TEST_TMP}/promote11-body.md"
+  assert_manifest_notes "${STATE_DIR}/releases/v1.1.0/assets/latest.json" "${TEST_TMP}/promote11-updater.md"
+
+  # Halt after a combined-notes promotion restores from the restore release's own latest.json notes.
+  make_release v1.2.0 true false
+  make_source_assets v1.2.0
+  write_combined_notes promote12
+  run_control_with_notes promote v1.2.0 "" "" \
+    "${TEST_TMP}/promote12-body.md" "${TEST_TMP}/promote12-updater.md"
+  assert_pointer_versions v1.2.0
+  assert_manifest_notes "${STATE_DIR}/releases/updater-stable/assets/latest-aarch64.json" "${TEST_TMP}/promote12-updater.md"
+  run_control halt "" v1.2.0 v1.1.0
+  assert_release_state v1.2.0 $'false\ttrue\tfalse'
+  assert_release_state v1.1.0 $'false\tfalse\ttrue'
+  assert_pointer_versions v1.1.0
+  # The restored pointers carry v1.1.0's own combined notes, not v1.2.0's and not the stale per-build note.
+  assert_manifest_notes_content "${STATE_DIR}/releases/updater-stable/assets/latest-aarch64.json" "${TEST_TMP}/promote11-updater.md"
+  assert_manifest_notes_content "${STATE_DIR}/releases/updater-stable/assets/latest-x86_64.json" "${TEST_TMP}/promote11-updater.md"
+  if jq -jr '.notes' "${STATE_DIR}/releases/updater-stable/assets/latest-aarch64.json" | grep -q 'promote12'; then
+    fail "halt left the demoted release's combined notes on the restored pointers"
+  fi
+
+  # A published latest.json that diverges from the staged manifest fails closed, before pointers publish.
+  setup_promotable_pair
+  write_combined_notes corrupt11
+  TEST_GH_CORRUPT_UPLOAD_TAG=v1.1.0
+  assert_fails rejects_diverged_published_latest_json \
+    run_control_with_notes promote v1.1.0 "" "" \
+      "${TEST_TMP}/corrupt11-body.md" "${TEST_TMP}/corrupt11-updater.md"
+  TEST_GH_CORRUPT_UPLOAD_TAG=""
+  assert_pointer_assets_absent
+
+  # Promotion without overrides leaves the body untouched and keeps the per-build manifest notes.
+  setup_promotable_pair
+  cp "${STATE_DIR}/releases/v1.1.0/assets/latest.json" "${TEST_TMP}/untouched-latest-v1.1.0.json"
+  run_control promote v1.1.0 "" ""
+  assert_pointer_versions v1.1.0
+  [[ ! -f "${STATE_DIR}/releases/v1.1.0/body.md" ]] \
+    || fail "promotion without notes overrides rewrote the release body"
+  cmp -s "${TEST_TMP}/untouched-latest-v1.1.0.json" "${STATE_DIR}/releases/v1.1.0/assets/latest.json" \
+    || fail "promotion without notes overrides replaced the versioned manifest"
+  assert_manifest_notes_content "${STATE_DIR}/releases/updater-stable/assets/latest-aarch64.json" \
+    "${TEST_TMP}/notes-v1.1.0.md"
 fi
 
 echo "PASS: fake-gh/curl release control proves Stable recovery, Nightly monotonicity, fail-closed state classification, and bounded cache retries"

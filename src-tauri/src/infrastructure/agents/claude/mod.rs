@@ -31,6 +31,7 @@ pub use agent_config::live_flags::LiveFlagOverrideTestGuard;
 pub use agent_config::process_config::{resolve_process_agent, ProcessMapping, ProcessSlot};
 pub use agent_config::{
     agent_configs, agent_harness_defaults_config, agent_personas_enabled, automations_config,
+    bounded_external_mcp_shutdown_grace_ms, bounded_shutdown_watchdog_deadline_secs,
     claude_runtime_config, config_path, database_maintenance_config, defer_merge_enabled,
     delegation_config, execution_defaults_config, external_mcp_config, external_mcp_config_path,
     file_logging_enabled, get_agent_config, get_agent_config_for_profile, get_allowed_tools,
@@ -38,13 +39,15 @@ pub use agent_config::{
     get_preapproved_tools, get_preapproved_tools_for_profile, git_runtime_config,
     ideation_activity_threshold_secs, limits_config, process_mapping, reconciliation_config,
     resolve_file_logging_early, resolve_file_logging_limits_early, scheduler_config,
-    standalone_conversations_enabled, stream_timeouts, supervisor_runtime_config,
+    shutdown_config, standalone_conversations_enabled, stream_timeouts, supervisor_runtime_config,
     ui_feature_flags_config, validate_external_mcp_config, verification_config, AgentConfig,
     AgentHarnessDefaultsConfig, AllRuntimeConfig, AutomationsRuntimeConfig,
     DatabaseMaintenanceConfig, DelegationConfig, ExecutionDefaultsConfig, ExternalMcpConfig,
-    GitRuntimeConfig, LimitsConfig, ReconciliationConfig, SchedulerConfig, SpecialistEntry,
+    GitRuntimeConfig, LimitsConfig, ReconciliationConfig, SchedulerConfig, ShutdownConfig,
+    SpecialistEntry,
     StreamTimeoutsConfig,
     SupervisorRuntimeConfig, UiFeatureFlagsConfig, VerificationConfig,
+    MAX_EXTERNAL_MCP_SHUTDOWN_GRACE_MS,
 };
 pub use claude_code_client::kill_all_tracked_processes;
 pub use claude_code_client::ClaudeCodeClient;

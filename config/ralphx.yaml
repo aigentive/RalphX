@@ -31,6 +31,11 @@ file_logging_max_bytes: 1073741824
 # Env override: RALPHX_FILE_LOGGING_KEEP_FILES (default: 5)
 file_logging_keep_files: 5
 
+# Whole-process deadline for RunEvent::Exit cleanup. A detached watchdog forces
+# process exit if terminals, agents, external MCP, or WAL cleanup hangs.
+shutdown:
+  watchdog_deadline_secs: 20 # Env: RALPHX_SHUTDOWN_WATCHDOG_DEADLINE_SECS
+
 # Startup-only SQLite compaction. Manual requests bypass the auto thresholds but not backup/headroom guards.
 # Env: RALPHX_DB_AUTO_COMPACT_ENABLED, RALPHX_DB_AUTO_COMPACT_MAX_DB_BYTES, RALPHX_DB_AUTO_COMPACT_MIN_FREELIST_PERCENT
 database_maintenance:

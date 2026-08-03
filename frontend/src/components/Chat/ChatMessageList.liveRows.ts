@@ -17,10 +17,9 @@ export type StreamingThinkingBlock = Extract<StreamingContentBlock, { type: "thi
 
 export type LiveTranscriptRow =
   | {
-      kind: "thinking";
+      kind: "thinking_group";
       key: string;
-      block: StreamingThinkingBlock;
-      index: number;
+      blocks: Array<{ block: StreamingThinkingBlock; index: number }>;
       sourceIndex: number;
       receivedAt?: number;
     }
@@ -97,12 +96,14 @@ export function synchronizeThinkingGroupExpansion(
   rows: LiveTranscriptRow[],
   intentByGroupKey: ReadonlyMap<string, ThinkingGroupIntent>,
 ): Set<string> {
-  const thinkingRows = rows.filter((row) => row.kind === "thinking");
-  const latestRunningThinking = [...thinkingRows].reverse().find((row) => !row.block.isSettled);
+  const thinkingRows = rows.filter((row) => row.kind === "thinking_group");
+  const latestRunningThinking = [...thinkingRows].reverse().find((row) => (
+    row.blocks.some(({ block }) => block.isSettled !== true)
+  ));
   let next = current;
 
   for (const row of thinkingRows) {
-    const groupKey = liveThinkingGroupKey(row.block, row.index);
+    const groupKey = row.key;
     const intent = intentByGroupKey.get(groupKey);
     const shouldExpand = intent === "expanded" || (
       intent === undefined && latestRunningThinking === row
@@ -178,14 +179,18 @@ export function buildLiveTranscriptRows(
         || block.estimatedTokens != null
         || block.isSettled !== true;
       if (hasContent) {
-        rows.push({
-          kind: "thinking",
-          key: liveThinkingGroupKey(block, index),
-          block,
-          index,
-          sourceIndex: index,
-          ...(block.receivedAt != null ? { receivedAt: block.receivedAt } : {}),
-        });
+        const previousRow = rows[rows.length - 1];
+        if (previousRow?.kind === "thinking_group") {
+          previousRow.blocks.push({ block, index });
+        } else {
+          rows.push({
+            kind: "thinking_group",
+            key: liveThinkingGroupKey(block, index),
+            blocks: [{ block, index }],
+            sourceIndex: index,
+            ...(block.receivedAt != null ? { receivedAt: block.receivedAt } : {}),
+          });
+        }
       }
       index += 1;
       continue;
@@ -196,7 +201,7 @@ export function buildLiveTranscriptRows(
     let endIndex = index;
     while (endIndex < contentBlocks.length) {
       const nextBlock = contentBlocks[endIndex];
-      if (!nextBlock || nextBlock.type === "text") {
+      if (!nextBlock || nextBlock.type === "text" || nextBlock.type === "thinking") {
         break;
       }
       if (nextBlock.type === "tool_use" && !shouldHideToolCall(nextBlock.toolCall)) {
