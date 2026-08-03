@@ -16,7 +16,11 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 from claude_rule_utils import matches  # noqa: E402
 
 
-def load_path_filters(workflow: str) -> dict[str, tuple[str, ...]]:
+PathRule = tuple[str, ...]
+PathFilters = dict[str, tuple[PathRule, ...]]
+
+
+def load_path_filters(workflow: str) -> PathFilters:
     lines = (ROOT / workflow).read_text(encoding="utf-8").splitlines()
     quantifier = next(
         (
@@ -26,17 +30,18 @@ def load_path_filters(workflow: str) -> dict[str, tuple[str, ...]]:
         ),
         "some",
     )
-    if quantifier != "some-with-excludes":
+    if quantifier != "every":
         raise AssertionError(
-            f"{workflow} must use predicate-quantifier: some-with-excludes "
+            f"{workflow} must use predicate-quantifier: every "
             "when filters contain negated patterns"
         )
     filter_index = next(
         index for index, line in enumerate(lines) if line.strip() == "filters: |"
     )
     filter_indent = len(lines[filter_index]) - len(lines[filter_index].lstrip())
-    groups: dict[str, list[str]] = {}
+    groups: dict[str, list[PathRule]] = {}
     current_group: str | None = None
+    current_rule_index: int | None = None
 
     for line in lines[filter_index + 1 :]:
         stripped = line.strip()
@@ -49,23 +54,40 @@ def load_path_filters(workflow: str) -> dict[str, tuple[str, ...]]:
         if indent == filter_indent + 2 and stripped.endswith(":"):
             current_group = stripped[:-1]
             groups[current_group] = []
+            current_rule_index = None
             continue
         if indent == filter_indent + 4 and stripped.startswith("- "):
             if current_group is None:
                 raise AssertionError(f"path pattern without a filter group in {workflow}")
-            groups[current_group].append(ast.literal_eval(stripped[2:]))
+            rule = stripped[2:]
+            if rule == "added|modified|deleted:":
+                current_rule_index = len(groups[current_group])
+                groups[current_group].append(())
+            else:
+                current_rule_index = None
+                groups[current_group].append((ast.literal_eval(rule),))
+            continue
+        if indent == filter_indent + 8 and stripped.startswith("- "):
+            if current_group is None or current_rule_index is None:
+                raise AssertionError(f"path alternative without a rule in {workflow}")
+            groups[current_group][current_rule_index] += (
+                ast.literal_eval(stripped[2:]),
+            )
             continue
         raise AssertionError(f"unsupported path-filter line in {workflow}: {line}")
 
-    return {name: tuple(patterns) for name, patterns in groups.items()}
+    return {name: tuple(rules) for name, rules in groups.items()}
 
 
-def filter_matches(patterns: tuple[str, ...], changed_paths: tuple[str, ...]) -> bool:
-    positive_patterns = tuple(pattern for pattern in patterns if not pattern.startswith("!"))
-    negative_patterns = tuple(pattern[1:] for pattern in patterns if pattern.startswith("!"))
+def rule_matches(rule: PathRule, path: str) -> bool:
+    if len(rule) == 1 and rule[0].startswith("!"):
+        return not matches(rule[0][1:], path)
+    return any(matches(pattern, path) for pattern in rule)
+
+
+def filter_matches(rules: tuple[PathRule, ...], changed_paths: tuple[str, ...]) -> bool:
     return any(
-        any(matches(pattern, path) for pattern in positive_patterns)
-        and not any(matches(pattern, path) for pattern in negative_patterns)
+        all(rule_matches(rule, path) for rule in rules)
         for path in changed_paths
     )
 
@@ -79,7 +101,7 @@ class DocumentationOnlyScopeTests(unittest.TestCase):
 
     def assert_filter(
         self,
-        groups: dict[str, tuple[str, ...]],
+        groups: PathFilters,
         group: str,
         changed_paths: tuple[str, ...],
         expected: bool,
