@@ -3,8 +3,6 @@ paths:
   - "src-tauri/src/application/**"
   - "src-tauri/src/infrastructure/agents/**"
   - "src-tauri/src/commands/**"
-  - "frontend/src/**"
-  - "docs/**"
   - "AGENTS.md"
 ---
 

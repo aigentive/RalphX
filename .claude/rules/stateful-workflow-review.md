@@ -1,5 +1,3 @@
-> **Maintainer note:** Keep this file compact. Prefer one-line rules, links to source docs, and explicit non-negotiables over prose.
-
 ---
 paths:
   - "src-tauri/src/application/chat_service/**"
@@ -11,6 +9,8 @@ paths:
   - "agents/ralphx-execution-*/**"
   - "docs/handoffs/**"
 ---
+
+> **Maintainer note:** Keep this file compact. Prefer one-line rules, links to source docs, and explicit non-negotiables over prose.
 
 # Stateful Workflow Review
 
