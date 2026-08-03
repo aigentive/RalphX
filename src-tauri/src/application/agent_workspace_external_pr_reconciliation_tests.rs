@@ -359,6 +359,7 @@ async fn live_reconciliation_fails_closed_without_a_durable_repair_repository() 
     let chat = Arc::new(MockChatService::new());
     deps.pr_poller_registry = Some(Arc::clone(&registry));
     deps.chat_service = Some(chat.clone() as Arc<dyn ChatService>);
+    deps.agent_workspace_repair_repo = None;
 
     let error = reconcile_agent_workspace_external_pr(
         deps,
