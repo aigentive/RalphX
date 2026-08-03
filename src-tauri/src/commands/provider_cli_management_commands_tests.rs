@@ -682,6 +682,8 @@ async fn active_runtime_detection_matches_interactive_process_metadata() {
                 provider_session_id: Some("thread-123".to_string()),
                 persona_id: None,
                 persona_content_hash: None,
+                agent_name: None,
+                agent_profile: None,
             },
         )
         .await;

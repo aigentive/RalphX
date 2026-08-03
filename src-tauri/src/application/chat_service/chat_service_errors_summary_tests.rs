@@ -193,10 +193,156 @@ fn codex_local_diagnostics_without_runtime_error_returns_local_tool_failed() {
 
     match result {
         StreamError::LocalToolFailed { message } => {
-            assert_eq!(message, "local MCP tool failed");
+            // The terminal fact is that the stream ended without completing; the
+            // tool diagnostic is retained as supporting evidence behind it.
+            assert_eq!(
+                message,
+                "Codex stream ended without a completion signal; \
+                 local tool diagnostics from this turn: local MCP tool failed"
+            );
         }
         other => panic!("expected local tool failure, got {other:?}"),
     }
+}
+
+#[test]
+fn codex_stream_end_without_completion_is_not_reported_as_the_stale_tool_diagnostic() {
+    // Reproduces the real incident: a mid-turn `rg` exit code 2 that the agent
+    // recovered from, followed by the stream ending with no completion signal.
+    let local_tool_errors =
+        vec!["rg: Cargo.toml: No such file or directory (os error 2)".to_string()];
+
+    let result = classify_codex_stream_failure(&[], &local_tool_errors, Some(0), false)
+        .expect("a stream that ended without completing must still classify as a failure");
+
+    match result {
+        StreamError::LocalToolFailed { message } => {
+            assert!(
+                message.starts_with("Codex stream ended without a completion signal"),
+                "terminal cause must lead the message, got: {message}"
+            );
+            assert!(
+                message.contains("rg: Cargo.toml: No such file or directory"),
+                "supporting diagnostics must be retained, got: {message}"
+            );
+        }
+        other => panic!("expected LocalToolFailed, got {other:?}"),
+    }
+}
+
+#[test]
+fn codex_oversized_local_diagnostics_are_bounded_keeping_head_and_tail() {
+    let local_tool_errors = vec![format!(
+        "HEAD-MARKER{}TAIL-MARKER",
+        "successful ripgrep output line\n".repeat(8_000)
+    )];
+    assert!(
+        local_tool_errors[0].len() > 100_000,
+        "fixture must exceed the observed 124KB-class blob scale"
+    );
+
+    let result = classify_codex_stream_failure(&[], &local_tool_errors, Some(0), false)
+        .expect("oversized diagnostics must still classify");
+
+    match result {
+        StreamError::LocalToolFailed { message } => {
+            assert!(
+                message.len() < 8_000,
+                "terminal message must stay bounded, got {} bytes",
+                message.len()
+            );
+            assert!(message.contains("HEAD-MARKER"), "head must be preserved");
+            assert!(message.contains("TAIL-MARKER"), "tail must be preserved");
+            assert!(message.contains("bytes elided"), "elision must be explicit");
+        }
+        other => panic!("expected LocalToolFailed, got {other:?}"),
+    }
+}
+
+#[test]
+fn codex_oversized_validation_diagnostics_are_bounded() {
+    let local_tool_errors = vec![format!(
+        "{VALIDATION_FAILED_ERROR_CODE} HEAD-MARKER{}TAIL-MARKER",
+        "validation transcript line\n".repeat(8_000)
+    )];
+
+    let result = classify_codex_stream_failure(&[], &local_tool_errors, Some(1), false)
+        .expect("validation failure should classify");
+
+    match result {
+        StreamError::ValidationFailed { message } => {
+            assert!(
+                message.len() < 8_000,
+                "validation message must stay bounded, got {} bytes",
+                message.len()
+            );
+            assert!(message.contains(VALIDATION_FAILED_ERROR_CODE));
+            assert!(message.contains("TAIL-MARKER"), "tail must be preserved");
+            assert!(message.contains("bytes elided"), "elision must be explicit");
+        }
+        other => panic!("expected validation failure, got {other:?}"),
+    }
+}
+
+#[test]
+fn codex_oversized_runtime_and_local_errors_bound_agent_exit_stderr() {
+    let runtime_errors = vec![format!("codex runtime failure {}", "x".repeat(60_000))];
+    let local_tool_errors = vec!["y".repeat(60_000)];
+
+    let result = classify_codex_stream_failure(&runtime_errors, &local_tool_errors, Some(1), false)
+        .expect("runtime failure must classify");
+
+    match result {
+        StreamError::AgentExit { stderr, .. } => {
+            assert!(
+                stderr.len() < 8_000,
+                "agent exit stderr must stay bounded, got {} bytes",
+                stderr.len()
+            );
+            assert!(stderr.contains("codex runtime failure"));
+            assert!(stderr.contains("bytes elided"), "elision must be explicit");
+        }
+        other => panic!("expected AgentExit, got {other:?}"),
+    }
+}
+
+/// Both the head cut and the tail cut land mid-codepoint for a 3-byte-char blob,
+/// because neither the diagnostic bound nor its half is a multiple of 3. Slicing
+/// there would panic, so both cuts must be walked to a char boundary first.
+#[test]
+fn codex_oversized_multibyte_diagnostics_never_split_a_codepoint() {
+    let blob = "€".repeat(2_000);
+    assert_eq!(
+        blob.len(),
+        6_000,
+        "fixture must exceed the diagnostic bound"
+    );
+
+    let result = classify_codex_stream_failure(&[], std::slice::from_ref(&blob), Some(0), false)
+        .expect("oversized diagnostics must still classify");
+
+    let StreamError::LocalToolFailed { message } = result else {
+        panic!("expected LocalToolFailed");
+    };
+
+    // head cut 2000 -> 1998 (walked down), tail cut 4000 -> 4002 (walked up).
+    let retained = "€".repeat(666);
+    assert!(
+        message.ends_with(&retained),
+        "the retained tail must decode as whole codepoints"
+    );
+    assert!(
+        message.contains(&format!(
+            "{retained}\n... {} bytes elided ...\n",
+            6_000 - 1_998 - 1_998
+        )),
+        "the retained head must decode as whole codepoints and precede the elision notice"
+    );
+    assert_eq!(
+        message.matches('€').count(),
+        1_332,
+        "no partial codepoint may survive the bound"
+    );
 }
 
 #[test]

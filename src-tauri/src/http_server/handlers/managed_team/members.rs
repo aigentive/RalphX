@@ -19,9 +19,6 @@ use crate::application::managed_team::{
     ManagedTeamAssignmentRequest, ManagedTeamMemberSpec, ManagedTeamWorkspaceRequest,
     TeamExitAction,
 };
-use crate::http_server::native_delegation_launcher::{
-    NativeDelegationLaunchParent, NativeDelegationLaunchRequest, NativeDelegationLauncher,
-};
 use crate::application::AgentTaskService;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort, DEFAULT_AGENT_HARNESS};
 use crate::domain::entities::{
@@ -30,6 +27,9 @@ use crate::domain::entities::{
 };
 use crate::http_server::handlers::coordination::{
     ensure_delegated_conversation, fail_started_delegated_launch,
+};
+use crate::http_server::native_delegation_launcher::{
+    NativeDelegationLaunchParent, NativeDelegationLaunchRequest, NativeDelegationLauncher,
 };
 use crate::http_server::types::{
     AddManagedTeamMemberRequest, AssignManagedTeamMemberRequest, ExitManagedTeamRequest,
@@ -333,6 +333,8 @@ pub async fn assign_managed_team_member(
         harness,
     );
     delegated.status = "pending".to_string();
+    delegated.delegate_context_authorized = true;
+    delegated.caller_conversation_id = Some(authority.conversation_id.as_str());
     delegated.parent_message_id = None;
     delegated.title = Some(format!("Team assignment: {}", member.name));
     let delegated = state
@@ -431,6 +433,7 @@ pub async fn assign_managed_team_member(
                 parent_conversation_id: Some(authority.conversation_id.as_str()),
                 ideation_verification: false,
             },
+            inherit_context: true,
             caller_agent_run_id: Some(authority.run_id.as_str()),
             target_agent_name: plan.member.canonical_agent_name.clone(),
             reusable_delegated_session: Some(delegated.clone()),

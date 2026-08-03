@@ -1,3 +1,6 @@
+use super::plan_edit_handoff::{
+    finish_plan_to_edit_handoff_after_commit, stop_plan_to_edit_handoff_before_commit,
+};
 use super::{
     agent_conversation_response_for_state, agent_conversation_responses_for_state,
     agent_workspace_freshness_cache, agent_workspace_freshness_cache_key,
@@ -6,10 +9,11 @@ use super::{
     apply_base_resolution_to_publish_target, archive_agent_conversation,
     build_agent_workspace_publish_repair_message_for_target,
     build_agent_workspace_repair_message_for_target, cached_agent_workspace_freshness,
-    create_agent_conversation, emit_agent_conversation_fork_events,
-    ensure_plan_workspace_planning_session_link_for_send, existing_pr_retarget_block_reason,
-    filter_agent_list_visible_conversations, fork_agent_conversation,
-    fork_agent_conversation_response_for_state, fork_terminal_agent_conversation_for_send,
+    compose_blocked_repair_retry_context, create_agent_conversation,
+    emit_agent_conversation_fork_events, ensure_plan_workspace_planning_session_link_for_send,
+    existing_pr_retarget_block_reason, filter_agent_list_visible_conversations,
+    fork_agent_conversation, fork_agent_conversation_response_for_state,
+    fork_terminal_agent_conversation_for_send,
     get_agent_conversation_messages_page_for_app_state,
     get_agent_conversation_runtime_index_for_app_state,
     get_agent_conversation_runtime_statuses_for_app_state,
@@ -3699,6 +3703,190 @@ async fn seed_blocked_command_repair_attempt(
     }
 }
 
+#[test]
+fn blocked_workspace_repair_retry_context_carries_blocker_commit_and_base_retarget() {
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        ChatConversationId::from_string("retry-context-blocker".to_string()),
+        AgentWorkspaceRepairSource::BaseUpdate,
+        AgentWorkspaceRepairContinuation::UpdateOnly,
+        "ralphx/old",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    attempt.blocker = Some("old base ref was deleted after its PR merged".to_string());
+    attempt.repair_head_commit = Some("bba066f".to_string());
+    attempt.pending_reasons = vec![
+        "real repair failure".to_string(),
+        crate::application::agent_workspace_publish_repair_state::NEEDS_HUMAN_REPAIR_REASON
+            .to_string(),
+    ];
+
+    let context = compose_blocked_repair_retry_context(&attempt, "main");
+
+    assert!(context.contains("old base ref was deleted after its PR merged"));
+    assert!(context.contains("bba066f"));
+    assert!(context.contains("ralphx/old"));
+    assert!(context.contains("main"));
+    assert!(!context.contains(
+        crate::application::agent_workspace_publish_repair_state::NEEDS_HUMAN_REPAIR_REASON
+    ));
+}
+
+#[test]
+fn blocked_workspace_repair_retry_context_uses_summary_when_no_human_reason_exists() {
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        ChatConversationId::from_string("retry-context-summary".to_string()),
+        AgentWorkspaceRepairSource::BaseUpdate,
+        AgentWorkspaceRepairContinuation::UpdateOnly,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    attempt.pending_reasons = vec![
+        crate::application::agent_workspace_publish_repair_state::NEEDS_HUMAN_REPAIR_REASON
+            .to_string(),
+    ];
+    attempt.summary = Some("repair summary retained for retry".to_string());
+
+    let context = compose_blocked_repair_retry_context(&attempt, "main");
+
+    assert!(context.contains("repair summary retained for retry"));
+    assert!(!context.contains(
+        crate::application::agent_workspace_publish_repair_state::NEEDS_HUMAN_REPAIR_REASON
+    ));
+}
+
+#[test]
+fn blocked_workspace_repair_retry_context_prefers_human_reason_over_summary() {
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        ChatConversationId::from_string("retry-context-human-reason".to_string()),
+        AgentWorkspaceRepairSource::BaseUpdate,
+        AgentWorkspaceRepairContinuation::UpdateOnly,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    attempt.pending_reasons = vec!["real reason".to_string()];
+    attempt.summary = Some("internal delivery message".to_string());
+
+    let context = compose_blocked_repair_retry_context(&attempt, "main");
+
+    assert!(context.contains("real reason"));
+    assert!(!context.contains("internal delivery message"));
+}
+
+#[test]
+fn blocked_workspace_repair_retry_context_uses_default_without_human_context() {
+    let attempt = AgentWorkspaceRepairAttempt::new(
+        ChatConversationId::from_string("retry-context-default".to_string()),
+        AgentWorkspaceRepairSource::BaseUpdate,
+        AgentWorkspaceRepairContinuation::UpdateOnly,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+
+    let context = compose_blocked_repair_retry_context(&attempt, "main");
+
+    assert!(context.contains("Retrying blocked workspace repair."));
+}
+
+#[test]
+fn blocked_workspace_repair_retry_context_omits_retarget_details_for_same_base() {
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        ChatConversationId::from_string("retry-context-same-base".to_string()),
+        AgentWorkspaceRepairSource::BaseUpdate,
+        AgentWorkspaceRepairContinuation::UpdateOnly,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    attempt.blocker = Some("still needs a repair".to_string());
+
+    let context = compose_blocked_repair_retry_context(&attempt, "main");
+
+    assert!(context.contains("still needs a repair"));
+    assert!(!context.contains("The base has since been updated"));
+}
+
+#[tokio::test]
+async fn explicit_workspace_repair_retry_prompt_carries_predecessor_blocker_and_commit() {
+    let (_temp, state, conversation_id, _github) = setup_publish_command_state(
+        "retry-blocker-context",
+        true,
+        None,
+        Arc::new(MockGithubService::new()),
+    )
+    .await;
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    let blocked = seed_blocked_command_repair_attempt(&state, &workspace).await;
+    let mut enriched = blocked.clone();
+    enriched.blocker = Some("old base ref was deleted after its PR merged".to_string());
+    enriched.repair_head_commit = Some("bba066f".to_string());
+    enriched.pending_reasons.push(
+        crate::application::agent_workspace_publish_repair_state::NEEDS_HUMAN_REPAIR_REASON
+            .to_string(),
+    );
+    enriched.updated_at += chrono::Duration::microseconds(1);
+    match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: enriched,
+            expected_phase: blocked.phase,
+            expected_updated_at: blocked.updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Blocked,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("persist predecessor repair context")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_) => {}
+        outcome => panic!("expected enriched blocked repair attempt, got {outcome:?}"),
+    }
+    let service = MockChatService::new();
+
+    assert!(
+        retry_blocked_agent_workspace_repair_for_explicit_user_action(
+            &state,
+            &workspace,
+            &service,
+            AgentWorkspacePostRepairAction::UpdateOnly,
+        )
+        .await
+    );
+
+    let messages = service.get_sent_messages().await;
+    assert_eq!(messages.len(), 1);
+    assert!(messages[0].contains(
+        "Error: Previous repair attempt was blocked: old base ref was deleted after its PR merged"
+    ));
+    assert!(messages[0].contains("bba066f"));
+    assert!(!messages[0].contains(
+        crate::application::agent_workspace_publish_repair_state::NEEDS_HUMAN_REPAIR_REASON
+    ));
+}
+
 #[tokio::test]
 async fn explicit_workspace_repair_retry_prompt_uses_root_pending_reason_not_delivery_summary() {
     let (_temp, state, conversation_id, _github) = setup_publish_command_state(
@@ -3729,7 +3917,7 @@ async fn explicit_workspace_repair_retry_prompt_uses_root_pending_reason_not_del
 
     let messages = service.get_sent_messages().await;
     assert_eq!(messages.len(), 1);
-    assert!(messages[0].contains("Error: publish rejected: protected branch requires approval"));
+    assert!(messages[0].contains("publish rejected: protected branch requires approval"));
     assert!(!messages[0].contains("Automatic repair delivery retries are exhausted"));
 }
 
@@ -9451,6 +9639,73 @@ async fn switching_branchless_chat_to_edit_persists_source_pull_request_metadata
 }
 
 #[tokio::test]
+async fn plan_to_edit_precommit_rejects_a_runtime_that_remains_registered_after_stop() {
+    let state = AppState::new_test();
+    let conversation = ChatConversation::new_project(ProjectId::new());
+    let running_key = RunningAgentKey::new(
+        ChatContextType::Project.to_string(),
+        conversation.id.as_str(),
+    );
+    state
+        .running_agent_registry
+        .register(
+            running_key.clone(),
+            123,
+            conversation.id.as_str(),
+            "run-still-registered".to_string(),
+            None,
+            None,
+        )
+        .await;
+    let service = MockChatService::new();
+
+    let error = stop_plan_to_edit_handoff_before_commit(&state, &service, &conversation)
+        .await
+        .expect_err("a still-registered runtime must block the authority transition");
+
+    assert_eq!(error, "Cannot change mode while the agent is running");
+    assert_eq!(
+        service.get_stop_agent_calls().await,
+        vec![(
+            ChatContextType::Project,
+            conversation.id.as_str().to_string()
+        )]
+    );
+    assert!(state.running_agent_registry.is_running(&running_key).await);
+}
+
+#[tokio::test]
+async fn plan_to_edit_postcommit_preserves_session_when_idle_retirement_is_rejected() {
+    let state = AppState::new_test();
+    let mut conversation = ChatConversation::new_project(ProjectId::new());
+    conversation.set_provider_session_ref(ProviderSessionRef {
+        harness: AgentHarnessKind::Claude,
+        provider_session_id: "planning-session".to_string(),
+    });
+    let conversation_id = conversation.id.as_str().to_string();
+    let service = MockChatService::new();
+    service
+        .set_retire_idle_interactive_process_result(false)
+        .await;
+
+    let error = finish_plan_to_edit_handoff_after_commit(&state, &service, &mut conversation)
+        .await
+        .expect_err("unverified idle retirement must reject direct implementation");
+
+    assert!(error.contains("runtime handoff is still active"));
+    assert_eq!(
+        service.get_retire_idle_interactive_process_calls().await,
+        vec![(ChatContextType::Project, conversation_id)]
+    );
+    assert_eq!(
+        conversation
+            .provider_session_ref()
+            .map(|session| session.provider_session_id),
+        Some("planning-session".to_string())
+    );
+}
+
+#[tokio::test]
 async fn accepted_plan_proposal_switch_can_bypass_running_agent_guard() {
     let state = AppState::new_test();
     let project_id = ProjectId::from_string("project-running-plan-switch".to_string());
@@ -9864,7 +10119,7 @@ async fn switching_unlocked_linked_plan_ideation_to_edit_uses_plan_worktree() {
 }
 
 #[tokio::test]
-async fn switching_to_plan_defers_planning_session_until_first_send_and_edit_preserves_it() {
+async fn switching_to_plan_defers_session_and_edit_preserves_link_but_clears_provider() {
     let state = AppState::new_test();
     let temp = tempfile::tempdir().expect("tempdir should be created");
     let repo_path = temp.path().join("repo");
@@ -9931,6 +10186,18 @@ async fn switching_to_plan_defers_planning_session_until_first_send_and_edit_pre
             .await
             .expect("existing planning session should be reused");
     assert!(!second_ensure);
+
+    state
+        .chat_conversation_repo
+        .update_provider_session_ref(
+            &conversation_id,
+            &ProviderSessionRef {
+                harness: AgentHarnessKind::Claude,
+                provider_session_id: "planning-provider-session".to_string(),
+            },
+        )
+        .await
+        .expect("planning provider session should persist before Edit handoff");
 
     let plan_workspace = state
         .agent_conversation_workspace_repo
@@ -10010,6 +10277,7 @@ async fn switching_to_plan_defers_planning_session_until_first_send_and_edit_pre
         Some(session_id.as_str())
     );
     assert!(edit_workspace.linked_plan_branch_id.is_none());
+    assert!(edit_response.conversation.provider_session_id.is_none());
     let cleaned_review = state
         .agent_conversation_workspace_repo
         .get_workspace_review_monitor(&conversation_id)

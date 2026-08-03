@@ -10,6 +10,8 @@ use rusqlite::{params_from_iter, Connection};
 
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
 
+pub(crate) use crate::infrastructure::agent_run_error_message::truncate_persisted_error_message;
+
 fn parse_usage_provenance(value: Option<String>) -> rusqlite::Result<Option<UsageProvenance>> {
     value
         .map(|value| {
@@ -678,16 +680,36 @@ impl AgentRunRepository for SqliteAgentRunRepository {
 
     async fn fail(&self, id: &AgentRunId, error_message: &str) -> AppResult<()> {
         let id = id.as_str().to_string();
-        let error_message = error_message.to_string();
-        self.db
+        let error_message = truncate_persisted_error_message(error_message);
+        let logged_id = id.clone();
+        let logged_error = error_message.clone();
+        let conversation_id = self
+            .db
             .run(move |conn| {
                 conn.execute(
                     "UPDATE agent_runs SET status = 'failed', completed_at = ?1, error_message = ?2 WHERE id = ?3",
                     rusqlite::params![Utc::now().to_rfc3339(), error_message, id],
                 )?;
-                Ok(())
+                let conversation_id = conn
+                    .query_row(
+                        "SELECT conversation_id FROM agent_runs WHERE id = ?1",
+                        rusqlite::params![id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .ok();
+                Ok(conversation_id)
             })
-            .await
+            .await?;
+
+        // A run reaching `failed` must never be visible only as a DB row; the
+        // original incident left no ERROR/WARN trace at all for a 20-minute run.
+        tracing::error!(
+            agent_run_id = %logged_id,
+            conversation_id = conversation_id.as_deref().unwrap_or("unknown"),
+            cause = %logged_error,
+            "Agent run transitioned to failed"
+        );
+        Ok(())
     }
 
     async fn cancel(&self, id: &AgentRunId) -> AppResult<()> {

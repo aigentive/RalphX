@@ -1,6 +1,7 @@
 // Infrastructure layer - external implementations
 // SQLite, file system, and harness-specific external integrations
 
+pub(crate) mod agent_run_error_message;
 pub mod agents;
 pub mod atlassian_client;
 pub mod clickup_client;
@@ -51,6 +52,8 @@ pub use webhook_http_client::{
 };
 pub use webhook_publisher::WebhookPublisher as ConcreteWebhookPublisher;
 
+#[cfg(test)]
+mod agent_run_error_message_tests;
 #[cfg(test)]
 mod atlassian_client_tests;
 #[cfg(test)]

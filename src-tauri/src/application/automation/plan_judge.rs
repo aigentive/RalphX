@@ -15,6 +15,12 @@ const GOAL_ITEMS_MAX_BYTES: usize = 12 * 1024;
 const RUN_PROMPT_MAX_BYTES: usize = 8 * 1024;
 const PLAN_OVERVIEW_MAX_BYTES: usize = 12 * 1024;
 pub(crate) const PLAN_BLUEPRINT_MAX_BYTES: usize = 28 * 1024;
+/// The round the judge sees for the first parked plan version. `plan_revision_round` is 1-based at
+/// judge time: runs are created at 0, and `refresh_plan_park_baseline` increments 0 -> 1 before
+/// `observe_automatic_plan_judge` re-reads the run. Round 2+ therefore means a condensed-Blueprint
+/// revision was already spent, and the judge must decide on the visible portion: the prompt budget
+/// truncates the Blueprint every time, so a permanent veto can never be satisfied.
+const FIRST_JUDGED_PLAN_REVISION_ROUND: i64 = 1;
 const VERIFICATION_MAX_BYTES: usize = 8 * 1024;
 const PREVIOUS_VERDICT_MAX_BYTES: usize = 8 * 1024;
 const MIN_REVISION_INSTRUCTIONS_CHARS: usize = 40;
@@ -106,13 +112,54 @@ pub struct AutomationPlanJudgeVerdict {
 pub struct AutomationPlanJudgeValidationContext<'a> {
     pub expected_overview_artifact_id: Option<&'a str>,
     pub expected_blueprint_artifact_id: Option<&'a str>,
-    pub blueprint_truncated: bool,
+    /// True only while an oversized Blueprint still has an unspent condensed-revision round.
+    /// Derive it with [`plan_blueprint_truncation_policy`] rather than from truncation alone.
+    pub blueprint_truncation_blocks_approval: bool,
+}
+
+/// How the judge must treat a Blueprint that does not fit the prompt budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlanBlueprintTruncationPolicy {
+    /// The Blueprint fits; no truncation-specific rule applies.
+    None,
+    /// The Blueprint overflows and this is the first judged plan version: revise once and ask for a
+    /// condensed Blueprint. Approval is blocked for this round only.
+    RequestCondensedOnce,
+    /// The Blueprint still overflows after a revision round: decide on the visible portion.
+    /// Truncation alone can no longer block approval.
+    JudgeVisiblePortion,
+}
+
+impl PlanBlueprintTruncationPolicy {
+    pub(crate) fn blocks_approval(self) -> bool {
+        matches!(self, Self::RequestCondensedOnce)
+    }
+}
+
+/// Resolves the truncation policy for a Blueprint at a given plan revision round.
+pub(crate) fn plan_blueprint_truncation_policy(
+    blueprint_content: Option<&str>,
+    plan_revision_round: i64,
+) -> PlanBlueprintTruncationPolicy {
+    let truncated =
+        blueprint_content.is_some_and(|content| content.len() > PLAN_BLUEPRINT_MAX_BYTES);
+    if !truncated {
+        return PlanBlueprintTruncationPolicy::None;
+    }
+    if plan_revision_round <= FIRST_JUDGED_PLAN_REVISION_ROUND {
+        PlanBlueprintTruncationPolicy::RequestCondensedOnce
+    } else {
+        PlanBlueprintTruncationPolicy::JudgeVisiblePortion
+    }
 }
 
 pub fn build_automation_plan_judge_prompt(
     input: BuildAutomationPlanJudgePromptInput<'_>,
 ) -> AppResult<String> {
-    let output_contract = output_contract_section();
+    let output_contract = output_contract_section(plan_blueprint_truncation_policy(
+        input.blueprint_content,
+        input.run.plan_revision_round,
+    ));
     if output_contract.len() > AUTOMATION_PLAN_JUDGE_PROMPT_MAX_BYTES {
         return Err(AppError::Validation(
             "automation plan judge output contract exceeds the 64KB argv-safe budget".to_string(),
@@ -299,9 +346,10 @@ pub fn validate_automation_plan_judge_verdict(
 
     match verdict.decision {
         AutomationPlanJudgeDecision::Approve => {
-            if context.blueprint_truncated {
+            if context.blueprint_truncation_blocks_approval {
                 return Err(AppError::Validation(
-                    "plan judge truncated Blueprint cannot be approved".to_string(),
+                    "plan judge truncated Blueprint cannot be approved before a condensed revision round"
+                        .to_string(),
                 ));
             }
             if has_revision_instructions_key {
@@ -421,8 +469,15 @@ fn format_previous_verdict(run: &AutomationRun, previous_verdict_json: Option<&s
     .expect("previous verdict context JSON should serialize")
 }
 
-fn output_contract_section() -> String {
-    r#"
+fn output_contract_section(truncation_policy: PlanBlueprintTruncationPolicy) -> String {
+    let truncation_rule = match truncation_policy {
+        PlanBlueprintTruncationPolicy::None => String::new(),
+        PlanBlueprintTruncationPolicy::RequestCondensedOnce => format!(
+            "\n- The Blueprint section has `truncated=\"true\"`: choose revise and ask for a condensed Blueprint under {PLAN_BLUEPRINT_MAX_BYTES} bytes that preserves scope, recovery, validation, and phase alignment. Never ask for the same document to be resubmitted in full — the prompt budget truncates it again."
+        ),
+        PlanBlueprintTruncationPolicy::JudgeVisiblePortion => "\n- The Blueprint section is still `truncated=\"true\"` after a revision round: judge the visible portion on its merits. Truncation alone is not grounds for revise; approve when the visible plan is ready and revise only for concrete gaps you can point to.".to_string(),
+    };
+    const CONTRACT_HEAD: &str = r#"
 <output_contract truncated="false">
 Return exactly one JSON object:
 {
@@ -438,11 +493,12 @@ Rules:
 - Judge both the Plan Overview and Implementation Blueprint against the automation goal, goal items, current phase, run prompt, advisory spec context, and advisory verification outcome.
 - Verification gap findings inform the verdict but never mandate revise on their own; if verification is unavailable, proceed on the other evidence.
 - Choose approve only when the plan is aligned with the current phase, scoped, plausible, and ready for implementation.
-- Choose revise when the plan is missing required scope, recovery, validation, phase alignment, or feasibility detail.
-- Never approve when the Blueprint section has `truncated="true"`; request a focused revision instead.
+- Choose revise when the plan is missing required scope, recovery, validation, phase alignment, or feasibility detail."#;
+    const CONTRACT_TAIL: &str = r#"
 - Both evaluated artifact ids must exactly match their corresponding plan section attributes.
 - Do not include markdown fences, prose, tool calls, or fields outside the JSON verdict.
 </output_contract>
-"#
-    .to_string()
+"#;
+
+    format!("{CONTRACT_HEAD}{truncation_rule}{CONTRACT_TAIL}")
 }

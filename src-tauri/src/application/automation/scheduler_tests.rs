@@ -26,6 +26,10 @@ use super::plan_gate::{
     ResumeDelivery, AUTOMATION_PLAN_REMINDER_PROMPT, PLAN_JUDGE_FAILED_PAUSED_REASON_CODE,
     PLAN_RESUME_FAILED_ERROR_CODE, PLAN_REVISION_EXHAUSTED_PAUSED_REASON_CODE,
 };
+use super::plan_judge::{
+    build_automation_plan_judge_prompt, plan_blueprint_truncation_policy,
+    BuildAutomationPlanJudgePromptInput, PlanBlueprintTruncationPolicy,
+};
 use super::provisioning::{
     AutomationRunStartOutcome, AutomationRunStartRequest, AutomationRunStarter,
 };
@@ -1604,6 +1608,300 @@ impl ParkedPlanGateScenario {
             .save_verification_run_snapshot(&self.session_id, &snapshot)
             .await
             .unwrap();
+    }
+
+    /// Repoints the linked workspace at a fresh v2 planning session whose bundle is the exact
+    /// overview/blueprint pair. Returns the new session id.
+    async fn link_plan_bundle_session(
+        &self,
+        overview_artifact_id: &str,
+        blueprint_artifact_id: &str,
+    ) -> crate::domain::entities::IdeationSessionId {
+        let session = IdeationSession::builder()
+            .project_id(ProjectId::from_string("project-1".to_string()))
+            .session_flow(IdeationSessionFlow::Planning)
+            .plan_contract_version(2)
+            .plan_artifact_id(ArtifactId::from_string(overview_artifact_id.to_string()))
+            .plan_blueprint_artifact_id(ArtifactId::from_string(blueprint_artifact_id.to_string()))
+            .build();
+        let session_id = session.id.clone();
+        self.session_repo.create(session).await.unwrap();
+        let mut workspace = self
+            .workspace_repo
+            .get_by_conversation_id(&self.conversation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        workspace.linked_ideation_session_id = Some(session_id.clone());
+        self.workspace_repo
+            .create_or_update(workspace)
+            .await
+            .unwrap();
+        session_id
+    }
+
+    /// Replaces the current run with one at an explicit park baseline, so a tick exercises the
+    /// real `refresh_plan_park_baseline` -> re-read -> `observe_automatic_plan_judge` sequence.
+    async fn reset_run_park_baseline(
+        &self,
+        plan_revision_round: i64,
+        parked_overview_artifact_id: Option<&str>,
+        parked_blueprint_artifact_id: Option<&str>,
+    ) {
+        let mut run = automation_run(
+            "run-1",
+            &self.automation_id,
+            AutomationRunStatus::AwaitingPlanApproval,
+            Some(self.conversation_id.clone()),
+        );
+        run.plan_revision_round = plan_revision_round;
+        run.plan_last_parked_artifact_id = parked_overview_artifact_id.map(str::to_string);
+        run.plan_last_parked_blueprint_artifact_id =
+            parked_blueprint_artifact_id.map(str::to_string);
+        self.run_repo
+            .delete_for_automation(&self.automation_id)
+            .await
+            .unwrap();
+        self.run_repo.create_run(run).await.unwrap();
+    }
+}
+
+fn oversized_blueprint_text() -> String {
+    "grounded implementation step ".repeat(10_000)
+}
+
+fn plan_verdict(decision: &str, overview_artifact_id: &str, blueprint_artifact_id: &str) -> String {
+    let mut verdict = json!({
+        "decision": decision,
+        "reason": "The plan is aligned with the automation goal and current phase.",
+        "confidence": "high",
+        "evaluatedOverviewArtifactId": overview_artifact_id,
+        "evaluatedBlueprintArtifactId": blueprint_artifact_id,
+    });
+    if decision == "revise" {
+        verdict["revisionInstructions"] =
+            json!("Condense the Blueprint while preserving scope, recovery, and validation.");
+    }
+    verdict.to_string()
+}
+
+/// Rebuilds the judge prompt from a captured invocation so assertions read the exact prompt the
+/// production seam would have produced for the round the judge actually saw.
+fn prompt_for_invocation(call: &AutomationPlanJudgeInvocation) -> String {
+    build_automation_plan_judge_prompt(BuildAutomationPlanJudgePromptInput {
+        automation: &call.automation,
+        run: &call.run,
+        evaluated_overview_artifact_id: &call.overview_artifact_id,
+        overview_content: &call.overview_content,
+        evaluated_blueprint_artifact_id: call.blueprint_artifact_id.as_deref(),
+        blueprint_content: call.blueprint_content.as_deref(),
+        verification_context: call.verification_context.as_ref(),
+        spec_attachments: &[],
+        previous_verdict_json: call.previous_verdict_json.as_deref(),
+    })
+    .unwrap()
+}
+
+/// The judge never sees `plan_revision_round == 0`: `refresh_plan_park_baseline` moves a fresh run
+/// 0 -> 1 before the scheduler re-reads it, so round 1 is the first judged plan version and must
+/// still spend the condensed-Blueprint veto. Regression for a boundary that made the veto dead.
+#[tokio::test]
+async fn automation_scheduler_plan_judge_vetoes_a_truncated_blueprint_on_the_first_judged_round() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-overview-1").await;
+    scenario.use_automatic_plan_approval("claude").await;
+    scenario
+        .link_plan_bundle_session("plan-overview-1", "plan-blueprint-1")
+        .await;
+    scenario
+        .seed_plan_artifact("plan-overview-1", "Concise overview.", 1)
+        .await;
+    scenario
+        .seed_plan_artifact("plan-blueprint-1", &oversized_blueprint_text(), 1)
+        .await;
+    scenario.reset_run_park_baseline(0, None, None).await;
+
+    // The judge approves; the truncation veto must reject it on both the first attempt and the
+    // retry, so the run fails closed instead of approving a partially visible Blueprint.
+    let approve = plan_verdict("approve", "plan-overview-1", "plan-blueprint-1");
+    let plan_judge = Arc::new(RecordingPlanJudgeInvoker::with_outputs(vec![
+        approve.clone(),
+        approve,
+    ]));
+    let scheduler = scenario.scheduler_with_plan_judge(plan_judge.clone());
+
+    scheduler.tick_once().await.unwrap();
+    wait_for_plan_judge_call_count(&plan_judge, 2).await;
+
+    let calls = plan_judge.calls();
+    assert_eq!(
+        calls[0].run.plan_revision_round, 1,
+        "the judge must see the 1-based first judged round, not the pre-park 0"
+    );
+    assert_eq!(
+        plan_blueprint_truncation_policy(
+            calls[0].blueprint_content.as_deref(),
+            calls[0].run.plan_revision_round
+        ),
+        PlanBlueprintTruncationPolicy::RequestCondensedOnce
+    );
+    let prompt = prompt_for_invocation(&calls[0]);
+    assert!(prompt.contains("ask for a condensed Blueprint under"));
+    assert!(!prompt.contains("Truncation alone is not grounds for revise"));
+
+    let automation = wait_for_automation_status(
+        &scenario.automation_repo,
+        &scenario.automation_id,
+        AutomationStatus::Paused,
+    )
+    .await;
+    assert_eq!(
+        automation.paused_reason_code.as_deref(),
+        Some(PLAN_JUDGE_FAILED_PAUSED_REASON_CODE)
+    );
+    assert!(
+        scenario
+            .approval_repo
+            .get_by_session(&scenario.session_id)
+            .await
+            .unwrap()
+            .is_none(),
+        "a vetoed truncated Blueprint must not produce a plan approval"
+    );
+}
+
+/// After a revision mints a new artifact pair, the round advances to 2 and truncation alone stops
+/// blocking approval — otherwise the prompt budget re-truncates forever and the run deadlocks.
+#[tokio::test]
+async fn automation_scheduler_plan_judge_lifts_the_truncation_veto_on_the_revised_plan_version() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-overview-1").await;
+    scenario.use_automatic_plan_approval("claude").await;
+    let session_id = scenario
+        .link_plan_bundle_session("plan-overview-2", "plan-blueprint-2")
+        .await;
+    scenario
+        .seed_plan_artifact("plan-overview-2", "Concise revised overview.", 2)
+        .await;
+    scenario
+        .seed_plan_artifact("plan-blueprint-2", &oversized_blueprint_text(), 2)
+        .await;
+    // Round 1 already spent on the previous (now superseded) artifact pair.
+    scenario
+        .reset_run_park_baseline(1, Some("plan-overview-1"), Some("plan-blueprint-1"))
+        .await;
+
+    let plan_judge = Arc::new(RecordingPlanJudgeInvoker::with_outputs(vec![plan_verdict(
+        "approve",
+        "plan-overview-2",
+        "plan-blueprint-2",
+    )]));
+    let scheduler = scenario.scheduler_with_plan_judge(plan_judge.clone());
+
+    scheduler.tick_once().await.unwrap();
+    wait_for_latest_plan_judge_state(
+        &scenario.run_repo,
+        &scenario.automation_id,
+        AutomationPlanJudgeState::Done,
+    )
+    .await;
+
+    let calls = plan_judge.calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].run.plan_revision_round, 2);
+    assert_eq!(
+        plan_blueprint_truncation_policy(
+            calls[0].blueprint_content.as_deref(),
+            calls[0].run.plan_revision_round
+        ),
+        PlanBlueprintTruncationPolicy::JudgeVisiblePortion
+    );
+    let prompt = prompt_for_invocation(&calls[0]);
+    assert!(prompt.contains("Truncation alone is not grounds for revise"));
+    assert!(!prompt.contains("ask for a condensed Blueprint under"));
+    assert!(
+        scenario
+            .approval_repo
+            .get_by_session(&session_id)
+            .await
+            .unwrap()
+            .is_some(),
+        "approval must be accepted once the veto round is spent"
+    );
+}
+
+/// Re-parking the same artifact ids must not advance the round (`refresh_plan_park_baseline` early
+/// return), so an unchanged plan cannot silently promote the run out of its veto round.
+#[tokio::test]
+async fn automation_scheduler_reparking_the_same_plan_bundle_keeps_the_judge_on_the_veto_round() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-overview-1").await;
+    scenario.use_automatic_plan_approval("claude").await;
+    scenario
+        .link_plan_bundle_session("plan-overview-1", "plan-blueprint-1")
+        .await;
+    scenario
+        .seed_plan_artifact("plan-overview-1", "Concise overview.", 1)
+        .await;
+    scenario
+        .seed_plan_artifact("plan-blueprint-1", &oversized_blueprint_text(), 1)
+        .await;
+    // Already parked on this exact pair at round 1: the tick must not advance to 2.
+    scenario
+        .reset_run_park_baseline(1, Some("plan-overview-1"), Some("plan-blueprint-1"))
+        .await;
+
+    let plan_judge = Arc::new(RecordingPlanJudgeInvoker::with_outputs(vec![plan_verdict(
+        "revise",
+        "plan-overview-1",
+        "plan-blueprint-1",
+    )]));
+    let scheduler = scenario.scheduler_with_plan_judge(plan_judge.clone());
+
+    scheduler.tick_once().await.unwrap();
+    wait_for_plan_judge_call_count(&plan_judge, 1).await;
+
+    let calls = plan_judge.calls();
+    assert_eq!(calls[0].run.plan_revision_round, 1);
+    assert!(plan_blueprint_truncation_policy(
+        calls[0].blueprint_content.as_deref(),
+        calls[0].run.plan_revision_round
+    )
+    .blocks_approval());
+}
+
+/// A plan bundle with no Blueprint stays on `None` at every round the scheduler can present.
+#[tokio::test]
+async fn automation_scheduler_plan_judge_without_a_blueprint_never_applies_a_truncation_policy() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.use_automatic_plan_approval("claude").await;
+    scenario
+        .seed_plan_artifact("plan-artifact-1", "Concise legacy overview.", 1)
+        .await;
+    scenario.reset_run_park_baseline(0, None, None).await;
+
+    let plan_judge = Arc::new(RecordingPlanJudgeInvoker::with_outputs(vec![
+        valid_plan_approve_verdict("plan-artifact-1"),
+    ]));
+    let scheduler = scenario.scheduler_with_plan_judge(plan_judge.clone());
+
+    scheduler.tick_once().await.unwrap();
+    wait_for_latest_plan_judge_state(
+        &scenario.run_repo,
+        &scenario.automation_id,
+        AutomationPlanJudgeState::Done,
+    )
+    .await;
+
+    let calls = plan_judge.calls();
+    assert_eq!(calls.len(), 1);
+    assert!(calls[0].blueprint_content.is_none());
+    for round in [calls[0].run.plan_revision_round, 1, 2, 5] {
+        assert_eq!(
+            plan_blueprint_truncation_policy(calls[0].blueprint_content.as_deref(), round),
+            PlanBlueprintTruncationPolicy::None
+        );
     }
 }
 

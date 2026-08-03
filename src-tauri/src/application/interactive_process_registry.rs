@@ -158,6 +158,8 @@ pub struct InteractiveProcessMetadata {
     pub provider_session_id: Option<String>,
     pub persona_id: Option<String>,
     pub persona_content_hash: Option<String>,
+    pub agent_name: Option<String>,
+    pub agent_profile: Option<String>,
 }
 
 /// Immutable identity and metadata captured from the current registry entry.
@@ -532,6 +534,36 @@ impl InteractiveProcessRegistry {
         };
 
         if is_exact_armed_idle {
+            processes.remove(key)
+        } else {
+            None
+        }
+    }
+
+    /// Atomically retire only the captured unarmed idle registration.
+    ///
+    /// This is intentionally exact-owner scoped: a key-only idle cleanup could
+    /// remove a replacement that registered after the caller captured its owner.
+    /// Armed owners remain under the staged handoff flow and are never retired
+    /// through this direct idle path.
+    pub async fn retire_unarmed_idle_if_owner(
+        &self,
+        key: &InteractiveProcessKey,
+        token: InteractiveProcessToken,
+        agent_run_id: &str,
+    ) -> Option<InteractiveProcess> {
+        let mut processes = self.processes.lock().await;
+        let is_exact_unarmed_idle = match processes.get(key) {
+            Some(entry)
+                if entry.token == token
+                    && entry.metadata.agent_run_id.as_deref() == Some(agent_run_id) =>
+            {
+                !entry.retire_after_turn && entry.state == InteractiveProcessState::Idle
+            }
+            _ => false,
+        };
+
+        if is_exact_unarmed_idle {
             processes.remove(key)
         } else {
             None

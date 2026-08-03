@@ -60,6 +60,8 @@ pub(crate) const DEFERRED_REPAIR_WAIT_TIMEOUT_SECS: u64 = 300;
 const REPAIR_RUN_CLASSIFICATION_PREFIX: &str = "agent_fixable:run:";
 pub(crate) const AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION: u64 = 1;
 pub(crate) const MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES: u32 = 3;
+pub(crate) const CONTINUATION_RECOVERY_FAILURE_REASON_PREFIX: &str =
+    "continuation_recovery_failure:";
 /// A deliberately small cap: transient runner failures must not create an unbounded CI loop.
 pub(crate) const MAX_AGENT_WORKSPACE_CI_RERUN_RETRIES: u32 = 3;
 pub(crate) const NEEDS_HUMAN_REPAIR_REASON: &str = "pr_autofix_needs_human";
@@ -73,6 +75,34 @@ pub(crate) const ORPHANED_REPAIR_DISPATCH_RESCUE_GRACE_SECS: i64 = 60;
 const AGENT_WORKSPACE_REPAIR_DISPATCH_INITIAL_BACKOFF_SECS: i64 = 5;
 const AGENT_WORKSPACE_REPAIR_DISPATCH_MAX_BACKOFF_SECS: i64 = 60;
 const AGENT_WORKSPACE_REPAIR_DISPATCH_DEFERRED_DELAY_SECS: i64 = 15;
+
+pub(crate) fn is_machine_repair_reason_marker(reason: &str) -> bool {
+    let trimmed = reason.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    matches!(
+        trimmed,
+        NEEDS_HUMAN_REPAIR_REASON
+            | PRE_EXISTING_ON_BASE_REPAIR_REASON
+            | UNCHANGED_HEALTH_REPAIR_REASON
+    ) || trimmed.starts_with(
+        crate::application::agent_workspace_publish_recovery::AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX,
+    ) || trimmed.starts_with(
+        crate::application::agent_workspace_publish_recovery::AUTO_RETRY_READY_REPAIR_REASON_PREFIX,
+    ) || trimmed.starts_with(
+        crate::application::agent_workspace_publish_recovery::EXHAUSTED_PUBLISH_REDRIVE_CHECKED_REASON_PREFIX,
+    )
+}
+
+pub(crate) fn last_human_repair_reason(attempt: &AgentWorkspaceRepairAttempt) -> Option<&str> {
+    attempt
+        .pending_reasons
+        .iter()
+        .rev()
+        .map(String::as_str)
+        .find(|reason| !is_machine_repair_reason_marker(reason))
+}
 
 #[cfg(any(test, feature = "test-utils"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1337,7 +1367,7 @@ pub(crate) async fn reacquire_agent_workspace_repair_target_lease_for_continuati
     attempt: AgentWorkspaceRepairAttempt,
     expected_phase: AgentWorkspaceRepairPhase,
 ) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
-    let attempt = if has_agent_workspace_repair_target_authority(&attempt) {
+    let mut attempt = if has_agent_workspace_repair_target_authority(&attempt) {
         match release_and_clear_agent_workspace_repair_target_lease(
             state.agent_workspace_repair_repo.as_ref(),
             state.branch_update_repo.as_ref(),
@@ -1405,6 +1435,12 @@ pub(crate) async fn reacquire_agent_workspace_repair_target_lease_for_continuati
             )));
         }
     };
+    // Acquiring a fresh canonical epoch is authoritative progress. Clear the old consecutive
+    // failure budget only now, so a busy/foreign target cannot reset its own escalation streak;
+    // the checkpoint below persists the reset atomically with the new fencing epoch.
+    attempt
+        .pending_reasons
+        .retain(|reason| !reason.starts_with(CONTINUATION_RECOVERY_FAILURE_REASON_PREFIX));
     match checkpoint_agent_workspace_repair_target_lease(
         state.agent_workspace_repair_repo.as_ref(),
         attempt,
@@ -1684,7 +1720,9 @@ where
         })?;
     let mut attempt = if matches!(
         expected_phase,
-        AgentWorkspaceRepairPhase::AwaitingReview | AgentWorkspaceRepairPhase::Ready
+        AgentWorkspaceRepairPhase::AwaitingReview
+            | AgentWorkspaceRepairPhase::Ready
+            | AgentWorkspaceRepairPhase::Blocked
     ) {
         match reacquire_agent_workspace_repair_target_lease_for_continuation(
             state,

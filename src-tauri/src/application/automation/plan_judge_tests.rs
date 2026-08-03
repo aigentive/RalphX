@@ -4,9 +4,10 @@ use serde_json::json;
 use super::judge::AutomationJudgeAttachmentContext;
 use super::plan_judge::{
     append_automation_plan_judge_retry_instruction, build_automation_plan_judge_prompt,
-    parse_automation_plan_judge_verdict, AutomationPlanJudgeDecision,
-    AutomationPlanJudgeValidationContext, AutomationPlanVerificationGapSummary,
-    AutomationPlanVerificationJudgeContext, BuildAutomationPlanJudgePromptInput,
+    parse_automation_plan_judge_verdict, plan_blueprint_truncation_policy,
+    AutomationPlanJudgeDecision, AutomationPlanJudgeValidationContext,
+    AutomationPlanVerificationGapSummary, AutomationPlanVerificationJudgeContext,
+    BuildAutomationPlanJudgePromptInput, PlanBlueprintTruncationPolicy,
     AUTOMATION_PLAN_JUDGE_PROMPT_MAX_BYTES,
 };
 use crate::domain::entities::{
@@ -277,7 +278,7 @@ fn parses_valid_approve_verdict() {
         AutomationPlanJudgeValidationContext {
             expected_overview_artifact_id: Some("plan-artifact-1"),
             expected_blueprint_artifact_id: None,
-            blueprint_truncated: false,
+            blueprint_truncation_blocks_approval: false,
         },
     )
     .unwrap();
@@ -302,7 +303,7 @@ fn parses_valid_revise_verdict() {
         AutomationPlanJudgeValidationContext {
             expected_overview_artifact_id: Some("plan-artifact-1"),
             expected_blueprint_artifact_id: None,
-            blueprint_truncated: false,
+            blueprint_truncation_blocks_approval: false,
         },
     )
     .unwrap();
@@ -327,7 +328,7 @@ fn rejects_missing_artifact_pin_short_revision_and_approve_instructions() {
         AutomationPlanJudgeValidationContext {
             expected_overview_artifact_id: Some("plan-artifact-1"),
             expected_blueprint_artifact_id: None,
-            blueprint_truncated: false,
+            blueprint_truncation_blocks_approval: false,
         },
     )
     .unwrap_err();
@@ -346,7 +347,7 @@ fn rejects_missing_artifact_pin_short_revision_and_approve_instructions() {
         AutomationPlanJudgeValidationContext {
             expected_overview_artifact_id: Some("plan-artifact-1"),
             expected_blueprint_artifact_id: None,
-            blueprint_truncated: false,
+            blueprint_truncation_blocks_approval: false,
         },
     )
     .unwrap_err();
@@ -365,7 +366,7 @@ fn rejects_missing_artifact_pin_short_revision_and_approve_instructions() {
         AutomationPlanJudgeValidationContext {
             expected_overview_artifact_id: Some("plan-artifact-1"),
             expected_blueprint_artifact_id: None,
-            blueprint_truncated: false,
+            blueprint_truncation_blocks_approval: false,
         },
     )
     .unwrap_err();
@@ -386,7 +387,7 @@ fn rejects_wrong_evaluated_artifact_when_context_expects_a_pin() {
         AutomationPlanJudgeValidationContext {
             expected_overview_artifact_id: Some("plan-artifact-1"),
             expected_blueprint_artifact_id: None,
-            blueprint_truncated: false,
+            blueprint_truncation_blocks_approval: false,
         },
     )
     .unwrap_err();
@@ -422,7 +423,7 @@ fn plan_judge_prompt_renders_overview_and_blueprint_with_independent_truncation_
 }
 
 #[test]
-fn plan_judge_rejects_approval_when_blueprint_was_truncated() {
+fn plan_judge_rejects_approval_while_truncation_veto_round_is_unspent() {
     let error = parse_automation_plan_judge_verdict(
         &json!({
             "decision": "approve",
@@ -435,14 +436,142 @@ fn plan_judge_rejects_approval_when_blueprint_was_truncated() {
         AutomationPlanJudgeValidationContext {
             expected_overview_artifact_id: Some("overview-1"),
             expected_blueprint_artifact_id: Some("blueprint-1"),
-            blueprint_truncated: true,
+            blueprint_truncation_blocks_approval: true,
         },
     )
     .unwrap_err();
 
     assert!(error
         .to_string()
-        .contains("truncated Blueprint cannot be approved"));
+        .contains("truncated Blueprint cannot be approved before a condensed revision round"));
+}
+
+#[test]
+fn plan_judge_allows_approval_once_the_truncation_veto_round_is_spent() {
+    let verdict = parse_automation_plan_judge_verdict(
+        &json!({
+            "decision": "approve",
+            "reason": "The visible plan is scoped and ready even though the Blueprint is truncated.",
+            "confidence": "medium",
+            "evaluatedOverviewArtifactId": "overview-1",
+            "evaluatedBlueprintArtifactId": "blueprint-1"
+        })
+        .to_string(),
+        AutomationPlanJudgeValidationContext {
+            expected_overview_artifact_id: Some("overview-1"),
+            expected_blueprint_artifact_id: Some("blueprint-1"),
+            blueprint_truncation_blocks_approval: false,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(verdict.decision, AutomationPlanJudgeDecision::Approve);
+}
+
+#[test]
+fn plan_blueprint_truncation_policy_spends_exactly_one_veto_round() {
+    let oversized = "grounded implementation step ".repeat(10_000);
+
+    // Round 1 is the first version the judge ever sees: `refresh_plan_park_baseline` increments
+    // 0 -> 1 before `observe_automatic_plan_judge` re-reads the run, so round 0 is unreachable in
+    // production and must not be used to define the boundary.
+    assert_eq!(
+        plan_blueprint_truncation_policy(Some(&oversized), 1),
+        PlanBlueprintTruncationPolicy::RequestCondensedOnce
+    );
+    assert!(plan_blueprint_truncation_policy(Some(&oversized), 1).blocks_approval());
+
+    for round in [2, 3, 5] {
+        assert_eq!(
+            plan_blueprint_truncation_policy(Some(&oversized), round),
+            PlanBlueprintTruncationPolicy::JudgeVisiblePortion,
+            "round {round} must not keep vetoing an unshrinkable Blueprint"
+        );
+        assert!(!plan_blueprint_truncation_policy(Some(&oversized), round).blocks_approval());
+    }
+}
+
+#[test]
+fn plan_blueprint_truncation_policy_is_inert_for_fitting_and_missing_blueprints() {
+    assert_eq!(
+        plan_blueprint_truncation_policy(Some("Concise blueprint"), 0),
+        PlanBlueprintTruncationPolicy::None
+    );
+    assert_eq!(
+        plan_blueprint_truncation_policy(None, 0),
+        PlanBlueprintTruncationPolicy::None
+    );
+    assert!(!plan_blueprint_truncation_policy(None, 0).blocks_approval());
+}
+
+#[test]
+fn plan_judge_prompt_requests_a_condensed_blueprint_on_the_first_truncated_round() {
+    let automation = automation_with_goal_items();
+    let mut run = automation_run();
+    run.plan_revision_round = 1;
+    let oversized_blueprint = "grounded implementation step ".repeat(10_000);
+
+    let prompt = build_automation_plan_judge_prompt(BuildAutomationPlanJudgePromptInput {
+        automation: &automation,
+        run: &run,
+        evaluated_overview_artifact_id: "overview-1",
+        overview_content: "Concise overview",
+        evaluated_blueprint_artifact_id: Some("blueprint-1"),
+        blueprint_content: Some(&oversized_blueprint),
+        verification_context: None,
+        spec_attachments: &[],
+        previous_verdict_json: None,
+    })
+    .unwrap();
+
+    assert!(prompt.contains("ask for a condensed Blueprint under 28672 bytes"));
+    assert!(prompt.contains("Never ask for the same document to be resubmitted in full"));
+}
+
+#[test]
+fn plan_judge_prompt_lifts_the_truncation_veto_after_a_revision_round() {
+    let automation = automation_with_goal_items();
+    let mut run = automation_run();
+    run.plan_revision_round = 2;
+    let oversized_blueprint = "grounded implementation step ".repeat(10_000);
+
+    let prompt = build_automation_plan_judge_prompt(BuildAutomationPlanJudgePromptInput {
+        automation: &automation,
+        run: &run,
+        evaluated_overview_artifact_id: "overview-1",
+        overview_content: "Concise overview",
+        evaluated_blueprint_artifact_id: Some("blueprint-1"),
+        blueprint_content: Some(&oversized_blueprint),
+        verification_context: None,
+        spec_attachments: &[],
+        previous_verdict_json: None,
+    })
+    .unwrap();
+
+    assert!(prompt.contains("Truncation alone is not grounds for revise"));
+    assert!(!prompt.contains("Never ask for the same document to be resubmitted in full"));
+}
+
+#[test]
+fn plan_judge_prompt_omits_truncation_rules_when_the_blueprint_fits() {
+    let automation = automation_with_goal_items();
+    let run = automation_run();
+
+    let prompt = build_automation_plan_judge_prompt(BuildAutomationPlanJudgePromptInput {
+        automation: &automation,
+        run: &run,
+        evaluated_overview_artifact_id: "overview-1",
+        overview_content: "Concise overview",
+        evaluated_blueprint_artifact_id: Some("blueprint-1"),
+        blueprint_content: Some("Concise blueprint"),
+        verification_context: None,
+        spec_attachments: &[],
+        previous_verdict_json: None,
+    })
+    .unwrap();
+
+    assert!(!prompt.contains("condensed Blueprint"));
+    assert!(!prompt.contains("Truncation alone is not grounds for revise"));
 }
 
 #[test]
@@ -460,7 +589,7 @@ fn plan_judge_rejects_either_stale_bundle_member() {
         AutomationPlanJudgeValidationContext {
             expected_overview_artifact_id: Some("overview-1"),
             expected_blueprint_artifact_id: Some("blueprint-1"),
-            blueprint_truncated: false,
+            blueprint_truncation_blocks_approval: false,
         },
     )
     .unwrap_err();

@@ -1,6 +1,8 @@
 import { toast } from "sonner";
 
 import { formatElapsedTime } from "@/lib/formatters";
+import { navigateToAgentConversation } from "@/lib/navigation";
+import { useAgentSessionStore } from "@/stores/agentSessionStore";
 
 export type AgentWorkspaceOperationToastKind =
   | "local-commit"
@@ -21,6 +23,13 @@ export interface AgentWorkspaceOperationToastOptions {
   detail?: string | null | undefined;
   id: string;
   startedAtMs?: number;
+  targetConversation?:
+    | {
+        conversationId: string;
+        projectId: string | null;
+      }
+    | null
+    | undefined;
   title: string;
 }
 
@@ -31,6 +40,7 @@ export interface AgentWorkspaceOperationToastResultOptions {
 
 const OPERATION_TOAST_INTERVAL_MS = 1_000;
 const MAX_OPERATION_ERROR_DETAIL_CHARS = 240;
+const MAX_OPERATION_PROGRESS_DETAIL_CHARS = 80;
 const MAX_OPERATION_RESULT_DETAIL_CHARS = 140;
 const VERBOSE_OPERATION_RESULT_DETAIL = "Full output is available in the workspace.";
 const ANSI_ESCAPE = String.fromCharCode(27);
@@ -49,6 +59,24 @@ const activeToastControllers = new Map<
   string,
   ActiveAgentWorkspaceOperationToastController
 >();
+const dismissedToastIds = new Set<string>();
+
+export function isAgentWorkspaceOperationToastDismissed(id: string): boolean {
+  return dismissedToastIds.has(id);
+}
+
+export function clearAgentWorkspaceOperationToastDismissal(id: string): void {
+  dismissedToastIds.delete(id);
+}
+
+export function resetAgentWorkspaceOperationToastStateForTests() {
+  for (const controller of activeToastControllers.values()) {
+    controller.supersede();
+  }
+  activeToastControllers.clear();
+  dismissedToastIds.clear();
+}
+
 export function agentWorkspaceOperationToastId(
   conversationId: string,
   kind: AgentWorkspaceOperationToastKind,
@@ -180,6 +208,51 @@ export function agentWorkspaceOperationResultDetail(
   return VERBOSE_OPERATION_RESULT_DETAIL;
 }
 
+function agentWorkspaceOperationProgressDetail(
+  detail: string | null | undefined,
+): string | null {
+  if (!detail) {
+    return null;
+  }
+  const compact = cleanAgentWorkspaceOperationDetail(detail);
+  if (!compact) {
+    return null;
+  }
+  if (compact.length <= MAX_OPERATION_PROGRESS_DETAIL_CHARS) {
+    return compact;
+  }
+  return `${compact.slice(0, MAX_OPERATION_PROGRESS_DETAIL_CHARS - 1).trimEnd()}…`;
+}
+
+function isTargetConversationVisible(
+  targetConversation: AgentWorkspaceOperationToastOptions["targetConversation"],
+): boolean {
+  return (
+    targetConversation !== null &&
+    targetConversation !== undefined &&
+    targetConversation.conversationId ===
+      useAgentSessionStore.getState().visibleAgentScope?.visibleConversationId
+  );
+}
+
+function targetConversationToastAction(
+  targetConversation: AgentWorkspaceOperationToastOptions["targetConversation"],
+) {
+  if (!targetConversation) {
+    return {};
+  }
+  return {
+    action: {
+      label: "Open conversation",
+      onClick: () =>
+        navigateToAgentConversation(
+          targetConversation.projectId,
+          targetConversation.conversationId,
+        ),
+    },
+  };
+}
+
 function progressDescription(options: ActiveAgentWorkspaceOperationToastOptions): string | undefined {
   const elapsedSeconds = Math.max(
     0,
@@ -188,7 +261,7 @@ function progressDescription(options: ActiveAgentWorkspaceOperationToastOptions)
   const elapsed = formatElapsedTime(elapsedSeconds);
   return agentWorkspaceOperationToastDescription(
     options.conversationTitle,
-    options.detail,
+    agentWorkspaceOperationProgressDetail(options.detail),
     elapsed,
   );
 }
@@ -217,6 +290,7 @@ function resultToastOptions(
     ...(description ? { description } : {}),
     duration: resultOptions?.duration ?? fallbackDuration,
     id: options.id,
+    ...targetConversationToastAction(options.targetConversation),
   };
 }
 
@@ -231,6 +305,8 @@ export function startAgentWorkspaceOperationToast(
   let activeToastId: string | null = null;
   let dismissed = false;
   let settled = false;
+  let userDismissed = false;
+  const programmaticDismissalIds = new Set<string>();
 
   const controller: ActiveAgentWorkspaceOperationToastController = {
     supersede: () => {
@@ -250,15 +326,30 @@ export function startAgentWorkspaceOperationToast(
     }
   };
 
-  const releaseActiveToast = () => {
-    if (activeToastId && activeToastControllers.get(activeToastId) === controller) {
-      activeToastControllers.delete(activeToastId);
+  const releaseActiveToast = (id = activeToastId) => {
+    if (id && activeToastControllers.get(id) === controller) {
+      activeToastControllers.delete(id);
     }
+  };
+
+  const dismissToast = (id: string) => {
+    programmaticDismissalIds.add(id);
+    toast.dismiss(id);
+  };
+
+  const suppressActiveToast = () => {
+    if (!activeToastId) {
+      return;
+    }
+    const toastId = activeToastId;
+    activeToastId = null;
+    dismissToast(toastId);
+    releaseActiveToast(toastId);
   };
 
   const registerActiveToast = (id: string) => {
     if (activeToastId && activeToastId !== id) {
-      toast.dismiss(activeToastId);
+      dismissToast(activeToastId);
       releaseActiveToast();
     }
     const existing = activeToastControllers.get(id);
@@ -271,11 +362,18 @@ export function startAgentWorkspaceOperationToast(
 
   const settle = () => {
     if (settled) {
-      return;
+      return false;
     }
+    const shouldShowResult =
+      !userDismissed &&
+      !isAgentWorkspaceOperationToastDismissed(currentOptions.id) &&
+      !isTargetConversationVisible(currentOptions.targetConversation);
     settled = true;
     clearTimer();
     releaseActiveToast();
+    clearAgentWorkspaceOperationToastDismissal(currentOptions.id);
+    if (!shouldShowResult) suppressActiveToast();
+    return shouldShowResult;
   };
 
   const dismiss = () => {
@@ -284,45 +382,70 @@ export function startAgentWorkspaceOperationToast(
     }
     dismissed = true;
     clearTimer();
-    releaseActiveToast();
-    if (activeToastId) {
-      toast.dismiss(activeToastId);
-    }
+    suppressActiveToast();
   };
 
   const render = () => {
     if (settled || dismissed) {
       return;
     }
+    if (
+      currentOptions.targetConversation &&
+      isAgentWorkspaceOperationToastDismissed(currentOptions.id)
+    ) {
+      dismissed = true;
+      userDismissed = true;
+      clearTimer();
+      suppressActiveToast();
+      return;
+    }
+    if (isTargetConversationVisible(currentOptions.targetConversation)) {
+      suppressActiveToast();
+      return;
+    }
     registerActiveToast(currentOptions.id);
+    const toastId = currentOptions.id;
+    const persistsDismissal = Boolean(currentOptions.targetConversation);
     const description = progressDescription(currentOptions);
     toast.loading(currentOptions.title, {
       ...(description ? { description } : {}),
       closeButton: true,
       dismissible: true,
       duration: Infinity,
-      id: currentOptions.id,
+      id: toastId,
+      ...targetConversationToastAction(currentOptions.targetConversation),
       onDismiss: () => {
+        if (programmaticDismissalIds.delete(toastId)) {
+          return;
+        }
         if (settled) {
           return;
         }
         dismissed = true;
+        if (persistsDismissal) {
+          userDismissed = true;
+          dismissedToastIds.add(toastId);
+        }
         clearTimer();
-        releaseActiveToast();
+        releaseActiveToast(toastId);
+        if (activeToastId === toastId) {
+          activeToastId = null;
+        }
       },
     });
   };
 
   render();
-  intervalId = setInterval(render, OPERATION_TOAST_INTERVAL_MS);
+  if (!settled && !dismissed) {
+    intervalId = setInterval(render, OPERATION_TOAST_INTERVAL_MS);
+  }
 
   return {
     dismiss,
     error: (message: string, options?: AgentWorkspaceOperationToastResultOptions) => {
-      if (settled) {
+      if (!settle()) {
         return;
       }
-      settle();
       toast.error(message, {
         ...resultToastOptions(
           currentOptions,
@@ -334,10 +457,9 @@ export function startAgentWorkspaceOperationToast(
       });
     },
     info: (message: string, options?: AgentWorkspaceOperationToastResultOptions) => {
-      if (settled) {
+      if (!settle()) {
         return;
       }
-      settle();
       toast.info(message, {
         ...resultToastOptions(
           currentOptions,
@@ -348,10 +470,9 @@ export function startAgentWorkspaceOperationToast(
       });
     },
     success: (message: string, options?: AgentWorkspaceOperationToastResultOptions) => {
-      if (settled) {
+      if (!settle()) {
         return;
       }
-      settle();
       toast.success(
         message,
         resultToastOptions(
