@@ -62,6 +62,7 @@ pub(crate) use durable_attempt_recovery::{
 };
 pub(crate) use durable_attempt_recovery::{
     AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX, AUTO_RETRY_READY_REPAIR_REASON_PREFIX,
+    EXHAUSTED_PUBLISH_REDRIVE_CHECKED_REASON_PREFIX,
 };
 #[cfg(test)]
 pub(crate) use pr_autofix_redelivery::due_pr_autofix_redispatch_message;
