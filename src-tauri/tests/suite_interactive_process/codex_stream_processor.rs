@@ -37,6 +37,26 @@ fn extract_codex_thread_id_reads_thread_started_events() {
 }
 
 #[test]
+fn extract_codex_usage_reads_provider_reported_reasoning_total() {
+    let event = parse_codex_event_line(
+        r#"{
+            "type":"turn.completed",
+            "usage":{
+                "input_tokens":53565,
+                "cached_input_tokens":30208,
+                "output_tokens":558,
+                "reasoning_output_tokens":170
+            }
+        }"#,
+    )
+    .expect("event should parse");
+
+    let usage = extract_codex_usage(&event).expect("turn usage should extract");
+
+    assert_eq!(usage.usage.reasoning_output_tokens, Some(170));
+}
+
+#[test]
 fn extract_codex_tool_call_snapshot_maps_started_mcp_tool_calls() {
     let event = parse_codex_event_line(
         r#"{
@@ -137,7 +157,10 @@ fn extract_codex_command_execution_captures_output_and_exit_code() {
 
     assert_eq!(execution.id.as_deref(), Some("item_2"));
     assert_eq!(execution.status.as_deref(), Some("completed"));
-    assert_eq!(execution.aggregated_output.as_deref(), Some("cargo test ok"));
+    assert_eq!(
+        execution.aggregated_output.as_deref(),
+        Some("cargo test ok")
+    );
     assert_eq!(execution.exit_code, Some(0));
 }
 

@@ -56,6 +56,8 @@ export interface ContentBlockItem {
   text?: string;
   durationMs?: number;
   isSettled?: boolean;
+  estimatedTokens?: number;
+  reasoningTokens?: number;
   id?: string;
   name?: string;
   arguments?: unknown;
@@ -447,6 +449,7 @@ export const MessageItem = React.memo(function MessageItem({
           <ThinkingGroupToggle groupKey={groupKey} isExpanded={isExpanded}
             isSettled={aggregate.isSettled} segmentCount={aggregate.segmentCount}
             {...(aggregate.totalDurationMs != null ? { durationMs: aggregate.totalDurationMs } : {})}
+            {...(aggregate.reasoningTokens != null ? { reasoningTokens: aggregate.reasoningTokens } : {})}
             onToggle={() => toggleContentToolGroup(groupKey)} />
           {isExpanded && text ? <ThinkingWidget text={text} /> : null}
         </div>,

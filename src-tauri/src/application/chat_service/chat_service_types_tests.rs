@@ -41,11 +41,19 @@ fn agent_thinking_payload_serializes_committed_streaming_and_settled_contracts()
         seq: 7,
         append_to_previous: true,
         duration_ms: None,
+        reasoning_tokens: None,
         is_settled: false,
     };
     let settled = AgentThinkingPayload {
         text: String::new(),
         duration_ms: Some(1_500),
+        is_settled: true,
+        ..streaming.clone()
+    };
+    let codex_settled = AgentThinkingPayload {
+        text: String::new(),
+        append_to_previous: true,
+        reasoning_tokens: Some(426),
         is_settled: true,
         ..streaming.clone()
     };
@@ -60,9 +68,18 @@ fn agent_thinking_payload_serializes_committed_streaming_and_settled_contracts()
         "/tests/fixtures/agent_thinking_payload.settled.json"
     )))
     .expect("settled fixture must be valid JSON");
+    let expected_codex_settled: serde_json::Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/agent_thinking_payload.codex_settled.json"
+    )))
+    .expect("Codex settled fixture must be valid JSON");
 
     assert_eq!(serde_json::to_value(streaming).unwrap(), expected_streaming);
     assert_eq!(serde_json::to_value(settled).unwrap(), expected_settled);
+    assert_eq!(
+        serde_json::to_value(codex_settled).unwrap(),
+        expected_codex_settled
+    );
 }
 
 /// The allowlist is intentionally triplicated (application helper plus both

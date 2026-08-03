@@ -13,7 +13,7 @@ RalphX can display only reasoning text that a harness CLI explicitly emits throu
 | Settled block | A complete provider block. Claude settles on `content_block_stop`; Codex reasoning items arrive complete. |
 | Logical block index | Position the block occupies in RalphX `content_blocks`; this is the backend authority used by events, persistence, and UI merging. |
 | Duration | Wall-clock time between Claude thinking block start/stop when both are observed. Codex currently exposes no equivalent. |
-| Token progress | Claude CLI `thinking_tokens` progress. This is an estimate attached to the currently unsettled live block, not persisted reasoning usage. |
+| Token progress | Claude CLI `thinking_tokens` progress. This is an estimate attached to the currently unsettled live block, not persisted reasoning usage. Codex exposes only a final aggregate `reasoning_output_tokens` count. |
 
 ## End-to-end flow
 
@@ -40,7 +40,7 @@ The harness parsers remain native because Claude and Codex do not expose the sam
 | Native input | `content_block_start` → `thinking_delta`* → `content_block_stop`; verbose `assistant.content[type=thinking]` fallback | Observed `item.completed` with `item.type == "reasoning"` and flat `text`; rollout `agent_reasoning`/`summary` compatibility |
 | RalphX event cadence | One unsettled event per non-empty delta, then one settle event | One settled event per extracted complete reasoning item |
 | Duration | Measured locally when start and stop are both present | `None` |
-| Token progress | Optional `system.subtype == "thinking_tokens"` → `agent:thinking_progress` | Not currently exposed |
+| Token progress | Optional `system.subtype == "thinking_tokens"` → `agent:thinking_progress` | `turn.completed.usage.reasoning_output_tokens`, attached to the final complete reasoning block; no per-summary split is inferred. |
 | Native fixture | Claude processor sidecar fixtures/tests | `codex/fixtures/exec_json_reasoning_0_146_0.jsonl` |
 
 ### Claude
@@ -70,7 +70,7 @@ Both Codex exec argument builders set `model_reasoning_summary="concise"`. `pars
 - Rollout compatibility: `agent_reasoning` completed items and `summary[]` text.
 - `agent_reasoning_delta` is intentionally not accepted because it is not a real event in the captured Codex exec schema.
 
-Each extracted item is complete. `process_codex_stream_background` appends and persists one thinking block, then emits `agent:thinking` with `append_to_previous: false`, `is_settled: true`, and no duration.
+Each extracted item is complete. `process_codex_stream_background` appends and persists one thinking block, then emits `agent:thinking` with `append_to_previous: false`, `is_settled: true`, and no duration. A real `codex-cli 0.146.0` capture also exposes `turn.completed.usage.reasoning_output_tokens`; RalphX updates only the final reasoning block from that turn and emits one empty-text settled update with the aggregate. The CLI provides no per-item allocation or duration, so neither is inferred.
 
 ## Capability probing
 
@@ -113,6 +113,7 @@ Capability tests must model the real short-circuit behavior: an unknown argument
 | `seq` | Monotonic event order within the stream emitter. |
 | `append_to_previous` | Claude deltas/settle: `true`; complete Codex item: `false`. |
 | `duration_ms` | Present only when measured/known. |
+| `reasoning_tokens` | Provider-reported aggregate reasoning output tokens, present only on Codex's final settled update; it belongs to the final reasoning block and is not a per-summary count. |
 | `is_settled` | Always emitted by current producers; `false` for Claude deltas, `true` for settle/complete items. |
 
 Claude settlement deliberately sends empty text with append semantics. `useChatEvents` also preserves existing text defensively. Changing settlement to replacement semantics would erase the accumulated reasoning.
@@ -121,8 +122,9 @@ The exact serialized streaming and settled shapes live in:
 
 - `src-tauri/tests/fixtures/agent_thinking_payload.streaming.json`
 - `src-tauri/tests/fixtures/agent_thinking_payload.settled.json`
+- `src-tauri/tests/fixtures/agent_thinking_payload.codex_settled.json`
 
-Rust asserts these fixtures match `AgentThinkingPayload`; frontend tests import the committed settled fixture. Any wire change must update both sides in the same change.
+Rust asserts these fixtures match `AgentThinkingPayload`; frontend tests import both committed settled fixtures. Any wire change must update both sides in the same change.
 
 ## Persistence and hydration
 
@@ -130,9 +132,10 @@ Thinking is represented in two durable projections plus one transient cache:
 
 | Surface | Contents and authority |
 |---|---|
-| `chat_messages.content_blocks` | Ordered assistant JSON, including `Thinking { text, duration_ms }`; used by transcript/modal hydration paths. |
-| `chat_message_blocks` | Canonical paged timeline row with `kind='thinking'`, original logical `block_index`, text, and optional `metadata.duration_ms`. |
+| `chat_messages.content_blocks` | Ordered assistant JSON, including `Thinking { text, duration_ms, reasoning_tokens }`; used by transcript/modal hydration paths. |
+| `chat_message_blocks` | Canonical paged timeline row with `kind='thinking'`, original logical `block_index`, text, and optional `metadata.duration_ms` / `metadata.reasoning_tokens`. |
 | `StreamingStateCache.partial_thinking_segments` | Transient partial text only. It is not settlement/duration authority and is cleared with the stream lifecycle. |
+| `StreamingStateCache.tool_calls` | Transient tool snapshots with an optional logical `block_index`; recovery inserts indexed tools between indexed text/thinking anchors and appends legacy unindexed snapshots. |
 
 `persist_timeline_snapshot` skips empty/whitespace thinking while retaining original logical indices. Finalized snapshots delete obsolete rows by exact retained-index membership, so gaps are valid.
 
@@ -171,7 +174,7 @@ Presentation ownership:
 | Stale run emits late thinking | Frontend rejects it by active `run_id`. |
 | Claude process stops before `content_block_stop` | No duration/settle exists to emit. Live UI may remain “thinking” until terminal persisted re-render; this is an accepted limitation. |
 | Persisted legacy block lacks lifecycle fields | Hydrate as settled; optional duration stays absent. |
-| Codex reasoning has no duration | Render settled without inventing a duration. |
+| Codex reasoning has no duration | Render settled without inventing a duration; attach `reasoning_output_tokens` only when authoritative turn-complete usage provides it. |
 
 Do not synthesize provider duration from run duration, tool timing, or frontend timestamps. Those measure different things.
 

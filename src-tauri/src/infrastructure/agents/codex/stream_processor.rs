@@ -7,6 +7,7 @@ pub struct CodexUsage {
     pub input_tokens: Option<u64>,
     pub cached_input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
+    pub reasoning_output_tokens: Option<u64>,
 }
 
 impl CodexUsage {
@@ -14,6 +15,7 @@ impl CodexUsage {
         self.input_tokens.is_none()
             && self.cached_input_tokens.is_none()
             && self.output_tokens.is_none()
+            && self.reasoning_output_tokens.is_none()
     }
 }
 
@@ -26,6 +28,8 @@ pub struct CodexUsagePayload {
     #[serde(default)]
     pub output_tokens: Option<u64>,
     #[serde(default)]
+    pub reasoning_output_tokens: Option<u64>,
+    #[serde(default)]
     pub total_token_usage: Option<CodexUsage>,
     #[serde(default)]
     pub last_token_usage: Option<CodexUsage>,
@@ -37,6 +41,7 @@ impl CodexUsagePayload {
             input_tokens: self.input_tokens,
             cached_input_tokens: self.cached_input_tokens,
             output_tokens: self.output_tokens,
+            reasoning_output_tokens: self.reasoning_output_tokens,
         }
     }
 }
@@ -546,6 +551,7 @@ mod tests {
                 input_tokens: Some(10),
                 cached_input_tokens: Some(3),
                 output_tokens: Some(5),
+                reasoning_output_tokens: None,
                 total_token_usage: None,
                 last_token_usage: None,
             }),
@@ -634,7 +640,6 @@ mod tests {
                 "**Confirming command verification**".to_string(),
             ]
         );
-
         for event in &events {
             if extract_codex_reasoning(event).is_some() {
                 assert_eq!(event.event_type, "item.completed");
@@ -728,6 +733,7 @@ mod tests {
                 input_tokens: Some(101),
                 cached_input_tokens: Some(22),
                 output_tokens: Some(33),
+                reasoning_output_tokens: Some(11),
                 total_token_usage: None,
                 last_token_usage: None,
             }),
@@ -740,6 +746,7 @@ mod tests {
                     input_tokens: Some(101),
                     cached_input_tokens: Some(22),
                     output_tokens: Some(33),
+                    reasoning_output_tokens: Some(11),
                 },
                 source: CodexUsageSource::CumulativeTotal,
             })
@@ -760,6 +767,7 @@ mod tests {
                     input_tokens: Some(202091),
                     cached_input_tokens: Some(201600),
                     output_tokens: Some(673),
+                    reasoning_output_tokens: None,
                 },
                 source: CodexUsageSource::TurnDelta,
             })
@@ -780,6 +788,7 @@ mod tests {
                     input_tokens: Some(900),
                     cached_input_tokens: Some(800),
                     output_tokens: Some(70),
+                    reasoning_output_tokens: None,
                 },
                 source: CodexUsageSource::CumulativeTotal,
             })
@@ -800,6 +809,7 @@ mod tests {
                     input_tokens: Some(12),
                     cached_input_tokens: Some(7),
                     output_tokens: Some(3),
+                    reasoning_output_tokens: None,
                 },
                 source: CodexUsageSource::CumulativeTotal,
             })

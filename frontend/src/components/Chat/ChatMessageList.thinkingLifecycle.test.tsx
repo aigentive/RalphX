@@ -8,6 +8,7 @@ import {
 } from "./ChatMessageList.liveRows";
 import { createWrapper } from "@/test/store-utils";
 import type { StreamingContentBlock } from "@/types/streaming-task";
+import type { ChatMessageData } from "./ChatMessageList";
 
 vi.mock("@/hooks/useMessageAttachments", () => ({
   useMessageAttachments: () => ({ data: new Map() }),
@@ -32,8 +33,11 @@ function thinking(blockIndex: number, text: string, isSettled = false): Streamin
   return { type: "thinking", blockIndex, text, isSettled, durationMs: 2_000 };
 }
 
-function renderList(streamingContentBlocks: StreamingContentBlock[]) {
-  return render(<ChatMessageList {...defaultProps} streamingContentBlocks={streamingContentBlocks} />, {
+function renderList(
+  streamingContentBlocks: StreamingContentBlock[],
+  messages: ChatMessageData[] = [],
+) {
+  return render(<ChatMessageList {...defaultProps} messages={messages} streamingContentBlocks={streamingContentBlocks} />, {
     wrapper: createWrapper(),
   });
 }
@@ -127,5 +131,27 @@ describe("ChatMessageList thinking lifecycle", () => {
     const current = new Set([liveThinkingGroupKey(thinking(1, "live thought"), 0)]);
 
     expect(synchronizeThinkingGroupExpansion(current, rows, new Map())).toBe(current);
+  });
+
+  it("renders one persisted thinking run across continuous rows and expands its shared body", () => {
+    const messages: ChatMessageData[] = [
+      {
+        id: "thinking-1", role: "assistant", content: "", createdAt: "2026-08-03T00:00:00Z",
+        parentMessageId: "message-1", timelineSequence: 4, providerHarness: "codex",
+        contentBlocks: [{ type: "thinking", text: "First persisted", durationMs: 1_000 }],
+      },
+      {
+        id: "thinking-2", role: "assistant", content: "", createdAt: "2026-08-03T00:00:01Z",
+        parentMessageId: "message-1", timelineSequence: 5, providerHarness: "codex",
+        contentBlocks: [{ type: "thinking", text: "Second persisted", durationMs: 2_000 }],
+      },
+    ];
+
+    renderList([], messages);
+
+    expect(screen.getAllByTestId("thinking-group-toggle")).toHaveLength(1);
+    fireEvent.click(screen.getByTestId("thinking-group-toggle"));
+    expect(screen.getByTestId("thinking-content")).toHaveTextContent("First persisted");
+    expect(screen.getByTestId("thinking-content")).toHaveTextContent("Second persisted");
   });
 });

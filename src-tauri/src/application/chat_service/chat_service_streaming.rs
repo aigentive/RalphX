@@ -453,11 +453,21 @@ pub(super) async fn persist_timeline_snapshot(
             ContentBlockItem::Text { text } => {
                 item.text = Some(text.clone());
             }
-            ContentBlockItem::Thinking { text, duration_ms } => {
+            ContentBlockItem::Thinking {
+                text,
+                duration_ms,
+                reasoning_tokens,
+            } => {
                 item.text = Some(text.clone());
-                item.metadata = duration_ms.map(|duration_ms| {
-                    serde_json::json!({ "duration_ms": duration_ms }).to_string()
-                });
+                let mut metadata = serde_json::Map::new();
+                if let Some(duration_ms) = duration_ms {
+                    metadata.insert("duration_ms".to_string(), (*duration_ms).into());
+                }
+                if let Some(reasoning_tokens) = reasoning_tokens {
+                    metadata.insert("reasoning_tokens".to_string(), (*reasoning_tokens).into());
+                }
+                item.metadata =
+                    (!metadata.is_empty()).then(|| serde_json::Value::Object(metadata).to_string());
             }
             ContentBlockItem::ToolUse {
                 id,
@@ -616,7 +626,7 @@ fn upsert_codex_tool_call_snapshot(
     tool_calls: &mut Vec<ToolCall>,
     content_blocks: &mut Vec<ContentBlockItem>,
     tool_call: ToolCall,
-) {
+) -> u64 {
     if let Some(tool_id) = tool_call.id.as_deref() {
         if let Some(existing) = tool_calls
             .iter_mut()
@@ -637,14 +647,16 @@ fn upsert_codex_tool_call_snapshot(
             tool_calls.push(tool_call.clone());
         }
 
-        if let Some(existing_block) = content_blocks.iter_mut().find(|block| {
-            matches!(
-                block,
-                ContentBlockItem::ToolUse { id, .. } if id.as_deref() == Some(tool_id)
-            )
-        }) {
+        if let Some((block_index, existing_block)) =
+            content_blocks.iter_mut().enumerate().find(|(_, block)| {
+                matches!(
+                    block,
+                    ContentBlockItem::ToolUse { id, .. } if id.as_deref() == Some(tool_id)
+                )
+            })
+        {
             *existing_block = codex_tool_call_content_block(&tool_call);
-            return;
+            return block_index as u64;
         }
     } else if let Some(existing) = tool_calls.iter_mut().find(|existing| {
         existing.name == tool_call.name && existing.arguments == tool_call.arguments
@@ -658,12 +670,57 @@ fn upsert_codex_tool_call_snapshot(
         if tool_call.stats.is_some() || existing.stats.is_none() {
             existing.stats = tool_call.stats.clone();
         }
-        return;
+        if let Some(block_index) = content_blocks.iter().rposition(|block| {
+            matches!(
+                block,
+                ContentBlockItem::ToolUse { name, arguments, .. }
+                    if name == &tool_call.name && arguments == &tool_call.arguments
+            )
+        }) {
+            return block_index as u64;
+        }
+
+        let block_index = content_blocks.len() as u64;
+        content_blocks.push(codex_tool_call_content_block(&tool_call));
+        return block_index;
     } else {
         tool_calls.push(tool_call.clone());
     }
 
+    let block_index = content_blocks.len() as u64;
     content_blocks.push(codex_tool_call_content_block(&tool_call));
+    block_index
+}
+
+fn tool_call_block_index(content_blocks: &[ContentBlockItem], tool_call: &ToolCall) -> Option<u64> {
+    content_blocks
+        .iter()
+        .rposition(|block| {
+            matches!(
+                block,
+                ContentBlockItem::ToolUse { id, name, arguments, .. }
+                    if id == &tool_call.id && name == &tool_call.name && arguments == &tool_call.arguments
+            )
+        })
+        .map(|index| index as u64)
+}
+
+fn attach_codex_reasoning_tokens(
+    content_blocks: &mut [ContentBlockItem],
+    block_index: Option<usize>,
+    reasoning_tokens: u64,
+) -> Option<u64> {
+    let block_index = block_index?;
+    match content_blocks.get_mut(block_index) {
+        Some(ContentBlockItem::Thinking {
+            reasoning_tokens: block_reasoning_tokens,
+            ..
+        }) => {
+            *block_reasoning_tokens = Some(reasoning_tokens);
+            Some(block_index as u64)
+        }
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1887,6 +1944,7 @@ pub async fn process_stream_background<R: Runtime>(
                                     seq: stream_seq,
                                     append_to_previous: true,
                                     duration_ms: None,
+                                    reasoning_tokens: None,
                                     is_settled: false,
                                 },
                             );
@@ -1962,6 +2020,7 @@ pub async fn process_stream_background<R: Runtime>(
                                     seq: stream_seq,
                                     append_to_previous: true,
                                     duration_ms,
+                                    reasoning_tokens: None,
                                     is_settled: true,
                                 },
                             );
@@ -2008,6 +2067,7 @@ pub async fn process_stream_background<R: Runtime>(
                         let cached_tool = CachedToolCall {
                             id: id.clone().unwrap_or_default(),
                             name: name.clone(),
+                            block_index: Some(processor.content_blocks.len() as u64),
                             arguments: serde_json::Value::Null,
                             result: None,
                             diff_context: None,
@@ -2113,6 +2173,10 @@ pub async fn process_stream_background<R: Runtime>(
                         let cached_tool = CachedToolCall {
                             id: tool_call.id.clone().unwrap_or_default(),
                             name: tool_call.name.clone(),
+                            block_index: tool_call_block_index(
+                                &processor.content_blocks,
+                                &tool_call,
+                            ),
                             arguments: tool_call.arguments.clone(),
                             result: None,
                             diff_context: diff_context_value.clone(),
@@ -3590,6 +3654,7 @@ async fn process_codex_stream_background<R: Runtime>(
     let mut completion_signal_tracker = CompletionSignalTracker::default();
     let mut last_emitted_capture: Option<UsageCapture> = None;
     let mut pending_codex_file_changes: HashMap<String, PendingCodexFileChange> = HashMap::new();
+    let mut current_turn_thinking_block_index: Option<usize> = None;
     let mut codex_turn_completed = false;
     let heartbeat_key = running_agent_registry
         .as_ref()
@@ -3768,7 +3833,9 @@ async fn process_codex_stream_background<R: Runtime>(
                 content_blocks.push(ContentBlockItem::Thinking {
                     text: text.clone(),
                     duration_ms: None,
+                    reasoning_tokens: None,
                 });
+                current_turn_thinking_block_index = Some(block_position as usize);
                 streaming_state_cache
                     .append_thinking(&conversation_id_str, block_position as usize, &text)
                     .await;
@@ -3803,6 +3870,7 @@ async fn process_codex_stream_background<R: Runtime>(
                             seq: stream_seq,
                             append_to_previous: false,
                             duration_ms: None,
+                            reasoning_tokens: None,
                             is_settled: true,
                         },
                     );
@@ -3831,7 +3899,7 @@ async fn process_codex_stream_background<R: Runtime>(
                         "Detected completion tool call in Codex stream"
                     );
                 }
-                upsert_codex_tool_call_snapshot(
+                let block_index = upsert_codex_tool_call_snapshot(
                     &mut tool_calls,
                     &mut content_blocks,
                     tool_call.clone(),
@@ -3859,6 +3927,7 @@ async fn process_codex_stream_background<R: Runtime>(
                                 .clone()
                                 .unwrap_or_else(|| format!("codex-tool-{}", stream_seq)),
                             name: tool_call.name.clone(),
+                            block_index: Some(block_index),
                             arguments: tool_call.arguments.clone(),
                             result: tool_call.result.clone(),
                             diff_context: diff_context_value.clone(),
@@ -3997,6 +4066,51 @@ async fn process_codex_stream_background<R: Runtime>(
             }
 
             if let Some(event_usage) = extract_codex_usage(&event) {
+                let reasoning_tokens = event_usage.usage.reasoning_output_tokens;
+                if let Some(reasoning_tokens) = reasoning_tokens {
+                    if let Some(block_index) = attach_codex_reasoning_tokens(
+                        &mut content_blocks,
+                        current_turn_thinking_block_index,
+                        reasoning_tokens,
+                    ) {
+                        persist_assistant_message_snapshot(
+                            &chat_message_repo,
+                            &assistant_message_id,
+                            &response_text,
+                            &tool_calls,
+                            &content_blocks,
+                        )
+                        .await;
+                        persist_timeline_snapshot(
+                            &chat_timeline_repo,
+                            &conversation_id_str,
+                            &assistant_message_id,
+                            &content_blocks,
+                            ChatTimelineItemStatus::Streaming,
+                        )
+                        .await;
+
+                        if let Some(ref handle) = app_handle {
+                            let _ = handle.emit(
+                                events::AGENT_THINKING,
+                                AgentThinkingPayload {
+                                    text: String::new(),
+                                    run_id: agent_run_id.clone(),
+                                    block_index: Some(block_index),
+                                    conversation_id: conversation_id_str.clone(),
+                                    context_type: context_type_str.clone(),
+                                    context_id: context_id_str.clone(),
+                                    seq: stream_seq,
+                                    append_to_previous: true,
+                                    duration_ms: None,
+                                    reasoning_tokens: Some(reasoning_tokens),
+                                    is_settled: true,
+                                },
+                            );
+                            stream_seq += 1;
+                        }
+                    }
+                }
                 let capture = if event_usage.source == CodexUsageSource::CumulativeTotal
                     && !run_session_attribution_ready
                 {

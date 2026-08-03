@@ -21,6 +21,9 @@ pub struct CachedToolCall {
     pub id: String,
     /// Tool name (e.g., "bash", "read", "edit")
     pub name: String,
+    /// Authoritative logical content-block position for recovered active-state ordering.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub block_index: Option<u64>,
     /// Current arguments (may be partial during streaming)
     pub arguments: serde_json::Value,
     /// Result if completed

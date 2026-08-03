@@ -275,6 +275,9 @@ pub struct AgentThinkingPayload {
     pub append_to_previous: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    /// Provider-reported total reasoning output tokens when available at settlement.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_tokens: Option<u64>,
     #[serde(default)]
     pub is_settled: bool,
 }

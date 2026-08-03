@@ -60,7 +60,14 @@ import { ToolActivityGroupToggle } from "./ToolActivityGroupToggle";
 import { ThinkingGroupToggle } from "./ThinkingGroupToggle";
 import { RunAttributionWidget } from "./RunAttributionWidget";
 import { ThinkingWidget } from "./tool-widgets/ThinkingWidget";
-import { aggregateThinkingSegments, joinThinkingSegmentTexts } from "./thinking-group";
+import {
+  aggregateThinkingSegments,
+  joinThinkingSegmentTexts,
+} from "./thinking-group";
+import {
+  collectPersistedThinkingRun,
+  samePersistedGroupSurface,
+} from "./persisted-thinking-group";
 import {
   summarizeToolActivity,
   type ToolActivitySummary,
@@ -254,12 +261,19 @@ type ToolCallGroupMarker = {
   position: "toggle" | "covered";
 };
 
+type PersistedThinkingGroupMarker = {
+  key: string;
+  blocks: ContentBlockItem[];
+  position: "toggle" | "covered";
+};
+
 
 type TimelineMessageItem = {
   kind: "message";
   data: ChatMessageData;
   sortTime: number;
   toolCallGroup?: ToolCallGroupMarker;
+  thinkingGroup?: PersistedThinkingGroupMarker;
 };
 
 /** Discriminated union for timeline items when hook events are interleaved */
@@ -286,21 +300,12 @@ function isPersistedTimelineToolCallMessage(message: ChatMessageData): boolean {
   return blocks?.length === 1 && blocks[0]?.type === "tool_use";
 }
 
-function sameToolGroupSurface(left: ChatMessageData, right: ChatMessageData): boolean {
-  return left.role === right.role
-    && (left.sender ?? null) === (right.sender ?? null)
-    && (left.providerHarness ?? null) === (right.providerHarness ?? null)
-    && (left.providerSessionId ?? null) === (right.providerSessionId ?? null)
-    && (left.upstreamProvider ?? null) === (right.upstreamProvider ?? null)
-    && (left.providerProfile ?? null) === (right.providerProfile ?? null);
-}
-
 function canContinueToolCallGroup(
   first: ChatMessageData,
   previous: ChatMessageData,
   next: ChatMessageData,
 ): boolean {
-  if (!isPersistedTimelineToolCallMessage(next) || !sameToolGroupSurface(first, next)) {
+  if (!isPersistedTimelineToolCallMessage(next) || !samePersistedGroupSurface(first, next)) {
     return false;
   }
   if (first.parentMessageId || next.parentMessageId) {
@@ -376,11 +381,22 @@ function isCollapsedToolCallGroupCoveredItem(
     && !expandedToolGroupKeys.has(item.toolCallGroup.key);
 }
 
+function isPersistedThinkingGroupCoveredItem(item: TimelineItem): boolean {
+  return item.kind === "message" && item.thinkingGroup?.position === "covered";
+}
+
 function isVisibleTimelineItem(
   item: TimelineItem,
   expandedToolGroupKeys: Set<string>,
 ): boolean {
-  return !isCollapsedToolCallGroupCoveredItem(item, expandedToolGroupKeys);
+  return !isCollapsedToolCallGroupCoveredItem(item, expandedToolGroupKeys)
+    && !isPersistedThinkingGroupCoveredItem(item);
+}
+
+function persistedThinkingGroupKey(messages: ChatMessageData[]): string {
+  const first = messages[0];
+  const last = messages[messages.length - 1];
+  return `thinking-msg-group:${first?.parentMessageId ?? first?.id ?? "empty"}:${first?.timelineSequence ?? "start"}:${last?.timelineSequence ?? "end"}:${messages.length}`;
 }
 
 interface RunAttributionTiming {
@@ -605,6 +621,67 @@ function ToolCallGroupToggleRow({
   );
 }
 
+function PersistedThinkingGroupToggleRow({
+  msg,
+  marker,
+  senderGroupState,
+  isLastInList,
+  isExpanded,
+  onToggle,
+  contentWidthClassName,
+  rowRef,
+}: {
+  msg: ChatMessageData;
+  marker: PersistedThinkingGroupMarker;
+  senderGroupState: AssistantSenderGroupState;
+  isLastInList: boolean;
+  isExpanded: boolean;
+  onToggle: React.MouseEventHandler<HTMLButtonElement>;
+  contentWidthClassName?: string | undefined;
+  rowRef?: React.Ref<HTMLDivElement> | undefined;
+}) {
+  const aggregate = aggregateThinkingSegments(marker.blocks, true);
+  const text = joinThinkingSegmentTexts(marker.blocks.map((block) => block.text));
+  return (
+    <div
+      ref={rowRef}
+      className="px-3 w-full"
+      data-chat-last-rendered-row={isLastInList ? "true" : undefined}
+      style={contentContainerStyle}
+    >
+      <ContentShell className={contentWidthClassName}>
+        <MessageItem
+          role={msg.role}
+          content=""
+          createdAt={msg.createdAt}
+          isLastInList={isLastInList}
+          toolCalls={null}
+          contentBlocks={null}
+          providerHarness={msg.providerHarness}
+          providerSessionId={msg.providerSessionId}
+          showAssistantIcon={senderGroupState.showSenderHeader}
+          reserveAssistantIconSpace={senderGroupState.reserveAssistantGutter}
+          showProviderMeta={senderGroupState.showSenderHeader}
+          hideMeta
+        >
+          <div className="space-y-1.5 overflow-hidden">
+            <ThinkingGroupToggle
+              groupKey={marker.key}
+              isExpanded={isExpanded}
+              isSettled={aggregate.isSettled}
+              segmentCount={aggregate.segmentCount}
+              {...(aggregate.totalDurationMs != null ? { durationMs: aggregate.totalDurationMs } : {})}
+              {...(aggregate.reasoningTokens != null ? { reasoningTokens: aggregate.reasoningTokens } : {})}
+              onToggle={onToggle}
+            />
+            {isExpanded && text ? <ThinkingWidget text={text} /> : null}
+          </div>
+        </MessageItem>
+      </ContentShell>
+    </div>
+  );
+}
+
 function LiveTranscriptRowItem({
   row,
   senderGroupState,
@@ -666,6 +743,7 @@ function LiveTranscriptRowItem({
             isSettled={aggregate.isSettled} segmentCount={aggregate.segmentCount}
             {...(aggregate.totalDurationMs != null ? { durationMs: aggregate.totalDurationMs } : {})}
             {...(aggregate.estimatedTokens != null ? { estimatedTokens: aggregate.estimatedTokens } : {})}
+            {...(aggregate.reasoningTokens != null ? { reasoningTokens: aggregate.reasoningTokens } : {})}
             onToggle={(event) => onToggleToolCallGroup(groupKey, event.currentTarget)} />
           {isExpanded && text ? <ThinkingWidget text={text} /> : null}
         </div>
@@ -1342,6 +1420,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       const pushMessageItem = (
         msg: ChatMessageData,
         toolCallGroup?: ToolCallGroupMarker,
+        thinkingGroup?: PersistedThinkingGroupMarker,
       ) => {
         // Enrich message with attachments if available
         const attachments = attachmentsMap?.get(msg.id);
@@ -1354,10 +1433,27 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           data: enrichedMsg,
           sortTime: new Date(msg.createdAt).getTime(),
           ...(toolCallGroup ? { toolCallGroup } : {}),
+          ...(thinkingGroup ? { thinkingGroup } : {}),
         });
       };
 
       for (let index = 0; index < teamFilteredMessages.length; index += 1) {
+        const thinkingGroup = collectPersistedThinkingRun(teamFilteredMessages, index);
+        const thinkingBlocks = thinkingGroup?.flatMap((message) =>
+          (message.contentBlocks ?? []).filter((block) => block.text?.trim()),
+        ) ?? [];
+        if (thinkingGroup && thinkingBlocks.length > 1) {
+          const key = persistedThinkingGroupKey(thinkingGroup);
+          thinkingGroup.forEach((msg, groupIndex) => {
+            pushMessageItem(msg, undefined, {
+              key,
+              blocks: thinkingBlocks,
+              position: groupIndex === 0 ? "toggle" : "covered",
+            });
+          });
+          index += thinkingGroup.length - 1;
+          continue;
+        }
         const toolCallGroup = collectToolCallGroupRun(teamFilteredMessages, index);
         if (toolCallGroup) {
           const key = toolCallGroupKey(toolCallGroup);
@@ -1906,15 +2002,35 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           </div>
         );
       }
-      if (isCollapsedToolCallGroupCoveredItem(item, expandedToolGroupKeys)) {
+      if (
+        isCollapsedToolCallGroupCoveredItem(item, expandedToolGroupKeys)
+        || isPersistedThinkingGroupCoveredItem(item)
+      ) {
         return null;
       }
       const msg = item.data;
       const senderGroupState =
         timelineSenderGroups[timelineIndex] ?? DEFAULT_ASSISTANT_GROUP_STATE;
       const toolCallGroup = item.toolCallGroup;
+      const thinkingGroup = item.thinkingGroup;
       const isExpandedToolCallGroup =
         toolCallGroup != null && expandedToolGroupKeys.has(toolCallGroup.key);
+      const isExpandedThinkingGroup =
+        thinkingGroup != null && expandedToolGroupKeys.has(thinkingGroup.key);
+      if (thinkingGroup?.position === "toggle") {
+        return (
+          <PersistedThinkingGroupToggleRow
+            msg={msg}
+            marker={thinkingGroup}
+            senderGroupState={senderGroupState}
+            isLastInList={isLastVisibleTimelineItem}
+            isExpanded={isExpandedThinkingGroup}
+            onToggle={(event) => toggleToolCallGroup(thinkingGroup.key, event.currentTarget)}
+            contentWidthClassName={contentWidthClassName}
+            rowRef={isLastVisibleTimelineItem ? handleLastRenderedRowRef : undefined}
+          />
+        );
+      }
       const groupToggleRow = toolCallGroup?.position === "toggle"
         ? (
           <ToolCallGroupToggleRow
@@ -2091,16 +2207,36 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
                 </div>
               );
             }
-            if (isCollapsedToolCallGroupCoveredItem(item, expandedToolGroupKeys)) {
+            if (
+              isCollapsedToolCallGroupCoveredItem(item, expandedToolGroupKeys)
+              || isPersistedThinkingGroupCoveredItem(item)
+            ) {
               return null;
             }
             const msg = item.data;
             const senderGroupState =
               timelineSenderGroups[index] ?? DEFAULT_ASSISTANT_GROUP_STATE;
             const toolCallGroup = item.toolCallGroup;
+            const thinkingGroup = item.thinkingGroup;
             const isExpandedToolCallGroup =
               toolCallGroup != null && expandedToolGroupKeys.has(toolCallGroup.key);
             const isLastVisibleTimelineItem = index === lastVisibleTimelineIndex;
+            const isExpandedThinkingGroup =
+              thinkingGroup != null && expandedToolGroupKeys.has(thinkingGroup.key);
+            if (thinkingGroup?.position === "toggle") {
+              return (
+                <PersistedThinkingGroupToggleRow
+                  key={`persisted-thinking-group-${thinkingGroup.key}`}
+                  msg={msg}
+                  marker={thinkingGroup}
+                  senderGroupState={senderGroupState}
+                  isLastInList={isLastVisibleTimelineItem}
+                  isExpanded={isExpandedThinkingGroup}
+                  onToggle={(event) => toggleToolCallGroup(thinkingGroup.key, event.currentTarget)}
+                  contentWidthClassName={contentWidthClassName}
+                />
+              );
+            }
             const groupToggleRow = toolCallGroup?.position === "toggle"
               ? (
                 <ToolCallGroupToggleRow

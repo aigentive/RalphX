@@ -122,6 +122,7 @@ async fn test_get_active_state_returns_cached_tool_calls() {
     let tool_call = CachedToolCall {
         id: "toolu_001".to_string(),
         name: "bash".to_string(),
+        block_index: Some(4),
         arguments: serde_json::json!({"command": "ls -la"}),
         result: Some(serde_json::json!({"output": "file1.txt"})),
         diff_context: None,
@@ -141,6 +142,7 @@ async fn test_get_active_state_returns_cached_tool_calls() {
     assert_eq!(response.0.tool_calls.len(), 1);
     assert_eq!(response.0.tool_calls[0].id, "toolu_001");
     assert_eq!(response.0.tool_calls[0].name, "bash");
+    assert_eq!(response.0.tool_calls[0].block_index, Some(4));
     assert!(response.0.tool_calls[0].result.is_some());
 }
 
@@ -327,6 +329,7 @@ async fn test_get_active_state_combines_all_data() {
     let tool_call = CachedToolCall {
         id: "toolu_combined".to_string(),
         name: "read".to_string(),
+        block_index: Some(0),
         arguments: serde_json::json!({"file_path": "/tmp/test.txt"}),
         result: None,
         diff_context: None,
