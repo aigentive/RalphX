@@ -30,6 +30,7 @@ use crate::application::chat_service::MockChatService;
 use crate::application::git_service::GitService;
 use crate::application::interactive_notification_producer::pr_review_notification_key;
 use crate::application::notification_service::{NoopNotificationEventEmitter, NotificationService};
+use crate::application::AppState;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
 use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus as DbPrStatus};
 use crate::domain::entities::{
@@ -395,6 +396,211 @@ async fn reserve_health_held_attempt(
         AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
         outcome => panic!("expected health-held reservation, got {outcome:?}"),
     }
+}
+
+async fn seed_poller_held_unpublished_head(
+    continuation: AgentWorkspaceRepairContinuation,
+    base_commit: &str,
+    health: &PrHealth,
+) -> (
+    AppState,
+    AgentConversationWorkspace,
+    AgentWorkspaceRepairAttempt,
+    Arc<MockGithubService>,
+) {
+    let worktree = tempfile::tempdir().expect("held unpublished poller worktree");
+    let worktree_path = worktree.keep();
+    let mut workspace = supervised_workspace(
+        "held-unpublished-poller-tick",
+        "project-held-unpublished-poller-tick",
+        &worktree_path,
+    );
+    init_repair_dispatch_repo(&worktree_path, &workspace.branch_name);
+    workspace.base_commit = Some(base_commit.to_string());
+    workspace.auto_publish_enabled = true;
+
+    let mut project = Project::new(
+        "Held unpublished poller".to_string(),
+        worktree_path.to_string_lossy().to_string(),
+    );
+    project.id = workspace.project_id.clone();
+    project.base_branch = Some("main".to_string());
+    project.github_pr_enabled = true;
+
+    let mut state = AppState::new_test();
+    state
+        .project_repo
+        .create(project)
+        .await
+        .expect("held unpublished project should persist");
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("held unpublished workspace should persist");
+
+    let fingerprint = super::classify_agent_workspace_pr_autofix_issue(101, health)
+        .expect("failing PR health should classify")
+        .classification;
+    let held = reserve_health_held_attempt(
+        state.agent_workspace_repair_repo.as_ref(),
+        &workspace.conversation_id,
+        &fingerprint,
+        crate::application::agent_workspace_publish_repair_state::UNCHANGED_HEALTH_REPAIR_REASON,
+    )
+    .await;
+    let expected_updated_at = held.updated_at;
+    let mut unpublished = held;
+    unpublished.continuation = continuation;
+    unpublished.target_base_commit = Some(base_commit.to_string());
+    unpublished.repair_head_commit = Some("validated-local-held-head".to_string());
+    unpublished.updated_at += chrono::Duration::microseconds(1);
+    let unpublished = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(
+            crate::domain::repositories::AgentWorkspaceRepairAttemptTransition {
+                attempt: unpublished,
+                expected_phase: AgentWorkspaceRepairPhase::Ready,
+                expected_updated_at,
+                next_phase: AgentWorkspaceRepairPhase::Ready,
+                compatibility_projection: None,
+                events: Vec::new(),
+            },
+        )
+        .await
+        .expect("held unpublished head should persist")
+    {
+        crate::domain::repositories::AgentWorkspaceRepairAttemptTransitionOutcome::Applied(
+            attempt,
+        ) => attempt,
+        outcome => panic!("held unpublished head must apply, got {outcome:?}"),
+    };
+
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health.clone()));
+    state.github_service =
+        Some(Arc::clone(&github) as Arc<dyn crate::domain::services::GithubServiceTrait>);
+    (state, workspace, unpublished, github)
+}
+
+#[tokio::test]
+async fn held_manual_unpublished_redrive_noop_falls_through_and_retains_the_hold() {
+    let mut health = open_pr_health("remote-held-head");
+    health.sync_state.base_ref_oid = Some("base-before-hold".to_string());
+    health.checks.push(PrHealthCheck {
+        name: "Rust tests".to_string(),
+        status: Some("completed".to_string()),
+        conclusion: Some("failure".to_string()),
+        details_url: None,
+    });
+    let (state, workspace, held, github) = seed_poller_held_unpublished_head(
+        AgentWorkspaceRepairContinuation::Manual,
+        "base-before-hold",
+        &health,
+    )
+    .await;
+    let workspace_repo = Arc::clone(&state.agent_conversation_workspace_repo);
+
+    assert!(
+        !super::re_drive_held_unpublished_agent_workspace_repair(
+            &state,
+            &workspace_repo,
+            &workspace.conversation_id,
+            &health,
+        )
+        .await
+        .expect("manual held-head recovery should be a safe no-op"),
+        "a no-op recovery must not tell the poll loop to skip remaining routing"
+    );
+
+    let chat = Arc::new(MockChatService::new());
+    let branch_update_repo: Arc<dyn BranchUpdateRepository> =
+        Arc::new(MemoryBranchUpdateRepository::new());
+    let routed = super::route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
+        github as Arc<dyn GithubServiceTrait>,
+        Path::new(&workspace.worktree_path),
+        101,
+        &workspace.conversation_id,
+        workspace_repo,
+        Some(Arc::clone(&state.agent_run_repo)),
+        Some(Arc::clone(&state.agent_workspace_repair_repo)),
+        Some(branch_update_repo),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("same-tick autofix routing should retain identical evidence");
+
+    assert!(!routed);
+    assert!(chat.get_sent_messages().await.is_empty());
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&workspace.conversation_id)
+        .await
+        .expect("held attempt should reload")
+        .expect("held attempt remains current");
+    assert_eq!(current.id, held.id);
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Ready);
+}
+
+#[tokio::test]
+async fn held_unpublished_redrive_noop_falls_through_to_base_advanced_supersession() {
+    let mut health = open_pr_health("remote-held-head");
+    health.sync_state.base_ref_oid = Some("base-after-hold".to_string());
+    health.checks.push(PrHealthCheck {
+        name: "Rust tests".to_string(),
+        status: Some("completed".to_string()),
+        conclusion: Some("failure".to_string()),
+        details_url: None,
+    });
+    let (state, workspace, held, github) = seed_poller_held_unpublished_head(
+        AgentWorkspaceRepairContinuation::ResumePrSupervision,
+        "base-before-hold",
+        &health,
+    )
+    .await;
+    let workspace_repo = Arc::clone(&state.agent_conversation_workspace_repo);
+
+    assert!(
+        !super::re_drive_held_unpublished_agent_workspace_repair(
+            &state,
+            &workspace_repo,
+            &workspace.conversation_id,
+            &health,
+        )
+        .await
+        .expect("base-advanced recovery should leave supersession to routing"),
+        "a non-advancing recovery must fall through to base supersession"
+    );
+
+    let agent_run_repo = seeded_latest_pr_fixer_run_repo(&workspace.conversation_id).await;
+    let chat = Arc::new(MockChatService::with_agent_run_repo(Arc::clone(
+        &agent_run_repo,
+    )));
+    let branch_update_repo: Arc<dyn BranchUpdateRepository> =
+        Arc::new(MemoryBranchUpdateRepository::new());
+    let routed = super::route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
+        github as Arc<dyn GithubServiceTrait>,
+        Path::new(&workspace.worktree_path),
+        101,
+        &workspace.conversation_id,
+        workspace_repo,
+        Some(agent_run_repo),
+        Some(Arc::clone(&state.agent_workspace_repair_repo)),
+        Some(branch_update_repo),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("base-advanced routing should supersede the held attempt");
+
+    assert!(routed);
+    assert_eq!(chat.get_sent_messages().await.len(), 1);
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&workspace.conversation_id)
+        .await
+        .expect("successor should reload")
+        .expect("successor remains current");
+    assert_eq!(current.generation, held.generation + 1);
 }
 
 fn ideation_plan_workspace(

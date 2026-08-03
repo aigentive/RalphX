@@ -20,7 +20,9 @@ use crate::application::agent_workspace_ci_rerun::ci_rerun_hold_still_pending;
 use crate::application::agent_workspace_pr_autofix_attempt::{
     load_pr_autofix_attempt_decision, pr_autofix_action_metadata,
 };
-use crate::application::agent_workspace_publish_recovery::recover_stale_publish_repair_for_workspace_in_state;
+use crate::application::agent_workspace_publish_recovery::{
+    recover_stale_publish_repair_for_workspace_in_state_result, StalePublishRepairRecoveryOutcome,
+};
 use crate::application::agent_workspace_publish_repair_state::held_repair_has_unpublished_head;
 use crate::application::agent_workspace_publish_repair_state::{
     agent_workspace_repair_is_ci_held, agent_workspace_repair_is_health_held,
@@ -1488,8 +1490,9 @@ async fn re_drive_held_unpublished_agent_workspace_repair(
                 conversation_id
             ))
         })?;
-    recover_stale_publish_repair_for_workspace_in_state(state, workspace).await?;
-    Ok(true)
+    let (_, outcome) =
+        recover_stale_publish_repair_for_workspace_in_state_result(state, workspace).await?;
+    Ok(!matches!(outcome, StalePublishRepairRecoveryOutcome::Noop))
 }
 
 #[allow(clippy::too_many_arguments)]

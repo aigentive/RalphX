@@ -45,6 +45,20 @@ impl PublishOperationScopeGuard {
     }
 }
 
+pub(crate) fn publish_operation_lease_token_for_scope(
+    conversation_id: &ChatConversationId,
+    operation_scope: &PublishOperationScopeGuard,
+) -> Option<String> {
+    if operation_scope.conversation_key != conversation_id.as_str() {
+        return None;
+    }
+    let conversation_key = conversation_id.as_str();
+    publish_operation_lease_heartbeats()
+        .get(&conversation_key)
+        .filter(|heartbeat| heartbeat.operation_id == operation_scope.operation_id)
+        .map(|heartbeat| heartbeat.token.clone())
+}
+
 pub(crate) fn begin_publish_operation_scope(
     conversation_id: &ChatConversationId,
 ) -> PublishOperationScopeGuard {

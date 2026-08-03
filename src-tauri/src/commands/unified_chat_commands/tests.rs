@@ -157,23 +157,13 @@ async fn terminal_publish_and_repair_handoff_statuses_release_the_owned_lease() 
         .create_or_update(workspace.clone())
         .await
         .expect("workspace should seed");
-    state
-        .agent_conversation_workspace_repo
-        .claim_publish_lease(
-            &conversation_id,
-            &format!("publish-operation:{conversation_id}"),
-            "update-success-token",
-            chrono::Utc::now(),
-            None,
-            false,
-        )
-        .await
-        .expect("update lease should seed");
-
     let operation_scope =
         crate::application::agent_workspace_publish_lease::begin_publish_operation_scope(
             &conversation_id,
         );
+    mark_agent_workspace_publish_status(&state, &workspace, "checking", &operation_scope)
+        .await
+        .expect("publish operation should claim its lease");
     mark_agent_workspace_publish_status(&state, &workspace, "refreshed", &operation_scope)
         .await
         .expect("successful update should settle its lease");
@@ -201,9 +191,14 @@ async fn terminal_publish_and_repair_handoff_statuses_release_the_owned_lease() 
         )
         .await
         .expect("repair handoff lease should seed");
-    settle_agent_workspace_publish_lease_status(&state, &workspace, "needs_agent")
-        .await
-        .expect("repair handoff should settle its lease");
+    settle_agent_workspace_publish_lease_status(
+        &state,
+        &workspace,
+        "needs_agent",
+        Some("repair-handoff-token"),
+    )
+    .await
+    .expect("repair handoff should settle its lease");
     let handed_off = state
         .agent_conversation_workspace_repo
         .get_by_conversation_id(&conversation_id)
@@ -215,6 +210,70 @@ async fn terminal_publish_and_repair_handoff_statuses_release_the_owned_lease() 
     assert_eq!(
         handed_off.publication_push_status.as_deref(),
         Some("needs_agent")
+    );
+}
+
+#[tokio::test]
+async fn terminal_status_without_an_owned_token_preserves_a_live_foreign_lease() {
+    let state = AppState::new_test();
+    let workspace = command_test_workspace();
+    let conversation_id = workspace.conversation_id.clone();
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should seed");
+    state
+        .agent_conversation_workspace_repo
+        .claim_publish_lease(
+            &conversation_id,
+            &format!("publish-operation:{conversation_id}"),
+            "live-owner-token",
+            chrono::Utc::now(),
+            None,
+            false,
+        )
+        .await
+        .expect("live owner lease should seed");
+
+    settle_agent_workspace_publish_lease_status(&state, &workspace, "failed", None)
+        .await
+        .expect("non-owner failure status should still persist");
+
+    let refreshed = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace should load")
+        .expect("workspace should exist");
+    assert_eq!(
+        refreshed.publish_lease_token.as_deref(),
+        Some("live-owner-token"),
+        "a pre-claim failure must not clear another operation's live lease"
+    );
+    assert_eq!(refreshed.publication_push_status.as_deref(), Some("failed"));
+
+    let competing_scope =
+        crate::application::agent_workspace_publish_lease::begin_publish_operation_scope(
+            &conversation_id,
+        );
+    mark_agent_workspace_publish_status(&state, &workspace, "no_changes", &competing_scope)
+        .await
+        .expect("non-owner terminal status should remain a lease no-op");
+    let refreshed = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace should reload")
+        .expect("workspace should exist");
+    assert_eq!(
+        refreshed.publish_lease_token.as_deref(),
+        Some("live-owner-token"),
+        "a competing operation must not release the row's current token"
+    );
+    assert_eq!(
+        refreshed.publication_push_status.as_deref(),
+        Some("no_changes")
     );
 }
 

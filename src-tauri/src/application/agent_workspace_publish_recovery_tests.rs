@@ -24,9 +24,9 @@ use crate::application::agent_workspace_publish_recovery::{
     recover_stale_transient_publish_statuses, recover_stale_transient_publish_statuses_for_state,
     recover_stale_transient_publish_statuses_for_state_with_redrive_emitter,
     settle_redrive_delivery, PrAutofixSuccessorDecision, StalePublishRepairRecoveryOutcome,
-    AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX, AUTO_RETRY_READY_REPAIR_REASON_PREFIX,
     AGENT_WORKSPACE_PUBLISH_REDRIVE_DELIVERING_STATUS,
-    AGENT_WORKSPACE_PUBLISH_REDRIVE_PENDING_STATUS, EXHAUSTED_PUBLISH_REDRIVE_CHECKED_REASON_PREFIX,
+    AGENT_WORKSPACE_PUBLISH_REDRIVE_PENDING_STATUS, AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX,
+    AUTO_RETRY_READY_REPAIR_REASON_PREFIX, EXHAUSTED_PUBLISH_REDRIVE_CHECKED_REASON_PREFIX,
     STALE_NEEDS_AGENT_CLASSIFICATION, STALE_REPAIR_BLOCKED_SUMMARY, STALE_REPAIR_RECOVERED_STEP,
     STALE_TRANSIENT_CLASSIFICATION, STALE_TRANSIENT_RECOVERED_STEP,
 };
@@ -5189,7 +5189,7 @@ async fn blocked_pr_autofix_with_unchanged_health_parks_without_spawning() {
     let health = failing_check_pr_health("head-unchanged", "Rust Tests");
     let fingerprint = health_fingerprint(684, &health);
     let github = Arc::new(crate::tests::mock_github_service::MockGithubService::new());
-    github.state().fetch_pr_health_result = Some(Ok(health));
+    github.state().fetch_pr_health_result = Some(Ok(health.clone()));
     state.github_service =
         Some(github.clone() as Arc<dyn crate::domain::services::GithubServiceTrait>);
 
@@ -5307,9 +5307,32 @@ async fn ready_health_hold_with_unpublished_head_marks_one_durable_redrive_witho
         AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
         outcome => panic!("unpublished ready-head checkpoint must apply, got {outcome:?}"),
     };
-    let busy_guard =
-        try_acquire_agent_workspace_repair_publish_continuation_guard(&conversation_id)
-            .expect("reserve durable publisher guard");
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load held-head workspace")
+        .expect("held-head workspace exists");
+    let target_identity = GitService::canonical_target_identity(
+        std::path::Path::new(&workspace.worktree_path),
+        &workspace.branch_name,
+    )
+    .await
+    .expect("resolve held-head target identity");
+    let foreign_owner = GitTargetLeaseOwner::branch_update("foreign-task", "foreign-update");
+    let AcquireGitTargetLeaseOutcome::Acquired {
+        fencing_epoch: foreign_epoch,
+    } = state
+        .branch_update_repo
+        .acquire_target_lease(AcquireGitTargetLease {
+            identity: target_identity.clone(),
+            owner: foreign_owner.clone(),
+        })
+        .await
+        .expect("acquire held-head target for a foreign owner")
+    else {
+        panic!("foreign held-head target lease should be newly acquired");
+    };
     github.state().fetch_pr_health_result = Some(Err(crate::error::AppError::Infrastructure(
         "GitHub health unavailable".to_string(),
     )));
@@ -5328,7 +5351,7 @@ async fn ready_health_hold_with_unpublished_head_marks_one_durable_redrive_witho
         .pending_reasons
         .iter()
         .any(|reason| reason.starts_with("pr_autofix_head_redrive:")));
-    github.state().fetch_pr_health_result = Some(Ok(health));
+    github.state().fetch_pr_health_result = Some(Ok(health.clone()));
 
     recover_agent_workspace_repair_attempts_for_state(&state)
         .await
@@ -5374,26 +5397,100 @@ async fn ready_health_hold_with_unpublished_head_marks_one_durable_redrive_witho
         1,
         "the exact-head marker prevents duplicate re-drives"
     );
+    let expected_updated_at = repeated.updated_at;
+    let mut capped = repeated;
+    capped.pending_reasons.extend([
+        "pr_autofix_head_redrive_retry:validated-local-ready-head:2".to_string(),
+        "pr_autofix_head_redrive_retry:validated-local-ready-head:3".to_string(),
+    ]);
+    capped.updated_at += chrono::Duration::microseconds(1);
+    let capped = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: capped,
+            expected_phase: AgentWorkspaceRepairPhase::Ready,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Ready,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("persist exhausted held-head retry history")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("held-head retry history must apply, got {outcome:?}"),
+    };
+    let capped_updated_at = capped.updated_at;
+    github.state().fetch_pr_health_result = Some(Ok(health.clone()));
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("capped held-head retry stays held"),
+        0
+    );
+    let capped = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload capped held-head retry")
+        .expect("capped held-head retry remains current");
+    assert_eq!(capped.phase, AgentWorkspaceRepairPhase::Ready);
+    assert_eq!(capped.updated_at, capped_updated_at);
+    assert!(capped.settled_at.is_none());
+
+    assert!(matches!(
+        state
+            .branch_update_repo
+            .release_target_lease(&target_identity, &foreign_owner, foreign_epoch)
+            .await
+            .expect("release foreign held-head target lease"),
+        crate::domain::repositories::GitAuthorityCasOutcome::Applied { .. }
+    ));
     let messages_before = state
         .chat_message_repo
         .get_by_conversation(&conversation_id)
         .await
         .expect("load baseline held-head messages")
         .len();
-    drop(busy_guard);
 
-    assert_eq!(
-        recover_agent_workspace_repair_attempts_for_state(&state)
-            .await
-            .expect("later recovery retries the authorized held-head continuation"),
-        0
-    );
+    let expected_updated_at = capped.updated_at;
+    let mut changed_head = capped;
+    changed_head.repair_head_commit = Some("validated-new-ready-head".to_string());
+    changed_head.updated_at += chrono::Duration::microseconds(1);
+    match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: changed_head,
+            expected_phase: AgentWorkspaceRepairPhase::Ready,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Ready,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("persist changed repair head")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_) => {}
+        outcome => panic!("changed repair head must apply, got {outcome:?}"),
+    }
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    recover_agent_workspace_repair_attempts_for_state(&state)
+        .await
+        .expect("changed repair head re-arms held-head retry");
     let resumed = state
         .agent_workspace_repair_repo
         .get_current_repair_attempt(&conversation_id)
         .await
-        .expect("reload released held-head continuation")
-        .expect("released held-head continuation remains current");
+        .expect("reload re-armed held-head retry")
+        .expect("re-armed held-head retry remains current");
+    assert!(resumed
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == "pr_autofix_head_redrive:validated-new-ready-head"));
+    assert!(resumed
+        .pending_reasons
+        .iter()
+        .any(|reason| { reason == "pr_autofix_head_redrive_retry:validated-new-ready-head:1" }));
     assert_eq!(resumed.id, unpublished.id);
     assert_eq!(resumed.generation, unpublished.generation);
     assert!(matches!(
@@ -5405,8 +5502,7 @@ async fn ready_health_hold_with_unpublished_head_marks_one_durable_redrive_witho
         resumed
             .pending_reasons
             .iter()
-            .filter(|reason| reason.as_str()
-                == "pr_autofix_head_redrive:validated-local-ready-head")
+            .filter(|reason| reason.as_str() == "pr_autofix_head_redrive:validated-new-ready-head")
             .count(),
         1,
         "successful retry never duplicates the authorization marker"

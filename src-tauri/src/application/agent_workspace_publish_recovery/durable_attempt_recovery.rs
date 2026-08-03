@@ -68,6 +68,7 @@ const MAX_AUTO_RETRY_READY_REPAIR_STREAK: u32 = 3;
 pub(crate) const EXHAUSTED_PUBLISH_REDRIVE_CHECKED_REASON_PREFIX: &str =
     "exhausted_publish_redrive_checked:";
 pub(crate) const PR_AUTOFIX_HEAD_REDRIVE_REASON_PREFIX: &str = "pr_autofix_head_redrive:";
+const PR_AUTOFIX_HEAD_REDRIVE_RETRY_REASON_PREFIX: &str = "pr_autofix_head_redrive_retry:";
 const CONTINUATION_RECOVERY_FAILURE_REASON_PREFIX: &str = "continuation_recovery_failure:";
 const CONTINUATION_OPEN_EFFECT_RECOVERY_REASON_PREFIX: &str = "continuation_open_effect_recovery:";
 const CONTINUATION_OPEN_EFFECT_ATTENTION_REASON: &str =
@@ -490,6 +491,22 @@ fn automatic_ready_repair_streak(attempt: &AgentWorkspaceRepairAttempt) -> u32 {
         .unwrap_or_default()
 }
 
+fn automatic_held_head_redrive_streak(
+    attempt: &AgentWorkspaceRepairAttempt,
+    repair_head: &str,
+) -> u32 {
+    let prefix = format!("{PR_AUTOFIX_HEAD_REDRIVE_RETRY_REASON_PREFIX}{repair_head}:");
+    attempt
+        .pending_reasons
+        .iter()
+        .filter_map(|reason| reason.strip_prefix(&prefix))
+        .filter_map(|streak| streak.parse::<u32>().ok())
+        .max()
+        .unwrap_or_else(|| {
+            u32::from(agent_workspace_repair_owns_unpublished_publish_continuation(attempt))
+        })
+}
+
 fn automatic_ready_repair_retry_delay(streak: u32) -> Duration {
     let multiplier = 1_i64 << streak.min(4);
     Duration::seconds(
@@ -511,7 +528,7 @@ async fn retry_safe_ready_agent_workspace_repair_publish(
     {
         return Ok(DurableRepairRecoveryOutcome::Noop);
     }
-    let (held_head_redrive_authorized, held_head_redrive_marker) =
+    let (held_head_redrive_authorized, held_head_redrive_marker, held_repair_head) =
         if agent_workspace_repair_is_health_held(&current) {
             // A health hold normally survives recovery. The one exception is a concrete repair head
             // GitHub has not seen: without publishing it, the health evidence can never change. The
@@ -550,9 +567,10 @@ async fn retry_safe_ready_agent_workspace_repair_publish(
                 true,
                 (!agent_workspace_repair_owns_unpublished_publish_continuation(&current))
                     .then_some(marker),
+                Some(head.to_string()),
             )
         } else {
-            (false, None)
+            (false, None, None)
         };
 
     let redrive_authorized = match current.continuation {
@@ -573,8 +591,24 @@ async fn retry_safe_ready_agent_workspace_repair_publish(
         return Ok(DurableRepairRecoveryOutcome::Noop);
     }
 
-    let streak = automatic_ready_repair_streak(&current);
-    if !held_head_redrive_authorized {
+    let streak = if let Some(head) = held_repair_head.as_deref() {
+        automatic_held_head_redrive_streak(&current, head)
+    } else {
+        automatic_ready_repair_streak(&current)
+    };
+    if held_head_redrive_authorized {
+        if streak >= MAX_AUTO_RETRY_READY_REPAIR_STREAK {
+            // The unchanged-health hold remains authoritative after this head exhausts its
+            // publish retries. Settling it would permit a fresh fixer generation on identical
+            // evidence. A different repair head gets an independent counter and re-arms here.
+            return Ok(DurableRepairRecoveryOutcome::Noop);
+        }
+        if held_head_redrive_marker.is_none()
+            && Utc::now() - current.updated_at < automatic_ready_repair_retry_delay(streak)
+        {
+            return Ok(DurableRepairRecoveryOutcome::Noop);
+        }
+    } else {
         if streak >= MAX_AUTO_RETRY_READY_REPAIR_STREAK {
             return settle_exhausted_ready_agent_workspace_repair(state, current).await;
         }
@@ -583,48 +617,45 @@ async fn retry_safe_ready_agent_workspace_repair_publish(
         }
     }
 
-    let marked = if held_head_redrive_authorized && held_head_redrive_marker.is_none() {
-        // The persisted marker proves this exact repair head was authorized for publication; it
-        // is not a completion receipt. If target reacquisition or another resume precondition
-        // failed after the marker CAS, the Ready generation must re-enter the same idempotent
-        // continuation on a later recovery sweep.
-        current
+    let expected_updated_at = current.updated_at;
+    let mut marked = current;
+    if let Some(marker) = held_head_redrive_marker {
+        marked.pending_reasons.push(marker);
+    }
+    if let Some(head) = held_repair_head.as_deref() {
+        marked.pending_reasons.push(format!(
+            "{PR_AUTOFIX_HEAD_REDRIVE_RETRY_REASON_PREFIX}{head}:{}",
+            streak + 1
+        ));
     } else {
-        let expected_updated_at = current.updated_at;
-        let mut marked = current;
-        if let Some(marker) = held_head_redrive_marker {
-            marked.pending_reasons.push(marker);
-        } else {
-            marked.pending_reasons.push(format!(
-                "{AUTO_RETRY_READY_REPAIR_REASON_PREFIX}{}",
-                streak + 1
-            ));
-        }
-        marked.updated_at =
-            std::cmp::max(Utc::now(), expected_updated_at + Duration::microseconds(1));
-        match state
-            .agent_workspace_repair_repo
-            .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
-                attempt: marked,
-                expected_phase: AgentWorkspaceRepairPhase::Ready,
-                expected_updated_at,
-                next_phase: AgentWorkspaceRepairPhase::Ready,
-                compatibility_projection: None,
-                events: Vec::new(),
-            })
-            .await?
-        {
-            AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
-            AgentWorkspaceRepairAttemptTransitionOutcome::Stale(_)
-            | AgentWorkspaceRepairAttemptTransitionOutcome::Missing => {
-                return Ok(DurableRepairRecoveryOutcome::Stale);
-            }
+        marked.pending_reasons.push(format!(
+            "{AUTO_RETRY_READY_REPAIR_REASON_PREFIX}{}",
+            streak + 1
+        ));
+    }
+    marked.updated_at = std::cmp::max(Utc::now(), expected_updated_at + Duration::microseconds(1));
+    let marked = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: marked,
+            expected_phase: AgentWorkspaceRepairPhase::Ready,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Ready,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await?
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        AgentWorkspaceRepairAttemptTransitionOutcome::Stale(_)
+        | AgentWorkspaceRepairAttemptTransitionOutcome::Missing => {
+            return Ok(DurableRepairRecoveryOutcome::Stale);
         }
     };
 
     // A failed re-drive must not abort the whole recovery sweep for other workspaces. Ordinary
-    // Ready retries persist a bounded backoff streak; an authorized unpublished-head marker keeps
-    // the exact held generation retryable until the continuation advances out of Ready.
+    // Ready retries persist a bounded backoff streak. Authorized unpublished-head retries use a
+    // per-head counter so an exhausted head stays held while a different repair head re-arms.
     // The authority gate above proves re-drive authority from durable consent, current Auto
     // Publish policy, or supervision of an already-created PR; it does not grant user consent.
     let resumed = match resume_current_agent_workspace_repair_publish(

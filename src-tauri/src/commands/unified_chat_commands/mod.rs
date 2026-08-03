@@ -91,6 +91,7 @@ use crate::application::agent_workspace_pr_supervision_recovery::{
 };
 use crate::application::agent_workspace_publish_lease::{
     begin_publish_operation_scope, publish_operation_lease_is_live,
+    publish_operation_lease_token_for_scope,
     spawn_publish_operation_lease_heartbeat_for_scope, stop_publish_operation_lease_heartbeat,
     PublishOperationScopeGuard,
 };
@@ -8550,7 +8551,13 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
     {
         Ok(target) => target,
         Err(error) => {
-            mark_agent_workspace_publish_description_failure(state, &workspace, &error).await;
+            mark_agent_workspace_publish_description_failure(
+                state,
+                &workspace,
+                &error,
+                operation_scope,
+            )
+            .await;
             return Err(error);
         }
     };
@@ -8622,7 +8629,13 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
         Ok(decision) => decision,
         Err(error) => {
             let error = error.to_string();
-            mark_agent_workspace_publish_description_failure(state, &workspace, &error).await;
+            mark_agent_workspace_publish_description_failure(
+                state,
+                &workspace,
+                &error,
+                operation_scope,
+            )
+            .await;
             return Err(error);
         }
     };
@@ -8727,11 +8740,23 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
             Ok(ResolvedAgentWorkspacePrTarget::NewPr) => {
                 let error =
                     "existing pull request disappeared before metadata mutation".to_string();
-                mark_agent_workspace_publish_description_failure(state, &workspace, &error).await;
+                mark_agent_workspace_publish_description_failure(
+                    state,
+                    &workspace,
+                    &error,
+                    operation_scope,
+                )
+                .await;
                 return Err(error);
             }
             Err(error) => {
-                mark_agent_workspace_publish_description_failure(state, &workspace, &error).await;
+                mark_agent_workspace_publish_description_failure(
+                    state,
+                    &workspace,
+                    &error,
+                    operation_scope,
+                )
+                .await;
                 return Err(error);
             }
         };
@@ -8775,8 +8800,13 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
                 }
                 Err(error) => {
                     let error = error.to_string();
-                    mark_agent_workspace_publish_description_failure(state, &workspace, &error)
-                        .await;
+                    mark_agent_workspace_publish_description_failure(
+                        state,
+                        &workspace,
+                        &error,
+                        operation_scope,
+                    )
+                    .await;
                     return Err(error);
                 }
             };
@@ -8797,8 +8827,13 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
                             ResolvedAgentWorkspacePrTarget::Existing(Box::new(confirmed_snapshot));
                     }
                     Err(error) => {
-                        mark_agent_workspace_publish_description_failure(state, &workspace, &error)
-                            .await;
+                        mark_agent_workspace_publish_description_failure(
+                            state,
+                            &workspace,
+                            &error,
+                            operation_scope,
+                        )
+                        .await;
                         return Err(error);
                     }
                 }
@@ -9135,11 +9170,16 @@ async fn mark_agent_workspace_publish_status(
         .await?
         .unwrap_or_else(|| workspace.clone());
     let mut active_token = None;
+    let mut publication_status_persisted = false;
     if matches!(
         push_status,
         "refreshed" | "pushed" | "failed" | "no_changes"
     ) {
-        if let Some(token) = current.publish_lease_token.as_deref() {
+        let owned_token = publish_operation_lease_token_for_scope(
+            &current.conversation_id,
+            operation_scope,
+        );
+        if let Some(token) = owned_token.as_deref() {
             let release = state
                 .agent_conversation_workspace_repo
                 .release_publish_lease(&current.conversation_id, token, Some(push_status), now)
@@ -9168,6 +9208,18 @@ async fn mark_agent_workspace_publish_status(
                     "publish lease release lost ownership".to_string(),
                 ));
             }
+        } else {
+            state
+                .agent_conversation_workspace_repo
+                .update_publication(
+                    &workspace.conversation_id,
+                    workspace.publication_pr_number,
+                    workspace.publication_pr_url.as_deref(),
+                    workspace.publication_pr_status.as_deref(),
+                    Some(push_status),
+                )
+                .await?;
+            publication_status_persisted = true;
         }
     } else {
         let owner_run_id = state
@@ -9272,16 +9324,20 @@ async fn mark_agent_workspace_publish_status(
             }
         }
     }
-    let update = state
-        .agent_conversation_workspace_repo
-        .update_publication(
-            &workspace.conversation_id,
-            workspace.publication_pr_number,
-            workspace.publication_pr_url.as_deref(),
-            workspace.publication_pr_status.as_deref(),
-            Some(push_status),
-        )
-        .await;
+    let update = if publication_status_persisted {
+        Ok(())
+    } else {
+        state
+            .agent_conversation_workspace_repo
+            .update_publication(
+                &workspace.conversation_id,
+                workspace.publication_pr_number,
+                workspace.publication_pr_url.as_deref(),
+                workspace.publication_pr_status.as_deref(),
+                Some(push_status),
+            )
+            .await
+    };
     if let Err(error) = update {
         if let Some(token) = active_token.as_deref() {
             let _ = state
@@ -9342,9 +9398,17 @@ async fn mark_agent_workspace_publish_description_failure(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
     error: &str,
+    operation_scope: &PublishOperationScopeGuard,
 ) {
-    let _ =
-        settle_agent_workspace_publish_lease_status(state, workspace, "description_failed").await;
+    let owned_token =
+        publish_operation_lease_token_for_scope(&workspace.conversation_id, operation_scope);
+    let _ = settle_agent_workspace_publish_lease_status(
+        state,
+        workspace,
+        "description_failed",
+        owned_token.as_deref(),
+    )
+    .await;
     let _ = append_agent_workspace_publication_event(
         state,
         &workspace.conversation_id,
@@ -9644,8 +9708,13 @@ async fn mark_agent_workspace_failure_with_routing_and_action<S>(
     if matches!(post_repair_action, AgentWorkspacePostRepairAction::Publish)
         && durable_repair_owns_publish_continuation(state, workspace).await
     {
-        if let Err(error) =
-            settle_agent_workspace_publish_lease_status(state, workspace, "needs_agent").await
+        if let Err(error) = settle_agent_workspace_publish_lease_status(
+            state,
+            workspace,
+            "needs_agent",
+            None,
+        )
+        .await
         {
             tracing::warn!(
                 conversation_id = %workspace.conversation_id,
@@ -9879,7 +9948,13 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
     {
         let push_status = "failed";
         if let Err(release_error) =
-            settle_agent_workspace_publish_lease_status(state, workspace, push_status).await
+            settle_agent_workspace_publish_lease_status(
+                state,
+                workspace,
+                push_status,
+                None,
+            )
+            .await
         {
             tracing::warn!(
                 conversation_id = %workspace.conversation_id,
@@ -9947,7 +10022,13 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
         "failed"
     };
     if let Err(release_error) =
-        settle_agent_workspace_publish_lease_status(state, workspace, lease_settlement_status).await
+        settle_agent_workspace_publish_lease_status(
+            state,
+            workspace,
+            lease_settlement_status,
+            None,
+        )
+        .await
     {
         tracing::warn!(
             conversation_id = %workspace.conversation_id,
@@ -10143,13 +10224,14 @@ async fn settle_agent_workspace_publish_lease_status(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
     push_status: &str,
+    owned_token: Option<&str>,
 ) -> crate::error::AppResult<()> {
     let current = state
         .agent_conversation_workspace_repo
         .get_by_conversation_id(&workspace.conversation_id)
         .await?
         .unwrap_or_else(|| workspace.clone());
-    if let Some(token) = current.publish_lease_token.as_deref() {
+    if let Some(token) = owned_token {
         let release = state
             .agent_conversation_workspace_repo
             .release_publish_lease(
