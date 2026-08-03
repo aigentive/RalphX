@@ -294,7 +294,8 @@ pub(crate) fn due_pr_autofix_redispatch_message(
     );
     out.push_str("- `fixed` with `fix_commit_sha` when you committed a real fix\n");
     out.push_str(
-        "- `transient_ci` when the failure is infrastructure/flake and a rerun is the right action\n",
+        "- `transient_ci` only for GitHub Actions infrastructure failures (runner cancellation, \
+         infrastructure timeout, startup failure) — never for a real test, lint, coverage, or code failure\n",
     );
     out.push_str(
         "- `pre_existing_on_base` when the same failure already exists on the base branch and this PR did not cause it\n",

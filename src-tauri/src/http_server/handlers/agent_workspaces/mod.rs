@@ -1,6 +1,7 @@
 //! Agent workspace HTTP handlers.
 
 mod repair_completion;
+pub(crate) mod repair_completion_ci_rerun;
 mod workspace_review_diff;
 pub use repair_completion::*;
 pub use workspace_review_diff::*;
