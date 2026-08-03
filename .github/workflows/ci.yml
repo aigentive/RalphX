@@ -32,6 +32,7 @@ jobs:
       run_rust: ${{ steps.decide.outputs.run_rust }}
       run_frontend: ${{ steps.decide.outputs.run_frontend }}
       run_visual: ${{ steps.decide.outputs.run_visual }}
+      run_tauri_alignment: ${{ steps.decide.outputs.run_tauri_alignment }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -56,6 +57,7 @@ jobs:
               - 'scripts/validate-claude-rules.py'
               - 'scripts/tests/test-ci-rust-full-integration-targets.sh'
               - 'scripts/tests/test-coverage-rust-shards.sh'
+              - 'scripts/tests/test-ci-path-filters.py'
               - 'scripts/tests/test-claude-rule-utils.py'
               - 'scripts/tests/test-claude-rules-activation.py'
               - 'scripts/build-prod-release.sh'
@@ -74,11 +76,13 @@ jobs:
             plugins:
               - 'plugins/app/ralphx-external-mcp/**'
               - 'plugins/app/ralphx-mcp-server/**'
+              - '!**/CLAUDE.md'
               - 'scripts/prepare-release-runtime.sh'
             rust:
               - '.cargo/**'
               - '.github/actions/**'
               - 'src-tauri/**'
+              - '!**/CLAUDE.md'
               - 'rust-toolchain.toml'
               - 'scripts/bench-rust-build.sh'
               - 'scripts/baselines/layering.json'
@@ -89,12 +93,20 @@ jobs:
               - 'scripts/validate_sqlite_migrations.py'
             frontend:
               - 'frontend/**'
+              - '!**/CLAUDE.md'
             visual:
               - 'frontend/**'
+              - '!**/CLAUDE.md'
               - 'src-tauri/Cargo.lock'
               - 'src-tauri/Cargo.toml'
               - 'src-tauri/src/application/runtime_wiring.rs'
               - 'src-tauri/tauri.conf.json'
+            tauri_alignment:
+              - 'scripts/check-tauri-package-alignment.mjs'
+              - 'frontend/package.json'
+              - 'frontend/package-lock.json'
+              - 'src-tauri/Cargo.toml'
+              - 'src-tauri/Cargo.lock'
 
       - name: Decide CI scope
         id: decide
@@ -109,6 +121,7 @@ jobs:
               echo "run_rust=true"
               echo "run_frontend=true"
               echo "run_visual=true"
+              echo "run_tauri_alignment=true"
             } >> "${GITHUB_OUTPUT}"
             exit 0
           fi
@@ -120,6 +133,7 @@ jobs:
               echo "run_rust=true"
               echo "run_frontend=true"
               echo "run_visual=true"
+              echo "run_tauri_alignment=true"
             } >> "${GITHUB_OUTPUT}"
             exit 0
           fi
@@ -130,6 +144,7 @@ jobs:
             echo "run_rust=${{ steps.filter.outputs.rust }}"
             echo "run_frontend=${{ steps.filter.outputs.frontend }}"
             echo "run_visual=${{ steps.filter.outputs.visual }}"
+            echo "run_tauri_alignment=${{ steps.filter.outputs.tauri_alignment }}"
           } >> "${GITHUB_OUTPUT}"
 
   automation-config:
@@ -185,6 +200,10 @@ jobs:
         shell: bash
         run: bash scripts/tests/test-coverage-rust-shards.sh
 
+      - name: Validate CI path filters
+        shell: bash
+        run: python3 scripts/tests/test-ci-path-filters.py
+
       - name: Validate Claude rule loading
         shell: bash
         run: |
@@ -213,6 +232,8 @@ jobs:
 
   tauri-package-alignment:
     name: Tauri Package Alignment
+    needs: changes
+    if: needs.changes.outputs.run_tauri_alignment == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

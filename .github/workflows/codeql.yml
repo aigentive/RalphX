@@ -46,8 +46,10 @@ jobs:
               - 'frontend/**'
               - 'plugins/app/ralphx-external-mcp/**'
               - 'plugins/app/ralphx-mcp-server/**'
+              - '!**/CLAUDE.md'
             rust:
               - 'src-tauri/**'
+              - '!**/CLAUDE.md'
               - 'rust-toolchain.toml'
 
       - name: Decide CodeQL scope

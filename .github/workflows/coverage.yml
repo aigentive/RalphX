@@ -47,6 +47,7 @@ jobs:
               - 'scripts/summarize-coverage.mjs'
               - 'plugins/app/ralphx-external-mcp/**'
               - 'plugins/app/ralphx-mcp-server/**'
+              - '!**/CLAUDE.md'
             rust:
               - '.cargo/**'
               - '.github/actions/**'
@@ -55,12 +56,14 @@ jobs:
               - 'scripts/check-rust-test-features.py'
               - 'scripts/test-rust-fast.sh'
               - 'src-tauri/**'
+              - '!**/CLAUDE.md'
               - 'rust-toolchain.toml'
               - 'scripts/ci-install-linux-deps.sh'
               - 'scripts/validate_sqlite_migrations.py'
             frontend:
               - 'scripts/summarize-coverage.mjs'
               - 'frontend/**'
+              - '!**/CLAUDE.md'
 
       - name: Decide coverage scope
         id: decide
