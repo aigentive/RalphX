@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::os::unix::fs::PermissionsExt;
 
 use crate::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
+use crate::application::agent_workspace_publish_recovery::agent_workspace_repair_owns_unpublished_publish_continuation;
 use crate::application::agent_workspace_publish_recovery::{
     claim_pending_redrive_delivery, due_repair_dispatch_message, evaluate_pr_autofix_successor,
     is_blocked_and_not_auto_retryable, recover_agent_workspace_repair_after_terminal_run,
@@ -5866,6 +5867,32 @@ fn unpublished_repair_head_predicate_trims_and_fails_closed() {
         &attempt,
         Some("remote-head")
     ));
+}
+
+#[test]
+fn unpublished_publish_continuation_requires_an_exact_current_head_marker() {
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        conversation_id(75),
+        AgentWorkspaceRepairSource::PrAutofix,
+        AgentWorkspaceRepairContinuation::Publish,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+
+    assert!(!agent_workspace_repair_owns_unpublished_publish_continuation(&attempt));
+    attempt.repair_head_commit = Some("   ".to_string());
+    assert!(!agent_workspace_repair_owns_unpublished_publish_continuation(&attempt));
+
+    attempt.repair_head_commit = Some(" local-head ".to_string());
+    attempt.pending_reasons = vec!["pr_autofix_head_redrive:other-head".to_string()];
+    assert!(!agent_workspace_repair_owns_unpublished_publish_continuation(&attempt));
+
+    attempt.pending_reasons = vec!["pr_autofix_head_redrive:local-head".to_string()];
+    assert!(agent_workspace_repair_owns_unpublished_publish_continuation(&attempt));
 }
 
 #[tokio::test]

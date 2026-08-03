@@ -60,6 +60,15 @@ fn test_all_defaults_are_sensible() {
         30
     );
     assert_eq!(cfg.git.agent_workspace_publish_recovery_interval_secs, 120);
+    assert_eq!(default_agent_workspace_publish_lease_stale_secs(), 300);
+    assert_eq!(
+        default_agent_workspace_publish_lease_heartbeat_interval_secs(),
+        30
+    );
+    assert_eq!(
+        default_agent_workspace_publish_recovery_interval_secs(),
+        120
+    );
     assert_eq!(cfg.git.terminal_pr_local_cleanup_interval_secs, 900);
     assert_eq!(cfg.git.terminal_pr_local_cleanup_retry_secs, 3_600);
     assert_eq!(cfg.git.orphan_worktree_cleanup_marker_retry_secs, 86_400);
