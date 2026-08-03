@@ -15,6 +15,7 @@ type CanonicalAgentDefinition = {
         };
     }>;
 };
+export declare const SAFE_CANONICAL_PROFILE_NAME: RegExp;
 export declare function resolveRepoRoot(): string;
 export declare function canonicalAgentName(agentType: string): string;
 export declare function clearCanonicalAgentDefinitionCache(): void;

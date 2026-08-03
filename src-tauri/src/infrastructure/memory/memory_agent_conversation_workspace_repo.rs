@@ -1231,6 +1231,19 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .collect())
     }
 
+    async fn set_last_blocked_pr_health_fingerprint(
+        &self,
+        conversation_id: &ChatConversationId,
+        fingerprint: Option<&str>,
+    ) -> AppResult<()> {
+        if let Some(workspace) = self.workspaces.write().await.get_mut(conversation_id) {
+            workspace.last_blocked_pr_health_fingerprint = fingerprint.map(str::to_string);
+            workspace.last_blocked_pr_health_at = fingerprint.map(|_| Utc::now());
+            workspace.updated_at = Utc::now();
+        }
+        Ok(())
+    }
+
     async fn update_pr_supervision_preferences(
         &self,
         conversation_id: &ChatConversationId,
@@ -2159,6 +2172,7 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         }
         monitor.review_fixer_status = Some("routing".to_string());
         monitor.review_fixer_attempt_id = Some(attempt_id.to_string());
+        monitor.review_fixer_cycle_count = monitor.review_fixer_cycle_count.saturating_add(1);
         monitor.review_fixer_run_id = None;
         monitor.review_fixer_conversation_id = None;
         monitor.last_error = None;

@@ -280,6 +280,7 @@ pub async fn get_conversation_active_state(
             streaming_tasks,
             partial_text: cached_state.partial_text,
             partial_text_segments: cached_state.partial_text_segments,
+            partial_thinking_segments: cached_state.partial_thinking_segments,
         }
     } else {
         ActiveStateResponse {
@@ -289,6 +290,7 @@ pub async fn get_conversation_active_state(
             streaming_tasks: Vec::new(),
             partial_text: String::new(),
             partial_text_segments: Vec::new(),
+            partial_thinking_segments: Vec::new(),
         }
     };
 

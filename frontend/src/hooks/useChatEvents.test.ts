@@ -31,7 +31,21 @@ const mockInvalidateQueries = vi.fn();
 const mockUpsertFinalizedMessageIntoConversationCache = vi.fn();
 const mockUpsertRenderReadyMessageIntoConversationCache = vi.fn();
 let mockQueryData: { messages: Array<{ id: string }> } | undefined = undefined;
-const mockGetQueryData = vi.fn(() => mockQueryData);
+const managedTeamCache = new Map<string, unknown>();
+const cacheKey = (key: unknown) => JSON.stringify(key);
+const mockGetQueryData = vi.fn((key?: unknown) =>
+  Array.isArray(key) && key[0] === "managed-team"
+    ? managedTeamCache.get(cacheKey(key))
+    : mockQueryData,
+);
+const mockSetQueryData = vi.fn((key: unknown, value: unknown) => {
+  const previous = managedTeamCache.get(cacheKey(key));
+  const next = typeof value === "function"
+    ? (value as (current: unknown) => unknown)(previous)
+    : value;
+  managedTeamCache.set(cacheKey(key), next);
+  return next;
+});
 const cacheSubscribers: Array<(event: { type: string; query: { queryKey: unknown[] } }) => void> = [];
 function fireCacheEvent(event: { type: string; query: { queryKey: unknown[] } }) {
   for (const fn of cacheSubscribers) fn(event);
@@ -60,6 +74,7 @@ vi.mock("@tanstack/react-query", () => ({
     invalidateQueries: mockInvalidateQueries,
     cancelQueries: mockCancelQueries,
     getQueryData: mockGetQueryData,
+    setQueryData: mockSetQueryData,
     getQueryCache: () => ({
       subscribe: (fn: (event: { type: string; query: { queryKey: unknown[] } }) => void) => {
         cacheSubscribers.push(fn);
@@ -106,7 +121,9 @@ vi.mock("@/lib/chat-context-registry", () => ({
 // ============================================================================
 
 import { useChatEvents } from "./useChatEvents";
+import { managedTeamKeys } from "./useManagedTeam";
 import { useChatStore } from "@/stores/chatStore";
+import settledThinkingPayload from "../../../src-tauri/tests/fixtures/agent_thinking_payload.settled.json";
 
 // ============================================================================
 // Helpers
@@ -188,6 +205,8 @@ describe("useChatEvents", () => {
     mockUpsertRenderReadyMessageIntoConversationCache.mockReturnValue(false);
     mockCancelQueries.mockClear();
     mockGetQueryData.mockClear();
+    mockSetQueryData.mockClear();
+    managedTeamCache.clear();
     mockQueryData = undefined;
     cacheSubscribers.length = 0;
     useChatStore.setState({
@@ -206,6 +225,79 @@ describe("useChatEvents", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("patches only current Team member events and rejects stale sequence updates", () => {
+    const statusKey = managedTeamKeys.status(CONV_ID);
+    mockSetQueryData(statusKey, {
+      session: { id: "team-1" },
+      members: [
+        {
+          id: "member-1",
+          teamId: "team-1",
+          name: "Scout",
+          normalizedName: "scout",
+          canonicalAgentName: "ralphx-general-explorer",
+          roleSummary: "Investigates focused questions.",
+          status: "idle",
+          generation: 2,
+        },
+      ],
+    });
+    renderAndClear(makeProps({ activeAgentRunId: "run-current" }));
+
+    act(() => {
+      fireEvent("team:member_updated", {
+        conversation_id: CONV_ID,
+        parent_run_id: "run-current",
+        sequence: 7,
+        member: {
+          id: "member-1",
+          teamId: "team-1",
+          name: "Scout",
+          normalizedName: "scout",
+          canonicalAgentName: "ralphx-general-explorer",
+          roleSummary: "Investigates focused questions.",
+          status: "working",
+          generation: 3,
+        },
+      });
+      fireEvent("team:member_updated", {
+        conversation_id: CONV_ID,
+        parent_run_id: "run-current",
+        sequence: 6,
+        member: {
+          id: "member-1",
+          teamId: "team-1",
+          name: "Scout",
+          normalizedName: "scout",
+          canonicalAgentName: "ralphx-general-explorer",
+          roleSummary: "Investigates focused questions.",
+          status: "failed",
+          generation: 4,
+        },
+      });
+      fireEvent("team:member_updated", {
+        conversation_id: "another-conversation",
+        parent_run_id: "run-current",
+        sequence: 8,
+        member: {
+          id: "member-1",
+          teamId: "team-1",
+          name: "Scout",
+          normalizedName: "scout",
+          canonicalAgentName: "ralphx-general-explorer",
+          roleSummary: "Investigates focused questions.",
+          status: "failed",
+          generation: 4,
+        },
+      });
+    });
+
+    expect(
+      (managedTeamCache.get(cacheKey(statusKey)) as { members: Array<{ status: string }> })
+        .members[0]?.status,
+    ).toBe("working");
   });
 
   it("rejects delegated lifecycle events from a stale parent run", () => {
@@ -1062,6 +1154,228 @@ describe("useChatEvents", () => {
       expect(executeUpdater<StreamingContentBlock[]>(props.setStreamingContentBlocks, [
         { type: "text", text: "Legacy" },
       ])).toEqual([{ type: "text", text: "Legacy legacy" }]);
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // 3b. Streaming thinking (via agent:thinking events)
+  // --------------------------------------------------------------------------
+  describe("streaming thinking", () => {
+    it("creates a new thinking block from an agent:thinking event", () => {
+      const props = makeProps();
+      renderAndClear(props);
+
+      act(() => {
+        fireEvent("agent:thinking", {
+          text: "Let me consider",
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+          block_index: 0,
+          append_to_previous: false,
+        });
+      });
+
+      expect(props.setStreamingContentBlocks).toHaveBeenCalledTimes(1);
+      const result = executeUpdater<StreamingContentBlock[]>(
+        props.setStreamingContentBlocks,
+        [],
+      );
+      expect(result).toHaveLength(1);
+      expect(result[0]).toMatchObject({ type: "thinking", text: "Let me consider", blockIndex: 0 });
+    });
+
+    it("appends text to an existing thinking block with the same block_index", () => {
+      const props = makeProps();
+      renderAndClear(props);
+
+      act(() => {
+        fireEvent("agent:thinking", {
+          text: " more",
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+          block_index: 0,
+          append_to_previous: true,
+        });
+      });
+
+      const result = executeUpdater<StreamingContentBlock[]>(
+        props.setStreamingContentBlocks,
+        [{ type: "thinking", text: "Initial", blockIndex: 0 } as StreamingContentBlock],
+      );
+      expect(result).toHaveLength(1);
+      expect(result[0]).toMatchObject({ type: "thinking", text: "Initial more" });
+    });
+
+    it("preserves accumulated reasoning from the committed settled payload contract", () => {
+      const props = makeProps();
+      renderAndClear(props);
+
+      act(() => {
+        fireEvent("agent:thinking", {
+          ...settledThinkingPayload,
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+        });
+      });
+
+      const result = executeUpdater<StreamingContentBlock[]>(
+        props.setStreamingContentBlocks,
+        [{ type: "thinking", text: "Done thinking", blockIndex: 0 }],
+      );
+      expect(result[0]).toMatchObject({
+        type: "thinking",
+        text: "Done thinking",
+        durationMs: 1500,
+        isSettled: true,
+      });
+    });
+
+    it("does not create an empty thinking block from an unmatched settle event", () => {
+      const props = makeProps();
+      renderAndClear(props);
+
+      act(() => fireEvent("agent:thinking", {
+        text: "", conversation_id: CONV_ID, context_id: CTX_ID,
+        block_index: 8, duration_ms: 1_500, is_settled: true, append_to_previous: true,
+      }));
+
+      const existing: StreamingContentBlock[] = [{ type: "text", text: "Already visible" }];
+      expect(executeUpdater<StreamingContentBlock[]>(props.setStreamingContentBlocks, existing)).toBe(existing);
+    });
+
+    it("rejects a thinking event from a stale run", () => {
+      const props = makeProps({ activeAgentRunId: "current-run" });
+      renderAndClear(props);
+
+      act(() => {
+        fireEvent("agent:thinking", {
+          text: "Stale thought",
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+          block_index: 0,
+          run_id: "old-run",
+        });
+      });
+
+      expect(props.setStreamingContentBlocks).not.toHaveBeenCalled();
+    });
+
+    it("creates one empty synthetic thinking block for token-only progress and updates it", () => {
+      const props = makeProps({ activeAgentRunId: "current-run" });
+      renderAndClear(props);
+
+      act(() => fireEvent("agent:thinking_progress", {
+        estimated_tokens: 1_200, conversation_id: CONV_ID, context_id: CTX_ID,
+        context_type: "task_execution", run_id: "current-run",
+      }));
+      const synthetic = executeUpdater<StreamingContentBlock[]>(props.setStreamingContentBlocks, []);
+      expect(synthetic).toMatchObject([{ type: "thinking", text: "", estimatedTokens: 1_200 }]);
+
+      act(() => fireEvent("agent:thinking_progress", {
+        estimated_tokens: 2_000, conversation_id: CONV_ID, context_id: CTX_ID,
+        context_type: "task_execution", run_id: "current-run",
+      }));
+      const updated = executeUpdater<StreamingContentBlock[]>(props.setStreamingContentBlocks, synthetic, 1);
+      expect(updated).toEqual([{ ...synthetic[0], estimatedTokens: 2_000, receivedAt: expect.any(Number) }]);
+    });
+
+    it("attaches token progress to an existing thinking block and rejects stale runs", () => {
+      const props = makeProps({ activeAgentRunId: "current-run" });
+      renderAndClear(props);
+
+      act(() => fireEvent("agent:thinking_progress", {
+        estimated_tokens: 700, conversation_id: CONV_ID, context_id: CTX_ID,
+        context_type: "task_execution", run_id: "old-run",
+      }));
+      expect(props.setStreamingContentBlocks).not.toHaveBeenCalled();
+
+      act(() => fireEvent("agent:thinking_progress", {
+        estimated_tokens: 700, conversation_id: CONV_ID, context_id: CTX_ID,
+        context_type: "task_execution", run_id: "current-run",
+      }));
+      const updated = executeUpdater<StreamingContentBlock[]>(props.setStreamingContentBlocks, [
+        { type: "thinking", text: "visible", blockIndex: 4 },
+      ]);
+      expect(updated).toMatchObject([{ type: "thinking", text: "visible", blockIndex: 4, estimatedTokens: 700 }]);
+    });
+
+    it("attaches token progress to the unsettled thinking block, not the last settled one", () => {
+      const props = makeProps({ activeAgentRunId: "current-run" });
+      renderAndClear(props);
+
+      act(() => fireEvent("agent:thinking_progress", {
+        estimated_tokens: 700, conversation_id: CONV_ID, context_id: CTX_ID,
+        context_type: "task_execution", run_id: "current-run",
+      }));
+
+      const updated = executeUpdater<StreamingContentBlock[]>(props.setStreamingContentBlocks, [
+        { type: "thinking", text: "Finished", blockIndex: 0, isSettled: true, estimatedTokens: 50 },
+        { type: "tool_use", toolCall: { id: "tool-1", name: "Read", arguments: {} } },
+        { type: "thinking", text: "Still working", blockIndex: 2, isSettled: false },
+        { type: "thinking", text: "Earlier settled", blockIndex: 3, isSettled: true },
+      ]);
+
+      expect(updated[0]).toMatchObject({ estimatedTokens: 50 });
+      expect(updated[2]).toMatchObject({ estimatedTokens: 700 });
+      expect(updated[3]).not.toHaveProperty("estimatedTokens");
+    });
+
+    it("creates a fresh synthetic block when every thinking block is settled", () => {
+      const props = makeProps({ activeAgentRunId: "current-run" });
+      renderAndClear(props);
+
+      act(() => fireEvent("agent:thinking_progress", {
+        estimated_tokens: 700, conversation_id: CONV_ID, context_id: CTX_ID,
+        context_type: "task_execution", run_id: "current-run",
+      }));
+
+      const updated = executeUpdater<StreamingContentBlock[]>(props.setStreamingContentBlocks, [
+        { type: "thinking", text: "Finished", blockIndex: 0, isSettled: true },
+      ]);
+
+      expect(updated).toMatchObject([
+        { type: "thinking", text: "Finished", blockIndex: 0, isSettled: true },
+        { type: "thinking", text: "", blockIndex: Number.MIN_SAFE_INTEGER, estimatedTokens: 700 },
+      ]);
+    });
+
+    it("replaces synthetic progress with text while retaining its token estimate", () => {
+      const props = makeProps();
+      renderAndClear(props);
+
+      act(() => fireEvent("agent:thinking", {
+        text: "Visible thought", conversation_id: CONV_ID, context_id: CTX_ID,
+        block_index: 4, append_to_previous: false,
+      }));
+      const result = executeUpdater<StreamingContentBlock[]>(props.setStreamingContentBlocks, [{
+        type: "thinking", text: "", blockIndex: Number.MIN_SAFE_INTEGER, estimatedTokens: 1_200,
+      }]);
+
+      expect(result).toEqual([{
+        type: "thinking", text: "Visible thought", blockIndex: 4, estimatedTokens: 1_200,
+        receivedAt: expect.any(Number),
+      }]);
+    });
+
+    it("adopts the last unsettled synthetic thinking block when real text arrives", () => {
+      const props = makeProps();
+      renderAndClear(props);
+
+      act(() => fireEvent("agent:thinking", {
+        text: "Second thought", conversation_id: CONV_ID, context_id: CTX_ID,
+        block_index: 4, append_to_previous: false,
+      }));
+      const result = executeUpdater<StreamingContentBlock[]>(props.setStreamingContentBlocks, [
+        { type: "thinking", text: "First thought", blockIndex: Number.MIN_SAFE_INTEGER, isSettled: true },
+        { type: "tool_use", toolCall: { id: "tool-1", name: "Read", arguments: {} } },
+        { type: "thinking", text: "", blockIndex: Number.MIN_SAFE_INTEGER, estimatedTokens: 1_200 },
+      ]);
+
+      expect(result).toMatchObject([
+        { type: "thinking", text: "First thought", blockIndex: Number.MIN_SAFE_INTEGER, isSettled: true },
+        { type: "tool_use", toolCall: { id: "tool-1", name: "Read", arguments: {} } },
+        { type: "thinking", text: "Second thought", blockIndex: 4, estimatedTokens: 1_200 },
+      ]);
     });
   });
 

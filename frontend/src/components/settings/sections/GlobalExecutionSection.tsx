@@ -4,13 +4,12 @@
  */
 
 import { useState, useCallback, useEffect, useRef } from "react";
-import { Globe } from "lucide-react";
 import { executionApi } from "@/api/execution";
 import { toast } from "sonner";
 import type { GlobalExecutionSettingsResponse } from "@/api/execution";
 import {
   NumberSettingRow,
-  SectionCard,
+  SettingsSection,
   ToggleSettingRow,
 } from "../SettingsView.shared";
 
@@ -146,13 +145,9 @@ export default function GlobalExecutionSection({ embedded = false }: { embedded?
     );
     if (embedded) return loading;
     return (
-      <SectionCard
-        icon={<Globe className="w-[18px] h-[18px] text-[var(--card-icon-color)]" />}
-        title="Global Capacity"
-        description="Cross-project concurrency limits"
-      >
+      <SettingsSection>
         {loading}
-      </SectionCard>
+      </SettingsSection>
     );
   }
 
@@ -170,12 +165,8 @@ export default function GlobalExecutionSection({ embedded = false }: { embedded?
     </>
   );
   return embedded ? rows : (
-    <SectionCard
-      icon={<Globe className="w-[18px] h-[18px] text-[var(--card-icon-color)]" />}
-      title="Global Capacity"
-      description="Cross-project concurrency limits"
-    >
+    <SettingsSection>
       {rows}
-    </SectionCard>
+    </SettingsSection>
   );
 }

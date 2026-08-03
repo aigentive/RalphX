@@ -67,6 +67,9 @@ impl StartupStage {
 pub enum StartupFailureCode {
     AppStateConstruction,
     AppStateRegistration,
+    /// The workspace itself is fine; the machine ran out of room to upgrade it.
+    /// Split from `AppStateConstruction` because the user can act on it.
+    InsufficientDiskSpace,
     LocalRuntimeBind,
     SafetyRecovery,
     BootstrapCancelled,

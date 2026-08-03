@@ -33,6 +33,8 @@ use crate::application::agent_conversation_workspace::AgentConversationWorkspace
 use crate::application::agent_workspace_local_commit::{
     commit_agent_workspace_locally, AgentWorkspaceLocalCommitRequest,
 };
+use crate::application::agent_workspace_publish_recovery::
+    recover_stale_publish_repair_for_workspace_in_state;
 #[cfg(test)]
 use crate::application::agent_workspace_pr_autofix_attempt::{
     load_pr_autofix_completion_authority, PrAutofixCompletionAuthority,
@@ -51,6 +53,8 @@ use crate::application::agent_workspace_publish_repair_state::{
 use crate::application::agent_workspace_publish_repair_state::{
     block_agent_workspace_pr_fix_claim, complete_agent_workspace_pr_fix_claim,
 };
+#[cfg(test)]
+use crate::application::agent_workspace_review::apply_review_artifact_to_monitor;
 use crate::application::agent_workspace_review::{
     apply_review_artifact_pair_to_monitor, complete_agent_workspace_review_run_unlocked,
     load_agent_workspace_review_context, load_current_workspace_review_eligible,
@@ -61,8 +65,6 @@ use crate::application::agent_workspace_review::{
 };
 #[cfg(test)]
 use crate::application::agent_workspace_review::AgentWorkspaceReviewStart;
-#[cfg(test)]
-use crate::application::agent_workspace_review::apply_review_artifact_to_monitor;
 use crate::application::agent_workspace_review_auto_merge::{
     preview_manual_workspace_review_start, start_guarded_agent_workspace_review_with_runtime_override,
     WorkspaceReviewStartConfirmation, WorkspaceReviewStartOrigin,
@@ -89,7 +91,9 @@ use crate::application::{AppState, ChatService};
 #[cfg(test)]
 use crate::application::GitService;
 use crate::commands::unified_chat_commands::{
-    agent_workspace_response_for_state, get_agent_conversation_workspace_freshness_for_app_state,
+    agent_workspace_response_for_state,
+    agent_workspace_response_without_repair_recovery_for_state,
+    get_agent_conversation_workspace_freshness_for_app_state,
     publish_agent_conversation_workspace_for_app_state,
     publish_agent_conversation_workspace_for_app_state_with_repair_intent,
     resume_durable_agent_workspace_repair_publish,
@@ -105,9 +109,9 @@ use crate::domain::agents::{
 use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus as PlanDbPrStatus};
 use crate::domain::entities::{
     is_publication_push_active, pr_comment_body_excerpt, AgentConversationWorkspace,
-    AgentConversationWorkspaceMode,
-    AgentConversationWorkspacePublicationEvent, AgentWorkspacePrCommentEvidence,
-    AgentWorkspacePrMetadataDecision, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
+    AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent,
+    AgentWorkspacePrCommentEvidence, AgentWorkspacePrMetadataDecision,
+    AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
     AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewGateStatus,
     AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor, AgentRunId,
@@ -130,6 +134,36 @@ use crate::error::AppError;
 pub struct CompleteAgentWorkspaceRepairRequest {
     pub summary: String,
     pub blocker: Option<String>,
+    pub resolution: Option<AgentWorkspacePrFixResolution>,
+    /// Present only on the PR-fixer compatibility route. The backend compares this with the
+    /// actual workspace head; it is never accepted as proof on its own.
+    pub reported_fix_commit_sha: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentWorkspacePrFixResolution {
+    Fixed,
+    TransientCi,
+    PreExistingOnBase,
+    NeedsHuman,
+}
+
+impl<'de> serde::Deserialize<'de> for AgentWorkspacePrFixResolution {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        match value.as_str() {
+            "fixed" => Ok(Self::Fixed),
+            "transient_ci" => Ok(Self::TransientCi),
+            "pre_existing_on_base" => Ok(Self::PreExistingOnBase),
+            "needs_human" => Ok(Self::NeedsHuman),
+            _ => Err(serde::de::Error::custom(
+                "resolution must be one of fixed, transient_ci, pre_existing_on_base, needs_human",
+            )),
+        }
+    }
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -327,6 +361,8 @@ pub struct CompleteAgentWorkspacePrFixRequest {
     pub summary: String,
     pub blocker: Option<String>,
     pub fix_commit_sha: Option<String>,
+    /// Typed, model-facing classification. Backend re-derives Git/PR authority.
+    pub resolution: Option<AgentWorkspacePrFixResolution>,
     /// Transport-owned runtime identity; intentionally absent from the model-facing tool schema.
     pub created_by_run_id: Option<String>,
 }
@@ -676,6 +712,7 @@ pub struct AgentWorkspaceReviewMonitorResponse {
     pub review_fixer_run_id: Option<String>,
     pub review_fixer_conversation_id: Option<String>,
     pub review_fixer_status: Option<String>,
+    pub review_fixer_cycle_count: i64,
     pub last_run_id: Option<String>,
     pub last_error: Option<String>,
     pub auto_merge_guard_status: Option<String>,
@@ -753,6 +790,7 @@ impl From<AgentWorkspaceReviewMonitor> for AgentWorkspaceReviewMonitorResponse {
                 .review_fixer_conversation_id
                 .map(|conversation_id| conversation_id.as_str()),
             review_fixer_status: value.review_fixer_status,
+            review_fixer_cycle_count: value.review_fixer_cycle_count,
             last_run_id: value.last_run_id,
             last_error: value.last_error,
             auto_merge_guard_status: value
@@ -1227,8 +1265,19 @@ pub async fn get_agent_workspace_publish_status(
     Path(conversation_id): Path<String>,
 ) -> Result<Json<AgentWorkspacePublishStatusResponse>, JsonError> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
-    let workspace =
-        load_agent_workspace_response(state.app_state.as_ref(), &conversation_id).await?;
+    let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
+    let workspace = recover_stale_publish_repair_for_workspace_in_state(
+        state.app_state.as_ref(),
+        workspace,
+    )
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let workspace = agent_workspace_response_without_repair_recovery_for_state(
+        state.app_state.as_ref(),
+        workspace,
+    )
+    .await
+    .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error, None))?;
     let events =
         load_agent_workspace_publication_events(state.app_state.as_ref(), &conversation_id).await?;
     Ok(Json(AgentWorkspacePublishStatusResponse {
@@ -1902,26 +1951,25 @@ pub async fn write_agent_workspace_review_artifact(
                 json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
             })?
     };
-    let created_requested_changes =
-        if let Some(previous) = previous_requested_changes_artifact {
-            state
-                .app_state
-                .artifact_repo
-                .create_with_previous_version(requested_changes_artifact, previous.id)
-                .await
-                .map_err(|error| {
-                    json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
-                })?
-        } else {
-            state
-                .app_state
-                .artifact_repo
-                .create(requested_changes_artifact)
-                .await
-                .map_err(|error| {
-                    json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
-                })?
-        };
+    let created_requested_changes = if let Some(previous) = previous_requested_changes_artifact {
+        state
+            .app_state
+            .artifact_repo
+            .create_with_previous_version(requested_changes_artifact, previous.id)
+            .await
+            .map_err(|error| {
+                json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+            })?
+    } else {
+        state
+            .app_state
+            .artifact_repo
+            .create(requested_changes_artifact)
+            .await
+            .map_err(|error| {
+                json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+            })?
+    };
 
     apply_review_artifact_pair_to_monitor(
         &mut monitor,
@@ -1980,8 +2028,7 @@ pub async fn write_agent_workspace_review_artifact(
 
     let mut artifact_response = ArtifactResponse::from(created);
     artifact_response.previous_artifact_id = previous_artifact_id.clone();
-    let mut requested_changes_artifact_response =
-        ArtifactResponse::from(created_requested_changes);
+    let mut requested_changes_artifact_response = ArtifactResponse::from(created_requested_changes);
     requested_changes_artifact_response.previous_artifact_id =
         previous_requested_changes_artifact_id.clone();
     tracing::info!(
@@ -2420,14 +2467,18 @@ pub async fn complete_agent_workspace_pr_fix(
                 )
             })
         })?;
-    let Json(response) = repair_completion::complete_agent_workspace_repair_for_trusted_run(
-        &state,
-        conversation_id,
-        run_id,
-        CompleteAgentWorkspaceRepairRequest {
-            summary: req.summary,
-            blocker: req.blocker,
-        },
+    let Json(response) = Box::pin(
+        repair_completion::complete_agent_workspace_repair_for_trusted_run(
+            &state,
+            conversation_id,
+            run_id,
+            CompleteAgentWorkspaceRepairRequest {
+                summary: req.summary,
+                blocker: req.blocker,
+                resolution: req.resolution,
+                reported_fix_commit_sha: req.fix_commit_sha,
+            },
+        ),
     )
     .await?;
 
@@ -2865,16 +2916,15 @@ fn schedule_pr_autofix_completion_recovery(
         return;
     };
     let runtime_app_handle = state.app_state.app_handle.clone();
-    let transition_service = Arc::new(
-        state.app_state.build_transition_service_for_runtime(
-            Arc::clone(&state.execution_state),
-            runtime_app_handle.clone(),
-        ),
-    );
-    let chat_service: Arc<dyn ChatService> = Arc::new(state.app_state.build_chat_service_for_runtime(
-        Some(Arc::clone(&state.execution_state)),
+    let transition_service = Arc::new(state.app_state.build_transition_service_for_runtime(
+        Arc::clone(&state.execution_state),
         runtime_app_handle.clone(),
     ));
+    let chat_service: Arc<dyn ChatService> =
+        Arc::new(state.app_state.build_chat_service_for_runtime(
+            Some(Arc::clone(&state.execution_state)),
+            runtime_app_handle.clone(),
+        ));
     let Some(deps) = build_agent_workspace_pr_supervision_recovery_deps(
         state.app_state.as_ref(),
         runtime_app_handle,
@@ -5036,8 +5086,11 @@ fn publish_readiness_blockers(
 fn publish_readiness_recommended_actions(
     freshness: &AgentConversationWorkspaceFreshnessResponse,
 ) -> Vec<String> {
-    let mut actions = Vec::new();
-    if freshness.base_status != "blocked" && freshness.is_base_ahead {
+    let mut actions = freshness.recommended_actions.clone().unwrap_or_default();
+    if freshness.base_status != "blocked"
+        && freshness.is_base_ahead
+        && !actions.iter().any(|action| action == "update_from_base")
+    {
         actions.push("update_from_base".to_string());
     }
     actions

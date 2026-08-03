@@ -215,7 +215,7 @@ pub async fn get_delegate_assignment(
     State(state): State<HttpServerState>,
     headers: HeaderMap,
 ) -> Json<DelegateAssignmentResponse> {
-    let (delegated_session_id, delegated_agent_run_id) =
+    let (delegated_session_id, delegated_agent_run_id, _delegated_conversation_id) =
         match trusted_delegate_identity(&state, &headers, "get_delegate_assignment").await {
             Ok(identity) => identity,
             Err(error) => return Json(assignment_error(error)),
@@ -245,7 +245,7 @@ pub async fn complete_delegate_assignment(
     headers: HeaderMap,
     Json(request): Json<CompleteDelegateAssignmentRequest>,
 ) -> Json<DelegateAssignmentResponse> {
-    let (delegated_session_id, delegated_agent_run_id) =
+    let (delegated_session_id, delegated_agent_run_id, _delegated_conversation_id) =
         match trusted_delegate_identity(&state, &headers, "complete_delegate_assignment").await {
             Ok(identity) => identity,
             Err(error) => return Json(assignment_error(error)),
@@ -277,7 +277,7 @@ pub async fn release_delegate_assignment(
             "release_delegate_assignment requires a non-empty reason".to_string(),
         ));
     }
-    let (delegated_session_id, delegated_agent_run_id) =
+    let (delegated_session_id, delegated_agent_run_id, _delegated_conversation_id) =
         match trusted_delegate_identity(&state, &headers, "release_delegate_assignment").await {
             Ok(identity) => identity,
             Err(error) => return Json(assignment_error(error)),
@@ -299,11 +299,11 @@ pub async fn release_delegate_assignment(
     )
 }
 
-async fn trusted_delegate_identity(
+pub(crate) async fn trusted_delegate_identity(
     state: &HttpServerState,
     headers: &HeaderMap,
     operation: &str,
-) -> Result<(DelegatedSessionId, AgentRunId), String> {
+) -> Result<(DelegatedSessionId, AgentRunId, ChatConversationId), String> {
     let conversation_id = header_value(headers, "x-ralphx-conversation-id", operation)?;
     let run_id = header_value(headers, "x-ralphx-agent-run-id", operation)?;
     let conversation_id = conversation_id
@@ -360,10 +360,14 @@ async fn trusted_delegate_identity(
             "{operation} delegated session is not currently running"
         ));
     }
-    Ok((delegated_session_id, run_id))
+    Ok((delegated_session_id, run_id, conversation_id))
 }
 
-fn header_value(headers: &HeaderMap, header_name: &str, operation: &str) -> Result<String, String> {
+pub(crate) fn header_value(
+    headers: &HeaderMap,
+    header_name: &str,
+    operation: &str,
+) -> Result<String, String> {
     headers
         .get(header_name)
         .and_then(|value| value.to_str().ok())
@@ -373,7 +377,8 @@ fn header_value(headers: &HeaderMap, header_name: &str, operation: &str) -> Resu
         .ok_or_else(|| format!("{operation} requires trusted runtime identity"))
 }
 
-fn resolve_scope(context: &AgentTaskContextFields) -> Result<AgentTaskScope, String> {
+#[doc(hidden)]
+pub fn resolve_scope(context: &AgentTaskContextFields) -> Result<AgentTaskScope, String> {
     let project_id = context.project_id.clone().map(ProjectId::from_string);
     if let (Some(scope_type), Some(scope_id)) = (&context.context_type, &context.context_id) {
         if scope_type.trim().is_empty() || scope_id.trim().is_empty() {
@@ -386,18 +391,10 @@ fn resolve_scope(context: &AgentTaskContextFields) -> Result<AgentTaskScope, Str
             actor_agent: context.actor_agent.clone(),
         });
     }
-    if let Some(project_id) = &context.project_id {
-        if project_id.trim().is_empty() {
-            return Err("Agent task project_id must be non-empty".to_string());
-        }
-        return Ok(AgentTaskScope {
-            project_id: Some(ProjectId::from_string(project_id.clone())),
-            scope_type: "project".to_string(),
-            scope_id: project_id.clone(),
-            actor_agent: context.actor_agent.clone(),
-        });
-    }
-    Err("Agent task context is required".to_string())
+    Err(
+        "Agent task context_type and context_id are required; explicit project scope must use context_type=project"
+            .to_string(),
+    )
 }
 
 fn mutation_success(result: AgentTaskMutationResult) -> AgentTaskMutationResponse {

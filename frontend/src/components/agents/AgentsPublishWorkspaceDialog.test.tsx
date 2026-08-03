@@ -70,4 +70,27 @@ describe("PublishWorkspaceDialog", () => {
     ).toBeInTheDocument();
     expect(screen.queryByText(/no pull request was opened/)).not.toBeInTheDocument();
   });
+
+  it("shows exhausted failure-fingerprint effort before another publish attempt", () => {
+    render(
+      <PublishWorkspaceDialog
+        base="main"
+        branch="feature/linked-pr"
+        confirmDisabled={false}
+        fingerprintSpend={{
+          summary: "3 generations · 92 min on this failure",
+          exhausted: true,
+        }}
+        isPublishing={false}
+        onConfirm={vi.fn()}
+        onOpenChange={vi.fn()}
+        open
+        phase="confirm"
+        status={null}
+      />,
+    );
+
+    expect(screen.getByText("3 generations · 92 min on this failure")).toBeInTheDocument();
+    expect(screen.getByText("Repair budget exhausted")).toBeInTheDocument();
+  });
 });

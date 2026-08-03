@@ -40,6 +40,9 @@ import {
 import { PersonaRunBadge } from "./PersonaRunBadge";
 import { ToolActivityGroupToggle } from "./ToolActivityGroupToggle";
 import { summarizeToolActivity } from "./tool-activity-summary";
+import { ThinkingGroupToggle } from "./ThinkingGroupToggle";
+import { ThinkingWidget } from "./tool-widgets/ThinkingWidget";
+import { aggregateThinkingSegments, joinThinkingSegmentTexts } from "./thinking-group";
 
 // ============================================================================
 // Types
@@ -49,8 +52,10 @@ import { summarizeToolActivity } from "./tool-activity-summary";
  * Content block item - represents either text or a tool use
  */
 export interface ContentBlockItem {
-  type: "text" | "tool_use";
+  type: "text" | "tool_use" | "thinking";
   text?: string;
+  durationMs?: number;
+  isSettled?: boolean;
   id?: string;
   name?: string;
   arguments?: unknown;
@@ -427,6 +432,27 @@ export const MessageItem = React.memo(function MessageItem({
   }, [childToolCallIds, parsedToolCallsById]);
   const renderedContentBlocks = useMemo(() => {
     const renderedBlocks: React.ReactNode[] = [];
+    const pendingThinking: Array<{ index: number; block: ContentBlockItem }> = [];
+    const flushThinkingGroup = () => {
+      const first = pendingThinking[0];
+      if (!first) {
+        return;
+      }
+      const groupKey = `content-thinking-group:${first.index}`;
+      const isExpanded = expandedContentToolGroupKeys.has(groupKey);
+      const aggregate = aggregateThinkingSegments(pendingThinking.map(({ block }) => block), true);
+      const text = joinThinkingSegmentTexts(pendingThinking.map(({ block }) => block.text));
+      renderedBlocks.push(
+        <div key={groupKey} className="space-y-1.5 overflow-hidden">
+          <ThinkingGroupToggle groupKey={groupKey} isExpanded={isExpanded}
+            isSettled={aggregate.isSettled} segmentCount={aggregate.segmentCount}
+            {...(aggregate.totalDurationMs != null ? { durationMs: aggregate.totalDurationMs } : {})}
+            onToggle={() => toggleContentToolGroup(groupKey)} />
+          {isExpanded && text ? <ThinkingWidget text={text} /> : null}
+        </div>,
+      );
+      pendingThinking.length = 0;
+    };
 
     for (let index = 0; index < parsedContentBlocks.length; index += 1) {
       const block = parsedContentBlocks[index];
@@ -434,6 +460,7 @@ export const MessageItem = React.memo(function MessageItem({
         continue;
       }
       if (block.type === "text" && block.text) {
+        flushThinkingGroup();
         renderedBlocks.push(
           <TextBubble
             key={`block-${index}`}
@@ -443,12 +470,20 @@ export const MessageItem = React.memo(function MessageItem({
         );
         continue;
       }
+      if (block.type === "thinking") {
+        if (block.text?.trim()) {
+          pendingThinking.push({ index, block });
+        }
+        continue;
+      }
 
       if (block.type === "tool_use") {
         const firstToolCall = buildContentBlockToolCall(block, index);
         if (!firstToolCall) {
           continue;
         }
+
+        flushThinkingGroup();
 
         if (!groupContentBlockToolCalls || !shouldIncludeInContentActivityGroup(firstToolCall)) {
           renderedBlocks.push(
@@ -500,6 +535,8 @@ export const MessageItem = React.memo(function MessageItem({
         index = groupEndIndex - 1;
       }
     }
+
+    flushThinkingGroup();
 
     return renderedBlocks;
   }, [

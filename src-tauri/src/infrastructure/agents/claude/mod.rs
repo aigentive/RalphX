@@ -13,6 +13,7 @@ pub mod model_labels;
 pub mod model_resolver;
 pub mod node_utils;
 mod security_policy;
+mod spawn_args;
 mod stream_processor;
 
 #[cfg(test)]
@@ -25,21 +26,29 @@ pub use agent_config::live_flags::{
     reset_agent_personas_override_for_test, reset_standalone_conversations_override_for_test,
     set_agent_personas_override, set_standalone_conversations_override,
 };
+#[cfg(any(test, feature = "test-utils"))]
+pub use agent_config::live_flags::LiveFlagOverrideTestGuard;
 pub use agent_config::process_config::{resolve_process_agent, ProcessMapping, ProcessSlot};
 pub use agent_config::{
     agent_configs, agent_harness_defaults_config, agent_personas_enabled, automations_config,
-    claude_runtime_config, config_path, defer_merge_enabled,
-    execution_defaults_config, external_mcp_config, external_mcp_config_path, file_logging_enabled,
+    bounded_external_mcp_shutdown_grace_ms, bounded_shutdown_watchdog_deadline_secs,
+    claude_runtime_config, config_path, database_maintenance_config, defer_merge_enabled,
+    delegation_config, execution_defaults_config, external_mcp_config, external_mcp_config_path,
+    file_logging_enabled,
     get_agent_config, get_agent_config_for_profile, get_allowed_tools,
     get_allowed_tools_for_profile, get_effective_settings, get_effective_settings_profile,
     get_preapproved_tools, get_preapproved_tools_for_profile, git_runtime_config,
     ideation_activity_threshold_secs, limits_config, process_mapping, reconciliation_config,
-    resolve_file_logging_early, scheduler_config, standalone_conversations_enabled,
-    stream_timeouts, supervisor_runtime_config, ui_feature_flags_config,
-    validate_external_mcp_config, verification_config, AgentConfig, AgentHarnessDefaultsConfig,
-    AllRuntimeConfig, AutomationsRuntimeConfig, ExecutionDefaultsConfig, ExternalMcpConfig,
-    GitRuntimeConfig, LimitsConfig, ReconciliationConfig, SchedulerConfig, SpecialistEntry,
-    StreamTimeoutsConfig, SupervisorRuntimeConfig, UiFeatureFlagsConfig, VerificationConfig,
+    resolve_file_logging_early, resolve_file_logging_limits_early, scheduler_config,
+    shutdown_config, standalone_conversations_enabled, stream_timeouts, supervisor_runtime_config,
+    ui_feature_flags_config, validate_external_mcp_config, verification_config, AgentConfig,
+    AgentHarnessDefaultsConfig, AllRuntimeConfig, AutomationsRuntimeConfig,
+    DatabaseMaintenanceConfig, DelegationConfig, ExecutionDefaultsConfig, ExternalMcpConfig,
+    GitRuntimeConfig,
+    LimitsConfig, ReconciliationConfig, SchedulerConfig, ShutdownConfig, SpecialistEntry,
+    StreamTimeoutsConfig,
+    SupervisorRuntimeConfig, UiFeatureFlagsConfig, VerificationConfig,
+    MAX_EXTERNAL_MCP_SHUTDOWN_GRACE_MS,
 };
 pub use claude_code_client::kill_all_tracked_processes;
 pub use claude_code_client::ClaudeCodeClient;
@@ -75,6 +84,7 @@ pub use model_resolver::{
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
+use spawn_args::shared_streaming_cli_args;
 use tokio::process::Command;
 use tracing::warn;
 
@@ -672,28 +682,13 @@ fn build_base_cli_command_inner_with_runtime_context_and_profile(
         cmd.env("RALPHX_IS_EXTERNAL_TRIGGER", "1");
     }
 
-    // Optional setting-sources override from config/ralphx.yaml.
-    if let Some(sources) = &claude_runtime_config().setting_sources {
-        if !sources.is_empty() {
-            cmd.args(["--setting-sources", &sources.join(",")]);
-        }
-    }
-
-    // Temporary hardening: disable slash-command skill loading to avoid
-    // startup JSON parse crashes in Claude's skill initialization path.
-    cmd.arg("--disable-slash-commands");
+    cmd.args(shared_streaming_cli_args(cli_path));
 
     // Plugin directory for agent/skill discovery
     cmd.args([
         "--plugin-dir",
         plugin_dir.to_str().unwrap_or("./plugins/app"),
     ]);
-
-    // Output format for streaming JSON
-    cmd.args(["--output-format", "stream-json"]);
-
-    // Required for stream-json with -p (print mode)
-    cmd.arg("--verbose");
 
     // Capture Claude's internal debug log per spawn for post-mortem analysis.
     // This is critical when the process exits 0 with no stdout/stderr.

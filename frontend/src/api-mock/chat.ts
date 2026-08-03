@@ -385,6 +385,7 @@ export async function mockListAgentSidebarConversations(
             publicationLabel: getMockPublicationLabel(workspace, publicationState),
             attentionLane:
               isMuted && attentionLane === "needs" ? "stale" : attentionLane,
+            parkedDelegateCount: 0,
             actionVerb: getMockInboxActionVerb(workspace, publicationState),
             isMuted,
           };
@@ -751,6 +752,7 @@ function mockTimelineItemsForMessages(
         timelineStatus: status,
         timelineKind: isToolCall ? "tool_use" : "text",
         timelineSequence: sequence,
+        timelineBlockIndex: blockIndex,
       };
 
       return {

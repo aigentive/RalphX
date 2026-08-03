@@ -1,25 +1,36 @@
-import { QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createTestQueryClient } from "@/test/store-utils";
 
 import { conversationWorkspaceFixture } from "./agentsTestFixtures";
+import {
+  isAgentWorkspaceOperationToastDismissed,
+  resetAgentWorkspaceOperationToastStateForTests,
+} from "./agentWorkspaceOperationToast";
+import { agentWorkspaceKeys } from "./agentWorkspaceQueries";
 import { useAgentWorkspaceBaseUpdate } from "./useAgentWorkspaceBaseUpdate";
 
 const {
   getAgentConversationWorkspaceMock,
+  updateAgentConversationWorkspaceFromBaseMock,
+  toastDismissMock,
   toastErrorMock,
   toastInfoMock,
   toastLoadingMock,
   toastSuccessMock,
+  startAgentWorkspaceOperationToastMock,
 } = vi.hoisted(() => ({
     getAgentConversationWorkspaceMock: vi.fn(),
+    updateAgentConversationWorkspaceFromBaseMock: vi.fn(),
+    toastDismissMock: vi.fn(),
     toastErrorMock: vi.fn(),
     toastInfoMock: vi.fn(),
     toastLoadingMock: vi.fn(),
     toastSuccessMock: vi.fn(),
+    startAgentWorkspaceOperationToastMock: vi.fn(),
   }));
 
 vi.mock("@/api/chat", async (importOriginal) => {
@@ -30,13 +41,15 @@ vi.mock("@/api/chat", async (importOriginal) => {
       ...actual.chatApi,
       getAgentConversationWorkspace: (...args: unknown[]) =>
         getAgentConversationWorkspaceMock(...args),
+      updateAgentConversationWorkspaceFromBase: (...args: unknown[]) =>
+        updateAgentConversationWorkspaceFromBaseMock(...args),
     },
   };
 });
 
 vi.mock("sonner", () => ({
   toast: {
-    dismiss: vi.fn(),
+    dismiss: (...args: unknown[]) => toastDismissMock(...args),
     error: (...args: unknown[]) => toastErrorMock(...args),
     info: (...args: unknown[]) => toastInfoMock(...args),
     loading: (...args: unknown[]) => toastLoadingMock(...args),
@@ -44,20 +57,400 @@ vi.mock("sonner", () => ({
   },
 }));
 
+vi.mock("./agentWorkspaceOperationToast", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./agentWorkspaceOperationToast")>();
+  return {
+    ...actual,
+    startAgentWorkspaceOperationToast: (
+      ...args: Parameters<typeof actual.startAgentWorkspaceOperationToast>
+    ) => {
+      startAgentWorkspaceOperationToastMock(...args);
+      return actual.startAgentWorkspaceOperationToast(...args);
+    },
+  };
+});
+
 function wrapper(queryClient: ReturnType<typeof createTestQueryClient>) {
   return function TestWrapper({ children }: { children: ReactNode }) {
     return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
   };
 }
 
+function freshnessCacheQueryClient() {
+  return new QueryClient({
+    defaultOptions: { queries: { gcTime: Infinity, retry: false } },
+  });
+}
+
+function staleFreshness(scope: "full" | "local") {
+  return {
+    conversationId: "conversation-1",
+    freshnessScope: scope,
+    baseRef: "main",
+    baseDisplayName: "Project default (main)",
+    targetRef: "origin/main",
+    capturedBaseCommit: "old-base",
+    targetBaseCommit: "new-base",
+    isBaseAhead: true,
+    hasUncommittedChanges: false,
+    unpublishedCommitCount: 0,
+    remoteRefreshed: true,
+    worktreeStatusChecked: true,
+    baseStatus: "valid" as const,
+    effectiveBaseRef: null,
+    effectiveBaseDisplayName: null,
+    baseBlockReason: null,
+  };
+}
+
 describe("useAgentWorkspaceBaseUpdate", () => {
   beforeEach(() => {
     getAgentConversationWorkspaceMock.mockReset();
+    updateAgentConversationWorkspaceFromBaseMock.mockReset();
+    toastDismissMock.mockClear();
     toastErrorMock.mockClear();
     toastInfoMock.mockClear();
     toastLoadingMock.mockClear();
     toastSuccessMock.mockClear();
+    startAgentWorkspaceOperationToastMock.mockClear();
+    resetAgentWorkspaceOperationToastStateForTests();
   });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it.each([false, true])(
+    "reconciles existing full and local freshness caches after a successful base update (updated: %s)",
+    async (updated) => {
+      const queryClient = freshnessCacheQueryClient();
+      const workspace = conversationWorkspaceFixture();
+      for (const scope of ["full", "local"] as const) {
+        queryClient.setQueryData(
+          agentWorkspaceKeys.scopedFreshness(workspace.conversationId, scope),
+          staleFreshness(scope),
+        );
+      }
+      updateAgentConversationWorkspaceFromBaseMock.mockResolvedValue({
+        workspace,
+        updated,
+        repairStarted: false,
+        targetRef: "origin/main",
+        baseCommit: "updated-base",
+        baseStatus: "valid",
+        effectiveBaseDisplayName: null,
+      });
+      const { result } = renderHook(
+        () => useAgentWorkspaceBaseUpdate({ conversationTitle: "Checkout flow fix" }),
+        { wrapper: wrapper(queryClient) },
+      );
+
+      act(() => {
+        result.current.runUpdateFromBase({
+          conversationId: workspace.conversationId,
+          detail: "Update workspace from main",
+          kind: "update-from-base",
+          title: "Updating from base",
+        });
+      });
+
+      await waitFor(() => expect(toastSuccessMock).toHaveBeenCalled());
+      for (const scope of ["full", "local"] as const) {
+        expect(
+          queryClient.getQueryData(
+            agentWorkspaceKeys.scopedFreshness(workspace.conversationId, scope),
+          ),
+        ).toEqual(
+          expect.objectContaining({
+            isBaseAhead: false,
+            capturedBaseCommit: "updated-base",
+            targetBaseCommit: "updated-base",
+            targetRef: "origin/main",
+            baseStatus: "valid",
+          }),
+        );
+      }
+    },
+  );
+
+  it("does not fabricate freshness cache entries after a successful base update", async () => {
+    const queryClient = freshnessCacheQueryClient();
+    const workspace = conversationWorkspaceFixture();
+    updateAgentConversationWorkspaceFromBaseMock.mockResolvedValue({
+      workspace,
+      updated: false,
+      repairStarted: false,
+      targetRef: "origin/main",
+      baseCommit: "updated-base",
+      baseStatus: "valid",
+      effectiveBaseDisplayName: null,
+    });
+    const { result } = renderHook(
+      () => useAgentWorkspaceBaseUpdate({ conversationTitle: "Checkout flow fix" }),
+      { wrapper: wrapper(queryClient) },
+    );
+
+    act(() => {
+      result.current.runUpdateFromBase({
+        conversationId: workspace.conversationId,
+        detail: "Update workspace from main",
+        kind: "update-from-base",
+        title: "Updating from base",
+      });
+    });
+
+    await waitFor(() => expect(toastSuccessMock).toHaveBeenCalled());
+    expect(queryClient.getQueryData(agentWorkspaceKeys.scopedFreshness("conversation-1", "full"))).toBeUndefined();
+    expect(queryClient.getQueryData(agentWorkspaceKeys.scopedFreshness("conversation-1", "local"))).toBeUndefined();
+  });
+
+  it("shows an informational repair-started toast for a successful base-update retry", async () => {
+    const queryClient = freshnessCacheQueryClient();
+    const workspace = conversationWorkspaceFixture({
+      publicationPushStatus: "needs_agent",
+    });
+    queryClient.setQueryData(
+      agentWorkspaceKeys.scopedFreshness(workspace.conversationId, "full"),
+      staleFreshness("full"),
+    );
+    updateAgentConversationWorkspaceFromBaseMock.mockResolvedValue({
+      workspace,
+      updated: false,
+      repairStarted: true,
+      targetRef: "main",
+      baseCommit: "base-sha",
+      baseStatus: "valid",
+      effectiveBaseDisplayName: null,
+    });
+    const { result } = renderHook(
+      () => useAgentWorkspaceBaseUpdate({ conversationTitle: "Checkout flow fix" }),
+      { wrapper: wrapper(queryClient) },
+    );
+
+    act(() => {
+      result.current.runUpdateFromBase({
+        conversationId: "conversation-1",
+        detail: "Update workspace from main",
+        kind: "update-from-base",
+        title: "Updating from base",
+      });
+    });
+
+    await waitFor(() =>
+      expect(toastInfoMock).toHaveBeenCalledWith(
+        "Repair started",
+        expect.objectContaining({
+          description: expect.stringContaining("will continue automatically"),
+        }),
+      ),
+    );
+    expect(toastErrorMock).not.toHaveBeenCalled();
+    expect(
+      queryClient.getQueryData(
+        agentWorkspaceKeys.scopedFreshness(workspace.conversationId, "full"),
+      ),
+    ).toEqual(expect.objectContaining({ isBaseAhead: true }));
+  });
+
+  it("adds merged pull-request retarget context to the rebase progress toast", async () => {
+    const queryClient = createTestQueryClient();
+    const workspace = conversationWorkspaceFixture();
+    updateAgentConversationWorkspaceFromBaseMock.mockResolvedValue({
+      workspace,
+      updated: true,
+      repairStarted: false,
+      targetRef: "release/next",
+      baseCommit: "base-sha",
+      baseStatus: "retargeted",
+      effectiveBaseDisplayName: "release/next",
+    });
+    const { result } = renderHook(
+      () => useAgentWorkspaceBaseUpdate({ conversationTitle: "Checkout flow fix" }),
+      { wrapper: wrapper(queryClient) },
+    );
+
+    act(() => {
+      result.current.runUpdateFromBase({
+        baseSelection: {
+          kind: "local_branch",
+          ref: "release/next",
+          displayName: "release/next",
+          retargetedFromPullRequest: 88,
+        },
+        conversationId: "conversation-1",
+        detail: "From release/next",
+        kind: "rebase",
+        title: "Rebasing onto release/next",
+      });
+    });
+
+    expect(toastLoadingMock).toHaveBeenCalledWith(
+      "Rebasing onto release/next",
+      expect.objectContaining({
+        description: expect.stringContaining(
+          "PR #88 merged — rebasing onto release/next",
+        ),
+      }),
+    );
+  });
+
+  it("dismisses live maintenance progress when the hook unmounts", () => {
+    vi.useFakeTimers();
+    const queryClient = createTestQueryClient();
+    const activeWorkspace = conversationWorkspaceFixture({
+      maintenanceOperation: {
+        operationId: "operation-unmount",
+        generation: 1,
+        source: "base_update",
+        stage: "repairing",
+        status: "active",
+        summary: "Resolving a conflict",
+        blocker: null,
+        automaticContinuation: true,
+        startedAt: "2026-07-25T10:00:00Z",
+        updatedAt: "2026-07-25T10:01:00Z",
+      },
+    });
+    const { result, unmount } = renderHook(
+      () => useAgentWorkspaceBaseUpdate({ conversationTitle: "Checkout flow fix" }),
+      { wrapper: wrapper(queryClient) },
+    );
+
+    act(() => {
+      result.current.syncMaintenanceOperation(activeWorkspace);
+    });
+    expect(startAgentWorkspaceOperationToastMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        targetConversation: {
+          conversationId: "conversation-1",
+          projectId: "project-1",
+        },
+      }),
+    );
+    const loadingCallCount = toastLoadingMock.mock.calls.length;
+
+    unmount();
+    vi.advanceTimersByTime(2_000);
+
+    expect(toastDismissMock).toHaveBeenCalledWith(
+      "agent-workspace-maintenance:conversation-1:operation-unmount",
+    );
+    expect(toastLoadingMock).toHaveBeenCalledTimes(loadingCallCount);
+  });
+
+  it("keeps a dismissed maintenance operation hidden while allowing a new operation to render", () => {
+    const queryClient = createTestQueryClient();
+    const activeWorkspace = conversationWorkspaceFixture({
+      maintenanceOperation: {
+        operationId: "operation-dismissed",
+        generation: 1,
+        source: "base_update",
+        stage: "repairing",
+        status: "active",
+        summary: "Resolving a conflict",
+        blocker: null,
+        automaticContinuation: true,
+        startedAt: "2026-07-25T10:00:00Z",
+        updatedAt: "2026-07-25T10:01:00Z",
+      },
+    });
+    const { result, unmount } = renderHook(
+      () => useAgentWorkspaceBaseUpdate({ conversationTitle: "Checkout flow fix" }),
+      { wrapper: wrapper(queryClient) },
+    );
+
+    act(() => {
+      result.current.syncMaintenanceOperation(activeWorkspace);
+    });
+    const dismiss = toastLoadingMock.mock.calls.at(-1)?.[1] as
+      | { onDismiss?: () => void }
+      | undefined;
+    expect(dismiss?.onDismiss).toEqual(expect.any(Function));
+    act(() => {
+      dismiss?.onDismiss?.();
+      result.current.syncMaintenanceOperation(activeWorkspace);
+    });
+    expect(toastLoadingMock).toHaveBeenCalledTimes(1);
+
+    unmount();
+    const { result: remounted } = renderHook(
+      () => useAgentWorkspaceBaseUpdate({ conversationTitle: "Checkout flow fix" }),
+      { wrapper: wrapper(queryClient) },
+    );
+    act(() => {
+      remounted.current.syncMaintenanceOperation(activeWorkspace);
+    });
+    expect(toastLoadingMock).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      remounted.current.syncMaintenanceOperation({
+        ...activeWorkspace,
+        maintenanceOperation: {
+          ...activeWorkspace.maintenanceOperation!,
+          operationId: "operation-new",
+        },
+      });
+    });
+    expect(toastLoadingMock).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["ready", "blocked"] as const)(
+    "silently settles a dismissed %s maintenance operation and clears its dismissal",
+    (status) => {
+      const queryClient = createTestQueryClient();
+      const activeWorkspace = conversationWorkspaceFixture({
+        maintenanceOperation: {
+          operationId: "operation-dismissed-terminal",
+          generation: 1,
+          source: "base_update",
+          stage: "repairing",
+          status: "active",
+          summary: "Resolving a conflict",
+          blocker: null,
+          automaticContinuation: true,
+          startedAt: "2026-07-25T10:00:00Z",
+          updatedAt: "2026-07-25T10:01:00Z",
+        },
+      });
+      const { result, unmount } = renderHook(
+        () => useAgentWorkspaceBaseUpdate({ conversationTitle: "Checkout flow fix" }),
+        { wrapper: wrapper(queryClient) },
+      );
+
+      act(() => {
+        result.current.syncMaintenanceOperation(activeWorkspace);
+      });
+      const dismiss = toastLoadingMock.mock.calls.at(-1)?.[1] as
+        | { onDismiss?: () => void }
+        | undefined;
+      act(() => {
+        dismiss?.onDismiss?.();
+      });
+      unmount();
+      const { result: remounted } = renderHook(
+        () => useAgentWorkspaceBaseUpdate({ conversationTitle: "Checkout flow fix" }),
+        { wrapper: wrapper(queryClient) },
+      );
+      act(() => {
+        remounted.current.syncMaintenanceOperation({
+          ...activeWorkspace,
+          maintenanceOperation: {
+            ...activeWorkspace.maintenanceOperation!,
+            stage: status,
+            status,
+          },
+        });
+      });
+
+      expect(toastSuccessMock).not.toHaveBeenCalled();
+      expect(toastErrorMock).not.toHaveBeenCalled();
+      expect(
+        isAgentWorkspaceOperationToastDismissed(
+          "agent-workspace-maintenance:conversation-1:operation-dismissed-terminal",
+        ),
+      ).toBe(false);
+    },
+  );
 
   it("refreshes once before settling a disappeared active maintenance operation", async () => {
     const queryClient = createTestQueryClient();

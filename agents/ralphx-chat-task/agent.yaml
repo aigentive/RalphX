@@ -13,6 +13,7 @@ capabilities:
     - delegate_start
     - delegate_wait
     - delegate_cancel
+    - delegate_park
     - create_agent_task
     - get_agent_task
     - list_agent_tasks
@@ -31,3 +32,49 @@ harnesses:
 delegation:
   allowed_targets:
     - ralphx-general-explorer
+profiles:
+  team_coordinator:
+    role: team_coordinator
+    description: "Read-only coordinator for an RX-native Team; delegates writable work to members."
+    capabilities:
+      mcp_tools:
+        - update_task
+        - add_task_note
+        - get_task_details
+        - get_artifact
+        - search_memories
+        - get_memory
+        - get_memories_for_paths
+        - team_add_member
+        - team_assign
+        - team_list
+        - team_stop_member
+        - team_send_message
+        - delegate_start
+        - delegate_wait
+        - delegate_cancel
+        - delegate_park
+        - create_agent_task
+        - get_agent_task
+        - list_agent_tasks
+        - update_agent_task
+        - claim_agent_task
+        - complete_agent_task
+    harnesses:
+      claude:
+        model: sonnet
+        tools:
+          extends: readonly_tools
+        disallowed_tools:
+          - Write
+          - Edit
+          - NotebookEdit
+          - Bash
+          - Task
+        preapproved_cli_tools: []
+      codex:
+        runtime_features:
+          shell_tool: false
+    delegation:
+      allowed_targets:
+        - ralphx-general-explorer

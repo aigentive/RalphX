@@ -29,6 +29,7 @@ pub mod delegation;
 mod delegation_tests;
 pub mod handlers;
 pub mod helpers;
+pub mod native_delegation_launcher;
 pub mod project_scope;
 pub mod types;
 
@@ -161,6 +162,35 @@ pub async fn start_http_server_with_listener_ready(
         .route("/api/auth/validate-key", get(validate_api_key))
         // Legacy validate_key endpoint (kept for backward compat)
         .route("/api/validate_key", get(validate_key))
+        // Managed Team lifecycle surface
+        .route("/api/managed_team/ensure", post(ensure_managed_team))
+        .route(
+            "/api/managed_team/status/:conversation_id",
+            get(get_managed_team_status),
+        )
+        .route(
+            "/api/managed_team/roster/:team_id",
+            get(get_managed_team_roster),
+        )
+        .route("/api/managed_team/member", post(add_managed_team_member))
+        .route(
+            "/api/managed_team/member/assign",
+            post(assign_managed_team_member),
+        )
+        .route(
+            "/api/managed_team/member/stop",
+            post(stop_managed_team_member),
+        )
+        .route("/api/managed_team/exit", post(exit_managed_team))
+        .route(
+            "/api/managed_team/members/idle",
+            get(list_idle_managed_team_members),
+        )
+        .route("/api/managed_team/message", post(send_managed_team_message))
+        .route(
+            "/api/managed_team/member/roster",
+            get(get_managed_team_member_roster),
+        )
         // Ideation tools (ralphx-ideation agent)
         .route("/api/create_task_proposal", post(create_task_proposal))
         .route("/api/finalize_proposals", post(finalize_proposals))
@@ -261,6 +291,11 @@ pub async fn start_http_server_with_listener_ready(
         )
         .route("/api/coordination/delegate/wait", post(wait_delegate))
         .route("/api/coordination/delegate/cancel", post(cancel_delegate))
+        .route("/api/coordination/delegate/park", post(park_delegate))
+        .route(
+            "/api/coordination/delegate/parent-context",
+            post(get_delegate_parent_context),
+        )
         .route(
             "/api/agent_workflows/scripts/create",
             post(create_agent_workflow_script),

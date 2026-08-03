@@ -8,14 +8,9 @@ import type { Model } from "@/types/agent-profile";
 
 export const MODEL_OPTIONS: { value: Model; label: string; description: string }[] = [
   {
-    value: "haiku",
-    label: "Claude Haiku 4.5",
-    description: "Fastest, most cost-effective",
-  },
-  {
-    value: "sonnet",
-    label: "Claude Sonnet",
-    description: "Best balance of speed and quality",
+    value: "fable",
+    label: "Claude Fable 5",
+    description: "Most capable, requires Claude Code 2.1.170+",
   },
   {
     value: "opus",
@@ -23,8 +18,13 @@ export const MODEL_OPTIONS: { value: Model; label: string; description: string }
     description: "Most capable, best for complex tasks",
   },
   {
-    value: "fable",
-    label: "Claude Fable 5",
-    description: "Most capable, requires Claude Code 2.1.170+",
+    value: "sonnet",
+    label: "Claude Sonnet",
+    description: "Best balance of speed and quality",
+  },
+  {
+    value: "haiku",
+    label: "Claude Haiku 4.5",
+    description: "Fastest, most cost-effective",
   },
 ];

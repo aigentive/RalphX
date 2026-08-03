@@ -2699,6 +2699,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                     conv.coordination_mode,
                                     &conversation_id.as_str(),
                                     conv.agent_mode,
+                                    Some(agent_run_id),
                                     msg,
                                     persona,
                                     folder_refs_block.as_deref(),

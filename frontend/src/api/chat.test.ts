@@ -1139,6 +1139,7 @@ describe("chat api", () => {
       timelineStatus: "streaming",
       timelineKind: "text",
       timelineSequence: 4,
+      timelineBlockIndex: 0,
       inputTokens: 10,
       providerHarness: "codex",
     });
@@ -1624,6 +1625,12 @@ describe("chat api", () => {
         publication_metadata_attempt_id: "attempt-plan-1",
         publication_metadata_phase: "reconciling",
         publication_metadata_state: "unknown",
+        pr_autofix_fingerprint_spend: {
+          generations: 3,
+          minutes: 92,
+          budget_minutes: 45,
+          is_exhausted: true,
+        },
         auto_publish_enabled: true,
         auto_publish_paused_pr_autofix_enabled: null,
         auto_publish_paused_pr_auto_merge_desired: null,
@@ -1650,6 +1657,12 @@ describe("chat api", () => {
         stage: "repairing",
         status: "active",
         automaticContinuation: true,
+      },
+      prAutofixFingerprintSpend: {
+        generations: 3,
+        minutes: 92,
+        budgetMinutes: 45,
+        isExhausted: true,
       },
     });
   });
@@ -1766,6 +1779,7 @@ describe("chat api", () => {
               publication_state: "merged",
               publication_label: "merged",
               attention_lane: "done",
+              parked_delegate_count: 2,
               action_verb: "Merged",
               is_muted: false,
             },
@@ -1812,6 +1826,7 @@ describe("chat api", () => {
           publicationState: "merged",
           publicationLabel: "merged",
           attentionLane: "done",
+          parkedDelegateCount: 2,
           actionVerb: "Merged",
           isMuted: false,
         },
@@ -1919,6 +1934,7 @@ describe("chat api", () => {
       effective_base_ref: "main",
       effective_base_display_name: "Project default (main)",
       base_block_reason: null,
+      recommended_actions: ["update_from_base", "base_pr_merged"],
     });
 
     const result =
@@ -1941,7 +1957,29 @@ describe("chat api", () => {
       unpublishedCommitCount: 2,
       remoteRefreshed: true,
       worktreeStatusChecked: true,
+      recommendedActions: ["update_from_base", "base_pr_merged"],
     });
+  });
+
+  it("defaults absent workspace freshness recommended actions", async () => {
+    mockInvoke.mockResolvedValue({
+      conversation_id: "conversation-1",
+      freshness_scope: "full",
+      base_ref: "main",
+      base_display_name: "Project default (main)",
+      target_ref: "origin/main",
+      captured_base_commit: "base",
+      target_base_commit: "base",
+      is_base_ahead: false,
+      has_uncommitted_changes: false,
+      unpublished_commit_count: null,
+      remote_refreshed: true,
+      worktree_status_checked: true,
+    });
+
+    await expect(
+      getAgentConversationWorkspaceFreshness("conversation-1"),
+    ).resolves.toMatchObject({ recommendedActions: [] });
   });
 
   it("requests scoped agent conversation workspace freshness", async () => {
@@ -2086,6 +2124,7 @@ describe("chat api", () => {
         updated_at: "2026-01-24T10:01:00Z",
       },
       updated: true,
+      repair_started: true,
       target_ref: "origin/feature/agent-screen",
       base_commit: "new-base",
     });
@@ -2099,6 +2138,7 @@ describe("chat api", () => {
     );
     expect(result).toMatchObject({
       updated: true,
+      repairStarted: true,
       targetRef: "origin/feature/agent-screen",
       baseCommit: "new-base",
       workspace: {
@@ -2952,7 +2992,7 @@ describe("chat api", () => {
     });
   });
 
-  it("sends unified agent message with native team target fields", async () => {
+  it("sends unified agent message with a normalized Team member target", async () => {
     mockInvoke.mockResolvedValue({
       conversation_id: "c1",
       agent_run_id: "r1",
@@ -2969,9 +3009,7 @@ describe("chat api", () => {
         teamIntent: { coordinationMode: "rx_native_team" },
         teamMessageTarget: {
           kind: "member",
-          teamId: "team-1",
-          teamMemberId: "member-1",
-          conversationId: "member-conversation-1",
+          memberName: "worker one",
         },
       },
     );
@@ -2985,9 +3023,7 @@ describe("chat api", () => {
         teamIntent: { coordinationMode: "rx_native_team" },
         teamMessageTarget: {
           kind: "member",
-          teamId: "team-1",
-          teamMemberId: "member-1",
-          conversationId: "member-conversation-1",
+          memberName: "worker one",
         },
       },
     });
@@ -3543,6 +3579,7 @@ describe("getConversationActiveState", () => {
     previous_version_id: "review-artifact-0",
     review_requested_changes_previous_version_id:
       "requested-changes-artifact-0",
+    review_fixer_cycle_count: 0,
     last_run_id: "run-1",
     last_error: null,
     created_at: "2026-06-18T12:00:00Z",
@@ -3609,6 +3646,7 @@ describe("getConversationActiveState", () => {
         },
       ],
       partial_text: "",
+      partial_thinking_segments: ["Reasoning through the response"],
     };
 
     mockFetch.mockResolvedValueOnce({
@@ -3635,6 +3673,7 @@ describe("getConversationActiveState", () => {
     expect(task.input_tokens).toBe(1100);
     expect(task.estimated_usd).toBe(1.23);
     expect(task.text_output).toBe("done");
+    expect(result.partial_thinking_segments).toEqual(["Reasoning through the response"]);
   });
 
   it("handles response with no stats fields (old format)", async () => {
@@ -3936,6 +3975,7 @@ describe("getConversationActiveState", () => {
             review_gate_status: "blocking",
             review_blocking_summary: "Fix the blocking finding.",
             review_fixer_status: "running",
+            review_fixer_cycle_count: 2,
             review_fixer_run_id: "fixer-run-1",
             review_fixer_conversation_id: "conversation-1",
           }),
@@ -3994,6 +4034,7 @@ describe("getConversationActiveState", () => {
     expect(result.started).toBe(true);
     expect(result.isCurrent).toBe(true);
     expect(result.monitor.reviewFixerStatus).toBe("running");
+    expect(result.monitor.reviewFixerCycleCount).toBe(2);
     expect(result.monitor.reviewFixerRunId).toBe("fixer-run-1");
   });
 

@@ -1,13 +1,12 @@
 /**
  * IdeationEffortSection — Settings section for configuring ideation agent effort levels.
  *
- * Uses SectionCard (frosted glass pattern) from SettingsView.shared.tsx.
+ * Uses the chrome-free SettingsSection container from SettingsView.shared.tsx.
  * Shows global dropdowns and per-project override dropdowns.
  * Effective value hint shown only when value is `inherit`.
  */
 
 import { useState } from "react";
-import { Gauge } from "lucide-react";
 import { Separator } from "@/components/ui/separator";
 import {
   Select,
@@ -16,7 +15,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { SectionCard, ErrorBanner } from "./SettingsView.shared";
+import { SettingsSection, ErrorBanner } from "./SettingsView.shared";
 import { useIdeationEffortSettings } from "@/hooks/useIdeationEffortSettings";
 import { useProjectStore, selectActiveProject } from "@/stores/projectStore";
 
@@ -273,19 +272,13 @@ export function IdeationEffortSection() {
   const activeProject = useProjectStore(selectActiveProject);
 
   return (
-    <SectionCard
-      icon={
-        <Gauge className="w-[18px] h-[18px] text-[var(--card-icon-color)]" />
-      }
-      title="Ideation Effort"
-      description="Configure the --effort level for ideation and verification agents"
-    >
+    <SettingsSection>
       <GlobalEffortSubsection />
       <Separator className="my-4 bg-[var(--border-subtle)]" />
       <ProjectEffortSubsection
         projectId={activeProject?.id ?? null}
         projectName={activeProject?.name ?? null}
       />
-    </SectionCard>
+    </SettingsSection>
   );
 }

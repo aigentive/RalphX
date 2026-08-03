@@ -48,6 +48,8 @@ use crate::error::AppResult;
 
 use super::TaskTransitionService;
 use crate::infrastructure::agents::claude::{stream_timeouts, StreamTimeoutsConfig};
+use crate::infrastructure::sqlite::sqlite_chat_payload_retention_repo::SqliteChatPayloadRetentionRepository;
+use crate::infrastructure::sqlite::DbConnection;
 
 /// Environment variable that disables startup recovery mechanisms when present.
 pub const RALPHX_DISABLE_STARTUP_RECOVERY_ENV: &str = "RALPHX_DISABLE_STARTUP_RECOVERY";
@@ -60,6 +62,48 @@ fn notification_retention_prune_args(
         now - chrono::Duration::days(config.notification_retention_read_days as i64),
         u32::try_from(config.notification_retention_max_rows).unwrap_or(u32::MAX),
     )
+}
+
+fn chat_payload_retention_prune_args(
+    config: &StreamTimeoutsConfig,
+    now: chrono::DateTime<chrono::Utc>,
+) -> (
+    chrono::DateTime<chrono::Utc>,
+    chrono::DateTime<chrono::Utc>,
+    u32,
+) {
+    (
+        now - chrono::Duration::days(config.chat_payload_retention_days as i64),
+        now - chrono::Duration::days(config.chat_payload_retention_archived_days as i64),
+        // A zero batch size would make every DELETE a silent no-op while the
+        // job still reports success; clamp to at least one row per batch.
+        u32::try_from(config.chat_payload_retention_batch_rows)
+            .unwrap_or(u32::MAX)
+            .max(1),
+    )
+}
+
+async fn prune_chat_payload_retention(
+    payload_repo: &SqliteChatPayloadRetentionRepository,
+    config: &StreamTimeoutsConfig,
+    now: chrono::DateTime<chrono::Utc>,
+) -> AppResult<usize> {
+    if !config.chat_payload_retention_enabled {
+        return Ok(0);
+    }
+
+    let (before, archived_before, batch_rows) = chat_payload_retention_prune_args(config, now);
+    let mut pruned = 0;
+    loop {
+        let pruned_in_batch = payload_repo
+            .prune_batch(before, archived_before, batch_rows)
+            .await?;
+        pruned += pruned_in_batch;
+        if pruned_in_batch == 0 {
+            return Ok(pruned);
+        }
+        tokio::task::yield_now().await;
+    }
 }
 
 #[doc(hidden)]
@@ -227,6 +271,9 @@ pub struct StartupJobRunner {
     /// these projects is deferred so recovery does not immediately hit known-bad auth.
     git_startup_blocked_project_ids: Arc<HashSet<ProjectId>>,
     notification_repo: Option<Arc<dyn NotificationRepository>>,
+    chat_payload_retention_repo: Option<Arc<SqliteChatPayloadRetentionRepository>>,
+    delegation_park_service:
+        Option<Arc<crate::application::delegation_park::DelegationParkService>>,
 }
 
 struct StartupSafetyNet {
@@ -359,6 +406,8 @@ impl StartupJobRunner {
             ideation_session_repo,
             git_startup_blocked_project_ids: Arc::new(HashSet::new()),
             notification_repo: None,
+            chat_payload_retention_repo: None,
+            delegation_park_service: None,
         }
     }
 
@@ -647,6 +696,23 @@ impl StartupJobRunner {
         self
     }
 
+    /// Sets the raw-SQL retention repository used only by the startup payload-prune job.
+    pub fn with_chat_payload_retention_db(mut self, db: DbConnection) -> Self {
+        self.chat_payload_retention_repo =
+            Some(Arc::new(SqliteChatPayloadRetentionRepository::from_db(db)));
+        self
+    }
+
+    /// Provide the durable delegation-park reconciler so coordinators parked across a restart
+    /// are woken from durable state rather than stranded.
+    pub fn with_delegation_park_service(
+        mut self,
+        service: Arc<crate::application::delegation_park::DelegationParkService>,
+    ) -> Self {
+        self.delegation_park_service = Some(service);
+        self
+    }
+
     pub fn spawn_post_ready_safety_net(&self, delay: Duration) {
         let runner = self.clone_for_safety_net();
         tauri::async_runtime::spawn(async move {
@@ -693,6 +759,45 @@ impl StartupJobRunner {
                 tracing::warn!(error = %error, "Failed to prune durable notifications at startup");
             }
             startup_job_step_completed("notification_retention_prune", step_started_at);
+        }
+
+        if let Some(park_service) = &self.delegation_park_service {
+            let step_started_at = startup_job_step_started("delegation_park_reconcile");
+            match park_service
+                .reconcile_all(self.agent_run_repo.as_ref())
+                .await
+            {
+                Ok(summary) => {
+                    if summary.parks_examined > 0 {
+                        info!(
+                            parks_examined = summary.parks_examined,
+                            "Reconciled durable delegation parks at startup"
+                        );
+                    }
+                }
+                Err(error) => tracing::warn!(
+                    error = %error,
+                    "Failed to reconcile delegation parks at startup; parked coordinators may wait until their deadline"
+                ),
+            }
+            startup_job_step_completed("delegation_park_reconcile", step_started_at);
+        }
+
+        if let Some(payload_repo) = &self.chat_payload_retention_repo {
+            let config = stream_timeouts().clone();
+            if config.chat_payload_retention_enabled {
+                let payload_repo = Arc::clone(payload_repo);
+                tauri::async_runtime::spawn(async move {
+                    let step_started_at = startup_job_step_started("chat_payload_retention_prune");
+                    if let Err(error) =
+                        prune_chat_payload_retention(&payload_repo, &config, chrono::Utc::now())
+                            .await
+                    {
+                        tracing::warn!(error = %error, "Failed to prune chat payloads at startup");
+                    }
+                    startup_job_step_completed("chat_payload_retention_prune", step_started_at);
+                });
+            }
         }
 
         if is_startup_recovery_disabled() {

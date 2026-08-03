@@ -5,6 +5,8 @@ use crate::infrastructure::agents::claude::format_stream_json_input;
 pub mod agent_followups;
 pub mod agent_issues;
 pub mod agent_tasks;
+#[cfg(test)]
+mod agent_tasks_tests;
 pub mod agent_workflows;
 #[cfg(test)]
 mod agent_workflows_tests;
@@ -23,6 +25,7 @@ pub mod external_auth;
 pub mod git;
 pub mod ideation;
 pub mod internal;
+pub mod managed_team;
 pub mod issues;
 pub mod memory;
 pub mod permissions;
@@ -59,6 +62,7 @@ pub use external_auth::*;
 pub use git::*;
 pub use ideation::*;
 pub use internal::*;
+pub use managed_team::*;
 pub use issues::*;
 pub use memory::*;
 pub use permissions::*;

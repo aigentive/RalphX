@@ -1201,6 +1201,13 @@ impl ControlledWorkspaceRepo {
 
 #[async_trait]
 impl AgentConversationWorkspaceRepository for ControlledWorkspaceRepo {
+    async fn set_last_blocked_pr_health_fingerprint(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _fingerprint: Option<&str>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
     async fn create_or_update(
         &self,
         workspace: AgentConversationWorkspace,

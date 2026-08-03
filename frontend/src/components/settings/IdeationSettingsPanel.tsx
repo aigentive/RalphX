@@ -10,10 +10,8 @@
  */
 
 import { useState } from "react";
-import { ShieldCheck, ChevronDown, ChevronRight } from "lucide-react";
-import { Checkbox } from "@/components/ui/checkbox";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -21,106 +19,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { cn } from "@/lib/utils";
 import { useIdeationSettings } from "@/hooks/useIdeationSettings";
 import { useConfirmation } from "@/hooks/useConfirmation";
 import { useUiStore } from "@/stores/uiStore";
 import type { ExternalIdeationOverrides } from "@/types/ideation-config";
-import { SectionCard } from "./SettingsView.shared";
-
-// ============================================================================
-// Setting Row Component
-// ============================================================================
-
-interface SettingRowProps {
-  id: string;
-  label: string;
-  description: string;
-  children: React.ReactNode;
-  isSubSetting?: boolean;
-  isDisabled?: boolean;
-}
-
-function SettingRow({
-  id,
-  label,
-  description,
-  children,
-  isSubSetting = false,
-  isDisabled = false,
-}: SettingRowProps) {
-  return (
-    <div
-      className={cn(
-        "flex items-start justify-between py-3 border-b border-[var(--border-subtle)] last:border-0 -mx-2 px-2 rounded-md transition-colors",
-        !isDisabled && "hover:bg-[var(--bg-hover)]",
-        isDisabled && "opacity-50"
-      )}
-    >
-      <div
-        className={cn(
-          "flex-1 min-w-0 pr-4",
-          isSubSetting && "pl-4 border-l-2 border-[var(--border-subtle)]"
-        )}
-      >
-        <Label
-          htmlFor={id}
-          className="text-sm font-medium text-[var(--text-primary)]"
-        >
-          {label}
-        </Label>
-        <p id={`${id}-desc`} className="text-xs text-[var(--text-muted)] mt-0.5">
-          {description}
-        </p>
-      </div>
-      <div className="shrink-0">{children}</div>
-    </div>
-  );
-}
-
-// ============================================================================
-// Checkbox Setting Row
-// ============================================================================
-
-interface CheckboxSettingRowProps {
-  id: string;
-  label: string;
-  description: string;
-  checked: boolean;
-  disabled: boolean;
-  onChange: (checked: boolean) => void;
-  isSubSetting?: boolean;
-}
-
-function CheckboxSettingRow({
-  id,
-  label,
-  description,
-  checked,
-  disabled,
-  onChange,
-  isSubSetting = false,
-}: CheckboxSettingRowProps) {
-  return (
-    <SettingRow
-      id={id}
-      label={label}
-      description={description}
-      isSubSetting={isSubSetting}
-      isDisabled={disabled}
-    >
-      <Checkbox
-        id={id}
-        data-testid={id}
-        checked={checked}
-        onCheckedChange={onChange}
-        disabled={disabled}
-        aria-describedby={`${id}-desc`}
-        className="data-[state=checked]:bg-[var(--accent-primary)] data-[state=checked]:border-[var(--accent-primary)]"
-      />
-    </SettingRow>
-  );
-}
+import { SettingsSection, SettingRow, ToggleSettingRow } from "./SettingsView.shared";
 
 // ============================================================================
 // 3-State Override Select
@@ -305,7 +208,7 @@ export function IdeationSettingsContent({
     <>
         {surface !== "planning" && (
           <>
-        <CheckboxSettingRow
+        <ToggleSettingRow
           id="enable-tasks"
           label="Enable Tasks"
           description="Off by default. Disabling pauses all task-managed work immediately; history and worktrees are retained, and plans can still be implemented directly."
@@ -339,29 +242,29 @@ export function IdeationSettingsContent({
           </div>
         )}
         {/* Require agent confirmation before finalizing proposals */}
-        <CheckboxSettingRow
+        <ToggleSettingRow
           id="require-accept-for-finalize"
           label="Require confirmation before finalizing"
-          description="Pause finalize_proposals for user Accept/Reject before tasks are created"
+          description="Pause plan finalization for user Accept or Reject before tasks are created."
           checked={settings.requireAcceptForFinalize}
           disabled={isUpdating}
           onChange={handleRequireAcceptForFinalizeChange}
         />
 
-        <CheckboxSettingRow
+        <ToggleSettingRow
           id="require-verification-for-accept"
           label="Require verification before accepting"
-          description="The exact current plan artifact must have verification proof before it can be accepted"
+          description="The exact current plan artifact must have verification proof before it can be accepted."
           checked={settings.requireVerificationForAccept}
           disabled={isUpdating}
           onChange={handleRequireVerificationForAcceptChange}
         />
 
         {/* Auto-accept finalization dialogs (in-memory only) */}
-        <CheckboxSettingRow
+        <ToggleSettingRow
           id="auto-accept-plans"
           label="Skip finalization confirmation"
-          description="Automatically confirm all pending finalize dialogs without prompting (resets on app restart)"
+          description="Automatically confirm all pending finalize dialogs without prompting. Resets on app restart."
           checked={autoAcceptPlans}
           disabled={false}
           onChange={setAutoAcceptPlans}
@@ -370,18 +273,18 @@ export function IdeationSettingsContent({
         )}
         {surface !== "tasks" && (
           <>
-            <CheckboxSettingRow
+            <ToggleSettingRow
               id="auto-verify-draft-plans"
               label="Verify draft plans automatically"
-              description="After a successful Plan-mode Agent response, queue a visible Verify Plan turn in the same conversation"
+              description="After a successful Plan-mode Agent response, queue a visible Verify Plan turn in the same conversation."
               checked={settings.autoVerifyDraftPlans}
               disabled={isUpdating}
               onChange={handleAutoVerifyDraftPlansChange}
             />
-            <CheckboxSettingRow
+            <ToggleSettingRow
               id="auto-verify-plans"
               label="Queue missing verification on acceptance"
-              description="When verification is required, an acceptance attempt queues a visible Verify Plan turn"
+              description="When verification is required, an acceptance attempt queues a visible Verify Plan turn."
               checked={settings.autoVerifyPlans}
               disabled={isUpdating}
               onChange={handleAutoVerifyPlansChange}
@@ -395,11 +298,11 @@ export function IdeationSettingsContent({
           </button>
           {showExternalOverrides && (
             <div className="space-y-1 mt-1">
-              {surface !== "tasks" && <OverrideSelectRow id="ext-override-auto-verify-plans" label="Automatic verification on acceptance" description="Override acceptance-triggered Verify Plan turns for external sessions" value={settings.externalOverrides.autoVerifyPlans} disabled={isUpdating} onChange={(v) => handleExternalOverrideChange("autoVerifyPlans", v)} />}
+              {surface !== "tasks" && <OverrideSelectRow id="ext-override-auto-verify-plans" label="Automatic verification on acceptance" description="Override acceptance-triggered Verify Plan turns for external sessions." value={settings.externalOverrides.autoVerifyPlans} disabled={isUpdating} onChange={(v) => handleExternalOverrideChange("autoVerifyPlans", v)} />}
               {surface !== "planning" && (
                 <>
-                  <OverrideSelectRow id="ext-override-verification-for-accept" label="Verification for accept" description="Override verification-before-accept gate for external sessions" value={settings.externalOverrides.requireVerificationForAccept} disabled={isUpdating} onChange={(v) => handleExternalOverrideChange("requireVerificationForAccept", v)} />
-                  <OverrideSelectRow id="ext-override-accept-for-finalize" label="Accept before finalizing" description="Override accept-before-finalize gate for external sessions" value={settings.externalOverrides.requireAcceptForFinalize} disabled={isUpdating} onChange={(v) => handleExternalOverrideChange("requireAcceptForFinalize", v)} />
+                  <OverrideSelectRow id="ext-override-verification-for-accept" label="Verification for accept" description="Override the verification-before-accept gate for external sessions." value={settings.externalOverrides.requireVerificationForAccept} disabled={isUpdating} onChange={(v) => handleExternalOverrideChange("requireVerificationForAccept", v)} />
+                  <OverrideSelectRow id="ext-override-accept-for-finalize" label="Accept before finalizing" description="Override the accept-before-finalize gate for external sessions." value={settings.externalOverrides.requireAcceptForFinalize} disabled={isUpdating} onChange={(v) => handleExternalOverrideChange("requireAcceptForFinalize", v)} />
                 </>
               )}
             </div>
@@ -415,13 +318,9 @@ export function IdeationSettingsContent({
   );
   if (embedded) return body;
   return (
-    <SectionCard
-      icon={<ShieldCheck className="w-[18px] h-[18px] text-[var(--accent-primary)]" />}
-      title={surface === "planning" ? "Planning" : "Tasks"}
-      description={surface === "planning" ? "Configure automatic plan verification" : "Configure task and acceptance gates"}
-    >
+    <SettingsSection>
       {body}
-    </SectionCard>
+    </SettingsSection>
   );
 }
 

@@ -2,11 +2,14 @@
  * IntegratedChatPanel.components - Sub-components for IntegratedChatPanel
  */
 
+import { useEffect, useState } from "react";
 import { Bot, MessageSquare, CheckSquare, FolderKanban, Hammer, Activity, X, History, GitMerge } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { withAlpha } from "@/lib/theme-colors";
 import { cn } from "@/lib/utils";
 import type { ChatContext } from "@/types/chat";
+import { selectActiveAgentRunMeta, useChatStore } from "@/stores/chatStore";
+import { elapsedLabel } from "./run-attribution";
 
 // ============================================================================
 // CSS Animations
@@ -30,7 +33,18 @@ export const animationStyles = `
 // Sub-components
 // ============================================================================
 
-export function TypingIndicator({ label }: { label?: string | undefined }) {
+export function TypingIndicator({ label, storeKey }: { label?: string | undefined; storeKey?: string | undefined }) {
+  const activeRunMeta = useChatStore(selectActiveAgentRunMeta(storeKey ?? ""));
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    if (!activeRunMeta) return;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [activeRunMeta]);
+  const liveLabel = activeRunMeta
+    ? elapsedLabel(activeRunMeta.startedAt, activeRunMeta.launchRole, now)
+    : label;
   return (
     <div
       data-testid="chat-typing-indicator"
@@ -48,12 +62,12 @@ export function TypingIndicator({ label }: { label?: string | undefined }) {
         }}
       >
         <div className="flex items-center gap-2">
-          {label ? (
+          {liveLabel ? (
             <span
               className="text-[0.75rem] font-medium"
               style={{ color: "var(--text-secondary)" }}
             >
-              {label}
+              {liveLabel}
             </span>
           ) : null}
           <div

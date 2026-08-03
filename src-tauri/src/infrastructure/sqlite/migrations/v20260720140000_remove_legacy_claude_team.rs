@@ -1,71 +1,12 @@
 // Migration v20260720140000: remove legacy Claude team persistence
 
-use std::collections::BTreeMap;
-
 use rusqlite::Connection;
 
 use crate::error::{AppError, AppResult};
 
-use super::helpers::{column_exists, table_exists};
-
-/// Violation counts keyed by `(child table, parent table, foreign key id)`.
-///
-/// Keying on the constraint rather than the offending rowid keeps the baseline
-/// comparison stable across the table rewrites this migration performs, which
-/// renumber rowids.
-type ForeignKeyViolationCounts = BTreeMap<(String, String, i64), i64>;
-
-fn foreign_key_violation_counts(conn: &Connection) -> AppResult<ForeignKeyViolationCounts> {
-    let mut statement = conn
-        .prepare(
-            "SELECT \"table\", \"parent\", \"fkid\", COUNT(*)
-             FROM pragma_foreign_key_check
-             GROUP BY \"table\", \"parent\", \"fkid\"",
-        )
-        .map_err(|error| AppError::Database(error.to_string()))?;
-    let rows = statement
-        .query_map([], |row| {
-            Ok((
-                (
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)?,
-                ),
-                row.get::<_, i64>(3)?,
-            ))
-        })
-        .map_err(|error| AppError::Database(error.to_string()))?;
-
-    let mut counts = ForeignKeyViolationCounts::new();
-    for row in rows {
-        let (key, count) = row.map_err(|error| AppError::Database(error.to_string()))?;
-        counts.insert(key, count);
-    }
-    Ok(counts)
-}
-
-/// Reports only violations this migration added, so orphan rows that already
-/// existed cannot be attributed to it.
-fn introduced_violations(
-    baseline: &ForeignKeyViolationCounts,
-    after: &ForeignKeyViolationCounts,
-) -> Vec<(String, String, i64)> {
-    after
-        .iter()
-        .filter(|(key, count)| **count > baseline.get(*key).copied().unwrap_or(0))
-        .map(|((table, parent, fkid), count)| {
-            (
-                table.clone(),
-                parent.clone(),
-                count
-                    - baseline
-                        .get(&(table.clone(), parent.clone(), *fkid))
-                        .copied()
-                        .unwrap_or(0),
-            )
-        })
-        .collect()
-}
+use super::helpers::{
+    column_exists, foreign_key_violation_counts, introduced_violations, table_exists,
+};
 
 pub fn migrate(conn: &Connection) -> AppResult<()> {
     let foreign_keys_was_enabled =

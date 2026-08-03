@@ -12,6 +12,7 @@ capabilities:
     - delegate_start
     - delegate_wait
     - delegate_cancel
+    - delegate_park
     - get_plan_verification
     - search_memories
     - get_memory

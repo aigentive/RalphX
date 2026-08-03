@@ -55,15 +55,15 @@ describe("PersonasSection toggle", () => {
   it("renders an unchecked toggle without persona management when disabled", () => {
     renderSection(disabledFlags);
 
-    expect(screen.getByRole("switch", { name: "Enable Agent Personas" })).not.toBeChecked();
-    expect(screen.queryByText("Craft reusable voices for project agents.")).not.toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Enable agent personas" })).not.toBeChecked();
+    expect(screen.queryByText("Persona library")).not.toBeInTheDocument();
   });
 
   it("renders a checked toggle and persona management when enabled", () => {
     renderSection({ ...disabledFlags, agentPersonas: true });
 
-    expect(screen.getByRole("switch", { name: "Enable Agent Personas" })).toBeChecked();
-    expect(screen.getByText("Craft reusable voices for project agents.")).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Enable agent personas" })).toBeChecked();
+    expect(screen.getByText("Persona library")).toBeInTheDocument();
   });
 
   it("enables personas through the update command and updates live consumers", async () => {
@@ -71,13 +71,13 @@ describe("PersonasSection toggle", () => {
     vi.mocked(invoke).mockResolvedValue({ ...disabledFlags, agentPersonas: true });
     renderSection(disabledFlags);
 
-    await user.click(screen.getByRole("switch", { name: "Enable Agent Personas" }));
+    await user.click(screen.getByRole("switch", { name: "Enable agent personas" }));
 
     expect(invoke).toHaveBeenCalledWith("update_ui_feature_flags", {
       input: { agentPersonas: true },
     });
     await waitFor(() =>
-      expect(screen.getByText("Craft reusable voices for project agents.")).toBeInTheDocument(),
+      expect(screen.getByText("Persona library")).toBeInTheDocument(),
     );
     expect(useUiStore.getState().featureFlags.agentPersonas).toBe(true);
   });
@@ -87,7 +87,7 @@ describe("PersonasSection toggle", () => {
     vi.mocked(invoke).mockResolvedValue({ ...disabledFlags, agentPersonas: false });
     renderSection({ ...disabledFlags, agentPersonas: true });
 
-    await user.click(screen.getByRole("switch", { name: "Enable Agent Personas" }));
+    await user.click(screen.getByRole("switch", { name: "Enable agent personas" }));
 
     expect(invoke).toHaveBeenCalledWith("update_ui_feature_flags", {
       input: { agentPersonas: false },

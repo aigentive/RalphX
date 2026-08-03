@@ -84,6 +84,37 @@ esac
     std::fs::set_permissions(path, permissions).expect("mark fake Claude CLI executable");
 }
 
+#[cfg(unix)]
+fn write_fake_claude_cli_with_streaming_capabilities(
+    path: &Path,
+    supports_partial_messages: bool,
+    supports_thinking_display: bool,
+) {
+    let partial_messages_flag = if supports_partial_messages {
+        "  --include-partial-messages"
+    } else {
+        ""
+    };
+    let thinking_display_flag = if supports_thinking_display {
+        "  --thinking-display <mode>"
+    } else {
+        ""
+    };
+    std::fs::write(
+        path,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  printf 'claude-code 2.1.219\\n'\n  exit 0\nelif [ \"$1\" = \"--help\" ]; then\n  printf '%s\\n' 'Claude Code' 'Options:' '{partial_messages_flag}' '{thinking_display_flag}'\n  exit 0\nfi\nexit 0\n"
+        ),
+    )
+    .expect("write fake Claude CLI");
+    use std::os::unix::fs::PermissionsExt;
+    let mut permissions = std::fs::metadata(path)
+        .expect("fake Claude CLI metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(path, permissions).expect("mark fake Claude CLI executable");
+}
+
 fn path_index(entries: &[PathBuf], path: impl AsRef<Path>) -> usize {
     entries
         .iter()
@@ -350,6 +381,81 @@ fn test_build_base_cli_command_preserves_supported_model_values_byte_for_byte() 
     clear_claude_cli_capability_cache();
 }
 
+#[cfg(unix)]
+#[test]
+fn test_build_base_cli_command_includes_streaming_capability_flags_when_supported() {
+    let _env_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("test env mutex");
+    let _plugin_lock = lock_runtime_plugin_dirs_for_tests();
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let cli_path = temp_dir.path().join("claude");
+    write_fake_claude_cli_with_streaming_capabilities(&cli_path, true, true);
+    clear_claude_cli_capability_cache();
+
+    let command = build_base_cli_command_inner(
+        &cli_path,
+        Path::new("/fake/plugin"),
+        None,
+        false,
+        None,
+        None,
+        false,
+    )
+    .expect("build base command with spawn guard disabled");
+    let args = command
+        .as_std()
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+
+    assert!(args.contains(&"--include-partial-messages".to_string()));
+    let thinking_display_idx = args
+        .iter()
+        .position(|arg| arg == "--thinking-display")
+        .expect("--thinking-display flag");
+    assert_eq!(
+        args.get(thinking_display_idx + 1).map(String::as_str),
+        Some("summarized")
+    );
+
+    clear_claude_cli_capability_cache();
+}
+
+#[cfg(unix)]
+#[test]
+fn test_build_base_cli_command_omits_streaming_capability_flags_when_unsupported() {
+    let _env_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("test env mutex");
+    let _plugin_lock = lock_runtime_plugin_dirs_for_tests();
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let cli_path = temp_dir.path().join("claude");
+    write_fake_claude_cli_with_streaming_capabilities(&cli_path, false, false);
+    clear_claude_cli_capability_cache();
+
+    let command = build_base_cli_command_inner(
+        &cli_path,
+        Path::new("/fake/plugin"),
+        None,
+        false,
+        None,
+        None,
+        false,
+    )
+    .expect("build base command with spawn guard disabled");
+    let args = command
+        .as_std()
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+
+    assert!(!args.contains(&"--include-partial-messages".to_string()));
+    assert!(!args.contains(&"--thinking-display".to_string()));
+
+    clear_claude_cli_capability_cache();
+}
+
 #[test]
 fn test_build_base_cli_command_uses_provider_permission_override() {
     let _lock = lock_runtime_plugin_dirs_for_tests();
@@ -431,12 +537,6 @@ fn test_materialize_generated_plugin_dir_generates_canonical_agents_and_preserve
         "// fake",
     )
     .unwrap();
-    std::fs::write(
-            plugin_dir.join(".mcp.json"),
-            r#"{"mcpServers":{"ralphx":{"type":"stdio","command":"node","args":["${CLAUDE_PLUGIN_ROOT}/ralphx-mcp-server/build/index.js"]}}}"#,
-        )
-        .unwrap();
-
     std::fs::create_dir_all(repo_root.join("agents/ralphx-utility-session-namer/shared")).unwrap();
     std::fs::write(
         repo_root.join("agents/ralphx-utility-session-namer/agent.yaml"),
@@ -468,5 +568,9 @@ fn test_materialize_generated_plugin_dir_generates_canonical_agents_and_preserve
     assert!(
         test_path_exists(generated_dir.join("ralphx-mcp-server/build/index.js")),
         "generated plugin dir should keep MCP runtime assets available"
+    );
+    assert!(
+        !test_path_exists(generated_dir.join(".mcp.json")),
+        "generated plugin must not materialize an ambient ralphx MCP registration; Claude spawns receive ralphx only through dynamic --mcp-config"
     );
 }

@@ -2,7 +2,8 @@ use super::*;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
 use crate::domain::entities::agent_run::PersonaRunAttribution;
 use crate::domain::entities::{
-    AgentRunAttribution, AgentRunUsage, ProviderUsageSnapshot, UsageCapture, UsageProvenance,
+    AgentRunAttribution, AgentRunUsage, ProviderUsageSnapshot, RuntimeSource, UsageCapture,
+    UsageProvenance,
 };
 use crate::domain::repositories::{ORPHANED_AGENT_RUN_ON_APP_RESTART, PRUNED_STALE_AGENT_RUN};
 
@@ -376,6 +377,105 @@ async fn test_update_attribution() {
     assert_eq!(retrieved.logical_effort, Some(LogicalEffort::High));
     assert_eq!(retrieved.effective_effort.as_deref(), Some("high"));
     assert_eq!(retrieved.service_tier.as_deref(), Some("fast"));
+}
+
+#[tokio::test]
+async fn agent_run_identity_fields_round_trip_in_memory_repo() {
+    let repo = MemoryAgentRunRepository::new();
+    let mut run = AgentRun::new(ChatConversationId::new());
+    let run_id = run.id;
+    run.agent_name = Some("ralphx-workspace-reviewer".to_string());
+    run.launch_role = Some("workspace_reviewer".to_string());
+    run.runtime_source = Some(RuntimeSource::RoleDefault);
+
+    repo.create(run).await.unwrap();
+
+    let persisted = repo.get_by_id(&run_id).await.unwrap().unwrap();
+    assert_eq!(
+        persisted.agent_name.as_deref(),
+        Some("ralphx-workspace-reviewer")
+    );
+    assert_eq!(persisted.launch_role.as_deref(), Some("workspace_reviewer"));
+    assert_eq!(persisted.runtime_source, Some(RuntimeSource::RoleDefault));
+}
+
+#[tokio::test]
+async fn get_by_ids_returns_only_requested_memory_runs() {
+    let repo = MemoryAgentRunRepository::new();
+    let first = AgentRun::new(ChatConversationId::new());
+    let first_id = first.id;
+    let second = AgentRun::new(ChatConversationId::new());
+    let second_id = second.id;
+    let omitted = AgentRun::new(ChatConversationId::new());
+    let omitted_id = omitted.id;
+    repo.create(first).await.unwrap();
+    repo.create(second).await.unwrap();
+    repo.create(omitted).await.unwrap();
+
+    let runs = repo
+        .get_by_ids(&[second_id, AgentRunId::new(), first_id])
+        .await
+        .unwrap();
+    let ids = runs
+        .iter()
+        .map(|run| run.id)
+        .collect::<std::collections::HashSet<_>>();
+
+    assert_eq!(runs.len(), 2);
+    assert!(ids.contains(&first_id));
+    assert!(ids.contains(&second_id));
+    assert!(!ids.contains(&omitted_id));
+}
+
+#[tokio::test]
+async fn update_status_sets_terminal_timestamp_once_and_clears_it_for_running() {
+    let repo = MemoryAgentRunRepository::new();
+    let fixed_completed_at = chrono::Utc::now() - chrono::Duration::minutes(1);
+
+    for status in [
+        AgentRunStatus::Completed,
+        AgentRunStatus::Failed,
+        AgentRunStatus::Cancelled,
+    ] {
+        let run = AgentRun::new(ChatConversationId::new());
+        let run_id = run.id;
+        repo.create(run).await.unwrap();
+        repo.update_status(&run_id, status).await.unwrap();
+        assert!(repo
+            .get_by_id(&run_id)
+            .await
+            .unwrap()
+            .expect("persisted run")
+            .completed_at
+            .is_some());
+    }
+
+    let mut preserved = AgentRun::new(ChatConversationId::new());
+    let preserved_id = preserved.id;
+    preserved.completed_at = Some(fixed_completed_at);
+    repo.create(preserved).await.unwrap();
+    repo.update_status(&preserved_id, AgentRunStatus::Cancelled)
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.get_by_id(&preserved_id)
+            .await
+            .unwrap()
+            .expect("persisted run")
+            .completed_at,
+        Some(fixed_completed_at)
+    );
+
+    repo.update_status(&preserved_id, AgentRunStatus::Running)
+        .await
+        .unwrap();
+    assert!(repo
+        .get_by_id(&preserved_id)
+        .await
+        .unwrap()
+        .expect("persisted run")
+        .completed_at
+        .is_none());
 }
 
 #[tokio::test]

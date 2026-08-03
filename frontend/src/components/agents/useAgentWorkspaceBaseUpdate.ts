@@ -1,10 +1,11 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 
 import {
   chatApi,
   type AgentConversationBaseSelection,
   type AgentConversationWorkspace,
+  type AgentConversationWorkspaceFreshness,
 } from "@/api/chat";
 
 import {
@@ -17,6 +18,8 @@ import {
   type AgentWorkspaceOperationToastResultOptions,
   agentWorkspaceOperationToastId,
   agentWorkspaceMaintenanceOperationToastId,
+  clearAgentWorkspaceOperationToastDismissal,
+  isAgentWorkspaceOperationToastDismissed,
   maintenanceOperationToastLabel,
   startAgentWorkspaceOperationToast,
 } from "./agentWorkspaceOperationToast";
@@ -26,8 +29,13 @@ type WorkspaceBaseUpdateToastKind = Extract<
   "rebase" | "update-from-base"
 >;
 
+export interface RetargetedAgentWorkspaceBaseSelection
+  extends AgentConversationBaseSelection {
+  retargetedFromPullRequest?: number | undefined;
+}
+
 export interface RunAgentWorkspaceBaseUpdateInput {
-  baseSelection?: AgentConversationBaseSelection | null | undefined;
+  baseSelection?: RetargetedAgentWorkspaceBaseSelection | null | undefined;
   conversationId: string;
   detail: string;
   kind: WorkspaceBaseUpdateToastKind;
@@ -49,12 +57,22 @@ export function useAgentWorkspaceBaseUpdate({
   } | null>(null);
   const settledMaintenanceOperationIdsRef = useRef(new Set<string>());
   const toastConversationTitle = conversationTitle?.trim() || null;
+  useEffect(
+    () => () => {
+      // The update-from-base progress toast stays connected across unmount:
+      // the pending mutation closure settles it. Only the poll-driven
+      // maintenance toast has no settlement path after unmount.
+      maintenanceToastRef.current?.toast.dismiss();
+      maintenanceToastRef.current = null;
+    },
+    [],
+  );
   const { isPending, mutateAsync } = useMutation({
     mutationFn: ({
       baseSelection,
       conversationId,
     }: {
-      baseSelection?: AgentConversationBaseSelection | null | undefined;
+      baseSelection?: RetargetedAgentWorkspaceBaseSelection | null | undefined;
       conversationId: string;
     }) =>
       baseSelection
@@ -149,21 +167,31 @@ export function useAgentWorkspaceBaseUpdate({
       if (settledMaintenanceOperationIdsRef.current.has(operationKey)) {
         return;
       }
-      if (!current && operation.status !== "active" && !allowTerminalStart) {
-        return;
-      }
       const id = agentWorkspaceMaintenanceOperationToastId(
         workspace.conversationId,
         operation.operationId,
       );
+      const isNewMaintenanceToast =
+        !current ||
+        current.conversationId !== workspace.conversationId ||
+        current.operationId !== operation.operationId;
+      if (
+        isNewMaintenanceToast &&
+        isAgentWorkspaceOperationToastDismissed(id)
+      ) {
+        if (operation.status === "ready" || operation.status === "blocked") {
+          settledMaintenanceOperationIdsRef.current.add(operationKey);
+          clearAgentWorkspaceOperationToastDismissal(id);
+        }
+        return;
+      }
+      if (!current && operation.status !== "active" && !allowTerminalStart) {
+        return;
+      }
       const title = maintenanceOperationToastLabel(operation.stage);
       const detail = operation.blocker ?? operation.summary;
       let toast: AgentWorkspaceOperationToast;
-      if (
-        !current ||
-        current.conversationId !== workspace.conversationId ||
-        current.operationId !== operation.operationId
-      ) {
+      if (isNewMaintenanceToast) {
         current?.toast.dismiss();
         progressToastRef.current?.dismiss();
         toast = startAgentWorkspaceOperationToast({
@@ -171,6 +199,10 @@ export function useAgentWorkspaceBaseUpdate({
           detail,
           id,
           startedAtMs: new Date(operation.startedAt).getTime(),
+          targetConversation: {
+            conversationId: workspace.conversationId,
+            projectId: workspace.projectId,
+          },
           title,
         });
         maintenanceToastRef.current = {
@@ -207,10 +239,13 @@ export function useAgentWorkspaceBaseUpdate({
     }: RunAgentWorkspaceBaseUpdateInput) => {
       const requestConversationId = conversationId;
       const requestWorkspace = workspace ?? null;
+      const progressDetail = baseSelection?.retargetedFromPullRequest
+        ? `PR #${baseSelection.retargetedFromPullRequest} merged — rebasing onto ${baseSelection.ref}`
+        : detail;
       progressToastRef.current?.dismiss();
       const progressToast = startAgentWorkspaceOperationToast({
         conversationTitle: toastConversationTitle,
-        detail,
+        detail: progressDetail,
         id: agentWorkspaceOperationToastId(requestConversationId, kind),
         title,
       });
@@ -226,9 +261,48 @@ export function useAgentWorkspaceBaseUpdate({
             queryClient,
             result.workspace.conversationId,
           );
+          if (result.repairStarted) {
+            settleProgressToast(
+              progressToast,
+              "info",
+              "Repair started",
+              {
+                detail:
+                  "A new workspace repair attempt has started and will continue automatically.",
+              },
+            );
+            if (result.workspace.maintenanceOperation) {
+              syncMaintenanceOperation(result.workspace, true);
+            }
+            return;
+          }
           if (result.workspace.maintenanceOperation) {
             syncMaintenanceOperation(result.workspace, true);
             return;
+          }
+          for (const scope of ["full", "local"] as const) {
+            queryClient.setQueryData<AgentConversationWorkspaceFreshness>(
+              agentWorkspaceKeys.scopedFreshness(
+                result.workspace.conversationId,
+                scope,
+              ),
+              (previous) => {
+                if (
+                  !previous ||
+                  previous.conversationId !== result.workspace.conversationId
+                ) {
+                  return previous;
+                }
+                return {
+                  ...previous,
+                  isBaseAhead: false,
+                  capturedBaseCommit: result.baseCommit,
+                  targetBaseCommit: result.baseCommit,
+                  targetRef: result.targetRef,
+                  baseStatus: result.baseStatus,
+                };
+              },
+            );
           }
           settleProgressToast(
             progressToast,

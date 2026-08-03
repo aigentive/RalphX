@@ -5,6 +5,7 @@
 Quality standards: @../../.claude/rules/code-quality-standards.md
 Task detail views: @../../.claude/rules/task-detail-views.md
 Interaction performance: @../../.claude/rules/frontend-interaction-performance.md
+Thinking capture: @../../.claude/rules/agent-thinking-capture.md
 
 ## Stack
 React 19.2 | TS 6.0 | Zustand 5.0+immer | TanStack Query 5.100 | Tailwind 4.1 | Zod 4.4
@@ -118,6 +119,7 @@ Example: "View Registry Pattern" — see @../../.claude/rules/task-detail-views.
 - **Reuse Before Invent (NON-NEGOTIABLE)** — new chat/agents behavior extends the existing owning surface: context derivation → chat-context-registry, send/queue/stop → `useChatActions`, streaming → `useChatEvents`, hydration → `useChatRecovery`, scrolling → `ChatScrollController`, per-conversation state → the conversation-keyed stores. ❌ Parallel stores/hooks/scroll writers for owned concerns.
 - **Chat Context Registry** — `src/lib/chat-context-registry.ts`. Use `buildStoreKey()`, `resolveContextType()`, `getContextConfig()` for all chat context derivations. New context type = add to registry + `CONTEXT_TYPE_VALUES`.
 - **Unified Chat Hooks** — `useChatActions` (send/queue/stop), `useChatEvents` (streaming/tool calls), `useChatRecovery` (polling/sync). Both panels use these.
+- **Backend-Owned Thinking Lifecycle** — `useChatEvents` consumes authoritative `block_index`/`is_settled`/`duration_ms`; visibly adjacent thinking renders under one collapse, and automatic expansion stays in `synchronizeThinkingGroupExpansion`. See @../../docs/architecture/agent-thinking-capture.md
 - **First-Paint Shells** — heavy panes/drawers/widgets render a lightweight shell immediately, then lazy-load/hydrate content after paint. See @../../.claude/rules/frontend-interaction-performance.md
 - **Backend-owned Startup Readiness** — `StartupRoot` polls the typed startup snapshot and is the only frontend mount gate; time, localStorage, and root-query settlement never authorize the real App.
 - **Provider MCP Settings** — Harness → MCP uses refreshed enabled/available provider readiness, provider-scoped query keys, redacted catalogs, and global/project tri-state deny controls; provider definitions/auth/trust never enter frontend state.
@@ -131,6 +133,7 @@ Example: "View Registry Pattern" — see @../../.claude/rules/task-detail-views.
 - **Shared Persona Menu** — `src/components/personas/PersonaMenuList.tsx` is the single writer for persona choose-menus (picker + chip); it owns the scoped `globalAndProject` query, grouping, and inspect preview. ❌ New flat/unscoped persona lists.
 - **StatusPill** — `src/components/ui/status-pill.tsx` is the single pill surface for status/stage/judge badges (tone-based, WKWebView-safe longhands). ❌ New ad-hoc `rounded-full px-2 py-0.5` status spans; automation run-card badge dedupe lives in `automations/automationRunBadges.ts`.
 - **Plan Bundle Tabs** — Agents Plan uses `PlanBundleTabs` for persistent Overview/Blueprint selection and conditional Proposals; lifecycle controls remain bundle-level while edit/history/export operate on the selected document.
+- **Freshness Gate Parity** — freshness verdicts render only under the predicate that enables their query (fetch-gate = render-gate).
 
 ### Composition Over Props
 ```tsx

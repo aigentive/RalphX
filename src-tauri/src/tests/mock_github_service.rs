@@ -1,7 +1,7 @@
 // MockGithubService — test double for GithubServiceTrait
 //
 // Configurable per-method return values and call tracking.
-// No real `gh` or `git` invocations.
+// No real `gh` or `git` invocations unless a test explicitly opts into real Git pushes.
 
 use async_trait::async_trait;
 use std::collections::VecDeque;
@@ -10,8 +10,9 @@ use std::sync::{Arc, Mutex};
 
 use crate::domain::services::github_service::{
     validate_pr_metadata_patch, GithubConnectionStatus, GithubServiceTrait, PrBranchMatch,
-    PrDetail, PrDiffAnnotations, PrHealth, PrReviewFeedback, PrReviewSubmissionEvent,
-    PrReviewThread, PrSearchResult, PrStatus, PrSubmittedReview, PrSyncState,
+    PrDetail, PrDiffAnnotations, PrHealth, PrHealthCheck, PrReviewFeedback,
+    PrReviewSubmissionEvent, PrReviewThread, PrSearchResult, PrStatus, PrSubmittedReview,
+    PrSyncState,
 };
 use crate::error::AppError;
 use crate::AppResult;
@@ -38,6 +39,9 @@ pub struct MockGithubState {
     pub fetch_pr_review_thread_result: Option<AppResult<PrReviewThread>>,
     pub fetch_github_connection_status_result: Option<AppResult<GithubConnectionStatus>>,
     pub fetch_pr_health_result: Option<AppResult<PrHealth>>,
+    /// `None` leaves the trait default (unknown base state); `Some` overrides it.
+    pub list_branch_check_conclusions_result: Option<AppResult<Option<Vec<PrHealthCheck>>>>,
+    pub rerun_failed_workflow_result: Option<AppResult<()>>,
     pub enable_pr_auto_merge_result: Option<AppResult<()>>,
     pub enable_pr_auto_merge_delay_ms: u64,
     pub disable_pr_auto_merge_result: Option<AppResult<()>>,
@@ -47,6 +51,7 @@ pub struct MockGithubState {
     pub push_branch_delay_ms: u64,
     pub push_branch_started: Option<Arc<tokio::sync::Notify>>,
     pub push_branch_with_expected_remote_oid_lease_result: Option<AppResult<()>>,
+    pub perform_real_git_pushes: bool,
     pub push_branch_with_expected_remote_oid_lease_delay_ms: u64,
     pub push_branch_with_expected_remote_oid_lease_started: Option<Arc<tokio::sync::Notify>>,
     pub close_pr_result: Option<AppResult<()>>,
@@ -77,6 +82,7 @@ pub struct MockGithubState {
     pub fetch_pr_review_thread_calls: u32,
     pub fetch_github_connection_status_calls: u32,
     pub fetch_pr_health_calls: u32,
+    pub rerun_failed_workflow_calls: u32,
     pub enable_pr_auto_merge_calls: u32,
     pub disable_pr_auto_merge_calls: u32,
     pub push_branch_calls: u32,
@@ -109,6 +115,7 @@ pub struct MockGithubState {
     pub last_fetch_pr_detail_number: Option<i64>,
     pub last_fetch_pr_review_thread_number: Option<i64>,
     pub last_fetch_pr_health_number: Option<i64>,
+    pub last_rerun_failed_workflow_id: Option<i64>,
     pub last_mark_pr_ready_working_dir: Option<String>,
     pub last_enable_pr_auto_merge_args: Option<(i64, String)>,
     pub last_enable_pr_auto_merge_working_dir: Option<String>,
@@ -550,6 +557,26 @@ impl GithubServiceTrait for MockGithubService {
         })
     }
 
+    async fn list_branch_check_conclusions(
+        &self,
+        _working_dir: &Path,
+        _branch_ref: &str,
+    ) -> AppResult<Option<Vec<PrHealthCheck>>> {
+        self.state
+            .lock()
+            .expect("lock poisoned")
+            .list_branch_check_conclusions_result
+            .take()
+            .unwrap_or(Ok(None))
+    }
+
+    async fn rerun_failed_workflow(&self, _working_dir: &Path, run_id: i64) -> AppResult<()> {
+        let mut s = self.state.lock().expect("lock poisoned");
+        s.rerun_failed_workflow_calls += 1;
+        s.last_rerun_failed_workflow_id = Some(run_id);
+        s.rerun_failed_workflow_result.take().unwrap_or(Ok(()))
+    }
+
     async fn enable_pr_auto_merge(
         &self,
         working_dir: &Path,
@@ -595,7 +622,7 @@ impl GithubServiceTrait for MockGithubService {
     }
 
     async fn push_branch(&self, _working_dir: &Path, branch: &str) -> AppResult<()> {
-        let (delay_ms, result) = {
+        let (delay_ms, perform_real_git_push, result) = {
             let mut state = self.state.lock().expect("lock poisoned");
             state.push_branch_calls += 1;
             state.last_push_branch_name = Some(branch.to_string());
@@ -604,11 +631,17 @@ impl GithubServiceTrait for MockGithubService {
             }
             (
                 state.push_branch_delay_ms,
+                state.perform_real_git_pushes,
                 state.push_branch_result.take().unwrap_or(Ok(())),
             )
         };
         if delay_ms > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+        }
+        if perform_real_git_push && result.is_ok() {
+            crate::infrastructure::GhCliGithubService::new()
+                .push_branch(_working_dir, branch)
+                .await?;
         }
         result
     }
@@ -619,7 +652,7 @@ impl GithubServiceTrait for MockGithubService {
         local_ref: &str,
         expected_remote_oid: &str,
     ) -> AppResult<()> {
-        let (delay_ms, result) = {
+        let (delay_ms, perform_real_git_push, result) = {
             let mut state = self.state.lock().expect("lock poisoned");
             state.push_branch_with_expected_remote_oid_lease_calls += 1;
             state.last_push_branch_with_expected_remote_oid_lease_args =
@@ -632,6 +665,7 @@ impl GithubServiceTrait for MockGithubService {
             }
             (
                 state.push_branch_with_expected_remote_oid_lease_delay_ms,
+                state.perform_real_git_pushes,
                 state
                     .push_branch_with_expected_remote_oid_lease_result
                     .take()
@@ -640,6 +674,15 @@ impl GithubServiceTrait for MockGithubService {
         };
         if delay_ms > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+        }
+        if perform_real_git_push && result.is_ok() {
+            crate::infrastructure::GhCliGithubService::new()
+                .push_branch_with_expected_remote_oid_lease(
+                    _working_dir,
+                    local_ref,
+                    expected_remote_oid,
+                )
+                .await?;
         }
         result
     }

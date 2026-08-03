@@ -32,7 +32,10 @@ const linearHook = vi.hoisted(() => ({
   },
 }));
 
-vi.mock("@/hooks/useLinearIntegration", () => ({
+vi.mock("@/hooks/useLinearIntegration", async () => ({
+  ...(await vi.importActual<typeof import("@/hooks/useLinearIntegration")>(
+    "@/hooks/useLinearIntegration",
+  )),
   useLinearIntegration: () => ({
     ...linearHook.state,
     saveSettingsAsync: linearHook.saveSettingsAsync,
@@ -106,7 +109,6 @@ describe("LinearIntegrationSettingsPanel", () => {
   it("shows Linear issue reference configuration status", () => {
     renderPanel();
 
-    expect(screen.getByText("Linear")).toBeInTheDocument();
     expect(screen.getByText("Issue references not ready")).toBeInTheDocument();
     expect(screen.queryByText("Webhook path")).not.toBeInTheDocument();
   });

@@ -13,6 +13,14 @@ export type AgentSidebarInboxLaneDescriptor = Readonly<{
   emptyLabel: string;
 }>;
 
+export type AgentSidebarInboxFilter = "recent" | "stale" | "done";
+
+export type AgentSidebarInboxFilterDescriptor = Readonly<{
+  filter: AgentSidebarInboxFilter;
+  label: string;
+  emptyLabel: string;
+}>;
+
 export type AgeEscalationTone = "normal" | "warn" | "alert";
 
 export type AgeEscalation = Readonly<{
@@ -20,12 +28,25 @@ export type AgeEscalation = Readonly<{
   tone: AgeEscalationTone;
 }>;
 
-export const AGENT_SIDEBAR_INBOX_LANES = [
+// The inbox's top-level filters. Recent has no single backing lane: it renders
+// the `needs` and `working` lane queries as two groups in one scroller, so the
+// backend still serves the same four attention lanes.
+export const AGENT_SIDEBAR_INBOX_FILTERS = [
+  { filter: "recent", label: "Recent", emptyLabel: "Nothing recent" },
+  { filter: "stale", label: "Stale", emptyLabel: "Nothing stale" },
+  { filter: "done", label: "Done", emptyLabel: "Nothing done" },
+] as const satisfies readonly AgentSidebarInboxFilterDescriptor[];
+
+export const AGENT_SIDEBAR_RECENT_GROUPS = [
   { lane: "needs", label: "Needs you", emptyLabel: "Nothing needs you" },
   { lane: "working", label: "Working", emptyLabel: "Nothing working" },
-  { lane: "stale", label: "Stale", emptyLabel: "Nothing stale" },
-  { lane: "done", label: "Done", emptyLabel: "Nothing done" },
 ] as const satisfies readonly AgentSidebarInboxLaneDescriptor[];
+
+export function laneForInboxFilter(
+  filter: AgentSidebarInboxFilter,
+): AgentSidebarAttentionLane | null {
+  return filter === "recent" ? null : filter;
+}
 
 export function getAgeEscalation(
   lastActivityIso: string,
@@ -61,6 +82,13 @@ export function describeInboxLaneCount(label: string, count: number): string {
 
 export function shouldEscalateAge(lane: AgentSidebarAttentionLane): boolean {
   return lane !== "working" && lane !== "done";
+}
+
+export function formatParkedDelegateMeta(count: number): string | null {
+  if (count <= 0) {
+    return null;
+  }
+  return `Waiting on ${count} ${count === 1 ? "delegate" : "delegates"}`;
 }
 
 export function summarizeInboxLaneCounts(

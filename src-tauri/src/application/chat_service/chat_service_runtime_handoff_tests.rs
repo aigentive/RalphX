@@ -2,14 +2,15 @@ use super::chat_service_runtime_handoff::{
     activate_runtime_handoff_watchdog, cancel_armed_runtime_handoff_owner,
     capture_runtime_handoff_owner, finalize_idle_runtime_handoff,
     map_runtime_handoff_kick_send_result, release_no_owner_runtime_handoff,
-    reserve_no_owner_runtime_handoff, stage_runtime_handoff, RuntimeHandoffCapture,
-    RuntimeHandoffKickOutcome, RuntimeHandoffOutcome, RuntimeHandoffReleaseOutcome,
+    reserve_no_owner_runtime_handoff, retire_unarmed_idle_runtime_owner, stage_runtime_handoff,
+    RuntimeHandoffCapture, RuntimeHandoffKickOutcome, RuntimeHandoffOutcome,
+    RuntimeHandoffReleaseOutcome,
 };
 use super::chat_service_streaming::is_armed_mode_handoff_disposition;
 use super::{ChatService, MockChatService, SendResult};
 use crate::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessMetadata, InteractiveProcessRegistry,
-    InteractiveProcessRetireAfterTurnDisposition,
+    InteractiveProcessRetireAfterTurnDisposition, PendingStdinTurn,
 };
 use crate::application::AppState;
 use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
@@ -209,6 +210,227 @@ async fn capture_runtime_handoff_owner_reports_no_owner_only_for_stable_absence(
         .await,
         RuntimeHandoffCapture::FailedOrUncertain
     ));
+}
+
+#[tokio::test]
+async fn retire_idle_interactive_process_removes_only_exact_owner_and_requeues_turns() {
+    let state = AppState::new_test();
+    let context_id = "handoff-retire-idle";
+    let key = InteractiveProcessKey::new("project", context_id);
+    let (stdin, _child) = create_test_stdin().await;
+    let token = state
+        .interactive_process_registry
+        .register_with_metadata(
+            key.clone(),
+            stdin,
+            InteractiveProcessMetadata {
+                agent_run_id: Some("run-idle".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+    state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("project", context_id),
+            0,
+            "conversation-idle".to_string(),
+            "run-idle".to_string(),
+            None,
+            None,
+        )
+        .await;
+    assert!(
+        state
+            .interactive_process_registry
+            .push_pending_turn(
+                &key,
+                token,
+                PendingStdinTurn {
+                    persisted_message_id: "turn-idle".to_string(),
+                    content: "continue after retirement".to_string(),
+                    metadata_override: None,
+                    queued_at: "2026-08-03T00:00:00Z".to_string(),
+                },
+            )
+            .await
+    );
+    assert!(
+        state
+            .interactive_process_registry
+            .mark_idle_if_token(&key, token)
+            .await
+    );
+
+    let service = state.build_chat_service();
+    assert!(service
+        .retire_idle_interactive_process(ChatContextType::Project, context_id)
+        .await
+        .expect("exact idle owner should retire"));
+
+    assert!(!state.interactive_process_registry.has_process(&key).await);
+    assert!(state
+        .running_agent_registry
+        .get(&RunningAgentKey::new("project", context_id))
+        .await
+        .is_none());
+    let queued = state
+        .message_queue
+        .get_queued(ChatContextType::Project, context_id);
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].content, "continue after retirement");
+    assert_eq!(queued[0].persisted_message_id.as_deref(), Some("turn-idle"));
+    assert_eq!(queued[0].created_at, "2026-08-03T00:00:00Z");
+}
+
+#[tokio::test]
+async fn retire_idle_interactive_process_fails_closed_for_an_active_exact_owner() {
+    let state = AppState::new_test();
+    let context_id = "handoff-retire-active";
+    let key = InteractiveProcessKey::new("project", context_id);
+    let (stdin, _child) = create_test_stdin().await;
+    state
+        .interactive_process_registry
+        .register_with_metadata(
+            key.clone(),
+            stdin,
+            InteractiveProcessMetadata {
+                agent_run_id: Some("run-active".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+    state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("project", context_id),
+            0,
+            "conversation-active".to_string(),
+            "run-active".to_string(),
+            None,
+            None,
+        )
+        .await;
+
+    let service = state.build_chat_service();
+    assert!(!service
+        .retire_idle_interactive_process(ChatContextType::Project, context_id)
+        .await
+        .expect("active owner is a retryable non-retirement"));
+    assert!(state.interactive_process_registry.has_process(&key).await);
+    assert_eq!(
+        state
+            .running_agent_registry
+            .get(&RunningAgentKey::new("project", context_id))
+            .await
+            .expect("active exact owner must remain registered")
+            .agent_run_id,
+        "run-active"
+    );
+}
+
+#[tokio::test]
+async fn retire_idle_interactive_process_preserves_idle_owner_on_registry_disagreement() {
+    let state = AppState::new_test();
+    let context_id = "handoff-retire-disagreement";
+    let key = InteractiveProcessKey::new("project", context_id);
+    let (stdin, _child) = create_test_stdin().await;
+    let token = state
+        .interactive_process_registry
+        .register_with_metadata(
+            key.clone(),
+            stdin,
+            InteractiveProcessMetadata {
+                agent_run_id: Some("ipr-run".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+    assert!(
+        state
+            .interactive_process_registry
+            .mark_idle_if_token(&key, token)
+            .await
+    );
+    state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("project", context_id),
+            0,
+            "conversation-disagreement".to_string(),
+            "running-run".to_string(),
+            None,
+            None,
+        )
+        .await;
+
+    let service = state.build_chat_service();
+    assert!(!service
+        .retire_idle_interactive_process(ChatContextType::Project, context_id)
+        .await
+        .expect("split registries must remain retryable"));
+    assert_eq!(
+        state
+            .interactive_process_registry
+            .capture_owner(&key)
+            .await
+            .expect("disagreeing IPR owner must remain")
+            .agent_run_id,
+        "ipr-run"
+    );
+    assert_eq!(
+        state
+            .running_agent_registry
+            .get(&RunningAgentKey::new("project", context_id))
+            .await
+            .expect("foreign running owner must remain")
+            .agent_run_id,
+        "running-run"
+    );
+}
+
+#[tokio::test]
+async fn plan_to_edit_direct_idle_retirement_preserves_owner_replaced_after_capture() {
+    let running = Arc::new(MemoryRunningAgentRegistry::new());
+    let running_trait: Arc<dyn RunningAgentRegistry> = running.clone();
+    let interactive = InteractiveProcessRegistry::new();
+    let context_id = "handoff-retire-replaced-after-capture";
+    let key = RunningAgentKey::new("project", context_id);
+    let interactive_key = InteractiveProcessKey::new("project", context_id);
+    let (token, _child) = register_interactive(&interactive, context_id, "captured-run").await;
+    assert!(
+        interactive
+            .mark_idle_if_token(&interactive_key, token)
+            .await
+    );
+    register_running(&running, context_id, "captured-run", None).await;
+    let RuntimeHandoffCapture::Captured(owner) = capture_runtime_handoff_owner(
+        &running_trait,
+        &interactive,
+        ChatContextType::Project,
+        context_id,
+    )
+    .await
+    else {
+        panic!("matching registries should yield an exact owner");
+    };
+    running.unregister(&key, "captured-run").await;
+    register_running(&running, context_id, "replacement-run", None).await;
+
+    assert!(
+        retire_unarmed_idle_runtime_owner(&running_trait, &interactive, &owner)
+            .await
+            .is_none()
+    );
+    assert!(interactive.has_process(&interactive_key).await);
+    assert_eq!(
+        running
+            .get(&key)
+            .await
+            .expect("replacement running owner must remain")
+            .agent_run_id,
+        "replacement-run"
+    );
 }
 
 #[tokio::test]
@@ -702,14 +924,18 @@ async fn idle_finalization_requires_armed_idle_exact_owner_and_removes_it_after_
     ));
 
     assert!(
-        !finalize_idle_runtime_handoff(&interactive, &owner).await,
+        finalize_idle_runtime_handoff(&interactive, &owner)
+            .await
+            .is_none(),
         "an active owner must remain available to finish its current turn"
     );
     assert!(interactive.has_process(&key).await);
 
     assert!(interactive.mark_idle_if_token(&key, token).await);
     assert!(
-        finalize_idle_runtime_handoff(&interactive, &owner).await,
+        finalize_idle_runtime_handoff(&interactive, &owner)
+            .await
+            .is_some(),
         "the exact armed idle owner must retire after answer commit"
     );
     assert!(

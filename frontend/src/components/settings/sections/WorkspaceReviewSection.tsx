@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronRight, ShieldCheck, TriangleAlert } from "lucide-react";
+import { ChevronRight, TriangleAlert } from "lucide-react";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAgentModels } from "@/hooks/useAgentModels";
@@ -11,7 +11,11 @@ import {
 import { useWorkspaceReviewRuntimeSettings } from "@/hooks/useWorkspaceReviewSettings";
 import { selectActiveProject, useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
-import { SectionCard, ToggleSettingRow } from "../SettingsView.shared";
+import {
+  NumberSettingRow,
+  SettingsSection,
+  ToggleSettingRow,
+} from "../SettingsView.shared";
 import { WorkspaceReviewScopeRows } from "./WorkspaceReviewRuntimeRows";
 import { isKnownHarness } from "./workspaceReviewHarness";
 
@@ -94,6 +98,22 @@ export default function WorkspaceReviewSection({ embedded = false }: { embedded?
               })
             }
           />
+          <NumberSettingRow
+            id="workspace-review-fixer-cycle-cap"
+            label="Maximum automatic fixer cycles"
+            description="Maximum times RalphX automatically starts a Workspace Review fixer. Set 0 to turn off automatic fixing; manual fixes remain available."
+            value={reviewSettings.workspace_review_fixer_cycle_cap}
+            min={0}
+            max={Number.MAX_SAFE_INTEGER}
+            step={1}
+            unit=""
+            disabled={disabledPublishGate}
+            onChange={(value) =>
+              updateReviewSettings({
+                workspaceReviewFixerCycleCap: Math.max(0, value),
+              })
+            }
+          />
         </>
       )}
       {isProviderPlaceholderData && (
@@ -143,14 +163,8 @@ export default function WorkspaceReviewSection({ embedded = false }: { embedded?
     </>
   );
   return embedded ? content : (
-    <SectionCard
-      icon={
-        <ShieldCheck className="h-[18px] w-[18px] text-[var(--card-icon-color)]" />
-      }
-      title="Workspace Review"
-      description="Configure publish gating and legacy runtime fallbacks. The Reviewer role in Agents is authoritative."
-    >
+    <SettingsSection>
       {content}
-    </SectionCard>
+    </SettingsSection>
   );
 }

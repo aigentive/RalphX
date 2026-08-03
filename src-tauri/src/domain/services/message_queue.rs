@@ -17,6 +17,22 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+/// Whether message metadata marks a message as internal recovery/UI-hidden content.
+pub(crate) fn message_metadata_hidden_from_ui(metadata: Option<&str>) -> bool {
+    metadata
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .is_some_and(|value| {
+            value
+                .get("hidden_from_ui")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+                || value
+                    .get("recovery_context")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+        })
+}
+
 /// User-selected project reference metadata that must survive queue replay.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -138,6 +154,9 @@ pub struct QueuedMessage {
     pub content: String,
     pub created_at: String,
     pub is_editing: bool,
+    /// Existing user-message row to reuse when an unanswered stdin turn is recovered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persisted_message_id: Option<String>,
     /// Optional metadata JSON to apply when persisting this message (survives queue round-trip)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata_override: Option<String>,
@@ -189,6 +208,11 @@ pub struct QueuedMessage {
 }
 
 impl QueuedMessage {
+    /// Hidden recovery messages may be discarded after the recovery staleness threshold.
+    pub fn is_hidden_recovery(&self) -> bool {
+        message_metadata_hidden_from_ui(self.metadata_override.as_deref())
+    }
+
     /// Create a new queued message with generated ID and timestamp
     pub fn new(content: String) -> Self {
         Self {
@@ -196,6 +220,7 @@ impl QueuedMessage {
             content,
             created_at: chrono::Utc::now().to_rfc3339(),
             is_editing: false,
+            persisted_message_id: None,
             metadata_override: None,
             created_at_override: None,
             harness_override: None,
@@ -223,6 +248,7 @@ impl QueuedMessage {
             content,
             created_at: chrono::Utc::now().to_rfc3339(),
             is_editing: false,
+            persisted_message_id: None,
             metadata_override: None,
             created_at_override: None,
             harness_override: None,
@@ -580,12 +606,11 @@ impl MessageQueue {
         false
     }
 
-    /// Remove messages older than `threshold_secs` seconds from the queue.
+    /// Remove hidden recovery messages older than `threshold_secs` seconds from the queue.
     ///
     /// Returns the list of dropped messages so callers can emit warnings.
     /// Messages with unparseable timestamps are retained (safe default).
-    /// Rehydration messages injected by `queue_front` are freshly created and
-    /// will always be within the threshold, so no special handling is needed.
+    /// User messages are always retained regardless of age.
     pub fn remove_stale(
         &self,
         context_type: ChatContextType,
@@ -602,16 +627,17 @@ impl MessageQueue {
         let now = chrono::Utc::now();
         let mut dropped = vec![];
         queue.retain(|msg| {
-            let is_stale = chrono::DateTime::parse_from_rfc3339(&msg.created_at)
-                .map(|ts| {
-                    let age = now.signed_duration_since(ts.with_timezone(&chrono::Utc));
-                    age.num_seconds() > threshold_secs as i64
-                })
-                .unwrap_or(false); // unparseable → retain (safe default)
-            if is_stale {
+            let is_stale_hidden_recovery = msg.is_hidden_recovery()
+                && chrono::DateTime::parse_from_rfc3339(&msg.created_at)
+                    .map(|ts| {
+                        let age = now.signed_duration_since(ts.with_timezone(&chrono::Utc));
+                        age.num_seconds() > threshold_secs as i64
+                    })
+                    .unwrap_or(false); // unparseable → retain (safe default)
+            if is_stale_hidden_recovery {
                 dropped.push(msg.clone());
             }
-            !is_stale
+            !is_stale_hidden_recovery
         });
         dropped
     }

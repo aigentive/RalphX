@@ -79,6 +79,8 @@ import {
 import { callPersonaTool, isPersonaToolName } from "./persona-tools.js";
 import { AGENT_TASK_TOOL_NAMES } from "./agent-task-tools.js";
 import { withAgentTaskRuntimeContext } from "./agent-task-context.js";
+import { callTeamTool, isTeamToolName } from "./team-tools.js";
+import { callGetParentContextTool } from "./ideation-tools.js";
 
 /**
  * Semantic keyword patterns for cross-project detection in plan text.
@@ -661,6 +663,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       result = await callPersonaTool(name, callTauri, callTauriGet, args, {
         conversationId: RALPHX_CONVERSATION_ID,
       });
+    } else if (isTeamToolName(name)) {
+      result = await callTeamTool(name, callTauri, callTauriGet, args, {
+        conversationId: RALPHX_CONVERSATION_ID,
+        agentRunId: RALPHX_AGENT_RUN_ID,
+      });
     } else if (name === "report_conflict") {
       // POST /api/git/tasks/:task_id/report-conflict
       const { task_id, conflict_files, reason } = args as {
@@ -926,6 +933,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // GET /api/parent_session_context/:session_id
       const { session_id } = args as { session_id: string };
       result = await callTauriGet(`parent_session_context/${session_id}`);
+    } else if (name === "get_parent_context") {
+      result = await callGetParentContextTool(
+        callTauri,
+        args as Record<string, unknown>,
+        runtimeContext,
+      );
     } else if (name === "create_agent_workflow_script") {
       if (!RALPHX_CONVERSATION_ID || RALPHX_CONTEXT_TYPE !== "project" || !RALPHX_CONTEXT_ID) {
         throw new Error("Agent Workflow authoring requires a project Agent conversation context");
@@ -981,6 +994,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       );
     } else if (name === "delegate_wait") {
       result = await callTauri("coordination/delegate/wait", args as Record<string, unknown>);
+    } else if (name === "delegate_park") {
+      result = await callTauri(
+        "coordination/delegate/park",
+        args as Record<string, unknown>,
+        {
+          headers: buildRuntimeIdentityTransportHeaders(runtimeContext),
+        },
+      );
     } else if (name === "delegate_cancel") {
       result = await callTauri("coordination/delegate/cancel", args as Record<string, unknown>);
     } else if ((AGENT_TASK_TOOL_NAMES as string[]).includes(name)) {
@@ -1018,7 +1039,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             contextId: RALPHX_CONTEXT_ID,
             projectId: RALPHX_PROJECT_ID,
             actorAgent: AGENT_TYPE,
+            conversationId: RALPHX_CONVERSATION_ID,
             parentConversationId: RALPHX_PARENT_CONVERSATION_ID,
+            agentRunId: RALPHX_AGENT_RUN_ID,
           })
         );
       }

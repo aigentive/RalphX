@@ -464,6 +464,40 @@ describe("AgentWorkspaceToolbar", () => {
     },
   );
 
+  it("uses plan-mode freshness only after the plan workspace becomes fetch-eligible", async () => {
+    vi.mocked(useAgentWorkspaceFullFreshness).mockReturnValue({
+      data: fullFreshness({ isBaseAhead: true }),
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useAgentWorkspaceFullFreshness>);
+
+    renderToolbar(
+      <AgentWorkspaceToolbar
+        workspace={workspace({ mode: "plan", linkedIdeationSessionId: "plan-1" })}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(useAgentWorkspaceFullFreshness).toHaveBeenLastCalledWith(
+        "conversation-1",
+        { enabled: true },
+      ),
+    );
+    expect(screen.getByText("Behind base")).toBeInTheDocument();
+  });
+
+  it("does not render cached freshness for a fetch-ineligible workspace", () => {
+    vi.mocked(useAgentWorkspaceFullFreshness).mockReturnValue({
+      data: fullFreshness({ isBaseAhead: true }),
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useAgentWorkspaceFullFreshness>);
+
+    renderToolbar(<AgentWorkspaceToolbar workspace={workspace({ mode: "review_pr" })} />);
+
+    expect(screen.queryByText("Behind base")).not.toBeInTheDocument();
+  });
+
   it.each([
     {
       label: "Repair pending",

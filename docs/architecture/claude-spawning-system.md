@@ -358,7 +358,9 @@ Default: `http://127.0.0.1:3847` (overridable via `TAURI_API_URL`)
 
 ## Stream Processing
 
-**File:** `src-tauri/src/infrastructure/agents/claude/stream_processor.rs`
+This section covers the Claude-native envelope only. The canonical cross-harness thinking lifecycle, capability-probe rules, shared event schema, persistence, frontend behavior, and tests live in [Agent Thinking Capture](agent-thinking-capture.md).
+
+**Files:** `src-tauri/src/infrastructure/agents/claude/stream_processor/{mod.rs,types.rs,parser.rs}`
 
 ### Stream Message Types
 
@@ -366,9 +368,9 @@ Default: `http://127.0.0.1:3847` (overridable via `TAURI_API_URL`)
 |------|-----------|----------------|
 | `content_block_start` (tool_use) | name, id | `ToolCallStarted` |
 | `content_block_delta` (text_delta) | text | `TextChunk` |
-| `content_block_delta` (thinking_delta) | text | `Thinking` |
+| `content_block_delta` (thinking_delta) | text | `Thinking { text, block_index }` |
 | `content_block_delta` (input_json_delta) | partial_json | (accumulated) |
-| `content_block_stop` | — | `ToolCallCompleted`, `TaskStarted` (if Task tool) |
+| `content_block_stop` | — | `ThinkingSettled` for thinking; `ToolCallCompleted`, `TaskStarted` (if Task tool) |
 | `assistant` | content[], session_id | `TextChunk`, `ToolCallCompleted`, `SessionId` |
 | `result` | session_id, is_error, cost_usd | `SessionId` |
 | `system` | subtype, hook_* | `HookStarted`, `HookCompleted`, `SessionId` |

@@ -133,10 +133,11 @@ impl QueuedMessageRepository for MemoryQueuedMessageRepository {
                     age.num_seconds() > threshold_secs as i64
                 })
                 .unwrap_or(false);
-            if is_stale {
+            let is_stale_hidden_recovery = is_stale && message.is_hidden_recovery();
+            if is_stale_hidden_recovery {
                 dropped.push(message.clone());
             }
-            !is_stale
+            !is_stale_hidden_recovery
         });
         if queue.is_empty() {
             queues.remove(key);

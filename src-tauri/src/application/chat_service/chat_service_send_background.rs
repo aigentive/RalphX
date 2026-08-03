@@ -25,7 +25,7 @@ use super::chat_service_types::{
 };
 use super::{event_context, has_meaningful_output, EventContextPayload, StreamingStateCache};
 use crate::application::interactive_process_registry::{
-    InteractiveProcessKey, InteractiveProcessRegistry, InteractiveProcessToken,
+    InteractiveProcess, InteractiveProcessKey, InteractiveProcessRegistry, InteractiveProcessToken,
 };
 use crate::application::memory_orchestration::trigger_memory_pipelines;
 use crate::application::notification_service::NotificationService;
@@ -299,6 +299,7 @@ fn has_recoverable_tool_activity_after_final_text(
                 recoverable_tool_after_last_text = false;
             }
             ContentBlockItem::Text { .. } => {}
+            ContentBlockItem::Thinking { .. } => {}
             ContentBlockItem::ToolUse { name, result, .. } => {
                 recoverable_tool_after_last_text =
                     is_recoverable_terminal_tool_activity(name, result.as_ref());
@@ -497,6 +498,9 @@ fn build_assistant_transcript_segments(
         match block {
             ContentBlockItem::Text { text } => {
                 current.content.push_str(text);
+                current.content_blocks.push(block.clone());
+            }
+            ContentBlockItem::Thinking { .. } => {
                 current.content_blocks.push(block.clone());
             }
             ContentBlockItem::ToolUse {
@@ -1076,10 +1080,28 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                 &runtime_context_id,
             );
 
-            let removed = match interactive_process_token {
+            let mut removed = match interactive_process_token {
                 Some(token) => ipr.remove_if_token(&ipr_key, token).await,
                 None => ipr.remove(&ipr_key).await,
             };
+            let pending_turns = removed
+                .as_mut()
+                .map(InteractiveProcess::take_pending_stdin_turns)
+                .unwrap_or_default();
+            let queued_message_repo = app_handle.as_ref().map(|handle| {
+                let app_state = handle.state::<crate::application::AppState>();
+                Arc::clone(&app_state.queued_message_repo)
+            });
+            super::chat_service_queue::requeue_pending_stdin_turns(
+                queued_message_repo.as_ref(),
+                &message_queue,
+                app_handle.as_ref(),
+                context_type,
+                &runtime_context_id,
+                Some(conversation_id.as_str()),
+                pending_turns,
+            )
+            .await;
             if removed.is_none() {
                 tracing::debug!(
                     %context_type,
@@ -1638,7 +1660,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                 };
                 for msg in &stale_dropped {
                     tracing::warn!(
-                        "[QUEUE] Dropped stale queued message (age > {}s) id={} for context {}:{}",
+                        "[QUEUE] Dropped stale hidden recovery queued message (age > {}s) id={} for context {}:{}",
                         staleness_threshold_secs,
                         msg.id,
                         context_type,
@@ -1647,7 +1669,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                 }
                 for msg in &durable_stale_dropped {
                     tracing::warn!(
-                        "[QUEUE] Dropped stale durable queued message (age > {}s) id={} for context {}:{}",
+                        "[QUEUE] Dropped stale durable hidden recovery queued message (age > {}s) id={} for context {}:{}",
                         staleness_threshold_secs,
                         msg.id,
                         context_type,

@@ -14,6 +14,8 @@ fn test_hook_started_from_system_message() {
         output: None,
         exit_code: None,
         outcome: None,
+        estimated_tokens: None,
+        estimated_tokens_delta: None,
     };
 
     let events = processor.process_message(msg);
@@ -46,6 +48,8 @@ fn test_hook_completed_from_system_message() {
         output: Some("Fixed 3 lint issues".to_string()),
         exit_code: Some(0),
         outcome: Some("success".to_string()),
+        estimated_tokens: None,
+        estimated_tokens_delta: None,
     };
 
     let events = processor.process_message(msg);
@@ -86,6 +90,8 @@ fn test_hook_completed_with_error() {
         output: Some("Rule manager has pending issues".to_string()),
         exit_code: Some(1),
         outcome: Some("error".to_string()),
+        estimated_tokens: None,
+        estimated_tokens_delta: None,
     };
 
     let events = processor.process_message(msg);
@@ -169,6 +175,8 @@ fn test_hook_started_missing_required_fields() {
         output: None,
         exit_code: None,
         outcome: None,
+        estimated_tokens: None,
+        estimated_tokens_delta: None,
     };
 
     let events = processor.process_message(msg);
@@ -192,6 +200,8 @@ fn test_hook_completed_optional_fields_none() {
         output: None,
         exit_code: None,
         outcome: None,
+        estimated_tokens: None,
+        estimated_tokens_delta: None,
     };
 
     let events = processor.process_message(msg);

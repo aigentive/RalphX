@@ -52,7 +52,6 @@ describe("settings composite sections", () => {
   it("renders Planning from the same ideation controller on its isolated surface", () => {
     render(<PlanningSettingsSection controller={controller} />);
 
-    expect(screen.getByText("Planning")).toBeInTheDocument();
     expect(screen.getByText("Ideation surface: planning")).toBeInTheDocument();
   });
 

@@ -199,6 +199,7 @@ export function AgentWorkspaceToolbar({
       workspace?.publicationPushStatus === "needs_agent" &&
       !terminalPrStatus,
   );
+  const canInspectBaseFreshness = canInspectAgentWorkspaceBaseFreshness(workspace);
   const fullFreshnessQuery = useAgentWorkspaceFullFreshness(
     workspace?.conversationId ?? null,
     {
@@ -207,7 +208,7 @@ export function AgentWorkspaceToolbar({
         workspace &&
         !blocksGitInspection &&
         !isRepairPending &&
-        canInspectAgentWorkspaceBaseFreshness(workspace) &&
+        canInspectBaseFreshness &&
         !terminalPrStatus,
       ),
     },
@@ -256,6 +257,7 @@ export function AgentWorkspaceToolbar({
   }
 
   const freshness =
+    canInspectBaseFreshness &&
     fullFreshnessQuery.data?.conversationId === workspace.conversationId
       ? fullFreshnessQuery.data
       : undefined;

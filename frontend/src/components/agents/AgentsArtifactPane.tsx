@@ -15,12 +15,12 @@ import {
   Square,
   Ticket,
   UserRound,
+  UsersRound,
   Workflow,
   X,
 } from "lucide-react";
 import type { ElementType } from "react";
 import {
-  lazy,
   memo,
   Suspense,
   useCallback,
@@ -34,6 +34,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { artifactApi } from "@/api/artifact";
+import { lazyWithRetry } from "@/lib/lazy-with-retry";
 import { atlassianApi } from "@/api/atlassian";
 import { clickupApi } from "@/api/clickup";
 import { granolaApi } from "@/api/granola";
@@ -101,6 +102,7 @@ import {
 import { ideationKeys } from "@/hooks/useIdeation";
 import { useIdeationSettings } from "@/hooks/useIdeationSettings";
 import { useAgentModels } from "@/hooks/useAgentModels";
+import { useFeatureFlags } from "@/hooks/useFeatureFlags";
 import { ticketingKeys } from "@/hooks/useTicketing";
 import {
   taskKeys,
@@ -129,6 +131,7 @@ import {
   type AgentConversation,
 } from "./agentConversations";
 import { AgentReviewPanel } from "./AgentReviewPanel";
+import { AgentsTeamPanel } from "./AgentsTeamPanel";
 import {
   hasWorkspaceReviewPublishAuthorization,
   isWorkspaceReviewApprovedAnyway,
@@ -303,89 +306,89 @@ function hasGeneratingConversationRuntime(
   );
 }
 
-const LazyTaskGraphView = lazy(() =>
+const LazyTaskGraphView = lazyWithRetry(() =>
   import("@/components/TaskGraph").then((module) => ({
     default: module.TaskGraphView,
   })),
 );
-const LazyTaskBoard = lazy(() =>
+const LazyTaskBoard = lazyWithRetry(() =>
   import("@/components/tasks/TaskBoard").then((module) => ({
     default: module.TaskBoard,
   })),
 );
-const LazyAgentsTaskDetailOverlay = lazy(() =>
+const LazyAgentsTaskDetailOverlay = lazyWithRetry(() =>
   import("@/components/agents/task-details/AgentsTaskDetailOverlay").then(
     (module) => ({
       default: module.AgentsTaskDetailOverlay,
     }),
   ),
 );
-const LazyExportPlanDialog = lazy(() =>
+const LazyExportPlanDialog = lazyWithRetry(() =>
   import("@/components/Ideation/ExportPlanDialog").then((module) => ({
     default: module.ExportPlanDialog,
   })),
 );
-const LazyPlanDisplay = lazy(() =>
+const LazyPlanDisplay = lazyWithRetry(() =>
   import("@/components/Ideation/PlanDisplay").then((module) => ({
     default: module.PlanDisplay,
   })),
 );
-const LazyPlanEditor = lazy(() =>
+const LazyPlanEditor = lazyWithRetry(() =>
   import("@/components/Ideation/PlanEditor").then((module) => ({
     default: module.PlanEditor,
   })),
 );
-const LazyPlanEmptyState = lazy(() =>
+const LazyPlanEmptyState = lazyWithRetry(() =>
   import("@/components/Ideation/PlanEmptyState").then((module) => ({
     default: module.PlanEmptyState,
   })),
 );
-const LazyProposalsTabContent = lazy(() =>
+const LazyProposalsTabContent = lazyWithRetry(() =>
   import("@/components/Ideation/ProposalsTabContent").then((module) => ({
     default: module.ProposalsTabContent,
   })),
 );
-const LazyProposalDetailSheet = lazy(() =>
+const LazyProposalDetailSheet = lazyWithRetry(() =>
   import("@/components/Ideation/ProposalDetailSheet").then((module) => ({
     default: module.ProposalDetailSheet,
   })),
 );
-const LazyAgentsJiraIssuePanel = lazy(() =>
+const LazyAgentsJiraIssuePanel = lazyWithRetry(() =>
   import("@/components/agents/AgentsJiraIssuePanel").then((module) => ({
     default: module.AgentsJiraIssuePanel,
   })),
 );
-const LazyAgentsLinearIssuePanel = lazy(() =>
+const LazyAgentsLinearIssuePanel = lazyWithRetry(() =>
   import("@/components/agents/AgentsLinearIssuePanel").then((module) => ({
     default: module.AgentsLinearIssuePanel,
   })),
 );
-const LazyAgentsClickUpIssuePanel = lazy(() =>
+const LazyAgentsClickUpIssuePanel = lazyWithRetry(() =>
   import("@/components/agents/AgentsClickUpIssuePanel").then((module) => ({
     default: module.AgentsClickUpIssuePanel,
   })),
 );
-const LazyAgentsGranolaNotePanel = lazy(() =>
+const LazyAgentsGranolaNotePanel = lazyWithRetry(() =>
   import("@/components/agents/AgentsGranolaNotePanel").then((module) => ({
     default: module.AgentsGranolaNotePanel,
   })),
 );
-const LazyAgentsIssuesPanel = lazy(() =>
+const LazyAgentsIssuesPanel = lazyWithRetry(() =>
   import("@/components/agents/AgentsIssuesPanel").then((module) => ({
     default: module.AgentsIssuesPanel,
   })),
 );
-const LazyPullRequestDetailPanel = lazy(() =>
+const LazyPullRequestDetailPanel = lazyWithRetry(() =>
   import("@/components/pr/PullRequestDetailPanel").then((module) => ({
     default: module.PullRequestDetailPanel,
   })),
 );
-const LazyAgentsAutomationPanel = lazy(() =>
+const LazyAgentsAutomationPanel = lazyWithRetry(() =>
   import("@/components/agents/AgentsAutomationPanel").then((module) => ({
     default: module.AgentsAutomationPanel,
   })),
 );
-const LazyPersonaArtifactPanel = lazy(() =>
+const LazyPersonaArtifactPanel = lazyWithRetry(() =>
   import("@/components/agents/PersonaArtifactPanel").then((module) => ({
     default: module.PersonaArtifactPanel,
   })),
@@ -459,6 +462,12 @@ const PR_TAB = {
   icon: GitPullRequestArrow,
 };
 
+const TEAM_TAB = {
+  id: "team" as const,
+  label: "Team",
+  icon: UsersRound,
+};
+
 const ALL_ARTIFACT_TAB_DEFINITIONS = [
   ...ARTIFACT_TABS,
   AUTOMATION_TAB,
@@ -468,6 +477,7 @@ const ALL_ARTIFACT_TAB_DEFINITIONS = [
   LINEAR_TAB,
   CLICKUP_TAB,
   GRANOLA_TAB,
+  TEAM_TAB,
   REVIEW_TAB,
   PUBLISH_TAB,
 ] as const;
@@ -477,6 +487,7 @@ const ARTIFACT_TAB_UNAVAILABLE_REASONS: Record<AgentArtifactTab, string> = {
   plan: "Appears when a plan can be created or already exists.",
   verification: "Appears when verification evidence is available.",
   tasks: "Appears when implementation tasks are available.",
+  team: "Appears for Team-capable conversations.",
   automation: "Appears in automation conversations.",
   persona: "Appears in persona-builder conversations.",
   pr: "Appears when this workspace has a pull request.",
@@ -515,6 +526,7 @@ function baseTabDefinition(
     LINEAR_TAB,
     CLICKUP_TAB,
     GRANOLA_TAB,
+    TEAM_TAB,
     PR_TAB,
   ].find((candidate) => candidate.id === id);
   return tab ?? AUTOMATION_TAB;
@@ -689,6 +701,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   onClose,
 }: AgentsArtifactPaneProps) {
   const queryClient = useQueryClient();
+  const { data: featureFlags } = useFeatureFlags();
   const { registry: modelRegistry } = useAgentModels();
   const ideationSettingsQuery = useIdeationSettings();
   const tasksEnabled =
@@ -776,6 +789,15 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         ? conversationData.messages
         : [],
     [conversationData, conversation?.id, shouldLoadIdeationData],
+  );
+  const teamStoreKey = conversation ? getAgentConversationStoreKey(conversation) : null;
+  const activeTeamRunId = useChatStore((state) =>
+    teamStoreKey ? state.activeAgentRunIds[teamStoreKey] ?? null : null,
+  );
+  const showTeamTab = Boolean(
+    featureFlags.agentConversationTeam &&
+      conversation?.coordinationMode === "rx_native_team" &&
+      conversationId,
   );
   const attachedSessionId = useMemo(
     () =>
@@ -1496,6 +1518,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
             ...(showLinearTab ? [visibleTab(LINEAR_TAB)] : []),
             ...(showClickUpTab ? [visibleTab(CLICKUP_TAB)] : []),
             ...(showGranolaTab ? [visibleTab(GRANOLA_TAB)] : []),
+            ...(showTeamTab ? [visibleTab(TEAM_TAB)] : []),
             ...(availableArtifactTabIds.includes("review")
               ? [visibleTab(REVIEW_TAB)]
               : []),
@@ -1513,6 +1536,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       showLinearTab,
       showPublishTab,
       showPullRequestTab,
+      showTeamTab,
     ],
   );
   const shownTabs = useMemo(
@@ -2443,6 +2467,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                 onOpenTasks={() => onTabChange("tasks")}
                 taskArtifactSelectedId={taskArtifactSelectedId}
                 onTaskArtifactSelectedIdChange={setTaskArtifactSelectedId}
+                activeTeamRunId={activeTeamRunId}
               />
             </ArtifactSelectionProvider>
           )}
@@ -2547,6 +2572,7 @@ type ArtifactContentProps = {
   onOpenTasks: () => void;
   taskArtifactSelectedId: string | null;
   onTaskArtifactSelectedIdChange: (id: string | null) => void;
+  activeTeamRunId: string | null;
 };
 
 function ArtifactContent({
@@ -2622,6 +2648,7 @@ function ArtifactContent({
   onOpenTasks,
   taskArtifactSelectedId,
   onTaskArtifactSelectedIdChange,
+  activeTeamRunId,
 }: ArtifactContentProps) {
   const reviewActionBlocker = getAgentWorkspaceReviewActionBlocker(workspace);
   const renderReviewPanel = (embedded: boolean) => (
@@ -2666,6 +2693,16 @@ function ArtifactContent({
           conversation={conversation}
         />
       </Suspense>
+    );
+  }
+
+  if (activeTab === "team" && conversationId) {
+    return (
+      <AgentsTeamPanel
+        conversationId={conversationId}
+        projectId={projectId}
+        activeAgentRunId={activeTeamRunId}
+      />
     );
   }
 

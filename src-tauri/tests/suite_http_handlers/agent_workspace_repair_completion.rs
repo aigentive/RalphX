@@ -532,6 +532,37 @@ async fn assert_no_duplicate_completion_side_effects(
     );
 }
 
+async fn block_valid_current_attempt(
+    state: &HttpServerState,
+    conversation_id: ChatConversationId,
+    run_id: AgentRunId,
+) -> AgentWorkspaceRepairAttempt {
+    let Json(response) = complete_agent_workspace_repair(
+        State(state.clone()),
+        Path(conversation_id.to_string()),
+        completion_headers(conversation_id, run_id),
+        Json(CompleteAgentWorkspaceRepairRequest {
+            summary: "The repair needs an explicit maintainer decision.".to_string(),
+            blocker: Some("Choose the safe repair path before continuing.".to_string()),
+            reported_fix_commit_sha: None,
+            resolution: None,
+        }),
+    )
+    .await
+    .expect("block the valid repair attempt");
+    assert_eq!(response.status, "blocked");
+    let blocked = state
+        .app_state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("read blocked repair attempt")
+        .expect("blocked repair attempt remains current");
+    assert_eq!(blocked.phase, AgentWorkspaceRepairPhase::Blocked);
+    assert!(blocked.target_lease_epoch.is_none());
+    blocked
+}
+
 #[tokio::test]
 async fn legacy_pr_fix_transport_without_a_durable_attempt_fails_closed_without_legacy_effects() {
     let state = test_state();
@@ -577,6 +608,7 @@ async fn legacy_pr_fix_transport_without_a_durable_attempt_fails_closed_without_
             blocker: None,
             fix_commit_sha: None,
             created_by_run_id: Some(owner_run_id.to_string()),
+            resolution: None,
         },
     )
     .await;
@@ -636,6 +668,7 @@ async fn legacy_pr_fix_transport_rejects_wrong_durable_run_without_effects() {
             blocker: None,
             fix_commit_sha: None,
             created_by_run_id: Some(wrong_run_id.to_string()),
+            resolution: None,
         },
     )
     .await;
@@ -668,6 +701,7 @@ async fn legacy_pr_fix_transport_uses_durable_completion_without_legacy_publish_
             blocker: None,
             fix_commit_sha: Some("f".repeat(40)),
             created_by_run_id: Some(owner_run_id.to_string()),
+            resolution: None,
         },
     )
     .await;
@@ -741,6 +775,8 @@ async fn transport_authority_rejects_missing_runtime_headers_without_mutation() 
         CompleteAgentWorkspaceRepairRequest {
             summary: "Missing runtime identity must never settle a repair.".to_string(),
             blocker: None,
+            reported_fix_commit_sha: None,
+            resolution: None,
         },
     )
     .await;
@@ -781,6 +817,8 @@ async fn transport_authority_rejects_malformed_runtime_run_without_mutation() {
         CompleteAgentWorkspaceRepairRequest {
             summary: "Malformed runtime identity must never settle a repair.".to_string(),
             blocker: None,
+            reported_fix_commit_sha: None,
+            resolution: None,
         },
     )
     .await;
@@ -807,6 +845,8 @@ async fn transport_authority_rejects_header_conversation_mismatch_without_mutati
         CompleteAgentWorkspaceRepairRequest {
             summary: "A mismatched runtime conversation must never settle a repair.".to_string(),
             blocker: None,
+            reported_fix_commit_sha: None,
+            resolution: None,
         },
     )
     .await;
@@ -841,6 +881,8 @@ async fn transport_authority_rejects_cross_conversation_runtime_run_without_muta
         CompleteAgentWorkspaceRepairRequest {
             summary: "A cross-conversation run must not settle this repair.".to_string(),
             blocker: None,
+            reported_fix_commit_sha: None,
+            resolution: None,
         },
     )
     .await;
@@ -875,6 +917,8 @@ async fn transport_authority_rejects_nonowning_runtime_run_without_mutation() {
         CompleteAgentWorkspaceRepairRequest {
             summary: "A nonowning run must not settle this repair.".to_string(),
             blocker: None,
+            reported_fix_commit_sha: None,
+            resolution: None,
         },
     )
     .await;
@@ -907,6 +951,8 @@ async fn transport_authority_rejects_missing_current_run_row_without_mutation() 
         CompleteAgentWorkspaceRepairRequest {
             summary: "A missing current run row must not settle a repair.".to_string(),
             blocker: None,
+            reported_fix_commit_sha: None,
+            resolution: None,
         },
     )
     .await;
@@ -939,6 +985,8 @@ async fn transport_authority_rejects_nonrunning_current_run_without_mutation() {
         CompleteAgentWorkspaceRepairRequest {
             summary: "A non-running current run must not settle a repair.".to_string(),
             blocker: None,
+            reported_fix_commit_sha: None,
+            resolution: None,
         },
     )
     .await;
@@ -966,6 +1014,8 @@ async fn transport_authority_keeps_semantic_repair_outcomes_successful() {
             CompleteAgentWorkspaceRepairRequest {
                 summary: "The repaired branch is clean and contains the current base.".to_string(),
                 blocker: None,
+                reported_fix_commit_sha: None,
+                resolution: None,
             },
         )
         .await,
@@ -1005,6 +1055,8 @@ async fn transport_authority_keeps_semantic_repair_outcomes_successful() {
             CompleteAgentWorkspaceRepairRequest {
                 summary: "This duplicate completion is safely idempotent.".to_string(),
                 blocker: None,
+                reported_fix_commit_sha: None,
+                resolution: None,
             },
         )
         .await,
@@ -1023,6 +1075,8 @@ async fn transport_authority_keeps_semantic_repair_outcomes_successful() {
             CompleteAgentWorkspaceRepairRequest {
                 summary: "The repair needs a maintainer decision.".to_string(),
                 blocker: Some("Choose whether to preserve the legacy schema.".to_string()),
+                reported_fix_commit_sha: None,
+                resolution: None,
             },
         )
         .await,
@@ -1079,6 +1133,8 @@ async fn transport_authority_keeps_semantic_repair_outcomes_successful() {
             CompleteAgentWorkspaceRepairRequest {
                 summary: "A superseded repair must not affect the successor.".to_string(),
                 blocker: None,
+                reported_fix_commit_sha: None,
+                resolution: None,
             },
         )
         .await,
@@ -1112,6 +1168,8 @@ async fn unknown_run_is_rejected_before_any_git_probe_or_attempt_mutation() {
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "This stale run must be harmless".to_string(),
             blocker: None,
+            reported_fix_commit_sha: None,
+            resolution: None,
         }),
     )
     .await
@@ -1174,6 +1232,8 @@ async fn stale_validation_reservation_returns_before_every_git_probe() {
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "The completion snapshot must not validate after replacement.".to_string(),
             blocker: None,
+            reported_fix_commit_sha: None,
+            resolution: None,
         }),
     ));
     reservation_gate.wait().await;
@@ -1252,6 +1312,8 @@ async fn racing_success_handoff_for_the_same_run_is_already_completed_without_du
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "The repaired branch is clean and contains the current base.".to_string(),
             blocker: None,
+            reported_fix_commit_sha: None,
+            resolution: None,
         }),
     ));
     continuation_gate.wait().await;
@@ -1346,6 +1408,8 @@ async fn racing_success_duplicates_for_the_same_run_skip_extra_git_and_complete_
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "The repaired branch is clean and contains the current base.".to_string(),
             blocker: None,
+            reported_fix_commit_sha: None,
+            resolution: None,
         })
     };
     let mut first = tokio::spawn(complete_agent_workspace_repair(
@@ -1446,6 +1510,8 @@ async fn racing_blocker_duplicates_for_the_same_run_are_already_blocked_without_
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "The repair needs an explicit schema choice.".to_string(),
             blocker: Some("Choose whether to preserve the legacy schema.".to_string()),
+            reported_fix_commit_sha: None,
+            resolution: None,
         }),
     ));
     let second = tokio::spawn(complete_agent_workspace_repair(
@@ -1455,6 +1521,8 @@ async fn racing_blocker_duplicates_for_the_same_run_are_already_blocked_without_
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "The repair needs an explicit schema choice.".to_string(),
             blocker: Some("Choose whether to preserve the legacy schema.".to_string()),
+            reported_fix_commit_sha: None,
+            resolution: None,
         }),
     ));
     blocker_gate.wait().await;
@@ -1535,6 +1603,8 @@ async fn completion_from_a_superseded_generation_stays_superseded_without_side_e
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "A superseded repair must not affect the next generation.".to_string(),
             blocker: None,
+            reported_fix_commit_sha: None,
+            resolution: None,
         }),
     )
     .await
@@ -1577,6 +1647,8 @@ async fn trusted_blocker_settles_the_generation_once_without_git_or_audit_side_e
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "The repair cannot safely choose a migration path.".to_string(),
             blocker: Some("Choose whether to preserve the legacy schema.".to_string()),
+            reported_fix_commit_sha: None,
+            resolution: None,
         }),
     )
     .await
@@ -1611,11 +1683,17 @@ async fn trusted_blocker_settles_the_generation_once_without_git_or_audit_side_e
         Json(CompleteAgentWorkspaceRepairRequest {
             summary: "Duplicate blocker signal".to_string(),
             blocker: Some("Different stale blocker".to_string()),
+            reported_fix_commit_sha: None,
+            resolution: None,
         }),
     )
     .await
     .expect("duplicate blocker is idempotent");
     assert_eq!(duplicate.status, "blocked");
+    assert_eq!(
+        duplicate.message,
+        "This repair generation is blocked. Retry repair from the workspace to start a new repair attempt."
+    );
     let after_duplicate = state
         .app_state
         .agent_workspace_repair_repo
@@ -1633,6 +1711,210 @@ async fn trusted_blocker_settles_the_generation_once_without_git_or_audit_side_e
         .await
         .expect("read audit events after duplicate")
         .is_empty());
+}
+
+#[tokio::test]
+async fn blocked_exact_run_with_clean_repair_resurrects_through_validation_and_continuation() {
+    let state = test_state();
+    let (conversation_id, run_id, attempt, _root) =
+        seed_current_attempt_with_valid_target(&state).await;
+    // An update-only continuation keeps the post-resurrection workflow off GitHub so this
+    // fixture proves the resurrection itself; publish continuations are covered elsewhere.
+    let mut update_only = attempt.clone();
+    let expected_updated_at = update_only.updated_at;
+    update_only.continuation =
+        ralphx_lib::domain::entities::AgentWorkspaceRepairContinuation::UpdateOnly;
+    update_only.updated_at += Duration::microseconds(1);
+    let seeded_phase = update_only.phase;
+    match state
+        .app_state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: update_only,
+            expected_phase: seeded_phase,
+            expected_updated_at,
+            next_phase: seeded_phase,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("flip seeded continuation to update-only")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_) => {}
+        other => panic!("expected update-only continuation flip, got {other:?}"),
+    }
+    let blocked = block_valid_current_attempt(&state, conversation_id, run_id).await;
+
+    let Json(response) = complete_agent_workspace_repair(
+        State(state.clone()),
+        Path(conversation_id.to_string()),
+        completion_headers(conversation_id, run_id),
+        Json(CompleteAgentWorkspaceRepairRequest {
+            summary: "The committed repair is clean at the durable target base.".to_string(),
+            blocker: None,
+            reported_fix_commit_sha: None,
+            resolution: None,
+        }),
+    )
+    .await
+    .expect("resurrect exact blocked repair run");
+
+    assert_eq!(response.status, "accepted");
+    let continued = state
+        .app_state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("read continued repair attempt")
+        .expect("continued repair attempt remains current");
+    assert_eq!(continued.id, blocked.id);
+    assert_ne!(continued.phase, AgentWorkspaceRepairPhase::Blocked);
+    assert_eq!(
+        continued.phase,
+        AgentWorkspaceRepairPhase::Ready,
+        "clean update-only resurrection parks the repaired workspace at Ready: {continued:?}"
+    );
+    assert!(
+        continued.repair_head_commit.is_some(),
+        "resurrection validation records the committed repair head"
+    );
+    assert!(
+        continued.blocker.is_none(),
+        "no blocker after clean resurrection: {continued:?}"
+    );
+}
+
+#[tokio::test]
+async fn blocked_exact_run_with_unproven_repair_stays_blocked_without_continuation() {
+    let state = test_state();
+    let (conversation_id, run_id, _attempt, root) =
+        seed_current_attempt_with_valid_target(&state).await;
+    let blocked = block_valid_current_attempt(&state, conversation_id, run_id).await;
+    let workspace = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("read repair workspace")
+        .expect("repair workspace exists");
+    fs::write(
+        std::path::Path::new(&workspace.worktree_path).join("uncommitted-repair.txt"),
+        "not a clean committed repair\n",
+    )
+    .expect("make repair validation fail");
+
+    let Json(response) = complete_agent_workspace_repair(
+        State(state.clone()),
+        Path(conversation_id.to_string()),
+        completion_headers(conversation_id, run_id),
+        Json(CompleteAgentWorkspaceRepairRequest {
+            summary: "The repair cannot be proven clean.".to_string(),
+            blocker: None,
+            reported_fix_commit_sha: None,
+            resolution: None,
+        }),
+    )
+    .await
+    .expect("blocked resurrection reports its validation failure");
+
+    assert_eq!(response.status, "blocked");
+    let after = state
+        .app_state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("read repair attempt after failed resurrection")
+        .expect("repair attempt remains current");
+    assert_eq!(after.id, blocked.id);
+    assert_eq!(after.phase, AgentWorkspaceRepairPhase::Blocked);
+    assert!(state
+        .app_state
+        .agent_workspace_repair_repo
+        .get_open_repair_effect(&after.id)
+        .await
+        .expect("read continuation effect")
+        .is_none());
+    drop(root);
+}
+
+#[tokio::test]
+async fn blocked_different_run_cannot_resurrect_the_current_generation() {
+    let state = test_state();
+    let (conversation_id, owner_run_id, _attempt, _root) =
+        seed_current_attempt_with_valid_target(&state).await;
+    let blocked = block_valid_current_attempt(&state, conversation_id, owner_run_id).await;
+    let different_run = AgentRun::new(conversation_id);
+    let different_run_id = different_run.id;
+    state
+        .app_state
+        .agent_run_repo
+        .create(different_run)
+        .await
+        .expect("seed nonowning repair run");
+
+    let response = repair_completion_http_response(
+        state.clone(),
+        &conversation_id,
+        completion_headers(conversation_id, different_run_id),
+        CompleteAgentWorkspaceRepairRequest {
+            summary: "A different run cannot settle this blocked repair.".to_string(),
+            blocker: None,
+            reported_fix_commit_sha: None,
+            resolution: None,
+        },
+    )
+    .await;
+    let (status, outcome) = response_status(response).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(outcome.is_empty());
+    let after = state
+        .app_state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("read blocked repair attempt")
+        .expect("blocked repair attempt remains current");
+    assert_eq!(after.id, blocked.id);
+    assert_eq!(after.phase, AgentWorkspaceRepairPhase::Blocked);
+    assert_eq!(after.updated_at, blocked.updated_at);
+}
+
+#[tokio::test]
+async fn blocked_exact_run_with_blocker_keeps_the_canned_blocked_response() {
+    let state = test_state();
+    let (conversation_id, run_id, _attempt, _root) =
+        seed_current_attempt_with_valid_target(&state).await;
+    let blocked = block_valid_current_attempt(&state, conversation_id, run_id).await;
+
+    let Json(response) = complete_agent_workspace_repair(
+        State(state.clone()),
+        Path(conversation_id.to_string()),
+        completion_headers(conversation_id, run_id),
+        Json(CompleteAgentWorkspaceRepairRequest {
+            summary: "A duplicate blocker must not resurrect the repair.".to_string(),
+            blocker: Some("Still awaiting maintainer direction.".to_string()),
+            reported_fix_commit_sha: None,
+            resolution: None,
+        }),
+    )
+    .await
+    .expect("blocked duplicate responds idempotently");
+
+    assert_eq!(response.status, "blocked");
+    assert_eq!(
+        response.message,
+        "This repair generation is blocked. Retry repair from the workspace to start a new repair attempt."
+    );
+    let after = state
+        .app_state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("read blocked repair attempt")
+        .expect("blocked repair attempt remains current");
+    assert_eq!(after.phase, AgentWorkspaceRepairPhase::Blocked);
+    assert_eq!(after.updated_at, blocked.updated_at);
+    assert!(after.target_lease_epoch.is_none());
 }
 
 #[tokio::test]

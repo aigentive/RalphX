@@ -1,4 +1,5 @@
 import { applyDelegationToolPolicy } from "./delegation-policy.js";
+import { applyTeamToolPolicy } from "./team-tool-policy.js";
 import { loadCanonicalMcpTools } from "./canonical-agent-metadata.js";
 import { safeError } from "./redact.js";
 import {
@@ -124,7 +125,9 @@ function applyRuntimeToolPolicies(
   agentType: string,
   agentProfile: string | undefined
 ): string[] {
-  return applyWorkflowToolPolicy(applyDelegationToolPolicy(tools, agentType, agentProfile));
+  return applyTeamToolPolicy(
+    applyWorkflowToolPolicy(applyDelegationToolPolicy(tools, agentType, agentProfile))
+  );
 }
 
 export function parseAllowedToolsFromArgs(knownToolNames: string[]): string[] | undefined {

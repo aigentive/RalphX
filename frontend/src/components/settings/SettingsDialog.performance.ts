@@ -19,6 +19,7 @@ export const sectionModuleLoaders: Record<SettingsSectionId, () => Promise<unkno
   capacity: () => import("./sections/CapacitySettingsSection"),
   repository: () => import("./RepositorySettingsSection"),
   "project-analysis": () => import("./ProjectAnalysisSection"),
+  "integrations-hub": () => import("./IntegrationsHubSection"),
   integrations: () => import("./AtlassianIntegrationSettingsPanel"),
   github: () => import("./GitHubIntegrationSettingsPanel"),
   linear: () => import("./LinearIntegrationSettingsPanel"),
@@ -28,6 +29,7 @@ export const sectionModuleLoaders: Record<SettingsSectionId, () => Promise<unkno
   "external-mcp": () => import("./ExternalMcpSettingsPanel"),
   mcp: () => import("./McpSettingsSection"),
   updates: () => import("./UpdatesSettingsSection"),
+  database: () => import("./DatabaseMaintenanceSection"),
   accessibility: () => import("./AccessibilitySection"),
   notifications: () => import("./NotificationSettingsPanel"),
 };

@@ -8,9 +8,53 @@ use tracing::warn;
 
 // ── Top-level wrapper ────────────────────────────────────────────────────
 
+pub const DEFAULT_SHUTDOWN_WATCHDOG_DEADLINE_SECS: u64 = 20;
+pub const MAX_SHUTDOWN_WATCHDOG_DEADLINE_SECS: u64 = 300;
+pub const MAX_EXTERNAL_MCP_SHUTDOWN_GRACE_MS: u64 = 30_000;
+
+pub fn bounded_shutdown_watchdog_deadline_secs(configured: u64) -> u64 {
+    if configured == 0 {
+        DEFAULT_SHUTDOWN_WATCHDOG_DEADLINE_SECS
+    } else {
+        configured.min(MAX_SHUTDOWN_WATCHDOG_DEADLINE_SECS)
+    }
+}
+
+pub fn bounded_external_mcp_shutdown_grace_ms(configured: u64) -> u64 {
+    configured.min(MAX_EXTERNAL_MCP_SHUTDOWN_GRACE_MS)
+}
+
+/// Whole-process exit cleanup deadline. The watchdog is intentionally independent
+/// of async runtimes because it protects teardown after Tauri begins exiting.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ShutdownConfig {
+    pub watchdog_deadline_secs: u64,
+}
+
+impl Default for ShutdownConfig {
+    fn default() -> Self {
+        Self {
+            watchdog_deadline_secs: DEFAULT_SHUTDOWN_WATCHDOG_DEADLINE_SECS,
+        }
+    }
+}
+
+pub(crate) fn apply_shutdown_env_overrides_with_lookup(
+    config: &mut ShutdownConfig,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) {
+    if let Some(value) = lookup("RALPHX_SHUTDOWN_WATCHDOG_DEADLINE_SECS") {
+        if let Ok(deadline) = value.parse::<u64>() {
+            config.watchdog_deadline_secs = deadline;
+        }
+    }
+}
+
 /// All runtime configuration collected from config/ralphx.yaml + env overrides.
 #[derive(Debug, Clone)]
 pub struct AllRuntimeConfig {
+    pub database_maintenance: DatabaseMaintenanceConfig,
     pub stream: StreamTimeoutsConfig,
     pub reconciliation: ReconciliationConfig,
     pub git: GitRuntimeConfig,
@@ -19,11 +63,63 @@ pub struct AllRuntimeConfig {
     pub limits: LimitsConfig,
     pub verification: VerificationConfig,
     pub external_mcp: ExternalMcpConfig,
+    pub delegation: DelegationConfig,
     /// Seconds of inactivity before an agent is considered "likely_waiting" vs "likely_generating".
     /// Used by get_child_session_status to derive estimated_status. Default: 10.
     pub child_session_activity_threshold_secs: Option<u64>,
     /// UI feature flags (page visibility). Defaults to all enabled.
     pub ui_feature_flags: super::ui_config::UiFeatureFlagsConfig,
+}
+
+/// Backend-held delegation waiting: bounded `delegate_wait` blocks and durable park/wake.
+///
+/// `wait_block_max_secs` MUST stay strictly below `timeouts.stream.default_parse_stall_secs`
+/// so a blocking wait can never be mistaken for a stalled stream and kill the coordinator.
+/// All fields required in config/ralphx.yaml; the `Default` impl exists only for the
+/// embedded-fallback and test paths.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DelegationConfig {
+    /// Default bounded block applied when a caller asks to wait without naming a duration.
+    pub wait_block_secs: u64,
+    /// Hard cap applied to any caller-supplied `wait_timeout_ms`.
+    pub wait_block_max_secs: u64,
+    /// Upper bound on how long a coordinator may stay parked before a force-wake.
+    pub park_max_secs: u64,
+    /// Wake-enqueue attempts before a park is marked failed.
+    pub park_wake_retry_max: u32,
+    /// Backoff between wake-enqueue attempts.
+    pub park_wake_retry_backoff_secs: u64,
+}
+
+impl Default for DelegationConfig {
+    fn default() -> Self {
+        Self {
+            wait_block_secs: 120,
+            wait_block_max_secs: 150,
+            park_max_secs: 3600,
+            park_wake_retry_max: 5,
+            park_wake_retry_backoff_secs: 30,
+        }
+    }
+}
+
+/// Startup-only database compaction settings. The percent avoids floating-point config drift.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct DatabaseMaintenanceConfig {
+    pub db_auto_compact_enabled: bool,
+    pub db_auto_compact_max_db_bytes: u64,
+    pub db_auto_compact_min_freelist_percent: u64,
+}
+
+impl Default for DatabaseMaintenanceConfig {
+    fn default() -> Self {
+        Self {
+            db_auto_compact_enabled: true,
+            db_auto_compact_max_db_bytes: 2_147_483_648,
+            db_auto_compact_min_freelist_percent: 20,
+        }
+    }
 }
 
 pub const DEFAULT_DESKTOP_NOTIFICATION_COALESCE_WINDOW_SECS: u64 = 5;
@@ -136,6 +232,9 @@ pub struct ExternalMcpConfig {
     pub max_restart_attempts: u32,
     /// Delay between restart attempts in milliseconds. Default: 2000.
     pub restart_delay_ms: u64,
+    /// Grace period for synchronous TERM-to-KILL escalation during app exit.
+    /// Default: 2000 milliseconds.
+    pub shutdown_grace_ms: u64,
     /// Deadline for required MCP server startup and external bridge readiness.
     pub startup_timeout_secs: u64,
     /// Backend deadline for human-in-the-loop MCP waits (question/team-plan).
@@ -182,6 +281,7 @@ impl Default for ExternalMcpConfig {
             host: "127.0.0.1".to_string(),
             max_restart_attempts: 3,
             restart_delay_ms: 2000,
+            shutdown_grace_ms: 2000,
             startup_timeout_secs: 30,
             human_wait_timeout_secs: 285,
             auth_token: None,
@@ -225,6 +325,8 @@ pub struct StreamTimeoutsConfig {
     pub review_parse_stall_secs: u64,
     pub default_line_read_secs: u64,
     pub default_parse_stall_secs: u64,
+    #[serde(default = "default_streaming_persistence_debounce_ms")]
+    pub streaming_persistence_debounce_ms: u64,
     #[serde(default = "default_max_wall_clock_secs")]
     pub max_wall_clock_secs: u64,
     #[serde(default = "default_completion_grace_secs")]
@@ -239,6 +341,14 @@ pub struct StreamTimeoutsConfig {
     pub notification_retention_read_days: u64,
     #[serde(default = "default_notification_retention_max_rows")]
     pub notification_retention_max_rows: u64,
+    #[serde(default = "default_chat_payload_retention_enabled")]
+    pub chat_payload_retention_enabled: bool,
+    #[serde(default = "default_chat_payload_retention_days")]
+    pub chat_payload_retention_days: u64,
+    #[serde(default = "default_chat_payload_retention_archived_days")]
+    pub chat_payload_retention_archived_days: u64,
+    #[serde(default = "default_chat_payload_retention_batch_rows")]
+    pub chat_payload_retention_batch_rows: u64,
     #[serde(default = "default_db_lock_wait_warn_ms")]
     pub db_lock_wait_warn_ms: u64,
     #[serde(default = "default_db_lock_hold_warn_ms")]
@@ -247,6 +357,10 @@ pub struct StreamTimeoutsConfig {
 
 fn default_max_wall_clock_secs() -> u64 {
     1800
+}
+
+fn default_streaming_persistence_debounce_ms() -> u64 {
+    1_000
 }
 
 fn default_completion_grace_secs() -> u64 {
@@ -273,6 +387,22 @@ fn default_notification_retention_max_rows() -> u64 {
     DEFAULT_NOTIFICATION_RETENTION_MAX_ROWS
 }
 
+fn default_chat_payload_retention_enabled() -> bool {
+    true
+}
+
+fn default_chat_payload_retention_days() -> u64 {
+    90
+}
+
+fn default_chat_payload_retention_archived_days() -> u64 {
+    7
+}
+
+fn default_chat_payload_retention_batch_rows() -> u64 {
+    2000
+}
+
 fn default_db_lock_wait_warn_ms() -> u64 {
     100
 }
@@ -290,6 +420,7 @@ impl Default for StreamTimeoutsConfig {
             review_parse_stall_secs: 120,
             default_line_read_secs: 600,
             default_parse_stall_secs: 180,
+            streaming_persistence_debounce_ms: default_streaming_persistence_debounce_ms(),
             max_wall_clock_secs: 1800,
             completion_grace_secs: 30,
             launch_reservation_lease_secs: 30,
@@ -298,6 +429,10 @@ impl Default for StreamTimeoutsConfig {
                 DEFAULT_DESKTOP_NOTIFICATION_COALESCE_WINDOW_SECS,
             notification_retention_read_days: DEFAULT_NOTIFICATION_RETENTION_READ_DAYS,
             notification_retention_max_rows: DEFAULT_NOTIFICATION_RETENTION_MAX_ROWS,
+            chat_payload_retention_enabled: default_chat_payload_retention_enabled(),
+            chat_payload_retention_days: default_chat_payload_retention_days(),
+            chat_payload_retention_archived_days: default_chat_payload_retention_archived_days(),
+            chat_payload_retention_batch_rows: default_chat_payload_retention_batch_rows(),
             db_lock_wait_warn_ms: default_db_lock_wait_warn_ms(),
             db_lock_hold_warn_ms: default_db_lock_hold_warn_ms(),
         }
@@ -669,10 +804,19 @@ pub struct LimitsConfig {
     pub max_resume_attempts: u64,
     #[serde(default = "default_max_live_folder_references")]
     pub max_live_folder_references: usize,
+    /// Total agent minutes RalphX will spend repairing one PR failure identity before handing it
+    /// to a human. Unattended repair can otherwise burn an unbounded budget on a failure no agent
+    /// can fix. `0` disables the budget.
+    #[serde(default = "default_repair_fingerprint_budget_minutes")]
+    pub repair_fingerprint_budget_minutes: u64,
 }
 
 fn default_max_live_folder_references() -> usize {
     5
+}
+
+fn default_repair_fingerprint_budget_minutes() -> u64 {
+    45
 }
 
 impl Default for LimitsConfig {
@@ -680,6 +824,7 @@ impl Default for LimitsConfig {
         Self {
             max_resume_attempts: 5,
             max_live_folder_references: default_max_live_folder_references(),
+            repair_fingerprint_budget_minutes: default_repair_fingerprint_budget_minutes(),
         }
     }
 }
@@ -759,6 +904,20 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
             }
         };
     }
+    if let Some(value) = lookup("RALPHX_DB_AUTO_COMPACT_ENABLED") {
+        if let Ok(enabled) = value.parse::<bool>() {
+            cfg.database_maintenance.db_auto_compact_enabled = enabled;
+        }
+    }
+    env_u64!(
+        cfg.database_maintenance.db_auto_compact_max_db_bytes,
+        "RALPHX_DB_AUTO_COMPACT_MAX_DB_BYTES"
+    );
+    env_u64!(
+        cfg.database_maintenance
+            .db_auto_compact_min_freelist_percent,
+        "RALPHX_DB_AUTO_COMPACT_MIN_FREELIST_PERCENT"
+    );
 
     // Stream timeouts
     env_u64!(
@@ -784,6 +943,10 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
     env_u64!(
         cfg.stream.default_parse_stall_secs,
         "RALPHX_STREAM_DEFAULT_PARSE_STALL_SECS"
+    );
+    env_u64!(
+        cfg.stream.streaming_persistence_debounce_ms,
+        "RALPHX_STREAM_STREAMING_PERSISTENCE_DEBOUNCE_MS"
     );
     env_u64!(
         cfg.stream.max_wall_clock_secs,
@@ -812,6 +975,23 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
     env_u64!(
         cfg.stream.notification_retention_max_rows,
         "RALPHX_STREAM_NOTIFICATION_RETENTION_MAX_ROWS"
+    );
+    if let Some(value) = lookup("RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_ENABLED") {
+        if let Ok(enabled) = value.parse::<bool>() {
+            cfg.stream.chat_payload_retention_enabled = enabled;
+        }
+    }
+    env_u64!(
+        cfg.stream.chat_payload_retention_days,
+        "RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_DAYS"
+    );
+    env_u64!(
+        cfg.stream.chat_payload_retention_archived_days,
+        "RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_ARCHIVED_DAYS"
+    );
+    env_u64!(
+        cfg.stream.chat_payload_retention_batch_rows,
+        "RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_BATCH_ROWS"
     );
     env_u64!(
         cfg.stream.db_lock_wait_warn_ms,
@@ -1130,6 +1310,10 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
         cfg.limits.max_resume_attempts,
         "RALPHX_LIMITS_MAX_RESUME_ATTEMPTS"
     );
+    env_u64!(
+        cfg.limits.repair_fingerprint_budget_minutes,
+        "RALPHX_LIMITS_REPAIR_FINGERPRINT_BUDGET_MINUTES"
+    );
 
     // Verification
     env_u64!(
@@ -1181,6 +1365,10 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
         cfg.external_mcp.human_wait_timeout_secs,
         "RALPHX_EXTERNAL_MCP_HUMAN_WAIT_TIMEOUT_SECS"
     );
+    env_u64!(
+        cfg.external_mcp.shutdown_grace_ms,
+        "RALPHX_EXTERNAL_MCP_SHUTDOWN_GRACE_MS"
+    );
     if let Some(v) = lookup("RALPHX_NODE_PATH") {
         cfg.external_mcp.node_path = Some(v);
     }
@@ -1190,6 +1378,29 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
              The session gate was removed; sessions are always created. Remove this env var."
         );
     }
+
+    // Delegation waiting (bounded delegate_wait + park/wake)
+    env_u64!(
+        cfg.delegation.wait_block_secs,
+        "RALPHX_DELEGATION_WAIT_BLOCK_SECS"
+    );
+    env_u64!(
+        cfg.delegation.wait_block_max_secs,
+        "RALPHX_DELEGATION_WAIT_BLOCK_MAX_SECS"
+    );
+    env_u64!(
+        cfg.delegation.park_max_secs,
+        "RALPHX_DELEGATION_PARK_MAX_SECS"
+    );
+    if let Some(v) = lookup("RALPHX_DELEGATION_PARK_WAKE_RETRY_MAX") {
+        if let Ok(n) = v.parse::<u32>() {
+            cfg.delegation.park_wake_retry_max = n;
+        }
+    }
+    env_u64!(
+        cfg.delegation.park_wake_retry_backoff_secs,
+        "RALPHX_DELEGATION_PARK_WAKE_RETRY_BACKOFF_SECS"
+    );
 
     // Ideation
     if let Some(v) = lookup("RALPHX_IDEATION_ACTIVITY_THRESHOLD_SECS") {

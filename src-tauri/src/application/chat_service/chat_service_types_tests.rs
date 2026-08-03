@@ -1,12 +1,117 @@
 use crate::application::chat_service::{
     AgentErrorPayload, AgentMessageQueuedPayload, AgentMessageRenderReadyPayload,
-    AgentRunCompletedPayload, AgentRunStartedPayload,
+    AgentRunCompletedPayload, AgentRunStartedPayload, AgentThinkingPayload,
 };
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
     ChatConversationId, ChatMessage, ChatMessageId, ChatTimelineItem, ChatTimelineItemKind,
     ChatTimelineItemStatus, MessageRole, ProjectId,
 };
+
+use super::retains_full_raw_tool_payload;
+
+#[test]
+fn full_raw_payload_allowlist_matches_renderer_hydration_tools() {
+    for name in [
+        "edit",
+        "mcp__ralphx__write",
+        "ralphx::ask_user_question",
+        "mcp__ralphx_internal__delegate_start",
+        "delegate_wait",
+        "delegate_cancel",
+        "delegate_terminal",
+    ] {
+        assert!(retains_full_raw_tool_payload(name), "{name}");
+    }
+
+    for name in ["bash", "Read", "mcp__ralphx__get_artifact"] {
+        assert!(!retains_full_raw_tool_payload(name), "{name}");
+    }
+}
+
+#[test]
+fn agent_thinking_payload_serializes_committed_streaming_and_settled_contracts() {
+    let streaming = AgentThinkingPayload {
+        text: "partial reasoning".to_string(),
+        run_id: Some("run-1".to_string()),
+        block_index: Some(0),
+        conversation_id: "conversation-1".to_string(),
+        context_type: "task_execution".to_string(),
+        context_id: "task-1".to_string(),
+        seq: 7,
+        append_to_previous: true,
+        duration_ms: None,
+        is_settled: false,
+    };
+    let settled = AgentThinkingPayload {
+        text: String::new(),
+        duration_ms: Some(1_500),
+        is_settled: true,
+        ..streaming.clone()
+    };
+
+    let expected_streaming: serde_json::Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/agent_thinking_payload.streaming.json"
+    )))
+    .expect("streaming fixture must be valid JSON");
+    let expected_settled: serde_json::Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/agent_thinking_payload.settled.json"
+    )))
+    .expect("settled fixture must be valid JSON");
+
+    assert_eq!(serde_json::to_value(streaming).unwrap(), expected_streaming);
+    assert_eq!(serde_json::to_value(settled).unwrap(), expected_settled);
+}
+
+/// The allowlist is intentionally triplicated (application helper plus both
+/// repository write guards) because infrastructure must not import
+/// application-layer code. This parity matrix keeps the three copies from
+/// drifting: an edit to one that is not mirrored fails here.
+#[test]
+fn full_raw_payload_allowlist_copies_agree_across_all_implementations() {
+    let matrix = [
+        "edit",
+        "Edit",
+        "write",
+        "WRITE",
+        "tools::edit",
+        "ask_user_question",
+        "mcp__ralphx__ask_user_question",
+        "ralphx::ask_user_question",
+        "ralphx_internal:ask_user_question",
+        "delegate_start",
+        "delegate_wait",
+        "delegate_cancel",
+        "delegate_terminal",
+        "mcp__ralphx_internal__delegate_start",
+        "bash",
+        "Read",
+        "grep",
+        "apply_patch",
+        "MultiEdit",
+        "str_replace_editor",
+        "mcp__ralphx__get_artifact",
+        "editors",
+        "rewrite",
+        "",
+        "  edit  ",
+    ];
+    for name in matrix {
+        let application = retains_full_raw_tool_payload(name);
+        let sqlite =
+            crate::infrastructure::sqlite::sqlite_chat_timeline_repo::retains_full_raw_tool_payload(
+                name,
+            );
+        let memory =
+            crate::infrastructure::memory::memory_chat_timeline_repo::retains_full_raw_tool_payload(
+                name,
+            );
+        assert_eq!(application, sqlite, "sqlite copy drifted for {name:?}");
+        assert_eq!(application, memory, "memory copy drifted for {name:?}");
+    }
+}
 
 #[test]
 fn agent_run_started_payload_serde_snake_case() {
@@ -17,6 +122,9 @@ fn agent_run_started_payload_serde_snake_case() {
         context_id: "task-1".to_string(),
         run_chain_id: None,
         parent_run_id: None,
+        agent_name: Some("ralphx-workspace-reviewer".to_string()),
+        launch_role: Some("workspace_reviewer".to_string()),
+        started_at: Some("2026-07-31T00:00:00Z".to_string()),
         effective_model_id: Some("claude-sonnet-4-6".to_string()),
         effective_model_label: Some("Sonnet 4.6".to_string()),
         provider_harness: Some("claude".to_string()),
@@ -30,6 +138,9 @@ fn agent_run_started_payload_serde_snake_case() {
     assert_eq!(value["effective_model_label"], "Sonnet 4.6");
     assert_eq!(value["provider_harness"], "claude");
     assert_eq!(value["provider_session_id"], "session-123");
+    assert_eq!(value["agent_name"], "ralphx-workspace-reviewer");
+    assert_eq!(value["launch_role"], "workspace_reviewer");
+    assert_eq!(value["started_at"], "2026-07-31T00:00:00Z");
 
     assert_eq!(value["run_id"], "run-1");
     assert_eq!(value["conversation_id"], "conv-1");
@@ -50,6 +161,9 @@ fn agent_run_started_payload_serde_skips_none_fields() {
         context_id: "task-1".to_string(),
         run_chain_id: None,
         parent_run_id: None,
+        agent_name: None,
+        launch_role: None,
+        started_at: None,
         effective_model_id: None,
         effective_model_label: None,
         provider_harness: None,
@@ -66,6 +180,9 @@ fn agent_run_started_payload_serde_skips_none_fields() {
     assert!(value.get("provider_session_id").is_none());
     assert!(value.get("run_chain_id").is_none());
     assert!(value.get("parent_run_id").is_none());
+    assert!(value.get("agent_name").is_none());
+    assert!(value.get("launch_role").is_none());
+    assert!(value.get("started_at").is_none());
 }
 
 #[test]

@@ -12,9 +12,9 @@ use crate::domain::entities::{
     AgentWorkspaceReviewOutcome, AgentWorkspaceSourcePullRequest, Artifact, ArtifactId,
     ArtifactType, ChatConversation, ChatConversationId, ChatMessage, IdeationAnalysisBaseRefKind,
     IdeationSession, IdeationSessionFlow, IdeationSessionId, IdeationSessionStatus, ProjectId,
-    TaskId,
+    RuntimeSource, TaskId,
 };
-use crate::domain::repositories::AgentProviderSettingsRepository;
+use crate::domain::repositories::{AgentProviderSettingsRepository, ReviewSettingsRepository};
 use crate::domain::review::ReviewSettings;
 use crate::domain::services::{QueueKey, QueuedMessage};
 use crate::infrastructure::MockAgenticClient;
@@ -249,6 +249,59 @@ fn fixer_attempt_monitor(
     monitor.review_fixer_status = Some(status.to_string());
     monitor.review_fixer_attempt_id = Some(attempt_id.to_string());
     monitor
+}
+
+struct FailingReviewSettingsRepository;
+
+#[async_trait::async_trait]
+impl ReviewSettingsRepository for FailingReviewSettingsRepository {
+    async fn get_settings(&self) -> Result<ReviewSettings, Box<dyn std::error::Error>> {
+        Err(Box::new(std::io::Error::other(
+            "review settings are unavailable",
+        )))
+    }
+
+    async fn update_settings(
+        &self,
+        _settings: &ReviewSettings,
+    ) -> Result<ReviewSettings, Box<dyn std::error::Error>> {
+        Err(Box::new(std::io::Error::other(
+            "review settings are unavailable",
+        )))
+    }
+}
+
+async fn persist_active_review_for_current_target(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    run_id: &str,
+    artifact_id: &str,
+    cycle_count: i64,
+) -> AgentWorkspaceReviewTarget {
+    let context = load_agent_workspace_review_context(state, workspace)
+        .await
+        .expect("context should load");
+    let target = context.target.expect("target should exist");
+    let mut monitor = context.monitor;
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+    apply_review_artifact_to_monitor(
+        &mut monitor,
+        target.scope,
+        target.head_sha.clone(),
+        target.diff_fingerprint.clone(),
+        Some(run_id.to_string()),
+        ArtifactId::from_string(artifact_id),
+        1,
+        Utc::now(),
+        None,
+    );
+    monitor.review_fixer_cycle_count = cycle_count;
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("active monitor should persist");
+    target
 }
 
 async fn wait_for_monitor_status(
@@ -2233,6 +2286,10 @@ async fn start_review_uses_the_workspace_reviewer_role_default() {
         sent_options[0].logical_effort_override,
         Some(LogicalEffort::High)
     );
+    assert_eq!(
+        sent_options[0].runtime_source_override,
+        Some(RuntimeSource::RoleDefault)
+    );
 }
 
 #[tokio::test]
@@ -2331,6 +2388,10 @@ async fn start_review_prefers_an_explicit_runtime_override_over_the_reviewer_def
     assert_eq!(
         sent_options[0].service_tier_override.as_deref(),
         Some("standard")
+    );
+    assert_eq!(
+        sent_options[0].runtime_source_override,
+        Some(RuntimeSource::ConversationOverride)
     );
 }
 
@@ -3589,7 +3650,7 @@ async fn complete_review_run_sets_typed_outcome_and_gate_statuses() {
 }
 
 #[tokio::test]
-async fn complete_blocking_review_does_not_autoroute_fixer_when_autofix_disabled() {
+async fn complete_blocking_review_keeps_gate_blocking_when_cycle_cap_is_reached() {
     let (_temp, repo, base_sha) = init_repo();
     committed_workspace_delta(&repo);
 
@@ -3597,7 +3658,7 @@ async fn complete_blocking_review_does_not_autoroute_fixer_when_autofix_disabled
     state
         .review_settings_repo
         .update_settings(&ReviewSettings {
-            autofix_workspace_review_blocking_findings: false,
+            workspace_review_fixer_cycle_cap: 0,
             ..ReviewSettings::default()
         })
         .await
@@ -3649,7 +3710,7 @@ async fn complete_blocking_review_does_not_autoroute_fixer_when_autofix_disabled
         Some("review-run".to_string()),
     )
     .await
-    .expect("blocking completion should persist without autorouting");
+    .expect("blocking completion should persist without auto-routing");
 
     assert_eq!(
         completed.review_gate_status,
@@ -3668,14 +3729,19 @@ async fn complete_blocking_review_does_not_autoroute_fixer_when_autofix_disabled
         completed.review_blocking_fingerprint.as_deref(),
         Some("stale-blocking-fingerprint")
     );
-    assert!(completed.review_fixer_status.is_none());
+    assert_eq!(
+        completed.review_fixer_status.as_deref(),
+        Some(WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED)
+    );
+    assert!(completed.review_fixer_attempt_id.is_none());
+    assert_eq!(completed.review_fixer_cycle_count, 0);
     assert!(completed.review_fixer_run_id.is_none());
     assert!(completed.review_fixer_conversation_id.is_none());
     assert!(completed.last_error.is_none());
 }
 
 #[tokio::test]
-async fn manual_blocking_review_fixer_routes_hidden_repair_message_when_autofix_disabled() {
+async fn complete_blocking_review_does_not_autoroute_fixer_when_autofix_is_disabled() {
     let (_temp, repo, base_sha) = init_repo();
     committed_workspace_delta(&repo);
 
@@ -3684,6 +3750,322 @@ async fn manual_blocking_review_fixer_routes_hidden_repair_message_when_autofix_
         .review_settings_repo
         .update_settings(&ReviewSettings {
             autofix_workspace_review_blocking_findings: false,
+            ..ReviewSettings::default()
+        })
+        .await
+        .expect("review settings should persist");
+    let project = seed_project(&state, &repo).await;
+    let workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    seed_conversation(&state, &workspace).await;
+    persist_active_review_for_current_target(
+        &state,
+        &workspace,
+        "review-autofix-disabled",
+        "artifact-autofix-disabled",
+        0,
+    )
+    .await;
+
+    let completed = complete_agent_workspace_review_run(
+        &state,
+        &workspace,
+        Some("blocking".to_string()),
+        Some("Manual repair is required.".to_string()),
+        None,
+        Some("review-autofix-disabled".to_string()),
+    )
+    .await
+    .expect("blocking completion should persist without automatic routing");
+
+    assert_eq!(
+        completed.review_gate_status,
+        AgentWorkspaceReviewGateStatus::Blocking
+    );
+    assert_eq!(completed.review_fixer_cycle_count, 0);
+    assert!(completed.review_fixer_status.is_none());
+    assert!(completed.review_fixer_attempt_id.is_none());
+    assert!(completed.review_fixer_run_id.is_none());
+    assert!(completed.review_fixer_conversation_id.is_none());
+    assert!(completed.last_error.is_none());
+}
+
+#[tokio::test]
+async fn automatic_workspace_review_fixers_stop_after_the_configured_fresh_fingerprint_cap() {
+    let (_temp, repo, base_sha) = init_repo();
+    committed_workspace_delta(&repo);
+
+    let mut state = AppState::new_test();
+    state
+        .review_settings_repo
+        .update_settings(&ReviewSettings {
+            workspace_review_fixer_cycle_cap: 2,
+            ..ReviewSettings::default()
+        })
+        .await
+        .expect("review settings should persist");
+    state.agent_provider_settings_repo =
+        Arc::new(crate::infrastructure::memory::MemoryAgentProviderSettingsRepository::new());
+    let project = seed_project(&state, &repo).await;
+    let workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    seed_conversation(&state, &workspace).await;
+
+    persist_active_review_for_current_target(&state, &workspace, "review-one", "artifact-one", 0)
+        .await;
+    let first = complete_agent_workspace_review_run(
+        &state,
+        &workspace,
+        Some("blocking".to_string()),
+        Some("First automatic fixer finding.".to_string()),
+        None,
+        Some("review-one".to_string()),
+    )
+    .await
+    .expect("first blocking completion should attempt automatic routing");
+    assert_eq!(
+        first.review_fixer_status.as_deref(),
+        Some(WORKSPACE_REVIEW_FIXER_STATUS_FAILED)
+    );
+    assert_eq!(first.review_fixer_cycle_count, 1);
+    assert!(first
+        .last_error
+        .as_deref()
+        .is_some_and(|error| error.contains("Failed to resolve Review fixer provider")));
+
+    std::fs::write(
+        repo.join("second-followup.rs"),
+        "pub fn second_followup() {}\n",
+    )
+    .expect("second followup file should be written");
+    git(&repo, &["add", "second-followup.rs"]);
+    git(&repo, &["commit", "-m", "second followup change"]);
+    let second_target = persist_active_review_for_current_target(
+        &state,
+        &workspace,
+        "review-two",
+        "artifact-two",
+        first.review_fixer_cycle_count,
+    )
+    .await;
+    assert_ne!(
+        second_target.diff_fingerprint,
+        first
+            .current_diff_fingerprint
+            .expect("first completion should persist a target fingerprint")
+    );
+    let second = complete_agent_workspace_review_run(
+        &state,
+        &workspace,
+        Some("blocking".to_string()),
+        Some("Second automatic fixer finding.".to_string()),
+        None,
+        Some("review-two".to_string()),
+    )
+    .await
+    .expect("second blocking completion should attempt automatic routing");
+    assert_eq!(
+        second.review_fixer_status.as_deref(),
+        Some(WORKSPACE_REVIEW_FIXER_STATUS_FAILED)
+    );
+    assert_eq!(second.review_fixer_cycle_count, 2);
+    assert!(second
+        .last_error
+        .as_deref()
+        .is_some_and(|error| error.contains("Failed to resolve Review fixer provider")));
+
+    commit_followup_change(&repo);
+    let third_target = persist_active_review_for_current_target(
+        &state,
+        &workspace,
+        "review-three",
+        "artifact-three",
+        second.review_fixer_cycle_count,
+    )
+    .await;
+    assert_ne!(
+        third_target.diff_fingerprint,
+        second_target.diff_fingerprint
+    );
+    let capped = complete_agent_workspace_review_run(
+        &state,
+        &workspace,
+        Some("blocking".to_string()),
+        Some("Third automatic fixer finding.".to_string()),
+        None,
+        Some("review-three".to_string()),
+    )
+    .await
+    .expect("capped blocking completion should persist");
+
+    assert_eq!(
+        capped.review_gate_status,
+        AgentWorkspaceReviewGateStatus::Blocking
+    );
+    assert_eq!(
+        capped.review_fixer_status.as_deref(),
+        Some(WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED)
+    );
+    assert_eq!(capped.review_fixer_cycle_count, 2);
+    assert!(capped.review_fixer_attempt_id.is_none());
+    assert!(capped.review_fixer_run_id.is_none());
+    assert!(capped.review_fixer_conversation_id.is_none());
+    assert!(capped.last_error.is_none());
+}
+
+#[tokio::test]
+async fn workspace_review_fixer_counter_survives_fresh_target_and_run_failure_then_resets_terminally(
+) {
+    let (_temp, repo, base_sha) = init_repo();
+    committed_workspace_delta(&repo);
+
+    let state = AppState::new_test();
+    let project = seed_project(&state, &repo).await;
+    let reviewed_workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    seed_conversation(&state, &reviewed_workspace).await;
+    let first_target = persist_active_review_for_current_target(
+        &state,
+        &reviewed_workspace,
+        "review-old-target",
+        "artifact-old-target",
+        2,
+    )
+    .await;
+
+    commit_followup_change(&repo);
+    let failed = complete_agent_workspace_review_run(
+        &state,
+        &reviewed_workspace,
+        Some("run_failed".to_string()),
+        Some("Reviewer process failed after the target changed.".to_string()),
+        None,
+        Some("review-old-target".to_string()),
+    )
+    .await
+    .expect("run failure should persist after clearing the stale target");
+    assert_eq!(failed.review_fixer_cycle_count, 2);
+    assert_ne!(
+        failed.current_diff_fingerprint.as_deref(),
+        Some(first_target.diff_fingerprint.as_str())
+    );
+    assert_eq!(
+        failed.review_outcome,
+        AgentWorkspaceReviewOutcome::RunFailed
+    );
+
+    persist_active_review_for_current_target(
+        &state,
+        &reviewed_workspace,
+        "review-pass-reset",
+        "artifact-pass-reset",
+        failed.review_fixer_cycle_count,
+    )
+    .await;
+    let passed = complete_agent_workspace_review_run(
+        &state,
+        &reviewed_workspace,
+        Some("passed".to_string()),
+        Some("No blockers remain.".to_string()),
+        None,
+        Some("review-pass-reset".to_string()),
+    )
+    .await
+    .expect("passing completion should reset the fixer cycle");
+    assert_eq!(passed.review_fixer_cycle_count, 0);
+
+    let mut no_target = AgentWorkspaceReviewMonitor::new(
+        reviewed_workspace.conversation_id.clone(),
+        reviewed_workspace.project_id.clone(),
+    );
+    no_target.review_gate_status = AgentWorkspaceReviewGateStatus::Blocking;
+    no_target.review_fixer_status = Some(WORKSPACE_REVIEW_FIXER_STATUS_RUNNING.to_string());
+    no_target.review_fixer_attempt_id = Some("stale-no-target-attempt".to_string());
+    no_target.review_fixer_cycle_count = 4;
+    apply_review_gate_to_monitor(&mut no_target, None);
+
+    assert_eq!(no_target.review_fixer_cycle_count, 0);
+    assert_eq!(
+        no_target.review_gate_status,
+        AgentWorkspaceReviewGateStatus::NotRequired
+    );
+    assert!(no_target.review_fixer_status.is_none());
+    assert!(no_target.review_fixer_attempt_id.is_none());
+}
+
+#[tokio::test]
+async fn automatic_workspace_review_fixer_fails_closed_when_settings_cannot_be_read() {
+    let (_temp, repo, base_sha) = init_repo();
+    committed_workspace_delta(&repo);
+
+    let mut state = AppState::new_test();
+    state.review_settings_repo = Arc::new(FailingReviewSettingsRepository);
+    let project = seed_project(&state, &repo).await;
+    let workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    seed_conversation(&state, &workspace).await;
+    persist_active_review_for_current_target(
+        &state,
+        &workspace,
+        "review-settings-failure",
+        "artifact-settings-failure",
+        1,
+    )
+    .await;
+
+    let completed = complete_agent_workspace_review_run(
+        &state,
+        &workspace,
+        Some("blocking".to_string()),
+        Some("Settings read must not authorize a fixer.".to_string()),
+        None,
+        Some("review-settings-failure".to_string()),
+    )
+    .await
+    .expect("blocking completion should fail closed rather than fail the review");
+
+    assert_eq!(
+        completed.review_gate_status,
+        AgentWorkspaceReviewGateStatus::Blocking
+    );
+    assert_eq!(completed.review_fixer_cycle_count, 1);
+    assert!(completed.review_fixer_status.is_none());
+    assert!(completed.review_fixer_attempt_id.is_none());
+    assert!(completed.review_fixer_run_id.is_none());
+    assert!(completed.review_fixer_conversation_id.is_none());
+    assert!(completed.last_error.is_none());
+}
+
+#[tokio::test]
+async fn manual_blocking_review_fixer_routes_hidden_repair_message_when_cycle_is_capped() {
+    let (_temp, repo, base_sha) = init_repo();
+    committed_workspace_delta(&repo);
+
+    let state = AppState::new_test();
+    state
+        .review_settings_repo
+        .update_settings(&ReviewSettings {
+            workspace_review_fixer_cycle_cap: 0,
             ..ReviewSettings::default()
         })
         .await
@@ -3732,7 +4114,14 @@ async fn manual_blocking_review_fixer_routes_hidden_repair_message_when_autofix_
     )
     .await
     .expect("blocking completion should persist");
-    assert!(completed.review_fixer_status.is_none());
+    assert_eq!(
+        completed.review_fixer_status.as_deref(),
+        Some(WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED)
+    );
+    assert_eq!(completed.review_fixer_cycle_count, 0);
+    assert!(completed.review_fixer_attempt_id.is_none());
+    assert!(completed.review_fixer_run_id.is_none());
+    assert!(completed.review_fixer_conversation_id.is_none());
     let blocking_fingerprint = completed
         .review_blocking_fingerprint
         .clone()
@@ -3752,12 +4141,20 @@ async fn manual_blocking_review_fixer_routes_hidden_repair_message_when_autofix_
             .expect("review artifact version should remain current"),
         blocking_fingerprint: blocking_fingerprint.clone(),
     };
+    let runtime_override = ManualRoleRuntimeOverride {
+        harness: AgentHarnessKind::Claude,
+        model: Some("claude-explicit-fixer".to_string()),
+        effort: Some(LogicalEffort::High),
+        service_tier: ManualServiceTier::Standard,
+        coordination_mode: None,
+        persona_id: None,
+    };
     let (_timing_guard, captured_timings) = capture_workspace_review_timings();
     let start = start_agent_workspace_review_blocking_fixer_with_chat_service(
         &state,
         &workspace,
         Some(&confirmation),
-        None,
+        Some(&runtime_override),
         &chat_service,
     )
     .await
@@ -3787,6 +4184,7 @@ async fn manual_blocking_review_fixer_routes_hidden_repair_message_when_autofix_
     );
     assert!(start.context.monitor.review_fixer_run_id.is_some());
     assert!(start.context.monitor.review_fixer_conversation_id.is_some());
+    assert_eq!(start.context.monitor.review_fixer_cycle_count, 1);
 
     let sent_options = chat_service.get_sent_options().await;
     assert_eq!(sent_options.len(), 1);
@@ -3798,6 +4196,10 @@ async fn manual_blocking_review_fixer_routes_hidden_repair_message_when_autofix_
     assert_eq!(
         options.agent_name_override.as_deref(),
         Some(agent_names::AGENT_WORKSPACE_REPAIR)
+    );
+    assert_eq!(
+        options.runtime_source_override,
+        Some(RuntimeSource::ConversationOverride)
     );
     let action = AgentRunAction::from_metadata_json(options.metadata.as_deref())
         .expect("repair send should carry typed action authority");
@@ -3966,6 +4368,10 @@ async fn assert_blocking_fixer_uses_enabled_default_over_stale_claude_session(
         Some(CODEX_DEFAULT_SANDBOX_MODE)
     );
     assert_eq!(options.service_tier_override.as_deref(), Some("standard"));
+    assert_eq!(
+        options.runtime_source_override,
+        Some(RuntimeSource::RoleDefault)
+    );
     assert!(options.preserve_conversation_provider_session_ref);
     assert!(options.force_new_provider_session);
 }

@@ -12,6 +12,40 @@ use crate::infrastructure::agents::claude::ToolCall;
 
 use super::tool_result_preview::{LiveToolResultPreview, ToolArgumentPreviewPayload};
 
+const RALPHX_TOOL_NAME_PREFIXES: [&str; 6] = [
+    "mcp__ralphx__",
+    "mcp__ralphx_internal__",
+    "ralphx::",
+    "ralphx_internal::",
+    "ralphx:",
+    "ralphx_internal:",
+];
+const DIFF_TOOL_NAMES: [&str; 2] = ["edit", "write"];
+const ASK_USER_QUESTION_TOOL_NAME: &str = "ask_user_question";
+const DELEGATION_TOOL_NAMES: [&str; 4] = [
+    "delegate_start",
+    "delegate_wait",
+    "delegate_cancel",
+    "delegate_terminal",
+];
+
+/// Whether a timeline block must retain its original raw JSON for renderer-specific hydration.
+pub(crate) fn retains_full_raw_tool_payload(tool_name: &str) -> bool {
+    let normalized = normalize_ralphx_tool_name(tool_name);
+    let leaf_name = normalized.rsplit("::").next().unwrap_or(&normalized);
+    DIFF_TOOL_NAMES.contains(&leaf_name)
+        || normalized == ASK_USER_QUESTION_TOOL_NAME
+        || DELEGATION_TOOL_NAMES.contains(&normalized.as_str())
+}
+
+fn normalize_ralphx_tool_name(tool_name: &str) -> String {
+    let normalized = tool_name.trim().to_ascii_lowercase();
+    RALPHX_TOOL_NAME_PREFIXES
+        .iter()
+        .find_map(|prefix| normalized.strip_prefix(prefix).map(str::to_string))
+        .unwrap_or(normalized)
+}
+
 // ============================================================================
 // Event Name Constants
 // ============================================================================
@@ -22,6 +56,10 @@ use super::tool_result_preview::{LiveToolResultPreview, ToolArgumentPreviewPaylo
 pub mod events {
     /// Agent text chunk event
     pub const AGENT_CHUNK: &str = "agent:chunk";
+    /// Agent reasoning chunk event
+    pub const AGENT_THINKING: &str = "agent:thinking";
+    /// Agent reasoning token progress event
+    pub const AGENT_THINKING_PROGRESS: &str = "agent:thinking_progress";
     /// Agent tool call event
     pub const AGENT_TOOL_CALL: &str = "agent:tool_call";
     /// Agent run started event
@@ -152,6 +190,12 @@ pub struct AgentRunStartedPayload {
     pub run_chain_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_run_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub launch_role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
     /// The resolved Claude model ID used for this run (e.g. "claude-sonnet-4-6").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effective_model_id: Option<String>,
@@ -187,6 +231,9 @@ impl AgentRunStartedPayload {
             context_id: context_id.into(),
             run_chain_id,
             parent_run_id,
+            agent_name: None,
+            launch_role: None,
+            started_at: None,
             effective_model_id,
             effective_model_label,
             provider_harness: harness.map(|value| value.to_string()),
@@ -210,6 +257,39 @@ pub struct AgentChunkPayload {
     pub seq: u64,
     #[serde(default)]
     pub append_to_previous: bool,
+}
+
+/// Payload for agent:thinking event.
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentThinkingPayload {
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub block_index: Option<u64>,
+    pub conversation_id: String,
+    pub context_type: String,
+    pub context_id: String,
+    pub seq: u64,
+    #[serde(default)]
+    pub append_to_previous: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(default)]
+    pub is_settled: bool,
+}
+
+/// Payload for agent:thinking_progress event.
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentThinkingProgressPayload {
+    pub estimated_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub estimated_tokens_delta: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    pub conversation_id: String,
+    pub context_type: String,
+    pub context_id: String,
 }
 
 /// Payload for agent:usage_updated event
@@ -879,6 +959,10 @@ pub enum ChatServiceError {
     InvalidInput(String),
     AgentNotAvailable(String),
     SpawnFailed(String),
+    /// The caller required a fresh runtime turn, but current conversation or launch capacity
+    /// makes that impossible right now. This is intentionally distinct from a spawn failure:
+    /// orchestrators can defer it without spending delivery retry budget.
+    ImmediateStartRejected(String),
     SpawnValidation {
         harness: crate::domain::agents::AgentHarnessKind,
         model: String,
@@ -902,6 +986,7 @@ impl std::fmt::Display for ChatServiceError {
             Self::InvalidInput(msg) => write!(f, "Invalid input: {}", msg),
             Self::AgentNotAvailable(msg) => write!(f, "Agent not available: {}", msg),
             Self::SpawnFailed(msg) => write!(f, "Failed to spawn agent: {}", msg),
+            Self::ImmediateStartRejected(msg) => write!(f, "Immediate start rejected: {msg}"),
             Self::SpawnValidation {
                 harness,
                 model,

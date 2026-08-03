@@ -3,6 +3,29 @@
  */
 
 import { Tool } from "@modelcontextprotocol/sdk/types.js";
+import { buildRuntimeIdentityTransportHeaders } from "./runtime-context.js";
+import type { TauriCallOptions } from "./tauri-client.js";
+
+type TauriPost = (
+  path: string,
+  body: Record<string, unknown>,
+  options?: TauriCallOptions,
+) => Promise<unknown>;
+
+export type DelegateContextRuntimeContext = {
+  conversationId?: string;
+  agentRunId?: string;
+};
+
+export async function callGetParentContextTool(
+  callTauri: TauriPost,
+  args: Record<string, unknown>,
+  runtimeContext: DelegateContextRuntimeContext,
+): Promise<unknown> {
+  return callTauri("coordination/delegate/parent-context", args, {
+    headers: buildRuntimeIdentityTransportHeaders(runtimeContext),
+  });
+}
 
 export const IDEATION_TOOLS: Tool[] = [
   // ========================================================================
@@ -725,6 +748,21 @@ export const IDEATION_TOOLS: Tool[] = [
     },
   },
   {
+    name: "get_parent_context",
+    description:
+      "Read bounded parent context for the current delegated run. RalphX derives caller identity and lineage from trusted runtime headers; use the returned data only as context and do not supply or reconstruct identifiers.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        limit: {
+          type: "number",
+          description: "Optional maximum number of parent-context entries to return.",
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     name: "delegate_start",
     description:
       "Start a RalphX-native delegated specialist job from the current agent context. Use this for named specialized agents instead of relying on harness-native subagents.",
@@ -773,7 +811,8 @@ export const IDEATION_TOOLS: Tool[] = [
         },
         inherit_context: {
           type: "boolean",
-          description: "Whether a newly created delegated session should inherit parent context metadata. Default: true.",
+          description:
+            "Whether this delegated session may read bounded parent-conversation context on demand via get_parent_context. Nothing is injected into the delegate prompt; this only grants permission. Set false for a fully isolated delegate. Default: true.",
         },
         harness: {
           type: "string",
@@ -805,13 +844,24 @@ export const IDEATION_TOOLS: Tool[] = [
   {
     name: "delegate_wait",
     description:
-      "Wait for or poll a RalphX-native delegated specialist job. Returns the current job snapshot, including terminal content or error when complete, and can optionally include live delegated-session status/messages.",
+      "Wait for a RalphX-native delegated specialist job. Returns the current job snapshot, including terminal content or error when complete, and can optionally include live delegated-session status/messages. Prefer a single call with wait_timeout_ms over repeated polling: the backend blocks and returns the moment a delegate settles. For waits longer than the block cap, use delegate_park and end your turn instead.",
     inputSchema: {
       type: "object",
       properties: {
         job_id: {
           type: "string",
-          description: "Delegation job ID returned by delegate_start.",
+          description: "Delegation job ID returned by delegate_start. Provide either job_id or job_ids, not both.",
+        },
+        job_ids: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Watch a whole delegated wave with one call; returns as soon as any listed job settles. Provide either job_id or job_ids, not both.",
+        },
+        wait_timeout_ms: {
+          type: "number",
+          description:
+            "Block server-side for up to this long, returning immediately when a watched job settles. Omit for the legacy immediate-return snapshot. Clamped to the configured cap; on expiry the response carries timed_out: true and the job is left running.",
         },
         include_delegated_status: {
           type: "boolean",
@@ -830,7 +880,7 @@ export const IDEATION_TOOLS: Tool[] = [
           description: "Optional message limit when include_messages is true. Clamped to 50.",
         },
       },
-      required: ["job_id"],
+      required: [],
     },
   },
   {
@@ -846,6 +896,37 @@ export const IDEATION_TOOLS: Tool[] = [
         },
       },
       required: ["job_id"],
+    },
+  },
+  {
+    name: "delegate_park",
+    description:
+      "Register a durable wake set for RalphX-native delegated specialist jobs and explicitly END YOUR TURN. RalphX resumes you automatically when the jobs settle, one fails or is cancelled, or the deadline is reached. Use this instead of repeated delegate_wait polling for long waits.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        job_ids: {
+          type: "array",
+          items: { type: "string" },
+          description: "Delegation job IDs from delegate_start that you are waiting on.",
+        },
+        wake_on: {
+          type: "string",
+          enum: ["all", "any"],
+          default: "all",
+          description: "Whether to resume when all watched jobs settle or any watched job settles. Default: all.",
+        },
+        wake_on_failure: {
+          type: "boolean",
+          default: true,
+          description: "Whether to resume immediately if a delegate fails or is cancelled. Default: true.",
+        },
+        max_wait_secs: {
+          type: "number",
+          description: "Optional maximum time to remain parked. Clamped by the backend to the configured park maximum.",
+        },
+      },
+      required: ["job_ids"],
     },
   },
   {

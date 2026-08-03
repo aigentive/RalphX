@@ -27,6 +27,23 @@ import type {
   StreamingContentBlock,
   StreamingTask,
 } from "@/types/streaming-task";
+import type {
+  AskUserQuestionPayload,
+  AskUserQuestionResponse,
+} from "@/types/ask-user-question";
+import type { SubmitQuestionAnswerResult } from "@/hooks/useAskUserQuestion";
+import type { UseQuestionInputParams } from "@/hooks/useQuestionInput";
+
+type MockQuestionState = {
+  activeQuestion: AskUserQuestionPayload | null;
+  answeredQuestion: string | undefined;
+  submitAnswer: (
+    response: AskUserQuestionResponse,
+  ) => Promise<SubmitQuestionAnswerResult>;
+  dismissQuestion: () => void;
+  clearAnswered: () => void;
+  isLoading: boolean;
+};
 
 // ============================================================================
 // Hoisted mutable state for useChat mock (vi.hoisted runs before vi.mock)
@@ -108,6 +125,35 @@ const { mockChatActions, mockSwitchConversationPersona } = vi.hoisted(() => ({
   },
   mockSwitchConversationPersona: vi.fn().mockResolvedValue(undefined),
 }));
+const {
+  mockQuestionStates,
+  mockQuestionInputParams,
+  useAskUserQuestionMock,
+} = vi.hoisted(() => {
+  const defaultQuestionState: MockQuestionState = {
+    activeQuestion: null,
+    answeredQuestion: undefined,
+    submitAnswer: vi.fn().mockResolvedValue({
+      success: true,
+      deliveredToWaitingAgent: true,
+    }),
+    dismissQuestion: vi.fn(),
+    clearAnswered: vi.fn(),
+    isLoading: false,
+  };
+  const mockQuestionStates = new Map<string, MockQuestionState>();
+  const useAskUserQuestionMock = vi.fn((sessionId: string | undefined) =>
+    (sessionId ? mockQuestionStates.get(sessionId) : undefined) ??
+    defaultQuestionState,
+  );
+  const mockQuestionInputParams: UseQuestionInputParams[] = [];
+
+  return {
+    mockQuestionStates,
+    mockQuestionInputParams,
+    useAskUserQuestionMock,
+  };
+});
 
 // ============================================================================
 // Mocks
@@ -308,28 +354,24 @@ vi.mock("@/hooks/useAgentEvents", () => ({
 
 // Mock useAskUserQuestion
 vi.mock("@/hooks/useAskUserQuestion", () => ({
-  useAskUserQuestion: () => ({
-    activeQuestion: null,
-    answeredQuestion: undefined,
-    submitAnswer: vi.fn().mockResolvedValue(true),
-    dismissQuestion: vi.fn(),
-    clearAnswered: vi.fn(),
-    isLoading: false,
-  }),
+  useAskUserQuestion: useAskUserQuestionMock,
 }));
 
 // Mock useQuestionInput
 vi.mock("@/hooks/useQuestionInput", () => ({
-  useQuestionInput: () => ({
-    selectedOptions: new Set(),
-    questionInputValue: "",
-    setQuestionInputValue: vi.fn(),
-    handleChipClick: vi.fn(),
-    handleMatchedOptions: vi.fn(),
-    handleQuestionSend: vi.fn(),
-    handleQuestionSkip: vi.fn(),
-    handleQuestionOptionSubmit: vi.fn(),
-  }),
+  useQuestionInput: (params: UseQuestionInputParams) => {
+    mockQuestionInputParams.push(params);
+    return {
+      selectedOptions: new Set(),
+      questionInputValue: "",
+      setQuestionInputValue: vi.fn(),
+      handleChipClick: vi.fn(),
+      handleMatchedOptions: vi.fn(),
+      handleQuestionSend: vi.fn(),
+      handleQuestionSkip: vi.fn(),
+      handleQuestionOptionSubmit: vi.fn(),
+    };
+  },
 }));
 
 // Mock useChatAttachments
@@ -408,6 +450,8 @@ describe("IntegratedChatPanel", () => {
     useChatMockState.timelineHasOlderMessages = false;
     useChatCalls.length = 0;
     historyWindowCalls.length = 0;
+    mockQuestionStates.clear();
+    mockQuestionInputParams.length = 0;
 
     // Reset stores
     act(() => {
@@ -451,13 +495,173 @@ describe("IntegratedChatPanel", () => {
     mockChatPanelContext.isFinalizing = false;
   });
 
-  it("hides Claude queues, restores Codex queues, and rejects an old clear", () => {
+  it("deduplicates question bridges and prioritizes the conversation question", () => {
+    const questionState = (
+      requestId: string,
+      sessionId: string,
+      question: string,
+    ): MockQuestionState => ({
+      activeQuestion: {
+        requestId,
+        sessionId,
+        question,
+        options: [],
+        multiSelect: false,
+      },
+      answeredQuestion: undefined,
+      submitAnswer: vi.fn().mockResolvedValue({
+        success: true,
+        deliveredToWaitingAgent: true,
+      }),
+      dismissQuestion: vi.fn(),
+      clearAnswered: vi.fn(),
+      isLoading: false,
+    });
+    mockQuestionStates.set(
+      "conversation-1",
+      questionState(
+        "conversation-question",
+        "conversation-1",
+        "Conversation question",
+      ),
+    );
+    mockQuestionStates.set(
+      "planning-session-1",
+      questionState(
+        "planning-question",
+        "planning-session-1",
+        "Planning question",
+      ),
+    );
+
+    render(
+      <TestWrapper>
+        <IntegratedChatPanel
+          projectId="project-1"
+          additionalQuestionSessionIds={[
+            "conversation-1",
+            "conversation-1",
+            "planning-session-1",
+            "ignored-session",
+          ]}
+        />
+      </TestWrapper>,
+    );
+
+    expect(useAskUserQuestionMock.mock.calls.slice(-3)).toEqual([
+      ["task-1"],
+      ["conversation-1"],
+      ["planning-session-1"],
+    ]);
+    expect(screen.getByTestId("question-input-banner")).toHaveTextContent(
+      "Conversation question",
+    );
+    expect(screen.queryByText("Planning question")).not.toBeInTheDocument();
+  });
+
+  it("keeps both bridge hook slots subscribed when only a conversation question is available", () => {
+    mockQuestionStates.set("conversation-1", {
+      activeQuestion: {
+        requestId: "conversation-question",
+        sessionId: "conversation-1",
+        question: "Conversation-only question",
+        options: [],
+        multiSelect: false,
+      },
+      answeredQuestion: undefined,
+      submitAnswer: vi.fn().mockResolvedValue({
+        success: true,
+        deliveredToWaitingAgent: true,
+      }),
+      dismissQuestion: vi.fn(),
+      clearAnswered: vi.fn(),
+      isLoading: false,
+    });
+
+    render(
+      <TestWrapper>
+        <IntegratedChatPanel
+          projectId="project-1"
+          additionalQuestionSessionIds={["conversation-1"]}
+        />
+      </TestWrapper>,
+    );
+
+    expect(useAskUserQuestionMock.mock.calls.slice(-3)).toEqual([
+      ["task-1"],
+      ["conversation-1"],
+      [undefined],
+    ]);
+    expect(screen.getByTestId("question-input-banner")).toHaveTextContent(
+      "Conversation-only question",
+    );
+  });
+
+  it("shows an active planning question over an answered primary and routes its answer", async () => {
+    const primarySubmitAnswer = vi.fn().mockResolvedValue({
+      success: true,
+      deliveredToWaitingAgent: true,
+    });
+    const planningSubmitAnswer = vi.fn().mockResolvedValue({
+      success: true,
+      deliveredToWaitingAgent: true,
+    });
+    mockQuestionStates.set("task-1", {
+      activeQuestion: null,
+      answeredQuestion: "Previous answer",
+      submitAnswer: primarySubmitAnswer,
+      dismissQuestion: vi.fn(),
+      clearAnswered: vi.fn(),
+      isLoading: false,
+    });
+    mockQuestionStates.set("planning-session-1", {
+      activeQuestion: {
+        requestId: "planning-question",
+        sessionId: "planning-session-1",
+        question: "Planning-only question",
+        options: [{ label: "A", value: "a" }],
+        multiSelect: false,
+      },
+      answeredQuestion: undefined,
+      submitAnswer: planningSubmitAnswer,
+      dismissQuestion: vi.fn(),
+      clearAnswered: vi.fn(),
+      isLoading: false,
+    });
+
+    render(
+      <TestWrapper>
+        <IntegratedChatPanel
+          projectId="project-1"
+          additionalQuestionSessionIds={[
+            "conversation-1",
+            "planning-session-1",
+          ]}
+        />
+      </TestWrapper>,
+    );
+
+    expect(screen.getByTestId("question-input-banner")).toHaveTextContent(
+      "Planning-only question",
+    );
+    const response: AskUserQuestionResponse = {
+      requestId: "planning-question",
+      selectedOptions: ["a"],
+    };
+    await mockQuestionInputParams.at(-1)!.submitAnswer(response);
+
+    expect(planningSubmitAnswer).toHaveBeenCalledWith(response);
+    expect(primarySubmitAnswer).not.toHaveBeenCalled();
+  });
+
+  it("hides optimistic Claude queues, restores Codex queues, and rejects an old clear", () => {
     const queuedMessage = {
       id: "queued-1",
       content: "Follow up",
       createdAt: "2026-07-23T00:00:00Z",
       isEditing: false,
       attachmentIds: [],
+      source: "optimistic" as const,
     };
     const hostComposer = (props: IntegratedChatComposerRenderProps) => (
       <div
@@ -507,6 +711,45 @@ describe("IntegratedChatPanel", () => {
     act(() => {
       useChatStore.getState().clearActiveAgentRun("task:task-1", "run-claude");
     });
+
+    expect(screen.getByTestId("queued-message-list")).toBeInTheDocument();
+    expect(screen.getByTestId("queue-aware-host-composer")).toHaveAttribute(
+      "data-has-queued",
+      "true",
+    );
+  });
+
+  it("keeps backend-confirmed queued messages visible for an interactive running run", () => {
+    const hostComposer = (props: IntegratedChatComposerRenderProps) => (
+      <div
+        data-testid="queue-aware-host-composer"
+        data-has-queued={String(props.hasQueuedMessages)}
+      />
+    );
+
+    act(() => {
+      useChatStore.setState({
+        queuedMessages: {
+          "task:task-1": [{
+            id: "queued-backend-1",
+            content: "Backend-confirmed follow up",
+            createdAt: "2026-07-31T10:00:00Z",
+            isEditing: false,
+            attachmentIds: [],
+            source: "backend",
+          }],
+        },
+        agentStatus: { "task:task-1": "generating" },
+        activeAgentRunIds: { "task:task-1": "run-claude" },
+        activeAgentRunHarnesses: { "task:task-1": "claude" },
+      });
+    });
+
+    render(
+      <TestWrapper>
+        <IntegratedChatPanel projectId="project-1" renderComposer={hostComposer} />
+      </TestWrapper>,
+    );
 
     expect(screen.getByTestId("queued-message-list")).toBeInTheDocument();
     expect(screen.getByTestId("queue-aware-host-composer")).toHaveAttribute(

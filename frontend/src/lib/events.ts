@@ -21,3 +21,6 @@ export const AGENT_TASK_STARTED = "agent:task_started";
 export const AGENT_TASK_COMPLETED = "agent:task_completed";
 export const AGENT_HOOK = "agent:hook";
 export const AGENT_SESSION_RECOVERED = "agent:session_recovered";
+
+// Delegation park (coordinator wakeups)
+export const DELEGATION_PARK_NEEDS_ATTENTION = "delegation_park:needs_attention";

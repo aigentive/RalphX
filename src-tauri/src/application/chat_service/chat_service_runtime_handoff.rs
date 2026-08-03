@@ -495,7 +495,7 @@ pub(super) async fn cancel_armed_runtime_handoff_owner(
 pub(super) async fn finalize_idle_runtime_handoff(
     interactive_process_registry: &InteractiveProcessRegistry,
     owner: &RuntimeHandoffOwner,
-) -> bool {
+) -> Option<crate::application::interactive_process_registry::InteractiveProcess> {
     interactive_process_registry
         .retire_armed_idle_if_owner(
             &owner.interactive_key(),
@@ -503,5 +503,40 @@ pub(super) async fn finalize_idle_runtime_handoff(
             &owner.agent_run_id,
         )
         .await
-        .is_some()
+}
+
+/// Retire only an exact captured owner that is still unarmed and idle.
+///
+/// The running registry is revalidated immediately before the IPR's atomic
+/// removal. The subsequent exact-run unregister cannot clear a replacement
+/// that won the race after that check. Any disagreement leaves both registries
+/// untouched so callers fail closed and retry from fresh authority.
+pub(super) async fn retire_unarmed_idle_runtime_owner(
+    running_agent_registry: &Arc<dyn RunningAgentRegistry>,
+    interactive_process_registry: &InteractiveProcessRegistry,
+    owner: &RuntimeHandoffOwner,
+) -> Option<crate::application::interactive_process_registry::InteractiveProcess> {
+    let running_key =
+        RunningAgentKey::new(owner.context_type.to_string(), &owner.runtime_context_id);
+    let current_running = running_agent_registry.get(&running_key).await;
+    if current_running
+        .as_ref()
+        .is_none_or(|running| running.agent_run_id != owner.agent_run_id)
+    {
+        return None;
+    }
+
+    let removed = interactive_process_registry
+        .retire_unarmed_idle_if_owner(
+            &owner.interactive_key(),
+            owner.interactive_process_token,
+            &owner.agent_run_id,
+        )
+        .await;
+    if removed.is_some() {
+        running_agent_registry
+            .unregister(&running_key, &owner.agent_run_id)
+            .await;
+    }
+    removed
 }

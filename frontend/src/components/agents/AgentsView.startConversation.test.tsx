@@ -2777,7 +2777,7 @@ describe("AgentsView start conversation", () => {
 
     await waitFor(() =>
       expect(
-        useAgentSessionStore.getState().lastRuntimeByProjectId["project-1"],
+        useAgentSessionStore.getState().lastRuntimeByProjectMode["project-1:edit"],
       ).toEqual({
         provider: "claude",
         modelId: "opus",
@@ -3813,6 +3813,8 @@ describe("AgentsView start conversation", () => {
         ?.selectedKey,
     ).toBe("project_default:main");
 
+    // The refresh lands only now, carrying the pre-click preferred key. It must
+    // repopulate the option list without reverting the explicit pick.
     resolveBranchOptions?.({
       options: [
         {
@@ -3826,9 +3828,358 @@ describe("AgentsView start conversation", () => {
             displayName: "Project default (main)",
           },
         },
+        {
+          key: "local_branch:feature/cached",
+          label: "feature/cached",
+          detail: "Local branch",
+          source: "local",
+          selection: {
+            kind: "local_branch",
+            ref: "feature/cached",
+            displayName: "feature/cached",
+          },
+        },
       ],
       selectedKey: "project_default:main",
+      degraded: { planBranches: false, agentBranches: false },
+      knownBranchRefs: ["main", "feature/cached"],
     });
+
+    await waitFor(() =>
+      expect(screen.queryByText("Refreshing branches...")).not.toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("agents-start-base")).toHaveTextContent(
+      "Project default (main)",
+    );
+    expect(
+      useAgentSessionStore.getState().lastBranchBaseSelectionByProjectId[
+        "project-1"
+      ],
+    ).toBe("project_default:main");
+    expect(
+      useAgentSessionStore.getState().branchBaseCacheByProjectId["project-1"]
+        ?.selectedKey,
+    ).toBe("project_default:main");
+  });
+
+  it("starts from the explicitly picked agent branch when the branch refresh resolves late", async () => {
+    mockAgentViewData();
+    startAgentConversationMock.mockResolvedValue({
+      conversation: conversation({
+        id: "conversation-agent-base",
+        contextId: "project-1",
+        title: "Fix workspace repair loops",
+      }),
+      workspace: conversationWorkspace({
+        conversationId: "conversation-agent-base",
+      }),
+    });
+    let resolveBranchOptions:
+      | ((result: unknown) => void)
+      | null = null;
+    loadBranchBaseOptionsMock.mockReturnValue(
+      new Promise((resolve) => {
+        resolveBranchOptions = resolve;
+      }),
+    );
+    resetAgentSessionState({
+      branchBaseCacheByProjectId: {
+        "project-1": {
+          options: [
+            {
+              key: "project_default:main",
+              label: "Project default (main)",
+              detail: "Configured project base branch",
+              source: "project",
+              selection: {
+                kind: "project_default",
+                ref: "main",
+                displayName: "Project default (main)",
+              },
+            },
+            {
+              key: "local_branch:ralphx/ralphx/agent-6c5acefd",
+              label: "Fix workspace repair loops",
+              detail: "ralphx/ralphx/agent-6c5acefd",
+              source: "agent",
+              selection: {
+                kind: "local_branch",
+                ref: "ralphx/ralphx/agent-6c5acefd",
+                displayName: "Fix workspace repair loops",
+              },
+            },
+          ],
+          selectedKey: "project_default:main",
+          loadedAt: "2026-07-31T00:00:00.000Z",
+        },
+      },
+      lastBranchBaseSelectionByProjectId: {
+        "project-1": "project_default:main",
+      },
+    });
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-start-composer")).toBeInTheDocument(),
+    );
+
+    // Opening the picker kicks off the slow refresh; the cached list is
+    // clickable immediately, which is exactly the reported race window.
+    await userEvent.click(screen.getByTestId("agents-start-base"));
+    await waitFor(() => expect(loadBranchBaseOptionsMock).toHaveBeenCalled());
+
+    await userEvent.click(screen.getByText("Fix workspace repair loops"));
+    expect(screen.getByTestId("agents-start-base")).toHaveTextContent(
+      "Fix workspace repair loops",
+    );
+
+    await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
+    await userEvent.click(screen.getByTestId("agents-start-mode-plan"));
+
+    // Refresh resolves last, still preferring the pre-click project default.
+    resolveBranchOptions?.({
+      options: [
+        {
+          key: "project_default:main",
+          label: "Project default (main)",
+          detail: "Configured project base branch",
+          source: "project",
+          selection: {
+            kind: "project_default",
+            ref: "main",
+            displayName: "Project default (main)",
+          },
+        },
+        {
+          key: "local_branch:ralphx/ralphx/agent-6c5acefd",
+          label: "Fix workspace repair loops",
+          detail: "ralphx/ralphx/agent-6c5acefd",
+          source: "agent",
+          selection: {
+            kind: "local_branch",
+            ref: "ralphx/ralphx/agent-6c5acefd",
+            displayName: "Fix workspace repair loops",
+          },
+        },
+      ],
+      selectedKey: "project_default:main",
+      degraded: { planBranches: false, agentBranches: false },
+      knownBranchRefs: ["main", "ralphx/ralphx/agent-6c5acefd"],
+    });
+    await waitFor(() =>
+      expect(screen.queryByText("Refreshing branches...")).not.toBeInTheDocument(),
+    );
+
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "continue the repair loop fix" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await waitFor(() =>
+      expect(startAgentConversationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: "project-1",
+          mode: "plan",
+          base: expect.objectContaining({
+            kind: "local_branch",
+            ref: "ralphx/ralphx/agent-6c5acefd",
+            branchMode: "isolated",
+          }),
+        }),
+      ),
+    );
+    expect(startAgentConversationMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        base: expect.objectContaining({ kind: "project_default" }),
+      }),
+    );
+  });
+
+  it("blocks the start when an explicitly picked base cannot be re-resolved", async () => {
+    mockAgentViewData();
+    const cachedOptions = [
+      {
+        key: "project_default:main",
+        label: "Project default (main)",
+        detail: "Configured project base branch",
+        source: "project" as const,
+        selection: {
+          kind: "project_default" as const,
+          ref: "main",
+          displayName: "Project default (main)",
+        },
+      },
+      {
+        key: "local_branch:ralphx/ralphx/agent-6c5acefd",
+        label: "Fix workspace repair loops",
+        detail: "ralphx/ralphx/agent-6c5acefd",
+        source: "agent" as const,
+        selection: {
+          kind: "local_branch" as const,
+          ref: "ralphx/ralphx/agent-6c5acefd",
+          displayName: "Fix workspace repair loops",
+        },
+      },
+    ];
+    // The refresh drops the agent branch, and so does the submit-time retry.
+    let resolveBranchOptions: ((result: unknown) => void) | null = null;
+    loadBranchBaseOptionsMock
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveBranchOptions = resolve;
+        }),
+      )
+      .mockResolvedValue({
+        options: [cachedOptions[0]],
+        selectedKey: "project_default:main",
+        degraded: { planBranches: false, agentBranches: false },
+        knownBranchRefs: ["main"],
+      });
+    resetAgentSessionState({
+      branchBaseCacheByProjectId: {
+        "project-1": {
+          options: cachedOptions,
+          selectedKey: "project_default:main",
+          loadedAt: "2026-07-31T00:00:00.000Z",
+        },
+      },
+      lastBranchBaseSelectionByProjectId: {
+        "project-1": "project_default:main",
+      },
+    });
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-start-composer")).toBeInTheDocument(),
+    );
+    await userEvent.click(screen.getByTestId("agents-start-base"));
+    await waitFor(() => expect(loadBranchBaseOptionsMock).toHaveBeenCalled());
+    await userEvent.click(screen.getByText("Fix workspace repair loops"));
+
+    resolveBranchOptions?.({
+      options: [cachedOptions[0]],
+      selectedKey: "project_default:main",
+      degraded: { planBranches: false, agentBranches: false },
+      knownBranchRefs: ["main"],
+    });
+    await waitFor(() =>
+      expect(screen.queryByText("Refreshing branches...")).not.toBeInTheDocument(),
+    );
+
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "continue the repair loop fix" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(/could not be resolved/i),
+      ).toBeInTheDocument(),
+    );
+    // Exactly one retry: the initial refresh plus one submit-time re-resolve.
+    expect(loadBranchBaseOptionsMock).toHaveBeenCalledTimes(2);
+    expect(screen.getByText(/ralphx\/ralphx\/agent-6c5acefd/)).toBeInTheDocument();
+    expect(startAgentConversationMock).not.toHaveBeenCalled();
+  });
+
+  it("starts after a successful retry resolve of a dropped base branch", async () => {
+    mockAgentViewData();
+    startAgentConversationMock.mockResolvedValue({
+      conversation: conversation({
+        id: "conversation-agent-retry",
+        contextId: "project-1",
+        title: "Fix workspace repair loops",
+      }),
+      workspace: conversationWorkspace({
+        conversationId: "conversation-agent-retry",
+      }),
+    });
+    const projectDefaultOption = {
+      key: "project_default:main",
+      label: "Project default (main)",
+      detail: "Configured project base branch",
+      source: "project" as const,
+      selection: {
+        kind: "project_default" as const,
+        ref: "main",
+        displayName: "Project default (main)",
+      },
+    };
+    const agentBranchOption = {
+      key: "local_branch:ralphx/ralphx/agent-6c5acefd",
+      label: "Fix workspace repair loops",
+      detail: "ralphx/ralphx/agent-6c5acefd",
+      source: "agent" as const,
+      selection: {
+        kind: "local_branch" as const,
+        ref: "ralphx/ralphx/agent-6c5acefd",
+        displayName: "Fix workspace repair loops",
+      },
+    };
+    // First load drops the branch; the submit-time retry restores it.
+    let resolveBranchOptions: ((result: unknown) => void) | null = null;
+    loadBranchBaseOptionsMock
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveBranchOptions = resolve;
+        }),
+      )
+      .mockResolvedValue({
+        options: [projectDefaultOption, agentBranchOption],
+        selectedKey: "project_default:main",
+        degraded: { planBranches: false, agentBranches: false },
+        knownBranchRefs: ["main", "ralphx/ralphx/agent-6c5acefd"],
+      });
+    resetAgentSessionState({
+      branchBaseCacheByProjectId: {
+        "project-1": {
+          options: [projectDefaultOption, agentBranchOption],
+          selectedKey: "project_default:main",
+          loadedAt: "2026-07-31T00:00:00.000Z",
+        },
+      },
+      lastBranchBaseSelectionByProjectId: {
+        "project-1": "project_default:main",
+      },
+    });
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-start-composer")).toBeInTheDocument(),
+    );
+    await userEvent.click(screen.getByTestId("agents-start-base"));
+    await waitFor(() => expect(loadBranchBaseOptionsMock).toHaveBeenCalled());
+    await userEvent.click(screen.getByText("Fix workspace repair loops"));
+
+    resolveBranchOptions?.({
+      options: [projectDefaultOption],
+      selectedKey: "project_default:main",
+      degraded: { planBranches: false, agentBranches: false },
+      knownBranchRefs: ["main"],
+    });
+    await waitFor(() =>
+      expect(screen.queryByText("Refreshing branches...")).not.toBeInTheDocument(),
+    );
+
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "continue the repair loop fix" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await waitFor(() =>
+      expect(startAgentConversationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          base: expect.objectContaining({
+            kind: "local_branch",
+            ref: "ralphx/ralphx/agent-6c5acefd",
+          }),
+        }),
+      ),
+    );
+    expect(screen.queryByText(/could not be resolved/i)).not.toBeInTheDocument();
   });
 
   it("starts a chat-mode conversation from the selected base and shows its workspace", async () => {

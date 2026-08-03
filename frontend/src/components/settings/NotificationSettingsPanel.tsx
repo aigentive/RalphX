@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { Bell, Info, TriangleAlert } from "lucide-react";
+import { Info, TriangleAlert } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   isPermissionGranted,
@@ -14,7 +14,7 @@ import {
 } from "@/hooks/useNotificationSettings";
 import { useProjects } from "@/hooks/useProjects";
 
-import { SectionCard, ToggleSettingRow } from "./SettingsView.shared";
+import { SettingsSection, ToggleSettingRow } from "./SettingsView.shared";
 
 const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
   desktop_enabled: true,
@@ -180,11 +180,7 @@ export function NotificationSettingsPanel() {
   };
 
   return (
-    <SectionCard
-      icon={<Bell className="h-[18px] w-[18px] text-[var(--card-icon-color)]" />}
-      title="Notifications"
-      description="Choose how RalphX gets your attention."
-    >
+    <SettingsSection>
       <ToggleSettingRow
         id="notification-desktop-enabled"
         label="Enable desktop notifications"
@@ -268,6 +264,6 @@ export function NotificationSettingsPanel() {
           </div>
         </InlineNotice>
       ) : null}
-    </SectionCard>
+    </SettingsSection>
   );
 }

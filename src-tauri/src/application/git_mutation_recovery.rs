@@ -559,7 +559,7 @@ async fn observe_repair_push_effect(
         })
         .await?
     {
-        CompleteAgentWorkspaceRepairEffectOutcome::Applied(effect) => Ok(effect),
+        CompleteAgentWorkspaceRepairEffectOutcome::Applied(effect) => Ok(*effect),
         CompleteAgentWorkspaceRepairEffectOutcome::Stale(_) => Err(AppError::Conflict(
             "repair push receipt lost current attempt authority during recovery".to_string(),
         )),
@@ -594,7 +594,7 @@ async fn fail_repair_push_effect(
         })
         .await?
     {
-        CompleteAgentWorkspaceRepairEffectOutcome::Applied(effect) => Ok(effect),
+        CompleteAgentWorkspaceRepairEffectOutcome::Applied(effect) => Ok(*effect),
         CompleteAgentWorkspaceRepairEffectOutcome::Stale(_) => Err(AppError::Conflict(
             "repair push failure lost current attempt authority during recovery".to_string(),
         )),

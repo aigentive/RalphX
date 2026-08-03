@@ -153,6 +153,10 @@ fn row_to_workspace(row: &rusqlite::Row<'_>) -> AppResult<AgentConversationWorks
         pr_supervision_updated_at: row
             .get::<_, Option<String>>("pr_supervision_updated_at")?
             .map(|value| parse_datetime(&value)),
+        last_blocked_pr_health_fingerprint: row.get("last_blocked_pr_health_fingerprint")?,
+        last_blocked_pr_health_at: row
+            .get::<_, Option<String>>("last_blocked_pr_health_at")?
+            .map(|value| parse_datetime(&value)),
         status: AgentConversationWorkspaceStatus::from_str(&status)
             .unwrap_or(AgentConversationWorkspaceStatus::Active),
         created_at: parse_datetime(&created_at),
@@ -596,6 +600,7 @@ fn row_to_workspace_review_monitor(
             .map(ChatConversationId::from_string),
         review_fixer_status: row.get("review_fixer_status")?,
         review_fixer_attempt_id: row.get("review_fixer_attempt_id")?,
+        review_fixer_cycle_count: row.get("review_fixer_cycle_count")?,
         last_run_id: row.get("last_run_id")?,
         last_error: row.get("last_error")?,
         auto_merge_guard,
@@ -2473,6 +2478,30 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
             .await
     }
 
+    async fn set_last_blocked_pr_health_fingerprint(
+        &self,
+        conversation_id: &ChatConversationId,
+        fingerprint: Option<&str>,
+    ) -> AppResult<()> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let fingerprint = fingerprint.map(str::to_string);
+        let observed_at = fingerprint.as_ref().map(|_| Utc::now().to_rfc3339());
+        let now = Utc::now().to_rfc3339();
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE agent_conversation_workspaces
+                     SET last_blocked_pr_health_fingerprint = ?2,
+                         last_blocked_pr_health_at = ?3,
+                         updated_at = ?4
+                     WHERE conversation_id = ?1",
+                    rusqlite::params![conversation_id, fingerprint, observed_at, now],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
     async fn update_pr_supervision_preferences(
         &self,
         conversation_id: &ChatConversationId,
@@ -3891,6 +3920,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
             .map(|id| id.as_str().to_string());
         let review_fixer_status = monitor.review_fixer_status;
         let review_fixer_attempt_id = monitor.review_fixer_attempt_id;
+        let review_fixer_cycle_count = monitor.review_fixer_cycle_count;
         let last_run_id = monitor.last_run_id;
         let last_error = monitor.last_error;
         let auto_merge_guard_status = monitor
@@ -3950,6 +3980,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         auto_merge_guard_method, auto_merge_guard_target_scope,
                         auto_merge_guard_diff_fingerprint, auto_merge_guard_head_sha,
                         auto_merge_guard_last_error, review_fixer_attempt_id,
+                        review_fixer_cycle_count,
                         review_requested_changes_artifact_id,
                         review_requested_changes_artifact_version,
                         review_requested_changes_artifact_updated_at,
@@ -3962,7 +3993,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25,
                         ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37,
                         ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48,
-                        ?49, ?50, ?51, ?52
+                        ?49, ?50, ?51, ?52, ?53
                     )
                     ON CONFLICT(conversation_id) DO UPDATE SET
                         project_id = excluded.project_id,
@@ -4005,6 +4036,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         review_fixer_conversation_id = excluded.review_fixer_conversation_id,
                         review_fixer_status = excluded.review_fixer_status,
                         review_fixer_attempt_id = excluded.review_fixer_attempt_id,
+                        review_fixer_cycle_count = excluded.review_fixer_cycle_count,
                         last_run_id = excluded.last_run_id,
                         last_error = excluded.last_error,
                         auto_merge_guard_status = agent_workspace_review_monitors.auto_merge_guard_status,
@@ -4060,6 +4092,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         auto_merge_guard_head_sha,
                         auto_merge_guard_last_error,
                         review_fixer_attempt_id,
+                        review_fixer_cycle_count,
                         review_requested_changes_artifact_id,
                         review_requested_changes_artifact_version,
                         review_requested_changes_artifact_updated_at,
@@ -4133,6 +4166,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                     "UPDATE agent_workspace_review_monitors
                      SET review_fixer_status = 'routing',
                          review_fixer_attempt_id = ?10,
+                         review_fixer_cycle_count = review_fixer_cycle_count + 1,
                          review_fixer_run_id = NULL,
                          review_fixer_conversation_id = NULL,
                          last_error = NULL,

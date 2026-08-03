@@ -1,18 +1,21 @@
 import { useEffect, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { ExternalLink, Loader2, Plug } from "lucide-react";
+import { ExternalLink, Loader2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
-import { useAtlassianIntegration } from "@/hooks/useAtlassianIntegration";
+import {
+  isAtlassianConnected,
+  useAtlassianIntegration,
+} from "@/hooks/useAtlassianIntegration";
 
 import {
   ErrorBanner,
   IntegrationDisconnectButton,
   IntegrationStatusBanner,
-  SectionCard,
+  SettingsSection,
 } from "./SettingsView.shared";
 
 const EMPTY_FORM = {
@@ -109,7 +112,7 @@ export function AtlassianIntegrationSettingsPanel() {
     isCompletingOAuthLocalCallback ||
     isExchangingOAuthCode;
   const usingOAuth = form.authMethod === "oauth";
-  const connected = Boolean(settings?.enabled);
+  const connected = isAtlassianConnected(settings);
   const hasConnection = Boolean(
     settings?.enabled ||
       settings?.hasApiToken ||
@@ -252,24 +255,16 @@ export function AtlassianIntegrationSettingsPanel() {
 
   if (isLoading) {
     return (
-      <SectionCard
-        icon={<Plug className="h-[18px] w-[18px]" />}
-        title="Atlassian"
-        description="Jira and Confluence context for agent conversations"
-      >
+      <SettingsSection>
         <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-2 text-sm text-[var(--text-muted)]">
           Loading Atlassian settings...
         </div>
-      </SectionCard>
+      </SettingsSection>
     );
   }
 
   return (
-    <SectionCard
-      icon={<Plug className="h-[18px] w-[18px]" />}
-      title="Atlassian"
-      description="Jira and Confluence context for agent conversations"
-    >
+    <SettingsSection>
       {displayedError ? (
         <ErrorBanner error={displayedError} onDismiss={() => setLocalError(null)} />
       ) : null}
@@ -501,6 +496,6 @@ export function AtlassianIntegrationSettingsPanel() {
           ) : null}
         </div>
       </div>
-    </SectionCard>
+    </SettingsSection>
   );
 }

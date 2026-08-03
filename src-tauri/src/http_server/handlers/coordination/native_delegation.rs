@@ -1,4 +1,5 @@
 use super::*;
+use crate::domain::entities::DelegationParkState;
 
 fn delegated_event_seq() -> u64 {
     u64::try_from(Utc::now().timestamp_millis()).unwrap_or_default()
@@ -125,7 +126,7 @@ fn cached_streaming_task_from_completed_payload(
     }
 }
 
-async fn fail_started_delegated_launch(
+pub(crate) async fn fail_started_delegated_launch(
     state: &HttpServerState,
     chat_service: &dyn ChatService,
     delegated_session_id: &str,
@@ -366,12 +367,121 @@ fn delegated_run_summary(run: AgentRun) -> DelegatedRunSummary {
     }
 }
 
+async fn resolve_current_delegated_run(
+    state: &HttpServerState,
+    conversation_id: &ChatConversationId,
+    launch_run_id: Option<&str>,
+) -> crate::error::AppResult<Option<AgentRun>> {
+    match state
+        .app_state
+        .agent_run_repo
+        .get_latest_for_conversation(conversation_id)
+        .await?
+    {
+        Some(run) => Ok(Some(run)),
+        None => match launch_run_id {
+            Some(run_id) => {
+                state
+                    .app_state
+                    .agent_run_repo
+                    .get_by_id(&AgentRunId::from_string(run_id.to_string()))
+                    .await
+            }
+            None => Ok(None),
+        },
+    }
+}
+
 async fn settle_delegation_from_run(
     state: &HttpServerState,
     job_id: &str,
-    run: AgentRun,
-    completed_content: Option<String>,
+    mut run: AgentRun,
+    mut completed_content: Option<String>,
 ) -> crate::error::AppResult<Option<DelegationJobSnapshot>> {
+    if run.status == crate::domain::entities::AgentRunStatus::Running {
+        return Ok(None);
+    }
+    let registered = state.delegation_service.snapshot(job_id).await;
+    if let Some(snapshot) = registered.as_ref() {
+        if snapshot.status != "running" {
+            return Ok(Some(snapshot.clone()));
+        }
+    }
+
+    // Nested delegation: a delegate remains unfinished through arm, wake dispatch, and the gap
+    // before its resumed run exists. Fail closed on park/run reads so stale launch output can never
+    // authorize parent settlement.
+    if let Some(delegated_conversation_id) = registered
+        .as_ref()
+        .and_then(|snapshot| snapshot.delegated_conversation_id.as_deref())
+    {
+        let conversation_id =
+            ChatConversationId::from_string(delegated_conversation_id.to_string());
+        if let Some(park) = state
+            .app_state
+            .delegation_park_repo
+            .get_settlement_blocking_for_conversation(&conversation_id)
+            .await?
+        {
+            match park.state {
+                DelegationParkState::Armed | DelegationParkState::Waking => return Ok(None),
+                DelegationParkState::Woken => {
+                    let Some(current_run) = resolve_current_delegated_run(
+                        state,
+                        &conversation_id,
+                        registered
+                            .as_ref()
+                            .and_then(|snapshot| snapshot.delegated_agent_run_id.as_deref()),
+                    )
+                    .await?
+                    else {
+                        return Ok(None);
+                    };
+                    let parked_run_id = park.parent_agent_run_id.as_str();
+                    let is_resumed_run = current_run.id != park.parent_agent_run_id
+                        && (current_run.parent_run_id.as_deref() == Some(parked_run_id.as_str())
+                            || park
+                                .wake_claimed_at
+                                .is_some_and(|claimed_at| current_run.started_at >= claimed_at));
+                    if current_run.status == crate::domain::entities::AgentRunStatus::Running {
+                        return Ok(None);
+                    }
+                    if !is_resumed_run {
+                        if !park.is_expired(Utc::now()) {
+                            return Ok(None);
+                        }
+                        tracing::warn!(
+                            park_id = %park.id,
+                            parent_conversation_id = %park.parent_conversation_id,
+                            current_run_id = %current_run.id,
+                            "expired woken delegation park no longer blocks parent settlement"
+                        );
+                    }
+                    if current_run.id != run.id {
+                        completed_content = if current_run.status
+                            == crate::domain::entities::AgentRunStatus::Completed
+                        {
+                            state
+                                .app_state
+                                .chat_message_repo
+                                .get_by_conversation(&conversation_id)
+                                .await
+                                .ok()
+                                .and_then(latest_delegated_handoff_message)
+                                .map(|message| message.content)
+                        } else {
+                            None
+                        };
+                        run = current_run;
+                    }
+                }
+                DelegationParkState::Superseded
+                | DelegationParkState::Expired
+                | DelegationParkState::Failed => {}
+            }
+        }
+    }
+
     let (status, error) = match run.status {
         crate::domain::entities::AgentRunStatus::Running => return Ok(None),
         crate::domain::entities::AgentRunStatus::Completed => ("completed", None),
@@ -385,11 +495,7 @@ async fn settle_delegation_from_run(
         ),
         crate::domain::entities::AgentRunStatus::Cancelled => ("cancelled", None),
     };
-    if let Some(snapshot) = state.delegation_service.snapshot(job_id).await {
-        if snapshot.status != "running" {
-            return Ok(Some(snapshot));
-        }
-    }
+
     let terminal_status = match run.status {
         crate::domain::entities::AgentRunStatus::Completed => {
             AgentTaskAssignmentTerminalStatus::Completed
@@ -427,6 +533,11 @@ async fn settle_delegation_from_run(
             .await?
     };
     if let Some(assignment) = assignment {
+        state
+            .app_state
+            .managed_team
+            .settle_member_assignment(&assignment, terminal_status, error.as_deref())
+            .await?;
         candidate.assignment = Some(delegation_assignment_summary(&assignment));
     }
     persist_terminal_projection(
@@ -481,6 +592,44 @@ async fn settle_delegation_from_run(
             );
         }
     }
+
+    // Effects strictly after authority: the wake is dispatched only once `commit_terminal` has
+    // accepted this terminal above. Failures here are non-fatal because startup reconciliation
+    // re-derives the same decision from durable park + agent_run state.
+    // Key the wake on the run id the park was ARMED against (the registered launch run), not the
+    // conversation's newest run. A delegate that itself parked and resumed carries a newer run id,
+    // which would match no park row and silently drop the parent's wake.
+    let parked_run_id = candidate
+        .delegated_agent_run_id
+        .clone()
+        .unwrap_or_else(|| latest_run.agent_run_id.clone());
+    // Wake DELIVERY is decoupled from settlement. Delivering a wake launches the parked
+    // coordinator's next turn and, on failure, retries with backoff for up to
+    // `park_wake_retry_max * park_wake_retry_backoff_secs`. Awaiting that here would stall the
+    // 100ms settlement monitor and any in-flight `delegate_wait` request for minutes.
+    //
+    // Exactly-once is preserved regardless of ordering: `dispatch_wake` claims the park with an
+    // `armed -> waking` CAS, and a dispatcher that dies mid-wake is recovered by the stale-claim
+    // sweep. Spawning happens strictly after `commit_terminal` accepted above.
+    let park_service = state.app_state.build_delegation_park_service();
+    let settled_status = status.to_string();
+    let wake_job_id = job_id.to_string();
+    tokio::spawn(async move {
+        if let Err(error) = park_service
+            .note_job_settled(
+                &AgentRunId::from_string(parked_run_id.clone()),
+                &settled_status,
+            )
+            .await
+        {
+            warn!(
+                job_id = wake_job_id,
+                delegated_agent_run_id = parked_run_id,
+                %error,
+                "Parked coordinator wake dispatch failed; startup reconciliation will retry"
+            );
+        }
+    });
 
     Ok(Some(candidate))
 }
@@ -543,7 +692,7 @@ pub(super) async fn resolve_parent_conversation_id(
         .map(|conversation| conversation.id.as_str()))
 }
 
-async fn ensure_delegated_conversation(
+pub(crate) async fn ensure_delegated_conversation(
     state: &HttpServerState,
     delegated_session_id: &str,
     parent_conversation_id: Option<&str>,
@@ -838,13 +987,17 @@ pub(crate) async fn start_delegate_impl_with_parent_run(
     trusted_caller_conversation_id: Option<&str>,
     trusted_parent_run_id: Option<&str>,
 ) -> Result<DelegationJobSnapshot, JsonError> {
-    let caller_agent_name = req.caller_agent_name.as_deref().ok_or_else(|| {
+    let caller_agent_name = req.caller_agent_name.clone().ok_or_else(|| {
         json_error(
             StatusCode::BAD_REQUEST,
             "delegate_start requires caller_agent_name from the MCP transport",
         )
     })?;
-    let parent = resolve_delegate_parent(state, &req).await?;
+    let mut parent = resolve_delegate_parent(state, &req).await?;
+    // Child runtimes (Workspace Review, forks, started child conversations) call from a
+    // descendant of the resolved parent conversation; adopt that runtime as the caller before
+    // run identity is resolved so the run/task scope belong to the delegating agent.
+    apply_trusted_caller_conversation(state, &mut parent, trusted_caller_conversation_id).await?;
     let parent_agent_run_id = resolve_trusted_caller_agent_run_id(
         state,
         &parent,
@@ -858,289 +1011,52 @@ pub(crate) async fn start_delegate_impl_with_parent_run(
             "delegate_start task_ref requires a trusted active caller run",
         ));
     }
-    let requested_session = preflight_requested_delegated_session(state, &req, &parent).await?;
-    let requested_harness = requested_session
-        .as_ref()
-        .map(|session| session.harness)
-        .or(req.harness);
-    let project = state
-        .app_state
-        .project_repo
-        .get_by_id(&ProjectId::from_string(parent.project_id.clone()))
-        .await
-        .map_err(|error| {
-            json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to load delegated project: {error}"),
-            )
-        })?
-        .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Delegated project not found"))?;
-    let role = routing_role_for_delegated_launch(
-        &req.agent_name,
-        parent.context_type,
-        parent.ideation_verification,
-    );
-    let resolved_spawn = resolve_manual_role_spawn_settings(
-        &req.agent_name,
-        Some(parent.project_id.as_str()),
-        Some(std::path::Path::new(&project.working_directory)),
-        role,
-        None,
-        requested_harness,
-        req.model.as_deref(),
-        &state.app_state.manual_role_default_service(),
-    )
-    .await
-    .map_err(|error| {
-        json_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to resolve delegated agent defaults: {error}"),
-        )
-    })?;
-    let harness = resolved_spawn.effective_harness;
-    let delegated_model = req.model.clone();
-    let plugin_dir = resolve_harness_plugin_dir(harness, &parent.working_directory);
-    let project_root = resolve_project_root_from_plugin_dir(&plugin_dir);
-    let (_caller_definition, definition) = resolve_delegation_policy(
-        &project_root,
-        caller_agent_name,
-        req.caller_agent_profile.as_deref(),
-        &req.agent_name,
-    )?;
-    let delegated_session_id =
-        resolve_delegated_session_id(state, &req, &parent, requested_session.as_ref(), harness)
-            .await?;
-    let delegated_session_entity = DelegatedSessionId::from_string(delegated_session_id.clone());
-    let assignment_service = AgentTaskService::new(state.app_state.agent_task_repo.clone());
-    let planned_agent_run_id = req.task_ref.as_ref().map(|_| AgentRunId::new());
-    let reserved_assignment = if let Some(task_ref) = req.task_ref.as_deref() {
-        let Some(caller_run_id) = parent_agent_run_id.as_deref() else {
-            return Err(json_error(
-                StatusCode::BAD_REQUEST,
-                "delegate_start task_ref requires a trusted active caller run",
-            ));
-        };
-        let caller_scope = resolve_caller_agent_task_scope(&parent, caller_agent_name);
-        match assignment_service
-            .reserve_assignment(
-                &caller_scope,
-                task_ref,
-                &delegated_session_entity,
-                &AgentRunId::from_string(caller_run_id.to_string()),
-                &definition.name,
-            )
-            .await
-        {
-            Ok(Some(reservation)) => Some(reservation.assignment),
-            Ok(None) => {
-                let message =
-                    format!("Agent task '{task_ref}' was not found in the caller's current ledger");
-                mark_delegated_launch_failed(state, &delegated_session_id, &message).await?;
-                return Err(json_error(StatusCode::NOT_FOUND, message));
-            }
-            Err(error) => {
-                let message = format!("Failed to reserve delegated agent task: {error}");
-                mark_delegated_launch_failed(state, &delegated_session_id, &message).await?;
-                return Err(json_error(StatusCode::CONFLICT, message));
-            }
-        }
-    } else {
-        None
-    };
-    if let Some(reserved) = reserved_assignment.as_ref() {
-        let Some(planned_run_id) = planned_agent_run_id.as_ref() else {
-            let message = "Assigned delegated launch has no preallocated run identity".to_string();
-            mark_delegated_launch_failed(state, &delegated_session_id, &message).await?;
-            return Err(json_error(StatusCode::INTERNAL_SERVER_ERROR, message));
-        };
-        match assignment_service
-            .plan_assignment_run(
-                &reserved.assignment.id,
-                &delegated_session_entity,
-                planned_run_id,
-            )
-            .await
-        {
-            Ok(Some(_)) => {}
-            Ok(None) => {
-                let message =
-                    "Reserved delegate assignment disappeared before run planning".to_string();
-                mark_delegated_launch_failed(state, &delegated_session_id, &message).await?;
-                return Err(json_error(StatusCode::INTERNAL_SERVER_ERROR, message));
-            }
-            Err(error) => {
-                let message = format!("Failed to plan delegated assignment run: {error}");
-                mark_delegated_launch_failed(state, &delegated_session_id, &message).await?;
-                return Err(json_error(StatusCode::INTERNAL_SERVER_ERROR, message));
-            }
-        }
-    }
-    let logical_effort = req.logical_effort.or(resolved_spawn.logical_effort);
-    let approval_policy = req
-        .approval_policy
-        .clone()
-        .or(resolved_spawn.approval_policy.clone());
-    let sandbox_mode = req
-        .sandbox_mode
-        .clone()
-        .or(resolved_spawn.sandbox_mode.clone());
-    if let Err(error) = state
-        .app_state
-        .delegated_session_repo
-        .update_status(
-            &DelegatedSessionId::from_string(delegated_session_id.clone()),
-            "running",
-            None,
-            None,
-        )
-        .await
-    {
-        let message = format!("Failed to update delegated session status: {error}");
-        mark_delegated_launch_failed(state, &delegated_session_id, &message).await?;
-        return Err(json_error(StatusCode::INTERNAL_SERVER_ERROR, message));
-    }
-
-    let delegated_conversation = match ensure_delegated_conversation(
-        state,
-        &delegated_session_id,
-        parent.parent_conversation_id.as_deref(),
-        req.title.as_deref(),
-    )
-    .await
-    {
-        Ok(conversation) => conversation,
-        Err(error) => {
-            mark_delegated_launch_failed(state, &delegated_session_id, &json_error_detail(&error))
-                .await?;
-            return Err(error);
-        }
-    };
-
-    let chat_service = state
-        .app_state
-        .build_chat_service_with_execution_state(Arc::clone(&state.execution_state));
-    let send_result = chat_service
-        .send_message(
-            ChatContextType::Delegation,
-            &delegated_session_id,
-            &build_delegated_prompt(
-                &definition.name,
-                parent.context_type,
-                &parent.context_id,
-                req.parent_turn_id.as_deref(),
-                req.parent_message_id.as_deref(),
-                parent.parent_conversation_id.as_deref(),
-                req.parent_tool_use_id.as_deref(),
-                &delegated_session_id,
-                reserved_assignment.as_ref(),
-                &req.prompt,
-            ),
-            SendMessageOptions {
-                preallocated_agent_run_id: planned_agent_run_id,
-                queue_policy: if reserved_assignment.is_some() {
-                    SendQueuePolicy::RequireImmediateStart
-                } else {
-                    SendQueuePolicy::AllowQueue
-                },
-                routing_role_override: Some(role),
-                harness_override: Some(harness),
-                agent_name_override: Some(definition.name.clone()),
-                model_override: delegated_model.clone(),
-                working_directory_override: Some(parent.working_directory.clone()),
-                logical_effort_override: logical_effort.clone(),
-                approval_policy_override: approval_policy.clone(),
-                sandbox_mode_override: sandbox_mode.clone(),
-                is_external_mcp: true,
-                ..Default::default()
+    let reusable_delegated_session =
+        preflight_requested_delegated_session(state, &req, &parent).await?;
+    let launch = NativeDelegationLauncher::new(state)
+        .launch(NativeDelegationLaunchRequest {
+            caller_agent_name,
+            caller_agent_profile: req.caller_agent_profile.clone(),
+            parent: NativeDelegationLaunchParent {
+                context_type: parent.context_type,
+                context_id: parent.context_id,
+                project_id: parent.project_id,
+                working_directory: parent.working_directory,
+                caller_conversation_id: parent.caller_conversation_id,
+                workspace_anchor_conversation_id: parent.workspace_anchor_conversation_id,
+                parent_conversation_id: parent.parent_conversation_id,
+                ideation_verification: parent.ideation_verification,
             },
-        )
-        .await;
-    let send_result = match send_result {
-        Ok(result) => result,
-        Err(error) => {
-            let error_message = format!("Failed to start delegated chat run: {error}");
-            mark_delegated_launch_failed(state, &delegated_session_id, &error_message).await?;
-            return Err(json_error(StatusCode::INTERNAL_SERVER_ERROR, error_message));
-        }
-    };
-    if let Some(planned_run_id) = planned_agent_run_id {
-        if send_result.agent_run_id != planned_run_id.as_str() {
-            let error_message =
-                "Delegated run did not use its preallocated assignment identity".to_string();
-            fail_started_delegated_launch(
-                state,
-                &chat_service,
-                &delegated_session_id,
-                &send_result.agent_run_id,
-                &error_message,
-            )
-            .await?;
-            return Err(json_error(StatusCode::INTERNAL_SERVER_ERROR, error_message));
-        }
-    }
-    let bound_assignment = if let Some(reserved) = reserved_assignment.as_ref() {
-        let planned_run_id = planned_agent_run_id.ok_or_else(|| {
-            json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Assigned delegated launch lost its preallocated run identity",
-            )
-        })?;
-        match assignment_service
-            .bind_assignment_run(
-                &reserved.assignment.id,
-                &delegated_session_entity,
-                &planned_run_id,
-            )
-            .await
-        {
-            Ok(assignment) => assignment,
-            Err(error) => {
-                let error_message =
-                    format!("Delegated run started but task assignment binding failed: {error}");
-                fail_started_delegated_launch(
-                    state,
-                    &chat_service,
-                    &delegated_session_id,
-                    &send_result.agent_run_id,
-                    &error_message,
-                )
-                .await?;
-                return Err(json_error(StatusCode::INTERNAL_SERVER_ERROR, error_message));
-            }
-        }
-    } else {
-        None
-    };
-    if reserved_assignment.is_some() && bound_assignment.is_none() {
-        let error_message =
-            "Delegated run started but its reserved task assignment disappeared".to_string();
-        fail_started_delegated_launch(
-            state,
-            &chat_service,
-            &delegated_session_id,
-            &send_result.agent_run_id,
-            &error_message,
-        )
+            inherit_context: req.inherit_context,
+            caller_agent_run_id: parent_agent_run_id,
+            target_agent_name: req.agent_name.clone(),
+            reusable_delegated_session,
+            task_ref: req.task_ref.clone(),
+            preallocated_agent_run_id: None,
+            prompt: req.prompt.clone(),
+            title: req.title.clone(),
+            parent_turn_id: req.parent_turn_id.clone(),
+            parent_message_id: req.parent_message_id.clone(),
+            parent_tool_use_id: req.parent_tool_use_id.clone(),
+            harness: req.harness,
+            model: req.model.clone(),
+            logical_effort: req.logical_effort,
+            approval_policy: req.approval_policy.clone(),
+            sandbox_mode: req.sandbox_mode.clone(),
+        })
         .await?;
-        return Err(json_error(StatusCode::INTERNAL_SERVER_ERROR, error_message));
-    }
-
-    let launched_run = match state
-        .app_state
-        .agent_run_repo
-        .get_by_id(&AgentRunId::from_string(send_result.agent_run_id.clone()))
-        .await
-    {
-        Ok(run) => run,
-        Err(error) => {
-            warn!(
-                agent_run_id = send_result.agent_run_id,
-                %error,
-                "Delegated run started but effective runtime attribution could not be loaded"
-            );
-            None
-        }
-    };
+    let parent = launch.parent.clone();
+    let parent_agent_run_id = launch.caller_agent_run_id.clone();
+    let delegated_session_id = launch.delegated_session_id.clone();
+    let delegated_conversation_id = launch.delegated_conversation_id.clone();
+    let delegated_agent_run_id = launch.delegated_agent_run_id.clone();
+    let bound_assignment = launch.assignment.clone();
+    let harness = launch.harness;
+    let launched_run = launch.launched_run.clone();
+    let delegated_model = launch.logical_model.clone();
+    let logical_effort = launch.logical_effort;
+    let approval_policy = launch.approval_policy.clone();
+    let sandbox_mode = launch.sandbox_mode.clone();
 
     let job_id = uuid::Uuid::new_v4().to_string();
     let snapshot = state
@@ -1155,9 +1071,9 @@ pub(crate) async fn start_delegate_impl_with_parent_run(
             parent_agent_run_id,
             req.parent_tool_use_id.clone(),
             delegated_session_id.clone(),
-            Some(delegated_conversation.id.as_str()),
-            Some(send_result.agent_run_id.clone()),
-            definition.name.clone(),
+            Some(delegated_conversation_id.clone()),
+            Some(delegated_agent_run_id.clone()),
+            launch.agent_name.clone(),
             bound_assignment.as_ref().map(delegation_assignment_summary),
             harness.to_string(),
             launched_run
@@ -1222,18 +1138,21 @@ pub(crate) async fn start_delegate_impl_with_parent_run(
     }
 
     let monitor_state = state.clone();
-    let agent_run_id = send_result.agent_run_id.clone();
-    let conversation_id = delegated_conversation.id;
+    let launch_run_id = delegated_agent_run_id;
+    let conversation_id = ChatConversationId::from_string(delegated_conversation_id);
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_millis(100)).await;
-            let run = match monitor_state
-                .app_state
-                .agent_run_repo
-                .get_by_id(&crate::domain::entities::AgentRunId::from_string(
-                    agent_run_id.clone(),
-                ))
-                .await
+            // Resolve the delegated conversation's CURRENT run, not the launch-time run id.
+            // A delegate that parks and is later woken resumes on a NEW run; watching the
+            // launch run would settle this job on a stale, already-terminal attempt while the
+            // delegate is still working.
+            let run = match resolve_current_delegated_run(
+                &monitor_state,
+                &conversation_id,
+                Some(&launch_run_id),
+            )
+            .await
             {
                 Ok(Some(run)) => run,
                 Ok(None) => continue,
@@ -1284,7 +1203,6 @@ pub(crate) async fn start_delegate_impl_with_parent_run(
 
     Ok(snapshot)
 }
-
 pub(crate) async fn start_delegate_impl(
     state: &HttpServerState,
     req: DelegateStartRequest,
@@ -1298,6 +1216,14 @@ pub async fn start_delegate(
 ) -> Result<Json<DelegationJobSnapshot>, JsonError> {
     Ok(Json(start_delegate_impl(&state, req).await?))
 }
+
+/// Fail-closed 400 for delegation calls whose MCP transport carries no run identity.
+/// This indicates the caller's spawn lane did not inject `--agent-run-id` into the MCP
+/// runtime context (a spawn-time injection gap), not a delegation policy denial.
+pub const DELEGATION_MISSING_RUN_IDENTITY_ERROR: &str = "Delegation start requires trusted parent agent run context, but this agent's MCP runtime context has no run identity: the spawn lane did not inject --agent-run-id at launch. This is a spawn-lane injection gap (fail-closed by design), not a delegation policy denial for this agent";
+
+pub const DELEGATION_INVALID_RUN_IDENTITY_ERROR: &str =
+    "Trusted parent agent run identity header is invalid";
 
 pub async fn start_delegate_with_runtime_context(
     State(state): State<HttpServerState>,
@@ -1314,21 +1240,21 @@ pub async fn start_delegate_with_runtime_context(
         .ok_or_else(|| {
             json_error(
                 StatusCode::BAD_REQUEST,
-                "Delegation start requires trusted parent agent run context",
+                DELEGATION_MISSING_RUN_IDENTITY_ERROR,
             )
         })?
         .to_str()
         .map_err(|_| {
             json_error(
                 StatusCode::BAD_REQUEST,
-                "Trusted parent agent run context is invalid",
+                DELEGATION_INVALID_RUN_IDENTITY_ERROR,
             )
         })?
         .trim();
     if trusted_parent_run_id.is_empty() {
         return Err(json_error(
             StatusCode::BAD_REQUEST,
-            "Delegation start requires trusted parent agent run context",
+            DELEGATION_MISSING_RUN_IDENTITY_ERROR,
         ));
     }
     Ok(Json(
@@ -1342,22 +1268,81 @@ pub async fn start_delegate_with_runtime_context(
     ))
 }
 
-pub async fn wait_delegate(
-    State(state): State<HttpServerState>,
-    Json(req): Json<DelegateWaitRequest>,
-) -> Result<Json<DelegationJobSnapshot>, JsonError> {
+/// Resolves the caller's watch set, rejecting ambiguous or empty requests.
+///
+/// Exactly one of `job_id` / `job_ids` must be present so a caller can never silently
+/// wait on a different set than it named.
+fn resolve_wait_job_ids(req: &DelegateWaitRequest) -> Result<Vec<String>, JsonError> {
+    match (req.job_id.as_deref(), req.job_ids.as_deref()) {
+        (Some(_), Some(_)) => Err(json_error(
+            StatusCode::BAD_REQUEST,
+            "delegate_wait accepts either job_id or job_ids, not both",
+        )),
+        (None, None) => Err(json_error(
+            StatusCode::BAD_REQUEST,
+            "delegate_wait requires job_id or job_ids",
+        )),
+        (Some(job_id), None) => Ok(vec![job_id.to_string()]),
+        (None, Some(job_ids)) => {
+            if job_ids.is_empty() {
+                return Err(json_error(
+                    StatusCode::BAD_REQUEST,
+                    "delegate_wait job_ids must not be empty",
+                ));
+            }
+            Ok(job_ids.to_vec())
+        }
+    }
+}
+
+/// Effective block ceiling: the caller's request clamped to the configured hard cap, which is
+/// itself held strictly below the stream parse-stall guard so a legitimate block can never be
+/// mistaken for a stalled coordinator stream.
+#[doc(hidden)]
+pub fn effective_wait_block(requested_ms: u64) -> Duration {
+    let delegation = crate::infrastructure::agents::claude::delegation_config();
+    let stall_guard_secs =
+        crate::infrastructure::agents::claude::stream_timeouts().default_parse_stall_secs;
+    // Never let config drift hand out a block that outlives the guard that would kill the caller.
+    let safe_cap_secs = delegation
+        .wait_block_max_secs
+        .min(stall_guard_secs.saturating_sub(30).max(1));
+    let requested_ms = if requested_ms == 0 {
+        delegation.wait_block_secs.saturating_mul(1_000)
+    } else {
+        requested_ms
+    };
+    Duration::from_millis(requested_ms.min(safe_cap_secs.saturating_mul(1_000)))
+}
+
+/// Reconcile-then-read for a single job: mirrors the historical `delegate_wait` body so a
+/// blocking wait and an immediate wait return identical snapshots.
+async fn resolve_or_settle_job(
+    state: &HttpServerState,
+    job_id: &str,
+) -> Result<DelegationJobSnapshot, JsonError> {
     let mut snapshot = state
         .delegation_service
-        .snapshot(&req.job_id)
+        .snapshot(job_id)
         .await
         .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Delegation job not found"))?;
     if snapshot.status == "running" {
-        if let Some(run_id) = snapshot.delegated_agent_run_id.as_deref() {
-            let run = state
-                .app_state
-                .agent_run_repo
-                .get_by_id(&AgentRunId::from_string(run_id.to_string()))
-                .await
+        if let Some(launch_run_id) = snapshot.delegated_agent_run_id.as_deref() {
+            let run =
+                if let Some(conversation_id) = snapshot.delegated_conversation_id.as_deref() {
+                    resolve_current_delegated_run(
+                        state,
+                        &ChatConversationId::from_string(conversation_id.to_string()),
+                        Some(launch_run_id),
+                    )
+                    .await
+                } else {
+                    state
+                        .app_state
+                        .agent_run_repo
+                        .get_by_id(&AgentRunId::from_string(launch_run_id.to_string()))
+                        .await
+                }
                 .map_err(|error| {
                     json_error(
                         StatusCode::SERVICE_UNAVAILABLE,
@@ -1388,7 +1373,7 @@ pub async fn wait_delegate(
                         None
                     };
                     if let Some(settled) =
-                        settle_delegation_from_run(&state, &req.job_id, run, completed_content)
+                        settle_delegation_from_run(state, job_id, run, completed_content)
                             .await
                             .map_err(|error| {
                                 json_error(
@@ -1403,6 +1388,53 @@ pub async fn wait_delegate(
             }
         }
     }
+    Ok(snapshot)
+}
+
+pub async fn wait_delegate(
+    State(state): State<HttpServerState>,
+    Json(req): Json<DelegateWaitRequest>,
+) -> Result<Json<DelegationJobSnapshot>, JsonError> {
+    let job_ids = resolve_wait_job_ids(&req)?;
+
+    // Subscribe BEFORE the reconcile read so a settlement racing this call is never missed.
+    let mut receivers = Vec::with_capacity(job_ids.len());
+    for job_id in &job_ids {
+        let receiver = state
+            .delegation_service
+            .subscribe_settlement(job_id)
+            .await
+            .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Delegation job not found"))?;
+        receivers.push(receiver);
+    }
+
+    let mut snapshot: Option<DelegationJobSnapshot> = None;
+    for job_id in &job_ids {
+        let resolved = resolve_or_settle_job(&state, job_id).await?;
+        let is_terminal = resolved.status != "running";
+        if snapshot.is_none() || is_terminal {
+            snapshot = Some(resolved);
+        }
+        if is_terminal {
+            break;
+        }
+    }
+    let mut snapshot =
+        snapshot.ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Delegation job not found"))?;
+
+    // Default is unchanged: without `wait_timeout_ms` this returns immediately, exactly as before.
+    if snapshot.status == "running" {
+        if let Some(requested_ms) = req.wait_timeout_ms {
+            let deadline = effective_wait_block(requested_ms);
+            match block_until_settlement(receivers, deadline).await {
+                Some(index) => {
+                    snapshot = resolve_or_settle_job(&state, &job_ids[index]).await?;
+                }
+                None => snapshot.timed_out = Some(true),
+            }
+        }
+    }
+
     if req
         .include_delegated_status
         .or(req.include_child_status)
@@ -1419,6 +1451,31 @@ pub async fn wait_delegate(
         snapshot.delegated_status = Some(delegated_status);
     }
     Ok(Json(snapshot))
+}
+
+/// Blocks until any watched job broadcasts a committed terminal, or the deadline elapses.
+///
+/// Returns the index of the settled job, or `None` on timeout. The settlement signal is only
+/// ever sent after `commit_terminal` accepts, so a wake here is proof of durable settlement.
+async fn block_until_settlement(
+    receivers: Vec<tokio::sync::watch::Receiver<Option<String>>>,
+    deadline: Duration,
+) -> Option<usize> {
+    let mut waits: futures::stream::FuturesUnordered<_> = receivers
+        .into_iter()
+        .enumerate()
+        .map(|(index, mut receiver)| async move {
+            // `changed()` resolves on the next send; a settlement that already landed before
+            // subscription is caught by the reconcile read in the caller.
+            let _ = receiver.changed().await;
+            index
+        })
+        .collect();
+
+    tokio::select! {
+        settled = futures::StreamExt::next(&mut waits) => settled,
+        () = tokio::time::sleep(deadline) => None,
+    }
 }
 
 pub async fn cancel_delegate(

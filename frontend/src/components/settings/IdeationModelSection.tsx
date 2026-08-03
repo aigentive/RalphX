@@ -1,13 +1,12 @@
 /**
  * IdeationModelSection — Settings section for configuring ideation agent model selection.
  *
- * Uses SectionCard (frosted glass pattern) from SettingsView.shared.tsx.
+ * Uses the chrome-free SettingsSection container from SettingsView.shared.tsx.
  * Shows global dropdowns and per-project override dropdowns.
  * Effective value hint shown only when value is `inherit`.
  */
 
 import { useState } from "react";
-import { Cpu } from "lucide-react";
 import { Separator } from "@/components/ui/separator";
 import {
   Select,
@@ -16,7 +15,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { SectionCard, ErrorBanner } from "./SettingsView.shared";
+import { SettingsSection, ErrorBanner } from "./SettingsView.shared";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { useIdeationModelSettings } from "@/hooks/useIdeationModelSettings";
 import { useProjectStore, selectActiveProject } from "@/stores/projectStore";
@@ -40,24 +39,9 @@ const MODEL_OPTIONS = [
     description: "Use default from configuration",
   },
   {
-    value: "sonnet",
-    label: "Sonnet",
-    description: "Fast and capable",
-  },
-  {
-    value: "opus",
-    label: "Opus",
-    description: "Most capable, highest cost",
-  },
-  {
-    value: "claude-opus-4-7",
-    label: "Claude Opus 4.7",
-    description: "Claude Opus 4.7, requires Claude Code 2.1.111+",
-  },
-  {
-    value: "claude-opus-4-8",
-    label: "Claude Opus 4.8",
-    description: "Claude Opus 4.8, requires Claude Code 2.1.154+",
+    value: "fable",
+    label: "Fable",
+    description: "Claude Fable 5, requires Claude Code 2.1.170+",
   },
   {
     value: "claude-opus-5",
@@ -65,14 +49,29 @@ const MODEL_OPTIONS = [
     description: "Claude Opus 5, requires Claude Code 2.1.219+",
   },
   {
+    value: "claude-opus-4-8",
+    label: "Claude Opus 4.8",
+    description: "Claude Opus 4.8, requires Claude Code 2.1.154+",
+  },
+  {
+    value: "claude-opus-4-7",
+    label: "Claude Opus 4.7",
+    description: "Claude Opus 4.7, requires Claude Code 2.1.111+",
+  },
+  {
+    value: "opus",
+    label: "Opus",
+    description: "Most capable, highest cost",
+  },
+  {
+    value: "sonnet",
+    label: "Sonnet",
+    description: "Fast and capable",
+  },
+  {
     value: "haiku",
     label: "Haiku",
     description: "Fastest, lowest cost",
-  },
-  {
-    value: "fable",
-    label: "Fable",
-    description: "Claude Fable 5, requires Claude Code 2.1.170+",
   },
 ] as const satisfies readonly ModelOption[];
 
@@ -372,13 +371,7 @@ export function IdeationModelSection() {
   const modelOptions = modelOptionsForClaudeCapabilities(providers);
 
   return (
-    <SectionCard
-      icon={
-        <Cpu className="w-[18px] h-[18px] text-[var(--accent-primary)]" />
-      }
-      title="Ideation Model"
-      description="Configure AI model for ideation and verification agents"
-    >
+    <SettingsSection>
       <GlobalModelSubsection modelOptions={modelOptions} />
       <Separator className="my-4 bg-[var(--border-subtle)]" />
       <ProjectModelSubsection
@@ -386,6 +379,6 @@ export function IdeationModelSection() {
         projectName={activeProject?.name ?? null}
         modelOptions={modelOptions}
       />
-    </SectionCard>
+    </SettingsSection>
   );
 }

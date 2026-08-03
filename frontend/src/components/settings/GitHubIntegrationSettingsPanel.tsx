@@ -1,11 +1,11 @@
-import { GitBranch, Loader2, RefreshCw } from "lucide-react";
+import { Loader2, RefreshCw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { useGitHubConnectionStatus } from "@/hooks/useGitHubConnectionStatus";
 
 import {
   IntegrationStatusBanner,
-  SectionCard,
+  SettingsSection,
 } from "./SettingsView.shared";
 
 function describeError(error: unknown): string {
@@ -60,11 +60,7 @@ export function GitHubIntegrationSettingsPanel() {
     state === "provider_unavailable" || state === "probe_failed";
 
   return (
-    <SectionCard
-      icon={<GitBranch className="h-[18px] w-[18px]" aria-hidden="true" />}
-      title="GitHub"
-      description="Local GitHub CLI connection"
-    >
+    <SettingsSection>
       <div className="space-y-4">
         <IntegrationStatusBanner
           connected={connected}
@@ -107,6 +103,6 @@ export function GitHubIntegrationSettingsPanel() {
           </Button>
         </div>
       </div>
-    </SectionCard>
+    </SettingsSection>
   );
 }

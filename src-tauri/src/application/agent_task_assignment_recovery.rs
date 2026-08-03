@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::application::managed_team::ManagedTeamService;
 use crate::application::AgentTaskService;
 use crate::domain::entities::{
     AgentRunId, AgentRunStatus, AgentTaskAssignmentState, AgentTaskAssignmentTerminalStatus,
@@ -24,6 +25,7 @@ pub struct AgentTaskAssignmentRecoveryService {
     conversation_repo: Arc<dyn ChatConversationRepository>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
     running_agent_registry: Arc<dyn RunningAgentRegistry>,
+    managed_team: Option<Arc<ManagedTeamService>>,
 }
 
 impl AgentTaskAssignmentRecoveryService {
@@ -40,7 +42,15 @@ impl AgentTaskAssignmentRecoveryService {
             conversation_repo,
             agent_run_repo,
             running_agent_registry,
+            managed_team: None,
         }
+    }
+
+    /// Production startup supplies the shared Team authority. Keeping this
+    /// optional preserves legacy/Solo test construction and behavior.
+    pub fn with_managed_team(mut self, managed_team: Arc<ManagedTeamService>) -> Self {
+        self.managed_team = Some(managed_team);
+        self
     }
 
     pub async fn recover(&self) -> AppResult<AgentTaskAssignmentRecoveryReport> {
@@ -91,6 +101,11 @@ impl AgentTaskAssignmentRecoveryService {
                                 .await?
                                 .is_some()
                             {
+                                self.recover_team_projection(
+                                    &assignment,
+                                    "orphaned_reservation_after_restart",
+                                )
+                                .await?;
                                 report.settled += 1;
                             }
                             continue;
@@ -104,6 +119,11 @@ impl AgentTaskAssignmentRecoveryService {
                             )
                             .await?;
                         if settled.is_some() {
+                            self.recover_team_projection(
+                                &assignment,
+                                "uncorrelated_reservation_after_restart",
+                            )
+                            .await?;
                             report.settled += 1;
                         }
                         continue;
@@ -158,6 +178,12 @@ impl AgentTaskAssignmentRecoveryService {
                     .await?
                     .is_some()
                 {
+                    self.settle_team_projection(
+                        &assignment,
+                        terminal,
+                        (run.is_none()).then_some("bound_run_missing_after_restart"),
+                    )
+                    .await?;
                     report.settled += 1;
                 }
                 continue;
@@ -195,6 +221,11 @@ impl AgentTaskAssignmentRecoveryService {
                 .await?
                 .is_some()
             {
+                self.recover_team_projection(
+                    &assignment,
+                    "orphaned_running_assignment_after_restart",
+                )
+                .await?;
                 report.settled += 1;
             }
         }
@@ -235,6 +266,33 @@ impl AgentTaskAssignmentRecoveryService {
                     && info.conversation_id == conversation.id.as_str()
             });
         Ok(exact_process)
+    }
+
+    async fn recover_team_projection(
+        &self,
+        assignment: &crate::domain::entities::AgentTaskAssignmentView,
+        reason: &str,
+    ) -> AppResult<()> {
+        if let Some(managed_team) = &self.managed_team {
+            managed_team
+                .recover_orphaned_member_assignment(assignment, reason)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn settle_team_projection(
+        &self,
+        assignment: &crate::domain::entities::AgentTaskAssignmentView,
+        terminal_status: AgentTaskAssignmentTerminalStatus,
+        reason: Option<&str>,
+    ) -> AppResult<()> {
+        if let Some(managed_team) = &self.managed_team {
+            managed_team
+                .settle_member_assignment(assignment, terminal_status, reason)
+                .await?;
+        }
+        Ok(())
     }
 }
 

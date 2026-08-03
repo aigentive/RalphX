@@ -12,15 +12,15 @@ use chrono::Utc;
 use ralphx_events::RecordingEventSink;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::{Listener, Manager};
 use tokio::io::AsyncReadExt;
 
-use ralphx_lib::application::chat_service::{
-    ChatService, ChatServiceError, SendMessageOptions, MESSAGE_DELIVERED_NOT_PERSISTED_PREFIX,
-};
+use ralphx_lib::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
+use ralphx_lib::application::chat_service::{ChatService, ChatServiceError, SendMessageOptions};
 use ralphx_lib::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessMetadata, InteractiveProcessRegistry,
 };
@@ -28,7 +28,8 @@ use ralphx_lib::application::AppState;
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::agents::ProviderSessionRef;
 use ralphx_lib::domain::entities::{
-    AgentRun, ChatContextType, ChatConversation, Persona, PersonaId, PersonaStatus, Project,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, ChatContextType,
+    ChatConversation, IdeationAnalysisBaseRefKind, Persona, PersonaId, PersonaStatus, Project,
     ProjectId, TaskId,
 };
 use ralphx_lib::domain::repositories::ChatConversationRepository;
@@ -65,6 +66,31 @@ fn active_persona(id: &str, content: &str, content_hash: &str) -> Persona {
     }
 }
 
+fn git(root: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .output()
+        .expect("git command should run");
+    assert!(
+        output.status.success(),
+        "git {:?} failed\nstdout:\n{}\nstderr:\n{}",
+        args,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn initialize_git_project(root: &Path) {
+    git(root, &["init", "-b", "main"]);
+    git(root, &["config", "user.email", "test@example.com"]);
+    git(root, &["config", "user.name", "Test User"]);
+    fs::write(root.join("README.md"), "gate-1 fixture\n").expect("write fixture file");
+    git(root, &["add", "README.md"]);
+    git(root, &["commit", "-m", "initial"]);
+}
+
 async fn seed_project_context(state: &AppState, context_id: &str) -> tempfile::TempDir {
     let project_dir = tempfile::tempdir().expect("temp project dir");
     let mut project = Project::new(
@@ -72,6 +98,9 @@ async fn seed_project_context(state: &AppState, context_id: &str) -> tempfile::T
         project_dir.path().to_string_lossy().to_string(),
     );
     project.id = ProjectId::from_string(context_id.to_string());
+    let worktree_parent = project_dir.path().join("worktrees");
+    fs::create_dir_all(&worktree_parent).expect("create test worktree parent");
+    project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().into_owned());
     state
         .project_repo
         .create(project)
@@ -345,6 +374,8 @@ async fn gate1_stdin_reuse_resolves_persona_and_compares_before_stdin_write() {
                 provider_session_id: Some("preserved-session".to_string()),
                 persona_id: Some(persona.id.to_string()),
                 persona_content_hash: Some("old-hash".to_string()),
+                agent_name: None,
+                agent_profile: None,
             },
         )
         .await;
@@ -387,6 +418,185 @@ async fn gate1_stdin_reuse_resolves_persona_and_compares_before_stdin_write() {
     assert!(
         observed_stdin.is_empty(),
         "persona mismatch must compare before any Gate-1 stdin write"
+    );
+}
+
+#[tokio::test]
+async fn gate1_idle_plan_launch_identity_never_reuses_stale_stdin_after_edit_handoff() {
+    let provider_home = tempfile::tempdir().expect("provider state home");
+    let session_dir = provider_home
+        .path()
+        .join(".claude/projects/gate1-plan-to-edit");
+    fs::create_dir_all(&session_dir).expect("session dir");
+    fs::write(session_dir.join("planning-session.jsonl"), "{}\n").expect("session artifact");
+    let _provider_home_guard = crate::support::env::EnvVarGuard::set(
+        "RALPHX_PROVIDER_STATE_HOME_OVERRIDE",
+        provider_home.path().as_os_str(),
+    );
+    let _allow_spawn =
+        crate::support::env::EnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let (_runtime_plugin_guard, _generated_plugin_root) =
+        configure_runtime_plugin_dirs_for_gate1_persona_test();
+    let state = AppState::new_test();
+    let context_id = "project-gate1-plan-to-edit";
+    let project_dir = seed_project_context(&state, context_id).await;
+    initialize_git_project(project_dir.path());
+    let mut conversation =
+        ChatConversation::new_project(ProjectId::from_string(context_id.to_string()));
+    conversation.set_agent_mode(Some(
+        ralphx_lib::domain::entities::AgentConversationWorkspaceMode::Edit,
+    ));
+    conversation.set_provider_session_ref(ProviderSessionRef {
+        harness: ralphx_lib::domain::agents::AgentHarnessKind::Claude,
+        provider_session_id: "planning-session".to_string(),
+    });
+    let conversation_id = conversation.id;
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("persist Edit conversation");
+    let mut completed_run = AgentRun::new(conversation_id);
+    completed_run.complete();
+    completed_run.harness = Some(ralphx_lib::domain::agents::AgentHarnessKind::Claude);
+    completed_run.provider_session_id = Some("planning-session".to_string());
+    completed_run.logical_model = Some("sonnet".to_string());
+    completed_run.effective_model_id = Some("sonnet".to_string());
+    state
+        .agent_run_repo
+        .create(completed_run)
+        .await
+        .expect("seed stale planning continuation runtime");
+
+    let mut child = tokio::process::Command::new("cat")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn stale Plan stdin observer");
+    let interactive_key = InteractiveProcessKey::new("project", context_id);
+    state
+        .interactive_process_registry
+        .register_with_metadata(
+            interactive_key.clone(),
+            child.stdin.take().expect("cat stdin"),
+            InteractiveProcessMetadata {
+                agent_run_id: None,
+                harness: Some(ralphx_lib::domain::agents::AgentHarnessKind::Claude),
+                agent_name: Some("ralphx:ralphx-ideation".to_string()),
+                agent_profile: Some("plan".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    let temp = tempfile::tempdir().expect("test tempdir");
+    let project_id = ProjectId::from_string(context_id.to_string());
+    let project = state
+        .project_repo
+        .get_by_id(&project_id)
+        .await
+        .expect("load test project")
+        .expect("test project should exist");
+    let workspace_path = resolve_agent_conversation_workspace_path(&project, &conversation_id)
+        .expect("resolve canonical Edit workspace path");
+    let workspace_path_arg = workspace_path.to_string_lossy().into_owned();
+    git(
+        project_dir.path(),
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "ralphx/test/gate1-plan-to-edit",
+            workspace_path_arg.as_str(),
+            "main",
+        ],
+    );
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(AgentConversationWorkspace::new(
+            conversation_id,
+            project_id,
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            None,
+            "ralphx/test/gate1-plan-to-edit".to_string(),
+            workspace_path_arg,
+        ))
+        .await
+        .expect("persist Edit workspace");
+    let capture = temp.path().join("claude-arguments-and-prompt");
+    let cli_path = write_capturing_claude_cli(temp.path(), &capture);
+    ralphx_lib::testing::seed_available_harness_probes_for_test_at(
+        cli_path.to_str().expect("UTF-8 CLI path"),
+    );
+    let service = state
+        .build_chat_service_with_execution_state(Arc::new(ExecutionState::new()))
+        .with_cli_path(cli_path)
+        .with_plugin_dir(runtime_plugin_dir_for_gate1_persona_test())
+        .with_working_directory(temp.path());
+
+    let result = service
+        .send_message(
+            ChatContextType::Project,
+            context_id,
+            "must not reach stale Plan stdin",
+            SendMessageOptions::default(),
+        )
+        .await
+        .expect("launch identity mismatch must spawn a fresh Edit runtime");
+
+    assert!(!result.was_queued);
+    let fresh_metadata = state
+        .interactive_process_registry
+        .get_metadata(&interactive_key)
+        .await
+        .expect("fresh Edit runtime must replace the stale Plan registration");
+    assert_eq!(
+        fresh_metadata.agent_name.as_deref(),
+        Some("ralphx:ralphx-general-worker")
+    );
+    assert_eq!(fresh_metadata.agent_profile, None);
+    {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let captured = fs::read_to_string(&capture).unwrap_or_default();
+            if captured.contains("ralphx-general-worker") {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "fresh Edit invocation did not resolve the general worker: {captured}"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+
+    service
+        .stop_agent(ChatContextType::Project, context_id)
+        .await
+        .expect("stop fresh Edit runtime after assertions");
+    assert!(
+        !state
+            .interactive_process_registry
+            .has_process(&interactive_key)
+            .await,
+        "the stale Plan process must be retired before the Edit launch"
+    );
+    let mut observed_stdin = Vec::new();
+    child
+        .stdout
+        .take()
+        .expect("cat stdout")
+        .read_to_end(&mut observed_stdin)
+        .await
+        .expect("read stdin observer output");
+    let _ = child.wait().await;
+    assert!(
+        observed_stdin.is_empty(),
+        "the stale Plan process must receive no Edit message"
     );
 }
 
@@ -459,6 +669,8 @@ async fn edit_while_idle_respawns_with_new_persona_and_preserved_provider_sessio
                 provider_session_id: Some("preserved-provider-session".to_string()),
                 persona_id: Some(persona.id.to_string()),
                 persona_content_hash: Some("old-hash".to_string()),
+                agent_name: Some("ralphx:ralphx-ideation".to_string()),
+                agent_profile: Some("plan".to_string()),
             },
         )
         .await;
@@ -550,6 +762,9 @@ async fn mid_turn_persona_mismatch_queues_behind_active_run() {
     let mut conversation =
         ChatConversation::new_project(ProjectId::from_string(context_id.to_string()));
     conversation.persona_id = Some(persona.id.to_string());
+    conversation.set_agent_mode(Some(
+        ralphx_lib::domain::entities::AgentConversationWorkspaceMode::Edit,
+    ));
     let conversation_id = conversation.id.as_str().to_string();
     let run = AgentRun::new(conversation.id);
     let run_id = run.id.as_str().to_string();
@@ -578,6 +793,8 @@ async fn mid_turn_persona_mismatch_queues_behind_active_run() {
                 provider_session_id: None,
                 persona_id: Some(persona.id.to_string()),
                 persona_content_hash: Some("old-hash".to_string()),
+                agent_name: Some("ralphx:ralphx-ideation".to_string()),
+                agent_profile: Some("plan".to_string()),
             },
         )
         .await;
@@ -632,6 +849,9 @@ async fn matching_persona_metadata_reuses_stdin_fast_path() {
     let mut conversation =
         ChatConversation::new_project(ProjectId::from_string(context_id.to_string()));
     conversation.persona_id = Some(persona.id.to_string());
+    conversation.set_agent_mode(Some(
+        ralphx_lib::domain::entities::AgentConversationWorkspaceMode::Edit,
+    ));
     let conversation_id = conversation.id;
     state
         .chat_conversation_repo
@@ -657,6 +877,8 @@ async fn matching_persona_metadata_reuses_stdin_fast_path() {
                 provider_session_id: None,
                 persona_id: Some(persona.id.to_string()),
                 persona_content_hash: Some(persona.content_hash.clone()),
+                agent_name: Some("ralphx:ralphx-general-worker".to_string()),
+                agent_profile: None,
             },
         )
         .await;
@@ -816,6 +1038,8 @@ async fn queue_message_persona_mismatch_queues_instead_of_writing_stale_stdin() 
                 provider_session_id: None,
                 persona_id: Some(persona.id.to_string()),
                 persona_content_hash: Some("old-hash".to_string()),
+                agent_name: None,
+                agent_profile: None,
             },
         )
         .await;
@@ -893,6 +1117,8 @@ async fn queue_message_matching_persona_writes_through() {
                 provider_session_id: None,
                 persona_id: Some(persona.id.to_string()),
                 persona_content_hash: Some(persona.content_hash.clone()),
+                agent_name: None,
+                agent_profile: None,
             },
         )
         .await;
@@ -960,6 +1186,8 @@ async fn queue_message_persona_guard_flag_off_writes_through() {
                 provider_session_id: None,
                 persona_id: Some("stale-persona".to_string()),
                 persona_content_hash: Some("stale-hash".to_string()),
+                agent_name: None,
+                agent_profile: None,
             },
         )
         .await;
@@ -1071,6 +1299,8 @@ async fn harness_override_persona_mismatch_removes_stale_ipr_before_spawn() {
                 provider_session_id: None,
                 persona_id: Some(persona.id.to_string()),
                 persona_content_hash: Some("old-hash".to_string()),
+                agent_name: None,
+                agent_profile: None,
             },
         )
         .await;
@@ -1325,7 +1555,7 @@ async fn gate1_ownerless_process_falls_through_without_stdin_or_message_side_eff
 }
 
 #[tokio::test]
-async fn gate1_message_persistence_failure_reports_delivery_and_keeps_run_authority() {
+async fn gate1_message_persistence_failure_prevents_untracked_stdin_delivery() {
     let mut seed_state = AppState::new_test();
     seed_state.chat_message_repo = Arc::new(FailingChatMessageRepository::new());
     let app = mock_builder()
@@ -1335,7 +1565,7 @@ async fn gate1_message_persistence_failure_reports_delivery_and_keeps_run_author
     let handle = app.handle().clone();
     let state = app.state::<AppState>();
     let context_id = "project-gate1-message-persistence-failure";
-    let (_project_dir, conversation_id, run_id, interactive_key, mut child) =
+    let (_project_dir, conversation_id, _run_id, interactive_key, mut child) =
         setup_live_project_continuation(&state, context_id, None).await;
 
     let run_started_events = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
@@ -1372,17 +1602,13 @@ async fn gate1_message_persistence_failure_reports_delivery_and_keeps_run_author
         .await
         .expect_err("a Gate-1 message persistence failure must not return SendResult success");
 
-    // The turn WAS delivered to the live process, so the caller must be told exactly
-    // that — not "failed to send message", which would discard the user's turn from the
-    // transcript while the agent is answering it.
     assert!(
         matches!(
             error,
-            ChatServiceError::MessageDeliveredNotPersisted(ref message)
-                if message.starts_with(MESSAGE_DELIVERED_NOT_PERSISTED_PREFIX)
-                    && message.contains(CHAT_MESSAGE_CREATE_FAILURE)
+            ChatServiceError::RepositoryError(ref message)
+                if message.contains(CHAT_MESSAGE_CREATE_FAILURE)
         ),
-        "Gate 1 must report delivery-without-persistence distinctly: {error}"
+        "Gate 1 must fail before delivery when the pending turn cannot be persisted: {error}"
     );
     assert!(
         state
@@ -1409,25 +1635,16 @@ async fn gate1_message_persistence_failure_reports_delivery_and_keeps_run_author
             .is_empty(),
         "a failed user-message create must not claim the message was persisted"
     );
-    // Run authority is still emitted: the live process is streaming this turn, and the
-    // frontend drops chunks for run ids it never saw start.
     let observed_run_started = run_started_events
         .lock()
         .expect("run_started event lock")
         .clone();
     assert_eq!(
         observed_run_started.len(),
-        1,
-        "a delivered turn must emit exactly one run_started even when persistence fails"
-    );
-    assert_eq!(
-        observed_run_started[0]["run_id"], run_id,
-        "run_started must reuse the live process run id"
+        0,
+        "an undelivered turn must not emit run_started"
     );
 
-    // Gate 1 intentionally writes the live continuation before persistence. That stdin
-    // delivery is unavoidable once the live process accepts the turn; only later success
-    // effects (message/timeline rows and success events) must be withheld on failure.
     state
         .interactive_process_registry
         .remove(&interactive_key)
@@ -1441,20 +1658,9 @@ async fn gate1_message_persistence_failure_reports_delivery_and_keeps_run_author
         .await
         .expect("read delivered Gate-1 stdin");
     let _ = child.wait().await;
-    let stdin_line = observed.trim();
-    assert_eq!(
-        stdin_line.lines().count(),
-        1,
-        "Gate 1 must send one stdin line"
-    );
-    let envelope: serde_json::Value =
-        serde_json::from_str(stdin_line).expect("Gate 1 must deliver stream-json stdin");
-    assert_eq!(envelope["type"], "user");
     assert!(
-        envelope["message"]["content"]
-            .as_str()
-            .is_some_and(|content| content.contains("deliver stdin before persistence fails")),
-        "Gate 1 must deliver the failed-persistence turn to the live stdin"
+        observed.is_empty(),
+        "failed persistence must not write an untracked user turn to stdin"
     );
 }
 

@@ -121,12 +121,16 @@ import {
   PUBLICATION_STATE_OPTIONS,
 } from "./agentSidebarMetadata";
 import {
-  AGENT_SIDEBAR_INBOX_LANES,
+  AGENT_SIDEBAR_INBOX_FILTERS,
+  AGENT_SIDEBAR_RECENT_GROUPS,
   describeInboxLaneCount,
   formatInboxLaneCount,
+  formatParkedDelegateMeta,
   getAgeEscalation,
+  laneForInboxFilter,
   shouldEscalateAge,
   summarizeInboxLaneCounts,
+  type AgentSidebarInboxFilter,
   type AgeEscalation,
 } from "./agentSidebarInboxLanes";
 import {
@@ -190,12 +194,14 @@ const AgentConversationMuteContext = createContext<
 >(() => undefined);
 
 interface AgentSidebarSessionScrollMemory {
+  inboxGroupRowCounts?: Partial<Record<AgentSidebarAttentionLane, number>>;
   rowCount?: number;
   scrollTop: number;
   stateSnapshot?: StateSnapshot;
 }
 
 interface AgentSidebarSessionScrollUpdate {
+  inboxGroupRowCounts?: Partial<Record<AgentSidebarAttentionLane, number>>;
   rowCount?: number;
   stateSnapshot?: StateSnapshot;
 }
@@ -237,6 +243,11 @@ function rememberAgentSidebarSessionScroll(
   const nextMemory: AgentSidebarSessionScrollMemory = {
     scrollTop: nextScrollTop,
   };
+  const nextInboxGroupRowCounts =
+    update.inboxGroupRowCounts ?? previous?.inboxGroupRowCounts;
+  if (nextInboxGroupRowCounts) {
+    nextMemory.inboxGroupRowCounts = nextInboxGroupRowCounts;
+  }
   if (typeof nextRowCount === "number") {
     nextMemory.rowCount = nextRowCount;
   }
@@ -996,9 +1007,6 @@ export function AgentsSidebar({
   );
   const selectedPriorityConversationIds = useMemo(() => {
     const ids = new Set<string>();
-    if (sidebarGroupBy !== "project" && selectedConversationId) {
-      ids.add(selectedConversationId);
-    }
     if (
       pinnedConversation &&
       !pinnedConversationIds[pinnedConversation.id] &&
@@ -1010,8 +1018,6 @@ export function AgentsSidebar({
   }, [
     pinnedConversation,
     pinnedConversationIds,
-    selectedConversationId,
-    sidebarGroupBy,
     sidebarSelectedConversationIds,
   ]);
   const fallbackPriorityProjectId = useMemo(() => {
@@ -1936,6 +1942,8 @@ interface AgentSidebarConversationRowsPanelProps {
   isLoading: boolean;
   expanded: boolean;
   fillAvailableHeight?: boolean;
+  inline?: boolean;
+  inlineFooter?: ReactNode;
   isSidebarVisible: boolean;
   onViewportRowCapacityChange?: (rowCapacity: number) => void;
   projectById: Map<string, Project>;
@@ -1962,6 +1970,8 @@ function AgentSidebarConversationRowsPanel({
   isLoading,
   expanded,
   fillAvailableHeight = false,
+  inline = false,
+  inlineFooter,
   isSidebarVisible,
   onViewportRowCapacityChange,
   projectById,
@@ -2054,6 +2064,13 @@ function AgentSidebarConversationRowsPanel({
     );
   }, []);
 
+  useEffect(() => {
+    if (!inline) {
+      return;
+    }
+    handleVisibleRowsChange(rows);
+  }, [handleVisibleRowsChange, inline, rows]);
+
   const getRowKey = useCallback(
     (row: AgentSidebarConversationRow) => row.conversation.id,
     []
@@ -2112,6 +2129,7 @@ function AgentSidebarConversationRowsPanel({
           refLabel={row.refLabel}
           publicationState={row.publicationState}
           publicationLabel={publicationLabel}
+          parkedDelegateCount={row.parkedDelegateCount}
           {...(inboxLane && row.actionVerb ? { actionVerb: row.actionVerb } : {})}
           {...(inboxLane && ageEscalation ? { ageEscalation } : {})}
           isSelected={isSelected}
@@ -2235,7 +2253,14 @@ function AgentSidebarConversationRowsPanel({
         }}
       />
 
-      {expanded && (
+      {expanded && (inline ? (
+        <div role="group" data-testid={testId}>
+          {rows.map((row) => (
+            <div key={getRowKey(row)}>{renderRow(row)}</div>
+          ))}
+          {inlineFooter}
+        </div>
+      ) : (
         <ScrollableAgentSessionList
           fetchNextPage={fetchNextPage}
           fillAvailableHeight={fillAvailableHeight}
@@ -2251,7 +2276,7 @@ function AgentSidebarConversationRowsPanel({
           scrollKey={scrollKey}
           testId={testId}
         />
-      )}
+      ))}
     </>
   );
 }
@@ -2527,9 +2552,6 @@ interface InboxLaneGroupsProps extends PublicationStateGroupsProps {
   onLaneCountChange: (lane: AgentSidebarAttentionLane, total: number) => void;
 }
 
-// The inbox is a lane switcher, not a stack of sections: one chip row selects a
-// lane and one flat list renders it, so the sidebar keeps a single scroller
-// instead of nesting a capped viewport per lane inside the pane's own scroller.
 function InboxLaneGroups({
   laneCounts,
   onLaneCountChange,
@@ -2542,7 +2564,7 @@ function InboxLaneGroups({
   // Switching lanes repaints synchronously; the persist write waits for that
   // paint so a click is never blocked by serializing the sidebar store.
   const [activeLane, setActiveLane] = useState(storedActiveLane);
-  const chipRefs = useRef<Partial<Record<AgentSidebarAttentionLane, HTMLButtonElement | null>>>(
+  const chipRefs = useRef<Partial<Record<AgentSidebarInboxFilter, HTMLButtonElement | null>>>(
     {}
   );
 
@@ -2551,7 +2573,7 @@ function InboxLaneGroups({
   }, [storedActiveLane]);
 
   const selectLane = useCallback(
-    (lane: AgentSidebarAttentionLane) => {
+    (lane: AgentSidebarInboxFilter) => {
       setActiveLane(lane);
       afterSidebarControlPaint(() => setSidebarInboxActiveLane(lane));
     },
@@ -2566,9 +2588,9 @@ function InboxLaneGroups({
         return;
       }
       event.preventDefault();
-      const laneCount = AGENT_SIDEBAR_INBOX_LANES.length;
+      const laneCount = AGENT_SIDEBAR_INBOX_FILTERS.length;
       const nextIndex = (index + delta + laneCount) % laneCount;
-      const nextLane = AGENT_SIDEBAR_INBOX_LANES[nextIndex]?.lane;
+      const nextLane = AGENT_SIDEBAR_INBOX_FILTERS[nextIndex]?.filter;
       if (!nextLane) {
         return;
       }
@@ -2579,9 +2601,9 @@ function InboxLaneGroups({
   );
 
   const activeLaneDescriptor =
-    AGENT_SIDEBAR_INBOX_LANES.find(({ lane }) => lane === activeLane) ??
-    AGENT_SIDEBAR_INBOX_LANES[0];
-  const resolvedActiveLane = activeLaneDescriptor?.lane ?? "needs";
+    AGENT_SIDEBAR_INBOX_FILTERS.find(({ filter }) => filter === activeLane) ??
+    AGENT_SIDEBAR_INBOX_FILTERS[0];
+  const resolvedActiveLane = activeLaneDescriptor?.filter ?? "recent";
 
   return (
     <div
@@ -2595,25 +2617,27 @@ function InboxLaneGroups({
         className="mb-1 flex shrink-0 items-center gap-1"
         data-testid="agents-inbox-lane-chips"
       >
-        {AGENT_SIDEBAR_INBOX_LANES.map(({ lane, label }, index) => {
-          const count = laneCounts[lane];
-          const isActive = lane === resolvedActiveLane;
+        {AGENT_SIDEBAR_INBOX_FILTERS.map(({ filter, label }, index) => {
+          const count = filter === "recent"
+            ? laneCounts.needs + laneCounts.working
+            : laneCounts[laneForInboxFilter(filter)!];
+          const isActive = filter === resolvedActiveLane;
           return (
             <button
-              key={lane}
+              key={filter}
               ref={(node) => {
-                chipRefs.current[lane] = node;
+                chipRefs.current[filter] = node;
               }}
               type="button"
               role="tab"
-              id={`agents-inbox-lane-chip-${lane}`}
+              id={`agents-inbox-lane-chip-${filter}`}
               aria-selected={isActive}
               aria-controls="agents-inbox-lane-panel"
               aria-label={describeInboxLaneCount(label, count)}
               tabIndex={isActive ? 0 : -1}
               title={describeInboxLaneCount(label, count)}
-              data-testid={`agents-inbox-lane-chip-${lane}`}
-              onClick={() => selectLane(lane)}
+              data-testid={`agents-inbox-lane-chip-${filter}`}
+              onClick={() => selectLane(filter)}
               onKeyDown={(event) => handleChipKeyDown(event, index)}
               // Content-sized rather than equal-width: at 268px an even split
               // truncates "Needs you" even when the row has room to spare.
@@ -2649,18 +2673,345 @@ function InboxLaneGroups({
         className="flex min-h-0 flex-1 flex-col"
         data-testid={`agents-inbox-lane-panel-${resolvedActiveLane}`}
       >
-        {AGENT_SIDEBAR_INBOX_LANES.map((descriptor) => (
-          <InboxLane
-            key={descriptor.lane}
-            lane={descriptor.lane}
-            emptyLabel={descriptor.emptyLabel}
-            isActive={descriptor.lane === resolvedActiveLane}
-            onLaneCountChange={onLaneCountChange}
-            {...props}
-          />
-        ))}
+        <RecentInboxLane
+          isActive={resolvedActiveLane === "recent"}
+          onLaneCountChange={onLaneCountChange}
+          {...props}
+        />
+        {AGENT_SIDEBAR_INBOX_FILTERS.map(({ filter, emptyLabel }) => {
+          const lane = laneForInboxFilter(filter);
+          return lane ? (
+            <InboxLane
+              key={lane}
+              lane={lane}
+              emptyLabel={emptyLabel}
+              isActive={filter === resolvedActiveLane}
+              onLaneCountChange={onLaneCountChange}
+              {...props}
+            />
+          ) : null;
+        })}
       </div>
     </div>
+  );
+}
+
+interface RecentInboxLaneProps extends PublicationStateGroupsProps {
+  isActive: boolean;
+  onLaneCountChange: (lane: AgentSidebarAttentionLane, total: number) => void;
+}
+
+// Recent is a frontend grouping over the existing `needs` and `working` lane
+// queries, so the two queries stay separate and only the presentation merges.
+// The scroller moves up here, out of the row panels: two `fillAvailableHeight`
+// panels stacked would be two nested scrollers.
+function RecentInboxLane({
+  isActive,
+  onLaneCountChange,
+  projects,
+  isSidebarVisible,
+  pinnedConversationIdList,
+  priorityConversationIds,
+  pinnedConversationIds,
+  rowSort,
+  selectedConversationId,
+  searchQuery,
+  selectedPublicationStates,
+  onArchiveConversation,
+  onAutoRenameConversation,
+  onRenameConversation,
+  onRestoreConversation,
+  onForkConversation,
+  onSelectConversation,
+  onTogglePinnedConversation,
+  showArchived,
+}: RecentInboxLaneProps) {
+  const projectIds = useMemo(() => projects.map((project) => project.id), [projects]);
+  const projectById = useMemo(
+    () => new Map(projects.map((project) => [project.id, project])),
+    [projects]
+  );
+  const inboxScrollKey = useMemo(
+    () =>
+      [
+        "inbox",
+        "recent",
+        showArchived ? "archived" : "active",
+        searchQuery,
+        rowSort,
+        selectedPublicationStates.join(","),
+        projectIds.join(","),
+        pinnedConversationIdList.join(","),
+      ].join("::"),
+    [
+      pinnedConversationIdList,
+      projectIds,
+      rowSort,
+      searchQuery,
+      selectedPublicationStates,
+      showArchived,
+    ]
+  );
+  // One scroll-memory entry per filter, not per group: Recent restores its
+  // offset and how many pages each group had loaded when it was last visible.
+  const rememberedNeedsRowCount = useRememberedRecentInboxGroupRowCount(
+    inboxScrollKey,
+    "needs"
+  );
+  const rememberedWorkingRowCount = useRememberedRecentInboxGroupRowCount(
+    inboxScrollKey,
+    "working"
+  );
+  const needsQuery = useAgentSidebarInboxGroup({
+    lane: "needs",
+    projectIds,
+    archivedOnly: showArchived,
+    search: searchQuery,
+    publicationStates: selectedPublicationStates,
+    pinnedConversationIds: pinnedConversationIdList,
+    priorityConversationIds,
+    sort: rowSort,
+    minimumRowCount: rememberedNeedsRowCount,
+  });
+  const workingQuery = useAgentSidebarInboxGroup({
+    lane: "working",
+    projectIds,
+    archivedOnly: showArchived,
+    search: searchQuery,
+    publicationStates: selectedPublicationStates,
+    pinnedConversationIds: pinnedConversationIdList,
+    priorityConversationIds,
+    sort: rowSort,
+    minimumRowCount: rememberedWorkingRowCount,
+  });
+  const scrollerRef = useRef<HTMLDivElement | null>(null);
+  const groups = useMemo(
+    () => [
+      { descriptor: AGENT_SIDEBAR_RECENT_GROUPS[0], query: needsQuery },
+      { descriptor: AGENT_SIDEBAR_RECENT_GROUPS[1], query: workingQuery },
+    ],
+    [needsQuery, workingQuery]
+  );
+  const needsTotal = needsQuery.group.total;
+  const workingTotal = workingQuery.group.total;
+  const isNeedsSettled = !needsQuery.isPending && !needsQuery.isLoading;
+  const isWorkingSettled = !workingQuery.isPending && !workingQuery.isLoading;
+  const needsRowCount = needsQuery.group.rows.length;
+  const workingRowCount = workingQuery.group.rows.length;
+
+  // A lane that has not settled reports no count: a transient 0 would blink the
+  // Recent chip, which sums both lanes.
+  useEffect(() => {
+    if (needsTotal !== 0 || isNeedsSettled) {
+      onLaneCountChange("needs", needsTotal);
+    }
+  }, [isNeedsSettled, needsTotal, onLaneCountChange]);
+
+  useEffect(() => {
+    if (workingTotal !== 0 || isWorkingSettled) {
+      onLaneCountChange("working", workingTotal);
+    }
+  }, [isWorkingSettled, onLaneCountChange, workingTotal]);
+
+  // Restore once rows exist — restoring against an empty scroller would clamp
+  // the offset back to 0.
+  const restoredScrollKeyRef = useRef<string | null>(null);
+  const hasRecentRows = needsRowCount + workingRowCount > 0;
+  useLayoutEffect(() => {
+    const scroller = scrollerRef.current;
+    if (!isActive || !scroller || !hasRecentRows) {
+      return;
+    }
+    if (restoredScrollKeyRef.current === inboxScrollKey) {
+      return;
+    }
+    restoredScrollKeyRef.current = inboxScrollKey;
+    scroller.scrollTop =
+      agentSidebarSessionScrollPositions.get(inboxScrollKey)?.scrollTop ?? 0;
+  }, [hasRecentRows, inboxScrollKey, isActive]);
+
+  useEffect(() => {
+    const scroller = scrollerRef.current;
+    if (!isActive || !scroller) {
+      return;
+    }
+    const save = () =>
+      rememberAgentSidebarSessionScroll(inboxScrollKey, scroller.scrollTop, {
+        inboxGroupRowCounts: { needs: needsRowCount, working: workingRowCount },
+      });
+    scroller.addEventListener("scroll", save, { passive: true });
+    return () => {
+      save();
+      scroller.removeEventListener("scroll", save);
+    };
+  }, [inboxScrollKey, isActive, needsRowCount, workingRowCount]);
+
+  if (!isActive) {
+    return null;
+  }
+
+  if (
+    needsTotal === 0 &&
+    workingTotal === 0 &&
+    isNeedsSettled &&
+    isWorkingSettled
+  ) {
+    return (
+      <div
+        className="px-2 py-1 text-xs"
+        style={{ color: "var(--text-muted)" }}
+        data-testid="agents-inbox-lane-empty-recent"
+      >
+        Nothing waiting on you
+      </div>
+    );
+  }
+
+  return (
+    <div
+      ref={scrollerRef}
+      className="agents-sidebar-session-list mt-1 flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto"
+      data-testid="agents-sidebar-session-list-inbox-recent"
+    >
+      {groups.map(({ descriptor, query }, index) => {
+        const isSettled = !query.isPending && !query.isLoading;
+        const remaining = Math.max(0, query.group.total - query.group.rows.length);
+        return (
+          <section
+            key={descriptor.lane}
+            className={`agents-inbox-recent-group flex flex-col gap-0.5${
+              index > 0 ? " mt-1.5" : ""
+            }`}
+            data-testid={`agents-inbox-recent-group-${descriptor.lane}`}
+          >
+            {/* The sidebar's existing group row with the icon column dropped —
+                inbox groups have no icon. Opaque background so rows scrolling
+                under a pinned header stay hidden. */}
+            <div
+              className="agents-project-row sticky top-0 z-[5] grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-[7px] rounded-[6px] px-2 py-1.5 text-left text-[0.8438rem]"
+              style={{ backgroundColor: "var(--app-sidebar-bg)" }}
+              data-testid={`agents-inbox-recent-group-header-${descriptor.lane}`}
+            >
+              <h3 className="min-w-0 truncate">{descriptor.label}</h3>
+              <span
+                className="agents-project-count grid min-w-[18px] place-items-center rounded-full px-1.5 text-[0.6562rem] leading-[1.6]"
+                style={{ borderStyle: "solid", borderWidth: "1px" }}
+              >
+                {query.group.total}
+              </span>
+            </div>
+            {query.group.total === 0 && isSettled ? (
+              <div
+                className="px-2 py-1 text-xs"
+                style={{ color: "var(--text-muted)" }}
+                data-testid={`agents-inbox-lane-empty-${descriptor.lane}`}
+              >
+                {descriptor.emptyLabel}
+              </div>
+            ) : (
+              <AgentSidebarConversationRowsPanel
+                rows={query.group.rows}
+                fetchNextPage={query.fetchNextPage}
+                hasNextPage={Boolean(query.hasNextPage)}
+                isFetchingNextPage={Boolean(query.isFetchingNextPage)}
+                isLoading={Boolean(query.isLoading)}
+                expanded
+                inline
+                inlineFooter={
+                  <RecentInboxPager
+                    lane={descriptor.lane}
+                    remaining={remaining}
+                    total={query.group.total}
+                    hasNextPage={Boolean(query.hasNextPage)}
+                    isFetchingNextPage={Boolean(query.isFetchingNextPage)}
+                    onFetchNextPage={query.fetchNextPage}
+                  />
+                }
+                isSidebarVisible={isSidebarVisible}
+                projectById={projectById}
+                pinnedConversationIds={pinnedConversationIds}
+                scrollKey={`${inboxScrollKey}::${descriptor.lane}`}
+                selectedConversationId={selectedConversationId}
+                showProjectNameInMeta
+                testId={`agents-sidebar-session-list-inbox-${descriptor.lane}`}
+                inboxLane={descriptor.lane}
+                onArchiveConversation={onArchiveConversation}
+                onAutoRenameConversation={onAutoRenameConversation}
+                onRenameConversation={onRenameConversation}
+                onRestoreConversation={onRestoreConversation}
+                onForkConversation={onForkConversation}
+                onSelectConversation={onSelectConversation}
+                onTogglePinnedConversation={onTogglePinnedConversation}
+              />
+            )}
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
+function useRememberedRecentInboxGroupRowCount(
+  scrollKey: string,
+  lane: AgentSidebarAttentionLane
+) {
+  const getSnapshot = useCallback(
+    () =>
+      agentSidebarSessionScrollPositions.get(scrollKey)?.inboxGroupRowCounts?.[
+        lane
+      ] ?? 0,
+    [lane, scrollKey]
+  );
+  return useSyncExternalStore(
+    subscribeAgentSidebarSessionScrollMemory,
+    getSnapshot,
+    () => 0
+  );
+}
+
+// The one genuinely new element. Inside Recent the pager replaces scroll-driven
+// paging: in a shared scroller, auto-loading lets the group you are not looking
+// at grow and shove the one you are.
+function RecentInboxPager({
+  lane,
+  remaining,
+  total,
+  hasNextPage,
+  isFetchingNextPage,
+  onFetchNextPage,
+}: {
+  lane: AgentSidebarAttentionLane;
+  remaining: number;
+  total: number;
+  hasNextPage: boolean;
+  isFetchingNextPage: boolean;
+  onFetchNextPage: () => Promise<unknown>;
+}) {
+  // Exhausted keeps the line rather than removing it, so the group's height
+  // does not change under the cursor on the last page.
+  if (!hasNextPage || remaining <= 0) {
+    return (
+      <div
+        className="px-2.5 pt-1 pb-1.5 text-left text-[0.6875rem] font-normal"
+        style={{ color: "var(--text-subtle)" }}
+        data-testid={`agents-inbox-recent-pager-${lane}`}
+      >
+        All {total} shown
+      </div>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      className="block w-full px-2.5 pt-1 pb-1.5 text-left text-[0.6875rem] font-medium transition-colors duration-[120ms] outline-none hover:text-[var(--text-primary)] focus-visible:[outline:2px_solid_var(--border-focus)]"
+      style={{ color: "var(--text-muted)" }}
+      data-testid={`agents-inbox-recent-pager-${lane}`}
+      onClick={() => void onFetchNextPage()}
+      disabled={isFetchingNextPage}
+    >
+      Load {remaining} older
+    </button>
   );
 }
 
@@ -2671,9 +3022,10 @@ interface InboxLaneProps extends PublicationStateGroupsProps {
   onLaneCountChange: (lane: AgentSidebarAttentionLane, total: number) => void;
 }
 
-// Every lane keeps its own query so the chip counts stay live, but only the
-// selected lane renders rows — and it renders them as the pane's single
-// full-height scroller.
+// Single-lane filters — Stale and Done. Every lane keeps its own query so the
+// chip counts stay live, but only the selected one renders rows, and it renders
+// them as the pane's single full-height scroller. Recent's two lanes take the
+// grouped path in RecentInboxLane instead.
 function InboxLane({
   lane,
   emptyLabel,
@@ -2741,6 +3093,7 @@ function InboxLane({
     ...(isActive ? { pageSize: adaptiveLanePageSize } : {}),
   });
   const totalConversationCount = groupQuery.group.total;
+  const isGroupQuerySettled = !groupQuery.isPending && !groupQuery.isLoading;
 
   const handleViewportRowCapacityChange = useCallback((rowCapacity: number) => {
     const nextPageSize = Math.min(
@@ -2756,23 +3109,24 @@ function InboxLane({
   }, []);
 
   useEffect(() => {
+    if (totalConversationCount === 0 && !isGroupQuerySettled) {
+      return;
+    }
     onLaneCountChange(lane, totalConversationCount);
-  }, [lane, onLaneCountChange, totalConversationCount]);
+  }, [isGroupQuerySettled, lane, onLaneCountChange, totalConversationCount]);
 
   if (!isActive) {
     return null;
   }
 
-  if (totalConversationCount === 0) {
+  if (totalConversationCount === 0 && isGroupQuerySettled) {
     return (
       <div
         className="px-2 py-1 text-xs"
         style={{ color: "var(--text-muted)" }}
         data-testid={`agents-inbox-lane-empty-${lane}`}
       >
-        {lane === "needs" && searchQuery.length === 0
-          ? "Nothing waiting on you"
-          : emptyLabel}
+        {emptyLabel}
       </div>
     );
   }
@@ -3143,6 +3497,7 @@ interface AgentSessionRowProps {
   refLabel: string;
   publicationState: AgentSidebarPublicationState;
   publicationLabel: string | null;
+  parkedDelegateCount: number;
   actionVerb?: string;
   ageEscalation?: AgeEscalation;
   isSelected: boolean;
@@ -3171,6 +3526,7 @@ function AgentSessionRow({
   refLabel,
   publicationState,
   publicationLabel,
+  parkedDelegateCount,
   actionVerb,
   ageEscalation,
   isSelected,
@@ -3198,6 +3554,7 @@ function AgentSessionRow({
       : null;
   const createdLabel = formatAgentConversationCreatedAt(conversation.createdAt);
   const createdTitle = formatAgentConversationCreatedAtTitle(conversation.createdAt);
+  const parkedDelegateMeta = formatParkedDelegateMeta(parkedDelegateCount);
 
   return (
     <div
@@ -3233,6 +3590,19 @@ function AgentSessionRow({
             {actionVerb && (
               <>
                 <span className="shrink-0 font-medium">{actionVerb}</span>
+                <span className="flex h-[1em] shrink-0 items-center" aria-hidden="true">
+                  ·
+                </span>
+              </>
+            )}
+            {parkedDelegateMeta && (
+              <>
+                <span
+                  className="shrink-0 font-medium"
+                  data-testid={`agents-parked-delegates-${conversation.id}`}
+                >
+                  {parkedDelegateMeta}
+                </span>
                 <span className="flex h-[1em] shrink-0 items-center" aria-hidden="true">
                   ·
                 </span>
@@ -3799,6 +4169,7 @@ function ProjectSessionGroup({
           refLabel={row.refLabel}
           publicationState={row.publicationState}
           publicationLabel={publicationLabel}
+          parkedDelegateCount={row.parkedDelegateCount}
           isSelected={isSelected}
           isPinned={isPinned}
           isMuted={row.isMuted}

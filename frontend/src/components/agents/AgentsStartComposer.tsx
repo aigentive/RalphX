@@ -9,7 +9,7 @@ import {
 import { Lock, PauseCircle, Sparkles } from "lucide-react";
 
 import type {
-  AgentConversationBranchMode,
+
   AgentConversationBaseSelection,
   AgentConversationWorkspaceMode,
   ComposerArtifactReference,
@@ -46,12 +46,7 @@ import {
   type ChatComposerFolder,
 } from "@/stores/chatStore";
 import { BranchBasePicker } from "@/components/shared/BranchBasePicker";
-import {
-  fallbackBranchBaseOptions,
-  loadBranchBaseOptions,
-  loadPullRequestBaseOptions,
-  type BranchBaseOption,
-} from "@/components/shared/branchBaseOptions";
+import { useStartFromBaseSelection } from "./useStartFromBaseSelection";
 import {
   agentModelSupportsCodexUltra,
   type AgentModelRegistry,
@@ -137,7 +132,11 @@ interface AgentsStartComposerProps {
   isLoadingProjects: boolean;
   isSubmitting: boolean;
   modelRegistry: AgentModelRegistry;
-  onRuntimePreferenceChange?: (projectId: string, runtime: AgentRuntimeSelection) => void;
+  onRuntimePreferenceChange?: (
+    projectId: string,
+    mode: AgentConversationWorkspaceMode,
+    runtime: AgentRuntimeSelection,
+  ) => void;
   onSubmit: (input: AgentsStartComposerSubmitInput) => Promise<void>;
 }
 
@@ -261,19 +260,6 @@ export function AgentsStartComposer({
   >("solo");
   const [automationAuthoringMode, setAutomationAuthoringMode] =
     useState<AutomationAuthoringMode | null>(null);
-  const [startFromOptions, setStartFromOptions] = useState<BranchBaseOption[]>([]);
-  const [pullRequestStartFromOptions, setPullRequestStartFromOptions] = useState<
-    BranchBaseOption[]
-  >([]);
-  const [selectedStartFromKey, setSelectedStartFromKey] = useState("");
-  const [isStartFromIsolatedBranch, setIsStartFromIsolatedBranch] =
-    useState(false);
-  const [isLoadingStartFrom, setIsLoadingStartFrom] = useState(false);
-  const [isLoadingPullRequestStartFrom, setIsLoadingPullRequestStartFrom] = useState(false);
-  const [pullRequestStartFromMessage, setPullRequestStartFromMessage] =
-    useState<string | null>(null);
-  const [hydratedStartFromProjectId, setHydratedStartFromProjectId] =
-    useState<string | null>(null);
   const [isComposerActive, setIsComposerActive] = useState(false);
   const [draftProjectReferences, setDraftProjectReferences] = useState<
     ComposerProjectReference[]
@@ -300,9 +286,6 @@ export function AgentsStartComposer({
   const [error, setError] = useState<StartComposerError | null>(null);
   const [isRepairingMcp, setIsRepairingMcp] = useState(false);
   const isStartBusy = isRepairingMcp || isSubmitting;
-  const startFromRequestRef = useRef(0);
-  const pullRequestStartFromRequestRef = useRef(0);
-  const userSelectedStartFromRef = useRef(false);
   const lastStartAttemptRef = useRef<AgentsStartComposerSubmitInput | null>(null);
   const openModal = useUiStore((s) => s.openModal);
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
@@ -347,15 +330,6 @@ export function AgentsStartComposer({
     isLoading: isLoadingProviderSettings,
     isPlaceholderData: isPlaceholderProviderSettings,
   } = useHarnessProviders({ refreshRuntime: true });
-  const lastBranchBaseSelectionByProjectId = useAgentSessionStore(
-    (s) => s.lastBranchBaseSelectionByProjectId
-  );
-  const setBranchBaseCacheForProject = useAgentSessionStore(
-    (s) => s.setBranchBaseCacheForProject
-  );
-  const setLastBranchBaseSelectionForProject = useAgentSessionStore(
-    (s) => s.setLastBranchBaseSelectionForProject
-  );
   const startConversationFailure = useAgentSessionStore(
     (s) => s.startConversationFailure
   );
@@ -365,11 +339,15 @@ export function AgentsStartComposer({
   const lastModelEffortByProvider = useAgentSessionStore(
     (s) => s.lastModelEffortByProvider
   );
-  const persistedRuntimeOverride = useAgentSessionStore((s) =>
-    projectId ? s.lastRuntimeByProjectId[projectId] : undefined
-  );
-  const clearLastRuntimeForProject = useAgentSessionStore(
-    (s) => s.clearLastRuntimeForProject
+  const persistedRuntimeOverride = useAgentSessionStore((s) => {
+    if (!projectId) return undefined;
+    // Legacy project-scoped memory predates per-mode memory and was written by
+    // the edit-mode composer; it must never leak into other modes.
+    return s.lastRuntimeByProjectMode[`${projectId}:${mode}`] ??
+      (mode === "edit" ? s.lastRuntimeByProjectId[projectId] : undefined);
+  });
+  const clearLastRuntimeForProjectMode = useAgentSessionStore(
+    (s) => s.clearLastRuntimeForProjectMode,
   );
   const startConversationDraft = useAgentSessionStore(
     (s) => s.startConversationDraft
@@ -583,6 +561,32 @@ export function AgentsStartComposer({
     setStartConversationFailure(null);
     setError(null);
   }, [setStartConversationFailure]);
+  const activeProject = useMemo(
+    () => projects.find((project) => project.id === projectId) ?? null,
+    [projectId, projects]
+  );
+  const activeProjectId = activeProject?.id ?? null;
+  const activeProjectBaseBranch = activeProject?.baseBranch ?? null;
+  const activeProjectWorkingDirectory = activeProject?.workingDirectory ?? null;
+  const baseSelection = useStartFromBaseSelection({
+    activeProjectId,
+    activeProjectBaseBranch,
+    activeProjectWorkingDirectory,
+    clickupTicketToken,
+    mode,
+    onClearError: clearStartError,
+  });
+  const {
+    selectedStartFromKey,
+    selectedStartFromSelection,
+    handleStartFromChange,
+    ensureStartFromOptionsLoaded,
+    searchPullRequestStartFromOptions,
+    resolveBaseForSubmit,
+    setIsolatedBranch: setStartFromIsolatedBranch,
+    forceIsolatedBranch: forceStartFromIsolatedBranch,
+    resetExplicitSelection: resetStartFromSelection,
+  } = baseSelection;
   const markRoleOverride = useCallback(() => {
     setRoleOverrideKey(currentRoleKey);
   }, [currentRoleKey]);
@@ -669,10 +673,10 @@ export function AgentsStartComposer({
     setDraftIntegrationReferences(draft.composerIntegrationReferences ?? []);
     setComposerIntegrationReferences(draft.composerIntegrationReferences ?? []);
     setDraftArtifactReferences(draft.composerArtifactReferences ?? []);
-    setIsStartFromIsolatedBranch(false);
-    userSelectedStartFromRef.current = false;
+    resetStartFromSelection();
   }, [
     consumeStartConversationDraft,
+    resetStartFromSelection,
     setComposerDraftContent,
     startConversationDraft,
   ]);
@@ -689,7 +693,7 @@ export function AgentsStartComposer({
     setMode(retryInput.mode);
     setAutomationAuthoringMode(retryInput.automationAuthoringMode ?? null);
     if (retryInput.base) {
-      setIsStartFromIsolatedBranch(retryInput.base.branchMode === "isolated");
+      setStartFromIsolatedBranch(retryInput.base.branchMode === "isolated");
     }
     setError(
       startConversationFailure.kind === "linked_setup"
@@ -708,7 +712,7 @@ export function AgentsStartComposer({
             },
           },
     );
-  }, [startConversationFailure]);
+  }, [setStartFromIsolatedBranch, startConversationFailure]);
 
   useEffect(() => {
     if (roleDefaultQuery.data && !hasRoleOverride) {
@@ -738,19 +742,6 @@ export function AgentsStartComposer({
       ),
     [modelId, modelRegistry, provider, selectedProviderSupportedEfforts]
   );
-  const activeProject = useMemo(
-    () => projects.find((project) => project.id === projectId) ?? null,
-    [projectId, projects]
-  );
-  const activeProjectId = activeProject?.id ?? null;
-  const activeProjectBaseBranch = activeProject?.baseBranch ?? null;
-  const activeProjectWorkingDirectory = activeProject?.workingDirectory ?? null;
-  const allStartFromOptions = useMemo(
-    () => [...startFromOptions, ...pullRequestStartFromOptions],
-    [pullRequestStartFromOptions, startFromOptions]
-  );
-  const selectedStartFrom =
-    allStartFromOptions.find((option) => option.key === selectedStartFromKey) ?? null;
   const reviewPrDefaultPrompt =
     mode === "review_pr" ? REVIEW_PR_DEFAULT_PROMPT : undefined;
   const isExecutionHalted = executionHaltState !== null;
@@ -760,27 +751,6 @@ export function AgentsStartComposer({
     executionHaltState === "stopped"
       ? "New prompts will queue until execution starts."
       : "New prompts will queue until execution resumes.";
-  const fallbackStartFrom = useMemo<AgentConversationBaseSelection | null>(() => {
-    if (!activeProject) {
-      return null;
-    }
-    const ref = activeProject.baseBranch ?? "main";
-    return {
-      kind: "project_default",
-      ref,
-      displayName: `Project default (${ref})`,
-    };
-  }, [activeProject]);
-  const selectedStartFromSelection =
-    selectedStartFrom?.selection ?? fallbackStartFrom;
-  const selectionForcesIsolatedBranch =
-    selectedStartFromSelection
-      ? startSelectionForcesIsolatedBranch(selectedStartFromSelection)
-      : false;
-  const startFromForcesIsolatedBranch =
-    mode === "review_pr" || selectionForcesIsolatedBranch;
-  const effectiveStartFromIsolatedBranch =
-    startFromForcesIsolatedBranch || isStartFromIsolatedBranch;
 
   const persistRuntimePreference = useCallback(
     (nextProjectId: string, runtime: AgentRuntimeSelection) => {
@@ -789,6 +759,7 @@ export function AgentsStartComposer({
       }
       onRuntimePreferenceChange?.(
         nextProjectId,
+        mode,
         normalizeRuntimeSelection(
           runtime,
           modelRegistry,
@@ -797,7 +768,7 @@ export function AgentsStartComposer({
         )
       );
     },
-    [modelRegistry, onRuntimePreferenceChange, providerOptions]
+    [mode, modelRegistry, onRuntimePreferenceChange, providerOptions]
   );
 
   useEffect(() => {
@@ -826,8 +797,7 @@ export function AgentsStartComposer({
     (nextProjectId: string | null) => {
       if (projectLocked) return;
       clearStartError();
-      userSelectedStartFromRef.current = false;
-      setIsStartFromIsolatedBranch(false);
+      resetStartFromSelection();
       setProjectId(nextProjectId);
       if (nextProjectId) {
         persistRuntimePreference(nextProjectId, { provider, modelId, effort });
@@ -840,6 +810,7 @@ export function AgentsStartComposer({
       persistRuntimePreference,
       projectLocked,
       provider,
+      resetStartFromSelection,
     ]
   );
 
@@ -951,29 +922,6 @@ export function AgentsStartComposer({
     ]
   );
 
-  const handleStartFromChange = useCallback(
-    (nextKey: string) => {
-      clearStartError();
-      userSelectedStartFromRef.current = true;
-      setSelectedStartFromKey(nextKey);
-      const nextSelection =
-        allStartFromOptions.find((option) => option.key === nextKey)?.selection ??
-        null;
-      setIsStartFromIsolatedBranch(
-        startSelectionDefaultsToIsolatedBranch(nextSelection)
-      );
-      if (activeProjectId && !isTransientStartFromKey(nextKey)) {
-        setLastBranchBaseSelectionForProject(activeProjectId, nextKey);
-      }
-    },
-    [
-      activeProjectId,
-      allStartFromOptions,
-      clearStartError,
-      setLastBranchBaseSelectionForProject,
-    ]
-  );
-
   const handleComposerIntegrationReferencesChange = useCallback(
     (references: ComposerIntegrationReference[]) => {
       if (
@@ -1003,7 +951,7 @@ export function AgentsStartComposer({
         return;
       }
       if (projectId) {
-        clearLastRuntimeForProject(projectId);
+        clearLastRuntimeForProjectMode(projectId, mode);
       }
       setRoleOverrideKey(null);
       applyRoleDefault(result.data);
@@ -1020,8 +968,9 @@ export function AgentsStartComposer({
     }
   }, [
     applyRoleDefault,
-    clearLastRuntimeForProject,
+    clearLastRuntimeForProjectMode,
     clearStartError,
+    mode,
     projectId,
     roleDefaultQuery,
   ]);
@@ -1056,189 +1005,6 @@ export function AgentsStartComposer({
       })),
     ]);
   };
-
-  useEffect(() => {
-    startFromRequestRef.current += 1;
-    pullRequestStartFromRequestRef.current += 1;
-    setHydratedStartFromProjectId(null);
-    setPullRequestStartFromOptions([]);
-    setPullRequestStartFromMessage(null);
-    setIsLoadingPullRequestStartFrom(false);
-    setIsStartFromIsolatedBranch(false);
-    userSelectedStartFromRef.current = false;
-
-    if (!activeProjectId || !activeProjectWorkingDirectory) {
-      setStartFromOptions([]);
-      setSelectedStartFromKey("");
-      setIsLoadingStartFrom(false);
-      return;
-    }
-
-    const {
-      branchBaseCacheByProjectId: cachedBranchBaseByProjectId,
-      lastBranchBaseSelectionByProjectId: rememberedBranchBaseByProjectId,
-    } = useAgentSessionStore.getState();
-    const fallback = fallbackBranchBaseOptions(activeProjectBaseBranch);
-    const cached = cachedBranchBaseByProjectId[activeProjectId];
-    const options = cached?.options.length ? cached.options : fallback.options;
-    const preferredKey =
-      rememberedBranchBaseByProjectId[activeProjectId] ??
-      cached?.selectedKey ??
-      fallback.selectedKey;
-    const nextSelectedStartFromKey =
-      resolveBranchSelectionKey(options, preferredKey) ??
-      resolveBranchSelectionKey(options, fallback.selectedKey) ??
-      fallback.selectedKey;
-    const nextStartFromSelection =
-      options.find((option) => option.key === nextSelectedStartFromKey)?.selection ??
-      null;
-    setStartFromOptions(options);
-    setSelectedStartFromKey(nextSelectedStartFromKey);
-    setIsStartFromIsolatedBranch(
-      startSelectionDefaultsToIsolatedBranch(nextStartFromSelection)
-    );
-    setIsLoadingStartFrom(false);
-  }, [
-    activeProjectBaseBranch,
-    activeProjectId,
-    activeProjectWorkingDirectory,
-  ]);
-
-  const searchPullRequestStartFromOptions = useCallback(
-    (query: string) => {
-      if (!activeProjectId) {
-        setPullRequestStartFromOptions([]);
-        setPullRequestStartFromMessage(null);
-        setIsLoadingPullRequestStartFrom(false);
-        return;
-      }
-
-      const requestId = ++pullRequestStartFromRequestRef.current;
-      setIsLoadingPullRequestStartFrom(true);
-      setPullRequestStartFromMessage(null);
-
-      void loadPullRequestBaseOptions({ projectId: activeProjectId, query })
-        .then((options) => {
-          if (pullRequestStartFromRequestRef.current !== requestId) {
-            return;
-          }
-          setPullRequestStartFromOptions((current) => {
-            const selected = current.find(
-              (option) => option.key === selectedStartFromKey
-            );
-            if (
-              selected &&
-              !options.some((option) => option.key === selected.key)
-            ) {
-              return [selected, ...options];
-            }
-            return options;
-          });
-          setIsLoadingPullRequestStartFrom(false);
-        })
-        .catch((err) => {
-          if (pullRequestStartFromRequestRef.current !== requestId) {
-            return;
-          }
-          setPullRequestStartFromOptions((current) =>
-            current.filter((option) => option.key === selectedStartFromKey)
-          );
-          setPullRequestStartFromMessage(
-            err instanceof Error
-              ? err.message
-              : "Unable to search pull requests"
-          );
-          setIsLoadingPullRequestStartFrom(false);
-        });
-    },
-    [activeProjectId, selectedStartFromKey]
-  );
-
-  const ensureStartFromOptionsLoaded = useCallback(() => {
-    if (
-      !activeProjectId ||
-      !activeProjectWorkingDirectory ||
-      isLoadingStartFrom ||
-      hydratedStartFromProjectId === activeProjectId
-    ) {
-      return;
-    }
-
-    const requestId = ++startFromRequestRef.current;
-    setIsLoadingStartFrom(true);
-
-    void loadBranchBaseOptions({
-      projectId: activeProjectId,
-      workingDirectory: activeProjectWorkingDirectory,
-      projectBaseBranch: activeProjectBaseBranch,
-    })
-      .then((result) => {
-        if (startFromRequestRef.current !== requestId) {
-          return;
-        }
-        const preferredKey =
-          (activeProjectId
-            ? lastBranchBaseSelectionByProjectId[activeProjectId]
-            : null) ??
-          selectedStartFromKey ??
-          result.selectedKey;
-        const normalSelectedKey =
-          resolveBranchSelectionKey(result.options, preferredKey) ??
-          resolveBranchSelectionKey(result.options, result.selectedKey) ??
-          result.selectedKey;
-        const clickupCandidates = clickupTicketToken
-          ? result.options.filter(
-              (option) =>
-                option.selection.kind === "local_branch" &&
-                containsTicketToken(option.selection.ref, clickupTicketToken),
-            )
-          : [];
-        const clickupSelectedKey =
-          !userSelectedStartFromRef.current && clickupCandidates.length === 1
-            ? clickupCandidates[0]?.key
-            : null;
-        const nextBranchSelectedKey = clickupSelectedKey ?? normalSelectedKey;
-        setStartFromOptions(result.options);
-        setSelectedStartFromKey((currentKey) =>
-          currentKey.startsWith("pull_request:")
-            ? currentKey
-            : nextBranchSelectedKey
-        );
-        if (clickupSelectedKey) {
-          setIsStartFromIsolatedBranch(false);
-        }
-        setBranchBaseCacheForProject(activeProjectId, result.options, normalSelectedKey);
-        if (!clickupSelectedKey) {
-          setLastBranchBaseSelectionForProject(activeProjectId, nextBranchSelectedKey);
-        }
-        setHydratedStartFromProjectId(activeProjectId);
-        setIsLoadingStartFrom(false);
-      })
-      .catch(() => {
-        if (startFromRequestRef.current !== requestId) {
-          return;
-        }
-        setHydratedStartFromProjectId(activeProjectId);
-        setIsLoadingStartFrom(false);
-      });
-  }, [
-    activeProjectBaseBranch,
-    activeProjectId,
-    activeProjectWorkingDirectory,
-    clickupTicketToken,
-    hydratedStartFromProjectId,
-    isLoadingStartFrom,
-    lastBranchBaseSelectionByProjectId,
-    selectedStartFromKey,
-    setBranchBaseCacheForProject,
-    setLastBranchBaseSelectionForProject,
-  ]);
-
-  useEffect(() => {
-    if (clickupTicketToken) {
-      ensureStartFromOptionsLoaded();
-    }
-  }, [clickupTicketToken, ensureStartFromOptionsLoaded]);
 
   const handleRemoveAttachment = (attachmentId: string) => {
     clearStartError();
@@ -1404,9 +1170,15 @@ export function AgentsStartComposer({
           }
         : lastAttempt.base,
     };
-    setIsStartFromIsolatedBranch(true);
+    forceStartFromIsolatedBranch();
     await submitStartInput(isolatedAttempt);
-  }, [attachments, folders, startConversationFailure, submitStartInput]);
+  }, [
+    attachments,
+    folders,
+    forceStartFromIsolatedBranch,
+    startConversationFailure,
+    submitStartInput,
+  ]);
 
   const handleRemovePersonaAndRetry = useCallback(async () => {
     const lastAttempt = lastStartAttemptRef.current;
@@ -1453,15 +1225,19 @@ export function AgentsStartComposer({
       return;
     }
 
-    const base = selectedStartFromSelection
-      ? {
-          ...selectedStartFromSelection,
-          branchMode: branchModeForStartSelection(
-            selectedStartFromSelection,
-            effectiveStartFromIsolatedBranch
-          ),
-        }
-      : null;
+    // §I4: an explicit base pick is never silently swapped for the project
+    // default. `resolveBaseForSubmit` retries a vanished selection once and
+    // reports `unavailable` rather than substituting.
+    const resolution = await resolveBaseForSubmit();
+    if (resolution.kind === "unavailable") {
+      setError(
+        plainStartComposerError(
+          `Selected base branch '${resolution.unavailableRef}' could not be resolved. Pick a base branch and try again.`,
+        ),
+      );
+      return;
+    }
+    const base = resolution.base;
     let launchRuntime: AgentRuntimeSelection = { provider, modelId, effort };
     let launchCapabilityMode = capabilityMode;
     let launchCodexFastMode =
@@ -1691,9 +1467,6 @@ export function AgentsStartComposer({
                 clearStartError();
                 const nextMode = value as AgentConversationWorkspaceMode;
                 if (nextMode !== mode) {
-                  if (projectId) {
-                    clearLastRuntimeForProject(projectId);
-                  }
                   setRoleOverrideKey(null);
                 }
                 setMode(nextMode);
@@ -1928,18 +1701,22 @@ export function AgentsStartComposer({
               <BranchBasePicker
                 value={selectedStartFromKey}
                 onValueChange={handleStartFromChange}
-                options={startFromOptions}
+                options={baseSelection.startFromOptions}
                 enablePullRequests={Boolean(activeProjectId)}
-                pullRequestOptions={pullRequestStartFromOptions}
-                isLoadingPullRequests={isLoadingPullRequestStartFrom}
-                pullRequestMessage={pullRequestStartFromMessage}
+                pullRequestOptions={baseSelection.pullRequestStartFromOptions}
+                isLoadingPullRequests={baseSelection.isLoadingPullRequestStartFrom}
+                pullRequestMessage={baseSelection.pullRequestStartFromMessage}
                 onPullRequestSearch={searchPullRequestStartFromOptions}
-                placeholder={isLoadingStartFrom ? "Loading branch..." : "Base branch"}
+                placeholder={
+                  baseSelection.isLoadingStartFrom ? "Loading branch..." : "Base branch"
+                }
                 disabled={
-                  !activeProjectId || (isLoadingStartFrom && startFromOptions.length === 0)
+                  !activeProjectId ||
+                  (baseSelection.isLoadingStartFrom &&
+                    baseSelection.startFromOptions.length === 0)
                 }
                 testId="agents-start-base"
-                isLoading={isLoadingStartFrom}
+                isLoading={baseSelection.isLoadingStartFrom}
                 onIntent={ensureStartFromOptionsLoaded}
                 onOpenChange={(open) => {
                   if (open) {
@@ -1947,11 +1724,11 @@ export function AgentsStartComposer({
                   }
                 }}
                 closeOnSelect={false}
-                isolatedBranch={effectiveStartFromIsolatedBranch}
-                isolatedBranchDisabled={startFromForcesIsolatedBranch}
+                isolatedBranch={baseSelection.effectiveIsolatedBranch}
+                isolatedBranchDisabled={baseSelection.forcesIsolatedBranch}
                 onIsolatedBranchChange={(value) => {
                   clearStartError();
-                  setIsStartFromIsolatedBranch(value);
+                  setStartFromIsolatedBranch(value);
                 }}
               />
             )}
@@ -2103,45 +1880,6 @@ const AnimatedStarterHeadingWord = memo(function AnimatedStarterHeadingWord({
   );
 });
 
-function resolveBranchSelectionKey(
-  options: BranchBaseOption[],
-  preferredKey: string | null | undefined
-) {
-  if (!preferredKey) {
-    return null;
-  }
-  return options.some((option) => option.key === preferredKey) ? preferredKey : null;
-}
-
-function branchModeForStartSelection(
-  selection: AgentConversationBaseSelection,
-  isIsolated: boolean
-): AgentConversationBranchMode {
-  if (selection.kind === "project_default") {
-    return "isolated";
-  }
-  if (selection.kind === "current_branch") {
-    return "isolated";
-  }
-  return isIsolated ? "isolated" : "linked";
-}
-
-function startSelectionForcesIsolatedBranch(
-  selection: AgentConversationBaseSelection
-): boolean {
-  return selection.kind === "project_default" || selection.kind === "current_branch";
-}
-
-function startSelectionDefaultsToIsolatedBranch(
-  selection: AgentConversationBaseSelection | null
-): boolean {
-  return selection !== null;
-}
-
-function isTransientStartFromKey(key: string) {
-  return key.startsWith("pull_request:");
-}
-
 function clickupTokenFromIntegrationReferences(
   references: ComposerIntegrationReference[],
 ): string | null {
@@ -2159,21 +1897,6 @@ function clickupTokenFromIntegrationReferences(
   }
   const id = reference.id.trim();
   return id ? (id.toUpperCase().startsWith("CU-") ? id : `CU-${id}`) : null;
-}
-
-function containsTicketToken(value: string, token: string): boolean {
-  const lowerValue = value.toLowerCase();
-  const lowerToken = token.toLowerCase();
-  let start = lowerValue.indexOf(lowerToken);
-  while (start >= 0) {
-    const before = start === 0 ? "" : lowerValue[start - 1];
-    const after = lowerValue[start + lowerToken.length] ?? "";
-    if (!/[a-z0-9]/.test(before ?? "") && !/[a-z0-9]/.test(after)) {
-      return true;
-    }
-    start = lowerValue.indexOf(lowerToken, start + 1);
-  }
-  return false;
 }
 
 function useAnimatedStarterWord(paused = false) {

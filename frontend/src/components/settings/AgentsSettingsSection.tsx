@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Bot, ChevronDown, ChevronRight, Search } from "lucide-react";
+import { ChevronDown, ChevronRight, Search } from "lucide-react";
 
 import type { ManualRoleCatalogEntry } from "@/api/manual-role-defaults.types";
 import { AGENT_START_MODE_OPTIONS } from "@/components/agents/agentStartModeOptions";
@@ -21,12 +21,7 @@ import { useUiStore } from "@/stores/uiStore";
 
 import { AgentRoleDefaultRow } from "./AgentRoleDefaultRow";
 import type { AgentsTabValue } from "./settings-ui-state";
-import {
-  ErrorBanner,
-  SectionCard,
-  SelectSettingRow,
-  type SelectOption,
-} from "./SettingsView.shared";
+import { ErrorBanner, type SelectOption } from "./SettingsView.shared";
 import { useAgentsSettingsUiState } from "./useAgentsSettingsUiState";
 
 interface FamilyGroup {
@@ -132,6 +127,16 @@ export function AgentsSettingsSection() {
   const activePersonas = (personasQuery.data ?? []).filter(
     (persona) => persona.status === "active",
   );
+  const { totalRoleCount, configuredRoleCount } = useMemo(() => {
+    let total = 0;
+    let configured = 0;
+    for (const role of defaults.catalog?.roles ?? []) {
+      if (!tasksEnabled && role.requiresTasks) continue;
+      total += 1;
+      if (role.configured) configured += 1;
+    }
+    return { totalRoleCount: total, configuredRoleCount: configured };
+  }, [defaults.catalog?.roles, tasksEnabled]);
   const filtersForceVisibility = Boolean(
     search.trim() || overridesOnly || attentionOnly,
   );
@@ -146,21 +151,46 @@ export function AgentsSettingsSection() {
   };
 
   return (
-    <SectionCard
-      icon={<Bot className="h-5 w-5" />}
-      title="Agents"
-      description="Configure new-run behavior and backend-owned defaults for every agent role."
-    >
+    <section aria-label="Roles">
       <div className="agents-settings-content space-y-4">
-        <SelectSettingRow
-          id="agent-default-start-mode"
-          label="Default new-run mode"
-          description="Choose the mode selected when you open Agents > New run"
-          value={defaultStartMode}
-          options={DEFAULT_START_MODE_OPTIONS}
-          disabled={false}
-          onChange={setDefaultStartMode}
-        />
+        <div className="settings-card">
+          <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+            Default new-run mode
+          </h3>
+          <p className="settings-row__help">
+            Pre-selected whenever you start a run from Agents → New run. You
+            can still switch modes per run.
+          </p>
+          <div
+            role="radiogroup"
+            aria-label="Default new-run mode"
+            data-testid="agent-default-start-mode"
+            className="mt-3 grid gap-2.5 [grid-template-columns:repeat(auto-fit,minmax(180px,1fr))]"
+          >
+            {DEFAULT_START_MODE_OPTIONS.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                role="radio"
+                aria-checked={defaultStartMode === option.value}
+                onClick={() => setDefaultStartMode(option.value)}
+                className="agents-mode-card"
+              >
+                <span className="flex items-center gap-2">
+                  <span aria-hidden="true" className="agents-mode-card__dot">
+                    <span className="agents-mode-card__dot-fill" />
+                  </span>
+                  <span className="text-[13.5px] font-semibold text-[var(--text-primary)]">
+                    {option.label}
+                  </span>
+                </span>
+                <span className="text-xs leading-relaxed text-[var(--text-muted)]">
+                  {option.description}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
         {!tasksEnabled && (
           <p
             data-testid="tasks-required-roles-hidden-notice"
@@ -207,6 +237,9 @@ export function AgentsSettingsSection() {
               className="settings-input h-9 w-full pl-8 font-[var(--font-body)]"
             />
           </label>
+          <span className="text-xs text-[var(--text-muted)]">
+            {configuredRoleCount} of {totalRoleCount} roles configured here
+          </span>
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
@@ -307,7 +340,7 @@ export function AgentsSettingsSection() {
                     : <ChevronRight aria-hidden="true" className="h-4 w-4 shrink-0" />}
                   <span
                     id={`agent-family-${family.id}`}
-                    className="font-semibold text-[var(--text-primary)]"
+                    className="agents-family__label"
                   >
                     {family.label}
                   </span>
@@ -370,6 +403,6 @@ export function AgentsSettingsSection() {
           </p>
         )}
       </div>
-    </SectionCard>
+    </section>
   );
 }

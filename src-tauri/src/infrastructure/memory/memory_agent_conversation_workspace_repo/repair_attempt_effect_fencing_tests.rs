@@ -119,7 +119,7 @@ async fn effect_writes_reject_stale_attempt_or_effect_versions_and_keep_exact_co
         .await
         .expect("complete effect")
     {
-        CompleteAgentWorkspaceRepairEffectOutcome::Applied(effect) => effect,
+        CompleteAgentWorkspaceRepairEffectOutcome::Applied(effect) => *effect,
         outcome => panic!("expected completion, got {outcome:?}"),
     };
 
@@ -261,7 +261,7 @@ async fn effect_writes_reject_stale_attempt_or_effect_versions_and_keep_exact_co
     assert!(matches!(
         idempotent,
         CompleteAgentWorkspaceRepairEffectOutcome::Applied(ref effect)
-            if effect == &completed
+            if **effect == completed
     ));
     assert_eq!(
         repo.get_by_conversation_id(&conversation_id)

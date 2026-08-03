@@ -4,13 +4,16 @@ import { KeyRound, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { useLinearIntegration } from "@/hooks/useLinearIntegration";
+import {
+  isLinearConnected,
+  useLinearIntegration,
+} from "@/hooks/useLinearIntegration";
 
 import {
   ErrorBanner,
   IntegrationDisconnectButton,
   IntegrationStatusBanner,
-  SectionCard,
+  SettingsSection,
 } from "./SettingsView.shared";
 
 function errorMessage(error: unknown, fallback: string): string {
@@ -49,12 +52,7 @@ export function LinearIntegrationSettingsPanel() {
     (saveSettingsError instanceof Error ? saveSettingsError.message : null) ??
     (validateError instanceof Error ? validateError.message : null) ??
     (disconnectError instanceof Error ? disconnectError.message : null);
-  const isApiConfigured = Boolean(
-    settings?.enabled &&
-    settings.hasApiToken &&
-    settings.validationStatus === "valid" &&
-    settings.issueSearchAvailable,
-  );
+  const isApiConfigured = isLinearConnected(settings);
   const hasConnection = Boolean(settings?.hasApiToken || settings?.enabled);
   const statusChips = [
     `API token ${settings?.hasApiToken ? "stored" : "missing"}`,
@@ -126,24 +124,16 @@ export function LinearIntegrationSettingsPanel() {
 
   if (isLoading) {
     return (
-      <SectionCard
-        icon={<KeyRound className="h-[18px] w-[18px]" />}
-        title="Linear"
-        description="Linear issue references"
-      >
+      <SettingsSection>
         <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-2 text-sm text-[var(--text-muted)]">
           Loading Linear settings...
         </div>
-      </SectionCard>
+      </SettingsSection>
     );
   }
 
   return (
-    <SectionCard
-      icon={<KeyRound className="h-[18px] w-[18px]" />}
-      title="Linear"
-      description="Linear issue references"
-    >
+    <SettingsSection>
       {displayedError ? (
         <ErrorBanner
           error={displayedError}
@@ -218,6 +208,6 @@ export function LinearIntegrationSettingsPanel() {
           ) : null}
         </div>
       </div>
-    </SectionCard>
+    </SettingsSection>
   );
 }

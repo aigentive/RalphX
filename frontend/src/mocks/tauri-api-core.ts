@@ -64,6 +64,7 @@ const mockReviewSettings = {
   require_fix_approval: false,
   auto_create_followup_agent_conversation: false,
   autofix_workspace_review_blocking_findings: true,
+  workspace_review_fixer_cycle_cap: 3,
   run_task_validations: true,
 };
 
@@ -340,15 +341,15 @@ const mockAgentProviderSettings = {
       error: null,
       missingCoreExecFeatures: [],
       supportedModelAliases: [
-        "sonnet",
-        "claude-sonnet-4-6",
-        "opus",
-        "claude-opus-4-7",
-        "claude-opus-4-8",
-        "claude-opus-5",
-        "haiku",
         "fable",
+        "claude-opus-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7",
+        "opus",
         "claude-sonnet-5",
+        "claude-sonnet-4-6",
+        "sonnet",
+        "haiku",
       ],
       supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
       updatedAt: "2026-05-08T00:00:00Z",
@@ -392,6 +393,72 @@ const mockManagedProviderCliStatuses = {
       action: "none",
       status: "claude CLI 2.1.197 is user-managed and current.",
       error: null,
+    },
+  ],
+};
+
+// Matches RawMcpCatalogSchema (snake_case serialization from the backend).
+const mockMcpCatalog = {
+  eligible_providers: ["codex"],
+  eligible_default_provider: "codex",
+  probed_at: "2026-05-08T00:00:00Z",
+  probe_stale: false,
+  provider_diagnostics: {},
+  policy_diagnostics: [],
+  servers: [
+    {
+      provider: "codex",
+      server_id: "ralphx",
+      native_scope: "user",
+      native_state: "enabled",
+      effective_enabled: true,
+      configured_state: "follow",
+      effective_state: "follow",
+      effective_source: "required_internal",
+      known_tools: [
+        {
+          tool_name: "list_agent_tasks",
+          configured_state: "follow",
+          effective_state: "follow",
+          effective_source: "required_internal",
+        },
+        {
+          tool_name: "create_agent_task",
+          configured_state: "follow",
+          effective_state: "follow",
+          effective_source: "required_internal",
+        },
+      ],
+      disabled_tools: [],
+      locked: true,
+      locked_reason: "Required internal RalphX server.",
+      diagnostic: null,
+      conflict_kind: null,
+      repair_status: null,
+    },
+    {
+      provider: "codex",
+      server_id: "github",
+      native_scope: "user",
+      native_state: "enabled",
+      effective_enabled: true,
+      configured_state: "follow",
+      effective_state: "follow",
+      effective_source: "provider_native",
+      known_tools: [
+        {
+          tool_name: "search_issues",
+          configured_state: "follow",
+          effective_state: "follow",
+          effective_source: "provider_native",
+        },
+      ],
+      disabled_tools: [],
+      locked: false,
+      locked_reason: null,
+      diagnostic: null,
+      conflict_kind: null,
+      repair_status: null,
     },
   ],
 };
@@ -464,23 +531,10 @@ const mockAgentModels = [
   },
   {
     provider: "claude",
-    modelId: "claude-sonnet-4-6",
-    label: "Claude Sonnet 4.6",
-    menuLabel: "Claude Sonnet 4.6",
-    description: "Pinned Claude Sonnet 4.6 model for stable agent work.",
-    supportedEfforts: ["low", "medium", "high", "max"],
-    defaultEffort: "high",
-    source: "built_in",
-    enabled: true,
-    createdAt: null,
-    updatedAt: null,
-  },
-  {
-    provider: "claude",
-    modelId: "claude-opus-4-7",
-    label: "Claude Opus 4.7",
-    menuLabel: "Claude Opus 4.7",
-    description: "Exact Claude Opus 4.7 model id; requires Claude Code 2.1.111 or newer.",
+    modelId: "claude-opus-5",
+    label: "Claude Opus 5",
+    menuLabel: "Claude Opus 5",
+    description: "Exact Claude Opus 5 model id; requires Claude Code 2.1.219 or newer.",
     supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
     defaultEffort: "high",
     source: "built_in",
@@ -503,10 +557,10 @@ const mockAgentModels = [
   },
   {
     provider: "claude",
-    modelId: "claude-opus-5",
-    label: "Claude Opus 5",
-    menuLabel: "Claude Opus 5",
-    description: "Exact Claude Opus 5 model id; requires Claude Code 2.1.219 or newer.",
+    modelId: "claude-opus-4-7",
+    label: "Claude Opus 4.7",
+    menuLabel: "Claude Opus 4.7",
+    description: "Exact Claude Opus 4.7 model id; requires Claude Code 2.1.111 or newer.",
     supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
     defaultEffort: "high",
     source: "built_in",
@@ -521,6 +575,19 @@ const mockAgentModels = [
     menuLabel: "Claude Sonnet 5",
     description: "Balanced Claude model for agent work.",
     supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
+    defaultEffort: "high",
+    source: "built_in",
+    enabled: true,
+    createdAt: null,
+    updatedAt: null,
+  },
+  {
+    provider: "claude",
+    modelId: "claude-sonnet-4-6",
+    label: "Claude Sonnet 4.6",
+    menuLabel: "Claude Sonnet 4.6",
+    description: "Pinned Claude Sonnet 4.6 model for stable agent work.",
+    supportedEfforts: ["low", "medium", "high", "max"],
     defaultEffort: "high",
     source: "built_in",
     enabled: true,
@@ -1305,6 +1372,8 @@ const commandHandlers: Record<
   }),
   get_agent_provider_settings: async () => mockAgentProviderSettings,
   get_managed_provider_cli_status: async () => mockManagedProviderCliStatuses,
+  get_mcp_catalog: async () => mockMcpCatalog,
+  refresh_mcp_catalog: async () => mockMcpCatalog,
   install_or_update_managed_provider_cli: async (args) => {
     const input = args.input as { provider?: string };
     const status = mockManagedProviderCliStatuses.providers.find(
@@ -2479,6 +2548,7 @@ const commandHandlers: Record<
           publication_state: row.publicationState,
           publication_label: row.publicationLabel,
           attention_lane: row.attentionLane ?? "needs",
+          parked_delegate_count: row.parkedDelegateCount ?? 0,
           action_verb: row.actionVerb ?? "",
           is_muted: row.isMuted ?? false,
         })),
@@ -3276,6 +3346,7 @@ const commandHandlers: Record<
       maxRevisionCycles?: number;
       autoCreateFollowupAgentConversation?: boolean;
       autofixWorkspaceReviewBlockingFindings?: boolean;
+      workspaceReviewFixerCycleCap?: number;
       runTaskValidations?: boolean;
     };
     if (input.requireHumanReview !== undefined) {
@@ -3298,6 +3369,12 @@ const commandHandlers: Record<
     if (input.autofixWorkspaceReviewBlockingFindings !== undefined) {
       mockReviewSettings.autofix_workspace_review_blocking_findings =
         input.autofixWorkspaceReviewBlockingFindings;
+    }
+    if (input.workspaceReviewFixerCycleCap !== undefined) {
+      mockReviewSettings.workspace_review_fixer_cycle_cap = Math.max(
+        0,
+        input.workspaceReviewFixerCycleCap,
+      );
     }
     if (input.runTaskValidations !== undefined) {
       mockReviewSettings.run_task_validations = input.runTaskValidations;

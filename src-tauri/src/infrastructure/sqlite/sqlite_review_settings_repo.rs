@@ -34,7 +34,8 @@ impl ReviewSettingsRepository for SqliteReviewSettingsRepository {
                     "SELECT ai_review_enabled, ai_review_auto_fix, require_fix_approval,
                     require_human_review, max_fix_attempts, max_revision_cycles,
                     auto_create_followup_agent_conversation, require_workspace_review,
-                    run_task_validations, autofix_workspace_review_blocking_findings
+                    run_task_validations, autofix_workspace_review_blocking_findings,
+                    workspace_review_fixer_cycle_cap
              FROM review_settings WHERE id = 1",
                     [],
                     |row| {
@@ -48,6 +49,7 @@ impl ReviewSettingsRepository for SqliteReviewSettingsRepository {
                         let require_workspace_review: i64 = row.get(7)?;
                         let run_task_validations: i64 = row.get(8)?;
                         let autofix_workspace_review_blocking_findings: i64 = row.get(9)?;
+                        let workspace_review_fixer_cycle_cap: i64 = row.get(10)?;
 
                         Ok(ReviewSettings {
                             ai_review_enabled: ai_review_enabled != 0,
@@ -57,6 +59,7 @@ impl ReviewSettingsRepository for SqliteReviewSettingsRepository {
                             require_workspace_review: require_workspace_review != 0,
                             autofix_workspace_review_blocking_findings:
                                 autofix_workspace_review_blocking_findings != 0,
+                            workspace_review_fixer_cycle_cap,
                             run_task_validations: run_task_validations != 0,
                             max_fix_attempts,
                             max_revision_cycles,
@@ -96,6 +99,7 @@ impl ReviewSettingsRepository for SqliteReviewSettingsRepository {
                  require_workspace_review = ?8,
                  run_task_validations = ?9,
                  autofix_workspace_review_blocking_findings = ?10,
+                 workspace_review_fixer_cycle_cap = ?11,
                  updated_at = strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now')
              WHERE id = 1",
                     rusqlite::params![
@@ -109,6 +113,7 @@ impl ReviewSettingsRepository for SqliteReviewSettingsRepository {
                         settings.require_workspace_review as i64,
                         settings.run_task_validations as i64,
                         settings.autofix_workspace_review_blocking_findings as i64,
+                        settings.workspace_review_fixer_cycle_cap,
                     ],
                 )?;
                 Ok(settings)

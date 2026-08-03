@@ -179,7 +179,10 @@ pub async fn get_github_branch_overview(
                 .search_pull_requests(&working_dir, None, 50)
                 .await
             {
-                Ok(results) => results,
+                Ok(results) => results
+                    .into_iter()
+                    .filter(PrSearchResult::is_open)
+                    .collect(),
                 Err(_) => {
                     sources_unavailable.push("githubPullRequests".to_string());
                     Vec::new()

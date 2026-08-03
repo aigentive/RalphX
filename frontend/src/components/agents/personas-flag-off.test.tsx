@@ -379,7 +379,9 @@ describe("agent personas flag-off sweep", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: "Personas" })).toBeInTheDocument();
+    // Personas is a leaf tab under the Agents nav entry.
+    await userEvent.setup().click(screen.getByRole("button", { name: "Agents" }));
+    expect(screen.getByRole("tab", { name: "Personas" })).toBeInTheDocument();
     expect(screen.queryByText("Build with agent")).not.toBeInTheDocument();
     settings.unmount();
 

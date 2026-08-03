@@ -124,10 +124,7 @@ export async function readAgentWorkspaceDurablePublishResult(
     attempt.baseline.lastEventId,
     attempt.startedAtMs,
   );
-  if (suffix === null) {
-    return null;
-  }
-  const latestEvent = suffix[suffix.length - 1];
+  const latestEvent = suffix?.[suffix.length - 1];
   if (latestEvent) {
     attempt.controller.update({ detail: publishPipelineToastLabel(latestEvent.step) });
   }
@@ -152,6 +149,10 @@ export async function readAgentWorkspaceDurablePublishResult(
         maintenanceOperation.operationId,
       ),
       startedAtMs: new Date(maintenanceOperation.startedAt).getTime(),
+      targetConversation: {
+        conversationId: workspace.conversationId,
+        projectId: workspace.projectId,
+      },
       title: maintenanceOperationToastLabel(maintenanceOperation.stage),
     });
     return null;
@@ -170,6 +171,9 @@ export async function readAgentWorkspaceDurablePublishResult(
       kind: "blocked",
       ...(detail ? { detail } : {}),
     };
+  }
+  if (suffix === null) {
+    return null;
   }
   let freshness;
   if (

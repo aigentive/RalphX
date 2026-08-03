@@ -37,15 +37,15 @@ use crate::infrastructure::agents::claude::{
 };
 use crate::infrastructure::agents::{
     extract_codex_agent_message, extract_codex_command_execution, extract_codex_error,
-    extract_codex_file_change_snapshot, extract_codex_thread_id, extract_codex_tool_call_snapshot,
-    extract_codex_usage, parse_codex_event_line, CodexErrorSource, CodexFileChange,
-    CodexFileChangeSnapshot, CodexToolCallPhase, CodexToolCallSnapshot, CodexUsage,
-    CodexUsageSource,
+    extract_codex_file_change_snapshot, extract_codex_reasoning, extract_codex_thread_id,
+    extract_codex_tool_call_snapshot, extract_codex_usage, parse_codex_event_line,
+    CodexErrorSource, CodexFileChange, CodexFileChangeSnapshot, CodexToolCallPhase,
+    CodexToolCallSnapshot, CodexUsage, CodexUsageSource,
 };
 use tokio_util::sync::CancellationToken;
 
 use super::chat_service_errors::StreamError;
-use super::chat_service_types::AgentUsageUpdatedPayload;
+use super::chat_service_types::{retains_full_raw_tool_payload, AgentUsageUpdatedPayload};
 use super::streaming_state_cache::{CachedStreamingTask, CachedToolCall, StreamingStateCache};
 use super::tool_result_preview::{
     build_live_tool_argument_preview, build_live_tool_result_preview_for_tool_call,
@@ -55,16 +55,16 @@ use super::tool_result_preview::{
 use super::{
     event_context, events, has_meaningful_output, message_metadata_hidden_from_ui,
     AgentChunkPayload, AgentHookPayload, AgentTaskCompletedPayload, AgentTaskStartedPayload,
-    AgentToolCallPayload, AgentToolCallPreviewFields,
+    AgentThinkingPayload, AgentThinkingProgressPayload, AgentToolCallPayload,
+    AgentToolCallPreviewFields,
 };
 use crate::utils::truncate_str;
 use crate::AppState;
 
-fn current_text_block_ordinal(completed_blocks: &[ContentBlockItem]) -> u64 {
-    completed_blocks
-        .iter()
-        .filter(|block| matches!(block, ContentBlockItem::Text { .. }))
-        .count() as u64
+/// Returns the index `persist_timeline_snapshot` will assign to the text block
+/// this chunk belongs to.
+fn current_text_block_position(completed_blocks: &[ContentBlockItem]) -> u64 {
+    completed_blocks.len() as u64
 }
 
 #[doc(hidden)]
@@ -431,6 +431,8 @@ pub(super) async fn persist_timeline_snapshot(
         let kind = match block {
             ContentBlockItem::Text { text } if text.is_empty() => continue,
             ContentBlockItem::Text { .. } => ChatTimelineItemKind::Text,
+            ContentBlockItem::Thinking { text, .. } if text.trim().is_empty() => continue,
+            ContentBlockItem::Thinking { .. } => ChatTimelineItemKind::Thinking,
             ContentBlockItem::ToolUse { .. } => ChatTimelineItemKind::ToolUse,
         };
         retained_block_indices.push(index as i64);
@@ -447,11 +449,15 @@ pub(super) async fn persist_timeline_snapshot(
         if status == ChatTimelineItemStatus::Finalized {
             item.finalized_at = Some(item.updated_at);
         }
-        item.raw_block_json = serde_json::to_string(block).ok();
-
         match block {
             ContentBlockItem::Text { text } => {
                 item.text = Some(text.clone());
+            }
+            ContentBlockItem::Thinking { text, duration_ms } => {
+                item.text = Some(text.clone());
+                item.metadata = duration_ms.map(|duration_ms| {
+                    serde_json::json!({ "duration_ms": duration_ms }).to_string()
+                });
             }
             ContentBlockItem::ToolUse {
                 id,
@@ -462,6 +468,9 @@ pub(super) async fn persist_timeline_snapshot(
             } => {
                 item.tool_call_id = id.clone();
                 item.tool_name = Some(name.clone());
+                if retains_full_raw_tool_payload(name) {
+                    item.raw_block_json = serde_json::to_string(block).ok();
+                }
                 item.tool_status = Some(
                     if result.is_some() {
                         "completed"
@@ -500,6 +509,50 @@ pub(super) async fn persist_timeline_snapshot(
         }
         persisted_items
     }
+}
+
+async fn flush_streaming_persistence_if_dirty(
+    dirty: &mut bool,
+    last_persisted_at: &mut std::time::Instant,
+    chat_message_repo: &Option<Arc<dyn ChatMessageRepository>>,
+    chat_timeline_repo: &Option<Arc<dyn ChatTimelineRepository>>,
+    conversation_id: &str,
+    assistant_message_id: &Option<String>,
+    response_text: &str,
+    tool_calls: &[ToolCall],
+    content_blocks: &[ContentBlockItem],
+    status: ChatTimelineItemStatus,
+) {
+    if !*dirty {
+        return;
+    }
+    // The in-flight text block is not pushed into `content_blocks` until the
+    // processor finishes, so a flush can land while the slice is still empty.
+    // `persist_timeline_snapshot` deletes every block index it is not asked to
+    // retain, so flushing here would wipe rows that are already durable. Stay
+    // dirty and let a later flush persist real content.
+    if content_blocks.is_empty() {
+        return;
+    }
+
+    persist_assistant_message_snapshot(
+        chat_message_repo,
+        assistant_message_id,
+        response_text,
+        tool_calls,
+        content_blocks,
+    )
+    .await;
+    persist_timeline_snapshot(
+        chat_timeline_repo,
+        conversation_id,
+        assistant_message_id,
+        content_blocks,
+        status,
+    )
+    .await;
+    *dirty = false;
+    *last_persisted_at = std::time::Instant::now();
 }
 
 pub(super) async fn persist_message_text_timeline_item(
@@ -1313,9 +1366,16 @@ pub async fn process_stream_background<R: Runtime>(
     let completion_grace_duration =
         std::time::Duration::from_secs(stream_cfg.completion_grace_secs);
 
-    // Debounced flush for incremental persistence (every 2 seconds)
-    let mut last_flush = std::time::Instant::now();
-    const FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+    // Keep persistence rate-bounded while leaving streaming cache updates and UI events
+    // unthrottled. Terminal and content-boundary flushes make this only a tuning knob.
+    let streaming_persistence_debounce =
+        std::time::Duration::from_millis(stream_cfg.streaming_persistence_debounce_ms);
+    let mut streaming_persistence_dirty = false;
+    let mut last_streaming_persisted_at = std::time::Instant::now()
+        .checked_sub(streaming_persistence_debounce)
+        .unwrap_or_else(std::time::Instant::now);
+    const USAGE_FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+    let mut last_usage_flush = std::time::Instant::now();
 
     // Throttled heartbeat: update last_active_at every 5s on any parsed event
     let heartbeat_key = running_agent_registry
@@ -1391,6 +1451,19 @@ pub async fn process_stream_background<R: Runtime>(
                     "Stream cancelled via cancellation token, killing agent"
                 );
                 let _ = child.kill().await;
+                flush_streaming_persistence_if_dirty(
+                    &mut streaming_persistence_dirty,
+                    &mut last_streaming_persisted_at,
+                    &chat_message_repo,
+                    &chat_timeline_repo,
+                    &conversation_id_str,
+                    &assistant_message_id,
+                    &processor.response_text,
+                    &processor.tool_calls,
+                    &processor.content_blocks,
+                    ChatTimelineItemStatus::Error,
+                )
+                .await;
                 flush_content_before_error(
                     &chat_message_repo, &assistant_message_id,
                     &processor.response_text, &processor.tool_calls, &processor.content_blocks,
@@ -1692,7 +1765,7 @@ pub async fn process_stream_background<R: Runtime>(
                     && matches!(
                         event,
                         StreamEvent::TextChunk(_)
-                            | StreamEvent::Thinking(_)
+                            | StreamEvent::Thinking { .. }
                             | StreamEvent::ToolCallStarted { .. }
                     )
                 {
@@ -1718,30 +1791,28 @@ pub async fn process_stream_background<R: Runtime>(
 
                 match event {
                     StreamEvent::TextChunk(text) => {
-                        let ordinal = current_text_block_ordinal(&processor.content_blocks);
+                        let block_position = current_text_block_position(&processor.content_blocks);
                         // Update streaming state cache
                         streaming_state_cache
-                            .append_text(&conversation_id_str, ordinal as usize, &text)
+                            .append_text(&conversation_id_str, block_position as usize, &text)
                             .await;
 
-                        // Persist text-only turns as they stream so a remount can recover the
-                        // durable timeline even before a tool call or terminal event arrives.
-                        persist_assistant_message_snapshot(
-                            &chat_message_repo,
-                            &assistant_message_id,
-                            &processor.response_text,
-                            &processor.tool_calls,
-                            &processor.content_blocks,
-                        )
-                        .await;
-                        persist_timeline_snapshot(
-                            &chat_timeline_repo,
-                            &conversation_id_str,
-                            &assistant_message_id,
-                            &processor.content_blocks,
-                            ChatTimelineItemStatus::Streaming,
-                        )
-                        .await;
+                        streaming_persistence_dirty = true;
+                        if last_streaming_persisted_at.elapsed() >= streaming_persistence_debounce {
+                            flush_streaming_persistence_if_dirty(
+                                &mut streaming_persistence_dirty,
+                                &mut last_streaming_persisted_at,
+                                &chat_message_repo,
+                                &chat_timeline_repo,
+                                &conversation_id_str,
+                                &assistant_message_id,
+                                &processor.response_text,
+                                &processor.tool_calls,
+                                &processor.content_blocks,
+                                ChatTimelineItemStatus::Streaming,
+                            )
+                            .await;
+                        }
 
                         if let Some(ref handle) = app_handle {
                             // Unified event
@@ -1750,7 +1821,7 @@ pub async fn process_stream_background<R: Runtime>(
                                 AgentChunkPayload {
                                     text: text.clone(),
                                     run_id: agent_run_id.clone(),
-                                    block_index: Some(ordinal),
+                                    block_index: Some(block_position),
                                     conversation_id: conversation_id_str.clone(),
                                     context_type: context_type_str.clone(),
                                     context_id: context_id_str.clone(),
@@ -1799,7 +1870,41 @@ pub async fn process_stream_background<R: Runtime>(
                             }
                         }
                     }
-                    StreamEvent::Thinking(text) => {
+                    StreamEvent::Thinking { text, block_index } => {
+                        streaming_state_cache
+                            .append_thinking(&conversation_id_str, block_index as usize, &text)
+                            .await;
+                        if let Some(ref handle) = app_handle {
+                            let _ = handle.emit(
+                                events::AGENT_THINKING,
+                                AgentThinkingPayload {
+                                    text: text.clone(),
+                                    run_id: agent_run_id.clone(),
+                                    block_index: Some(block_index),
+                                    conversation_id: conversation_id_str.clone(),
+                                    context_type: context_type_str.clone(),
+                                    context_id: context_id_str.clone(),
+                                    seq: stream_seq,
+                                    append_to_previous: true,
+                                    duration_ms: None,
+                                    is_settled: false,
+                                },
+                            );
+                            stream_seq += 1;
+                        }
+                        flush_streaming_persistence_if_dirty(
+                            &mut streaming_persistence_dirty,
+                            &mut last_streaming_persisted_at,
+                            &chat_message_repo,
+                            &chat_timeline_repo,
+                            &conversation_id_str,
+                            &assistant_message_id,
+                            &processor.response_text,
+                            &processor.tool_calls,
+                            &processor.content_blocks,
+                            ChatTimelineItemStatus::Streaming,
+                        )
+                        .await;
                         // Activity stream event for task execution and merge
                         if matches!(
                             context_type,
@@ -1840,11 +1945,65 @@ pub async fn process_stream_background<R: Runtime>(
                             }
                         }
                     }
+                    StreamEvent::ThinkingSettled {
+                        block_index,
+                        duration_ms,
+                    } => {
+                        if let Some(ref handle) = app_handle {
+                            let _ = handle.emit(
+                                events::AGENT_THINKING,
+                                AgentThinkingPayload {
+                                    text: String::new(),
+                                    run_id: agent_run_id.clone(),
+                                    block_index: Some(block_index),
+                                    conversation_id: conversation_id_str.clone(),
+                                    context_type: context_type_str.clone(),
+                                    context_id: context_id_str.clone(),
+                                    seq: stream_seq,
+                                    append_to_previous: true,
+                                    duration_ms,
+                                    is_settled: true,
+                                },
+                            );
+                            stream_seq += 1;
+                        }
+                    }
+                    StreamEvent::ThinkingProgress {
+                        estimated_tokens,
+                        estimated_tokens_delta,
+                    } => {
+                        if let Some(ref handle) = app_handle {
+                            let _ = handle.emit(
+                                events::AGENT_THINKING_PROGRESS,
+                                AgentThinkingProgressPayload {
+                                    estimated_tokens,
+                                    estimated_tokens_delta,
+                                    run_id: agent_run_id.clone(),
+                                    conversation_id: conversation_id_str.clone(),
+                                    context_type: context_type_str.clone(),
+                                    context_id: context_id_str.clone(),
+                                },
+                            );
+                        }
+                    }
                     StreamEvent::ToolCallStarted {
                         name,
                         id,
                         parent_tool_use_id,
                     } => {
+                        flush_streaming_persistence_if_dirty(
+                            &mut streaming_persistence_dirty,
+                            &mut last_streaming_persisted_at,
+                            &chat_message_repo,
+                            &chat_timeline_repo,
+                            &conversation_id_str,
+                            &assistant_message_id,
+                            &processor.response_text,
+                            &processor.tool_calls,
+                            &processor.content_blocks,
+                            ChatTimelineItemStatus::Streaming,
+                        )
+                        .await;
                         // Update streaming state cache with started tool call
                         let cached_tool = CachedToolCall {
                             id: id.clone().unwrap_or_default(),
@@ -2036,6 +2195,19 @@ pub async fn process_stream_background<R: Runtime>(
                         // Captured in processor.finish()
                     }
                     StreamEvent::TurnComplete { session_id } => {
+                        flush_streaming_persistence_if_dirty(
+                            &mut streaming_persistence_dirty,
+                            &mut last_streaming_persisted_at,
+                            &chat_message_repo,
+                            &chat_timeline_repo,
+                            &conversation_id_str,
+                            &assistant_message_id,
+                            &processor.response_text,
+                            &processor.tool_calls,
+                            &processor.content_blocks,
+                            ChatTimelineItemStatus::Streaming,
+                        )
+                        .await;
                         tracing::info!(
                             conversation_id = %conversation_id_str,
                             ?session_id,
@@ -2256,6 +2428,17 @@ pub async fn process_stream_background<R: Runtime>(
 
                         turns_finalized += 1;
 
+                        // Interactive stdin turns are consumed in order. Once an
+                        // assistant turn finalizes, its matching pending user turn
+                        // no longer needs exit recovery.
+                        if let (Some(registry), Some(key), Some(token)) = (
+                            interactive_process_registry.as_ref(),
+                            interactive_process_key.as_ref(),
+                            interactive_process_token,
+                        ) {
+                            let _ = registry.pop_pending_turn(key, token).await;
+                        }
+
                         // Free the execution slot while process is idle between turns.
                         // Only for contexts that use execution slots.
                         if super::uses_execution_slot(context_type) {
@@ -2381,22 +2564,41 @@ pub async fn process_stream_background<R: Runtime>(
                             }
                         }
 
-                        let retire_after_turn =
+                        let retired_pending_turns =
                             if let (Some(registry), Some(key), Some(token), Some(run_id)) = (
                                 interactive_process_registry.as_ref(),
                                 interactive_process_key.as_ref(),
                                 interactive_process_token,
                                 agent_run_id.as_deref(),
                             ) {
-                                matches!(
-                                    registry.complete_turn_if_owner(key, token, run_id).await,
-                                    InteractiveProcessTurnCompleteDisposition::RetireAfterTurn
-                                )
+                                match registry.complete_turn_if_owner(key, token, run_id).await {
+                                    InteractiveProcessTurnCompleteDisposition::RetireAfterTurn {
+                                        pending_turns,
+                                    } => Some(pending_turns),
+                                    InteractiveProcessTurnCompleteDisposition::Stale
+                                    | InteractiveProcessTurnCompleteDisposition::KeepAlive => None,
+                                }
                             } else {
-                                false
+                                None
                             };
 
-                        if retire_after_turn {
+                        if let Some(pending_turns) = retired_pending_turns {
+                            if let Some(handle) = app_handle.as_ref() {
+                                let state = handle.state::<crate::application::AppState>();
+                                super::chat_service_queue::requeue_pending_stdin_turns(
+                                    Some(&state.queued_message_repo),
+                                    &state.message_queue,
+                                    Some(handle),
+                                    context_type,
+                                    interactive_process_key
+                                        .as_ref()
+                                        .map(|key| key.context_id.as_str())
+                                        .unwrap_or(context_id),
+                                    Some(conversation_id.as_str()),
+                                    pending_turns,
+                                )
+                                .await;
+                            }
                             tracing::info!(
                                 conversation_id = %conversation_id_str,
                                 "TurnComplete retired exact runtime for mode handoff"
@@ -2905,24 +3107,29 @@ pub async fn process_stream_background<R: Runtime>(
             }
         }
 
-        // Debounced flush: persist accumulated content every 2s for crash recovery
-        if last_flush.elapsed() >= FLUSH_INTERVAL {
-            persist_assistant_message_snapshot(
+        if streaming_persistence_dirty
+            && last_streaming_persisted_at.elapsed() >= streaming_persistence_debounce
+        {
+            flush_streaming_persistence_if_dirty(
+                &mut streaming_persistence_dirty,
+                &mut last_streaming_persisted_at,
                 &chat_message_repo,
+                &chat_timeline_repo,
+                &conversation_id_str,
                 &assistant_message_id,
                 &processor.response_text,
                 &processor.tool_calls,
                 &processor.content_blocks,
-            )
-            .await;
-            persist_timeline_snapshot(
-                &chat_timeline_repo,
-                &conversation_id_str,
-                &assistant_message_id,
-                &processor.content_blocks,
                 ChatTimelineItemStatus::Streaming,
             )
             .await;
+        }
+
+        // Usage runs on its own cadence. Tying it to the text debounce would
+        // stall usage updates for turns that stream no text, such as a long
+        // run of tool calls.
+        if last_usage_flush.elapsed() >= USAGE_FLUSH_INTERVAL {
+            last_usage_flush = std::time::Instant::now();
             if let Some(capture) = processor.current_turn_capture() {
                 let current_turn_usage = capture.normalized.clone();
                 let usage_persisted = persist_usage_capture_run_first(
@@ -2943,7 +3150,6 @@ pub async fn process_stream_background<R: Runtime>(
                     last_emitted_usage = current_turn_usage;
                 }
             }
-            last_flush = std::time::Instant::now();
         }
 
         // Throttled heartbeat: write last_active_at every 5s on any parsed event
@@ -3515,7 +3721,7 @@ async fn process_codex_stream_background<R: Runtime>(
             }
 
             if let Some(text) = extract_codex_agent_message(&event) {
-                let ordinal = current_text_block_ordinal(&content_blocks);
+                let block_position = current_text_block_position(&content_blocks);
                 if !response_text.is_empty() {
                     response_text.push_str("\n\n");
                 }
@@ -3545,12 +3751,59 @@ async fn process_codex_stream_background<R: Runtime>(
                         AgentChunkPayload {
                             text,
                             run_id: agent_run_id.clone(),
-                            block_index: Some(ordinal),
+                            block_index: Some(block_position),
                             conversation_id: conversation_id_str.clone(),
                             context_type: context_type_str.clone(),
                             context_id: context_id_str.clone(),
                             seq: stream_seq,
                             append_to_previous: false,
+                        },
+                    );
+                    stream_seq += 1;
+                }
+            }
+
+            if let Some(text) = extract_codex_reasoning(&event) {
+                let block_position = current_text_block_position(&content_blocks);
+                content_blocks.push(ContentBlockItem::Thinking {
+                    text: text.clone(),
+                    duration_ms: None,
+                });
+                streaming_state_cache
+                    .append_thinking(&conversation_id_str, block_position as usize, &text)
+                    .await;
+
+                persist_assistant_message_snapshot(
+                    &chat_message_repo,
+                    &assistant_message_id,
+                    &response_text,
+                    &tool_calls,
+                    &content_blocks,
+                )
+                .await;
+                persist_timeline_snapshot(
+                    &chat_timeline_repo,
+                    &conversation_id_str,
+                    &assistant_message_id,
+                    &content_blocks,
+                    ChatTimelineItemStatus::Streaming,
+                )
+                .await;
+
+                if let Some(ref handle) = app_handle {
+                    let _ = handle.emit(
+                        events::AGENT_THINKING,
+                        AgentThinkingPayload {
+                            text,
+                            run_id: agent_run_id.clone(),
+                            block_index: Some(block_position),
+                            conversation_id: conversation_id_str.clone(),
+                            context_type: context_type_str.clone(),
+                            context_id: context_id_str.clone(),
+                            seq: stream_seq,
+                            append_to_previous: false,
+                            duration_ms: None,
+                            is_settled: true,
                         },
                     );
                     stream_seq += 1;

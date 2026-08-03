@@ -407,6 +407,25 @@ impl AgentTaskRepository for SqliteAgentTaskRepository {
         .await
     }
 
+    async fn set_assignment_team_identity(
+        &self,
+        assignment_id: &AgentTaskAssignmentId,
+        delegated_session_id: &DelegatedSessionId,
+        team_id: &crate::domain::entities::TeamSessionId,
+        team_member_id: &crate::domain::entities::TeamMemberId,
+        team_member_generation: i64,
+    ) -> AppResult<Option<AgentTaskAssignmentView>> {
+        assignments::set_team_identity(
+            &self.db,
+            assignment_id,
+            delegated_session_id,
+            team_id,
+            team_member_id,
+            team_member_generation,
+        )
+        .await
+    }
+
     async fn get_unresolved_assignment(
         &self,
         delegated_session_id: &DelegatedSessionId,

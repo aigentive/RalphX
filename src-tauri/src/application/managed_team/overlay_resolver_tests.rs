@@ -134,14 +134,10 @@ fn root_lib_coverage_exercises_team_domain_request_contract() {
     ] {
         let target = TeamMessageTarget {
             kind,
-            team_id: Some("team-1".to_string()),
-            team_member_id: Some("member-1".to_string()),
-            conversation_id: Some("conversation-1".to_string()),
+            member_name: Some("member one".to_string()),
         };
         let json = serde_json::to_value(&target).unwrap();
         assert_eq!(json["kind"], value);
-        assert_eq!(json["teamId"], "team-1");
-        assert_eq!(json["teamMemberId"], "member-1");
-        assert_eq!(json["conversationId"], "conversation-1");
+        assert_eq!(json["memberName"], "member one");
     }
 }

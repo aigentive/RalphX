@@ -183,6 +183,10 @@ fn skip_reason_strings_are_stable_for_logs() {
         (AutoPublishSkipReason::BaseBlocked, "base_blocked"),
         (AutoPublishSkipReason::BaseCurrent, "base_current"),
         (AutoPublishSkipReason::AlreadyInFlight, "already_in_flight"),
+        (
+            AutoPublishSkipReason::DurableRepairBlockedExhausted,
+            "durable_repair_blocked_exhausted",
+        ),
     ];
 
     for (reason, expected) in cases {

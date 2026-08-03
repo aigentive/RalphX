@@ -63,6 +63,8 @@ fn queued_agent_run_inherits_exact_continuation_runtime_attribution() {
         &codex_continuation_runtime(),
         &message,
         super::super::conversation_launch_security::ConversationLaunchSecurityClass::ConfiguredMcp,
+        None,
+        None,
     );
 
     assert_eq!(run.logical_model.as_deref(), Some("gpt-5.5"));
@@ -90,12 +92,66 @@ fn queued_agent_run_records_explicit_runtime_overrides() {
         &codex_continuation_runtime(),
         &message,
         super::super::conversation_launch_security::ConversationLaunchSecurityClass::ConfiguredMcp,
+        None,
+        None,
     );
 
     assert_eq!(run.logical_model.as_deref(), Some("gpt-5.6"));
     assert_eq!(run.effective_model_id.as_deref(), Some("gpt-5.6"));
     assert_eq!(run.logical_effort, Some(LogicalEffort::High));
     assert_eq!(run.service_tier.as_deref(), Some("standard"));
+}
+
+#[test]
+fn queued_agent_run_inherits_identity_from_parent_run_with_name_fallback() {
+    let message = crate::domain::services::QueuedMessage::new("follow up".to_string());
+    let mut parent = crate::domain::entities::AgentRun::new(ChatConversationId::new());
+    parent.agent_name = Some("ralphx-agent-workspace-repair".to_string());
+    parent.launch_role = Some("workspace_repair".to_string());
+    parent.runtime_source = Some(crate::domain::entities::RuntimeSource::RoleDefault);
+
+    let run = build_queued_agent_run(
+        ChatConversationId::new(),
+        AgentHarnessKind::Codex,
+        "codex-session",
+        None,
+        None,
+        None,
+        &codex_continuation_runtime(),
+        &message,
+        super::super::conversation_launch_security::ConversationLaunchSecurityClass::ConfiguredMcp,
+        Some(&parent),
+        Some("ralphx-general-worker"),
+    );
+    assert_eq!(
+        run.agent_name.as_deref(),
+        Some("ralphx-agent-workspace-repair")
+    );
+    assert_eq!(run.launch_role.as_deref(), Some("workspace_repair"));
+    assert_eq!(
+        run.runtime_source,
+        Some(crate::domain::entities::RuntimeSource::RoleDefault)
+    );
+
+    let orphan_run = build_queued_agent_run(
+        ChatConversationId::new(),
+        AgentHarnessKind::Codex,
+        "codex-session",
+        None,
+        None,
+        None,
+        &codex_continuation_runtime(),
+        &message,
+        super::super::conversation_launch_security::ConversationLaunchSecurityClass::ConfiguredMcp,
+        None,
+        Some("ralphx-general-worker"),
+    );
+    assert_eq!(
+        orphan_run.agent_name.as_deref(),
+        Some("ralphx-general-worker")
+    );
+    assert_eq!(orphan_run.launch_role, None);
+    assert_eq!(orphan_run.runtime_source, None);
 }
 
 #[test]
@@ -479,7 +535,7 @@ async fn provider_switch_queue_without_app_handle_requeues_instead_of_resuming()
 }
 
 #[tokio::test]
-async fn missing_continuation_authority_records_failed_action_run() {
+async fn missing_completed_owner_requeues_message_without_preflight_failure_run() {
     let app_state = AppState::new_test();
     let message_queue = Arc::clone(&app_state.message_queue);
     let running_agent_registry = Arc::clone(&app_state.running_agent_registry);
@@ -552,31 +608,16 @@ async fn missing_continuation_authority_records_failed_action_run() {
     .await;
 
     assert_eq!(outcome.total_processed, 1);
-    assert!(
-        message_queue
-            .get_queued(ChatContextType::Ideation, "plan-session")
-            .is_empty(),
-        "permanent authority failures must not be retried forever"
-    );
+    let queued = message_queue.get_queued(ChatContextType::Ideation, "plan-session");
+    assert_eq!(queued.len(), 1, "the undelivered message must be retained");
+    assert_eq!(queued[0].content, "verify plan");
     let runs = agent_run_repo
         .get_by_conversation(&conversation_id)
         .await
-        .expect("load failed action run");
-    assert_eq!(runs.len(), 1);
-    assert_eq!(
-        runs[0].status,
-        crate::domain::entities::AgentRunStatus::Failed
-    );
-    assert_eq!(
-        runs[0].action_kind,
-        Some(crate::domain::entities::AgentRunActionKind::VerifyPlan)
-    );
-    assert_eq!(runs[0].action_context_id.as_deref(), Some("plan-session"));
-    assert_eq!(runs[0].action_target_id.as_deref(), Some("plan-artifact"));
-    assert_eq!(runs[0].harness, Some(AgentHarnessKind::Codex));
-    assert_eq!(
-        runs[0].provider_session_id.as_deref(),
-        Some("missing-codex-session")
+        .expect("load agent runs");
+    assert!(
+        runs.is_empty(),
+        "no queued_preflight failure run is persisted"
     );
 }
 
@@ -598,7 +639,10 @@ fn hidden_resume_marker_metadata_strips_transient_flags() {
 
 #[test]
 fn queued_agent_identity_for_plan_uses_ideation_agent_plan_profile() {
-    let identity = queued_agent_identity_for_mode(Some(AgentConversationWorkspaceMode::Plan));
+    let identity = queued_agent_identity_for_mode(
+        Some(AgentConversationWorkspaceMode::Plan),
+        CoordinationMode::Solo,
+    );
 
     assert_eq!(
         identity.agent_name,
@@ -609,8 +653,10 @@ fn queued_agent_identity_for_plan_uses_ideation_agent_plan_profile() {
 
 #[test]
 fn queued_agent_identity_for_persona_builder_uses_extractor_agent() {
-    let identity =
-        queued_agent_identity_for_mode(Some(AgentConversationWorkspaceMode::PersonaBuilder));
+    let identity = queued_agent_identity_for_mode(
+        Some(AgentConversationWorkspaceMode::PersonaBuilder),
+        CoordinationMode::Solo,
+    );
 
     assert_eq!(
         identity.agent_name,

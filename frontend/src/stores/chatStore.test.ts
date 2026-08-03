@@ -497,6 +497,33 @@ describe("chatStore", () => {
       expect(state.activeAgentRunHarnesses[storeKey]).toBe("codex");
     });
 
+    it("preserves the original timing anchor when the same run is re-emitted", () => {
+      useChatStore.getState().setActiveAgentRun(storeKey, "run-123", "claude", {
+        startedAt: 100, agentName: "reviewer", launchRole: "workspace_reviewer",
+      });
+      useChatStore.getState().setActiveAgentRun(storeKey, "run-123", "claude", {
+        startedAt: 200, agentName: "reviewer-v2", launchRole: "workspace_reviewer",
+      });
+
+      expect(useChatStore.getState().activeAgentRunMeta[storeKey]).toEqual({
+        startedAt: 100, agentName: "reviewer-v2", launchRole: "workspace_reviewer",
+      });
+    });
+
+    it("resets metadata for a new run and clears it with the active run", () => {
+      useChatStore.getState().setActiveAgentRun(storeKey, "run-old", "claude", {
+        startedAt: 100, agentName: "old", launchRole: "workspace_reviewer",
+      });
+      useChatStore.getState().setActiveAgentRun(storeKey, "run-new", "codex", {
+        startedAt: 200, agentName: "new", launchRole: "pr_fixer",
+      });
+      expect(useChatStore.getState().activeAgentRunMeta[storeKey]).toEqual({
+        startedAt: 200, agentName: "new", launchRole: "pr_fixer",
+      });
+      useChatStore.getState().clearActiveAgentRun(storeKey, "run-new");
+      expect(useChatStore.getState().activeAgentRunMeta[storeKey]).toBeUndefined();
+    });
+
     it("replaces a known harness with an unknown pair without leaking the old harness", () => {
       useChatStore.getState().setActiveAgentRun(storeKey, "run-old", "claude");
       useChatStore.getState().setActiveAgentRun(storeKey, "run-new");
@@ -881,6 +908,7 @@ describe("chatStore", () => {
           createdAt: "2026-06-19T10:00:00Z",
           isEditing: false,
           attachmentIds: ["att-1"],
+          source: "backend",
         },
         {
           id: "backend-2",
@@ -888,6 +916,7 @@ describe("chatStore", () => {
           createdAt: "2026-06-19T10:01:00Z",
           isEditing: false,
           attachmentIds: [],
+          source: "backend",
         },
       ]);
     });

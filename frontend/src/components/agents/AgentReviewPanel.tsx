@@ -9,7 +9,6 @@ import {
   Wrench,
 } from "lucide-react";
 import {
-  lazy,
   Suspense,
   useEffect,
   useMemo,
@@ -22,6 +21,7 @@ import type {
   AgentWorkspaceReviewContext,
   StartAgentWorkspaceReviewResult,
 } from "@/api/chat";
+import { lazyWithRetry } from "@/lib/lazy-with-retry";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -59,7 +59,7 @@ import {
   type ReviewArtifactBodyMode,
 } from "./ReviewArtifactTabs";
 
-const LazyPlanDisplay = lazy(() =>
+const LazyPlanDisplay = lazyWithRetry(() =>
   import("@/components/Ideation/PlanDisplay").then((module) => ({
     default: module.PlanDisplay,
   })),
@@ -159,6 +159,13 @@ function isWorkspaceReviewFixerActive(
   status: string | null | undefined,
 ): boolean {
   return status === "routing" || status === "queued" || status === "running";
+}
+
+function reviewFixerCycleCapDetail(cycleCount: number): string {
+  if (cycleCount === 0) {
+    return "Automatic fixes are disabled by the cycle limit. Fix Issues manually to continue.";
+  }
+  return `This workspace has recorded ${cycleCount} fixer ${cycleCount === 1 ? "cycle" : "cycles"}. Automatic fixing is paused; Fix Issues manually to continue.`;
 }
 
 function canFixBlockingReview(
@@ -295,6 +302,19 @@ function reviewStatusForState({
       detail:
         context?.monitor.reviewBlockingSummary ??
         "The original blocking findings remain visible below. Publishing is allowed for this exact Review and change set.",
+      color: "var(--status-warning)",
+      icon: AlertCircle,
+    };
+  }
+  if (context?.monitor.reviewFixerStatus === "cycle_capped") {
+    return {
+      label: "Automatic fix cycle limit reached",
+      detail: [
+        context.monitor.reviewBlockingSummary,
+        reviewFixerCycleCapDetail(context.monitor.reviewFixerCycleCount),
+      ]
+        .filter(Boolean)
+        .join(" "),
       color: "var(--status-warning)",
       icon: AlertCircle,
     };

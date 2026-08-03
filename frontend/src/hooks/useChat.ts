@@ -29,6 +29,7 @@ import {
   type SendAgentMessageOptions,
   type SendAgentMessageResult,
   type TeamIntent,
+  type TeamMessageTarget,
 } from "@/api/chat";
 import { isVisibleChatMessage } from "@/api/chat-message-visibility";
 import {
@@ -92,6 +93,7 @@ type SendMessageVariables = {
   capabilityIntent?: CapabilityIntent | null;
   composerSelectionSnapshot?: ComposerSelectionSnapshot;
   teamIntent?: TeamIntent | null;
+  teamMessageTarget?: TeamMessageTarget | null;
 };
 
 type SendMessageMutationContext = {
@@ -1240,6 +1242,7 @@ export function useChat(
       capabilityIntent,
       composerSelectionSnapshot,
       teamIntent,
+      teamMessageTarget,
     }) => {
       const sendOptions =
         composerProjectReferences?.length ||
@@ -1247,11 +1250,13 @@ export function useChat(
         composerArtifactReferences?.length ||
         composerSelectionSnapshot ||
         capabilityIntent ||
-        teamIntent
+        teamIntent ||
+        teamMessageTarget
           ? {
               ...options?.sendOptions,
               ...(capabilityIntent ? { capabilityIntent } : {}),
               ...(teamIntent ? { teamIntent } : {}),
+              ...(teamMessageTarget ? { teamMessageTarget } : {}),
               ...(composerProjectReferences?.length
                 ? { composerProjectReferences }
                 : {}),

@@ -3,9 +3,10 @@ use std::sync::Arc;
 use super::continuation_runtime::{
     resolve_for_conversation, ContinuationRuntime, ModelIdentityComparison, RuntimeOverridePresence,
 };
+use super::SendMessageOptions;
 use crate::application::agent_lane_resolution::ResolvedAgentSpawnSettings;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort, ProviderSessionRef};
-use crate::domain::entities::{AgentRun, AgentRunStatus, ChatConversation};
+use crate::domain::entities::{AgentRun, AgentRunStatus, ChatConversation, RuntimeSource};
 use crate::domain::repositories::AgentRunRepository;
 use crate::infrastructure::memory::MemoryAgentRunRepository;
 
@@ -26,7 +27,58 @@ fn base_codex_settings() -> ResolvedAgentSpawnSettings {
         service_tier: None,
         configured_subagent_model_cap: None,
         subagent_model_cap: None,
+        runtime_source: RuntimeSource::HarnessFallback,
     }
+}
+
+#[test]
+fn runtime_source_for_send_uses_typed_launch_provenance_before_materialized_fields() {
+    let resolved = base_codex_settings();
+    assert_eq!(
+        super::runtime_source_for_send(
+            &SendMessageOptions {
+                model_override: Some("gpt-5.6-sol".to_string()),
+                ..Default::default()
+            },
+            &resolved,
+        ),
+        RuntimeSource::ComposerSelection
+    );
+    assert_eq!(
+        super::runtime_source_for_send(
+            &SendMessageOptions {
+                manual_role_runtime_override: Some(
+                    crate::domain::agents::ManualRoleRuntimeOverride {
+                        harness: AgentHarnessKind::Codex,
+                        model: Some("gpt-5.6-sol".to_string()),
+                        effort: Some(LogicalEffort::High),
+                        service_tier: crate::domain::agents::ManualServiceTier::Standard,
+                        coordination_mode: None,
+                        persona_id: None,
+                    },
+                ),
+                runtime_source_override: Some(RuntimeSource::ComposerSelection),
+                ..Default::default()
+            },
+            &resolved,
+        ),
+        RuntimeSource::ComposerSelection
+    );
+    assert_eq!(
+        super::runtime_source_for_send(
+            &SendMessageOptions {
+                model_override: Some("gpt-5.6-sol".to_string()),
+                runtime_source_override: Some(RuntimeSource::RoleDefault),
+                ..Default::default()
+            },
+            &resolved,
+        ),
+        RuntimeSource::RoleDefault
+    );
+    assert_eq!(
+        super::runtime_source_for_send(&SendMessageOptions::default(), &resolved),
+        RuntimeSource::HarnessFallback
+    );
 }
 
 #[tokio::test]

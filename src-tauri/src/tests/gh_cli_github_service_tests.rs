@@ -6,7 +6,7 @@
 use crate::domain::services::github_service::{PrMergeStateStatus, PrMergeableState, PrStatus};
 use crate::error::AppError;
 use crate::infrastructure::services::gh_cli_github_service::{
-    parse_check_run_annotations_output, parse_check_runs_output,
+    parse_branch_check_conclusions, parse_check_run_annotations_output, parse_check_runs_output,
     parse_code_scanning_alert_annotations_output, parse_gh_auth_status_lines,
     parse_issue_create_plain_output, parse_pr_annotation_head_sha_output, parse_pr_create_output,
     parse_pr_create_plain_output, parse_pr_detail_output, parse_pr_health_output,
@@ -97,6 +97,8 @@ fn parse_pr_search_output_returns_base_picker_fields() {
             "headRefOid": "abc123",
             "baseRefName": "main",
             "isDraft": true,
+            "state": "MERGED",
+            "mergedAt": "2026-05-21T10:00:00Z",
             "updatedAt": "2026-05-20T10:00:00Z",
             "author": {"login": "dev"},
             "assignees": [{"login": "ops"}, {"login": "qa"}],
@@ -122,12 +124,38 @@ fn parse_pr_search_output_returns_base_picker_fields() {
     assert_eq!(result.head_ref_oid.as_deref(), Some("abc123"));
     assert_eq!(result.base_ref_name, "main");
     assert!(result.is_draft);
+    assert_eq!(result.state.as_deref(), Some("MERGED"));
+    assert_eq!(result.merged_at.as_deref(), Some("2026-05-21T10:00:00Z"));
     assert_eq!(result.author_login.as_deref(), Some("dev"));
     assert_eq!(result.assignee_logins, vec!["ops", "qa"]);
     assert_eq!(result.review_decision.as_deref(), Some("CHANGES_REQUESTED"));
     assert_eq!(result.latest_review_author_logins, vec!["dev", "reviewer"]);
     assert_eq!(result.review_request_logins, vec!["lazabogdan", "platform"]);
     assert!(!result.is_cross_repository);
+}
+
+#[test]
+fn parse_pr_search_output_preserves_all_states_and_absent_state() {
+    let json = r#"[
+        {"number":1,"title":"Open","url":"https://example.test/1","headRefName":"open","baseRefName":"main","state":"OPEN","mergedAt":null},
+        {"number":2,"title":"Merged","url":"https://example.test/2","headRefName":"merged","baseRefName":"main","state":"MERGED","mergedAt":"2026-08-01T10:00:00Z"},
+        {"number":3,"title":"Closed","url":"https://example.test/3","headRefName":"closed","baseRefName":"main","state":"CLOSED","mergedAt":null},
+        {"number":4,"title":"Legacy","url":"https://example.test/4","headRefName":"legacy","baseRefName":"main"}
+    ]"#;
+
+    let results = parse_pr_search_output(json).expect("all PR states should parse");
+
+    assert_eq!(results[0].state.as_deref(), Some("OPEN"));
+    assert_eq!(results[0].merged_at, None);
+    assert_eq!(results[1].state.as_deref(), Some("MERGED"));
+    assert_eq!(
+        results[1].merged_at.as_deref(),
+        Some("2026-08-01T10:00:00Z")
+    );
+    assert_eq!(results[2].state.as_deref(), Some("CLOSED"));
+    assert_eq!(results[2].merged_at, None);
+    assert_eq!(results[3].state, None);
+    assert_eq!(results[3].merged_at, None);
 }
 
 #[test]
@@ -936,6 +964,54 @@ fn parse_gh_auth_status_empty_returns_none() {
     assert!(account.is_none());
 }
 
+// ── parse_branch_check_conclusions ─────────────────────────────────────────
+
+#[test]
+fn parse_branch_check_conclusions_keeps_only_the_newest_completed_run_per_check() {
+    // `gh run list` returns newest first, so the first completed entry per name wins and later
+    // rows for the same workflow are historical noise.
+    let json = r#"[
+        {"name": "CI", "status": "completed", "conclusion": "failure", "url": "https://github.com/o/r/actions/runs/2"},
+        {"name": "CI", "status": "completed", "conclusion": "success", "url": "https://github.com/o/r/actions/runs/1"}
+    ]"#;
+
+    let checks = parse_branch_check_conclusions(json);
+
+    assert_eq!(checks.len(), 1);
+    assert_eq!(checks[0].name, "CI");
+    assert_eq!(checks[0].status.as_deref(), Some("completed"));
+    assert_eq!(checks[0].conclusion.as_deref(), Some("failure"));
+    assert_eq!(
+        checks[0].details_url.as_deref(),
+        Some("https://github.com/o/r/actions/runs/2")
+    );
+}
+
+#[test]
+fn parse_branch_check_conclusions_skips_in_progress_and_unnamed_runs() {
+    // An in-progress run proves nothing about the base yet, and a run with no resolvable name
+    // cannot be compared against the PR's checks.
+    let json = r#"[
+        {"name": "Flaky", "status": "in_progress", "conclusion": null},
+        {"name": "   ", "workflowName": "", "status": "completed", "conclusion": "success"},
+        {"workflowName": "Lint", "status": "completed", "conclusion": "success", "url": "https://github.com/o/r/actions/runs/9"}
+    ]"#;
+
+    let checks = parse_branch_check_conclusions(json);
+
+    assert_eq!(checks.len(), 1);
+    assert_eq!(checks[0].name, "Lint");
+    assert_eq!(checks[0].conclusion.as_deref(), Some("success"));
+}
+
+#[test]
+fn parse_branch_check_conclusions_returns_empty_for_unparseable_output() {
+    assert!(parse_branch_check_conclusions("not json").is_empty());
+    // A completed run without a conclusion still reports the check so callers can see it is not
+    // a pass; only unusable output collapses to empty.
+    assert!(parse_branch_check_conclusions("{}").is_empty());
+}
+
 // ── MockGithubService round-trip ───────────────────────────────────────────
 
 mod mock_roundtrip {
@@ -1694,6 +1770,56 @@ mod mock_roundtrip {
     }
 
     #[tokio::test]
+    async fn list_branch_check_conclusions_reads_the_branch_tip_run_list() {
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![Ok(vec![r#"[
+            {"name": "CI", "status": "completed", "conclusion": "failure", "url": "https://github.com/o/r/actions/runs/2"}
+        ]"#
+        .to_string()])]));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        let checks = service
+            .list_branch_check_conclusions(Path::new("/tmp"), "  main  ")
+            .await
+            .unwrap()
+            .expect("a readable branch reports its checks");
+
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].name, "CI");
+        assert_eq!(checks[0].conclusion.as_deref(), Some("failure"));
+        assert_eq!(
+            runner.gh_calls(),
+            vec![vec![
+                "run",
+                "list",
+                "--branch",
+                "main",
+                "--limit",
+                "40",
+                "--json",
+                "name,workflowName,status,conclusion,url,headSha",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()]
+        );
+    }
+
+    #[tokio::test]
+    async fn list_branch_check_conclusions_reports_unknown_without_a_branch() {
+        // An empty ref cannot be read, and "unknown" must never be spelled as an empty check list
+        // that a caller could mistake for a healthy base.
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(Vec::new()));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        assert!(service
+            .list_branch_check_conclusions(Path::new("/tmp"), "   ")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(runner.gh_calls().is_empty());
+    }
+
+    #[tokio::test]
     async fn update_pr_base_uses_gh_pr_edit_with_base() {
         let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![Ok(Vec::new())]));
         let service = GhCliGithubService::with_runner(runner.clone());
@@ -1774,6 +1900,39 @@ mod mock_roundtrip {
                 "20",
                 "--json",
                 "number,url,state,isDraft,headRefName,updatedAt",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()]
+        );
+    }
+
+    #[tokio::test]
+    async fn search_pull_requests_uses_all_state_lookup_with_state_fields() {
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![Ok(vec![
+            "[]".to_string()
+        ])]));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        let results = service
+            .search_pull_requests(Path::new("/tmp"), Some(" base picker "), 30)
+            .await
+            .unwrap();
+
+        assert!(results.is_empty());
+        assert_eq!(
+            runner.gh_calls(),
+            vec![vec![
+                "pr",
+                "list",
+                "--state",
+                "all",
+                "--limit",
+                "30",
+                "--json",
+                "number,title,url,headRefName,headRefOid,baseRefName,isDraft,state,mergedAt,updatedAt,author,assignees,reviewDecision,latestReviews,reviewRequests,isCrossRepository",
+                "--search",
+                "base picker",
             ]
             .into_iter()
             .map(str::to_string)

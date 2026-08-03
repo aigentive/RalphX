@@ -62,6 +62,7 @@ import type { ContextType } from "@/types/chat-conversation";
 import type { ToolCall } from "@/components/Chat/ToolCallIndicator";
 import type { StreamingContentBlock } from "@/types/streaming-task";
 import { chatApi } from "@/api/chat";
+import { projectPersistedStreamingContentBlocks } from "./chat-transcript/projection";
 
 const mockIsAgentRunning = vi.mocked(chatApi.isAgentRunning);
 const mockGetConversationActiveState = vi.mocked(chatApi.getConversationActiveState);
@@ -83,6 +84,7 @@ interface DefaultProps {
   agentRunStatus: string | undefined;
   activeAgentRunId?: string;
   isVisible: boolean;
+  persistedStreamingContentBlocks?: readonly StreamingContentBlock[];
   setAgentRunning: ReturnType<typeof vi.fn>;
   setStreamingToolCalls?: ReturnType<typeof vi.fn>;
   setStreamingContentBlocks?: ReturnType<typeof vi.fn>;
@@ -264,6 +266,52 @@ describe("useChatRecovery", () => {
             arguments: { file_path: "src/main.ts" },
           },
         },
+      ]);
+    });
+
+    it("hydrates sparse absolute thinking segments without duplicating the persisted anchor", async () => {
+      const setStreamingContentBlocks = vi.fn();
+      const persistedStreamingContentBlocks = projectPersistedStreamingContentBlocks([{
+        id: "message-thinking",
+        sessionId: null,
+        projectId: null,
+        taskId: null,
+        role: "assistant",
+        content: "",
+        metadata: null,
+        parentMessageId: null,
+        conversationId: "conv-abc",
+        toolCalls: null,
+        contentBlocks: [{ type: "thinking", text: "Reconsidering" }],
+        sender: null,
+        createdAt: "2026-07-30T00:00:00Z",
+        runId: "run-active",
+        timelineStatus: "streaming",
+        timelineBlockIndex: 2,
+      }], "run-active");
+      mockGetConversationActiveState.mockResolvedValueOnce({
+        is_active: true,
+        tool_calls: [],
+        streaming_tasks: [],
+        partial_text: "",
+        partial_thinking_segments: ["", "", "Reconsidering the recovery path"],
+      });
+
+      renderHook(() => useChatRecovery(makeProps({
+        setStreamingContentBlocks,
+        persistedStreamingContentBlocks,
+      })));
+      await act(async () => {});
+
+      const updater = setStreamingContentBlocks.mock.calls[0][0] as (
+        prev: StreamingContentBlock[]
+      ) => StreamingContentBlock[];
+      const reconciled = updater([
+        { type: "thinking", text: "Reconsidering", blockIndex: 2 },
+      ]);
+      expect(reconciled.filter((block) => block.type === "thinking")).toHaveLength(1);
+      expect(reconciled).toEqual([
+        { type: "thinking", text: "Reconsidering the recovery path", blockIndex: 2 },
       ]);
     });
 
