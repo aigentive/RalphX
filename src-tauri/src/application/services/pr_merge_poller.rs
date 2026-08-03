@@ -16,17 +16,18 @@ use tokio::task::JoinHandle;
 use crate::application::agent_conversation_workspace::{
     agent_name_for_workspace_mode, resolve_valid_agent_conversation_workspace_path,
 };
+use crate::application::agent_workspace_ci_rerun::ci_rerun_hold_still_pending;
 use crate::application::agent_workspace_pr_autofix_attempt::{
     load_pr_autofix_attempt_decision, pr_autofix_action_metadata,
 };
 use crate::application::agent_workspace_publish_repair_state::{
-    block_agent_workspace_repair_completion, classify_agent_workspace_repair_delivery,
-    clear_agent_workspace_ci_rerun_deferral, reserve_agent_workspace_repair_dispatch,
+    agent_workspace_repair_is_ci_held, agent_workspace_repair_is_health_held,
+    classify_agent_workspace_repair_delivery, reserve_agent_workspace_repair_dispatch,
     settle_agent_workspace_repair_dispatch_outcome, start_or_join_agent_workspace_repair,
     start_or_join_agent_workspace_repair_without_projection,
     validate_agent_workspace_repair_target_lease, AgentWorkspaceRepairDispatchOutcome,
     AgentWorkspaceRepairDispatchSettlement, AgentWorkspaceRepairStartOutcome,
-    AgentWorkspaceRepairStartRequest, AgentWorkspaceRepairTransitionOutcome,
+    AgentWorkspaceRepairStartRequest,
 };
 #[cfg(test)]
 use crate::application::agent_workspace_publish_repair_state::{
@@ -65,14 +66,13 @@ use crate::domain::repositories::{
 };
 use crate::domain::services::github_service::{
     PrHealth, PrHealthCheck, PrMergeStateStatus, PrMergeableState, PrReviewCommentFeedback,
-    PrReviewFeedback, WorkflowRunLifecycle,
+    PrReviewFeedback,
 };
 use crate::domain::services::{GithubServiceTrait, PrStatus};
 use crate::error::AppError;
 use crate::infrastructure::agents::claude::agent_names::{
     AGENT_WORKSPACE_PR_FIXER, AGENT_WORKSPACE_REPAIR,
 };
-use crate::infrastructure::agents::claude::git_runtime_config;
 
 #[cfg(test)]
 const AGENT_WORKSPACE_REPAIR_REQUESTED_STEP: &str = "repair_requested";
@@ -3001,107 +3001,14 @@ async fn route_agent_workspace_pr_autofix_for_target(
             .await?
         {
             if attempt.phase == AgentWorkspaceRepairPhase::Ready {
-                if let Some(pending_run_id) = attempt.ci_rerun_pending_run_id {
-                    match github
-                        .fetch_workflow_run_status(working_dir, pending_run_id)
-                        .await
+                let health_suppressed = agent_workspace_repair_is_health_held(&attempt);
+                let ci_held = agent_workspace_repair_is_ci_held(&attempt);
+                if ci_held {
+                    if ci_rerun_hold_still_pending(&health, attempt.ci_rerun_fingerprint.as_deref())
                     {
-                        Ok(Some(WorkflowRunLifecycle::Concluded)) => {
-                            match clear_agent_workspace_ci_rerun_deferral(
-                                Arc::clone(repair_repo),
-                                attempt.clone(),
-                                "Workflow run concluded; RalphX is rerunning the failed GitHub Actions jobs.",
-                                workspace.pr_auto_merge_current,
-                            )
-                            .await?
-                            {
-                                AgentWorkspaceRepairTransitionOutcome::Applied(cleared) => {
-                                    if let Err(error) = github
-                                        .rerun_failed_workflow(working_dir, pending_run_id)
-                                        .await
-                                    {
-                                        tracing::warn!(
-                                            conversation_id = %conversation_id,
-                                            run_id = pending_run_id,
-                                            error = %error,
-                                            "Deferred GitHub Actions rerun failed after the run concluded"
-                                        );
-                                        let Some(branch_update_repo) = branch_update_repo.as_ref()
-                                        else {
-                                            return Err(AppError::Infrastructure(
-                                                "deferred CI rerun requires canonical Git target authority"
-                                                    .to_string(),
-                                            ));
-                                        };
-                                        let blocker = format!(
-                                            "GitHub Actions rerun failed after workflow run {pending_run_id} concluded: {error}"
-                                        );
-                                        let _ = block_agent_workspace_repair_completion(
-                                            Arc::clone(repair_repo),
-                                            Arc::clone(branch_update_repo),
-                                            cleared,
-                                            "Deferred GitHub Actions rerun failed.",
-                                            &blocker,
-                                            workspace.pr_auto_merge_current,
-                                        )
-                                        .await?;
-                                    }
-                                }
-                                AgentWorkspaceRepairTransitionOutcome::Stale(_)
-                                | AgentWorkspaceRepairTransitionOutcome::Missing => {}
-                            }
-                            return Ok(false);
-                        }
-                        Ok(Some(WorkflowRunLifecycle::Active)) | Ok(None) => {}
-                        Err(error) => {
-                            tracing::warn!(
-                                conversation_id = %conversation_id,
-                                run_id = pending_run_id,
-                                error = %error,
-                                "Could not determine lifecycle for deferred GitHub Actions rerun"
-                            );
-                        }
+                        return Ok(false);
                     }
-
-                    if attempt
-                        .ci_rerun_deferred_since
-                        .is_some_and(|deferred_since| {
-                            chrono::Utc::now() - deferred_since
-                                > chrono::Duration::seconds(
-                                    i64::try_from(
-                                        git_runtime_config()
-                                            .agent_workspace_ci_rerun_deferral_deadline_secs,
-                                    )
-                                    .unwrap_or(i64::MAX),
-                                )
-                        })
-                    {
-                        let Some(branch_update_repo) = branch_update_repo.as_ref() else {
-                            return Err(AppError::Infrastructure(
-                                "deferred CI rerun requires canonical Git target authority"
-                                    .to_string(),
-                            ));
-                        };
-                        let blocker = format!(
-                            "RalphX waited for GitHub Actions run {pending_run_id} to finish so it could rerun the failed jobs, but the run has not concluded. Check the run on GitHub."
-                        );
-                        let _ = block_agent_workspace_repair_completion(
-                            Arc::clone(repair_repo),
-                            Arc::clone(branch_update_repo),
-                            attempt,
-                            "Deferred GitHub Actions rerun timed out.",
-                            &blocker,
-                            workspace.pr_auto_merge_current,
-                        )
-                        .await?;
-                    }
-                    return Ok(false);
-                }
-                // Both hold kinds — pre-existing-on-base and unchanged-health — park a generation
-                // against an exact observed failure identity, and neither may be ended by anything
-                // other than GitHub reporting different health.
-                let health_suppressed = crate::application::agent_workspace_publish_repair_state::agent_workspace_repair_is_health_held(&attempt);
-                if health_suppressed
+                } else if health_suppressed
                     && current_issue.as_ref().is_some_and(|issue| {
                         attempt.pr_autofix_health_fingerprint.as_deref()
                             == Some(issue.classification.as_str())
@@ -3109,17 +3016,7 @@ async fn route_agent_workspace_pr_autofix_for_target(
                 {
                     return Ok(false);
                 }
-                if health_suppressed || attempt.ci_rerun_count > 0 {
-                    // Only a generation that actually reserved a rerun can be waiting on that
-                    // rerun's conclusion. Without this guard a health hold whose failure is not
-                    // transient-CI shaped compares `None == None` here and suppresses itself
-                    // forever, even once GitHub reports something new.
-                    if attempt.ci_rerun_count > 0
-                        && attempt.ci_rerun_fingerprint.as_deref()
-                            == transient_ci_health_fingerprint(&health).as_deref()
-                    {
-                        return Ok(false);
-                    }
+                if health_suppressed || ci_held {
                     // A changed conclusion ends the rerun-pending generation. The next normal
                     // dispatch below creates a fresh, independently fenced repair attempt.
                     match repair_repo
@@ -3584,29 +3481,6 @@ async fn cross_streak_fingerprint_suppresses_dispatch(
         "Suppressing a fresh PR autofix streak against an already-exhausted failure identity"
     );
     Ok(true)
-}
-
-fn transient_ci_health_fingerprint(health: &PrHealth) -> Option<String> {
-    let failed = health.checks.iter().find(|check| {
-        check.conclusion.as_deref().is_some_and(|value| {
-            matches!(
-                value.to_ascii_uppercase().as_str(),
-                "FAILURE" | "CANCELLED" | "TIMED_OUT"
-            )
-        })
-    })?;
-    let url = failed.details_url.as_deref()?;
-    Some(format!(
-        "{}:{}:{}:{}",
-        health
-            .sync_state
-            .head_ref_oid
-            .as_deref()
-            .unwrap_or("missing-head"),
-        failed.name,
-        failed.conclusion.as_deref().unwrap_or("unknown"),
-        url
-    ))
 }
 
 async fn record_agent_workspace_pr_autofix_pre_start_failure(

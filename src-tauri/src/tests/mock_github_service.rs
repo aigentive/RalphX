@@ -4,7 +4,7 @@
 // No real `gh` or `git` invocations unless a test explicitly opts into real Git pushes.
 
 use async_trait::async_trait;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -12,7 +12,7 @@ use crate::domain::services::github_service::{
     validate_pr_metadata_patch, GithubConnectionStatus, GithubServiceTrait, PrBranchMatch,
     PrDetail, PrDiffAnnotations, PrHealth, PrHealthCheck, PrReviewFeedback,
     PrReviewSubmissionEvent, PrReviewThread, PrSearchResult, PrStatus, PrSubmittedReview,
-    PrSyncState, WorkflowRunLifecycle,
+    PrSyncState,
 };
 use crate::error::AppError;
 use crate::AppResult;
@@ -42,7 +42,7 @@ pub struct MockGithubState {
     /// `None` leaves the trait default (unknown base state); `Some` overrides it.
     pub list_branch_check_conclusions_result: Option<AppResult<Option<Vec<PrHealthCheck>>>>,
     pub rerun_failed_workflow_result: Option<AppResult<()>>,
-    pub fetch_workflow_run_status_result: Option<AppResult<Option<WorkflowRunLifecycle>>>,
+    pub rerun_failed_workflow_results: HashMap<i64, AppResult<()>>,
     pub enable_pr_auto_merge_result: Option<AppResult<()>>,
     pub enable_pr_auto_merge_delay_ms: u64,
     pub disable_pr_auto_merge_result: Option<AppResult<()>>,
@@ -84,7 +84,7 @@ pub struct MockGithubState {
     pub fetch_github_connection_status_calls: u32,
     pub fetch_pr_health_calls: u32,
     pub rerun_failed_workflow_calls: u32,
-    pub fetch_workflow_run_status_calls: u32,
+    pub rerun_failed_workflow_ids: Vec<i64>,
     pub enable_pr_auto_merge_calls: u32,
     pub disable_pr_auto_merge_calls: u32,
     pub push_branch_calls: u32,
@@ -118,7 +118,6 @@ pub struct MockGithubState {
     pub last_fetch_pr_review_thread_number: Option<i64>,
     pub last_fetch_pr_health_number: Option<i64>,
     pub last_rerun_failed_workflow_id: Option<i64>,
-    pub last_fetch_workflow_run_status_run_id: Option<i64>,
     pub last_mark_pr_ready_working_dir: Option<String>,
     pub last_enable_pr_auto_merge_args: Option<(i64, String)>,
     pub last_enable_pr_auto_merge_working_dir: Option<String>,
@@ -577,20 +576,11 @@ impl GithubServiceTrait for MockGithubService {
         let mut s = self.state.lock().expect("lock poisoned");
         s.rerun_failed_workflow_calls += 1;
         s.last_rerun_failed_workflow_id = Some(run_id);
-        s.rerun_failed_workflow_result.take().unwrap_or(Ok(()))
-    }
-
-    async fn fetch_workflow_run_status(
-        &self,
-        _working_dir: &Path,
-        run_id: i64,
-    ) -> AppResult<Option<WorkflowRunLifecycle>> {
-        let mut s = self.state.lock().expect("lock poisoned");
-        s.fetch_workflow_run_status_calls += 1;
-        s.last_fetch_workflow_run_status_run_id = Some(run_id);
-        s.fetch_workflow_run_status_result
-            .take()
-            .unwrap_or(Ok(None))
+        s.rerun_failed_workflow_ids.push(run_id);
+        s.rerun_failed_workflow_results
+            .remove(&run_id)
+            .or_else(|| s.rerun_failed_workflow_result.take())
+            .unwrap_or(Ok(()))
     }
 
     async fn enable_pr_auto_merge(

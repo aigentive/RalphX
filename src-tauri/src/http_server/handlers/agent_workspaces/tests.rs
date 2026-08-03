@@ -1689,11 +1689,60 @@ fn failed_ci_pr_health(head_sha: &str, run_id: i64) -> PrHealth {
         .push(crate::domain::services::github_service::PrHealthCheck {
             name: "CI / test".to_string(),
             status: Some("completed".to_string()),
-            conclusion: Some("failure".to_string()),
+            conclusion: Some("cancelled".to_string()),
             details_url: Some(format!(
                 "https://github.com/owner/repo/actions/runs/{run_id}/jobs/1"
             )),
         });
+    health
+}
+
+fn mixed_failure_and_cancelled_pr_health(head_sha: &str, run_id: i64) -> PrHealth {
+    let mut health = failed_ci_pr_health(head_sha, run_id);
+    health
+        .checks
+        .push(crate::domain::services::github_service::PrHealthCheck {
+            name: "CI / lint".to_string(),
+            status: Some("completed".to_string()),
+            conclusion: Some("failure".to_string()),
+            details_url: Some(format!(
+                "https://github.com/owner/repo/actions/runs/{}/jobs/2",
+                run_id + 1
+            )),
+        });
+    health
+}
+
+fn cancelled_with_in_flight_sibling_pr_health(head_sha: &str, run_id: i64) -> PrHealth {
+    let mut health = failed_ci_pr_health(head_sha, run_id);
+    health
+        .checks
+        .push(crate::domain::services::github_service::PrHealthCheck {
+            name: "CI / sibling".to_string(),
+            status: Some("in_progress".to_string()),
+            conclusion: None,
+            details_url: Some(format!(
+                "https://github.com/owner/repo/actions/runs/{run_id}/jobs/2"
+            )),
+        });
+    health
+}
+
+fn multi_run_cancelled_pr_health(head_sha: &str, run_ids: &[i64]) -> PrHealth {
+    let mut health = open_review_pr_health();
+    health.sync_state.head_ref_oid = Some(head_sha.to_string());
+    for (index, run_id) in run_ids.iter().enumerate() {
+        health
+            .checks
+            .push(crate::domain::services::github_service::PrHealthCheck {
+                name: format!("CI / cancelled {index}"),
+                status: Some("completed".to_string()),
+                conclusion: Some("cancelled".to_string()),
+                details_url: Some(format!(
+                    "https://github.com/owner/repo/actions/runs/{run_id}/jobs/1"
+                )),
+            });
+    }
     health
 }
 
@@ -1748,7 +1797,7 @@ async fn transient_ci_completion_reserves_one_rerun_without_settling_repair() {
     assert_eq!(attempt.ci_rerun_pending_run_id, None);
     assert_eq!(
         attempt.ci_rerun_fingerprint.as_deref(),
-        Some("rerun-head:CI / test:failure:https://github.com/owner/repo/actions/runs/789/jobs/1")
+        Some("ci-hold:v1:rerun-head:789")
     );
     assert!(attempt.settled_at.is_none());
     assert!(attempt.outcome.is_none());
@@ -1890,7 +1939,7 @@ async fn transient_ci_completion_blocks_with_github_rerun_error_after_one_reserv
     fixture.github.state().fetch_pr_health_result =
         Some(Ok(failed_ci_pr_health("error-head", 791)));
     fixture.github.state().rerun_failed_workflow_result = Some(Err(
-        crate::error::AppError::Infrastructure("gh run rerun exited 1".to_string()),
+        crate::error::AppError::Infrastructure("gh run rerun: authentication failed".to_string()),
     ));
     fixture.github.state().fetch_workflow_run_status_result = Some(Ok(Some(
         crate::domain::services::github_service::WorkflowRunLifecycle::Concluded,
@@ -1899,7 +1948,7 @@ async fn transient_ci_completion_blocks_with_github_rerun_error_after_one_reserv
     let response = complete_transient_ci_failure(&fixture).await;
 
     assert_eq!(response.status, "blocked");
-    assert!(response.message.contains("gh run rerun exited 1"));
+    assert!(response.message.contains("authentication failed"));
     assert_eq!(fixture.github.state().rerun_failed_workflow_calls, 1);
     assert_eq!(fixture.github.state().fetch_workflow_run_status_calls, 1);
     assert_eq!(
@@ -1921,7 +1970,267 @@ async fn transient_ci_completion_blocks_with_github_rerun_error_after_one_reserv
     assert!(attempt
         .blocker
         .as_deref()
-        .is_some_and(|blocker| blocker.contains("gh run rerun exited 1")));
+        .is_some_and(|blocker| blocker.contains("authentication failed")));
+}
+
+#[tokio::test]
+async fn transient_ci_completion_rejects_when_real_failures_remain() {
+    let fixture = setup_transient_ci_rerun_fixture("rerun-rejects-real-failure").await;
+    let repair_repo = Arc::clone(&fixture.app_state.agent_workspace_repair_repo);
+    let before = repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("load attempt before rejection")
+        .expect("repair attempt exists");
+    fixture.github.state().fetch_pr_health_result =
+        Some(Ok(mixed_failure_and_cancelled_pr_health("mixed-head", 792)));
+
+    let response = complete_transient_ci_failure(&fixture).await;
+
+    assert_eq!(response.status, "rejected");
+    assert!(response.message.contains("CI / lint (failure)"));
+    assert_eq!(fixture.github.state().rerun_failed_workflow_calls, 0);
+    let after = repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("load attempt after rejection")
+        .expect("rejected attempt stays current");
+    assert_eq!(after, before, "rejection must not mutate durable state");
+}
+
+#[tokio::test]
+async fn transient_ci_completion_awaits_in_progress_workflow_run() {
+    let fixture = setup_transient_ci_rerun_fixture("rerun-awaits-in-flight").await;
+    fixture.github.state().fetch_pr_health_result = Some(Ok(
+        cancelled_with_in_flight_sibling_pr_health("await-head", 793),
+    ));
+
+    let response = complete_transient_ci_failure(&fixture).await;
+
+    assert_eq!(response.status, "rerun_pending");
+    assert_eq!(fixture.github.state().rerun_failed_workflow_calls, 0);
+    let attempt = fixture
+        .app_state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("load awaiting attempt")
+        .expect("awaiting attempt stays current");
+    assert_eq!(
+        attempt.phase,
+        crate::domain::entities::AgentWorkspaceRepairPhase::Ready
+    );
+    assert_eq!(attempt.ci_rerun_count, 0);
+    assert!(attempt.blocker.is_none());
+    assert!(attempt.pending_reasons.iter().any(|reason| {
+        reason
+            == crate::application::agent_workspace_publish_repair_state::AWAITING_CI_REPAIR_REASON
+    }));
+    assert_eq!(
+        attempt.ci_rerun_fingerprint.as_deref(),
+        Some("ci-hold:v1:await-head:793")
+    );
+}
+
+#[tokio::test]
+async fn transient_ci_completion_reruns_every_terminal_transient_run() {
+    let fixture = setup_transient_ci_rerun_fixture("rerun-multiple-runs").await;
+    fixture.github.state().fetch_pr_health_result = Some(Ok(multi_run_cancelled_pr_health(
+        "multi-run-head",
+        &[795, 794, 795],
+    )));
+
+    let response = complete_transient_ci_failure(&fixture).await;
+
+    assert_eq!(response.status, "rerun_pending");
+    assert_eq!(
+        fixture.github.state().rerun_failed_workflow_ids,
+        vec![794, 795]
+    );
+    let attempt = fixture
+        .app_state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("load multi-run attempt")
+        .expect("multi-run attempt stays current");
+    assert_eq!(attempt.ci_rerun_count, 1);
+}
+
+#[tokio::test]
+async fn transient_ci_completion_attempts_every_run_after_an_earlier_error() {
+    let fixture = setup_transient_ci_rerun_fixture("rerun-continues-after-error").await;
+    fixture.github.state().fetch_pr_health_result = Some(Ok(multi_run_cancelled_pr_health(
+        "partial-rerun-head",
+        &[798, 799],
+    )));
+    fixture.github.state().rerun_failed_workflow_results.insert(
+        798,
+        Err(crate::error::AppError::Infrastructure(
+            "GitHub secondary rate limit".to_string(),
+        )),
+    );
+
+    let response = complete_transient_ci_failure(&fixture).await;
+
+    assert_eq!(response.status, "rerun_pending");
+    assert_eq!(
+        fixture.github.state().rerun_failed_workflow_ids,
+        vec![798, 799],
+        "a failed rerun request must not skip later workflow runs"
+    );
+    let attempt = fixture
+        .app_state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("load partially rerun attempt")
+        .expect("partially rerun attempt stays current");
+    assert_eq!(attempt.ci_rerun_count, 1);
+    assert!(attempt.blocker.is_none());
+}
+
+#[tokio::test]
+async fn transient_ci_completion_parks_on_transient_github_rerun_error() {
+    let fixture = setup_transient_ci_rerun_fixture("rerun-transient-error").await;
+    fixture.github.state().fetch_pr_health_result =
+        Some(Ok(failed_ci_pr_health("rate-limit-head", 796)));
+    fixture.github.state().rerun_failed_workflow_result = Some(Err(
+        crate::error::AppError::Infrastructure("GitHub secondary rate limit".to_string()),
+    ));
+
+    let response = complete_transient_ci_failure(&fixture).await;
+
+    assert_eq!(response.status, "rerun_pending");
+    assert!(response.message.contains("secondary rate limit"));
+    let attempt = fixture
+        .app_state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("load rate-limited attempt")
+        .expect("rate-limited attempt stays current");
+    assert_eq!(
+        attempt.phase,
+        crate::domain::entities::AgentWorkspaceRepairPhase::Ready
+    );
+    assert_eq!(attempt.ci_rerun_count, 1);
+    assert!(attempt.blocker.is_none());
+    assert!(attempt.pending_reasons.iter().any(|reason| {
+        reason
+            == crate::application::agent_workspace_publish_repair_state::AWAITING_CI_REPAIR_REASON
+    }));
+}
+
+#[tokio::test]
+async fn transient_ci_completion_parks_when_a_rate_limit_error_names_a_404_run_id() {
+    let fixture = setup_transient_ci_rerun_fixture("rerun-rate-limit-404-run-id").await;
+    fixture.github.state().fetch_pr_health_result = Some(Ok(failed_ci_pr_health(
+        "rate-limit-404-head",
+        30_840_412_345,
+    )));
+    fixture.github.state().rerun_failed_workflow_result = Some(Err(
+        crate::error::AppError::Infrastructure(
+            "gh exited with code 1: HTTP 403: You have exceeded a secondary rate limit (https://api.github.com/repos/o/r/actions/runs/30840412345/rerun-failed-jobs)"
+                .to_string(),
+        ),
+    ));
+
+    let response = complete_transient_ci_failure(&fixture).await;
+
+    assert_eq!(response.status, "rerun_pending");
+    let attempt = fixture
+        .app_state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("load rate-limited attempt")
+        .expect("rate-limited attempt stays current");
+    assert!(attempt.blocker.is_none());
+    assert!(attempt.pending_reasons.iter().any(|reason| {
+        reason
+            == crate::application::agent_workspace_publish_repair_state::AWAITING_CI_REPAIR_REASON
+    }));
+}
+
+#[tokio::test]
+async fn transient_ci_completion_blocks_on_a_real_http_404() {
+    let fixture = setup_transient_ci_rerun_fixture("rerun-real-http-404").await;
+    fixture.github.state().fetch_pr_health_result =
+        Some(Ok(failed_ci_pr_health("real-http-404-head", 800)));
+    fixture.github.state().rerun_failed_workflow_result =
+        Some(Err(crate::error::AppError::Infrastructure(
+            "gh exited with code 1: HTTP 404: Not Found".to_string(),
+        )));
+
+    let response = complete_transient_ci_failure(&fixture).await;
+
+    assert_eq!(response.status, "blocked");
+    let attempt = fixture
+        .app_state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("load HTTP 404 attempt")
+        .expect("HTTP 404 attempt stays durable");
+    assert!(attempt
+        .blocker
+        .as_deref()
+        .is_some_and(|blocker| blocker.contains("HTTP 404: Not Found")));
+}
+
+#[tokio::test]
+async fn transient_ci_completion_blocks_an_unknown_error_naming_a_503_run_id() {
+    let fixture = setup_transient_ci_rerun_fixture("rerun-unknown-503-run-id").await;
+    fixture.github.state().fetch_pr_health_result =
+        Some(Ok(failed_ci_pr_health("unknown-503-head", 30_850_312_345)));
+    fixture.github.state().rerun_failed_workflow_result =
+        Some(Err(crate::error::AppError::Infrastructure(
+            "gh exited with code 1: unexpected failure for run 30850312345".to_string(),
+        )));
+
+    let response = complete_transient_ci_failure(&fixture).await;
+
+    assert_eq!(response.status, "blocked");
+    let attempt = fixture
+        .app_state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("load unknown rerun error attempt")
+        .expect("unknown rerun error attempt stays durable");
+    assert!(attempt
+        .blocker
+        .as_deref()
+        .is_some_and(|blocker| blocker.contains("unexpected failure for run 30850312345")));
+}
+
+#[tokio::test]
+async fn transient_ci_completion_rejects_when_health_has_no_head() {
+    let fixture = setup_transient_ci_rerun_fixture("rerun-missing-head").await;
+    let repair_repo = Arc::clone(&fixture.app_state.agent_workspace_repair_repo);
+    let before = repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("load attempt before missing-head rejection")
+        .expect("repair attempt exists");
+    let mut health = failed_ci_pr_health("placeholder", 797);
+    health.sync_state.head_ref_oid = None;
+    fixture.github.state().fetch_pr_health_result = Some(Ok(health));
+
+    let response = complete_transient_ci_failure(&fixture).await;
+
+    assert_eq!(response.status, "rejected");
+    assert_eq!(fixture.github.state().rerun_failed_workflow_calls, 0);
+    let after = repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("load attempt after missing-head rejection")
+        .expect("rejected attempt stays current");
+    assert_eq!(
+        after, before,
+        "missing-head rejection must not mutate state"
+    );
 }
 
 #[tokio::test]

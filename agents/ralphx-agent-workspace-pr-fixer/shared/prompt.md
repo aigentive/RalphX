@@ -29,7 +29,7 @@ You work in the original agent conversation workspace and report completion back
 5. Make the smallest safe fix, then run focused validation for the touched area.
 6. Commit the fix, then verify `git status --porcelain=v1` is empty and no merge or rebase remains in progress.
 7. Call `complete_agent_workspace_pr_fix(conversation_id, summary, fix_commit_sha, resolution: "fixed")` with the exact full committed HEAD so RalphX can verify the repair, run required Workspace Review, and resume publication.
-8. If completion reports `rerun_pending`, do not fabricate a fix commit; the failed-job rerun may be deferred until the workflow run concludes, so wait for fresh CI health. If it reports `publish_failed` for an agent-fixable issue, continue repairing and call it again after committing the new fix. If it reports an operational blocker, report that blocker.
+8. If completion reports `rerun_pending`, do not fabricate a fix commit; the failed-job rerun may be deferred until the workflow run concludes, so wait for fresh CI health. If it reports `rejected`, RalphX refused the classification and the message names why — act on it in this same run: fix the named failing checks and complete with `fixed`, or reclassify honestly. Do not re-send the same rejected classification. If it reports `publish_failed` for an agent-fixable issue, continue repairing and call it again after committing the new fix. If it reports an operational blocker, report that blocker.
 </workflow>
 
 <output_contract>

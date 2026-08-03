@@ -70,6 +70,8 @@ pub(crate) const PRE_EXISTING_ON_BASE_REPAIR_REASON: &str = "pr_autofix_pre_exis
 /// Distinct from `PRE_EXISTING_ON_BASE_REPAIR_REASON`: RalphX has not proven anything about the
 /// base branch, only that spending another agent generation on identical evidence is waste.
 pub(crate) const UNCHANGED_HEALTH_REPAIR_REASON: &str = "pr_autofix_unchanged_health";
+/// Held because the workflow run RalphX intends to rerun has not finished yet.
+pub(crate) const AWAITING_CI_REPAIR_REASON: &str = "pr_autofix_awaiting_ci";
 pub(crate) const REPAIR_FINGERPRINT_HOLD_STEP: &str = "repair_fingerprint_hold";
 pub(crate) const ORPHANED_REPAIR_DISPATCH_RESCUE_GRACE_SECS: i64 = 60;
 const AGENT_WORKSPACE_REPAIR_DISPATCH_INITIAL_BACKOFF_SECS: i64 = 5;
@@ -86,6 +88,7 @@ pub(crate) fn is_machine_repair_reason_marker(reason: &str) -> bool {
         NEEDS_HUMAN_REPAIR_REASON
             | PRE_EXISTING_ON_BASE_REPAIR_REASON
             | UNCHANGED_HEALTH_REPAIR_REASON
+            | AWAITING_CI_REPAIR_REASON
     ) || trimmed.starts_with(
         crate::application::agent_workspace_publish_recovery::AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX,
     ) || trimmed.starts_with(
@@ -606,6 +609,14 @@ pub(crate) fn agent_workspace_repair_is_health_held(attempt: &AgentWorkspaceRepa
     })
 }
 
+pub(crate) fn agent_workspace_repair_is_ci_held(attempt: &AgentWorkspaceRepairAttempt) -> bool {
+    attempt.ci_rerun_count > 0
+        || attempt
+            .pending_reasons
+            .iter()
+            .any(|reason| reason == AWAITING_CI_REPAIR_REASON)
+}
+
 /// Holds a PR autofix generation at a backend-derived health fingerprint without pretending the
 /// failing state was repaired. The poller settles it only after health changes.
 pub(crate) async fn reserve_agent_workspace_pre_existing_on_base(
@@ -698,7 +709,6 @@ pub(crate) async fn reserve_agent_workspace_ci_rerun(
     repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
     mut attempt: AgentWorkspaceRepairAttempt,
     fingerprint: &str,
-    pending_run_id: Option<i64>,
     summary: &str,
     auto_merge_current: Option<bool>,
 ) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
@@ -709,8 +719,6 @@ pub(crate) async fn reserve_agent_workspace_ci_rerun(
     let expected_updated_at = attempt.updated_at;
     attempt.ci_rerun_count += 1;
     attempt.ci_rerun_fingerprint = Some(fingerprint.to_string());
-    attempt.ci_rerun_pending_run_id = pending_run_id;
-    attempt.ci_rerun_deferred_since = pending_run_id.map(|_| Utc::now());
     // Ready is deliberately non-terminal: startup/recovery sees a settled boundary, while the
     // poller owns observation of the next CI conclusion rather than replaying this agent run.
     attempt.phase = AgentWorkspaceRepairPhase::Ready;
@@ -731,18 +739,29 @@ pub(crate) async fn reserve_agent_workspace_ci_rerun(
         .map(repair_attempt_transition_outcome)
 }
 
-/// CAS-clear a parked rerun before the poller invokes GitHub. The clear is the authority check
-/// that prevents overlapping poll ticks from issuing duplicate reruns for the same run.
-pub(crate) async fn clear_agent_workspace_ci_rerun_deferral(
+/// CAS-reserve a wait for the workflow run RalphX intends to rerun. Unlike a rerun reservation,
+/// this preserves the retry budget because no GitHub rerun request has been made.
+pub(crate) async fn reserve_agent_workspace_ci_await(
     repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
     mut attempt: AgentWorkspaceRepairAttempt,
+    fingerprint: &str,
     summary: &str,
     auto_merge_current: Option<bool>,
 ) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
     let expected_phase = attempt.phase;
     let expected_updated_at = attempt.updated_at;
-    attempt.ci_rerun_pending_run_id = None;
-    attempt.ci_rerun_deferred_since = None;
+    if !attempt
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == AWAITING_CI_REPAIR_REASON)
+    {
+        attempt
+            .pending_reasons
+            .push(AWAITING_CI_REPAIR_REASON.to_string());
+    }
+    attempt.ci_rerun_fingerprint = Some(fingerprint.to_string());
+    // Ready is deliberately non-terminal: the poller owns observation of the held run's next
+    // conclusion, while this reservation records that no rerun budget has been consumed yet.
     attempt.phase = AgentWorkspaceRepairPhase::Ready;
     attempt.summary = Some(summary.to_string());
     attempt.blocker = None;
