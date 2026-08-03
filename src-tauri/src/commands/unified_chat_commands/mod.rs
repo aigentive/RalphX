@@ -1113,7 +1113,7 @@ pub async fn agent_workspace_response_for_state(
 /// Returns the persisted workspace and durable repair projection without starting recovery work.
 /// Preference no-ops use this read-only form so an already-enabled Auto Publish toggle cannot
 /// become a second producer for an in-flight repair continuation.
-async fn agent_workspace_response_without_repair_recovery_for_state(
+pub(crate) async fn agent_workspace_response_without_repair_recovery_for_state(
     state: &AppState,
     workspace: AgentConversationWorkspace,
 ) -> Result<AgentConversationWorkspaceResponse, String> {

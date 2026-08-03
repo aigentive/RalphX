@@ -91,7 +91,9 @@ use crate::application::{AppState, ChatService};
 #[cfg(test)]
 use crate::application::GitService;
 use crate::commands::unified_chat_commands::{
-    agent_workspace_response_for_state, get_agent_conversation_workspace_freshness_for_app_state,
+    agent_workspace_response_for_state,
+    agent_workspace_response_without_repair_recovery_for_state,
+    get_agent_conversation_workspace_freshness_for_app_state,
     publish_agent_conversation_workspace_for_app_state,
     publish_agent_conversation_workspace_for_app_state_with_repair_intent,
     resume_durable_agent_workspace_repair_publish,
@@ -1270,9 +1272,12 @@ pub async fn get_agent_workspace_publish_status(
     )
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
-    let workspace = agent_workspace_response_for_state(state.app_state.as_ref(), workspace)
-        .await
-        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error, None))?;
+    let workspace = agent_workspace_response_without_repair_recovery_for_state(
+        state.app_state.as_ref(),
+        workspace,
+    )
+    .await
+    .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error, None))?;
     let events =
         load_agent_workspace_publication_events(state.app_state.as_ref(), &conversation_id).await?;
     Ok(Json(AgentWorkspacePublishStatusResponse {
