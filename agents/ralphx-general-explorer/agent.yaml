@@ -8,6 +8,7 @@ capabilities:
     - fs_grep
     - fs_glob
     - get_artifact
+    - get_parent_context
     - propose_plan_mode
     - delegate_start
     - delegate_wait
