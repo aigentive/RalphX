@@ -29,10 +29,11 @@ use tool_sets::canonical_claude_tool_sets;
 use process_config::{resolve_canonical_process_mapping, ProcessMapping};
 
 pub use runtime_config::{
+    bounded_external_mcp_shutdown_grace_ms, bounded_shutdown_watchdog_deadline_secs,
     validate_external_mcp_config, AllRuntimeConfig, AutomationsRuntimeConfig,
     DatabaseMaintenanceConfig, DelegationConfig, ExternalMcpConfig, GitRuntimeConfig, LimitsConfig,
-    ReconciliationConfig, SchedulerConfig, SpecialistEntry, StreamTimeoutsConfig,
-    SupervisorRuntimeConfig, VerificationConfig,
+    ReconciliationConfig, SchedulerConfig, ShutdownConfig, SpecialistEntry, StreamTimeoutsConfig,
+    SupervisorRuntimeConfig, VerificationConfig, MAX_EXTERNAL_MCP_SHUTDOWN_GRACE_MS,
 };
 
 const VALID_EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
@@ -255,6 +256,8 @@ struct RalphxConfig {
     #[serde(default)]
     scheduler: SchedulerConfig,
     #[serde(default)]
+    shutdown: ShutdownConfig,
+    #[serde(default)]
     automations: AutomationsRuntimeConfig,
     #[serde(default)]
     supervisor: SupervisorRuntimeConfig,
@@ -317,6 +320,7 @@ struct ExternalMcpConfigRawOverlay {
     host: Option<String>,
     max_restart_attempts: Option<u32>,
     restart_delay_ms: Option<u64>,
+    shutdown_grace_ms: Option<u64>,
     startup_timeout_secs: Option<u64>,
     human_wait_timeout_secs: Option<u64>,
     auth_token: Option<String>,
@@ -366,6 +370,7 @@ struct LoadedConfig {
     process_mapping: ProcessMapping,
     defer_merge_enabled: bool,
     file_logging: bool,
+    shutdown: ShutdownConfig,
     runtime: AllRuntimeConfig,
     automations: AutomationsRuntimeConfig,
     execution_defaults: ExecutionDefaultsConfig,
@@ -586,6 +591,9 @@ fn apply_external_mcp_config_overlay(cfg: &mut RalphxConfig, overlay: ExternalMc
     }
     if let Some(restart_delay_ms) = overlay.restart_delay_ms {
         cfg.external_mcp.restart_delay_ms = restart_delay_ms;
+    }
+    if let Some(shutdown_grace_ms) = overlay.shutdown_grace_ms {
+        cfg.external_mcp.shutdown_grace_ms = shutdown_grace_ms;
     }
     if let Some(startup_timeout_secs) = overlay.startup_timeout_secs {
         cfg.external_mcp.startup_timeout_secs = startup_timeout_secs;
@@ -1266,6 +1274,8 @@ fn resolve_loaded_config_with_lookup(
         );
     }
     runtime_config::apply_env_overrides_with_lookup(&mut runtime, lookup);
+    let mut shutdown = parsed.shutdown;
+    runtime_config::apply_shutdown_env_overrides_with_lookup(&mut shutdown, lookup);
     runtime_config::apply_automations_env_overrides_with_lookup(&mut automations, lookup);
     let mut agent_harness_defaults = parsed
         .agent_harness_defaults
@@ -1283,6 +1293,7 @@ fn resolve_loaded_config_with_lookup(
         process_mapping,
         defer_merge_enabled: parsed.defer_merge_enabled,
         file_logging: parsed.file_logging,
+        shutdown,
         runtime,
         automations,
         execution_defaults: parsed.execution_defaults,
@@ -1737,6 +1748,7 @@ fn load_config() -> LoadedConfig {
                 process_mapping: ProcessMapping::default(),
                 defer_merge_enabled: true,
                 file_logging: true,
+                shutdown: ShutdownConfig::default(),
                 runtime,
                 automations,
                 execution_defaults: ExecutionDefaultsConfig::default(),
@@ -1870,6 +1882,10 @@ pub fn defer_merge_enabled() -> bool {
 
 pub fn file_logging_enabled() -> bool {
     LOADED_CONFIG_CELL.get_or_init(load_config).file_logging
+}
+
+pub fn shutdown_config() -> &'static ShutdownConfig {
+    &LOADED_CONFIG_CELL.get_or_init(load_config).shutdown
 }
 
 pub fn execution_defaults_config() -> &'static ExecutionDefaultsConfig {
