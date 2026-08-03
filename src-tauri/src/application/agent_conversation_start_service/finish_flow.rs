@@ -18,21 +18,16 @@ async fn abort_new_conversation_after_failure(
 async fn restore_existing_conversation_after_failure(
     state: &AppState,
     previous: &ChatConversation,
-    restore_coordination_mode: bool,
     failed_phase: &'static str,
 ) {
     let mode_result = state
         .chat_conversation_repo
         .update_agent_mode(&previous.id, previous.agent_mode)
         .await;
-    let coordination_result = if restore_coordination_mode {
-        state
-            .chat_conversation_repo
-            .update_coordination_mode(&previous.id, previous.coordination_mode)
-            .await
-    } else {
-        Ok(())
-    };
+    let coordination_result = state
+        .chat_conversation_repo
+        .update_coordination_mode(&previous.id, previous.coordination_mode)
+        .await;
     if let Err(cleanup_error) = mode_result.and(coordination_result) {
         tracing::error!(
             conversation_id = %previous.id,
@@ -213,7 +208,6 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                 return Err(error.to_string());
             }
         }
-        let mut team_exit_committed = false;
         if let Some(previous) = persisted_before_start.as_ref() {
             if let Err(error) = self
                 .deps
@@ -247,7 +241,7 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                         )
                         .await
                     {
-                        Ok(exited) => team_exit_committed = exited,
+                        Ok(_) => {}
                         Err(error) => {
                             let rollback_error = self
                                 .deps
@@ -346,7 +340,6 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                     restore_existing_conversation_after_failure(
                         self.deps.state,
                         previous,
-                        !team_exit_committed,
                         "seed_persona_draft",
                     )
                     .await;

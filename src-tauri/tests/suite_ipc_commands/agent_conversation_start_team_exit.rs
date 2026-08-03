@@ -40,6 +40,13 @@ async fn team_start_fixture(
     setup_repo(&repo_path);
 
     let mut state = AppState::new_sqlite_test();
+    state.agent_capability_gate.replace(
+        ralphx_lib::application::agent_capability_gate::AgentCapabilities {
+            team: true,
+            workflows: false,
+            autopilot: false,
+        },
+    );
     share_managed_team_repositories(&mut state);
     let project = seed_project(&state, project_id, &repo_path, &worktree_parent).await;
     let mut conversation = ChatConversation::new_project(project.id.clone());
@@ -113,6 +120,39 @@ async fn restarting_team_conversation_with_solo_intent_performs_staged_exit() {
         exited.pending_exit_action.as_deref(),
         Some("drain_and_close")
     );
+}
+
+#[tokio::test]
+async fn restarting_team_conversation_with_team_intent_keeps_session_open() {
+    let (_temp, app, project, conversation, session) =
+        team_start_fixture("project-start-service-team-restart").await;
+    let mut input = solo_restart_input(&project, &conversation);
+    input.team_intent = Some(TeamIntent::rx_native(None));
+
+    start_with_app(&app, input)
+        .await
+        .expect("Team restart should queue without exiting the Team session");
+
+    let state = app.state::<AppState>();
+    let stored = state
+        .chat_conversation_repo
+        .get_by_id(&conversation.id)
+        .await
+        .expect("conversation query should succeed")
+        .expect("conversation should remain persisted");
+    assert_eq!(stored.coordination_mode, CoordinationMode::RxNativeTeam);
+    let active = state
+        .managed_team
+        .team_repo()
+        .get_session(&session.id)
+        .await
+        .expect("Team session query should succeed")
+        .expect("Team session should remain persisted");
+    assert_eq!(
+        active.status,
+        ralphx_lib::domain::entities::TeamSessionStatus::Active
+    );
+    assert!(active.pending_exit_action.is_none());
 }
 
 #[tokio::test]
