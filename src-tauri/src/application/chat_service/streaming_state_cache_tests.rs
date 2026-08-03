@@ -61,6 +61,7 @@ async fn test_changing_run_id_discards_stale_transient_projection() {
             CachedToolCall {
                 id: "toolu_stale".to_string(),
                 name: "bash".to_string(),
+                block_index: Some(0),
                 arguments: serde_json::json!({}),
                 result: None,
                 diff_context: None,
@@ -118,6 +119,7 @@ async fn test_upsert_tool_call_creates_state() {
     let tool_call = CachedToolCall {
         id: "toolu_001".to_string(),
         name: "bash".to_string(),
+        block_index: None,
         arguments: serde_json::json!({"command": "ls"}),
         result: None,
         diff_context: None,
@@ -141,6 +143,7 @@ async fn test_upsert_tool_call_updates_existing() {
     let tool_call = CachedToolCall {
         id: "toolu_001".to_string(),
         name: "bash".to_string(),
+        block_index: Some(4),
         arguments: serde_json::json!({"command": "ls"}),
         result: None,
         diff_context: None,
@@ -152,6 +155,7 @@ async fn test_upsert_tool_call_updates_existing() {
     let updated = CachedToolCall {
         id: "toolu_001".to_string(),
         name: "bash".to_string(),
+        block_index: Some(4),
         arguments: serde_json::json!({"command": "ls"}),
         result: Some(serde_json::json!({"output": "file1.txt\nfile2.txt"})),
         diff_context: None,
@@ -162,6 +166,62 @@ async fn test_upsert_tool_call_updates_existing() {
     let state = cache.get("conv-123").await.unwrap();
     assert_eq!(state.tool_calls.len(), 1); // Still just one
     assert!(state.tool_calls[0].result.is_some());
+    assert_eq!(state.tool_calls[0].block_index, Some(4));
+}
+
+#[tokio::test]
+async fn test_upsert_tool_call_preserves_known_block_index_when_completed_lookup_misses() {
+    let cache = StreamingStateCache::new();
+
+    cache
+        .upsert_tool_call(
+            "conv-123",
+            CachedToolCall {
+                id: "toolu_001".to_string(),
+                name: "bash".to_string(),
+                block_index: Some(4),
+                arguments: serde_json::json!({"command": "ls"}),
+                result: None,
+                diff_context: None,
+                parent_tool_use_id: None,
+            },
+        )
+        .await;
+
+    cache
+        .upsert_tool_call(
+            "conv-123",
+            CachedToolCall {
+                id: "toolu_001".to_string(),
+                name: "edit".to_string(),
+                block_index: None,
+                arguments: serde_json::json!({"file_path": "src/main.rs"}),
+                result: Some(serde_json::json!({"output": "updated"})),
+                diff_context: Some(serde_json::json!({"before": "old", "after": "new"})),
+                parent_tool_use_id: Some("toolu_parent".to_string()),
+            },
+        )
+        .await;
+
+    let tool_call = &cache.get("conv-123").await.unwrap().tool_calls[0];
+    assert_eq!(tool_call.block_index, Some(4));
+    assert_eq!(tool_call.name, "edit");
+    assert_eq!(
+        tool_call.arguments,
+        serde_json::json!({"file_path": "src/main.rs"})
+    );
+    assert_eq!(
+        tool_call.result,
+        Some(serde_json::json!({"output": "updated"}))
+    );
+    assert_eq!(
+        tool_call.diff_context,
+        Some(serde_json::json!({"before": "old", "after": "new"}))
+    );
+    assert_eq!(
+        tool_call.parent_tool_use_id.as_deref(),
+        Some("toolu_parent")
+    );
 }
 
 #[tokio::test]
@@ -261,6 +321,7 @@ async fn test_clear() {
     let tool_call = CachedToolCall {
         id: "toolu_001".to_string(),
         name: "bash".to_string(),
+        block_index: Some(0),
         arguments: serde_json::json!({}),
         result: None,
         diff_context: None,
@@ -288,6 +349,7 @@ async fn test_multiple_conversations_independent() {
     let tool1 = CachedToolCall {
         id: "toolu_001".to_string(),
         name: "bash".to_string(),
+        block_index: Some(0),
         arguments: serde_json::json!({}),
         result: None,
         diff_context: None,
@@ -296,6 +358,7 @@ async fn test_multiple_conversations_independent() {
     let tool2 = CachedToolCall {
         id: "toolu_002".to_string(),
         name: "read".to_string(),
+        block_index: Some(0),
         arguments: serde_json::json!({"file_path": "/tmp/test.txt"}),
         result: None,
         diff_context: None,
@@ -342,6 +405,7 @@ async fn test_serialize_produces_expected_json() {
         tool_calls: vec![CachedToolCall {
             id: "toolu_001".to_string(),
             name: "bash".to_string(),
+            block_index: Some(0),
             arguments: serde_json::json!({"command": "ls"}),
             result: None,
             diff_context: None,
@@ -386,6 +450,7 @@ async fn test_serialize_skips_none_fields() {
     let tool_call = CachedToolCall {
         id: "toolu_001".to_string(),
         name: "bash".to_string(),
+        block_index: None,
         arguments: serde_json::json!({}),
         result: None,
         diff_context: None,
@@ -396,6 +461,7 @@ async fn test_serialize_skips_none_fields() {
     assert!(!json.contains("\"result\""));
     assert!(!json.contains("\"diff_context\""));
     assert!(!json.contains("\"parent_tool_use_id\""));
+    assert!(!json.contains("\"block_index\""));
 }
 
 #[tokio::test]

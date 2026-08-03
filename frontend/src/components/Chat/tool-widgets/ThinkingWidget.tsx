@@ -3,6 +3,15 @@ import { colors } from "./shared.constants";
 
 const BOTTOM_EPSILON_PX = 2;
 
+function ThinkingText({ text }: { text: string }) {
+  return text.split(/(\*\*[^*]+\*\*)/g).map((part, index) => {
+    if (part.startsWith("**") && part.endsWith("**")) {
+      return <strong key={index}>{part.slice(2, -2)}</strong>;
+    }
+    return part;
+  });
+}
+
 export const ThinkingWidget = React.memo(function ThinkingWidget({ text, compact = false }: {
   text: string;
   compact?: boolean;
@@ -38,7 +47,7 @@ export const ThinkingWidget = React.memo(function ThinkingWidget({ text, compact
             fontFamily: "var(--font-mono)", fontSize: compact ? 10 : 11, lineHeight: 1.55,
             color: colors.textSecondary, padding: "2px 2px 2px 4px",
           }}>
-          {text}
+          <ThinkingText text={text} />
         </div>
       ) : <div data-testid="thinking-widget-shell" style={{ minHeight: "2em" }} />;
 });

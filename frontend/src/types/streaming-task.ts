@@ -29,7 +29,7 @@ export type StreamingTaskProviderStatus = StreamingTaskStatus | "cancelled";
  */
 export type StreamingContentBlock =
   | { type: "text"; text: string; blockIndex?: number; seq?: number; receivedAt?: number }
-  | { type: "thinking"; text: string; blockIndex?: number; durationMs?: number; isSettled?: boolean; estimatedTokens?: number; seq?: number; receivedAt?: number }
+  | { type: "thinking"; text: string; blockIndex?: number; durationMs?: number; isSettled?: boolean; estimatedTokens?: number; reasoningTokens?: number; seq?: number; receivedAt?: number }
   | { type: "tool_use"; toolCall: ToolCall; seq?: number; receivedAt?: number }
   | { type: "task"; toolUseId: string; seq?: number; receivedAt?: number };
 
