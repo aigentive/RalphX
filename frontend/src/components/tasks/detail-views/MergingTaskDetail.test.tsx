@@ -1044,7 +1044,11 @@ describe("MergingTaskDetail", () => {
       renderWithProviders(<AgentsMergingTaskDetail task={task} />);
 
       const stop = screen.getByTestId("stop-merge-action");
-      disabled ? expect(stop).toBeDisabled() : expect(stop).toBeEnabled();
+      if (disabled) {
+        expect(stop).toBeDisabled();
+      } else {
+        expect(stop).toBeEnabled();
+      }
       if (disabled) {
         expect(screen.getByTestId("agent-gate-tooltip")).toHaveAttribute("data-agent-gated", "true");
       } else {

@@ -252,7 +252,11 @@ describe("Agents CompletedTaskDetail", () => {
     render(<CompletedTaskDetail task={task()} />, { wrapper: TestWrapper });
 
     const button = screen.getByTestId("reopen-task-button");
-    disabled ? expect(button).toBeDisabled() : expect(button).toBeEnabled();
+    if (disabled) {
+      expect(button).toBeDisabled();
+    } else {
+      expect(button).toBeEnabled();
+    }
     if (hint) {
       expect(screen.getByTestId("agent-gate-tooltip")).toHaveAttribute("data-agent-gated", "true");
     } else {

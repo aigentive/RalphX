@@ -61,8 +61,6 @@ export function useAgentSidebarRunningStates(
   const conversationIds = agentConversations
     .map((conversation) => conversation.id)
     .join("\u0000");
-  const agentConversationsRef = useRef(agentConversations);
-  agentConversationsRef.current = agentConversations;
   const lastRemoteReconcileIds = useRef<string | null>(null);
 
   useEffect(() => {
@@ -80,9 +78,12 @@ export function useAgentSidebarRunningStates(
     const environmentId = useEnvironmentStore.getState().activeEnvironmentId;
     void reconcileAgentConversationRuntimeIndexes(
       environmentId,
-      agentConversationsRef.current,
+      agentConversations,
     );
-  }, [conversationIds, isVisible]);
+    // `agentConversations` is a dependency for correctness, but the id-set guard above is
+    // what decides whether a fan-out actually runs: a re-created array with the same ids
+    // returns early, so this never re-fetches on identity churn alone.
+  }, [agentConversations, conversationIds, isVisible]);
 
   useEffect(() => {
     if (!isVisible || agentConversations.length === 0) {

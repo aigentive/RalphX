@@ -362,6 +362,9 @@ vi.mock("@/hooks/useQuestionInput", () => ({
   useQuestionInput: (params: UseQuestionInputParams) => {
     mockQuestionInputParams.push(params);
     return {
+      // The hook owns the `questionAnswer` gate and the panel renders its `reason` as the
+      // banner's disabled copy, so the mock must carry it — a bare object throws on render.
+      agentGate: { status: "enabled", gated: false, reason: null },
       selectedOptions: new Set(),
       questionInputValue: "",
       setQuestionInputValue: vi.fn(),
