@@ -126,6 +126,22 @@ describe("chat-active-state helpers", () => {
     expect(mergeActiveStreamingToolCalls(toolCalls, [])).toBe(toolCalls);
   });
 
+  it("places active-state tool calls by backend block index", () => {
+    const next = mergeActiveStreamingTaskAndToolBlocks([
+      { type: "thinking", text: "Before", blockIndex: 0 },
+      { type: "thinking", text: "After", blockIndex: 2 },
+    ], {
+      partial_text: "",
+      streaming_tasks: [],
+      tool_calls: [{ id: "tool-between", name: "Read", arguments: {}, block_index: 1 }],
+    });
+
+    expect(next.map((block) => block.type === "tool_use"
+      ? `${block.type}:${block.toolCall.id}`
+      : `${block.type}:${block.blockIndex}`,
+    )).toEqual(["thinking:0", "tool_use:tool-between", "thinking:2"]);
+  });
+
   it("preserves existing task metadata when the active-state task only has live status", () => {
     const childToolCall: ToolCall = {
       id: "toolu_child",

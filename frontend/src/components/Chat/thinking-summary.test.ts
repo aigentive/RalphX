@@ -18,6 +18,13 @@ describe("formatThinkingSummary", () => {
     expect(formatThinkingSummary(true)).toBe("Agent thought");
   });
 
+  it("shows settled reasoning tokens only when duration is absent", () => {
+    expect(formatThinkingSummary(true, undefined, undefined, 1_234))
+      .toBe("Agent thought · ~1,234 reasoning tokens");
+    expect(formatThinkingSummary(true, 5_000, undefined, 1_234))
+      .toBe("Agent thought for 5s");
+  });
+
   it("rounds sub-second durations down", () => {
     expect(formatThinkingSummary(true, 1400)).toBe("Agent thought for 1s");
   });
