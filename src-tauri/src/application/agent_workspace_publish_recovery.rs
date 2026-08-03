@@ -47,6 +47,8 @@ mod pr_autofix_redelivery;
 
 #[cfg(test)]
 pub(crate) use durable_attempt_recovery::due_repair_dispatch_message;
+#[cfg(test)]
+pub(crate) use durable_attempt_recovery::CONTINUATION_RECOVERY_BLOCKED_STEP;
 pub(crate) use durable_attempt_recovery::is_blocked_and_not_auto_retryable;
 #[cfg(any(test, feature = "test-utils"))]
 pub use durable_attempt_recovery::recover_agent_workspace_repair_after_terminal_run;

@@ -1692,7 +1692,9 @@ where
         })?;
     let mut attempt = if matches!(
         expected_phase,
-        AgentWorkspaceRepairPhase::AwaitingReview | AgentWorkspaceRepairPhase::Ready
+        AgentWorkspaceRepairPhase::AwaitingReview
+            | AgentWorkspaceRepairPhase::Ready
+            | AgentWorkspaceRepairPhase::Blocked
     ) {
         match reacquire_agent_workspace_repair_target_lease_for_continuation(
             state,
