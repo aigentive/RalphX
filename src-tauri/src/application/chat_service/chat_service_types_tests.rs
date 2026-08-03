@@ -388,6 +388,43 @@ fn message_render_ready_payload_serializes_canonical_message_and_timeline() {
 }
 
 #[test]
+fn message_render_ready_payload_serializes_thinking_timeline_metadata() {
+    let conversation_id = ChatConversationId::from_string("33333333-3333-3333-3333-333333333333");
+    let message_id = ChatMessageId::from_string("msg-thinking");
+    let mut message = ChatMessage::user_in_project(
+        ProjectId::from_string("project-1".to_string()),
+        "Considering the request",
+    );
+    message.id = message_id.clone();
+    message.conversation_id = Some(conversation_id.clone());
+    message.role = MessageRole::Orchestrator;
+
+    let mut item = ChatTimelineItem::for_message_block(
+        message_id,
+        conversation_id,
+        0,
+        MessageRole::Orchestrator,
+        ChatTimelineItemKind::Thinking,
+    );
+    item.status = ChatTimelineItemStatus::Finalized;
+    item.text = Some("Considering the request".to_string());
+    item.metadata = Some(r#"{"duration_ms":1234,"reasoning_tokens":321}"#.to_string());
+
+    let payload =
+        AgentMessageRenderReadyPayload::from_message_and_timeline_items(&message, vec![item])
+            .expect("payload");
+    let value = serde_json::to_value(payload).expect("serialization failed");
+    let block = &value["timeline_items"][0]["content_blocks"][0];
+
+    assert_eq!(block["type"], "thinking");
+    assert_eq!(block["text"], "Considering the request");
+    assert_eq!(block["duration_ms"], 1234);
+    assert_eq!(block["reasoning_tokens"], 321);
+    assert_ne!(block["type"], "tool_use");
+    assert!(value["timeline_items"][0]["tool_call"].is_null());
+}
+
+#[test]
 fn message_render_ready_payload_handles_empty_and_text_timeline_items() {
     let conversation_id = ChatConversationId::from_string("22222222-2222-2222-2222-222222222222");
     let message_id = ChatMessageId::from_string("msg-text");

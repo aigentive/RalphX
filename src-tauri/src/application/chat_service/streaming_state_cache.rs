@@ -215,7 +215,7 @@ impl StreamingStateCache {
     ///
     /// If a tool call with the same ID exists, it's updated.
     /// Otherwise, a new entry is added.
-    pub async fn upsert_tool_call(&self, conversation_id: &str, tool_call: CachedToolCall) {
+    pub async fn upsert_tool_call(&self, conversation_id: &str, mut tool_call: CachedToolCall) {
         let mut states = self.states.lock().await;
         let state = states
             .entry(conversation_id.to_string())
@@ -230,6 +230,9 @@ impl StreamingStateCache {
 
         // Find existing tool call with same ID and update, or add new
         if let Some(existing) = state.tool_calls.iter_mut().find(|tc| tc.id == tool_call.id) {
+            if tool_call.block_index.is_none() {
+                tool_call.block_index = existing.block_index;
+            }
             *existing = tool_call;
             tracing::trace!(
                 conversation_id,

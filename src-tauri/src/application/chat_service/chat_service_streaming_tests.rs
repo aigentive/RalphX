@@ -1561,6 +1561,33 @@ async fn live_codex_exec_json_reasoning_persists_as_thinking_blocks() {
 }
 
 #[tokio::test]
+async fn codex_stream_does_not_attach_later_turn_usage_to_prior_reasoning() {
+    // `process_codex_stream_background` exits on `turn.completed`, so a second completed
+    // turn cannot reach this loop. A subsequent `turn.started` is the reachable boundary that
+    // must revoke the prior turn's reasoning ownership before the terminal usage arrives.
+    let outcome = run_codex_stream_lines(&[
+        r#"{"type":"thread.started","thread_id":"turn-local-reasoning"}"#,
+        r#"{"type":"turn.started"}"#,
+        r#"{"type":"item.completed","item":{"id":"reasoning-1","type":"reasoning","text":"First turn reasoning"}}"#,
+        r#"{"type":"turn.started"}"#,
+        r#"{"type":"item.completed","item":{"id":"message-2","type":"agent_message","text":"Second turn response"}}"#,
+        r#"{"type":"turn.completed","usage":{"reasoning_output_tokens":50}}"#,
+    ])
+    .await
+    .expect("Codex stream should complete");
+
+    assert_eq!(outcome.response_text, "Second turn response");
+    assert!(matches!(
+        outcome.content_blocks.first(),
+        Some(ContentBlockItem::Thinking {
+            text,
+            reasoning_tokens: None,
+            ..
+        }) if text == "First turn reasoning"
+    ));
+}
+
+#[tokio::test]
 async fn claude_stream_turn_complete_persists_assistant_blocks_to_timeline() {
     // Regression: when a project/task chat Claude turn ends via TurnComplete (result event),
     // the assistant content must land in BOTH chat_messages and chat_message_blocks.

@@ -637,6 +637,32 @@ fn render_ready_timeline_content_block(
         });
     }
 
+    if item.kind.to_string() == "thinking" {
+        let metadata = item
+            .metadata
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<Value>(raw).ok());
+        let duration_ms = metadata
+            .as_ref()
+            .and_then(|value| value.get("duration_ms"))
+            .and_then(Value::as_u64);
+        let reasoning_tokens = metadata
+            .as_ref()
+            .and_then(|value| value.get("reasoning_tokens"))
+            .and_then(Value::as_u64);
+        let mut block = serde_json::json!({
+            "type": "thinking",
+            "text": item.text.clone().unwrap_or_default(),
+        });
+        if let Some(duration_ms) = duration_ms {
+            block["duration_ms"] = serde_json::json!(duration_ms);
+        }
+        if let Some(reasoning_tokens) = reasoning_tokens {
+            block["reasoning_tokens"] = serde_json::json!(reasoning_tokens);
+        }
+        return block;
+    }
+
     let arguments = item
         .input_json
         .as_deref()

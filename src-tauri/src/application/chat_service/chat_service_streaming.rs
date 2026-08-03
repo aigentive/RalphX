@@ -3738,6 +3738,10 @@ async fn process_codex_stream_background<R: Runtime>(
             last_parsed_at = std::time::Instant::now();
             last_activity_at = std::time::Instant::now();
 
+            if event.event_type == "turn.started" {
+                current_turn_thinking_block_index = None;
+            }
+
             if let Some(thread_id) = extract_codex_thread_id(&event) {
                 session_id = Some(thread_id.clone());
                 let session_ref =
