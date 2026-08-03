@@ -344,8 +344,10 @@ jobs:
       # (exit 143, "runner has received a shutdown signal") on 3 of 4 recent attempts here
       # while main — a smaller build — never hit it. Capping concurrency trades wall clock
       # (the job died at ~7-9 min against a 40 min budget) for headroom. Raise it back if the
-      # crate graph shrinks or the runner size grows.
-      CARGO_BUILD_JOBS: "2"
+      # crate graph shrinks or the runner size grows. Archiving every test binary is the
+      # heaviest link step in CI, so this one needs the same "1" the Rust IPC Coverage job
+      # already uses — capping at 2 still got reaped.
+      CARGO_BUILD_JOBS: "1"
     steps:
       - uses: actions/checkout@v6
 

@@ -16,6 +16,7 @@ const updateDefault = vi.fn();
 const testState = vi.hoisted(() => ({
   activeProject: null as { id: string; name: string } | null,
   requestedScopes: [] as Array<string | null>,
+  isHostOnly: false,
   isLoading: false,
   error: null as unknown,
   saveError: null as unknown,
@@ -39,6 +40,7 @@ vi.mock("@/hooks/useManualRoleDefaults", () => ({
         projectId,
         roles: testState.roles,
       },
+      isHostOnly: testState.isHostOnly,
       isLoading: testState.isLoading,
       isError: testState.error !== null,
       error: testState.error,
@@ -174,6 +176,23 @@ describe("AgentsSettingsSection", () => {
     testState.isSaving = false;
     testState.roles = roleFixtures;
     testState.tasksFeatureState = "enabled";
+  });
+
+  it("explains that role defaults are host-only instead of blaming the filters", () => {
+    // The host does not expose `get_manual_role_defaults`, so a paired client used to render
+    // a raw REMOTE_COMMAND_UNAVAILABLE banner. With the read suppressed the catalog is empty,
+    // which must NOT fall through to the "no roles match these filters" empty state.
+    testState.isHostOnly = true;
+    testState.roles = [];
+
+    renderSection();
+
+    expect(screen.getByTestId("remote-host-only-notice")).toBeInTheDocument();
+    expect(
+      screen.queryByText("No agent roles match these filters."),
+    ).not.toBeInTheDocument();
+
+    testState.isHostOnly = false;
   });
 
   it("renders seven collapsed backend-returned family overviews without mounting role editors", () => {
