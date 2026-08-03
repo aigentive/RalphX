@@ -80,6 +80,7 @@ import { callPersonaTool, isPersonaToolName } from "./persona-tools.js";
 import { AGENT_TASK_TOOL_NAMES } from "./agent-task-tools.js";
 import { withAgentTaskRuntimeContext } from "./agent-task-context.js";
 import { callTeamTool, isTeamToolName } from "./team-tools.js";
+import { callGetParentContextTool } from "./ideation-tools.js";
 
 /**
  * Semantic keyword patterns for cross-project detection in plan text.
@@ -932,6 +933,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // GET /api/parent_session_context/:session_id
       const { session_id } = args as { session_id: string };
       result = await callTauriGet(`parent_session_context/${session_id}`);
+    } else if (name === "get_parent_context") {
+      result = await callGetParentContextTool(
+        callTauri,
+        args as Record<string, unknown>,
+        runtimeContext,
+      );
     } else if (name === "create_agent_workflow_script") {
       if (!RALPHX_CONVERSATION_ID || RALPHX_CONTEXT_TYPE !== "project" || !RALPHX_CONTEXT_ID) {
         throw new Error("Agent Workflow authoring requires a project Agent conversation context");
