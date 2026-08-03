@@ -1,8 +1,8 @@
 //! Behavioral tests for the production exit-cleanup sequencing seam.
 //!
 //! The concrete agent shutdown closure owns its 2.5-second timeout; these tests
-//! prove that once each bounded step returns, cleanup continues in the required
-//! terminals → agents → external MCP → WAL order.
+//! prove that once each bounded step returns, cleanup invokes every remaining
+//! step in the required terminals → agents → external MCP → WAL order.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -56,40 +56,45 @@ fn exit_steps_preserve_production_cleanup_order() {
 }
 
 #[test]
-fn exit_steps_continue_after_agent_shutdown_returns_without_completion() {
-    let agent_completed = AtomicBool::new(false);
+fn exit_steps_continue_after_bounded_agent_step_returns() {
+    let agent_step_called = AtomicBool::new(false);
     let mcp_completed = AtomicBool::new(false);
     let wal_completed = AtomicBool::new(false);
 
     run_exit_steps(
         || {},
+        || agent_step_called.store(true, Ordering::SeqCst),
         || {
-            // Models the bounded production agent step returning after timeout.
+            assert!(agent_step_called.load(Ordering::SeqCst));
+            mcp_completed.store(true, Ordering::SeqCst);
         },
-        || mcp_completed.store(true, Ordering::SeqCst),
-        || wal_completed.store(true, Ordering::SeqCst),
+        || {
+            assert!(mcp_completed.load(Ordering::SeqCst));
+            wal_completed.store(true, Ordering::SeqCst);
+        },
     );
 
-    assert!(!agent_completed.load(Ordering::SeqCst));
+    assert!(agent_step_called.load(Ordering::SeqCst));
     assert!(mcp_completed.load(Ordering::SeqCst));
     assert!(wal_completed.load(Ordering::SeqCst));
 }
 
 #[test]
-fn exit_steps_checkpoint_wal_when_external_mcp_was_not_started() {
-    let mcp_called = AtomicBool::new(false);
+fn exit_steps_checkpoint_wal_after_noop_external_mcp_step() {
+    let mcp_step_called = AtomicBool::new(false);
     let wal_called = AtomicBool::new(false);
 
     run_exit_steps(
         || {},
         || {},
+        || mcp_step_called.store(true, Ordering::SeqCst),
         || {
-            // Mirrors ExternalMcpHandle::get() returning None.
+            assert!(mcp_step_called.load(Ordering::SeqCst));
+            wal_called.store(true, Ordering::SeqCst);
         },
-        || wal_called.store(true, Ordering::SeqCst),
     );
 
-    assert!(!mcp_called.load(Ordering::SeqCst));
+    assert!(mcp_step_called.load(Ordering::SeqCst));
     assert!(wal_called.load(Ordering::SeqCst));
 }
 
