@@ -20,6 +20,7 @@ import {
   X,
 } from "lucide-react";
 import type { ElementType } from "react";
+import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
 import {
   memo,
   Suspense,
@@ -701,6 +702,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   onTaskArtifactSelectionChange,
   onClose,
 }: AgentsArtifactPaneProps) {
+  const isRemoteEnvironment = useIsRemoteEnvironment();
   const queryClient = useQueryClient();
   const { data: featureFlags } = useFeatureFlags();
   const { registry: modelRegistry } = useAgentModels();
@@ -1566,10 +1568,12 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           available: availableTab?.enabled === true,
           unavailableReason:
             availableTab?.disabledReason ??
-            ARTIFACT_TAB_UNAVAILABLE_REASONS[definition.id],
+            (isRemoteEnvironment && ["jira", "linear", "clickup"].includes(definition.id)
+              ? `${definition.label} integration runs on the host.`
+              : ARTIFACT_TAB_UNAVAILABLE_REASONS[definition.id]),
         };
       }),
-    [availableTabs],
+    [availableTabs, isRemoteEnvironment],
   );
   const allAvailableTabsHidden =
     enabledAvailableTabIds.length > 0 && shownEnabledTabs.length === 0;

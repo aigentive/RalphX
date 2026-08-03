@@ -56,6 +56,7 @@ import type {
 } from "@/types/ask-user-question";
 import type { AgentRunCompletedPayload } from "@/types/events";
 import { Button } from "@/components/ui/button";
+import { RemoteHostOnlyNotice } from "@/components/remote/RemoteHostOnlyNotice";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   fallbackBranchBaseOptions,
@@ -73,6 +74,7 @@ import { useAgentModels } from "@/hooks/useAgentModels";
 import { useAgentGate } from "@/hooks/useAgentGate";
 import { useConfirmation } from "@/hooks/useConfirmation";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
+import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
 import { useManagedTeamStatus } from "@/hooks/useManagedTeam";
 import {
@@ -861,6 +863,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   terminalArchivedReason,
   terminalUnavailableReason,
 }: AgentsActiveConversationPanelProps) {
+  const isRemoteEnvironment = useIsRemoteEnvironment();
   const resolvedConversationModeLocked = isConversationModeLocked(
     activeConversation,
     activeWorkspace,
@@ -1858,7 +1861,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     queryFn: () =>
       chatApi.getAgentWorkspacePrReviewContext(activeWorkspace!.conversationId),
     enabled: Boolean(
-      !isFocusedChildChat &&
+      !isRemoteEnvironment &&
+        !isFocusedChildChat &&
         activeConversation.contextType === "project" &&
         activeWorkspace?.conversationId &&
         activeWorkspace.mode === "review_pr",
@@ -2950,13 +2954,20 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                   {!isFocusedChildChat &&
                     activeWorkspace?.mode === "review_pr" &&
                     activeWorkspace.conversationId && (
-                      <AgentWorkspacePrReviewCard
-                        conversationId={activeWorkspace.conversationId}
-                        context={reviewPrContext}
-                        isLoading={reviewPrContextQuery.isLoading}
-                        isFetching={reviewPrContextQuery.isFetching}
-                        error={reviewPrContextQuery.error}
-                      />
+                      isRemoteEnvironment ? (
+                        <RemoteHostOnlyNotice
+                          subject={`PR #${activeWorkspace.sourcePullRequest?.number ?? activeWorkspace.publicationPrNumber ?? "—"} review`}
+                          detail="Pull request review runs on the host and is read-only from this device."
+                        />
+                      ) : (
+                        <AgentWorkspacePrReviewCard
+                          conversationId={activeWorkspace.conversationId}
+                          context={reviewPrContext}
+                          isLoading={reviewPrContextQuery.isLoading}
+                          isFetching={reviewPrContextQuery.isFetching}
+                          error={reviewPrContextQuery.error}
+                        />
+                      )
                     )}
                   <AgentsComposerWorkspaceChangesCard
                     conversationId={selectedConversationId}

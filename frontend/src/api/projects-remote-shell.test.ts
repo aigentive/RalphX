@@ -150,6 +150,29 @@ describe("workspace shell read routing", () => {
     expect(project.name).toBe("RalphX");
   });
 
+  it("preserves the path-free GitHub capability kind and durable PR setting", async () => {
+    useRemoteEnvironment();
+    remoteOk({
+      ...RAW_PROJECT,
+      github_pr_enabled: true,
+      repository_capability_kind: "github",
+    });
+
+    const project = await projectsApi.get("project-1");
+
+    expect(project.githubPrEnabled).toBe(true);
+    expect(project.repositoryCapability?.kind).toBe("github");
+  });
+
+  it("fails closed when the remote twin omits the capability kind", async () => {
+    useRemoteEnvironment();
+    remoteOk(RAW_PROJECT);
+
+    const project = await projectsApi.get("project-1");
+
+    expect(project.repositoryCapability?.kind).toBe("inspectionFailed");
+  });
+
   it("keeps calling the local get_project on the local environment", async () => {
     primitiveInvoke.mockResolvedValue(RAW_PROJECT);
 

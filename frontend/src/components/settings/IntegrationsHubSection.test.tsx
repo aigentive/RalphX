@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useUiStore } from "@/stores/uiStore";
+import { LOCAL_ENVIRONMENT_ID, useEnvironmentStore } from "@/stores/environmentStore";
 
 import { IntegrationsHubSection } from "./IntegrationsHubSection";
 
@@ -67,6 +68,10 @@ function card(name: string): HTMLElement {
 
 describe("IntegrationsHubSection", () => {
   beforeEach(() => {
+    useEnvironmentStore.setState({
+      activeEnvironmentId: LOCAL_ENVIRONMENT_ID,
+      environments: [{ id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" }],
+    });
     hooks.atlassian = { settings: undefined, isLoading: false };
     hooks.github = { data: undefined, isLoading: false };
     hooks.linear = { settings: undefined, isLoading: false };
@@ -162,6 +167,23 @@ describe("IntegrationsHubSection", () => {
     expect(
       within(card("github")).getByRole("button", { name: /set up github/i }),
     ).toBeEnabled();
+  });
+
+  it("renders failed remote reads as unavailable without false configuration claims", () => {
+    useEnvironmentStore.setState({
+      activeEnvironmentId: "studio",
+      environments: [
+        { id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" },
+        { id: "studio", name: "Studio Mac", kind: "remote" },
+      ],
+    });
+    renderHub();
+
+    for (const id of ["integrations", "github", "linear", "clickup", "granola", "api-keys"]) {
+      expect(within(card(id)).getByText("Available on the host Mac")).toBeInTheDocument();
+    }
+    expect(screen.queryByText("Not authenticated")).not.toBeInTheDocument();
+    expect(screen.queryByText("Not configured")).not.toBeInTheDocument();
   });
 
   it("summarises stored API keys once the list resolves", () => {

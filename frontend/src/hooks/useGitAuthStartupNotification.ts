@@ -6,6 +6,7 @@ import {
   type GitHubConnectionStatus,
 } from "@/api/github";
 import { useGitHubConnectionStatus } from "@/hooks/useGitHubConnectionStatus";
+import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
 import {
   useGitAuthDiagnostics,
   useResumeDeferredGitStartup,
@@ -55,6 +56,7 @@ export function hasStartupGitAuthIssue(
 }
 
 export function useGitAuthStartupNotification() {
+  const isRemoteEnvironment = useIsRemoteEnvironment();
   const project = useProjectStore(selectActiveProject);
   const diagnosticsQuery = useGitAuthDiagnostics(project?.id ?? null);
   const ghStatusQuery = useGitHubConnectionStatus();
@@ -62,7 +64,7 @@ export function useGitAuthStartupNotification() {
   const previouslyBlockedProjects = useRef(new Set<string>());
   const resumeAttemptedProjects = useRef(new Set<string>());
 
-  const hasIssue = hasStartupGitAuthIssue(
+  const hasIssue = !isRemoteEnvironment && hasStartupGitAuthIssue(
     project,
     diagnosticsQuery.data,
     ghStatusQuery.data,

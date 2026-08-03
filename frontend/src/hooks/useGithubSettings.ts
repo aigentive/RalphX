@@ -16,6 +16,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { githubApi } from "@/api/github";
+import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
 import { useProjectStore } from "@/stores/projectStore";
 
 import { prKeys } from "./usePullRequestDetail";
@@ -58,11 +59,12 @@ export function useGitRemoteUrl(projectId: string | null) {
  * Inspect origin fetch/push auth modes and available explicit repair actions.
  */
 export function useGitAuthDiagnostics(projectId: string | null) {
+  const isRemoteEnvironment = useIsRemoteEnvironment();
   return useQuery<GitAuthDiagnostics>({
     queryKey: ["git-auth-diagnostics", projectId],
     queryFn: () =>
       invoke<GitAuthDiagnostics>("get_git_auth_diagnostics", { projectId }),
-    enabled: projectId !== null,
+    enabled: projectId !== null && !isRemoteEnvironment,
     staleTime: 0,
     refetchOnMount: "always",
     refetchOnWindowFocus: true,

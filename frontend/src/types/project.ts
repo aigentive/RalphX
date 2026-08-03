@@ -96,6 +96,9 @@ export const ProjectResponseSchema = z.object({
   analyzed_at: z.string().nullish(),
   github_pr_enabled: z.boolean().default(false),
   repository_capability: RepositoryCapabilityResponseSchema.optional(),
+  repository_capability_kind: z
+    .enum(["local_only", "github", "other_remote", "inspection_failed"])
+    .optional(),
   // Accept RFC3339 timestamps with offset (e.g., +00:00) not just Z
   created_at: z.string().datetime({ offset: true }),
   updated_at: z.string().datetime({ offset: true }),
@@ -178,10 +181,13 @@ export function transformProject(
     analyzedAt: response.analyzed_at ?? null,
     githubPrEnabled: response.github_pr_enabled,
     repositoryCapability: transformRepositoryCapability(
-      response.repository_capability ?? {
-        kind: "inspection_failed",
-        message: UNKNOWN_REPOSITORY_CAPABILITY_MESSAGE,
-      },
+      response.repository_capability ??
+        (response.repository_capability_kind === "github"
+          ? { kind: "github", fetch_url: null, push_url: "" }
+          : {
+              kind: "inspection_failed",
+              message: UNKNOWN_REPOSITORY_CAPABILITY_MESSAGE,
+            }),
     ),
     createdAt: response.created_at,
     updatedAt: response.updated_at,

@@ -3,8 +3,10 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { ExternalLink, Loader2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { RemoteHostOnlyNotice } from "@/components/remote/RemoteHostOnlyNotice";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
 import {
   isAtlassianConnected,
@@ -38,6 +40,7 @@ function statusLabel(status: string, enabled: boolean): string {
 }
 
 export function AtlassianIntegrationSettingsPanel() {
+  const isRemoteEnvironment = useIsRemoteEnvironment();
   const {
     settings,
     isLoading,
@@ -261,6 +264,10 @@ export function AtlassianIntegrationSettingsPanel() {
         </div>
       </SettingsSection>
     );
+  }
+
+  if (isRemoteEnvironment) {
+    return <RemoteHostOnlyNotice subject="Atlassian credentials" />;
   }
 
   return (

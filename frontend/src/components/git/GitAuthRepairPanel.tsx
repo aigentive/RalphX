@@ -17,6 +17,7 @@ import {
 } from "@/api/github";
 import { Button } from "@/components/ui/button";
 import { useConfirmation } from "@/hooks/useConfirmation";
+import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
 import { useGitHubConnectionStatus } from "@/hooks/useGitHubConnectionStatus";
 import type { Unsubscribe } from "@/lib/event-bus";
 import { useEventBus } from "@/providers/EventProvider";
@@ -95,6 +96,7 @@ export function GitAuthRepairPanel({
   showWhenHealthy?: boolean;
   requiresGhAuth?: boolean;
 }) {
+  const isRemoteEnvironment = useIsRemoteEnvironment();
   const eventBus = useEventBus();
   const diagnosticsQuery = useGitAuthDiagnostics(projectId);
   const ghStatusQuery = useGitHubConnectionStatus();
@@ -105,7 +107,7 @@ export function GitAuthRepairPanel({
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const [loginPrompt, setLoginPrompt] = useState<GhAuthLoginPromptPayload | null>(null);
 
-  if (!projectId) {
+  if (!projectId || isRemoteEnvironment) {
     return null;
   }
 

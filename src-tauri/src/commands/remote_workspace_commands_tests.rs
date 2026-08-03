@@ -179,6 +179,7 @@ fn state_with_projects(projects: Vec<Project>) -> AppState {
 fn sentinel_project() -> Project {
     let mut project = Project::new("RalphX".to_string(), "/host/code/ralphx".to_string());
     project.base_branch = Some("main".to_string());
+    project.github_pr_enabled = true;
     project
 }
 
@@ -203,6 +204,10 @@ async fn single_project_projection_matches_the_list_projection_field_for_field()
     let object = value.as_object().expect("object");
     assert!(!object.contains_key("repository_capability"));
     assert!(!object.contains_key("repositoryCapability"));
+    assert_eq!(object["repository_capability_kind"], "github");
+    assert!(!object.contains_key("fetch_url"));
+    assert!(!object.contains_key("push_url"));
+    assert!(!object.keys().any(|key| key.contains("worktree")));
     assert_eq!(object["working_directory"], "/host/code/ralphx");
 }
 

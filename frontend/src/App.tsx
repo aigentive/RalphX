@@ -253,13 +253,14 @@ function AppContent({ backgroundSettled }: { backgroundSettled: boolean }) {
   // entry; provider availability is handled by the dashboard/sidebar surfaces.
   useEffect(() => {
     if (
-      currentView !== "ticketing" &&
-      !import.meta.env.DEV &&
-      !isViewEnabled(currentView, featureFlags)
+      (isRemoteEnvironment && (currentView === "ticketing" || currentView === "github")) ||
+      (currentView !== "ticketing" &&
+        !import.meta.env.DEV &&
+        !isViewEnabled(currentView, featureFlags))
     ) {
       setCurrentView(DEFAULT_APP_VIEW);
     }
-  }, [currentView, featureFlags, setCurrentView]);
+  }, [currentView, featureFlags, isRemoteEnvironment, setCurrentView]);
 
   // Welcome screen overlay state
   const showWelcomeOverlay = useUiStore((s) => s.showWelcomeOverlay);

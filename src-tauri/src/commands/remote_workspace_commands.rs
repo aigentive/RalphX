@@ -30,9 +30,8 @@
 //! shares [`project_view`] with the list twin, so the single-project answer cannot drift from
 //! the list answer's field set.
 //!
-//! `repositoryCapability` is therefore **absent by construction**, not merely omitted: it is
-//! the field whose computation was the carrier. A client that needs it is asking to run a git
-//! inspection on the host, which is a different request than reading the project list.
+//! Full `repositoryCapability` is absent by construction. The projection carries only a
+//! coarse kind derived from durable row state, never repository paths or remote URLs.
 //!
 //! `workingDirectory` IS carried (owner decision, 2026-07-30). It is a stored string, and the
 //! authority problem was the act of inspecting that path — never the act of returning it. The
@@ -83,6 +82,8 @@ pub struct RemoteProjectView {
     pub merge_validation_mode: String,
     pub merge_strategy: String,
     pub github_pr_enabled: bool,
+    /// Coarse repository capability with no path or remote URL payload.
+    pub repository_capability_kind: Option<String>,
     pub detected_analysis: Option<String>,
     pub custom_analysis: Option<String>,
     pub analyzed_at: Option<String>,
@@ -144,6 +145,14 @@ fn project_view(project: Project) -> RemoteProjectView {
         merge_validation_mode: project.merge_validation_mode.to_string(),
         merge_strategy: project.merge_strategy.to_string(),
         github_pr_enabled: project.github_pr_enabled,
+        repository_capability_kind: Some(
+            if project.github_pr_enabled {
+                "github"
+            } else {
+                "inspection_failed"
+            }
+            .to_string(),
+        ),
         detected_analysis: project.detected_analysis,
         custom_analysis: project.custom_analysis,
         // Already RFC3339 text on the entity, unlike the two timestamps below.
