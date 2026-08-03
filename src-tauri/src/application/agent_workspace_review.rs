@@ -4596,7 +4596,7 @@ struct WorkspaceDeltaTreeFingerprints {
     target_tree: String,
 }
 
-#[cfg(feature = "test-utils")]
+#[cfg(test)]
 mod workspace_delta_fingerprint_test_hook {
     use std::collections::HashMap;
     use std::path::{Path, PathBuf};
@@ -4703,7 +4703,7 @@ async fn workspace_delta_tree_fingerprints(
         ));
     }
 
-    #[cfg(feature = "test-utils")]
+    #[cfg(test)]
     workspace_delta_fingerprint_test_hook::wait(repo).await;
 
     ensure_workspace_review_git_is_settled(repo).await?;
