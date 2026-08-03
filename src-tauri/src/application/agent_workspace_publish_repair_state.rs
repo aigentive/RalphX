@@ -99,11 +99,18 @@ pub(crate) struct AgentWorkspaceRepairStartRequest {
     pub reason: String,
     pub summary: String,
     pub auto_merge_current: Option<bool>,
+    pub explicit_publish_requested: bool,
     pub retry_blocked: bool,
     /// Backend-observed PR evidence carried onto a successor generation. Without it a successor
     /// starts with no failure identity, and every fingerprint-based suppression downstream
     /// silently disengages.
     pub carryover_pr_autofix_evidence: Option<PrAutofixCarryover>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PublishAuthority {
+    UserExplicit,
+    VerifiedAutomation,
 }
 
 /// Exact PR evidence observed by the backend immediately before starting a successor generation.
@@ -291,6 +298,7 @@ fn start_attempt_from_workspace(
     );
     attempt.target_base_commit = request.target_base_commit.clone();
     attempt.summary = Some(request.summary.clone());
+    attempt.explicit_publish_requested = request.explicit_publish_requested;
     if let Some(carryover) = request.carryover_pr_autofix_evidence.as_ref() {
         attempt.pr_autofix_dispatch_head_commit = carryover.dispatch_head_commit.clone();
         attempt.pr_autofix_health_fingerprint = carryover.health_fingerprint.clone();
@@ -1646,6 +1654,7 @@ pub(crate) async fn continue_agent_workspace_repair_at_boundary(
     expected_phase: AgentWorkspaceRepairPhase,
     summary: &str,
     explicit_publish: bool,
+    publish_authority: PublishAuthority,
 ) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
     continue_agent_workspace_repair_at_boundary_with_review_starter(
         state,
@@ -1653,6 +1662,7 @@ pub(crate) async fn continue_agent_workspace_repair_at_boundary(
         expected_phase,
         summary,
         explicit_publish,
+        publish_authority,
         &DefaultDurableRepairWorkspaceReviewStarter,
     )
     .await
@@ -1664,6 +1674,7 @@ pub(crate) async fn continue_agent_workspace_repair_at_boundary_with_review_star
     expected_phase: AgentWorkspaceRepairPhase,
     summary: &str,
     explicit_publish: bool,
+    publish_authority: PublishAuthority,
     review_starter: &S,
 ) -> AppResult<AgentWorkspaceRepairTransitionOutcome>
 where
@@ -1716,12 +1727,24 @@ where
     {
         attempt.continuation = AgentWorkspaceRepairContinuation::Publish;
     }
+    if explicit_publish
+        && publish_authority == PublishAuthority::UserExplicit
+        && matches!(
+            attempt.continuation,
+            AgentWorkspaceRepairContinuation::Publish
+                | AgentWorkspaceRepairContinuation::ResumePrSupervision
+        )
+    {
+        attempt.explicit_publish_requested = true;
+    }
     let next_phase = if review_blocker.is_some() {
         AgentWorkspaceRepairPhase::AwaitingReview
     } else if matches!(
         attempt.continuation,
         AgentWorkspaceRepairContinuation::Manual | AgentWorkspaceRepairContinuation::UpdateOnly
-    ) || (!workspace.auto_publish_enabled && !explicit_publish)
+    ) || (!workspace.auto_publish_enabled
+        && !explicit_publish
+        && !attempt.explicit_publish_requested)
     {
         AgentWorkspaceRepairPhase::Ready
     } else {
@@ -1765,6 +1788,7 @@ where
                         attempt,
                         summary,
                         explicit_publish,
+                        publish_authority,
                         review_starter,
                     )
                     .await
@@ -1800,6 +1824,7 @@ async fn continue_agent_workspace_repair_workspace_review_handoff<S>(
     attempt: AgentWorkspaceRepairAttempt,
     summary: &str,
     explicit_publish: bool,
+    publish_authority: PublishAuthority,
     review_starter: &S,
 ) -> AppResult<AgentWorkspaceRepairTransitionOutcome>
 where
@@ -1836,6 +1861,7 @@ where
                 AgentWorkspaceRepairPhase::AwaitingReview,
                 summary,
                 explicit_publish,
+                publish_authority,
                 review_starter,
             ),
         )
@@ -1852,6 +1878,7 @@ where
                     AgentWorkspaceRepairPhase::AwaitingReview,
                     summary,
                     explicit_publish,
+                    publish_authority,
                     review_starter,
                 ),
             )
@@ -1919,6 +1946,7 @@ where
                             AgentWorkspaceRepairPhase::AwaitingReview,
                             summary,
                             explicit_publish,
+                            publish_authority,
                             review_starter,
                         ),
                     )
@@ -1966,6 +1994,7 @@ pub(crate) async fn resume_ready_agent_workspace_repair_for_publish(
     state: &AppState,
     attempt: AgentWorkspaceRepairAttempt,
     summary: &str,
+    publish_authority: PublishAuthority,
 ) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
     continue_agent_workspace_repair_at_boundary(
         state,
@@ -1973,19 +2002,22 @@ pub(crate) async fn resume_ready_agent_workspace_repair_for_publish(
         AgentWorkspaceRepairPhase::Ready,
         summary,
         true,
+        publish_authority,
     )
     .await
 }
 
 /// Re-enters the exact active repair generation before an ordinary publish caller can invoke the
 /// normal publisher. A current repair attempt is authoritative even when its compatibility
-/// projection makes the workspace appear publishable. Ready uses an explicit user request;
-/// review resumption revalidates the persisted Workspace Review gate at the same CAS boundary.
+/// projection makes the workspace appear publishable. Ready requires a gate override with a
+/// separately typed origin; review resumption revalidates the persisted Workspace Review gate at
+/// the same CAS boundary.
 pub(crate) async fn resume_current_agent_workspace_repair_publish(
     state: &AppState,
     conversation_id: &ChatConversationId,
     summary: &str,
     explicit_publish: bool,
+    publish_authority: PublishAuthority,
 ) -> AppResult<AgentWorkspaceRepairPublishResumeOutcome> {
     let Some(attempt) = state
         .agent_workspace_repair_repo
@@ -2000,7 +2032,13 @@ pub(crate) async fn resume_current_agent_workspace_repair_publish(
             if !explicit_publish {
                 return Ok(AgentWorkspaceRepairPublishResumeOutcome::Ready);
             }
-            resume_ready_agent_workspace_repair_for_publish(state, attempt, summary).await?
+            resume_ready_agent_workspace_repair_for_publish(
+                state,
+                attempt,
+                summary,
+                publish_authority,
+            )
+            .await?
         }
         AgentWorkspaceRepairPhase::AwaitingReview => {
             let workspace = state
@@ -2019,6 +2057,7 @@ pub(crate) async fn resume_current_agent_workspace_repair_publish(
                 attempt,
                 summary,
                 explicit_publish,
+                publish_authority,
                 &DefaultDurableRepairWorkspaceReviewStarter,
             )
             .await?
