@@ -18,7 +18,7 @@ use crate::domain::agents::{
     AgentHarnessKind, ManualRoleRuntimeOverride, ManualServiceTier, ProviderSessionRef,
 };
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, Artifact,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunStatus, Artifact,
     ArtifactBucketId, ArtifactContent, ArtifactId, ArtifactMetadata, ArtifactRelationType,
     ArtifactType, ChatConversation, CoordinationMode, IdeationAnalysisBaseRefKind, IdeationSession,
     IdeationSessionFlow, IdeationSessionId, IdeationSessionStatus, Priority, Project,
@@ -563,6 +563,126 @@ async fn direct_implementation_rejects_stale_blueprint_before_atomic_mode_switch
 }
 
 #[tokio::test]
+async fn direct_implementation_stops_plan_runtime_before_activation_handoff() {
+    let (state, _project, conversation, _test_root) =
+        setup_target_workspace(AgentConversationWorkspaceMode::Edit).await;
+    let seeded = import_agent_conversation_plan_for_state(
+        ImportAgentConversationPlanInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            title: "Runtime handoff plan".to_string(),
+            content: "# Overview".to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    seed_blueprint_for_session(&state, &seeded.session_id, "# Blueprint").await;
+    let session_id = seeded.session_id.clone();
+    let artifact_id = seeded.artifact.id.clone();
+    state
+        .db
+        .run_transaction(move |conn| {
+            crate::application::plan_artifact_approval::approve_current_plan_artifact_sync(
+                conn,
+                IdeationSessionId::from_string(session_id),
+                Some(&artifact_id),
+                PlanApprovalActor::User,
+            )
+            .map(|_| ())
+        })
+        .await
+        .unwrap();
+    set_sql_conversation_mode(&state, &conversation, AgentConversationWorkspaceMode::Plan).await;
+    seed_planning_provider_session(&state, &conversation).await;
+
+    let run = AgentRun::new(conversation.id);
+    let agent_run_id = run.id.clone();
+    let run_id = agent_run_id.as_str().to_string();
+    state.agent_run_repo.create(run).await.unwrap();
+    let interactive_key = InteractiveProcessKey::new("project", conversation.id.as_str());
+    let running_key = RunningAgentKey::new("project", conversation.id.as_str());
+    let mut child = tokio::process::Command::new("cat")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn Plan runtime fixture");
+    state
+        .interactive_process_registry
+        .register_with_metadata(
+            interactive_key.clone(),
+            child.stdin.take().expect("Plan runtime stdin"),
+            InteractiveProcessMetadata {
+                agent_run_id: Some(run_id.clone()),
+                agent_name: Some("ralphx:ralphx-ideation".to_string()),
+                agent_profile: Some("plan".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+    state
+        .running_agent_registry
+        .register(
+            running_key.clone(),
+            0,
+            conversation.id.as_str(),
+            run_id,
+            None,
+            None,
+        )
+        .await;
+
+    let activated = activate_agent_plan_direct_implementation_for_state(
+        ActivateAgentPlanDirectImplementationInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            session_id: seeded.session_id,
+            retry: false,
+        },
+        &state,
+    )
+    .await
+    .expect("activation should stop and retire the Plan runtime");
+
+    assert_eq!(activated.workspace.mode, "edit");
+    assert!(
+        !state
+            .interactive_process_registry
+            .has_process(&interactive_key)
+            .await
+    );
+    assert!(!state.running_agent_registry.is_running(&running_key).await);
+    let stopped_run = state
+        .agent_run_repo
+        .get_by_id(&agent_run_id)
+        .await
+        .unwrap()
+        .expect("stopped Plan run should persist");
+    assert_eq!(stopped_run.status, AgentRunStatus::Failed);
+    assert_eq!(
+        stopped_run.error_message.as_deref(),
+        Some("Agent stopped by user"),
+        "the command must stop the running Plan agent before the mode CAS"
+    );
+    assert!(
+        state
+            .chat_conversation_repo
+            .get_by_id(&conversation.id)
+            .await
+            .unwrap()
+            .expect("conversation should persist")
+            .provider_session_ref()
+            .is_none(),
+        "post-commit handoff must clear the planning provider session"
+    );
+
+    state
+        .interactive_process_registry
+        .remove(&interactive_key)
+        .await;
+    let _ = child.kill().await;
+}
+
+#[tokio::test]
 async fn direct_implementation_authority_conflict_keeps_provider_session() {
     let (state, _project, conversation, _test_root) =
         setup_target_workspace(AgentConversationWorkspaceMode::Edit).await;
@@ -629,13 +749,14 @@ async fn direct_implementation_authority_conflict_keeps_provider_session() {
             },
         )
         .await;
+    let running_key = RunningAgentKey::new("project", conversation.id.as_str());
     state
         .running_agent_registry
         .register(
-            RunningAgentKey::new("project", conversation.id.as_str()),
+            running_key.clone(),
             0,
             conversation.id.as_str(),
-            run_id,
+            run_id.clone(),
             None,
             None,
         )
@@ -653,6 +774,17 @@ async fn direct_implementation_authority_conflict_keeps_provider_session() {
     .expect_err("stale workspace mode must reject the activation CAS");
 
     assert!(error.contains("Plan conversation no longer owns this planning session"));
+    assert_eq!(
+        state
+            .chat_conversation_repo
+            .get_by_id(&conversation.id)
+            .await
+            .unwrap()
+            .expect("conversation should persist")
+            .agent_mode,
+        Some(AgentConversationWorkspaceMode::Plan),
+        "authority conflict must leave the conversation in Plan mode"
+    );
     assert!(
         state
             .interactive_process_registry
@@ -674,6 +806,10 @@ async fn direct_implementation_authority_conflict_keeps_provider_session() {
     state
         .interactive_process_registry
         .remove(&interactive_key)
+        .await;
+    state
+        .running_agent_registry
+        .unregister(&running_key, &run_id)
         .await;
     let _ = child.kill().await;
 }

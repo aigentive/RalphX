@@ -44,7 +44,7 @@ pub(crate) async fn finish_plan_to_edit_handoff_after_commit(
         .map_err(|error| error.to_string())?;
     if !retired {
         return Err(
-            "Plan-to-Edit runtime handoff is still active or could not be verified; retry direct implementation"
+            "Plan-to-Edit runtime handoff is still active or could not be verified; the mode change is saved, retry the action to finish the handoff"
                 .to_string(),
         );
     }
