@@ -18,6 +18,19 @@ from claude_rule_utils import matches  # noqa: E402
 
 def load_path_filters(workflow: str) -> dict[str, tuple[str, ...]]:
     lines = (ROOT / workflow).read_text(encoding="utf-8").splitlines()
+    quantifier = next(
+        (
+            line.split(":", 1)[1].strip().strip("'\"")
+            for line in lines
+            if line.strip().startswith("predicate-quantifier:")
+        ),
+        "some",
+    )
+    if quantifier != "some-with-excludes":
+        raise AssertionError(
+            f"{workflow} must use predicate-quantifier: some-with-excludes "
+            "when filters contain negated patterns"
+        )
     filter_index = next(
         index for index, line in enumerate(lines) if line.strip() == "filters: |"
     )
