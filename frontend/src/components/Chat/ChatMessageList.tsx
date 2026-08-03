@@ -49,7 +49,6 @@ import {
 import {
   buildLiveTranscriptRows,
   isLiveThinkingGroupKey,
-  liveThinkingGroupKey,
   liveToolGroupKey,
   synchronizeThinkingGroupExpansion,
   type LiveTranscriptRow,
@@ -61,6 +60,7 @@ import { ToolActivityGroupToggle } from "./ToolActivityGroupToggle";
 import { ThinkingGroupToggle } from "./ThinkingGroupToggle";
 import { RunAttributionWidget } from "./RunAttributionWidget";
 import { ThinkingWidget } from "./tool-widgets/ThinkingWidget";
+import { aggregateThinkingSegments, joinThinkingSegmentTexts } from "./thinking-group";
 import {
   summarizeToolActivity,
   type ToolActivitySummary,
@@ -655,16 +655,19 @@ function LiveTranscriptRowItem({
     if (row.kind === "tool_call") {
       return renderStreamingToolCallBlock(row.block, row.index);
     }
-    if (row.kind === "thinking") {
-      const groupKey = liveThinkingGroupKey(row.block, row.index);
+    if (row.kind === "thinking_group") {
+      const groupKey = row.key;
       const isExpanded = expandedToolGroupKeys.has(groupKey);
+      const aggregate = aggregateThinkingSegments(row.blocks.map(({ block }) => block), false);
+      const text = joinThinkingSegmentTexts(row.blocks.map(({ block }) => block.text));
       return (
         <div className="space-y-1.5 overflow-hidden">
           <ThinkingGroupToggle groupKey={groupKey} isExpanded={isExpanded}
-            isSettled={row.block.isSettled ?? false} {...(row.block.durationMs != null ? { durationMs: row.block.durationMs } : {})}
-            {...(row.block.estimatedTokens != null ? { estimatedTokens: row.block.estimatedTokens } : {})}
+            isSettled={aggregate.isSettled} segmentCount={aggregate.segmentCount}
+            {...(aggregate.totalDurationMs != null ? { durationMs: aggregate.totalDurationMs } : {})}
+            {...(aggregate.estimatedTokens != null ? { estimatedTokens: aggregate.estimatedTokens } : {})}
             onToggle={(event) => onToggleToolCallGroup(groupKey, event.currentTarget)} />
-          {isExpanded && row.block.text ? <ThinkingWidget text={row.block.text} /> : null}
+          {isExpanded && text ? <ThinkingWidget text={text} /> : null}
         </div>
       );
     }

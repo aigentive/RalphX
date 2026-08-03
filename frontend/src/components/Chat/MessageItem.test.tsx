@@ -18,6 +18,10 @@ import {
   makeToolCall,
 } from "./__tests__/chatRenderFixtures";
 
+vi.mock("./tool-widgets/ThinkingWidget", () => ({
+  ThinkingWidget: ({ text }: { text: string }) => <div data-testid="thinking-content">{text}</div>,
+}));
+
 function renderMessageItem(ui: ReactElement) {
   return render(<TooltipProvider delayDuration={0}>{ui}</TooltipProvider>);
 }
@@ -234,6 +238,61 @@ describe("MessageItem - Attachment Integration", () => {
 
     expect(screen.queryByTestId("thinking-group-toggle")).not.toBeInTheDocument();
     expect(screen.getByText("The answer remains visible.")).toBeInTheDocument();
+  });
+
+  it("groups adjacent persisted thinking blocks into one expandable toggle", async () => {
+    const user = userEvent.setup();
+    renderMessageItem(
+      <MessageItem
+        {...baseProps}
+        role="assistant"
+        contentBlocks={[
+          { type: "thinking", text: "First thought", durationMs: 1_000 },
+          { type: "thinking", text: "   " },
+          { type: "thinking", text: "Second thought", durationMs: 2_000 },
+        ]}
+      />,
+    );
+
+    expect(screen.getAllByTestId("thinking-group-toggle")).toHaveLength(1);
+    expect(screen.getByRole("button", { name: /Agent thought for 3s · 2 steps/ })).toBeInTheDocument();
+    await user.click(screen.getByTestId("thinking-group-toggle"));
+    expect(screen.getByText(/First thought/)).toBeInTheDocument();
+    expect(screen.getByText(/Second thought/)).toBeInTheDocument();
+  });
+
+  it("keeps thinking adjacent across hidden child tool calls but splits it at visible tools", () => {
+    const childToolUseId = "child-thinking-tool";
+    const hiddenChildContentBlocks = [
+      makeContentToolUse("Task", {
+        id: "task-before-thinking",
+        result: [{ type: "tool_use", id: childToolUseId }],
+      }),
+      { type: "thinking" as const, text: "First" },
+      makeContentToolUse("Glob", { id: childToolUseId }),
+      { type: "thinking" as const, text: "Second" },
+    ];
+    const { rerender } = renderMessageItem(
+      <MessageItem {...baseProps} role="assistant" contentBlocks={hiddenChildContentBlocks} />,
+    );
+
+    expect(screen.getAllByTestId("thinking-group-toggle")).toHaveLength(1);
+
+    rerender(
+      <TooltipProvider delayDuration={0}>
+        <MessageItem
+          {...baseProps}
+          role="assistant"
+          contentBlocks={[
+            { type: "thinking", text: "First" },
+            makeContentToolUse("Read", { id: "visible-tool" }),
+            { type: "thinking", text: "Second" },
+          ]}
+        />
+      </TooltipProvider>,
+    );
+
+    expect(screen.getAllByTestId("thinking-group-toggle")).toHaveLength(2);
   });
 
   it("passes argument preview metadata from content block tool uses into diff widgets", async () => {

@@ -13,7 +13,9 @@ use crate::application::agent_workspace_publish_repair_state::{
     agent_workspace_repair_dispatch_is_due, agent_workspace_repair_is_health_held,
     block_agent_workspace_repair_completion, block_agent_workspace_repair_needs_human,
     classify_agent_workspace_repair_delivery, continue_agent_workspace_repair_at_boundary,
-    inspect_agent_workspace_repair_completion, record_agent_workspace_repair_validation,
+    inspect_agent_workspace_repair_completion,
+    reacquire_agent_workspace_repair_target_lease_for_continuation,
+    record_agent_workspace_repair_validation,
     release_and_clear_agent_workspace_repair_target_lease,
     reserve_agent_workspace_repair_completion_validation, reserve_agent_workspace_repair_dispatch,
     reserve_agent_workspace_unchanged_health_hold, resume_current_agent_workspace_repair_publish,
@@ -21,7 +23,7 @@ use crate::application::agent_workspace_publish_repair_state::{
     transition_agent_workspace_repair_attempt, validate_agent_workspace_repair_target_lease,
     AgentWorkspaceRepairDispatchOutcome, AgentWorkspaceRepairDispatchSettlement,
     AgentWorkspaceRepairPublishResumeOutcome, AgentWorkspaceRepairStartOutcome,
-    AgentWorkspaceRepairStartRequest, AgentWorkspaceRepairTransitionOutcome,
+    AgentWorkspaceRepairStartRequest, AgentWorkspaceRepairTransitionOutcome, PublishAuthority,
     ORPHANED_REPAIR_DISPATCH_RESCUE_GRACE_SECS,
 };
 use crate::application::chat_service::{ChatService, SendMessageOptions, SendQueuePolicy};
@@ -47,6 +49,9 @@ use crate::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_REPAIR;
 
 /// Publication step recorded when unattended repair stops because its budget is spent.
 const REPAIR_BUDGET_EXHAUSTED_STEP: &str = "repair_budget_exhausted";
+const REPAIR_PUBLISH_REDRIVE_STEP: &str = "repair_publish_redrive";
+pub(crate) const CONTINUATION_RECOVERY_BLOCKED_STEP: &str = "continuation_recovery_blocked";
+const CONTINUATION_OPEN_EFFECT_ATTENTION_STEP: &str = "continuation_open_effect_attention_required";
 const LEGACY_REPAIR_IMPORT_BLOCKED_STEP: &str = "legacy_repair_import_blocked";
 const LEGACY_REPAIR_IMPORT_BLOCKED_CLASSIFICATION: &str = "legacy_repair_import_ambiguous";
 const LEGACY_REPAIR_IMPORTED_STEP: &str = "legacy_repair_imported";
@@ -60,6 +65,12 @@ pub(crate) const AUTO_RETRY_READY_REPAIR_REASON_PREFIX: &str = "auto_retry_ready
 const AUTO_RETRY_READY_REPAIR_BASE_DELAY_SECS: i64 = 60;
 const AUTO_RETRY_READY_REPAIR_MAX_DELAY_SECS: i64 = 15 * 60;
 const MAX_AUTO_RETRY_READY_REPAIR_STREAK: u32 = 3;
+const EXHAUSTED_PUBLISH_REDRIVE_CHECKED_REASON_PREFIX: &str = "exhausted_publish_redrive_checked:";
+const CONTINUATION_RECOVERY_FAILURE_REASON_PREFIX: &str = "continuation_recovery_failure:";
+const CONTINUATION_OPEN_EFFECT_RECOVERY_REASON_PREFIX: &str = "continuation_open_effect_recovery:";
+const CONTINUATION_OPEN_EFFECT_ATTENTION_REASON: &str =
+    "continuation_open_effect_attention_required";
+const MAX_CONTINUATION_RECOVERY_FAILURE_STREAK: u32 = 3;
 
 pub(crate) async fn recover_stale_publish_repair_for_workspace_in_state_result(
     state: &AppState,
@@ -313,9 +324,106 @@ async fn reconcile_agent_workspace_repair_attempt(
             }
         }
         AgentWorkspaceRepairPhase::ContinuationPending | AgentWorkspaceRepairPhase::Continuing => {
+            let continuation = match validate_agent_workspace_repair_target_lease(
+                state.branch_update_repo.as_ref(),
+                &current,
+            )
+            .await
+            {
+                Ok(_) => current.clone(),
+                Err(AppError::Conflict(_)) => {
+                    let open_effect = match state
+                        .agent_workspace_repair_repo
+                        .get_open_repair_effect(&current.id)
+                        .await
+                    {
+                        Ok(effect) => effect,
+                        Err(error) => {
+                            return escalate_or_record_continuation_recovery_failure(
+                                state, current, &error,
+                            )
+                            .await;
+                        }
+                    };
+                    if let Some(effect) = open_effect {
+                        match crate::application::publish_resilience::reconcile_open_agent_workspace_repair_push_effect(
+                            state,
+                            &current,
+                            effect,
+                        )
+                        .await
+                        {
+                            Ok(crate::application::publish_resilience::AgentWorkspaceRepairOpenPushEffectReconciliation::Observed) => {}
+                            Ok(crate::application::publish_resilience::AgentWorkspaceRepairOpenPushEffectReconciliation::Pending) => {
+                                let error = AppError::Conflict(
+                                    "workspace repair continuation lost its canonical target authority while an external effect remains open"
+                                        .to_string(),
+                                );
+                                return escalate_or_record_continuation_recovery_failure(
+                                    state, current, &error,
+                                )
+                                .await;
+                            }
+                            Err(error) => {
+                                return escalate_or_record_continuation_recovery_failure(
+                                    state, current, &error,
+                                )
+                                .await;
+                            }
+                        }
+                    }
+                    let workspace = match state
+                        .agent_conversation_workspace_repo
+                        .get_by_conversation_id(&current.conversation_id)
+                        .await
+                    {
+                        Ok(Some(workspace)) => workspace,
+                        Ok(None) => {
+                            return block_recovery_attempt(
+                                state,
+                                current,
+                                "Workspace repair continuation recovery cannot find its canonical workspace.",
+                            )
+                            .await;
+                        }
+                        Err(error) => {
+                            return escalate_or_record_continuation_recovery_failure(
+                                state, current, &error,
+                            )
+                            .await;
+                        }
+                    };
+                    match reacquire_agent_workspace_repair_target_lease_for_continuation(
+                        state,
+                        &workspace,
+                        current.clone(),
+                        current.phase,
+                    )
+                    .await
+                    {
+                        Ok(AgentWorkspaceRepairTransitionOutcome::Applied(attempt)) => attempt,
+                        Ok(AgentWorkspaceRepairTransitionOutcome::Stale(_))
+                        | Ok(AgentWorkspaceRepairTransitionOutcome::Missing) => {
+                            return Ok(DurableRepairRecoveryOutcome::Stale);
+                        }
+                        Err(error) => {
+                            return escalate_or_record_continuation_recovery_failure(
+                                state, current, &error,
+                            )
+                            .await;
+                        }
+                    }
+                }
+                Err(error) => {
+                    return escalate_or_record_continuation_recovery_failure(
+                        state, current, &error,
+                    )
+                    .await;
+                }
+            };
             match crate::application::publish_resilience::continue_agent_workspace_repair_publish(
                 state,
-                current.clone(),
+                continuation.clone(),
             )
             .await
             {
@@ -329,13 +437,14 @@ async fn reconcile_agent_workspace_repair_attempt(
                 Ok(None) => {
                     block_recovery_attempt(
                         state,
-                        current,
+                        continuation,
                         "Workspace repair continuation could not prove a publish runtime. Retry the blocked operation.",
                     )
                     .await
                 }
                 Err(error) => {
-                    record_continuation_recovery_failure(state, current, &error).await
+                    escalate_or_record_continuation_recovery_failure(state, continuation, &error)
+                        .await
                 }
             }
         }
@@ -345,6 +454,7 @@ async fn reconcile_agent_workspace_repair_attempt(
                 &current.conversation_id,
                 "Resuming the durable workspace repair continuation after Workspace Review.",
                 false,
+                PublishAuthority::VerifiedAutomation,
             )
             .await?
             {
@@ -397,12 +507,11 @@ async fn retry_safe_ready_agent_workspace_repair_publish(
     state: &AppState,
     current: AgentWorkspaceRepairAttempt,
 ) -> AppResult<DurableRepairRecoveryOutcome> {
-    if !current.continuation.is_automatic()
-        || state
-            .agent_workspace_repair_repo
-            .get_open_repair_effect(&current.id)
-            .await?
-            .is_some()
+    if state
+        .agent_workspace_repair_repo
+        .get_open_repair_effect(&current.id)
+        .await?
+        .is_some()
     {
         return Ok(DurableRepairRecoveryOutcome::Noop);
     }
@@ -411,6 +520,24 @@ async fn retry_safe_ready_agent_workspace_repair_publish(
     // the generation, freeing the poller to dispatch a fresh one on the identical failure.
     // Only the poller, comparing live GitHub health, may end a hold.
     if agent_workspace_repair_is_health_held(&current) {
+        return Ok(DurableRepairRecoveryOutcome::Noop);
+    }
+
+    let redrive_authorized = match current.continuation {
+        AgentWorkspaceRepairContinuation::ResumePrSupervision => true,
+        AgentWorkspaceRepairContinuation::Publish => {
+            current.explicit_publish_requested
+                || state
+                    .agent_conversation_workspace_repo
+                    .get_by_conversation_id(&current.conversation_id)
+                    .await?
+                    .is_some_and(|workspace| workspace.auto_publish_enabled)
+        }
+        AgentWorkspaceRepairContinuation::Manual | AgentWorkspaceRepairContinuation::UpdateOnly => {
+            false
+        }
+    };
+    if !redrive_authorized {
         return Ok(DurableRepairRecoveryOutcome::Noop);
     }
 
@@ -450,11 +577,14 @@ async fn retry_safe_ready_agent_workspace_repair_publish(
 
     // A failed re-drive must not abort the whole recovery sweep for other workspaces; the
     // persisted streak marker keeps this attempt on backoff until it re-drives or settles.
+    // The authority gate above proves re-drive authority from durable consent, current Auto
+    // Publish policy, or supervision of an already-created PR; it does not grant user consent.
     let resumed = match resume_current_agent_workspace_repair_publish(
         state,
         &marked.conversation_id,
         "Resuming a parked durable workspace repair publish continuation.",
         true,
+        PublishAuthority::VerifiedAutomation,
     )
     .await
     {
@@ -522,6 +652,51 @@ fn automatic_blocked_repair_streak(attempt: &AgentWorkspaceRepairAttempt) -> u32
         .unwrap_or_default()
 }
 
+fn exhausted_publish_redrive_was_checked(
+    attempt: &AgentWorkspaceRepairAttempt,
+    repair_head: &str,
+) -> bool {
+    let checked_reason = format!("{EXHAUSTED_PUBLISH_REDRIVE_CHECKED_REASON_PREFIX}{repair_head}");
+    attempt
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == &checked_reason)
+}
+
+async fn mark_exhausted_publish_redrive_checked(
+    state: &AppState,
+    current: AgentWorkspaceRepairAttempt,
+    repair_head: &str,
+) -> AppResult<DurableRepairRecoveryOutcome> {
+    let expected_updated_at = current.updated_at;
+    let mut marked = current;
+    marked.pending_reasons.push(format!(
+        "{EXHAUSTED_PUBLISH_REDRIVE_CHECKED_REASON_PREFIX}{repair_head}"
+    ));
+    marked.updated_at = std::cmp::max(Utc::now(), expected_updated_at + Duration::microseconds(1));
+    match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: marked,
+            expected_phase: AgentWorkspaceRepairPhase::Blocked,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Blocked,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await?
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(marked) => {
+            remember_blocked_pr_autofix_fingerprint(state, &marked).await;
+            Ok(DurableRepairRecoveryOutcome::Noop)
+        }
+        AgentWorkspaceRepairAttemptTransitionOutcome::Stale(_)
+        | AgentWorkspaceRepairAttemptTransitionOutcome::Missing => {
+            Ok(DurableRepairRecoveryOutcome::Stale)
+        }
+    }
+}
+
 /// Only the current durable generation may suspend unrelated publish work. A blocked repair is
 /// terminal for automatic recovery when its delivery budget has been spent, or its automatic
 /// blocked-repair successor budget has been spent; queued deliveries retain a next dispatch and
@@ -568,6 +743,52 @@ async fn retry_safe_blocked_agent_workspace_repair(
     }
     let streak = automatic_blocked_repair_streak(&current);
     if streak >= MAX_AUTO_RETRY_BLOCKED_REPAIR_STREAK {
+        // A completed local repair whose head is still absent from the PR is a publish-only gap.
+        // It may not take the ordinary exhausted-successor path: that would preserve the
+        // publish-vs-health hold livelock. Evaluate only the durable-head shape here so the
+        // pre-existing cap behavior remains unchanged for ordinary successors and holds.
+        if current.source == AgentWorkspaceRepairSource::PrAutofix {
+            let repair_head = current
+                .repair_head_commit
+                .as_deref()
+                .map(str::trim)
+                .filter(|head| !head.is_empty())
+                .map(str::to_string);
+            if let Some(repair_head) =
+                repair_head.filter(|head| !exhausted_publish_redrive_was_checked(&current, head))
+            {
+                match state
+                    .agent_conversation_workspace_repo
+                    .get_by_conversation_id(&current.conversation_id)
+                    .await
+                {
+                    Ok(Some(workspace))
+                        if matches!(
+                            evaluate_pr_autofix_successor(state, &current, &workspace).await,
+                            PrAutofixSuccessorDecision::RedrivePublish
+                        ) =>
+                    {
+                        return redrive_blocked_repair_publish(state, current, &workspace).await;
+                    }
+                    Ok(_) => {
+                        return mark_exhausted_publish_redrive_checked(
+                            state,
+                            current,
+                            &repair_head,
+                        )
+                        .await;
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            conversation_id = current.conversation_id.as_str(),
+                            attempt_id = current.id.as_str(),
+                            %error,
+                            "Could not evaluate whether an exhausted PR autofix repair needs a publish re-drive"
+                        );
+                    }
+                }
+            }
+        }
         // This streak is finished. Repair attempts are per-streak, so unless the workspace itself
         // remembers what this streak died against, the next poll starts a brand new streak with
         // no memory and re-spends the same agents on the same failing check.
@@ -601,6 +822,9 @@ async fn retry_safe_blocked_agent_workspace_repair(
     let carryover_pr_autofix_evidence = if current.source == AgentWorkspaceRepairSource::PrAutofix {
         match evaluate_pr_autofix_successor(state, &current, &workspace).await {
             PrAutofixSuccessorDecision::Proceed(carryover) => carryover,
+            PrAutofixSuccessorDecision::RedrivePublish => {
+                return redrive_blocked_repair_publish(state, current, &workspace).await;
+            }
             PrAutofixSuccessorDecision::HoldUnchanged => {
                 return hold_unchanged_pr_autofix_health(state, current, &workspace).await;
             }
@@ -631,6 +855,7 @@ async fn retry_safe_blocked_agent_workspace_repair(
             reason: marker,
             summary: "Automatically retrying the blocked workspace repair.".to_string(),
             auto_merge_current: workspace.pr_auto_merge_current,
+            explicit_publish_requested: current.explicit_publish_requested,
             retry_blocked: true,
             carryover_pr_autofix_evidence,
         },
@@ -662,12 +887,21 @@ async fn park_exhausted_pr_autofix_budget(
     // Captured before `current` is consumed below. The dedupe key must be the identity this
     // generation actually exhausted, so a later, different failure still reaches the user.
     let fingerprint = current.pr_autofix_health_fingerprint.clone();
-    let summary = format!(
-        "RalphX has spent {} minutes across {} repair generations on this same PR failure without \
-         resolving it, which is the configured limit. Automatic repair has stopped so it does not \
-         keep spending on a failure it cannot fix.",
-        spend.minutes, spend.generations
-    );
+    let summary = if spend.budget_minutes == 0 {
+        format!(
+            "RalphX re-drove publication of this completed repair {} times without reaching the \
+             PR, which is the configured limit. Automatic repair has stopped so it does not keep \
+             retrying a publish it cannot complete.",
+            spend.generations
+        )
+    } else {
+        format!(
+            "RalphX has spent {} minutes across {} repair generations on this same PR failure without \
+             resolving it, which is the configured limit. Automatic repair has stopped so it does not \
+             keep spending on a failure it cannot fix.",
+            spend.minutes, spend.generations
+        )
+    };
 
     remember_blocked_pr_autofix_fingerprint(state, &current).await;
     state
@@ -721,6 +955,65 @@ async fn park_exhausted_pr_autofix_budget(
     match outcome {
         AgentWorkspaceRepairTransitionOutcome::Applied(_) => {
             Ok(DurableRepairRecoveryOutcome::Blocked)
+        }
+        AgentWorkspaceRepairTransitionOutcome::Stale(_)
+        | AgentWorkspaceRepairTransitionOutcome::Missing => Ok(DurableRepairRecoveryOutcome::Stale),
+    }
+}
+
+/// Re-enters the existing publish boundary for a completed repair whose durable local head has
+/// not reached the PR. This is deliberately not a successor: the fixer already produced output,
+/// and the boundary remains authoritative for review and auto-publish gates.
+async fn redrive_blocked_repair_publish(
+    state: &AppState,
+    mut current: AgentWorkspaceRepairAttempt,
+    workspace: &AgentConversationWorkspace,
+) -> AppResult<DurableRepairRecoveryOutcome> {
+    let streak = automatic_blocked_repair_streak(&current);
+    if streak >= MAX_AUTO_RETRY_BLOCKED_REPAIR_STREAK {
+        return park_exhausted_pr_autofix_budget(
+            state,
+            current,
+            workspace,
+            PrAutofixFingerprintSpend {
+                generations: streak,
+                minutes: 0,
+                budget_minutes: 0,
+            },
+        )
+        .await;
+    }
+
+    let summary =
+        "Re-driving the publish of a completed repair whose output has not reached the PR.";
+    current.pending_reasons.push(format!(
+        "{AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX}{}",
+        streak + 1
+    ));
+    let conversation_id = current.conversation_id.clone();
+    let fingerprint = current.pr_autofix_health_fingerprint.clone();
+    match continue_agent_workspace_repair_at_boundary(
+        state,
+        current,
+        AgentWorkspaceRepairPhase::Blocked,
+        summary,
+        false,
+        PublishAuthority::VerifiedAutomation,
+    )
+    .await?
+    {
+        AgentWorkspaceRepairTransitionOutcome::Applied(_) => {
+            state
+                .agent_conversation_workspace_repo
+                .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                    conversation_id,
+                    REPAIR_PUBLISH_REDRIVE_STEP,
+                    "active",
+                    summary,
+                    fingerprint,
+                ))
+                .await?;
+            Ok(DurableRepairRecoveryOutcome::Continued)
         }
         AgentWorkspaceRepairTransitionOutcome::Stale(_)
         | AgentWorkspaceRepairTransitionOutcome::Missing => Ok(DurableRepairRecoveryOutcome::Stale),
@@ -1198,6 +1491,7 @@ async fn recover_clean_interrupted_repair(
         AgentWorkspaceRepairPhase::Validating,
         "Continuing the durable workspace repair after recovery validation.",
         false,
+        PublishAuthority::VerifiedAutomation,
     )
     .await?
     {
@@ -1227,7 +1521,7 @@ async fn recover_clean_interrupted_repair(
             let error = AppError::Conflict(
                 "workspace repair continuation could not prove a publish runtime".to_string(),
             );
-            record_continuation_recovery_failure(state, continuation, &error).await
+            escalate_or_record_continuation_recovery_failure(state, continuation, &error).await
         }
         Err(error) => {
             tracing::warn!(
@@ -1235,7 +1529,7 @@ async fn recover_clean_interrupted_repair(
                 error = %error,
                 "Clean workspace repair recovery left its durable continuation pending"
             );
-            record_continuation_recovery_failure(state, continuation, &error).await
+            escalate_or_record_continuation_recovery_failure(state, continuation, &error).await
         }
     }
 }
@@ -1244,7 +1538,7 @@ async fn recover_clean_interrupted_repair(
 /// error. Re-read the exact durable generation: a persisted blocker is authoritative, while a
 /// current pending/continuing generation keeps its effect receipt and target lease fenced for
 /// postcondition reconciliation. Never convert either state into a false `Continued` outcome.
-async fn record_continuation_recovery_failure(
+async fn escalate_or_record_continuation_recovery_failure(
     state: &AppState,
     failed_attempt: AgentWorkspaceRepairAttempt,
     error: &AppError,
@@ -1270,13 +1564,55 @@ async fn record_continuation_recovery_failure(
         return Ok(DurableRepairRecoveryOutcome::Stale);
     }
 
+    let has_open_effect = state
+        .agent_workspace_repair_repo
+        .get_open_repair_effect(&current.id)
+        .await?
+        .is_some();
+    if has_open_effect {
+        return record_open_effect_continuation_recovery_failure(state, current, error).await;
+    }
+    let next_streak = continuation_recovery_failure_streak(&current).saturating_add(1);
+    if next_streak >= MAX_CONTINUATION_RECOVERY_FAILURE_STREAK {
+        let conversation_id = current.conversation_id.clone();
+        let fingerprint = current.pr_autofix_health_fingerprint.clone();
+        let outcome = block_recovery_attempt(
+            state,
+            current,
+            &format!(
+                "Workspace repair continuation recovery failed {next_streak} times without settling: {error}"
+            ),
+        )
+        .await?;
+        if outcome == DurableRepairRecoveryOutcome::Blocked {
+            state
+                .agent_conversation_workspace_repo
+                .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                    conversation_id,
+                    CONTINUATION_RECOVERY_BLOCKED_STEP,
+                    "blocked",
+                    format!(
+                        "Workspace repair publication was blocked after {next_streak} failed recovery attempts."
+                    ),
+                    fingerprint,
+                ))
+                .await?;
+        }
+        return Ok(outcome);
+    }
+
+    let mut marked = current;
+    marked.pending_reasons.push(format!(
+        "{CONTINUATION_RECOVERY_FAILURE_REASON_PREFIX}{next_streak}"
+    ));
     let summary = format!(
         "Workspace repair continuation is pending reconciliation after recovery error: {error}"
     );
+    let expected_phase = marked.phase;
     match transition_agent_workspace_repair_attempt(
         Arc::clone(&state.agent_workspace_repair_repo),
-        current.clone(),
-        current.phase,
+        marked,
+        expected_phase,
         &summary,
         None,
     )
@@ -1288,6 +1624,140 @@ async fn record_continuation_recovery_failure(
         AgentWorkspaceRepairTransitionOutcome::Stale(_)
         | AgentWorkspaceRepairTransitionOutcome::Missing => Ok(DurableRepairRecoveryOutcome::Stale),
     }
+}
+
+async fn record_open_effect_continuation_recovery_failure(
+    state: &AppState,
+    current: AgentWorkspaceRepairAttempt,
+    error: &AppError,
+) -> AppResult<DurableRepairRecoveryOutcome> {
+    let already_escalated = current
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == CONTINUATION_OPEN_EFFECT_ATTENTION_REASON);
+    let next_streak = continuation_open_effect_recovery_streak(&current).saturating_add(1);
+    let summary = if already_escalated || next_streak >= MAX_CONTINUATION_RECOVERY_FAILURE_STREAK {
+        format!(
+            "Workspace repair publication needs attention because its external effect remains open after {next_streak} recovery checks. RalphX retained the effect fence and did not reacquire or release Git authority: {error}"
+        )
+    } else {
+        format!(
+            "Workspace repair continuation is pending reconciliation for an open external effect after recovery error: {error}"
+        )
+    };
+
+    if already_escalated {
+        surface_open_effect_continuation_attention(state, &current, &summary).await?;
+        return Ok(DurableRepairRecoveryOutcome::Active);
+    }
+
+    let mut marked = current;
+    marked.pending_reasons.push(format!(
+        "{CONTINUATION_OPEN_EFFECT_RECOVERY_REASON_PREFIX}{next_streak}"
+    ));
+    if next_streak >= MAX_CONTINUATION_RECOVERY_FAILURE_STREAK {
+        marked
+            .pending_reasons
+            .push(CONTINUATION_OPEN_EFFECT_ATTENTION_REASON.to_string());
+    }
+    let expected_phase = marked.phase;
+    match transition_agent_workspace_repair_attempt(
+        Arc::clone(&state.agent_workspace_repair_repo),
+        marked,
+        expected_phase,
+        &summary,
+        None,
+    )
+    .await?
+    {
+        AgentWorkspaceRepairTransitionOutcome::Applied(marked) => {
+            if next_streak >= MAX_CONTINUATION_RECOVERY_FAILURE_STREAK {
+                surface_open_effect_continuation_attention(state, &marked, &summary).await?;
+            }
+            Ok(DurableRepairRecoveryOutcome::Active)
+        }
+        AgentWorkspaceRepairTransitionOutcome::Stale(_)
+        | AgentWorkspaceRepairTransitionOutcome::Missing => Ok(DurableRepairRecoveryOutcome::Stale),
+    }
+}
+
+async fn surface_open_effect_continuation_attention(
+    state: &AppState,
+    attempt: &AgentWorkspaceRepairAttempt,
+    summary: &str,
+) -> AppResult<()> {
+    let classification = attempt.id.to_string();
+    let events = state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&attempt.conversation_id)
+        .await?;
+    if !events.iter().any(|event| {
+        event.step == CONTINUATION_OPEN_EFFECT_ATTENTION_STEP
+            && event.classification.as_deref() == Some(classification.as_str())
+    }) {
+        state
+            .agent_conversation_workspace_repo
+            .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                attempt.conversation_id.clone(),
+                CONTINUATION_OPEN_EFFECT_ATTENTION_STEP,
+                "attention_required",
+                summary,
+                Some(classification),
+            ))
+            .await?;
+    }
+
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&attempt.conversation_id)
+        .await?;
+    let project_id = workspace
+        .as_ref()
+        .map(|workspace| workspace.project_id.to_string());
+    state
+        .notification_service()
+        .record(NewNotification {
+            project_id: project_id.clone(),
+            category: NotificationCategory::TaskBlocked,
+            severity: NotificationSeverity::ActionRequired,
+            title: "Workspace repair effect needs attention".to_string(),
+            body: Some(summary.to_string()),
+            target: NotificationTarget {
+                kind: NotificationTargetKind::AgentConversation,
+                project_id,
+                task_id: None,
+                conversation_id: Some(attempt.conversation_id.to_string()),
+                setup_conversation_id: None,
+                automation_id: None,
+                run_id: None,
+            },
+            dedupe_key: Some(format!(
+                "repair_open_effect:{}:{}",
+                attempt.conversation_id, attempt.id
+            )),
+        })
+        .await;
+    Ok(())
+}
+
+fn continuation_recovery_failure_streak(attempt: &AgentWorkspaceRepairAttempt) -> u32 {
+    attempt
+        .pending_reasons
+        .iter()
+        .filter_map(|reason| reason.strip_prefix(CONTINUATION_RECOVERY_FAILURE_REASON_PREFIX))
+        .filter_map(|streak| streak.parse::<u32>().ok())
+        .max()
+        .unwrap_or_default()
+}
+
+fn continuation_open_effect_recovery_streak(attempt: &AgentWorkspaceRepairAttempt) -> u32 {
+    attempt
+        .pending_reasons
+        .iter()
+        .filter_map(|reason| reason.strip_prefix(CONTINUATION_OPEN_EFFECT_RECOVERY_REASON_PREFIX))
+        .filter_map(|streak| streak.parse::<u32>().ok())
+        .max()
+        .unwrap_or_default()
 }
 
 async fn block_recovery_attempt(

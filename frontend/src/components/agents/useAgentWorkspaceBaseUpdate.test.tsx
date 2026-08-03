@@ -6,6 +6,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestQueryClient } from "@/test/store-utils";
 
 import { conversationWorkspaceFixture } from "./agentsTestFixtures";
+import {
+  isAgentWorkspaceOperationToastDismissed,
+  resetAgentWorkspaceOperationToastStateForTests,
+} from "./agentWorkspaceOperationToast";
 import { agentWorkspaceKeys } from "./agentWorkspaceQueries";
 import { useAgentWorkspaceBaseUpdate } from "./useAgentWorkspaceBaseUpdate";
 
@@ -17,6 +21,7 @@ const {
   toastInfoMock,
   toastLoadingMock,
   toastSuccessMock,
+  startAgentWorkspaceOperationToastMock,
 } = vi.hoisted(() => ({
     getAgentConversationWorkspaceMock: vi.fn(),
     updateAgentConversationWorkspaceFromBaseMock: vi.fn(),
@@ -25,6 +30,7 @@ const {
     toastInfoMock: vi.fn(),
     toastLoadingMock: vi.fn(),
     toastSuccessMock: vi.fn(),
+    startAgentWorkspaceOperationToastMock: vi.fn(),
   }));
 
 vi.mock("@/api/chat", async (importOriginal) => {
@@ -50,6 +56,19 @@ vi.mock("sonner", () => ({
     success: (...args: unknown[]) => toastSuccessMock(...args),
   },
 }));
+
+vi.mock("./agentWorkspaceOperationToast", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./agentWorkspaceOperationToast")>();
+  return {
+    ...actual,
+    startAgentWorkspaceOperationToast: (
+      ...args: Parameters<typeof actual.startAgentWorkspaceOperationToast>
+    ) => {
+      startAgentWorkspaceOperationToastMock(...args);
+      return actual.startAgentWorkspaceOperationToast(...args);
+    },
+  };
+});
 
 function wrapper(queryClient: ReturnType<typeof createTestQueryClient>) {
   return function TestWrapper({ children }: { children: ReactNode }) {
@@ -93,6 +112,8 @@ describe("useAgentWorkspaceBaseUpdate", () => {
     toastInfoMock.mockClear();
     toastLoadingMock.mockClear();
     toastSuccessMock.mockClear();
+    startAgentWorkspaceOperationToastMock.mockClear();
+    resetAgentWorkspaceOperationToastStateForTests();
   });
 
   afterEach(() => {
@@ -298,6 +319,14 @@ describe("useAgentWorkspaceBaseUpdate", () => {
     act(() => {
       result.current.syncMaintenanceOperation(activeWorkspace);
     });
+    expect(startAgentWorkspaceOperationToastMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        targetConversation: {
+          conversationId: "conversation-1",
+          projectId: "project-1",
+        },
+      }),
+    );
     const loadingCallCount = toastLoadingMock.mock.calls.length;
 
     unmount();
@@ -308,6 +337,120 @@ describe("useAgentWorkspaceBaseUpdate", () => {
     );
     expect(toastLoadingMock).toHaveBeenCalledTimes(loadingCallCount);
   });
+
+  it("keeps a dismissed maintenance operation hidden while allowing a new operation to render", () => {
+    const queryClient = createTestQueryClient();
+    const activeWorkspace = conversationWorkspaceFixture({
+      maintenanceOperation: {
+        operationId: "operation-dismissed",
+        generation: 1,
+        source: "base_update",
+        stage: "repairing",
+        status: "active",
+        summary: "Resolving a conflict",
+        blocker: null,
+        automaticContinuation: true,
+        startedAt: "2026-07-25T10:00:00Z",
+        updatedAt: "2026-07-25T10:01:00Z",
+      },
+    });
+    const { result, unmount } = renderHook(
+      () => useAgentWorkspaceBaseUpdate({ conversationTitle: "Checkout flow fix" }),
+      { wrapper: wrapper(queryClient) },
+    );
+
+    act(() => {
+      result.current.syncMaintenanceOperation(activeWorkspace);
+    });
+    const dismiss = toastLoadingMock.mock.calls.at(-1)?.[1] as
+      | { onDismiss?: () => void }
+      | undefined;
+    expect(dismiss?.onDismiss).toEqual(expect.any(Function));
+    act(() => {
+      dismiss?.onDismiss?.();
+      result.current.syncMaintenanceOperation(activeWorkspace);
+    });
+    expect(toastLoadingMock).toHaveBeenCalledTimes(1);
+
+    unmount();
+    const { result: remounted } = renderHook(
+      () => useAgentWorkspaceBaseUpdate({ conversationTitle: "Checkout flow fix" }),
+      { wrapper: wrapper(queryClient) },
+    );
+    act(() => {
+      remounted.current.syncMaintenanceOperation(activeWorkspace);
+    });
+    expect(toastLoadingMock).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      remounted.current.syncMaintenanceOperation({
+        ...activeWorkspace,
+        maintenanceOperation: {
+          ...activeWorkspace.maintenanceOperation!,
+          operationId: "operation-new",
+        },
+      });
+    });
+    expect(toastLoadingMock).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["ready", "blocked"] as const)(
+    "silently settles a dismissed %s maintenance operation and clears its dismissal",
+    (status) => {
+      const queryClient = createTestQueryClient();
+      const activeWorkspace = conversationWorkspaceFixture({
+        maintenanceOperation: {
+          operationId: "operation-dismissed-terminal",
+          generation: 1,
+          source: "base_update",
+          stage: "repairing",
+          status: "active",
+          summary: "Resolving a conflict",
+          blocker: null,
+          automaticContinuation: true,
+          startedAt: "2026-07-25T10:00:00Z",
+          updatedAt: "2026-07-25T10:01:00Z",
+        },
+      });
+      const { result, unmount } = renderHook(
+        () => useAgentWorkspaceBaseUpdate({ conversationTitle: "Checkout flow fix" }),
+        { wrapper: wrapper(queryClient) },
+      );
+
+      act(() => {
+        result.current.syncMaintenanceOperation(activeWorkspace);
+      });
+      const dismiss = toastLoadingMock.mock.calls.at(-1)?.[1] as
+        | { onDismiss?: () => void }
+        | undefined;
+      act(() => {
+        dismiss?.onDismiss?.();
+      });
+      unmount();
+      const { result: remounted } = renderHook(
+        () => useAgentWorkspaceBaseUpdate({ conversationTitle: "Checkout flow fix" }),
+        { wrapper: wrapper(queryClient) },
+      );
+      act(() => {
+        remounted.current.syncMaintenanceOperation({
+          ...activeWorkspace,
+          maintenanceOperation: {
+            ...activeWorkspace.maintenanceOperation!,
+            stage: status,
+            status,
+          },
+        });
+      });
+
+      expect(toastSuccessMock).not.toHaveBeenCalled();
+      expect(toastErrorMock).not.toHaveBeenCalled();
+      expect(
+        isAgentWorkspaceOperationToastDismissed(
+          "agent-workspace-maintenance:conversation-1:operation-dismissed-terminal",
+        ),
+      ).toBe(false);
+    },
+  );
 
   it("refreshes once before settling a disappeared active maintenance operation", async () => {
     const queryClient = createTestQueryClient();

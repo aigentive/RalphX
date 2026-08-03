@@ -18,6 +18,8 @@ import {
   type AgentWorkspaceOperationToastResultOptions,
   agentWorkspaceOperationToastId,
   agentWorkspaceMaintenanceOperationToastId,
+  clearAgentWorkspaceOperationToastDismissal,
+  isAgentWorkspaceOperationToastDismissed,
   maintenanceOperationToastLabel,
   startAgentWorkspaceOperationToast,
 } from "./agentWorkspaceOperationToast";
@@ -165,21 +167,31 @@ export function useAgentWorkspaceBaseUpdate({
       if (settledMaintenanceOperationIdsRef.current.has(operationKey)) {
         return;
       }
-      if (!current && operation.status !== "active" && !allowTerminalStart) {
-        return;
-      }
       const id = agentWorkspaceMaintenanceOperationToastId(
         workspace.conversationId,
         operation.operationId,
       );
+      const isNewMaintenanceToast =
+        !current ||
+        current.conversationId !== workspace.conversationId ||
+        current.operationId !== operation.operationId;
+      if (
+        isNewMaintenanceToast &&
+        isAgentWorkspaceOperationToastDismissed(id)
+      ) {
+        if (operation.status === "ready" || operation.status === "blocked") {
+          settledMaintenanceOperationIdsRef.current.add(operationKey);
+          clearAgentWorkspaceOperationToastDismissal(id);
+        }
+        return;
+      }
+      if (!current && operation.status !== "active" && !allowTerminalStart) {
+        return;
+      }
       const title = maintenanceOperationToastLabel(operation.stage);
       const detail = operation.blocker ?? operation.summary;
       let toast: AgentWorkspaceOperationToast;
-      if (
-        !current ||
-        current.conversationId !== workspace.conversationId ||
-        current.operationId !== operation.operationId
-      ) {
+      if (isNewMaintenanceToast) {
         current?.toast.dismiss();
         progressToastRef.current?.dismiss();
         toast = startAgentWorkspaceOperationToast({
@@ -187,6 +199,10 @@ export function useAgentWorkspaceBaseUpdate({
           detail,
           id,
           startedAtMs: new Date(operation.startedAt).getTime(),
+          targetConversation: {
+            conversationId: workspace.conversationId,
+            projectId: workspace.projectId,
+          },
           title,
         });
         maintenanceToastRef.current = {

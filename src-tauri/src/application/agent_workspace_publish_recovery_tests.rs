@@ -30,21 +30,24 @@ use crate::application::agent_workspace_publish_repair_state::{
     AgentWorkspaceRepairStartRequest, MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES,
 };
 use crate::application::agent_workspace_review::{
-    AgentWorkspaceReviewPacket, AgentWorkspaceReviewTarget,
+    resolve_review_target, AgentWorkspaceReviewPacket, AgentWorkspaceReviewTarget,
 };
-use crate::application::publish_resilience::try_acquire_agent_workspace_repair_publish_continuation_guard;
+use crate::application::publish_resilience::{
+    reconcile_open_agent_workspace_repair_push_effect,
+    try_acquire_agent_workspace_repair_publish_continuation_guard,
+};
 use crate::application::{AppState, GitService};
 use crate::domain::agents::{AgentHarnessKind, AgentProviderSettings};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentRun, AgentRunActionKind, AgentRunId,
     AgentRunStatus, AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation,
-    AgentWorkspaceRepairEffect, AgentWorkspaceRepairEffectKind, AgentWorkspaceRepairOutcome,
-    AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource, AgentWorkspaceReviewGateStatus,
-    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
-    AgentWorkspaceReviewTargetScope, ArtifactId, ChatConversation, ChatConversationId,
-    GitTargetIdentity, GitTargetLeaseOwner, IdeationAnalysisBaseRefKind, IdeationSessionId,
-    PlanBranch, Project, ProjectId,
+    AgentWorkspaceRepairEffect, AgentWorkspaceRepairEffectKind, AgentWorkspaceRepairEffectStatus,
+    AgentWorkspaceRepairOutcome, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
+    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
+    AgentWorkspaceReviewOutcome, AgentWorkspaceReviewTargetScope, ArtifactId, ChatConversation,
+    ChatConversationId, GitTargetIdentity, GitTargetLeaseOwner, IdeationAnalysisBaseRefKind,
+    IdeationSessionId, PlanBranch, Project, ProjectId,
 };
 use crate::domain::repositories::{
     AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, AgentConversationWorkspaceRepository,
@@ -798,18 +801,20 @@ async fn recovery_ignores_nonterminal_run_hints_and_blocks_exhausted_ownerless_d
 async fn startup_recovery_blocks_unprovable_validation_and_manual_continuation() {
     let state = AppState::new_test();
 
-    for (suffix, phase, continuation, expected_blocker) in [
+    for (suffix, phase, continuation, recovery_passes, expected_blocker) in [
         (
             97,
             AgentWorkspaceRepairPhase::Validating,
             AgentWorkspaceRepairContinuation::Publish,
+            1,
             "lost canonical Git target authority",
         ),
         (
             98,
             AgentWorkspaceRepairPhase::ContinuationPending,
             AgentWorkspaceRepairContinuation::Manual,
-            "could not prove a publish runtime",
+            3,
+            "failed 3 times",
         ),
     ] {
         let conversation_id = conversation_id(suffix);
@@ -862,12 +867,14 @@ async fn startup_recovery_blocks_unprovable_validation_and_manual_continuation()
             AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_)
         ));
 
-        assert_eq!(
-            recover_agent_workspace_repair_attempts_for_state(&state)
-                .await
-                .expect("reconcile interrupted durable phase"),
-            1
-        );
+        for pass in 1..=recovery_passes {
+            assert_eq!(
+                recover_agent_workspace_repair_attempts_for_state(&state)
+                    .await
+                    .expect("reconcile interrupted durable phase"),
+                u32::from(pass == recovery_passes)
+            );
+        }
         let blocked = state
             .agent_workspace_repair_repo
             .get_current_repair_attempt(&conversation_id)
@@ -1213,7 +1220,10 @@ async fn fresh_dispatch_reservation_is_not_settled_as_interrupted_before_its_run
         "a spawning dispatch must not be settled as interrupted"
     );
     assert_eq!(held.dispatch_count, 0, "no retry was consumed");
-    assert!(held.next_dispatch_at.is_none(), "no duplicate delivery queued");
+    assert!(
+        held.next_dispatch_at.is_none(),
+        "no duplicate delivery queued"
+    );
     assert_eq!(
         held.reserved_agent_run_id,
         Some(AgentRunId::from_string("fresh-dispatch-run")),
@@ -1714,6 +1724,7 @@ wait "$stdin_drain_pid" 2>/dev/null || true
             reason: "retry blocked repair".to_string(),
             summary: "Retry blocked repair.".to_string(),
             auto_merge_current: None,
+            explicit_publish_requested: false,
             retry_blocked: true,
             carryover_pr_autofix_evidence: None,
         },
@@ -2151,6 +2162,70 @@ async fn ready_manual_repair_remains_untouched_by_automatic_recovery() {
         .expect("manual ready repair remains current");
     assert_eq!(current.id, ready.id);
     assert_eq!(current.phase, AgentWorkspaceRepairPhase::Ready);
+}
+
+#[tokio::test]
+async fn ready_publish_repair_without_consent_or_auto_publish_remains_untouched() {
+    let state = AppState::new_test();
+    let conversation_id = conversation_id(121);
+    let mut workspace = needs_agent_workspace(conversation_id.clone());
+    workspace.auto_publish_enabled = false;
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("seed disabled-auto-publish workspace");
+    state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                conversation_id.clone(),
+                AgentWorkspaceRepairSource::Publish,
+                AgentWorkspaceRepairContinuation::Publish,
+                "main",
+                false,
+                false,
+                false,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: "background publish repair".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("start background repair");
+    let ready = park_repair_attempt_ready_after(
+        &state,
+        &conversation_id,
+        AgentWorkspaceRepairPhase::Requested,
+        61,
+    )
+    .await;
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("disabled automatic publish must be safe to recover"),
+        0
+    );
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload parked repair")
+        .expect("parked repair remains current");
+    assert_eq!(current.id, ready.id);
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Ready);
+    assert!(!current.explicit_publish_requested);
+    assert!(
+        !current
+            .pending_reasons
+            .iter()
+            .any(|reason| reason.starts_with("auto_retry_ready_repair:")),
+        "automatic recovery must not spend a retry without durable publish authority"
+    );
 }
 
 #[tokio::test]
@@ -4423,7 +4498,10 @@ mod extracted_inline_tests {
 // because durable redelivery addressed the generic repairer, successors carried no failure
 // identity, and a live dispatch was settled as "interrupted" 43 ms after spawn.
 
-fn failing_check_pr_health(head: &str, check_name: &str) -> crate::domain::services::github_service::PrHealth {
+fn failing_check_pr_health(
+    head: &str,
+    check_name: &str,
+) -> crate::domain::services::github_service::PrHealth {
     crate::domain::services::github_service::PrHealth {
         sync_state: crate::domain::services::PrSyncState {
             status: crate::domain::services::PrStatus::Open,
@@ -4447,7 +4525,10 @@ fn failing_check_pr_health(head: &str, check_name: &str) -> crate::domain::servi
     }
 }
 
-fn health_fingerprint(pr_number: i64, health: &crate::domain::services::github_service::PrHealth) -> String {
+fn health_fingerprint(
+    pr_number: i64,
+    health: &crate::domain::services::github_service::PrHealth,
+) -> String {
     crate::application::services::pr_merge_poller::classify_agent_workspace_pr_autofix_issue(
         pr_number, health,
     )
@@ -4503,7 +4584,10 @@ async fn block_pr_autofix_attempt_with_fingerprint(
     }
 }
 
-async fn latest_sent_repair_message(state: &AppState, conversation_id: &ChatConversationId) -> String {
+async fn latest_sent_repair_message(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> String {
     let messages = state
         .chat_message_repo
         .get_by_conversation(conversation_id)
@@ -4650,7 +4734,10 @@ async fn seed_pr_autofix_health_workspace(
         project_dir.path(),
         &["config", "user.email", "recovery@example.com"],
     );
-    recovery_git(project_dir.path(), &["config", "user.name", "Recovery Test"]);
+    recovery_git(
+        project_dir.path(),
+        &["config", "user.name", "Recovery Test"],
+    );
     std::fs::write(project_dir.path().join("README.md"), "base\n").expect("write base file");
     recovery_git(project_dir.path(), &["add", "README.md"]);
     recovery_git(project_dir.path(), &["commit", "-m", "base"]);
@@ -4701,11 +4788,15 @@ async fn blocked_pr_autofix_with_unchanged_health_parks_without_spawning() {
     let fingerprint = health_fingerprint(684, &health);
     let github = Arc::new(crate::tests::mock_github_service::MockGithubService::new());
     github.state().fetch_pr_health_result = Some(Ok(health));
-    state.github_service = Some(github.clone() as Arc<dyn crate::domain::services::GithubServiceTrait>);
+    state.github_service =
+        Some(github.clone() as Arc<dyn crate::domain::services::GithubServiceTrait>);
 
-    let blocked =
-        block_pr_autofix_attempt_with_fingerprint(&state, &conversation_id, Some(fingerprint.clone()))
-            .await;
+    let blocked = block_pr_autofix_attempt_with_fingerprint(
+        &state,
+        &conversation_id,
+        Some(fingerprint.clone()),
+    )
+    .await;
 
     assert_eq!(
         recover_agent_workspace_repair_attempts_for_state(&state)
@@ -4720,11 +4811,19 @@ async fn blocked_pr_autofix_with_unchanged_health_parks_without_spawning() {
         .await
         .expect("load held attempt")
         .expect("held attempt remains current");
-    assert_eq!(held.generation, blocked.generation, "no successor generation");
+    assert_eq!(
+        held.generation, blocked.generation,
+        "no successor generation"
+    );
     assert_eq!(held.phase, AgentWorkspaceRepairPhase::Ready);
-    assert!(held.pending_reasons.iter().any(|reason| reason
-        == crate::application::agent_workspace_publish_repair_state::UNCHANGED_HEALTH_REPAIR_REASON));
-    assert_eq!(held.pr_autofix_health_fingerprint.as_deref(), Some(fingerprint.as_str()));
+    assert!(held.pending_reasons.iter().any(|reason| {
+        reason
+        == crate::application::agent_workspace_publish_repair_state::UNCHANGED_HEALTH_REPAIR_REASON
+    }));
+    assert_eq!(
+        held.pr_autofix_health_fingerprint.as_deref(),
+        Some(fingerprint.as_str())
+    );
     assert!(
         state
             .agent_run_repo
@@ -4931,7 +5030,10 @@ async fn blocked_pr_autofix_without_provable_health_withholds_the_successor() {
         .is_empty());
 }
 
-async fn start_blocked_pr_autofix_generation(state: &AppState, conversation_id: &ChatConversationId) {
+async fn start_blocked_pr_autofix_generation(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+) {
     let started = state
         .agent_workspace_repair_repo
         .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
@@ -5098,4 +5200,932 @@ async fn pr_autofix_successor_withholds_when_the_workspace_path_cannot_be_resolv
         evaluate_pr_autofix_successor(&state, &attempt, &workspace).await,
         PrAutofixSuccessorDecision::Withhold("workspace_path_unresolved")
     );
+}
+
+async fn evaluate_successor_with_heads(
+    suffix: u8,
+    remote_head: Option<&str>,
+    repair_head: Option<&str>,
+    preserve_fingerprint: bool,
+) -> PrAutofixSuccessorDecision {
+    let (mut state, conversation_id, _worktree_parent, _project_dir) =
+        seed_pr_autofix_health_workspace(suffix).await;
+    let mut health = failing_check_pr_health(remote_head.unwrap_or("unused-head"), "Rust Tests");
+    health.sync_state.head_ref_oid = remote_head.map(str::to_string);
+    let fingerprint = health_fingerprint(684, &health);
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    state.github_service = Some(github as Arc<dyn crate::domain::services::GithubServiceTrait>);
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load successor decision workspace")
+        .expect("successor decision workspace exists");
+    let mut attempt = blocked_pr_autofix_attempt(
+        &conversation_id,
+        if preserve_fingerprint {
+            &fingerprint
+        } else {
+            "github_pr_autofix:684:checks:different"
+        },
+    );
+    attempt.target_base_commit = workspace.base_commit.clone();
+    attempt.repair_head_commit = repair_head.map(str::to_string);
+
+    evaluate_pr_autofix_successor(&state, &attempt, &workspace).await
+}
+
+#[tokio::test]
+async fn unchanged_pr_health_with_unpublished_repair_head_redrives_publish() {
+    assert_eq!(
+        evaluate_successor_with_heads(75, Some("remote-head"), Some("local-head"), true).await,
+        PrAutofixSuccessorDecision::RedrivePublish
+    );
+}
+
+#[tokio::test]
+async fn unchanged_pr_health_without_proven_unpublished_output_still_holds() {
+    for (suffix, remote_head, repair_head) in [
+        (76, Some("same-head"), Some("same-head")),
+        (77, Some("remote-head"), None),
+        (78, None, Some("local-head")),
+    ] {
+        assert_eq!(
+            evaluate_successor_with_heads(suffix, remote_head, repair_head, true).await,
+            PrAutofixSuccessorDecision::HoldUnchanged,
+            "missing or already-published output must stay fail closed"
+        );
+    }
+}
+
+#[tokio::test]
+async fn changed_pr_health_still_authorizes_a_successor_when_local_output_exists() {
+    assert!(matches!(
+        evaluate_successor_with_heads(79, Some("remote-head"), Some("local-head"), false).await,
+        PrAutofixSuccessorDecision::Proceed(Some(_))
+    ));
+}
+
+async fn mark_blocked_pr_autofix_as_unpublished(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    repair_head: &str,
+    retry_streak: u32,
+) -> AgentWorkspaceRepairAttempt {
+    let mut attempt = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(conversation_id)
+        .await
+        .expect("load blocked PR autofix to mark unpublished")
+        .expect("blocked PR autofix exists");
+    let expected_updated_at = attempt.updated_at;
+    attempt.repair_head_commit = Some(repair_head.to_string());
+    attempt.pending_reasons = if retry_streak == 0 {
+        Vec::new()
+    } else {
+        vec![format!("auto_retry_blocked_repair:{retry_streak}")]
+    };
+    attempt.updated_at += chrono::Duration::microseconds(1);
+    match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase: AgentWorkspaceRepairPhase::Blocked,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Blocked,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("persist unpublished PR autofix output")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("unpublished PR autofix checkpoint must apply, got {outcome:?}"),
+    }
+}
+
+async fn seed_unpublished_blocked_pr_autofix(
+    suffix: u8,
+    retry_streak: u32,
+) -> (
+    AppState,
+    ChatConversationId,
+    tempfile::TempDir,
+    tempfile::TempDir,
+) {
+    let (mut state, conversation_id, worktree_parent, project_dir) =
+        seed_pr_autofix_health_workspace(suffix).await;
+    let mut workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load unpublished-output workspace")
+        .expect("unpublished-output workspace exists");
+    workspace.auto_publish_enabled = false;
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("disable automatic publication in redrive fixture");
+    start_blocked_pr_autofix_generation(&state, &conversation_id).await;
+    let health = failing_check_pr_health("remote-head", "Rust Tests");
+    let fingerprint = health_fingerprint(684, &health);
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    state.github_service = Some(github as Arc<dyn crate::domain::services::GithubServiceTrait>);
+    block_pr_autofix_attempt_with_fingerprint(&state, &conversation_id, Some(fingerprint)).await;
+    mark_blocked_pr_autofix_as_unpublished(
+        &state,
+        &conversation_id,
+        "validated-local-head",
+        retry_streak,
+    )
+    .await;
+    (state, conversation_id, worktree_parent, project_dir)
+}
+
+#[tokio::test]
+async fn blocked_unpublished_pr_autofix_redrives_the_existing_publish_boundary() {
+    let (state, conversation_id, _worktree_parent, _project_dir) =
+        seed_unpublished_blocked_pr_autofix(80, 0).await;
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("re-drive unpublished repair output"),
+        1
+    );
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load re-driven repair")
+        .expect("re-driven repair remains current");
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Ready);
+    assert!(current
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == "auto_retry_blocked_repair:1"));
+    assert!(!current.pending_reasons.iter().any(|reason| {
+        reason
+        == crate::application::agent_workspace_publish_repair_state::UNCHANGED_HEALTH_REPAIR_REASON
+    }));
+    assert!(state
+        .agent_run_repo
+        .get_by_conversation(&conversation_id)
+        .await
+        .expect("list repair runs")
+        .is_empty());
+    let events = state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("list publish redrive events");
+    assert!(events
+        .iter()
+        .any(|event| event.step == "repair_publish_redrive"));
+}
+
+#[tokio::test]
+async fn blocked_unpublished_pr_autofix_redrive_stops_at_workspace_review() {
+    let (state, conversation_id, _worktree_parent, _project_dir) =
+        seed_unpublished_blocked_pr_autofix(85, 0).await;
+    state
+        .review_settings_repo
+        .update_settings(&crate::domain::review::ReviewSettings {
+            require_workspace_review: true,
+            ..crate::domain::review::ReviewSettings::default()
+        })
+        .await
+        .expect("require Workspace Review for publish redrive");
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load review-gated redrive workspace")
+        .expect("review-gated redrive workspace exists");
+    std::fs::write(
+        std::path::Path::new(&workspace.worktree_path).join("review-gated-repair.md"),
+        "review this completed repair\n",
+    )
+    .expect("write review-gated repair output");
+    recovery_git(
+        std::path::Path::new(&workspace.worktree_path),
+        &["add", "review-gated-repair.md"],
+    );
+    recovery_git(
+        std::path::Path::new(&workspace.worktree_path),
+        &["commit", "-m", "review-gated repair"],
+    );
+    let project = state
+        .project_repo
+        .get_by_id(&workspace.project_id)
+        .await
+        .expect("load review-gated redrive project")
+        .expect("review-gated redrive project exists");
+    let target = resolve_review_target(&workspace, &project)
+        .await
+        .expect("resolve review-gated redrive target")
+        .expect("review-gated redrive has reviewable changes");
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(reviewing_monitor(conversation_id.clone(), &target))
+        .await
+        .expect("seed active Workspace Review for redrive target");
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("re-drive unpublished output through Workspace Review gate"),
+        1
+    );
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load review-gated redrive")
+        .expect("review-gated redrive remains current");
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::AwaitingReview);
+    assert_ne!(
+        current.phase,
+        AgentWorkspaceRepairPhase::ContinuationPending
+    );
+    assert!(current
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == "auto_retry_blocked_repair:1"));
+    let monitor = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&conversation_id)
+        .await
+        .expect("load redrive review monitor")
+        .expect("redrive review monitor remains durable");
+    assert_eq!(monitor.status, AgentWorkspaceReviewMonitorStatus::Reviewing);
+    assert_eq!(
+        monitor.review_gate_status,
+        AgentWorkspaceReviewGateStatus::Reviewing
+    );
+}
+
+#[tokio::test]
+async fn exhausted_unpublished_publish_redrive_hands_off_to_a_human() {
+    let (state, conversation_id, _worktree_parent, _project_dir) =
+        seed_unpublished_blocked_pr_autofix(81, 3).await;
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("park exhausted unpublished repair output"),
+        1
+    );
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load exhausted publish redrive")
+        .expect("exhausted publish redrive remains current");
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Blocked);
+    assert!(current.pending_reasons.iter().any(|reason| reason
+        == crate::application::agent_workspace_publish_repair_state::NEEDS_HUMAN_REPAIR_REASON));
+    assert!(is_blocked_and_not_auto_retryable(&current));
+    let notifications = state
+        .notification_repo
+        .list(None, None, 20)
+        .await
+        .expect("list exhausted redrive notifications");
+    assert!(notifications
+        .notifications
+        .iter()
+        .any(|notification| notification
+            .body
+            .as_deref()
+            .is_some_and(|body| body.contains("re-drove publication"))));
+}
+
+#[tokio::test]
+async fn exhausted_publish_redrive_checks_each_repair_head_only_once() {
+    let (mut state, conversation_id, _worktree_parent, _project_dir) =
+        seed_unpublished_blocked_pr_autofix(86, 3).await;
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(failing_check_pr_health(
+        "validated-local-head",
+        "Rust Tests",
+    )));
+    state.github_service =
+        Some(github.clone() as Arc<dyn crate::domain::services::GithubServiceTrait>);
+
+    for _ in 0..2 {
+        assert_eq!(
+            recover_agent_workspace_repair_attempts_for_state(&state)
+                .await
+                .expect("bound exhausted publish re-drive health check"),
+            0
+        );
+    }
+
+    assert_eq!(github.state().fetch_pr_health_calls, 1);
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load exhausted checked repair")
+        .expect("exhausted checked repair remains current");
+    assert!(current
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == "exhausted_publish_redrive_checked:validated-local-head"));
+
+    mark_blocked_pr_autofix_as_unpublished(&state, &conversation_id, "new-local-head", 3).await;
+    github.state().fetch_pr_health_result =
+        Some(Ok(failing_check_pr_health("new-local-head", "Rust Tests")));
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("recheck changed exhausted repair head"),
+        0
+    );
+    assert_eq!(github.state().fetch_pr_health_calls, 2);
+}
+
+async fn seed_publish_continuation_with_lease(
+    suffix: u8,
+) -> (
+    AppState,
+    ChatConversationId,
+    tempfile::TempDir,
+    tempfile::TempDir,
+    GitTargetIdentity,
+    GitTargetLeaseOwner,
+    u64,
+) {
+    let (state, conversation_id, worktree_parent, project_dir) =
+        seed_pr_autofix_health_workspace(suffix).await;
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load continuation workspace")
+        .expect("continuation workspace exists");
+    let started = state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                conversation_id.clone(),
+                AgentWorkspaceRepairSource::Publish,
+                AgentWorkspaceRepairContinuation::Publish,
+                "main",
+                false,
+                true,
+                false,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: "seed publish continuation lease recovery".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("start publish continuation fixture");
+    let StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(mut attempt) = started else {
+        panic!("publish continuation fixture must start");
+    };
+    let identity = GitService::canonical_target_identity(
+        std::path::Path::new(&workspace.worktree_path),
+        &workspace.branch_name,
+    )
+    .await
+    .expect("resolve continuation target identity");
+    let owner = GitTargetLeaseOwner::agent_workspace_repair(attempt.id.as_str());
+    let AcquireGitTargetLeaseOutcome::Acquired { fencing_epoch } = state
+        .branch_update_repo
+        .acquire_target_lease(AcquireGitTargetLease {
+            identity: identity.clone(),
+            owner: owner.clone(),
+        })
+        .await
+        .expect("acquire continuation fixture lease")
+    else {
+        panic!("continuation fixture lease must be newly acquired");
+    };
+    let expected_updated_at = attempt.updated_at;
+    attempt.phase = AgentWorkspaceRepairPhase::ContinuationPending;
+    attempt.git_common_dir = Some(identity.git_common_dir().to_string_lossy().into_owned());
+    attempt.target_ref = Some(identity.full_ref().to_string());
+    attempt.target_identity_version = Some(
+        crate::application::agent_workspace_publish_repair_state::AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION,
+    );
+    attempt.target_lease_epoch = Some(fencing_epoch);
+    attempt.updated_at += chrono::Duration::microseconds(1);
+    assert!(matches!(
+        state
+            .agent_workspace_repair_repo
+            .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+                attempt,
+                expected_phase: AgentWorkspaceRepairPhase::Requested,
+                expected_updated_at,
+                next_phase: AgentWorkspaceRepairPhase::ContinuationPending,
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("checkpoint publish continuation fixture"),
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_)
+    ));
+    (
+        state,
+        conversation_id,
+        worktree_parent,
+        project_dir,
+        identity,
+        owner,
+        fencing_epoch,
+    )
+}
+
+#[tokio::test]
+async fn lost_continuation_lease_reacquires_before_publish_reconciliation() {
+    let (state, conversation_id, _worktree_parent, _project_dir, identity, owner, old_epoch) =
+        seed_publish_continuation_with_lease(82).await;
+    state
+        .branch_update_repo
+        .release_target_lease(&identity, &owner, old_epoch)
+        .await
+        .expect("release continuation fixture lease");
+    let _busy_guard =
+        try_acquire_agent_workspace_repair_publish_continuation_guard(&conversation_id)
+            .expect("hold publish guard after lease reacquire");
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("reacquire lost continuation lease"),
+        0
+    );
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load reacquired continuation")
+        .expect("reacquired continuation remains current");
+    assert!(matches!(
+        current.phase,
+        AgentWorkspaceRepairPhase::ContinuationPending | AgentWorkspaceRepairPhase::Continuing
+    ));
+    assert!(current
+        .target_lease_epoch
+        .is_some_and(|epoch| epoch > old_epoch));
+    assert!(!current
+        .pending_reasons
+        .iter()
+        .any(|reason| reason.starts_with("continuation_recovery_failure:")));
+}
+
+#[tokio::test]
+async fn busy_continuation_target_escalates_to_blocked_within_the_recovery_cap() {
+    let (state, conversation_id, _worktree_parent, _project_dir, identity, owner, old_epoch) =
+        seed_publish_continuation_with_lease(83).await;
+    state
+        .branch_update_repo
+        .release_target_lease(&identity, &owner, old_epoch)
+        .await
+        .expect("release continuation fixture lease");
+    let foreign_owner = GitTargetLeaseOwner::branch_update("foreign-task", "foreign-update");
+    assert!(matches!(
+        state
+            .branch_update_repo
+            .acquire_target_lease(AcquireGitTargetLease {
+                identity: identity.clone(),
+                owner: foreign_owner.clone(),
+            })
+            .await
+            .expect("acquire continuation target for foreign owner"),
+        AcquireGitTargetLeaseOutcome::Acquired { .. }
+    ));
+
+    for expected_recovered in [0, 0, 1] {
+        assert_eq!(
+            recover_agent_workspace_repair_attempts_for_state(&state)
+                .await
+                .expect("bound busy continuation recovery"),
+            expected_recovered
+        );
+    }
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load bounded busy continuation")
+        .expect("bounded busy continuation remains actionable");
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Blocked);
+    let lease = state
+        .branch_update_repo
+        .get_target_lease(&identity)
+        .await
+        .expect("load foreign target lease")
+        .expect("foreign target lease remains durable");
+    assert_eq!(lease.owner(), &foreign_owner);
+    assert!(!lease.is_released());
+    let events = state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("list continuation recovery events");
+    assert!(events.iter().any(|event| {
+        event.step
+        == crate::application::agent_workspace_publish_recovery::CONTINUATION_RECOVERY_BLOCKED_STEP
+    }));
+}
+
+#[tokio::test]
+async fn generic_continuation_error_escalates_to_blocked_within_the_recovery_cap() {
+    let (state, conversation_id, _worktree_parent, _project_dir, identity, owner, epoch) =
+        seed_publish_continuation_with_lease(88).await;
+    let mut workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load generic-error continuation workspace")
+        .expect("generic-error continuation workspace exists");
+    workspace.project_id = ProjectId::from_string("missing-continuation-project".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("make continuation project lookup fail");
+
+    for expected_recovered in [0, 0, 1] {
+        assert_eq!(
+            recover_agent_workspace_repair_attempts_for_state(&state)
+                .await
+                .expect("bound generic continuation recovery failure"),
+            expected_recovered
+        );
+    }
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load bounded generic-error continuation")
+        .expect("bounded generic-error continuation remains actionable");
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Blocked);
+    assert!(current
+        .blocker
+        .as_deref()
+        .is_some_and(|blocker| blocker.contains("failed 3 times")));
+    assert!(state
+        .agent_workspace_repair_repo
+        .get_open_repair_effect(&current.id)
+        .await
+        .expect("check generic-error continuation effects")
+        .is_none());
+    let lease = state
+        .branch_update_repo
+        .get_target_lease(&identity)
+        .await
+        .expect("load generic-error continuation lease")
+        .expect("generic-error continuation lease remains durable");
+    assert_eq!(lease.owner(), &owner);
+    assert_eq!(lease.fencing_epoch(), epoch);
+    assert!(lease.is_released());
+    let events = state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("list generic continuation recovery events");
+    assert!(events.iter().any(|event| {
+        event.step
+        == crate::application::agent_workspace_publish_recovery::CONTINUATION_RECOVERY_BLOCKED_STEP
+    }));
+}
+
+#[tokio::test]
+async fn open_continuation_effect_fences_reacquire_and_block_escalation() {
+    let (state, conversation_id, _worktree_parent, _project_dir, identity, owner, old_epoch) =
+        seed_publish_continuation_with_lease(84).await;
+    state
+        .branch_update_repo
+        .release_target_lease(&identity, &owner, old_epoch)
+        .await
+        .expect("release continuation fixture lease");
+    let attempt = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load effect-fenced continuation")
+        .expect("effect-fenced continuation exists");
+    assert!(matches!(
+        state
+            .agent_workspace_repair_repo
+            .create_repair_effect(CreateAgentWorkspaceRepairEffect {
+                attempt_id: attempt.id.clone(),
+                generation: attempt.generation,
+                expected_phase: attempt.phase,
+                expected_attempt_updated_at: attempt.updated_at,
+                effect: AgentWorkspaceRepairEffect::new(
+                    attempt.id.clone(),
+                    AgentWorkspaceRepairEffectKind::PushBranch,
+                    "effect-fenced-lost-lease",
+                    chrono::Utc::now(),
+                ),
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("create open continuation effect"),
+        CreateAgentWorkspaceRepairEffectOutcome::Created(_)
+    ));
+
+    for _ in 0..4 {
+        assert_eq!(
+            recover_agent_workspace_repair_attempts_for_state(&state)
+                .await
+                .expect("keep open continuation effect fenced"),
+            0
+        );
+    }
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload effect-fenced continuation")
+        .expect("effect-fenced continuation remains current");
+    assert!(matches!(
+        current.phase,
+        AgentWorkspaceRepairPhase::ContinuationPending | AgentWorkspaceRepairPhase::Continuing
+    ));
+    assert_eq!(current.target_lease_epoch, Some(old_epoch));
+    assert!(state
+        .agent_workspace_repair_repo
+        .get_open_repair_effect(&current.id)
+        .await
+        .expect("reload fenced open effect")
+        .is_some());
+    assert!(!current
+        .pending_reasons
+        .iter()
+        .any(|reason| reason.starts_with("continuation_recovery_failure:")));
+    assert!(current
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == "continuation_open_effect_attention_required"));
+    let events = state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("list effect-fenced continuation events");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.step == "continuation_open_effect_attention_required")
+            .count(),
+        1
+    );
+    let notifications = state
+        .notification_repo
+        .list(None, None, 20)
+        .await
+        .expect("list effect-fenced continuation notifications");
+    assert_eq!(
+        notifications
+            .notifications
+            .iter()
+            .filter(|notification| notification
+                .dedupe_key
+                .as_deref()
+                .is_some_and(|key| key.starts_with("repair_open_effect:")))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn observed_open_push_effect_is_reconciled_before_lease_reacquire() {
+    let (state, conversation_id, _worktree_parent, project_dir, identity, owner, old_epoch) =
+        seed_publish_continuation_with_lease(87).await;
+    let remote = tempfile::tempdir().expect("create repair push remote");
+    recovery_git(remote.path(), &["init", "--bare"]);
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load effect reconciliation workspace")
+        .expect("effect reconciliation workspace exists");
+    recovery_git(
+        std::path::Path::new(&workspace.worktree_path),
+        &[
+            "remote",
+            "add",
+            "origin",
+            remote.path().to_str().expect("remote path"),
+        ],
+    );
+    recovery_git(
+        std::path::Path::new(&workspace.worktree_path),
+        &["push", "-u", "origin", &workspace.branch_name],
+    );
+    let intended_head = recovery_git(
+        std::path::Path::new(&workspace.worktree_path),
+        &["rev-parse", "HEAD"],
+    );
+    let remote_tracking_ref = format!("refs/remotes/origin/{}", workspace.branch_name);
+    recovery_git(
+        std::path::Path::new(&workspace.worktree_path),
+        &["update-ref", "-d", &remote_tracking_ref],
+    );
+    assert!(recovery_git(
+        std::path::Path::new(&workspace.worktree_path),
+        &["for-each-ref", "--format=%(refname)", &remote_tracking_ref],
+    )
+    .is_empty());
+    state
+        .branch_update_repo
+        .release_target_lease(&identity, &owner, old_epoch)
+        .await
+        .expect("release effect reconciliation lease");
+    let mut attempt = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load effect reconciliation continuation")
+        .expect("effect reconciliation continuation exists");
+    let expected_updated_at = attempt.updated_at;
+    attempt.phase = AgentWorkspaceRepairPhase::Continuing;
+    attempt.updated_at += chrono::Duration::microseconds(1);
+    let attempt = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase: AgentWorkspaceRepairPhase::ContinuationPending,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Continuing,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("checkpoint initialized push effect continuation")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("initialized push effect continuation must apply, got {outcome:?}"),
+    };
+    let idempotency_key = "effect-reconciled-after-lost-lease";
+    let mut effect = AgentWorkspaceRepairEffect::new(
+        attempt.id.clone(),
+        AgentWorkspaceRepairEffectKind::PushBranch,
+        idempotency_key,
+        chrono::Utc::now(),
+    );
+    effect.status = AgentWorkspaceRepairEffectStatus::InFlight;
+    effect.intended_head_oid = Some(intended_head.clone());
+    effect.expected_remote_absent = true;
+    assert!(matches!(
+        state
+            .agent_workspace_repair_repo
+            .create_repair_effect(CreateAgentWorkspaceRepairEffect {
+                attempt_id: attempt.id.clone(),
+                generation: attempt.generation,
+                expected_phase: attempt.phase,
+                expected_attempt_updated_at: attempt.updated_at,
+                effect,
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("create initialized open push effect"),
+        CreateAgentWorkspaceRepairEffectOutcome::Created(_)
+    ));
+    let _busy_guard =
+        try_acquire_agent_workspace_repair_publish_continuation_guard(&conversation_id)
+            .expect("hold continuation after effect reconciliation");
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("reconcile observed push effect before reacquire"),
+        0
+    );
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload effect-reconciled continuation")
+        .expect("effect-reconciled continuation remains current");
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Continuing);
+    assert!(current
+        .target_lease_epoch
+        .is_some_and(|epoch| epoch > old_epoch));
+    let effect = state
+        .agent_workspace_repair_repo
+        .get_repair_effect_by_idempotency_key(idempotency_key)
+        .await
+        .expect("load reconciled push effect")
+        .expect("reconciled push effect exists");
+    assert_eq!(effect.status, AgentWorkspaceRepairEffectStatus::Observed);
+    assert!(effect
+        .receipt_json
+        .as_deref()
+        .is_some_and(|receipt| receipt.contains(&intended_head)));
+    assert!(recovery_git(
+        std::path::Path::new(&workspace.worktree_path),
+        &["for-each-ref", "--format=%(refname)", &remote_tracking_ref],
+    )
+    .is_empty());
+    drop(project_dir);
+    drop(remote);
+}
+
+#[tokio::test]
+async fn open_push_effect_reconciliation_requires_its_workspace_and_project() {
+    let state = AppState::new_test();
+    let conversation_id = conversation_id(89);
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        conversation_id.clone(),
+        AgentWorkspaceRepairSource::Publish,
+        AgentWorkspaceRepairContinuation::Publish,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    attempt.phase = AgentWorkspaceRepairPhase::Continuing;
+    let mut effect = AgentWorkspaceRepairEffect::new(
+        attempt.id.clone(),
+        AgentWorkspaceRepairEffectKind::PushBranch,
+        "missing-reconciliation-context",
+        chrono::Utc::now(),
+    );
+    effect.status = AgentWorkspaceRepairEffectStatus::InFlight;
+    effect.intended_head_oid = Some("intended-head".to_string());
+    effect.expected_remote_absent = true;
+
+    assert!(matches!(
+        reconcile_open_agent_workspace_repair_push_effect(&state, &attempt, effect.clone()).await,
+        Err(crate::error::AppError::NotFound(_))
+    ));
+
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(needs_agent_workspace(conversation_id.clone()))
+        .await
+        .expect("seed reconciliation workspace without its project");
+    assert!(state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("reload reconciliation workspace")
+        .is_some());
+    assert!(matches!(
+        reconcile_open_agent_workspace_repair_push_effect(&state, &attempt, effect).await,
+        Err(crate::error::AppError::NotFound(_))
+    ));
+    assert!(state
+        .agent_workspace_repair_repo
+        .get_open_repair_effect(&attempt.id)
+        .await
+        .expect("verify missing reconciliation context did not create an effect")
+        .is_none());
+}
+
+#[tokio::test]
+async fn open_push_effect_reconciliation_requires_persisted_canonical_identity() {
+    let (state, conversation_id, _worktree_parent, _project_dir, identity, _owner, _epoch) =
+        seed_publish_continuation_with_lease(90).await;
+    let mut attempt = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load identity reconciliation continuation")
+        .expect("identity reconciliation continuation exists");
+    attempt.phase = AgentWorkspaceRepairPhase::Continuing;
+    let mut effect = AgentWorkspaceRepairEffect::new(
+        attempt.id.clone(),
+        AgentWorkspaceRepairEffectKind::PushBranch,
+        "missing-reconciliation-identity",
+        chrono::Utc::now(),
+    );
+    effect.status = AgentWorkspaceRepairEffectStatus::InFlight;
+    effect.intended_head_oid = Some("intended-head".to_string());
+    effect.expected_remote_absent = true;
+
+    attempt.git_common_dir = None;
+    assert!(matches!(
+        reconcile_open_agent_workspace_repair_push_effect(&state, &attempt, effect.clone()).await,
+        Err(crate::error::AppError::Conflict(_))
+    ));
+
+    attempt.git_common_dir = Some(identity.git_common_dir().to_string_lossy().into_owned());
+    attempt.target_ref = None;
+    assert!(matches!(
+        reconcile_open_agent_workspace_repair_push_effect(&state, &attempt, effect).await,
+        Err(crate::error::AppError::Conflict(_))
+    ));
+    assert!(state
+        .agent_workspace_repair_repo
+        .get_open_repair_effect(&attempt.id)
+        .await
+        .expect("verify invalid reconciliation identity did not create an effect")
+        .is_none());
 }
