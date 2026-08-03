@@ -227,11 +227,13 @@ function ThinkingStateFixture({
   isSettled,
   durationMs,
   estimatedTokens,
+  segmentCount,
 }: {
   testId: string;
   isSettled: boolean;
   durationMs?: number;
   estimatedTokens?: number;
+  segmentCount?: number;
 }) {
   return (
     <div
@@ -248,6 +250,7 @@ function ThinkingStateFixture({
         isSettled={isSettled}
         {...(durationMs != null ? { durationMs } : {})}
         {...(estimatedTokens != null ? { estimatedTokens } : {})}
+        {...(segmentCount != null ? { segmentCount } : {})}
         onToggle={() => undefined}
       />
     </div>
@@ -310,7 +313,7 @@ export function ChatActivityVisualTestPage() {
             >
               Thinking lifecycle
             </p>
-            <div className="grid gap-2 md:grid-cols-3">
+            <div className="grid gap-2 md:grid-cols-4">
               <ThinkingStateFixture
                 testId="thinking-state-streaming"
                 isSettled={false}
@@ -324,6 +327,12 @@ export function ChatActivityVisualTestPage() {
                 testId="thinking-state-settled"
                 isSettled
                 durationMs={2_000}
+              />
+              <ThinkingStateFixture
+                testId="thinking-state-grouped"
+                isSettled
+                durationMs={6_000}
+                segmentCount={3}
               />
             </div>
           </section>

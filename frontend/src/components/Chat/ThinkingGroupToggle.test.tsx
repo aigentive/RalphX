@@ -53,4 +53,19 @@ describe("ThinkingGroupToggle", () => {
     );
     expect(screen.getByText("Agent thought")).toBeInTheDocument();
   });
+
+  it("renders the aggregate step count for a settled multi-segment group", () => {
+    render(
+      <ThinkingGroupToggle
+        groupKey="blk-group"
+        isExpanded={false}
+        isSettled
+        durationMs={12_000}
+        segmentCount={2}
+        onToggle={() => {}}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /Agent thought for 12s · 2 steps/ })).toBeInTheDocument();
+  });
 });
