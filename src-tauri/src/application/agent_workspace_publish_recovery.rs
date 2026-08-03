@@ -54,7 +54,6 @@ pub(crate) const AGENT_WORKSPACE_PUBLISH_REDRIVE_DELIVERING_STATUS: &str = "redr
 mod durable_attempt_recovery;
 mod pr_autofix_redelivery;
 
-#[cfg(test)]
 pub(crate) use durable_attempt_recovery::agent_workspace_repair_owns_unpublished_publish_continuation;
 
 #[cfg(test)]
