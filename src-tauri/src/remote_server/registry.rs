@@ -1215,19 +1215,20 @@ crate::remote_commands! {
     // Detector-silent on (a) and (c) — it reaches no scheduler and no CLI path — and detector (b)
     // flags it MECHANICALLY (not via a declared writer) through the
     // `remote-conversation-start` state-surface row, which is the honest classification the
-    // `SeedsSpawnTriggeringState` capability expresses. `mode` is host-pinned to "chat"; the
-    // command independently rejects any other mode, and there is no role/team/base field to forge.
+    // `SeedsSpawnTriggeringState` capability expresses. Mode is validated host-side against the
+    // known-mode set, matching the already-registered mode-switch intent's acceptance. This adds
+    // no authority: the host dispatcher remains the sole spawner, and there is no role/team/base
+    // field to forge. Owner decision: 2026-08-03, client/host parity for the first prompt.
     "request_remote_agent_conversation_start"
         => crate::commands::remote_conversation_start_commands::request_remote_agent_conversation_start {
         class: AgentControl,
         caps: [MutatesAgentConsumedContent, SeedsSpawnTriggeringState],
         params: [
-            (pinned_arg input: crate::commands::remote_conversation_start_commands::RequestRemoteAgentConversationStartInput),
+            (arg input: crate::commands::remote_conversation_start_commands::RequestRemoteAgentConversationStartInput),
             (app_state),
         ],
         call: async,
         result: fallible,
-        pins: [("input", "mode", "chat")],
     },
 
     // Spawn-free conversation CONTINUATION (WP1) — the fix for the one-shot remote surface.

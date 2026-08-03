@@ -461,8 +461,8 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
         policy: policy(
             RiskClass::AgentControl,
             CONTENT_AND_SEEDS,
-            "seeds-spawn-triggering-state: persists a mode-pinned chat start intent a host loop \
-             later spawns; validates provider/model/project fail-closed and rejects unknown \
+            "seeds-spawn-triggering-state: persists a host-validated known-mode start intent a \
+             host loop later spawns; validates mode/provider/model/project fail-closed and rejects unknown \
              models rather than passing them to CLI argv; resolves no CLI path and arms no \
              scheduler in-band",
         ),

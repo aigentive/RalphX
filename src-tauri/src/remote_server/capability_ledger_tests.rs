@@ -15,6 +15,17 @@ use super::capability_ledger::{
 };
 use super::registry::{find_spec, serialize_ok, REMOTE_COMMANDS};
 
+/// Owner decision (2026-08-03, client/host parity): start mode is command-validated against
+/// the known-mode enum, matching mode-switch acceptance; it is not a facade pin.
+#[test]
+fn remote_conversation_start_mode_is_validated_by_the_command_not_pinned() {
+    let spec = find_spec("request_remote_agent_conversation_start").expect("registered");
+    assert!(
+        spec.pins.iter().all(|pin| pin.field != "mode"),
+        "mode must reach the command for known-mode validation"
+    );
+}
+
 fn registry_source() -> &'static str {
     include_str!("../commands/registry.rs")
 }

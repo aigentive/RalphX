@@ -4924,9 +4924,9 @@ export class RemoteConversationStartError extends Error {
 /**
  * Projects a start request onto the spawn-free remote input (contract §2.1/§2.5). Only
  * client-settable fields cross: project, content, title, and the provider/model/effort
- * NAMES the host re-validates before spawn. `mode` is pinned `"chat"`; first-turn role,
- * team intent, base/branch, persona, attachments, and `refreshRuntime` are host-forced or
- * absent by design and MUST NOT be forwarded.
+ * NAMES and known mode the host re-validates before spawn. First-turn role, team intent,
+ * base/branch, persona, attachments, and `refreshRuntime` are host-forced or absent by design
+ * and MUST NOT be forwarded.
  */
 function remoteConversationStartInvokeInput(input: StartAgentConversationInput) {
   if (!input.projectId) {
@@ -4939,7 +4939,7 @@ function remoteConversationStartInvokeInput(input: StartAgentConversationInput) 
     ...(input.providerHarness ? { provider: input.providerHarness } : {}),
     ...(input.modelId ? { modelOverride: input.modelId } : {}),
     ...(input.logicalEffort ? { logicalEffort: input.logicalEffort } : {}),
-    mode: "chat" as const,
+    mode: input.mode ?? "chat",
   };
 }
 

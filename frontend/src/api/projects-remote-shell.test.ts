@@ -248,6 +248,18 @@ describe("workspace shell read routing", () => {
     expect(wireInput().cmd).toBe("get_remote_execution_status");
   });
 
+  it("names a project the host does not have instead of dumping a schema error", async () => {
+    useRemoteEnvironment();
+    // `get_remote_project` answers `null` for an id the host does not have — common when the
+    // client's selection predates the environment switch. Parsing it as a required object
+    // surfaced a raw "expected object, received null" dump at the root path.
+    remoteOk(null);
+
+    await expect(projectsApi.get("project-missing")).rejects.toThrow(
+      /was not found on this host/,
+    );
+  });
+
   it("surfaces a failed project read instead of returning an empty workspace", async () => {
     useRemoteEnvironment();
     primitiveInvoke.mockRejectedValue("REMOTE_INTERNAL_ERROR: host database is down");

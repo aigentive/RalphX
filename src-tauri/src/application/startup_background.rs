@@ -798,9 +798,8 @@ pub(crate) async fn dispatch_one_remote_conversation_start<R: tauri::Runtime + '
     Ok(())
 }
 
-/// Build the host-forced start input: the seeded draft conversation, `chat` mode, and the
-/// re-validated provider/model/effort. Everything else (persona, base/branch, team, attachments)
-/// is a host-forced default — none of it is client-expressible in v1.5.
+/// Build the host start input from the seeded draft conversation, validated mode, and re-validated
+/// provider/model/effort. Persona, base/branch, team, and attachments remain host-forced defaults.
 fn build_remote_conversation_start_input(
     claimed: &crate::domain::entities::RemoteConversationStartRequest,
 ) -> StartAgentConversationInput {
@@ -819,7 +818,7 @@ fn build_remote_conversation_start_input(
             .as_deref()
             .and_then(|effort| effort.parse::<crate::domain::agents::LogicalEffort>().ok()),
         codex_fast_mode: None,
-        mode: Some("chat".to_string()),
+        mode: Some(claimed.mode.clone()),
         base_ref_kind: None,
         base_branch_mode: None,
         base_ref: None,
@@ -1939,7 +1938,7 @@ mod remote_conversation_message_dispatcher_tests {
 mod remote_conversation_start_dispatcher_tests {
     use std::sync::Arc;
 
-    use super::dispatch_one_remote_conversation_start;
+    use super::{build_remote_conversation_start_input, dispatch_one_remote_conversation_start};
     use crate::application::AppState;
     use crate::commands::remote_conversation_start_commands::REMOTE_CONV_START_PROVIDER_NOT_ENABLED;
     use crate::commands::ExecutionState;
@@ -1948,6 +1947,31 @@ mod remote_conversation_start_dispatcher_tests {
         RemoteConversationStartStatus,
     };
     use crate::infrastructure::memory::MemoryAgentProviderSettingsRepository;
+
+    #[test]
+    fn claimed_mode_reaches_the_host_start_input_without_a_chat_rewrite() {
+        let now = chrono::Utc::now();
+        let claimed = RemoteConversationStartRequest {
+            id: "intent-plan".to_string(),
+            conversation_id: ChatConversationId::new(),
+            project_id: ProjectId::from_string("proj-plan".to_string()),
+            content: "plan the change".to_string(),
+            provider: "codex".to_string(),
+            model: None,
+            effort: None,
+            mode: "plan".to_string(),
+            status: RemoteConversationStartStatus::Starting,
+            error_code: None,
+            requested_by_device_id: String::new(),
+            agent_run_id: None,
+            claimed_at: Some(now),
+            created_at: now,
+            updated_at: now,
+        };
+
+        let input = build_remote_conversation_start_input(&claimed);
+        assert_eq!(input.mode.as_deref(), Some("plan"));
+    }
 
     /// Claim-time re-validation failure (a provider disabled since persist) must terminalise the
     /// intent as `Failed` and NEVER spawn — authority-before-effects, fail-closed.

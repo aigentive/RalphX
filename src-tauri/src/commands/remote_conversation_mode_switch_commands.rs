@@ -4,9 +4,9 @@
 //! conversation workspace — `GitService::ref_exists` and the publish path's
 //! `inspect_repository_capability` -> `ensure_git_worktree` — which are detector-(c)
 //! process-launch sinks, and the process floor is absolute. The consequence for a paired device
-//! was a dead end with teeth: remote conversations START pinned to mode `"chat"` (the
-//! conversation-start intent host-pins it), so a remote client could reach chat and NOTHING else,
-//! forever. Edit, Plan, and Ideation were unreachable, not merely slower.
+//! was a dead end with teeth: remote conversations originally STARTed only in `"chat"`, so a
+//! remote client could reach chat and NOTHING else, forever. Edit, Plan, and Ideation were
+//! unreachable, not merely slower.
 //!
 //! So the surface is redesigned rather than the floor relaxed: this module persists a MODE SWITCH
 //! INTENT, and a host-owned dispatcher loop (`spawn_remote_conversation_mode_switch_dispatcher`)

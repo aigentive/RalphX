@@ -33,6 +33,7 @@ import {
   PERSONA_UNAVAILABLE_PREFIX,
   isPersonaUnavailableError,
 } from "@/lib/personaErrors";
+import { REMOTE_UNAVAILABLE_HINT } from "@/lib/remote/agent-gate";
 import { withAlpha } from "@/lib/theme-colors";
 import {
   useAgentSessionStore,
@@ -659,16 +660,6 @@ export function AgentsStartComposer({
       );
     }
   }, [featureFlags.standaloneConversations, mode, projectId]);
-
-  // Remote starts are pinned to `chat` on the host (§2.5 `mode` pin). The composer keeps the
-  // client honest: force chat and hide the mode picker so no edit/plan request is composed
-  // that the host would only reject. Local composition is untouched.
-  useEffect(() => {
-    if (isRemoteEnvironment && mode !== "chat") {
-      setMode("chat");
-      setAutomationAuthoringMode(null);
-    }
-  }, [isRemoteEnvironment, mode]);
 
   useEffect(() => {
     if (mode !== "persona_builder") return;
@@ -1483,10 +1474,7 @@ export function AgentsStartComposer({
             {...(reviewPrDefaultPrompt
               ? { emptySubmitMessage: reviewPrDefaultPrompt }
               : {})}
-            {...(isRemoteEnvironment
-              ? {}
-              : {
-                  mode: {
+            mode={{
                     value: mode,
                     onValueChange: (value) => {
                       clearStartError();
@@ -1507,7 +1495,13 @@ export function AgentsStartComposer({
                       )
                       .map((option) => ({
                         ...option,
-                        ...(projectId === null && option.requiresProject
+                        ...(isRemoteEnvironment &&
+                        (option.id === "automation" || option.id === "review_pr")
+                          ? {
+                              disabled: true,
+                              disabledReason: REMOTE_UNAVAILABLE_HINT,
+                            }
+                          : projectId === null && option.requiresProject
                           ? {
                               disabled: true,
                               disabledReason: "Requires a project",
@@ -1521,8 +1515,7 @@ export function AgentsStartComposer({
                       )
                       .map((option) => option.id),
                     testId: "agents-start-mode",
-                  },
-                })}
+                  }}
             {...(mode !== "persona_builder" && projectId && capabilityOptions.length > 1
               ? {
                   capability: {

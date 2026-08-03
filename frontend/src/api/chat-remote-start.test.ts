@@ -6,7 +6,7 @@
  * through `networkInvoke` and out via the `remote_invoke` primitive. Mocking the API module
  * would prove nothing about the routing, which is the only thing in question here.
  *
- * What is pinned: a paired device NEVER calls `start_agent_conversation` (it fires the
+ * What is host-owned: a paired device NEVER calls `start_agent_conversation` (it fires the
  * process-spawn detectors and stays unregistered by ruling). It persists a start-intent
  * through `request_remote_agent_conversation_start`, polls
  * `get_remote_conversation_start_request` to a terminal state, and — on `started` — navigates
@@ -163,7 +163,7 @@ describe("remote conversation-start routing", () => {
     expect(wireCmd(1)).toBe("get_remote_conversation_start_request");
     expect(wireCmd(2)).toBe("get_remote_agent_conversation");
 
-    // Only client-settable fields cross; `mode` is pinned `chat`.
+    // Only client-settable fields cross; the requested known mode is preserved.
     expect(wireInput(0).args).toEqual({
       input: {
         projectId: PROJECT_ID,
@@ -181,7 +181,7 @@ describe("remote conversation-start routing", () => {
     expect(result.sendResult.wasQueued).toBe(false);
   });
 
-  it("never forwards refreshRuntime, base/branch, persona, or team intent", async () => {
+  it("forwards the requested known mode but never refreshRuntime, base/branch, persona, or team intent", async () => {
     useRemoteEnvironment();
     routeRemote("started");
 
@@ -213,8 +213,21 @@ describe("remote conversation-start routing", () => {
       "projectId",
       "provider",
     ]);
-    // The client cannot smuggle a non-chat mode past the pin, even by naming one.
-    expect(sent.mode).toBe("chat");
+    expect(sent.mode).toBe("edit");
+  });
+
+  it("carries Plan on the transport wire for a new remote conversation", async () => {
+    useRemoteEnvironment();
+    routeRemote("started");
+
+    await startAgentConversation({
+      projectId: PROJECT_ID,
+      content: "plan first",
+      mode: "plan",
+    });
+
+    const sent = (wireInput(0).args as { input: Record<string, unknown> }).input;
+    expect(sent.mode).toBe("plan");
   });
 
   it("surfaces a non-started terminal status as a typed error with the host error code", async () => {

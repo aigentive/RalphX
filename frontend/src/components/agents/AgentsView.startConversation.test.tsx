@@ -24,6 +24,8 @@ import { ticketingKeys } from "@/hooks/useTicketing";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { useChatStore } from "@/stores/chatStore";
 import { useUiStore } from "@/stores/uiStore";
+import { useEnvironmentStore, LOCAL_ENVIRONMENT_ID } from "@/stores/environmentStore";
+import { REMOTE_UNAVAILABLE_HINT } from "@/lib/remote/agent-gate";
 import {
   agentProjectFixture as project,
   conversationFixture as conversation,
@@ -230,6 +232,58 @@ function codexRoleDefault(role: string) {
 
 describe("AgentsView start conversation", () => {
   beforeEach(setupAgentsViewTest);
+
+  it("shows the mode picker remotely, submits Plan, and disables host-only setup modes", async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    useEnvironmentStore.setState({
+      activeEnvironmentId: "remote-start-mode-test",
+      environments: [
+        { id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" },
+        { id: "remote-start-mode-test", name: "Remote Mac", kind: "remote" },
+      ],
+      connectionPresentations: {
+        "remote-start-mode-test": {
+          presentation: "connected",
+          blockedFailure: null,
+          blockedMessage: null,
+        },
+      },
+      effectiveScopes: {
+        "remote-start-mode-test": ["ui:read", "ui:operate", "ui:agent"],
+      },
+    });
+
+    renderWithAgentProviders(
+      <AgentsStartComposer
+        projects={[project]}
+        defaultProjectId={project.id}
+        defaultRuntime={null}
+        isLoadingProjects={false}
+        isSubmitting={false}
+        modelRegistry={{ claude: [], codex: [] }}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
+    await userEvent.click(screen.getByTestId("agents-start-mode-plan"));
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "plan this remotely" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ mode: "plan" })),
+    );
+
+    await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
+    const reviewPr = screen.getByTestId("agents-start-mode-review_pr");
+    expect(reviewPr).toBeDisabled();
+    expect(reviewPr).toHaveTextContent(REMOTE_UNAVAILABLE_HINT);
+    await userEvent.click(screen.getByRole("button", { name: "Show more modes" }));
+    const automation = screen.getByTestId("agents-start-mode-automation");
+    expect(automation).toBeDisabled();
+    expect(automation).toHaveTextContent(REMOTE_UNAVAILABLE_HINT);
+  });
 
   it("defaults to the starter composer when no conversation is selected", async () => {
     mockAgentViewData();

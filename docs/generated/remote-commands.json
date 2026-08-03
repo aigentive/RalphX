@@ -2675,13 +2675,7 @@
       ],
       "class": "agentControl",
       "command": "request_remote_agent_conversation_start",
-      "pins": [
-        {
-          "field": "mode",
-          "param": "input",
-          "value": "chat"
-        }
-      ],
+      "pins": [],
       "scopeConfined": false,
       "target": "crate::commands::remote_conversation_start_commands::request_remote_agent_conversation_start"
     },
@@ -8937,7 +8931,7 @@
       "class": "agentControl",
       "command": "request_remote_agent_conversation_start",
       "module": "remote_conversation_start_commands",
-      "reason": "seeds-spawn-triggering-state: persists a mode-pinned chat start intent a host loop later spawns; validates provider/model/project fail-closed and rejects unknown models rather than passing them to CLI argv; resolves no CLI path and arms no scheduler in-band",
+      "reason": "seeds-spawn-triggering-state: persists a host-validated known-mode start intent a host loop later spawns; validates mode/provider/model/project fail-closed and rejects unknown models rather than passing them to CLI argv; resolves no CLI path and arms no scheduler in-band",
       "registered": true,
       "v1Resolution": "registerable"
     },

@@ -2,8 +2,8 @@
  * Remote conversation MODE SWITCH routing (WP5a).
  *
  * `switch_agent_conversation_mode` prepares the workspace (`ensure_git_worktree` — a git
- * spawn) and is host-denied by the absolute process floor. Combined with the start intent
- * pinning `mode: "chat"`, a paired device could reach chat and nothing else. The switch now
+ * spawn) and is host-denied by the absolute process floor. Before start-mode parity, a paired
+ * device could reach chat and nothing else. The switch now
  * persists an intent (`request_remote_agent_conversation_mode_switch`) and polls it to a
  * terminal state — the host owns the worktree.
  *

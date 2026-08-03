@@ -1188,7 +1188,7 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     opClass: "agentControl",
     argumentSensitive: false,
     capabilities: ["mutatesAgentConsumedContent","seedsSpawnTriggeringState"],
-    pins: [{"param":"input","field":"mode","value":"chat"}],
+    pins: [],
   },
   "request_remote_agent_stop": {
     opClass: "operate",

@@ -3,7 +3,7 @@
 //! Every refusal asserts BOTH the error code AND the absence of the durable rows the command
 //! would otherwise create (seeded conversation + intent), because the failures this command
 //! exists to prevent are a forged scope/provider/model reaching a spawn and a rejected request
-//! that still left state behind. The model-pin test additionally proves the local unknown-model
+//! that still left state behind. The model-validation test additionally proves the local unknown-model
 //! leniency is NOT reproduced.
 
 use std::sync::Arc;
@@ -129,20 +129,54 @@ async fn rejects_empty_content_and_leaves_no_state() {
 }
 
 #[tokio::test]
-async fn rejects_non_chat_mode() {
+async fn accepts_known_plan_mode_and_persists_it_end_to_end() {
+    let state = fresh_state();
+    let project_id = seed(&state).await;
+
+    let response = request_remote_agent_conversation_start_for_state(
+        &state,
+        RequestRemoteAgentConversationStartInput {
+            mode: "plan".to_string(),
+            ..input(&project_id)
+        },
+    )
+    .await
+    .expect("known plan mode accepted");
+
+    let stored = state
+        .remote_conversation_start_request_repo
+        .get_start_request(&response.start_request_id)
+        .await
+        .expect("read intent")
+        .expect("intent exists");
+    assert_eq!(stored.mode, "plan");
+    let conversation = state
+        .chat_conversation_repo
+        .get_by_id(&stored.conversation_id)
+        .await
+        .expect("read conversation")
+        .expect("conversation exists");
+    assert_eq!(
+        conversation.agent_mode,
+        Some(AgentConversationWorkspaceMode::Plan)
+    );
+}
+
+#[tokio::test]
+async fn rejects_unknown_mode_fail_closed_and_leaves_no_state() {
     let state = fresh_state();
     let project_id = seed(&state).await;
 
     let err = request_remote_agent_conversation_start_for_state(
         &state,
         RequestRemoteAgentConversationStartInput {
-            mode: "edit".to_string(),
+            mode: "future_mode".to_string(),
             ..input(&project_id)
         },
     )
     .await
-    .expect_err("non-chat mode rejected");
-    assert_eq!(err, REMOTE_CONV_START_MODE_NOT_PERMITTED);
+    .expect_err("unknown mode rejected");
+    assert_eq!(err, REMOTE_CONV_START_INVALID_MODE);
     assert_eq!(conversation_count(&state, &project_id).await, 0);
 }
 

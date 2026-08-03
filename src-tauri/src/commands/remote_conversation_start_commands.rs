@@ -17,7 +17,7 @@
 //! - The model pin is STRICTER than the local path: an unknown `model_override` is REJECTED
 //!   (`REMOTE_CONV_START_MODEL_NOT_ENABLED`), never passed through to a spawned CLI argv the
 //!   way `normalize_agent_runtime_selection` does locally. Provider and mode are validated the
-//!   same fail-closed way. `mode` is additionally host-pinned to `"chat"` at dispatch.
+//!   same fail-closed way. `mode` is parsed into the host's known-mode enum before any write.
 //!
 //! Validate-then-persist, create-last: every precondition is a fail-closed tri-state
 //! (`Err` != absent != ok), and the intent row is the LAST statement, mirroring the ideation
@@ -35,8 +35,8 @@ use crate::domain::entities::{
 
 /// The first-turn body was empty or whitespace only.
 pub const REMOTE_CONV_START_EMPTY_CONTENT: &str = "REMOTE_CONV_START_EMPTY_CONTENT";
-/// A mode other than `chat` was requested. v1.5 confines remote starts to chat mode.
-pub const REMOTE_CONV_START_MODE_NOT_PERMITTED: &str = "REMOTE_CONV_START_MODE_NOT_PERMITTED";
+/// The requested mode is not a known `AgentConversationWorkspaceMode`.
+pub const REMOTE_CONV_START_INVALID_MODE: &str = "REMOTE_CONV_START_INVALID_MODE";
 /// A precondition read failed. Deliberately distinct from "absent" so an unavailable
 /// repository can never be mistaken for a satisfied precondition.
 pub const REMOTE_CONV_START_LOOKUP_FAILED: &str = "REMOTE_CONV_START_LOOKUP_FAILED";
@@ -56,16 +56,11 @@ pub const REMOTE_CONV_START_SEED_FAILED: &str = "REMOTE_CONV_START_SEED_FAILED";
 /// The status read could not resolve the request.
 pub const REMOTE_CONV_START_REQUEST_NOT_FOUND: &str = "REMOTE_CONV_START_REQUEST_NOT_FOUND";
 
-/// The mode the host pins every remote conversation start to in v1.5.
-pub const REMOTE_CONV_START_PINNED_MODE: &str = "chat";
-
 /// Input for `request_remote_agent_conversation_start`.
 ///
-/// `mode` exists ONLY as a pin target: the facade overwrites the wire value with `"chat"` at
-/// dispatch (`pins: [("input","mode","chat")]`), and step 2 below independently rejects
-/// anything else. There is deliberately NO `role`, `teamIntent`, or base/branch field — the
-/// first turn's authorship (`User`), coordination (`Solo`), and git base are host-forced by
-/// FIELD ABSENCE, which is stronger than a pinned field.
+/// `mode` is client-selected but host-validated against the known-mode enum. There is deliberately
+/// NO `role`, `teamIntent`, or base/branch field — the first turn's authorship (`User`),
+/// coordination (`Solo`), and git base are host-forced by FIELD ABSENCE.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RequestRemoteAgentConversationStartInput {
@@ -123,10 +118,14 @@ pub async fn request_remote_agent_conversation_start_for_state(
     }
     let content = content.to_string();
 
-    // 2. Mode — an independent second layer under the dispatch pin.
-    if input.mode != REMOTE_CONV_START_PINNED_MODE {
-        return Err(REMOTE_CONV_START_MODE_NOT_PERMITTED.to_string());
-    }
+    // 2. The requested mode must be a KNOWN variant, exactly like the already-registered remote
+    //    mode-switch intent. Parsing before project/provider reads keeps unknown values fail-closed
+    //    and prevents them from reaching either persisted conversation state or the host spawner.
+    let mode = input
+        .mode
+        .trim()
+        .parse::<AgentConversationWorkspaceMode>()
+        .map_err(|_| REMOTE_CONV_START_INVALID_MODE.to_string())?;
 
     // 3. Project — fail-closed tri-state (Err != None != Some).
     let requested_project = ProjectId::from_string(input.project_id.trim().to_string());
@@ -199,11 +198,11 @@ pub async fn request_remote_agent_conversation_start_for_state(
 
     // 6. Seed the conversation. Mirrors the Project branch of `create_agent_conversation`
     //    (unified_chat_commands/mod.rs), which is persist-only for the Project context (the
-    //    standalone-workspace side effect is never taken here). Solo + Chat + User authorship
-    //    are host-forced.
+    //    standalone-workspace side effect is never taken here). Solo + User authorship are
+    //    host-forced; mode is the validated client intent.
     let mut conversation = ChatConversation::new_project(project_id.clone());
     conversation.set_coordination_mode(CoordinationMode::Solo);
-    conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Chat));
+    conversation.set_agent_mode(Some(mode));
     if let Some(title) = input
         .title
         .as_deref()
@@ -232,7 +231,7 @@ pub async fn request_remote_agent_conversation_start_for_state(
         provider: provider.to_string(),
         model,
         effort,
-        mode: REMOTE_CONV_START_PINNED_MODE.to_string(),
+        mode: mode.to_string(),
         status: RemoteConversationStartStatus::Pending,
         error_code: None,
         // Deferred: stamping the authenticated device id requires threading `identity.device_id`

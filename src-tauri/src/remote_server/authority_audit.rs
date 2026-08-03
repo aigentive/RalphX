@@ -1478,7 +1478,7 @@ fn test_only_module_gates(root: &Path, dir: &Path) -> BTreeMap<String, String> {
 ///
 /// Exposed so the general rule — fixtures never contribute authority rows — can be asserted
 /// against the real tree, not just a synthetic fixture.
-pub fn test_gated_module_files(root: &Path) -> BTreeMap<String, String> {
+pub(crate) fn test_gated_module_files(root: &Path) -> BTreeMap<String, String> {
     let mut found = BTreeMap::new();
     collect_test_gated_module_files(root, root, &mut found);
     found
@@ -1520,7 +1520,7 @@ fn collect_test_gated_module_files(root: &Path, dir: &Path, out: &mut BTreeMap<S
 /// and thereby OVER-attributed `start_research` to the `workspace-bridge` surface — the same
 /// collision could as easily have masked a real writer. Fixtures must never move authority
 /// verdicts in either direction.
-pub fn collect_rs_files(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
+pub(crate) fn collect_rs_files(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
     let test_only = test_only_module_gates(root, dir);
     // `dir` is the compile-time crate root or a descendant discovered by this same walk;
     // no runtime, env, request, or config value reaches it.
