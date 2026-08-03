@@ -67,9 +67,12 @@ remote_id!(RemoteSessionId);
 pub struct RemoteScopeSet(Vec<Scope>);
 
 impl RemoteScopeSet {
-    /// The scopes a standard pairing grant carries: read + operate, never `ui:agent` (§4.4).
+    /// The scopes a standard pairing grant carries: read + operate + agent control.
+    ///
+    /// Owner decision 2026-08-03: pairing grants agent control by default. Existing devices
+    /// keep their stored scopes; the per-device toggle is the revoke/re-grant path.
     pub fn default_pairing_grant() -> Self {
-        Self::from_scopes([Scope::UiRead, Scope::UiOperate])
+        Self::from_scopes([Scope::UiRead, Scope::UiOperate, Scope::UiAgent])
     }
 
     /// Builds a canonical set from any iterator, sorting and de-duplicating.
@@ -141,15 +144,13 @@ pub enum RemoteScopeError {
 
 /// Scopes a pairing code may ever carry.
 ///
-/// `ui:agent` is never minted into a pairing grant — it is a per-device host-side toggle
-/// (§4.3, §5.4) — and `ui:elevated` is defined but ungrantable in v1 (§4.3).
+/// `ui:agent` is grantable at pairing and remains revocable per device. `ui:elevated` is
+/// defined but ungrantable in v1 (§4.3).
 pub fn validate_pairing_grant(grant: &RemoteScopeSet) -> Result<(), RemoteScopeError> {
     for scope in grant.as_slice() {
         match scope {
-            Scope::UiRead | Scope::UiOperate => {}
-            Scope::UiAgent | Scope::UiElevated => {
-                return Err(RemoteScopeError::NotGrantable(*scope))
-            }
+            Scope::UiRead | Scope::UiOperate | Scope::UiAgent => {}
+            Scope::UiElevated => return Err(RemoteScopeError::NotGrantable(*scope)),
         }
     }
     Ok(())

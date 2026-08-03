@@ -79,7 +79,8 @@ async fn redeeming_a_code_mints_a_device_and_consumes_the_code_in_one_transactio
         panic!("expected a paired device, got {outcome:?}");
     };
     assert_eq!(device.scopes, RemoteScopeSet::default_pairing_grant());
-    assert!(!device.agent_control_granted());
+    // Owner decision (2026-08-03): pairing mints agent control by default.
+    assert!(device.agent_control_granted());
     assert!(device.is_active());
     assert!(repo
         .list_outstanding(NOW)
@@ -351,7 +352,11 @@ async fn agent_control_scopes_can_be_granted_and_narrowed_but_never_on_a_revoked
 
     assert!(granted.agent_control_granted());
     assert!(!narrowed.agent_control_granted());
-    assert_eq!(narrowed.scopes, RemoteScopeSet::default_pairing_grant());
+    // Narrowing strips UiAgent from the (now agent-capable) default pairing grant.
+    assert_eq!(
+        narrowed.scopes,
+        RemoteScopeSet::default_pairing_grant().without(Scope::UiAgent)
+    );
     assert!(
         !after_revoke.agent_control_granted(),
         "a revoked device must not be re-widened"

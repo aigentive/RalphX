@@ -495,7 +495,7 @@ export function AgentComposerSurface({
   const agentGate = useAgentGate("agentComposerSend");
   /**
    * Stopping is a BRAKE, so it resolves through its own affordance rather than the send gate:
-   * `request_remote_agent_stop` is `class: operate` and reachable from the default pairing,
+   * `request_remote_agent_stop` is `class: operate` and reachable without `ui:agent`,
    * while sending needs `ui:agent`. Reusing the send gate here would have disabled Stop on
    * exactly the devices that most need it. When the host does not expose the op at all this
    * renders the unavailable hint instead of an enabled button that answers

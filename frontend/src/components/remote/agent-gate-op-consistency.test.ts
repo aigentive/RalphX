@@ -409,7 +409,7 @@ describe("a resolved affordance names the op its file invokes", () => {
  * `deny_permission_request` by its `decision` argument, and denies `resolve_user_question`
  * in favour of `answer_user_question`. Invoking either raw name from production code is
  * unreachable at every scope remotely — and, for deny, takes a brake away from a
- * default-paired device.
+ * device without `ui:agent`.
  *
  * Only transport call shapes count: naming the raw commands in a `LOCAL_ONLY_COMMANDS`-style
  * declaration or a comment is how the routing policy is expressed, not a defect.

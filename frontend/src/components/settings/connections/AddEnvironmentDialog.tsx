@@ -420,6 +420,11 @@ export function AddEnvironmentDialog({
               </NoticeBanner>
             )}
 
+            <NoticeBanner tone="neutral" testId="add-environment-agent-control">
+              Pairing grants this device agent control on the host. You can revoke it
+              later in the host&apos;s Remote access settings.
+            </NoticeBanner>
+
             <div className="space-y-1.5">
               <label
                 className="text-xs font-medium text-[var(--text-secondary)]"

@@ -57,7 +57,7 @@ async function derive(manifest: unknown) {
 }
 
 const GRANTED = ["ui:read", "ui:operate", UI_AGENT_SCOPE];
-const DEFAULT_PAIRED = ["ui:read", "ui:operate"];
+const WITHOUT_UI_AGENT = ["ui:read", "ui:operate"];
 
 // ---------------------------------------------------------------------------
 // The mirror actually mirrors
@@ -103,7 +103,7 @@ describe("capability model derivation", () => {
     ]) {
       expect(REMOTE_FACADE_OPS[command]?.opClass, command).toBe("agentControl");
     }
-    // Inert work the default pairing keeps.
+    // Inert work available without ui:agent.
     for (const command of ["deny_permission_request", "create_task", "update_task"]) {
       expect(REMOTE_FACADE_OPS[command]?.opClass, command).toBe("operate");
     }
@@ -241,19 +241,19 @@ describe("affordance mapping", () => {
 
   /**
    * Affordances whose backing op is a BRAKE, and therefore deliberately reachable from the
-   * default pairing. This is a deliberate carve-out, not a hole: `request_remote_agent_stop` is
+   * device without ui:agent. This is a deliberate carve-out, not a hole: `request_remote_agent_stop` is
    * `class: operate` (authority-REDUCING, with a recorded `AUTHORITY_REDUCING_EXEMPTIONS` row),
-   * so gating it would take the brake away from exactly the devices the viewer-with-brakes
+   * so gating it would take the brake away from exactly the devices with agent control revoked
    * boundary exists to give it to. Adding a row here is a boundary change — the op's class is
    * asserted below so a reclassified op cannot ride in on this list.
    */
   const DEFAULT_PAIRING_BRAKES = ["agentStop"] as const;
 
-  it("resolves every affordance to a defined state under a default pairing", () => {
+  it("resolves every affordance to a defined state without ui:agent", () => {
     for (const affordance of Object.keys(
       AGENT_GATED_AFFORDANCES
     ) as Array<keyof typeof AGENT_GATED_AFFORDANCES>) {
-      const state = resolveAffordanceGate(affordance, true, DEFAULT_PAIRED);
+      const state = resolveAffordanceGate(affordance, true, WITHOUT_UI_AGENT);
       const expected = (DEFAULT_PAIRING_BRAKES as readonly string[]).includes(
         affordance
       )
@@ -263,7 +263,7 @@ describe("affordance mapping", () => {
     }
   });
 
-  it("every default-pairing brake is backed by a read/operate op, never agentControl", () => {
+  it("every brake available without ui:agent is backed by a read/operate op", () => {
     for (const affordance of DEFAULT_PAIRING_BRAKES) {
       const op = REMOTE_FACADE_OPS[AGENT_GATED_AFFORDANCES[affordance]];
       // Absent is fine (older host → `unavailable`); present-and-escalated is not.
@@ -317,7 +317,7 @@ describe("inert exemption list", () => {
   it("keeps every note-writing command out of the remote operate surface", () => {
     // `add_task_note` does not exist in this manifest, so R6-M1's literal anchor is
     // asserted conditionally and its INTENT over whatever note commands exist: a note
-    // surface is never served under a scope a default-paired device holds.
+    // surface is never served below ui:agent.
     const ledger = readManifest().ledger as ReadonlyArray<{
       command: string;
       class: string;
@@ -357,7 +357,7 @@ describe("resolveAffordanceGate", () => {
   it("reports an unregistered op as unavailable regardless of scopes", () => {
     // The load-bearing distinction: granting ui:agent does NOT make it appear, so
     // the copy must not send the user to a host switch.
-    for (const scopes of [null, DEFAULT_PAIRED, GRANTED]) {
+    for (const scopes of [null, WITHOUT_UI_AGENT, GRANTED]) {
       const state = resolveAffordanceGate("taskResume", true, scopes);
       expect(state.status).toBe("unavailable");
       expect(state.reason).toBe(REMOTE_UNAVAILABLE_HINT);
@@ -366,7 +366,7 @@ describe("resolveAffordanceGate", () => {
   });
 
   it("gates a registered agent-control op when ui:agent is absent", () => {
-    const state = resolveAffordanceGate("taskMove", true, DEFAULT_PAIRED);
+    const state = resolveAffordanceGate("taskMove", true, WITHOUT_UI_AGENT);
     expect(state.status).toBe("gated");
     expect(state.reason).toBe(AGENT_CONTROL_DISABLED_HINT);
   });
@@ -395,12 +395,12 @@ describe("resolveAffordanceGate", () => {
     // The read half is what keeps existing references rendering remotely.
     expect(REMOTE_FACADE_OPS["list_conversation_folder_references"]?.opClass).toBe("read");
 
-    for (const scopes of [null, DEFAULT_PAIRED, GRANTED]) {
+    for (const scopes of [null, WITHOUT_UI_AGENT, GRANTED]) {
       const add = resolveAffordanceGate("folderReferenceAdd", true, scopes);
       expect(add.status).toBe("unavailable");
       expect(add.reason).toBe(REMOTE_UNAVAILABLE_HINT);
     }
-    expect(resolveAffordanceGate("folderReferenceRemove", true, DEFAULT_PAIRED).status).toBe(
+    expect(resolveAffordanceGate("folderReferenceRemove", true, WITHOUT_UI_AGENT).status).toBe(
       "gated"
     );
     expect(resolveAffordanceGate("folderReferenceRemove", true, GRANTED).status).toBe(
@@ -421,13 +421,13 @@ describe("resolveAffordanceGate", () => {
     ]) {
       expect(REMOTE_FACADE_OPS[command]?.opClass).toBe("agentControl");
     }
-    expect(resolveAffordanceGate("stepSkip", true, DEFAULT_PAIRED).status).toBe("gated");
+    expect(resolveAffordanceGate("stepSkip", true, WITHOUT_UI_AGENT).status).toBe("gated");
     expect(resolveAffordanceGate("stepSkip", true, GRANTED).status).toBe("enabled");
   });
 
   it("gates the content half of update_task while the op itself is operate", () => {
     expect(REMOTE_FACADE_OPS["update_task"]?.opClass).toBe("operate");
-    expect(resolveAffordanceGate("taskEditContent", true, DEFAULT_PAIRED).status).toBe(
+    expect(resolveAffordanceGate("taskEditContent", true, WITHOUT_UI_AGENT).status).toBe(
       "gated"
     );
     expect(resolveAffordanceGate("taskEditContent", true, GRANTED).status).toBe(
@@ -440,13 +440,13 @@ describe("resolveFieldGate", () => {
   it("locks the conditional fields and leaves the inert ones editable", () => {
     for (const field of ["title", "description"]) {
       expect(
-        resolveFieldGate("update_task", field, true, DEFAULT_PAIRED).status,
+        resolveFieldGate("update_task", field, true, WITHOUT_UI_AGENT).status,
         field
       ).toBe("gated");
     }
     for (const field of ["category", "priority"]) {
       expect(
-        resolveFieldGate("update_task", field, true, DEFAULT_PAIRED).status,
+        resolveFieldGate("update_task", field, true, WITHOUT_UI_AGENT).status,
         field
       ).toBe("enabled");
     }
@@ -474,7 +474,7 @@ describe("resolveFieldGate", () => {
 describe("resolveAgentGate (scope-only fallback)", () => {
   it("answers the broad question without an affordance", () => {
     expect(resolveAgentGate(false, null).status).toBe("enabled");
-    expect(resolveAgentGate(true, DEFAULT_PAIRED).status).toBe("gated");
+    expect(resolveAgentGate(true, WITHOUT_UI_AGENT).status).toBe("gated");
     expect(resolveAgentGate(true, GRANTED).status).toBe("enabled");
     expect(resolveAgentGate(true, null).status).toBe("gated");
   });

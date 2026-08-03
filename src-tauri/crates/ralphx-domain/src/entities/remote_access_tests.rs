@@ -5,22 +5,21 @@ fn set(scopes: &[Scope]) -> RemoteScopeSet {
 }
 
 #[test]
-fn the_default_pairing_grant_is_read_plus_operate_and_never_agent_control() {
+fn default_pairing_grant_includes_agent_control_but_never_elevated() {
+    // Owner decision 2026-08-03: new pairings receive agent control from the start.
     let grant = RemoteScopeSet::default_pairing_grant();
 
     assert!(grant.contains(Scope::UiRead));
     assert!(grant.contains(Scope::UiOperate));
-    assert!(!grant.contains(Scope::UiAgent));
+    assert!(grant.contains(Scope::UiAgent));
     assert!(!grant.contains(Scope::UiElevated));
     validate_pairing_grant(&grant).expect("the default grant must be mintable");
 }
 
 #[test]
-fn a_pairing_grant_may_never_carry_agent_or_elevated_scope() {
-    assert_eq!(
-        validate_pairing_grant(&set(&[Scope::UiRead, Scope::UiAgent])),
-        Err(RemoteScopeError::NotGrantable(Scope::UiAgent))
-    );
+fn a_pairing_grant_may_carry_agent_but_never_elevated_scope() {
+    validate_pairing_grant(&set(&[Scope::UiRead, Scope::UiAgent]))
+        .expect("ui:agent is grantable at pairing");
     assert_eq!(
         validate_pairing_grant(&set(&[Scope::UiElevated])),
         Err(RemoteScopeError::NotGrantable(Scope::UiElevated))
@@ -69,14 +68,14 @@ fn requested_scopes_must_be_a_subset_of_the_pairing_grant() {
         set(&[Scope::UiRead])
     );
     assert_eq!(
-        effective_pairing_scopes(&grant, Some(&set(&[Scope::UiRead, Scope::UiAgent]))),
-        Err(RemoteScopeError::NotGranted(Scope::UiAgent)),
+        effective_pairing_scopes(&grant, Some(&set(&[Scope::UiElevated]))),
+        Err(RemoteScopeError::NotGranted(Scope::UiElevated)),
         "asking for more than the grant must fail, never quietly intersect"
     );
 }
 
 #[test]
-fn agent_control_is_off_for_a_freshly_paired_device() {
+fn agent_control_can_be_revoked_and_regranted_for_a_paired_device() {
     let device = RemoteDevice {
         id: RemoteDeviceId::new(),
         name: "laptop".to_string(),
@@ -89,23 +88,23 @@ fn agent_control_is_off_for_a_freshly_paired_device() {
     };
 
     assert!(device.is_active());
-    assert!(!device.agent_control_granted());
+    assert!(device.agent_control_granted());
 
-    let granted = RemoteDevice {
-        scopes: device.scopes.with(Scope::UiAgent),
+    let revoked = RemoteDevice {
+        scopes: device.scopes.without(Scope::UiAgent),
         ..device.clone()
     };
-    assert!(granted.agent_control_granted());
+    assert!(!revoked.agent_control_granted());
 
-    let narrowed = RemoteDevice {
-        scopes: granted.scopes.without(Scope::UiAgent),
-        ..granted
+    let regranted = RemoteDevice {
+        scopes: revoked.scopes.with(Scope::UiAgent),
+        ..revoked
     };
-    assert!(!narrowed.agent_control_granted());
+    assert!(regranted.agent_control_granted());
     assert_eq!(
-        narrowed.scopes,
+        regranted.scopes,
         RemoteScopeSet::default_pairing_grant(),
-        "narrowing agent control must not disturb the base grant"
+        "regranting agent control must restore the default pairing grant"
     );
 }
 

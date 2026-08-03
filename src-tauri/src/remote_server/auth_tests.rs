@@ -556,7 +556,7 @@ async fn a_forged_tauri_local_trust_header_still_gets_401() {
 // ---------------------------------------------------------------------------------------
 
 #[tokio::test]
-async fn pairing_returns_the_token_once_and_grants_read_plus_operate_without_agent_control() {
+async fn pairing_returns_the_token_once_and_grants_agent_control_without_elevated() {
     let context = in_memory_auth_context();
 
     let (token, device_id) = pair_device(&context, "laptop").await;
@@ -569,7 +569,8 @@ async fn pairing_returns_the_token_once_and_grants_read_plus_operate_without_age
         .expect("device should exist");
     assert!(token.starts_with(REMOTE_DEVICE_TOKEN_PREFIX));
     assert_eq!(device.scopes, RemoteScopeSet::default_pairing_grant());
-    assert!(!device.agent_control_granted());
+    assert!(device.agent_control_granted());
+    assert!(!device.scopes.contains(Scope::UiElevated));
     assert_eq!(device.token_hash, hash_key(&token));
     assert_ne!(device.token_hash, token);
     assert!(audit_actions(&context)
@@ -869,7 +870,7 @@ async fn session_introspection(context: &RemoteAuthContext, token: &str) -> Valu
 }
 
 #[tokio::test]
-async fn agent_control_is_off_by_default_and_toggles_without_re_pairing() {
+async fn agent_control_is_on_by_default_and_can_be_revoked_without_re_pairing() {
     let context = in_memory_auth_context();
     let (token, device_id) = pair_device(&context, "laptop").await;
 
@@ -882,26 +883,29 @@ async fn agent_control_is_off_by_default_and_toggles_without_re_pairing() {
         .expect("device should exist");
     context
         .devices
-        .set_scopes(&device_id, &device.scopes.with(Scope::UiAgent))
-        .await
-        .expect("grant should apply");
-    let granted = session_introspection(&context, &token).await;
-    context
-        .devices
         .set_scopes(&device_id, &device.scopes.without(Scope::UiAgent))
         .await
-        .expect("narrow should apply");
-    let narrowed = session_introspection(&context, &token).await;
+        .expect("revoke should apply");
+    let revoked = session_introspection(&context, &token).await;
+    context
+        .devices
+        .set_scopes(&device_id, &device.scopes.with(Scope::UiAgent))
+        .await
+        .expect("regrant should apply");
+    let regranted = session_introspection(&context, &token).await;
 
-    assert_eq!(paired["agentControlGranted"], json!(false));
-    assert_eq!(paired["scopes"], json!(["ui:read", "ui:operate"]));
-    assert_eq!(granted["agentControlGranted"], json!(true));
+    assert_eq!(paired["agentControlGranted"], json!(true));
     assert_eq!(
-        granted["scopes"],
+        paired["scopes"],
         json!(["ui:read", "ui:operate", "ui:agent"])
     );
-    assert_eq!(narrowed["agentControlGranted"], json!(false));
-    assert_eq!(narrowed["scopes"], json!(["ui:read", "ui:operate"]));
+    assert_eq!(revoked["agentControlGranted"], json!(false));
+    assert_eq!(revoked["scopes"], json!(["ui:read", "ui:operate"]));
+    assert_eq!(regranted["agentControlGranted"], json!(true));
+    assert_eq!(
+        regranted["scopes"],
+        json!(["ui:read", "ui:operate", "ui:agent"])
+    );
 }
 
 /// Narrowing the grant must also fire the device's kill channels — introspection alone is

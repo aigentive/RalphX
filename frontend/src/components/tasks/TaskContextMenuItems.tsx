@@ -191,7 +191,7 @@ function resolveHandler(
  *
  * The complement is deliberate, not an oversight: `onPause`, `onBlockWithReason`,
  * `onStatusChange` for `cancel`, and the view-only actions are authority-reducing or
- * inert, so a paired device keeps them under the viewer-with-brakes boundary. This
+ * inert, so a device without `ui:agent` keeps them under the operate-only boundary. This
  * one map covers both the Kanban and graph menus, so neither surface can drift from
  * the other.
  */

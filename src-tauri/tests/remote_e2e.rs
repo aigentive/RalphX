@@ -241,9 +241,13 @@ async fn leg1_pairing_code_is_single_use_and_mints_a_working_bearer() {
         "the paired device must be bound to this host's environment",
     );
     assert!(
-        !paired.scopes.contains(&Scope::UiAgent),
-        "the default pairing grant is viewer-with-brakes and must never include ui:agent, \
-         got {:?}",
+        paired.scopes.contains(&Scope::UiAgent),
+        "owner decision 2026-08-03: the default pairing grant includes ui:agent, got {:?}",
+        paired.scopes,
+    );
+    assert!(
+        !paired.scopes.contains(&Scope::UiElevated),
+        "the default pairing grant must never include ui:elevated, got {:?}",
         paired.scopes,
     );
 
@@ -297,7 +301,7 @@ async fn leg2_read_command_round_trips_with_tauri_identical_serialization() {
 
 /// The scope split, both directions, in one leg.
 ///
-/// A device holding the default grant is refused an `AgentControl` command with the SCOPE code
+/// A device holding an explicit `ui:read` + `ui:operate` grant is refused an `AgentControl` command with the SCOPE code
 /// (not an incidental error), and the same device succeeds at a brake. The pairing that proves
 /// the negative is the same pairing that proves the positive, so a host that simply refused
 /// everything could not pass.
@@ -307,7 +311,10 @@ async fn leg2_agent_control_is_forbidden_while_a_brake_succeeds_under_ui_operate
         .await
         .expect("the harness host should boot");
     let device = host
-        .pair_device("viewer-with-brakes")
+        .pair_device_with_scopes(
+            "agent-control-revoked",
+            RemoteScopeSet::from_scopes([Scope::UiRead, Scope::UiOperate]),
+        )
         .await
         .expect("pairing should succeed");
     let client = ScriptedClient::new(host.base_url(), device.token);

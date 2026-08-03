@@ -188,6 +188,9 @@ describe("AddEnvironmentDialog — step 2 verify", () => {
     expect(screen.getByText("0.9.4")).toBeInTheDocument();
     expect(screen.getByText("macOS")).toBeInTheDocument();
     expect(screen.getByTestId("add-environment-protocol")).toHaveTextContent("v1");
+    expect(screen.getByTestId("add-environment-agent-control")).toHaveTextContent(
+      /pairing grants this device agent control/i,
+    );
     // The wire descriptor has no project count; inventing one would be a lie.
     expect(screen.queryByText(/project/i)).not.toBeInTheDocument();
   });

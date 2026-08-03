@@ -1,10 +1,10 @@
 /**
  * Remote affordance availability (PR 2.6-b), against manifest schemaVersion 2.
  *
- * Under the viewer-with-brakes boundary (Fixed Decision 12) a default-paired remote
- * environment can watch and it can STOP things — deny, stop, pause, block, edit
+ * When a host revokes `ui:agent`, a paired remote environment can still watch and STOP
+ * things — deny, stop, pause, block, edit
  * category/priority, create a Backlog task. Everything that steers an agent forward
- * needs the `ui:agent` scope the host grants explicitly.
+ * needs the `ui:agent` scope that pairing grants by default and the host can revoke.
  *
  * ## Three states, not two
  *
@@ -29,7 +29,7 @@
  * `approve_permission_request` / `deny_permission_request` ops. So affordances name
  * the FACADE OP they front, not the underlying Tauri command, and the field-level
  * case is resolved by `resolveFieldGate`. Gating either command wholesale would take
- * the brakes away from every default-paired device.
+ * the brakes away from every device whose agent control was revoked.
  *
  * Unknown scope state gates closed: `null` effective scopes means the supervisor has
  * never confirmed a set (Fixed Decision 2), not an empty grant to be optimistic about.
@@ -141,7 +141,7 @@ export const AGENT_GATED_AFFORDANCES = {
   // `send_remote_chat_message` remote command.
   questionAnswer: "resolve_remote_user_question",
   taskMove: "move_task",
-  // Task-level stop is registered as agentControl, so default-paired remotes must not invoke it.
+  // Task-level stop is registered as agentControl, so remotes without ui:agent must not invoke it.
   taskStop: "stop_task",
   // Restart is absent on older/current hosts and therefore resolves unavailable remotely.
   taskRestart: "restart_task",
@@ -212,7 +212,7 @@ export type AgentGatedAffordance = keyof typeof AGENT_GATED_AFFORDANCES;
 
 /**
  * The closed inert exemption list (A6) — surfaces that stay fully operable under a
- * default-paired remote environment because they only ever REDUCE authority or create
+ * remote environment without `ui:agent` because they only ever REDUCE authority or create
  * un-armed work. Closed means closed: adding a row is a boundary change.
  *
  * The per-task brakes (`stop`, `pause`, `block`) were exempt until the host escalated

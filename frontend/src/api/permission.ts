@@ -48,7 +48,7 @@ export const permissionApi = {
    * Both brakes on a paired device (Phase 1). `resolve_permission_request` is a
    * DUAL-DECISION command and the facade deliberately does not register it: one op that
    * can allow or deny by argument would have to sit at `agentControl`, which would take
-   * the deny brake away from every default pairing. The facade splits it into two
+   * the deny brake away from every device without `ui:agent`. The facade splits it into two
    * server-pinned ops instead — `approve_permission_request` (`agentControl`, pins
    * `decision: "allow"`) and `deny_permission_request` (`operate`, pins
    * `decision: "deny"`) — both dispatching to this same target fn.

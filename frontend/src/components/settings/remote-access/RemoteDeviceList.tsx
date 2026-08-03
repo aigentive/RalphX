@@ -1,8 +1,8 @@
 /**
- * RemoteDeviceList — paired devices with the per-device "Allow remote agent
- * control" toggle (§5.4's one deliberate consent) and immediate revoke.
+ * RemoteDeviceList — paired devices with the per-device agent-control revoke/re-grant toggle
+ * and immediate device revoke.
  *
- * Granting agent control surfaces the explicit warning BEFORE committing: it
+ * Re-granting agent control surfaces the explicit warning BEFORE committing: it
  * names kanban operation, agent start/steer, content editing, and tool-use
  * approval — host code execution. Withdrawal commits immediately (narrowing
  * needs no consent) and tears down the device's live sessions.
@@ -59,7 +59,7 @@ export function RemoteDeviceList({
     <Card className="bg-[var(--bg-elevated)] border-[var(--border-default)] shadow-[var(--shadow-xs)]">
       <RemoteAccessCardHeader
         title="Paired devices"
-        description="Every device that holds a token for this Mac"
+        description="Agent control starts on; revoke or re-grant it for each device"
       />
       <div className="px-5 pb-5">
         {devices === null ? (

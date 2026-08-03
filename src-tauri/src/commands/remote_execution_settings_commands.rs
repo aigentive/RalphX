@@ -45,7 +45,7 @@
 //! `AgentControl`, not `Operate`. Persisting a higher cap seeds state a background loop turns
 //! into a spawn, which is exactly the `seedsSpawnTriggeringState` capability — the ledger's
 //! rule is that classification traces downstream authority, not immediate action. It
-//! therefore requires `ui:agent`, the per-device grant that is off by default.
+//! therefore requires `ui:agent`, the pairing-default grant that remains revocable per device.
 //!
 //! # No event emission
 //!

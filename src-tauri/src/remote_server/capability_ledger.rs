@@ -1298,7 +1298,8 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
     // AgentControl, not Operate: persisting a higher cap seeds state a background scheduling
     // pass turns into a spawn. Classification traces downstream authority, not immediate
     // action, so a write whose only effect is a database row is still AgentControl when a
-    // loop consumes that row. Requires `ui:agent`, which is off by default per device.
+    // loop consumes that row. Requires `ui:agent`, which is granted at pairing and revocable
+    // per device.
     // -----------------------------------------------------------------------------------
     // -----------------------------------------------------------------------------------
     // WP4 (a) — the rows batch 14 refused on a transport shape that does not exist.
@@ -3834,7 +3835,7 @@ pub const CONDITIONAL_CAPABILITIES: &[ConditionalCapability] = &[ConditionalCapa
 /// Some commands are safe remotely only in a narrowed form. The brakes are the canonical case:
 /// `pause_execution`/`stop_execution` take `project_id: Option<String>`, and the `None` arm
 /// falls back to the LOCAL user's active project or, failing that, to `project_repo.get_all()`
-/// — so a default-paired phone could sweep every project on the host in one call. A remote
+/// — so a paired phone could sweep every project on the host in one call. A remote
 /// device must name the project it is halting.
 ///
 /// Recorded here rather than left implicit in the macro so the annotation and the `validate:`
@@ -3872,7 +3873,7 @@ pub const DECLARED_MEMBERSHIPS: &[(&str, &str)] = &[
     ("resolve_user_question", "steering-question"),
     // Declared, precisely BECAUSE the detectors are silent on it. The P-17b negative
     // suite is generated from detector output, so a spawn-free command that steers a
-    // live agent would otherwise never be proved unreachable from a default pairing —
+    // live agent would otherwise never be proved unreachable without `ui:agent` —
     // the one class of member the generator cannot find by itself.
     ("send_remote_chat_message", "steers-live-agent-turn"),
     // PR 3.1-b batch 10 — the two registered arming writes NO detector models.
@@ -3883,7 +3884,7 @@ pub const DECLARED_MEMBERSHIPS: &[(&str, &str)] = &[
     // `update_qa_settings` writes an in-memory `RwLock`, not a repository, and
     // `set_active_project` writes `ExecutionState` atomics rather than an `InternalStatus` — so
     // each is detector-silent and would otherwise be REGISTERED at `ui:agent` while never being
-    // proved unreachable from a default `ui:read`+`ui:operate` pairing. That is precisely the
+    // proved unreachable from an explicit `ui:read`+`ui:operate` grant. That is precisely the
     // hole the chat-send row exists to close, and registering an arming write without one would
     // reopen it.
     //
@@ -3899,7 +3900,7 @@ pub const DECLARED_MEMBERSHIPS: &[(&str, &str)] = &[
     // verification service gates on `auto_verify_draft_plans`, and `resolve_agent_spawn_settings`
     // reads the lane row to choose the harness a live agent is launched with. Registering either
     // without a declaration would put an arming write at `ui:agent` that the generated P-17b
-    // negative suite never proves unreachable from a default pairing.
+    // negative suite never proves unreachable without `ui:agent`.
     ("update_ideation_settings", "arms-auto-plan-verification"),
     ("update_agent_lane_settings", "arms-agent-spawn-harness"),
     // PR 3.1-b batch 12 — three automation writes that flip `automations.status` to Active.

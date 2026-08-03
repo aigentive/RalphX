@@ -313,7 +313,7 @@ mod audit_is_fatal {
     #[tokio::test]
     async fn agent_control_grant_is_reverted_and_refused_when_the_audit_write_fails() {
         let devices = Arc::new(RecordingDeviceRepository::with_scopes(
-            RemoteScopeSet::default_pairing_grant(),
+            RemoteScopeSet::from_scopes([Scope::UiRead, Scope::UiOperate]),
         ));
         let context = context_with(devices.clone());
 

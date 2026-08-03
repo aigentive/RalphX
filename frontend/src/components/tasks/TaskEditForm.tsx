@@ -69,7 +69,7 @@ export function TaskEditForm({
   /**
    * Title and description are AGENT-CONSUMED content — editing them re-aims work in
    * flight — so they need `ui:agent` (2.6-b). Category and priority are inert under
-   * the viewer-with-brakes boundary (A6).
+   * the operate-only boundary for a device whose agent control was revoked (A6).
    *
    * Both halves share one `update_task` call, so the gate has to be argument-level,
    * not command-level: the gated fields are stripped from the diff here AND their

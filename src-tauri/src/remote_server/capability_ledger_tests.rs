@@ -2231,7 +2231,7 @@ fn b1_sibling_getters_that_audit_dirty_stay_above_read() {
         spec.class,
         RiskClass::AgentControl,
         "set_active_project syncs the execution concurrency quota; registering it anywhere a \
-         default pairing can reach would expose scheduler arming to a viewer"
+         device without ui:agent can reach would expose scheduler arming"
     );
 }
 
@@ -3270,7 +3270,7 @@ fn scope_confinements_are_enforced_by_a_live_predicate() {
         assert!(
             spec.validate.is_some(),
             "`{}` is annotated scope-confined but has no `validate:` predicate — the annotation \
-             would be the only thing standing between a default-paired device and the \
+             would be the only thing standing between a device without ui:agent and the \
              all-projects sweep",
             entry.command
         );
@@ -3654,7 +3654,7 @@ fn the_spawn_free_remote_read_module_carries_no_authority_carriers() {
 /// Their absence is what lets `request_remote_agent_stop` sit at `ui:operate` with no
 /// capability, so it is asserted over the module source instead of trusted from the ledger
 /// reason: a future edit that reconnects a carrier fails here rather than silently re-arming
-/// the default pairing.
+/// a device without `ui:agent`.
 #[test]
 fn the_spawn_free_remote_agent_stop_module_carries_no_authority_carriers() {
     let sources = load_production_sources();
@@ -3735,7 +3735,7 @@ fn the_spawn_free_remote_question_module_carries_no_authority_carriers() {
 ///
 /// Both halves matter. Registering the intent while `stop_agent` also became reachable would
 /// re-open the process floor; classifying the intent above `Operate` would take the brake away
-/// from the default pairing, which is the exact regression the WP exists to fix.
+/// from a device without `ui:agent`, which is the exact regression the WP exists to fix.
 #[test]
 fn the_remote_agent_stop_intent_is_an_operate_brake_and_stop_agent_stays_denied() {
     let rows = census().into_iter().collect::<BTreeMap<_, _>>();
@@ -4431,7 +4431,7 @@ fn b3_members_that_audit_dirty_stay_unregistered() {
     // Batch 10 REGISTERED it at `ui:agent`, with an explicit DECLARED_MEMBERSHIPS row
     // (`arms-auto-qa`) precisely because no detector models the in-memory surface described
     // above — without that row the generated P-17b suite could never prove a registered
-    // arming write is unreachable from a default pairing. The invariant this test keeps is
+    // arming write is unreachable without `ui:agent`. The invariant this test keeps is
     // the class: an auto-QA arming write must never be reachable below `ui:agent`.
     let qa_spec = find_spec("update_qa_settings").expect("batch 10 registered update_qa_settings");
     assert_eq!(qa_spec.class, RiskClass::AgentControl);
@@ -4629,7 +4629,7 @@ fn b4_members_that_audit_dirty_stay_unregistered() {
     // refusal was about the surface; the split proves it was about the body.
     //
     // The invariant this test still enforces is unchanged: neither may be reclassified DOWNWARD
-    // by module analogy into a scope a default pairing can reach.
+    // by module analogy below the `ui:agent` scope.
     for (command, module) in [
         ("clear_active_plan", "plan_commands"),
         ("seed_builtin_workflows", "workflow_commands"),
@@ -5398,7 +5398,7 @@ fn batch11_closes_the_b4_remainder() {
 
     // The two arming writes no detector models. Registering either without a declaration would
     // put an arming write at `ui:agent` that the generated P-17b negative suite never proves
-    // unreachable from a default pairing — the exact hole the chat-send declaration closed.
+    // unreachable without `ui:agent` — the exact hole the chat-send declaration closed.
     for command in ["update_ideation_settings", "update_agent_lane_settings"] {
         let declared = DECLARED_MEMBERSHIPS
             .iter()

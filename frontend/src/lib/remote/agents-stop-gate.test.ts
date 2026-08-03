@@ -24,7 +24,7 @@ import {
 } from "./agent-gate";
 
 const GRANTED = ["ui:read", "ui:operate", "ui:agent"];
-const DEFAULT_PAIRED = ["ui:read", "ui:operate"];
+const WITHOUT_UI_AGENT = ["ui:read", "ui:operate"];
 
 /** A generated-manifest stand-in with the Stop op present at the given class. */
 function mockManifest(withStopOp: boolean, opClass = "operate"): void {
@@ -75,7 +75,7 @@ describe("Stop gate", () => {
   });
 
   it("the DEFAULT pairing can stop — brakes must not require ui:agent", async () => {
-    const state = await resolveStop(true, true, DEFAULT_PAIRED);
+    const state = await resolveStop(true, true, WITHOUT_UI_AGENT);
     expect(state.status).toBe("enabled");
     expect(state.gated).toBe(false);
     expect(state.reason).toBeNull();
@@ -100,11 +100,11 @@ describe("Stop gate", () => {
 
   /**
    * The regression guard: if the host ever reclassified the intent to `agentControl`, the
-   * default pairing would lose the brake. This documents that consequence so the change is a
+   * device without ui:agent would lose the brake. This documents that consequence so the change is a
    * deliberate contract edit rather than an accident.
    */
-  it("would gate the default pairing if the intent were reclassified agentControl", async () => {
-    const state = await resolveStop(true, true, DEFAULT_PAIRED, "agentControl");
+  it("would gate a device without ui:agent if the intent were reclassified agentControl", async () => {
+    const state = await resolveStop(true, true, WITHOUT_UI_AGENT, "agentControl");
     expect(state.status).toBe("gated");
     expect(state.reason).toBe(AGENT_CONTROL_DISABLED_HINT);
   });

@@ -928,8 +928,8 @@ crate::remote_commands! {
 
     // -----------------------------------------------------------------------------------
     // PR 1.5-A — `ui:operate`: watch + brakes + inert edits, and NOTHING that can start,
-    // resume, restart, or steer an agent. This is the default pairing's entire mutating
-    // surface (the "viewer with brakes" boundary, §3.3/§4.3).
+    // resume, restart, or steer an agent. This is the mutating surface that remains available
+    // after a host revokes a device's agent-control grant (§3.3/§4.3).
     // -----------------------------------------------------------------------------------
 
     // Argument-sensitive: `category`/`priority` are inert (closed enum + i32, so neither can

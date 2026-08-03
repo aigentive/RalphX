@@ -251,7 +251,7 @@ export function RemotePairingCard({
     <Card className="bg-[var(--bg-elevated)] border-[var(--border-default)] shadow-[var(--shadow-xs)]">
       <RemoteAccessCardHeader
         title="Pair a device"
-        description="Single-use code, 10-minute expiry — shown only once"
+        description="New devices get agent control; revoke it per device below"
       />
       <div className="px-5 pb-5 space-y-4">
         {!pairing || expired ? (
@@ -261,7 +261,7 @@ export function RemotePairingCard({
                 ? "That code expired before it was used. Generate a new one."
                 : restored
                   ? "Generating another code leaves the active one valid — cancel it above if you no longer want it."
-                  : "Generate a code, then scan or paste it on the device you are pairing."}
+                  : "Generate a single-use code, then scan or paste it on the device you are pairing. It expires after 10 minutes."}
             </p>
             <Button
               data-testid="remote-pair-device"

@@ -12,11 +12,12 @@
 //! waits for a LATER durable frame to arrive rather than guessing at a duration. See
 //! `durable_barrier` below for why that is sound.
 
-use ralphx_remote_protocol::{ClientFrame, ResetReason, ServerFrame};
+use ralphx_remote_protocol::{ClientFrame, ResetReason, Scope, ServerFrame};
 use serde_json::json;
 
 use super::harness::{invoke_error_code, RemoteHostHarness, ScriptedClient};
 use super::sequencer::EpochRollCause;
+use crate::domain::entities::RemoteScopeSet;
 
 /// A durable chat event, used as the ordering barrier in several legs.
 const DURABLE_PROBE: &str = "agent:message_created";
@@ -426,14 +427,17 @@ async fn an_epoch_roll_resets_a_connected_client() {
 // Leg: scope split on chat send
 // =====================================================================================
 
-/// Chat send is `AgentControl`: a default "viewer with brakes" device must be refused.
+/// Chat send is `AgentControl`: an explicitly narrowed device without `ui:agent` is refused.
 #[tokio::test]
 async fn chat_send_without_ui_agent_is_forbidden() {
     let host = RemoteHostHarness::start()
         .await
         .expect("the harness host should boot");
     let device = host
-        .pair_device("viewer-with-brakes")
+        .pair_device_with_scopes(
+            "agent-control-revoked",
+            RemoteScopeSet::from_scopes([Scope::UiRead, Scope::UiOperate]),
+        )
         .await
         .expect("pairing should succeed");
     let client = ScriptedClient::new(host.base_url(), device.token);

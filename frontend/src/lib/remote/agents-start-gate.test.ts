@@ -23,7 +23,7 @@ import { buildAgentProviderAvailabilityOptions } from "@/components/agents/agent
 import type { AgentProviderSettingsResponse } from "@/api/harness-providers";
 
 const GRANTED = ["ui:read", "ui:operate", "ui:agent"];
-const DEFAULT_PAIRED = ["ui:read", "ui:operate"];
+const WITHOUT_UI_AGENT = ["ui:read", "ui:operate"];
 
 /** A generated-manifest stand-in with the Start op present at the given class. */
 function mockManifest(withStartOp: boolean): void {
@@ -74,7 +74,7 @@ describe("Start gate — the five §3.2 rows", () => {
   });
 
   it("row 2 — remote ui:read/ui:operate (no ui:agent) → gated, agent-control hint", async () => {
-    const state = await resolveStart(true, true, DEFAULT_PAIRED);
+    const state = await resolveStart(true, true, WITHOUT_UI_AGENT);
     expect(state.status).toBe("gated");
     expect(state.reason).toBe(AGENT_CONTROL_DISABLED_HINT);
   });

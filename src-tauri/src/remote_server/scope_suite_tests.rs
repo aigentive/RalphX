@@ -12,7 +12,7 @@
 //! "generated from the audit", with a CI gate on the link.
 //!
 //! What each member proves:
-//! * registered → dispatching it with a default pairing's grant (`ui:read` + `ui:operate`)
+//! * registered → dispatching it without `ui:agent` (`ui:read` + `ui:operate`)
 //!   is refused with `REMOTE_FORBIDDEN`, and nothing was written;
 //! * unregistered → dispatching it returns the `REMOTE_COMMAND_UNAVAILABLE` envelope, i.e. the
 //!   floor member is unreachable rather than reachable-but-unguarded.
@@ -29,8 +29,8 @@ use super::registry::{self, find_spec};
 use crate::application::AppState;
 use crate::domain::entities::{ProjectId, Task};
 
-/// The grant a default-paired device holds under the viewer-with-brakes model.
-const DEFAULT_PAIRING: &[Scope] = &[Scope::UiRead, Scope::UiOperate];
+/// An explicit minimal grant used to prove the `ui:agent` enforcement boundary.
+const WITHOUT_UI_AGENT: &[Scope] = &[Scope::UiRead, Scope::UiOperate];
 
 /// Every scope, used to prove an unregistered floor member is unreachable for ANY device — not
 /// merely unauthorized for this one.
@@ -181,9 +181,9 @@ fn stripping_a_declared_membership_shrinks_the_suite_and_fails_the_guard() {
     }
 }
 
-/// Every registered member of the generated suite sits at a class a default pairing cannot reach.
+/// Every registered member of the generated suite sits at a class requiring `ui:agent` or more.
 #[test]
-fn every_registered_suite_member_is_classified_above_the_default_pairing() {
+fn every_registered_suite_member_is_classified_above_ui_operate() {
     let members = suite_membership(&manifest());
     let mut registered = 0usize;
     for member in &members {
@@ -233,9 +233,9 @@ async fn update_task_splits_on_the_field_the_request_touches() {
 
     for field in ["title", "description"] {
         let args = json!({"taskId": &task_id, "input": {field: "POISON"}});
-        let refused = registry::dispatch(app.handle(), DEFAULT_PAIRING, "update_task", &args)
+        let refused = registry::dispatch(app.handle(), WITHOUT_UI_AGENT, "update_task", &args)
             .await
-            .expect_err("a content write must not be reachable from the default pairing");
+            .expect_err("a content write must not be reachable without ui:agent");
         assert_eq!(refused.code, ErrorCode::RemoteForbidden, "field {field}");
     }
 
@@ -253,12 +253,12 @@ async fn update_task_splits_on_the_field_the_request_touches() {
     // The inert edit is admitted at the same class.
     let admitted = registry::dispatch(
         app.handle(),
-        DEFAULT_PAIRING,
+        WITHOUT_UI_AGENT,
         "update_task",
         &json!({"taskId": &task_id, "input": {"priority": 7}}),
     )
     .await
-    .expect("an inert edit must be reachable from the default pairing");
+    .expect("an inert edit must be reachable with ui:operate");
     assert!(
         matches!(admitted, registry::DispatchOutcome::Ok(_)),
         "inert update was admitted but failed: {admitted:?}"
@@ -288,7 +288,7 @@ async fn create_task_is_backlog_only_even_when_a_status_is_smuggled() {
 
     let outcome = registry::dispatch(
         app.handle(),
-        DEFAULT_PAIRING,
+        WITHOUT_UI_AGENT,
         "create_task",
         // Extra keys are the smuggling attempt: `CreateTaskInput` has no status field, so they
         // must be inert rather than merely ignored-by-luck.
@@ -301,7 +301,7 @@ async fn create_task_is_backlog_only_even_when_a_status_is_smuggled() {
         }}),
     )
     .await
-    .expect("create_task is reachable from the default pairing");
+    .expect("create_task is reachable with ui:operate");
     assert!(
         matches!(outcome, registry::DispatchOutcome::Ok(_)),
         "create_task failed: {outcome:?}"
@@ -367,7 +367,7 @@ async fn default_pairing_is_refused_per_task_and_bulk_brakes_but_permitted_globa
         assert_eq!(spec.class, RiskClass::AgentControl, "{brake} drifted class");
         let error = registry::dispatch(
             app.handle(),
-            DEFAULT_PAIRING,
+            WITHOUT_UI_AGENT,
             brake,
             &json!({
                 "taskId": &task_id,
@@ -377,7 +377,7 @@ async fn default_pairing_is_refused_per_task_and_bulk_brakes_but_permitted_globa
             }),
         )
         .await
-        .expect_err("the default pairing must not reach agent-control brakes");
+        .expect_err("a device without ui:agent must not reach agent-control brakes");
         assert_eq!(error.code, ErrorCode::RemoteForbidden, "{brake} drifted");
     }
 
@@ -386,7 +386,7 @@ async fn default_pairing_is_refused_per_task_and_bulk_brakes_but_permitted_globa
         assert_eq!(spec.class, RiskClass::Operate, "{brake} drifted class");
         registry::dispatch(
             app.handle(),
-            DEFAULT_PAIRING,
+            WITHOUT_UI_AGENT,
             brake,
             &json!({"projectId": project_id.as_str()}),
         )
@@ -484,7 +484,7 @@ fn a_client_supplied_role_cannot_forge_a_speaker_on_the_remote_chat_send() {
 
 /// The suite proper, driven through the PRODUCTION `registry::dispatch`.
 #[tokio::test]
-async fn the_generated_suite_is_unreachable_from_a_default_pairing() {
+async fn the_generated_suite_is_unreachable_without_ui_agent() {
     let members = suite_membership(&manifest());
     check_anchors(&members).expect("anchor missing from the generated suite");
 
@@ -522,10 +522,10 @@ async fn the_generated_suite_is_unreachable_from_a_default_pairing() {
             "input": {"taskId": seeded.id.as_str(), "projectId": project_id.as_str()},
         });
 
-        let refusal = registry::dispatch(app.handle(), DEFAULT_PAIRING, member, &args)
+        let refusal = registry::dispatch(app.handle(), WITHOUT_UI_AGENT, member, &args)
             .await
             .expect_err(&format!(
-                "`{member}` is in the AgentControl floor but a default pairing dispatched it"
+                "`{member}` is in the AgentControl floor but dispatched without ui:agent"
             ));
 
         if find_spec(member).is_some() {
@@ -675,7 +675,7 @@ async fn manifest_classified_commands_stay_unreachable_at_every_scope() {
             );
         }
 
-        // 3. The envelope is the `find_spec`-miss code, at the default pairing AND with every
+        // 3. The envelope is the `find_spec`-miss code, without `ui:agent` AND with every
         //    scope a device could ever be granted. `ui:elevated` is in `EVERY_SCOPE`, so this
         //    also discharges the v1-deferred class's "reachable only under a scope v1 excludes"
         //    claim: even holding that scope, the command does not dispatch.
@@ -688,7 +688,7 @@ async fn manifest_classified_commands_stay_unreachable_at_every_scope() {
             "projectId": project_id.as_str(),
             "input": {"taskId": seeded.id.as_str(), "projectId": project_id.as_str()},
         });
-        for granted in [DEFAULT_PAIRING, EVERY_SCOPE] {
+        for granted in [WITHOUT_UI_AGENT, EVERY_SCOPE] {
             let refusal = registry::dispatch(app.handle(), granted, command, &args)
                 .await
                 .expect_err(&format!(

@@ -145,7 +145,7 @@ function minted(expiresAt: string): MintedRemotePairingCode {
   return {
     id: "pc-1",
     code: "rxp_ABCDEFGHJKLMNPQRSTUVWXYZabcdef01",
-    scopes: ["ui:read", "ui:operate"],
+    scopes: ["ui:read", "ui:operate", "ui:agent"],
     createdAt: "2026-07-27T10:00:00Z",
     expiresAt,
     expiresInSecs: 600,
@@ -422,6 +422,7 @@ describe("pairing flow", () => {
     expect(api.generatePairingCode).toHaveBeenCalledTimes(1);
 
     const card = await screen.findByTestId("remote-pairing-card");
+    expect(screen.getByText(/new devices get agent control/i)).toBeInTheDocument();
     expect(within(card).getByTestId("remote-pairing-code")).toHaveTextContent(
       "rxp_ABCD EFGH JKLM NPQR STUV WXYZ abcd ef01",
     );
@@ -536,7 +537,7 @@ describe("active pairing code across remounts", () => {
     api.listPairingCodes.mockResolvedValue([
       {
         id: "pc-live",
-        scopes: ["ui:read", "ui:operate"],
+        scopes: ["ui:read", "ui:operate", "ui:agent"],
         createdAt: "2026-07-27T09:56:00Z",
         expiresAt: "2026-07-27T10:06:00Z",
       },

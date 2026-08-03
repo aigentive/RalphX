@@ -1019,9 +1019,9 @@
     },
     {
       "authorityBearing": false,
-      "enclosingFunction": "application/shutdown.rs:::::shutdown_external_mcp",
+      "enclosingFunction": "application/shutdown.rs::ExitWatchdog::arm_with",
       "file": "application/shutdown.rs",
-      "id": "application/shutdown.rs::application/shutdown.rs:::::shutdown_external_mcp@cd295ad11d49d37f",
+      "id": "application/shutdown.rs::application/shutdown.rs::ExitWatchdog::arm_with@443d5cc12f6f5989",
       "kind": "thread::spawn",
       "readSurface": [],
       "sinksReached": []

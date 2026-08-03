@@ -412,8 +412,8 @@ impl RemoteHostHarness {
         Ok(raw)
     }
 
-    /// Pairs a device over the real HTTP pairing route with the default grant
-    /// ("viewer with brakes": `ui:read` + `ui:operate`, never `ui:agent`).
+    /// Pairs a device over the real HTTP pairing route with the default grant, including agent
+    /// control.
     pub async fn pair_device(&self, name: &str) -> AppResult<PairedDevice> {
         self.pair_device_with_scopes(name, RemoteScopeSet::default_pairing_grant())
             .await
@@ -451,10 +451,10 @@ impl RemoteHostHarness {
 
     /// Flips the per-device agent-control grant through the production repository seam.
     ///
-    /// `ui:agent` is deliberately NOT grantable at pairing time (the pairing grant validator
-    /// refuses it), so this is the only honest way to reach an agent-control device.
+    /// Pairing grants `ui:agent` by default; this mirrors the per-device re-grant path after a
+    /// device has had agent control revoked.
     pub async fn grant_agent_control(&self, device_id: &RemoteDeviceId) -> AppResult<()> {
-        let granted = RemoteScopeSet::default_pairing_grant().with(Scope::UiAgent);
+        let granted = RemoteScopeSet::default_pairing_grant();
         // `set_scopes` refuses revoked devices, so this can never widen a dead credential.
         self.auth.devices.set_scopes(device_id, &granted).await?;
         Ok(())

@@ -1270,8 +1270,8 @@ const mockRemoteHost = {
       id: "dev-mock-1",
       name: "Mock iPhone",
       tokenPrefix: "rxd_live_MoCk",
-      scopes: ["ui:read", "ui:operate"] as string[],
-      agentControlGranted: false,
+      scopes: ["ui:read", "ui:operate", "ui:agent"] as string[],
+      agentControlGranted: true,
       createdAt: "2026-07-20T10:00:00.000Z",
       lastSeenAt: "2026-07-27T09:00:00.000Z",
       revokedAt: null as string | null,
@@ -1521,14 +1521,14 @@ const commandHandlers: Record<
     const expiresAt = new Date(Date.now() + 600_000).toISOString();
     mockRemoteHost.pairingCodes.push({
       id,
-      scopes: ["ui:read", "ui:operate"],
+      scopes: ["ui:read", "ui:operate", "ui:agent"],
       createdAt,
       expiresAt,
     });
     return {
       id,
       code: "rxp_MOCKCODEMOCKCODEMOCKCODEMOCKCODE",
-      scopes: ["ui:read", "ui:operate"],
+      scopes: ["ui:read", "ui:operate", "ui:agent"],
       createdAt,
       expiresAt,
       expiresInSecs: 600,
@@ -1642,7 +1642,7 @@ const commandHandlers: Record<
       name,
       baseUrl,
       candidateUrls: [baseUrl],
-      scopes: ["ui:read", "ui:operate"],
+      scopes: ["ui:read", "ui:operate", "ui:agent"],
       protocolVersion: 1,
       status: "active",
       createdAt: new Date().toISOString(),

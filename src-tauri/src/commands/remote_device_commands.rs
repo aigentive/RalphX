@@ -80,7 +80,7 @@ pub struct RemoteDeviceIdInput {
 #[serde(rename_all = "camelCase")]
 pub struct SetRemoteDeviceAgentControlInput {
     pub device_id: String,
-    /// Off by default; this is the only way `ui:agent` is ever granted (§5.4).
+    /// Granted at pairing by default; this toggle revokes or re-grants `ui:agent` (§5.4).
     pub enabled: bool,
 }
 
@@ -128,8 +128,9 @@ async fn list_audit_entries_from(
 
 /// Mints a single-use pairing code with a 10-minute TTL.
 ///
-/// The grant is validated first: a pairing code can never carry `ui:agent` or `ui:elevated`,
-/// so agent control cannot be smuggled in through pairing (§4.3).
+/// The grant is validated first: a pairing code can carry the default `ui:agent` scope but
+/// never `ui:elevated`. Existing devices are not retrofitted because scopes are stored when
+/// pairing completes; the per-device toggle upgrades, revokes, or re-grants agent control.
 #[tauri::command]
 pub async fn generate_remote_pairing_code(
     state: State<'_, AppState>,

@@ -8,7 +8,7 @@
  *
  * What is pinned: a paired device NEVER names `resolve_permission_request` (the facade does
  * not register the dual-decision command — one op that allows OR denies by argument would
- * have to sit at `agentControl`, taking the deny brake away from every default pairing). It
+ * have to sit at `agentControl`, taking the deny brake away from devices without ui:agent). It
  * names the server-pinned split instead: `deny_permission_request` (`operate`) and
  * `approve_permission_request` (`agentControl`). And the local environment is byte-identical
  * to what it was before the split existed.
@@ -34,10 +34,10 @@ const REMOTE_ID = "env-remote";
 const REQUEST_ID = "perm-req-1";
 
 /** The DEFAULT pairing: read + operate, no `ui:agent`. */
-const DEFAULT_PAIRED = ["ui:read", "ui:operate"];
+const WITHOUT_UI_AGENT = ["ui:read", "ui:operate"];
 const AGENT_GRANTED = ["ui:read", "ui:operate", "ui:agent"];
 
-function useRemoteEnvironment(scopes: string[] = DEFAULT_PAIRED): void {
+function useRemoteEnvironment(scopes: string[] = WITHOUT_UI_AGENT): void {
   useEnvironmentStore.setState({
     activeEnvironmentId: REMOTE_ID,
     environments: [
@@ -89,7 +89,7 @@ beforeEach(() => {
 
 describe("remote permission-gate routing", () => {
   it("routes deny to the pinned deny op from the DEFAULT pairing", async () => {
-    useRemoteEnvironment(DEFAULT_PAIRED);
+    useRemoteEnvironment(WITHOUT_UI_AGENT);
     routeRemote();
 
     await permissionApi.resolveRequest({
@@ -158,7 +158,7 @@ describe("remote permission-gate routing", () => {
   });
 
   it("surfaces a host refusal instead of resolving silently", async () => {
-    useRemoteEnvironment(DEFAULT_PAIRED);
+    useRemoteEnvironment(WITHOUT_UI_AGENT);
     primitiveInvoke.mockResolvedValue({
       outcome: "error",
       error: { code: "REMOTE_FORBIDDEN", message: "not allowed" },
