@@ -13,6 +13,8 @@
 // - agent:queue_sent - Queued message sent
 // - agent:startup_progress - Project agent startup phase label for chat typing indicator
 
+pub(crate) mod plan_edit_handoff;
+
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
@@ -3841,19 +3843,28 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
 
     if agent_is_running {
         if let ModeSwitchRunningAgentPolicy::StopWithService(chat_service) = running_agent_policy {
-            let stop_context_id = conversation.id.as_str();
-            let stopped = chat_service
-                .stop_agent(ChatContextType::Project, &stop_context_id)
-                .await
-                .map_err(|error| error.to_string())?;
-            tracing::info!(
-                conversation_id = %conversation.id,
-                target_mode = %target_mode,
-                stopped,
-                "Stopped running project agent before switching conversation mode"
-            );
-            if state.running_agent_registry.is_running(&running_key).await {
-                return Err("Cannot change mode while the agent is running".to_string());
+            if plan_to_edit_handoff {
+                plan_edit_handoff::stop_plan_to_edit_handoff_before_commit(
+                    state,
+                    chat_service,
+                    &conversation,
+                )
+                .await?;
+            } else {
+                let stop_context_id = conversation.id.as_str();
+                let stopped = chat_service
+                    .stop_agent(ChatContextType::Project, &stop_context_id)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                tracing::info!(
+                    conversation_id = %conversation.id,
+                    target_mode = %target_mode,
+                    stopped,
+                    "Stopped running project agent before switching conversation mode"
+                );
+                if state.running_agent_registry.is_running(&running_key).await {
+                    return Err("Cannot change mode while the agent is running".to_string());
+                }
             }
         }
     }
@@ -3992,19 +4003,6 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
             invalidate_workspace_review_presentation_context(&conversation.id);
     }
 
-    if plan_to_edit_handoff && conversation.provider_session_ref().is_some() {
-        state
-            .chat_conversation_repo
-            .clear_provider_session_ref(&conversation.id)
-            .await
-            .map_err(|error| error.to_string())?;
-        conversation.clear_provider_session_ref();
-        tracing::info!(
-            conversation_id = %conversation.id,
-            "Cleared planning provider session before Plan-to-Edit implementation handoff"
-        );
-    }
-
     if let Some(runtime_override) = input.runtime_override.as_ref() {
         let coordination_mode = runtime_override.coordination_mode.unwrap_or_default();
         state
@@ -4034,6 +4032,26 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
             .await
             .map_err(|error| error.to_string())?;
         conversation.set_agent_mode(Some(target_mode));
+    }
+
+    if plan_to_edit_handoff {
+        match running_agent_policy {
+            ModeSwitchRunningAgentPolicy::StopWithService(chat_service) => {
+                plan_edit_handoff::finish_plan_to_edit_handoff_after_commit(
+                    state,
+                    chat_service,
+                    &mut conversation,
+                )
+                .await?;
+            }
+            ModeSwitchRunningAgentPolicy::Reject | ModeSwitchRunningAgentPolicy::Allow => {
+                plan_edit_handoff::clear_plan_provider_session_after_commit(
+                    state,
+                    &mut conversation,
+                )
+                .await?;
+            }
+        }
     }
 
     let conversation = state

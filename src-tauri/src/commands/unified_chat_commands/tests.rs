@@ -1,3 +1,6 @@
+use super::plan_edit_handoff::{
+    finish_plan_to_edit_handoff_after_commit, stop_plan_to_edit_handoff_before_commit,
+};
 use super::{
     agent_conversation_response_for_state, agent_conversation_responses_for_state,
     agent_workspace_freshness_cache, agent_workspace_freshness_cache_key,
@@ -9450,6 +9453,73 @@ async fn switching_branchless_chat_to_edit_persists_source_pull_request_metadata
 }
 
 #[tokio::test]
+async fn plan_to_edit_precommit_rejects_a_runtime_that_remains_registered_after_stop() {
+    let state = AppState::new_test();
+    let conversation = ChatConversation::new_project(ProjectId::new());
+    let running_key = RunningAgentKey::new(
+        ChatContextType::Project.to_string(),
+        conversation.id.as_str(),
+    );
+    state
+        .running_agent_registry
+        .register(
+            running_key.clone(),
+            123,
+            conversation.id.as_str(),
+            "run-still-registered".to_string(),
+            None,
+            None,
+        )
+        .await;
+    let service = MockChatService::new();
+
+    let error = stop_plan_to_edit_handoff_before_commit(&state, &service, &conversation)
+        .await
+        .expect_err("a still-registered runtime must block the authority transition");
+
+    assert_eq!(error, "Cannot change mode while the agent is running");
+    assert_eq!(
+        service.get_stop_agent_calls().await,
+        vec![(
+            ChatContextType::Project,
+            conversation.id.as_str().to_string()
+        )]
+    );
+    assert!(state.running_agent_registry.is_running(&running_key).await);
+}
+
+#[tokio::test]
+async fn plan_to_edit_postcommit_preserves_session_when_idle_retirement_is_rejected() {
+    let state = AppState::new_test();
+    let mut conversation = ChatConversation::new_project(ProjectId::new());
+    conversation.set_provider_session_ref(ProviderSessionRef {
+        harness: AgentHarnessKind::Claude,
+        provider_session_id: "planning-session".to_string(),
+    });
+    let conversation_id = conversation.id.as_str().to_string();
+    let service = MockChatService::new();
+    service
+        .set_retire_idle_interactive_process_result(false)
+        .await;
+
+    let error = finish_plan_to_edit_handoff_after_commit(&state, &service, &mut conversation)
+        .await
+        .expect_err("unverified idle retirement must reject direct implementation");
+
+    assert!(error.contains("runtime handoff is still active"));
+    assert_eq!(
+        service.get_retire_idle_interactive_process_calls().await,
+        vec![(ChatContextType::Project, conversation_id)]
+    );
+    assert_eq!(
+        conversation
+            .provider_session_ref()
+            .map(|session| session.provider_session_id),
+        Some("planning-session".to_string())
+    );
+}
+
+#[tokio::test]
 async fn accepted_plan_proposal_switch_can_bypass_running_agent_guard() {
     let state = AppState::new_test();
     let project_id = ProjectId::from_string("project-running-plan-switch".to_string());
@@ -9863,7 +9933,7 @@ async fn switching_unlocked_linked_plan_ideation_to_edit_uses_plan_worktree() {
 }
 
 #[tokio::test]
-async fn switching_to_plan_defers_planning_session_until_first_send_and_edit_preserves_it() {
+async fn switching_to_plan_defers_session_and_edit_preserves_link_but_clears_provider() {
     let state = AppState::new_test();
     let temp = tempfile::tempdir().expect("tempdir should be created");
     let repo_path = temp.path().join("repo");
@@ -9930,6 +10000,18 @@ async fn switching_to_plan_defers_planning_session_until_first_send_and_edit_pre
             .await
             .expect("existing planning session should be reused");
     assert!(!second_ensure);
+
+    state
+        .chat_conversation_repo
+        .update_provider_session_ref(
+            &conversation_id,
+            &ProviderSessionRef {
+                harness: AgentHarnessKind::Claude,
+                provider_session_id: "planning-provider-session".to_string(),
+            },
+        )
+        .await
+        .expect("planning provider session should persist before Edit handoff");
 
     let plan_workspace = state
         .agent_conversation_workspace_repo
@@ -10009,6 +10091,7 @@ async fn switching_to_plan_defers_planning_session_until_first_send_and_edit_pre
         Some(session_id.as_str())
     );
     assert!(edit_workspace.linked_plan_branch_id.is_none());
+    assert!(edit_response.conversation.provider_session_id.is_none());
     let cleaned_review = state
         .agent_conversation_workspace_repo
         .get_workspace_review_monitor(&conversation_id)
