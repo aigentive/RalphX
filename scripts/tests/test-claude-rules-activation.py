@@ -27,6 +27,11 @@ class Scenario:
 # over the exact post-diet payload for each bounded touch set.
 SCENARIOS = (
     Scenario("S6 rule editing", (".claude/rules/assets.md",), 17_000),
+    Scenario(
+        "S7 generated planning tracker",
+        (".artifacts/specs/example/tracker.md",),
+        24_000,
+    ),
     Scenario("S5 docs only", ("docs/features/plan-verification.md",), 28_500),
     Scenario(
         "S3 small frontend component",

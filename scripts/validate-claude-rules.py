@@ -18,6 +18,10 @@ RULES_DIR = ROOT / ".claude" / "rules"
 ROOT_CLAUDE = ROOT / "CLAUDE.md"
 ALWAYS_ON_ALLOWLIST = {"git-workflow.md"}
 ALWAYS_ON_BUDGET_BYTES = 17_000
+# Some rule scopes target process-generated, gitignored files that are absent from
+# clean CI checkouts. Keep explicit exemplars so those scopes remain validated
+# without weakening dead-glob detection for the rest of the repository.
+GENERATED_PATH_EXEMPLARS = {".artifacts/specs/example/tracker.md"}
 MARKDOWN_IMPORT_RE = re.compile(
     r"(?:^|[\s(])@[A-Za-z0-9_~./-]+\.(?:md|mdc)", re.MULTILINE
 )
@@ -54,6 +58,7 @@ def repository_files() -> set[str]:
         files.update(
             (parent_path / name).relative_to(ROOT).as_posix() for name in file_names
         )
+    files.update(GENERATED_PATH_EXEMPLARS)
     return files
 
 
@@ -211,7 +216,9 @@ def main() -> None:
             continue
         for pattern in paths:
             if not matching_paths(pattern, candidates):
-                errors.append(f"{relative_path}: glob matches no tracked or real path: {pattern}")
+                errors.append(
+                    f"{relative_path}: glob matches no tracked, real, or generated path: {pattern}"
+                )
 
     for allowlisted_name in ALWAYS_ON_ALLOWLIST:
         if not (RULES_DIR / allowlisted_name).is_file():
