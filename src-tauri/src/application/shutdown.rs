@@ -1,4 +1,4 @@
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,6 +11,45 @@ use crate::domain::services::RunningAgentRegistry;
 use crate::infrastructure::sqlite::DbConnection;
 use crate::infrastructure::ExternalMcpHandle;
 use crate::AppState;
+
+pub(crate) struct ExitWatchdog {
+    disarmed: Arc<AtomicBool>,
+}
+
+impl ExitWatchdog {
+    fn arm(deadline: Duration) -> Self {
+        Self::arm_with(deadline, || {
+            const MESSAGE: &[u8] =
+                b"RalphX exit cleanup exceeded its deadline; forcing process exit\n";
+            // SAFETY: write(2) and _exit(2) avoid allocator, logging, and atexit
+            // locks that may themselves be wedged during process teardown.
+            unsafe {
+                let _ = libc::write(
+                    libc::STDERR_FILENO,
+                    MESSAGE.as_ptr().cast::<libc::c_void>(),
+                    MESSAGE.len(),
+                );
+                libc::_exit(1);
+            }
+        })
+    }
+
+    pub(crate) fn arm_with(deadline: Duration, on_fire: impl FnOnce() + Send + 'static) -> Self {
+        let disarmed = Arc::new(AtomicBool::new(false));
+        let thread_flag = Arc::clone(&disarmed);
+        std::thread::spawn(move || {
+            std::thread::sleep(deadline);
+            if !thread_flag.load(Ordering::SeqCst) {
+                on_fire();
+            }
+        });
+        Self { disarmed }
+    }
+
+    pub(crate) fn disarm(&self) {
+        self.disarmed.store(true, Ordering::SeqCst);
+    }
+}
 
 pub fn handle_run_event<R: tauri::Runtime>(
     app_handle: &tauri::AppHandle<R>,
@@ -59,6 +98,19 @@ pub(crate) fn trigger_http_shutdown<R: tauri::Runtime>(app_handle: &tauri::AppHa
 }
 
 fn run_exit_cleanup<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) {
+    // Arm a fixed fallback before the lazy config accessor can perform any I/O.
+    let bootstrap_watchdog = ExitWatchdog::arm(Duration::from_secs(
+        crate::infrastructure::agents::claude::ShutdownConfig::default().watchdog_deadline_secs,
+    ));
+    let configured_deadline =
+        crate::infrastructure::agents::claude::shutdown_config().watchdog_deadline_secs;
+    let deadline_secs =
+        crate::infrastructure::agents::claude::bounded_shutdown_watchdog_deadline_secs(
+            configured_deadline,
+        );
+    let watchdog = ExitWatchdog::arm(Duration::from_secs(deadline_secs));
+    bootstrap_watchdog.disarm();
+
     // Set shutdown flag before killing agents so stream handlers can skip escalation.
     if let Some(exec_state) = app_handle.try_state::<Arc<commands::ExecutionState>>() {
         exec_state.is_shutting_down.store(true, Ordering::SeqCst);
@@ -67,6 +119,7 @@ fn run_exit_cleanup<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) {
     let Some(app_state) = app_handle.try_state::<AppState>() else {
         tracing::debug!("AppState not registered; skipping AppState exit cleanup");
         shutdown_external_mcp(app_handle);
+        watchdog.disarm();
         return;
     };
 
@@ -75,10 +128,25 @@ fn run_exit_cleanup<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) {
     let terminal_service = Arc::clone(&app_state.agent_terminal_service);
     let db = app_state.db.clone();
 
-    shutdown_agent_terminals(terminal_service);
-    shutdown_agents(registry, interactive);
-    shutdown_external_mcp(app_handle);
-    checkpoint_wal(db);
+    run_exit_steps(
+        move || shutdown_agent_terminals(terminal_service),
+        move || shutdown_agents(registry, interactive),
+        || shutdown_external_mcp(app_handle),
+        move || checkpoint_wal(db),
+    );
+    watchdog.disarm();
+}
+
+pub(crate) fn run_exit_steps(
+    shutdown_terminals: impl FnOnce(),
+    shutdown_agents: impl FnOnce(),
+    shutdown_external_mcp: impl FnOnce(),
+    checkpoint_wal: impl FnOnce(),
+) {
+    shutdown_terminals();
+    shutdown_agents();
+    shutdown_external_mcp();
+    checkpoint_wal();
 }
 
 fn shutdown_agent_terminals(terminal_service: Arc<crate::application::AgentTerminalService>) {
@@ -121,16 +189,7 @@ fn shutdown_external_mcp<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) {
         return;
     };
     if let Some(supervisor) = handle.get() {
-        let supervisor = supervisor.clone();
-        std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-            rt.block_on(supervisor.shutdown());
-        })
-        .join()
-        .ok();
+        supervisor.shutdown_blocking();
     }
 }
 

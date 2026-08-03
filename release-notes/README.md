@@ -30,6 +30,15 @@ Daily scheduled releases:
 - Daily Release, Release Build, and Release Publish always produce a published prerelease. Use `Stable Release Control` with `operation=promote` and `candidate_tag=<vX.Y.Z>`, or `operation=halt` with `bad_tag=<vX.Y.Z>` and the derived `restore_tag=<vX.Y.Z>`, to reconcile Stable GitHub authority, `updater-stable`, and Homebrew.
 - Maintenance-only commits can avoid scheduled release prep when every commit after the latest tag includes `[skip daily-release]`, `[skip release]`, `[no daily-release]`, or `[no release]`.
 
+Stable promotion notes:
+
+- Files in this directory always stay the **per-build increment** for their own `vX.Y.Z` tag. Stable promotion never rewrites, regenerates, or adds a file here.
+- `Stable Release Control` with `operation=promote` builds a **cumulative** note covering every build since the previous Stable release, using `./scripts/resolve-stable-baseline.sh` to find that baseline and `./scripts/generate-stable-release-notes.sh` to merge the committed per-build notes in `(last_stable, candidate]` with Codex.
+- That combined note is release-hosted only: it replaces the promoted GitHub release body, the promoted release's `latest.json` notes, and both `updater-stable` pointer notes. It is also uploaded as a workflow artifact, but it is never committed back to the repository.
+- A version tag with no committed note file here is skipped with a warning during combination, because the next build's note normally already covers those commits.
+- Promote supports `notes_dry_run=true` to generate and upload the combined note without changing any release, pointer, or Homebrew state.
+- `Stable Release Control` needs the same `CODEX_API_KEY` secret as `Daily Release`.
+
 Notes:
 
 - Release proposals default to `.artifacts/release-notes/proposal-from-v<current-version>.md`

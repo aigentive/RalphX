@@ -41,6 +41,113 @@ fn setup_repo() -> (
 }
 
 #[tokio::test]
+async fn repair_attempt_round_trip_and_join_preserve_explicit_publish_consent() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(workspace(conversation_id.clone()))
+        .await
+        .expect("persist workspace");
+
+    let mut consented = repair_attempt(conversation_id.clone());
+    consented.explicit_publish_requested = true;
+    let started = repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: consented,
+            reason: "explicit publish failed".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("start consented repair attempt");
+    let StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(started) = started else {
+        panic!("consented repair generation must start");
+    };
+    assert!(started.explicit_publish_requested);
+    assert!(
+        repo.get_current_repair_attempt(&conversation_id)
+            .await
+            .expect("reload started repair attempt")
+            .expect("repair attempt exists")
+            .explicit_publish_requested
+    );
+
+    let mut background_join = repair_attempt(conversation_id.clone());
+    background_join.updated_at = started.updated_at + Duration::microseconds(1);
+    let joined = repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: background_join,
+            reason: "background failure joined".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("join current repair attempt");
+    assert!(matches!(
+        joined,
+        StartOrJoinAgentWorkspaceRepairAttemptOutcome::Joined(ref attempt)
+            if attempt.explicit_publish_requested
+    ));
+    assert!(
+        repo.get_current_repair_attempt(&conversation_id)
+            .await
+            .expect("reload joined repair attempt")
+            .expect("repair attempt exists")
+            .explicit_publish_requested
+    );
+}
+
+#[tokio::test]
+async fn joining_with_explicit_publish_consent_upgrades_an_existing_repair_attempt() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(workspace(conversation_id.clone()))
+        .await
+        .expect("persist workspace");
+
+    let started = repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: repair_attempt(conversation_id.clone()),
+            reason: "background repair failure".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("start background repair attempt");
+    let StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(started) = started else {
+        panic!("background repair generation must start");
+    };
+    assert!(!started.explicit_publish_requested);
+
+    let mut explicitly_published = repair_attempt(conversation_id.clone());
+    explicitly_published.explicit_publish_requested = true;
+    explicitly_published.updated_at = started.updated_at + Duration::microseconds(1);
+    let joined = repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: explicitly_published,
+            reason: "user selected Commit & Publish".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("join explicitly published repair attempt");
+    assert!(matches!(
+        joined,
+        StartOrJoinAgentWorkspaceRepairAttemptOutcome::Joined(ref attempt)
+            if attempt.explicit_publish_requested
+    ));
+    assert!(
+        repo.get_current_repair_attempt(&conversation_id)
+            .await
+            .expect("reload joined repair attempt")
+            .expect("repair attempt exists")
+            .explicit_publish_requested,
+        "explicit user consent must be durably promoted when it joins an active repair"
+    );
+}
+
+#[tokio::test]
 async fn bind_repair_run_rejects_a_stale_same_phase_snapshot() {
     let (_db, repo, conversation_id) = setup_repo();
     repo.create_or_update(workspace(conversation_id.clone()))
@@ -225,7 +332,28 @@ fn publication_event(
 
 #[tokio::test]
 async fn repair_attempt_cas_effect_and_successor_share_one_sqlite_transaction_boundary() {
-    let (_db, repo, conversation_id) = setup_repo();
+    let (db, repo, conversation_id) = setup_repo();
+    let conn = db.new_connection();
+    conn.execute_batch(
+        "PRAGMA recursive_triggers = OFF;
+         CREATE TRIGGER simulate_equivalent_effect_completion
+         BEFORE UPDATE ON agent_workspace_repair_effects
+         BEGIN
+           UPDATE agent_workspace_repair_effects
+           SET kind = NEW.kind, status = NEW.status,
+               idempotency_key = NEW.idempotency_key,
+               intended_head_oid = NEW.intended_head_oid,
+               expected_remote_oid = NEW.expected_remote_oid,
+               expected_pr_number = NEW.expected_pr_number,
+               expected_remote_absent = NEW.expected_remote_absent,
+               receipt_json = NEW.receipt_json, last_error = NEW.last_error,
+               updated_at = NEW.updated_at, completed_at = NEW.completed_at
+           WHERE id = OLD.id;
+           SELECT RAISE(IGNORE);
+         END;",
+    )
+    .expect("install equivalent concurrent completion trigger");
+    let cas_repo = SqliteAgentConversationWorkspaceRepository::new(conn);
     repo.create_or_update(workspace(conversation_id.clone()))
         .await
         .expect("persist workspace");
@@ -373,7 +501,7 @@ async fn repair_attempt_cas_effect_and_successor_share_one_sqlite_transaction_bo
     observed.completed_at = Some(effect.created_at + Duration::seconds(1));
     observed.updated_at = observed.completed_at.expect("completion timestamp");
     let settled_at = observed.updated_at + Duration::seconds(1);
-    let completed = repo
+    let completed = cas_repo
         .complete_repair_effect(CompleteAgentWorkspaceRepairEffect {
             attempt_id: dispatching.id.clone(),
             generation: dispatching.generation,
@@ -381,16 +509,20 @@ async fn repair_attempt_cas_effect_and_successor_share_one_sqlite_transaction_bo
             expected_attempt_updated_at: dispatching.updated_at,
             expected_effect_updated_at: effect.updated_at,
             expected_effect_status: AgentWorkspaceRepairEffectStatus::Pending,
-            effect: observed,
+            effect: observed.clone(),
             compatibility_projection: None,
             events: Vec::new(),
         })
         .await
         .expect("complete repair effect");
-    assert!(matches!(
-        completed,
-        CompleteAgentWorkspaceRepairEffectOutcome::Applied(_)
-    ));
+    let CompleteAgentWorkspaceRepairEffectOutcome::Applied(completed) = completed else {
+        panic!("an equivalent concurrent completion must be idempotently accepted");
+    };
+    assert_eq!(*completed, observed);
+    db.with_connection(|conn| {
+        conn.execute_batch("DROP TRIGGER simulate_equivalent_effect_completion;")
+            .expect("remove equivalent concurrent completion trigger");
+    });
     assert!(repo
         .get_open_repair_effect(&dispatching.id)
         .await

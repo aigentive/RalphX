@@ -61,6 +61,7 @@ fn row_to_repair_attempt(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentWorks
             .map_err(|error| invalid_repair_row_value(9, rusqlite::types::Type::Text, error))?,
         review_required: row.get("review_required")?,
         auto_publish_enabled: row.get("auto_publish_enabled")?,
+        explicit_publish_requested: row.get("explicit_publish_requested")?,
         auto_merge_desired: row.get("auto_merge_desired")?,
         auto_merge_method: row.get("auto_merge_method")?,
         dispatch_count: u32::try_from(row.get::<_, i64>("dispatch_count")?)
@@ -198,10 +199,11 @@ fn write_repair_attempt(conn: &Connection, attempt: &AgentWorkspaceRepairAttempt
             pr_autofix_dispatch_head_commit, pr_autofix_health_fingerprint,
             repair_head_commit, summary, blocker,
             git_common_dir, target_ref, target_identity_version, target_lease_epoch, outcome,
-            created_at, updated_at, settled_at
+            created_at, updated_at, settled_at, explicit_publish_requested
          ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-            ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31
+            ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31,
+            ?32
          )",
         rusqlite::params![
             attempt.id.as_str(),
@@ -254,6 +256,7 @@ fn write_repair_attempt(conn: &Connection, attempt: &AgentWorkspaceRepairAttempt
             attempt.created_at.to_rfc3339(),
             attempt.updated_at.to_rfc3339(),
             attempt.settled_at.map(|value| value.to_rfc3339()),
+            attempt.explicit_publish_requested,
         ],
     )?;
     Ok(())
@@ -293,10 +296,11 @@ fn update_repair_attempt(
              target_lease_epoch = ?26,
              outcome = ?27,
              updated_at = ?28,
-             settled_at = ?29
+             settled_at = ?29,
+             explicit_publish_requested = ?30
          WHERE id = ?1 AND generation = ?2 AND phase = ?3
-           AND (?30 IS NULL OR updated_at = ?30)
-           AND (?31 = 0 OR settled_at IS NULL)",
+           AND (?31 IS NULL OR updated_at = ?31)
+           AND (?32 = 0 OR settled_at IS NULL)",
         rusqlite::params![
             attempt.id.as_str(),
             i64::try_from(attempt.generation).map_err(|_| {
@@ -346,6 +350,7 @@ fn update_repair_attempt(
             attempt.outcome.map(|outcome| outcome.to_string()),
             attempt.updated_at.to_rfc3339(),
             attempt.settled_at.map(|value| value.to_rfc3339()),
+            attempt.explicit_publish_requested,
             expected_updated_at.map(|value| value.to_rfc3339()),
             if require_unsettled { 1_i64 } else { 0_i64 },
         ],
@@ -672,6 +677,8 @@ impl AgentWorkspaceRepairRepository for SqliteAgentConversationWorkspaceReposito
                         current.target_base_commit = attempt.target_base_commit.clone();
                     }
                     current.auto_publish_enabled = attempt.auto_publish_enabled;
+                    current.explicit_publish_requested =
+                        current.explicit_publish_requested || attempt.explicit_publish_requested;
                     current.auto_merge_desired = attempt.auto_merge_desired;
                     current.auto_merge_method = attempt.auto_merge_method.clone();
                     current.updated_at = attempt.updated_at;
