@@ -392,6 +392,7 @@ fn test_processor_thinking_block_streaming() {
         [ContentBlockItem::Thinking {
             text,
             duration_ms: Some(duration_ms),
+            ..
         }] => {
             assert_eq!(text, "Let me analyze this problem.");
             assert_eq!(*duration_ms, settled_duration_ms);
@@ -442,7 +443,8 @@ fn test_processor_thinking_block_verbose() {
         processor.content_blocks.first(),
         Some(ContentBlockItem::Thinking {
             text,
-            duration_ms: None
+            duration_ms: None,
+            ..
         }) if text == "Deep analysis of the problem..."
     ));
 }
@@ -506,6 +508,7 @@ fn streamed_thinking_then_summary_keeps_only_sealed_block() {
         [ContentBlockItem::Thinking {
             text,
             duration_ms: Some(_),
+            ..
         }] if text == "Reasoning"
     ));
 }
@@ -540,6 +543,7 @@ fn summary_only_non_empty_thinking_keeps_one_block() {
         [ContentBlockItem::Thinking {
             text,
             duration_ms: None,
+            ..
         }] if text == "Reasoning"
     ));
 }

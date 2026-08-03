@@ -124,6 +124,7 @@ import { useChatEvents } from "./useChatEvents";
 import { managedTeamKeys } from "./useManagedTeam";
 import { useChatStore } from "@/stores/chatStore";
 import settledThinkingPayload from "../../../src-tauri/tests/fixtures/agent_thinking_payload.settled.json";
+import codexSettledThinkingPayload from "../../../src-tauri/tests/fixtures/agent_thinking_payload.codex_settled.json";
 
 // ============================================================================
 // Helpers
@@ -1228,6 +1229,27 @@ describe("useChatEvents", () => {
         durationMs: 1500,
         isSettled: true,
       });
+    });
+
+    it("merges optional settled reasoning tokens without dropping a known duration", () => {
+      const props = makeProps();
+      renderAndClear(props);
+
+      act(() => fireEvent("agent:thinking", {
+        ...codexSettledThinkingPayload,
+        conversation_id: CONV_ID,
+        context_id: CTX_ID,
+        reasoning_tokens: 321,
+        duration_ms: 1_500,
+        estimated_tokens: 400,
+      }));
+
+      expect(executeUpdater<StreamingContentBlock[]>(props.setStreamingContentBlocks, [
+        { type: "thinking", text: "Done thinking", blockIndex: 0 },
+      ])).toMatchObject([{
+        type: "thinking", text: "Done thinking", durationMs: 1_500,
+        reasoningTokens: 321, estimatedTokens: 400, isSettled: true,
+      }]);
     });
 
     it("does not create an empty thinking block from an unmatched settle event", () => {

@@ -162,6 +162,16 @@ describe("chat api", () => {
     });
   });
 
+  it("normalizes a backend tool block index without requiring it", () => {
+    expect(parseToolCalls([
+      { id: "t-indexed", name: "Read", arguments: {}, block_index: 3 },
+      { id: "t-legacy", name: "Read", arguments: {} },
+    ])).toMatchObject([
+      { id: "t-indexed", blockIndex: 3 },
+      { id: "t-legacy" },
+    ]);
+  });
+
   it("preserves preview metadata and detail refs on parsed tool calls", () => {
     const parsed = parseToolCalls(
       JSON.stringify([
@@ -350,6 +360,21 @@ describe("chat api", () => {
     const parsed = parseContentBlocks('[{"type":"text","text":"hello"}]');
     expect(parsed).toHaveLength(1);
     expect(parsed[0]).toMatchObject({ type: "text", text: "hello" });
+  });
+
+  it("keeps additive thinking token fields from snake_case payloads", () => {
+    expect(parseContentBlocks([
+      {
+        type: "thinking",
+        text: "A settled summary",
+        reasoning_tokens: 321,
+        estimated_tokens: 400,
+      },
+    ])).toMatchObject([{
+      type: "thinking",
+      reasoningTokens: 321,
+      estimatedTokens: 400,
+    }]);
   });
 
   it("preserves parent tool linkage on parsed content blocks", () => {
@@ -1151,6 +1176,7 @@ describe("chat api", () => {
       contentBlockIndex: 1,
       timelineItemId: "block:msg-1:1",
     });
+    expect(result.items[1].toolCall?.blockIndex).toBe(1);
   });
 
   it("loads a full tool call detail by preview detail ref", async () => {
