@@ -51,6 +51,7 @@ use crate::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_REPAIR;
 const REPAIR_BUDGET_EXHAUSTED_STEP: &str = "repair_budget_exhausted";
 const REPAIR_PUBLISH_REDRIVE_STEP: &str = "repair_publish_redrive";
 pub(crate) const CONTINUATION_RECOVERY_BLOCKED_STEP: &str = "continuation_recovery_blocked";
+const CONTINUATION_OPEN_EFFECT_ATTENTION_STEP: &str = "continuation_open_effect_attention_required";
 const LEGACY_REPAIR_IMPORT_BLOCKED_STEP: &str = "legacy_repair_import_blocked";
 const LEGACY_REPAIR_IMPORT_BLOCKED_CLASSIFICATION: &str = "legacy_repair_import_ambiguous";
 const LEGACY_REPAIR_IMPORTED_STEP: &str = "legacy_repair_imported";
@@ -64,7 +65,11 @@ pub(crate) const AUTO_RETRY_READY_REPAIR_REASON_PREFIX: &str = "auto_retry_ready
 const AUTO_RETRY_READY_REPAIR_BASE_DELAY_SECS: i64 = 60;
 const AUTO_RETRY_READY_REPAIR_MAX_DELAY_SECS: i64 = 15 * 60;
 const MAX_AUTO_RETRY_READY_REPAIR_STREAK: u32 = 3;
+const EXHAUSTED_PUBLISH_REDRIVE_CHECKED_REASON_PREFIX: &str = "exhausted_publish_redrive_checked:";
 const CONTINUATION_RECOVERY_FAILURE_REASON_PREFIX: &str = "continuation_recovery_failure:";
+const CONTINUATION_OPEN_EFFECT_RECOVERY_REASON_PREFIX: &str = "continuation_open_effect_recovery:";
+const CONTINUATION_OPEN_EFFECT_ATTENTION_REASON: &str =
+    "continuation_open_effect_attention_required";
 const MAX_CONTINUATION_RECOVERY_FAILURE_STREAK: u32 = 3;
 
 pub(crate) async fn recover_stale_publish_repair_for_workspace_in_state_result(
@@ -332,7 +337,7 @@ async fn reconcile_agent_workspace_repair_attempt(
                         .get_open_repair_effect(&current.id)
                         .await
                     {
-                        Ok(effect) => effect.is_some(),
+                        Ok(effect) => effect,
                         Err(error) => {
                             return escalate_or_record_continuation_recovery_failure(
                                 state, current, &error,
@@ -340,15 +345,32 @@ async fn reconcile_agent_workspace_repair_attempt(
                             .await;
                         }
                     };
-                    if open_effect {
-                        let error = AppError::Conflict(
-                            "workspace repair continuation lost its canonical target authority while an external effect remains open"
-                                .to_string(),
-                        );
-                        return escalate_or_record_continuation_recovery_failure(
-                            state, current, &error,
+                    if let Some(effect) = open_effect {
+                        match crate::application::publish_resilience::reconcile_open_agent_workspace_repair_push_effect(
+                            state,
+                            &current,
+                            effect,
                         )
-                        .await;
+                        .await
+                        {
+                            Ok(crate::application::publish_resilience::AgentWorkspaceRepairOpenPushEffectReconciliation::Observed) => {}
+                            Ok(crate::application::publish_resilience::AgentWorkspaceRepairOpenPushEffectReconciliation::Pending) => {
+                                let error = AppError::Conflict(
+                                    "workspace repair continuation lost its canonical target authority while an external effect remains open"
+                                        .to_string(),
+                                );
+                                return escalate_or_record_continuation_recovery_failure(
+                                    state, current, &error,
+                                )
+                                .await;
+                            }
+                            Err(error) => {
+                                return escalate_or_record_continuation_recovery_failure(
+                                    state, current, &error,
+                                )
+                                .await;
+                            }
+                        }
                     }
                     let workspace = match state
                         .agent_conversation_workspace_repo
@@ -609,6 +631,51 @@ fn automatic_blocked_repair_streak(attempt: &AgentWorkspaceRepairAttempt) -> u32
         .unwrap_or_default()
 }
 
+fn exhausted_publish_redrive_was_checked(
+    attempt: &AgentWorkspaceRepairAttempt,
+    repair_head: &str,
+) -> bool {
+    let checked_reason = format!("{EXHAUSTED_PUBLISH_REDRIVE_CHECKED_REASON_PREFIX}{repair_head}");
+    attempt
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == &checked_reason)
+}
+
+async fn mark_exhausted_publish_redrive_checked(
+    state: &AppState,
+    current: AgentWorkspaceRepairAttempt,
+    repair_head: &str,
+) -> AppResult<DurableRepairRecoveryOutcome> {
+    let expected_updated_at = current.updated_at;
+    let mut marked = current;
+    marked.pending_reasons.push(format!(
+        "{EXHAUSTED_PUBLISH_REDRIVE_CHECKED_REASON_PREFIX}{repair_head}"
+    ));
+    marked.updated_at = std::cmp::max(Utc::now(), expected_updated_at + Duration::microseconds(1));
+    match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: marked,
+            expected_phase: AgentWorkspaceRepairPhase::Blocked,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Blocked,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await?
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(marked) => {
+            remember_blocked_pr_autofix_fingerprint(state, &marked).await;
+            Ok(DurableRepairRecoveryOutcome::Noop)
+        }
+        AgentWorkspaceRepairAttemptTransitionOutcome::Stale(_)
+        | AgentWorkspaceRepairAttemptTransitionOutcome::Missing => {
+            Ok(DurableRepairRecoveryOutcome::Stale)
+        }
+    }
+}
+
 /// Only the current durable generation may suspend unrelated publish work. A blocked repair is
 /// terminal for automatic recovery when its delivery budget has been spent, or its automatic
 /// blocked-repair successor budget has been spent; queued deliveries retain a next dispatch and
@@ -659,33 +726,45 @@ async fn retry_safe_blocked_agent_workspace_repair(
         // It may not take the ordinary exhausted-successor path: that would preserve the
         // publish-vs-health hold livelock. Evaluate only the durable-head shape here so the
         // pre-existing cap behavior remains unchanged for ordinary successors and holds.
-        if current.source == AgentWorkspaceRepairSource::PrAutofix
-            && current
+        if current.source == AgentWorkspaceRepairSource::PrAutofix {
+            let repair_head = current
                 .repair_head_commit
                 .as_deref()
-                .is_some_and(|head| !head.trim().is_empty())
-        {
-            match state
-                .agent_conversation_workspace_repo
-                .get_by_conversation_id(&current.conversation_id)
-                .await
+                .map(str::trim)
+                .filter(|head| !head.is_empty())
+                .map(str::to_string);
+            if let Some(repair_head) =
+                repair_head.filter(|head| !exhausted_publish_redrive_was_checked(&current, head))
             {
-                Ok(Some(workspace))
-                    if matches!(
-                        evaluate_pr_autofix_successor(state, &current, &workspace).await,
-                        PrAutofixSuccessorDecision::RedrivePublish
-                    ) =>
+                match state
+                    .agent_conversation_workspace_repo
+                    .get_by_conversation_id(&current.conversation_id)
+                    .await
                 {
-                    return redrive_blocked_repair_publish(state, current, &workspace).await;
-                }
-                Ok(_) => {}
-                Err(error) => {
-                    tracing::warn!(
-                        conversation_id = current.conversation_id.as_str(),
-                        attempt_id = current.id.as_str(),
-                        %error,
-                        "Could not evaluate whether an exhausted PR autofix repair needs a publish re-drive"
-                    );
+                    Ok(Some(workspace))
+                        if matches!(
+                            evaluate_pr_autofix_successor(state, &current, &workspace).await,
+                            PrAutofixSuccessorDecision::RedrivePublish
+                        ) =>
+                    {
+                        return redrive_blocked_repair_publish(state, current, &workspace).await;
+                    }
+                    Ok(_) => {
+                        return mark_exhausted_publish_redrive_checked(
+                            state,
+                            current,
+                            &repair_head,
+                        )
+                        .await;
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            conversation_id = current.conversation_id.as_str(),
+                            attempt_id = current.id.as_str(),
+                            %error,
+                            "Could not evaluate whether an exhausted PR autofix repair needs a publish re-drive"
+                        );
+                    }
                 }
             }
         }
@@ -1466,8 +1545,11 @@ async fn escalate_or_record_continuation_recovery_failure(
         .get_open_repair_effect(&current.id)
         .await?
         .is_some();
+    if has_open_effect {
+        return record_open_effect_continuation_recovery_failure(state, current, error).await;
+    }
     let next_streak = continuation_recovery_failure_streak(&current).saturating_add(1);
-    if !has_open_effect && next_streak >= MAX_CONTINUATION_RECOVERY_FAILURE_STREAK {
+    if next_streak >= MAX_CONTINUATION_RECOVERY_FAILURE_STREAK {
         let conversation_id = current.conversation_id.clone();
         let fingerprint = current.pr_autofix_health_fingerprint.clone();
         let outcome = block_recovery_attempt(
@@ -1496,11 +1578,9 @@ async fn escalate_or_record_continuation_recovery_failure(
     }
 
     let mut marked = current;
-    if !has_open_effect {
-        marked.pending_reasons.push(format!(
-            "{CONTINUATION_RECOVERY_FAILURE_REASON_PREFIX}{next_streak}"
-        ));
-    }
+    marked.pending_reasons.push(format!(
+        "{CONTINUATION_RECOVERY_FAILURE_REASON_PREFIX}{next_streak}"
+    ));
     let summary = format!(
         "Workspace repair continuation is pending reconciliation after recovery error: {error}"
     );
@@ -1522,11 +1602,135 @@ async fn escalate_or_record_continuation_recovery_failure(
     }
 }
 
+async fn record_open_effect_continuation_recovery_failure(
+    state: &AppState,
+    current: AgentWorkspaceRepairAttempt,
+    error: &AppError,
+) -> AppResult<DurableRepairRecoveryOutcome> {
+    let already_escalated = current
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == CONTINUATION_OPEN_EFFECT_ATTENTION_REASON);
+    let next_streak = continuation_open_effect_recovery_streak(&current).saturating_add(1);
+    let summary = if already_escalated || next_streak >= MAX_CONTINUATION_RECOVERY_FAILURE_STREAK {
+        format!(
+            "Workspace repair publication needs attention because its external effect remains open after {next_streak} recovery checks. RalphX retained the effect fence and did not reacquire or release Git authority: {error}"
+        )
+    } else {
+        format!(
+            "Workspace repair continuation is pending reconciliation for an open external effect after recovery error: {error}"
+        )
+    };
+
+    if already_escalated {
+        surface_open_effect_continuation_attention(state, &current, &summary).await?;
+        return Ok(DurableRepairRecoveryOutcome::Active);
+    }
+
+    let mut marked = current;
+    marked.pending_reasons.push(format!(
+        "{CONTINUATION_OPEN_EFFECT_RECOVERY_REASON_PREFIX}{next_streak}"
+    ));
+    if next_streak >= MAX_CONTINUATION_RECOVERY_FAILURE_STREAK {
+        marked
+            .pending_reasons
+            .push(CONTINUATION_OPEN_EFFECT_ATTENTION_REASON.to_string());
+    }
+    let expected_phase = marked.phase;
+    match transition_agent_workspace_repair_attempt(
+        Arc::clone(&state.agent_workspace_repair_repo),
+        marked,
+        expected_phase,
+        &summary,
+        None,
+    )
+    .await?
+    {
+        AgentWorkspaceRepairTransitionOutcome::Applied(marked) => {
+            if next_streak >= MAX_CONTINUATION_RECOVERY_FAILURE_STREAK {
+                surface_open_effect_continuation_attention(state, &marked, &summary).await?;
+            }
+            Ok(DurableRepairRecoveryOutcome::Active)
+        }
+        AgentWorkspaceRepairTransitionOutcome::Stale(_)
+        | AgentWorkspaceRepairTransitionOutcome::Missing => Ok(DurableRepairRecoveryOutcome::Stale),
+    }
+}
+
+async fn surface_open_effect_continuation_attention(
+    state: &AppState,
+    attempt: &AgentWorkspaceRepairAttempt,
+    summary: &str,
+) -> AppResult<()> {
+    let classification = attempt.id.to_string();
+    let events = state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&attempt.conversation_id)
+        .await?;
+    if !events.iter().any(|event| {
+        event.step == CONTINUATION_OPEN_EFFECT_ATTENTION_STEP
+            && event.classification.as_deref() == Some(classification.as_str())
+    }) {
+        state
+            .agent_conversation_workspace_repo
+            .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                attempt.conversation_id.clone(),
+                CONTINUATION_OPEN_EFFECT_ATTENTION_STEP,
+                "attention_required",
+                summary,
+                Some(classification),
+            ))
+            .await?;
+    }
+
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&attempt.conversation_id)
+        .await?;
+    let project_id = workspace
+        .as_ref()
+        .map(|workspace| workspace.project_id.to_string());
+    state
+        .notification_service()
+        .record(NewNotification {
+            project_id: project_id.clone(),
+            category: NotificationCategory::TaskBlocked,
+            severity: NotificationSeverity::ActionRequired,
+            title: "Workspace repair effect needs attention".to_string(),
+            body: Some(summary.to_string()),
+            target: NotificationTarget {
+                kind: NotificationTargetKind::AgentConversation,
+                project_id,
+                task_id: None,
+                conversation_id: Some(attempt.conversation_id.to_string()),
+                setup_conversation_id: None,
+                automation_id: None,
+                run_id: None,
+            },
+            dedupe_key: Some(format!(
+                "repair_open_effect:{}:{}",
+                attempt.conversation_id, attempt.id
+            )),
+        })
+        .await;
+    Ok(())
+}
+
 fn continuation_recovery_failure_streak(attempt: &AgentWorkspaceRepairAttempt) -> u32 {
     attempt
         .pending_reasons
         .iter()
         .filter_map(|reason| reason.strip_prefix(CONTINUATION_RECOVERY_FAILURE_REASON_PREFIX))
+        .filter_map(|streak| streak.parse::<u32>().ok())
+        .max()
+        .unwrap_or_default()
+}
+
+fn continuation_open_effect_recovery_streak(attempt: &AgentWorkspaceRepairAttempt) -> u32 {
+    attempt
+        .pending_reasons
+        .iter()
+        .filter_map(|reason| reason.strip_prefix(CONTINUATION_OPEN_EFFECT_RECOVERY_REASON_PREFIX))
         .filter_map(|streak| streak.parse::<u32>().ok())
         .max()
         .unwrap_or_default()
