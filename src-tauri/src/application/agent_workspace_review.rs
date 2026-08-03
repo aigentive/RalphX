@@ -27,7 +27,7 @@ use crate::domain::entities::{
     AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
     AgentWorkspaceReviewOutcome, AgentWorkspaceReviewRuntimeState, AgentWorkspaceReviewTargetScope,
     Artifact, ArtifactContent, ArtifactId, ChatContextType, ChatConversation, ChatConversationId,
-    MessageRole, Project,
+    MessageRole, Project, WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, QueuedMessageRepository,
@@ -73,7 +73,6 @@ const WORKSPACE_REVIEW_FIXER_STATUS_ROUTING: &str = "routing";
 const WORKSPACE_REVIEW_FIXER_STATUS_QUEUED: &str = "queued";
 const WORKSPACE_REVIEW_FIXER_STATUS_RUNNING: &str = "running";
 const WORKSPACE_REVIEW_FIXER_STATUS_FAILED: &str = "failed";
-const WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED: &str = "cycle_capped";
 const WORKSPACE_REVIEW_FIXER_SKIPPED_ALREADY_ACTIVE: &str = "fixer_already_active";
 const WORKSPACE_REVIEW_PLAN_CONTEXT_CHANGED_ERROR: &str =
     "The linked plan changed after this Workspace Review. Run Workspace Review again before repairing its findings.";

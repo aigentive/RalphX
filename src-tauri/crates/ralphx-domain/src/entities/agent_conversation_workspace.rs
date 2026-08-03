@@ -116,6 +116,8 @@ pub enum AgentWorkspaceReviewMonitorStatus {
     Blocked,
 }
 
+pub const WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED: &str = "cycle_capped";
+
 /// Response-only classification of whether the current runtime owns Review mutations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
