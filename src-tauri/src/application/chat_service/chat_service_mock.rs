@@ -55,6 +55,10 @@ pub struct MockChatService {
     fail_next_send_as_delivered_not_persisted: Mutex<bool>,
     /// When set, the next successful send reports a different conversation identity.
     mismatch_next_send_result_identity: Mutex<bool>,
+    /// Records direct idle-runtime retirement requests from mode handoff flows.
+    retire_idle_interactive_process_calls: Mutex<Vec<(ChatContextType, String)>>,
+    /// Safe default for callers that only need to advance a retired idle owner.
+    retire_idle_interactive_process_result: Mutex<bool>,
     /// Optional production-style run sink used by authority-sensitive tests.
     agent_run_repo: Option<Arc<dyn AgentRunRepository>>,
 }
@@ -84,6 +88,8 @@ impl MockChatService {
             fail_next_delete_queued_message: Mutex::new(false),
             fail_next_send_as_delivered_not_persisted: Mutex::new(false),
             mismatch_next_send_result_identity: Mutex::new(false),
+            retire_idle_interactive_process_calls: Mutex::new(Vec::new()),
+            retire_idle_interactive_process_result: Mutex::new(true),
             agent_run_repo: None,
         }
     }
@@ -106,6 +112,8 @@ impl MockChatService {
             fail_next_delete_queued_message: Mutex::new(false),
             fail_next_send_as_delivered_not_persisted: Mutex::new(false),
             mismatch_next_send_result_identity: Mutex::new(false),
+            retire_idle_interactive_process_calls: Mutex::new(Vec::new()),
+            retire_idle_interactive_process_result: Mutex::new(true),
             agent_run_repo: None,
         }
     }
@@ -151,6 +159,19 @@ impl MockChatService {
 
     pub async fn mismatch_next_send_result_identity(&self) {
         *self.mismatch_next_send_result_identity.lock().await = true;
+    }
+
+    pub async fn get_retire_idle_interactive_process_calls(
+        &self,
+    ) -> Vec<(ChatContextType, String)> {
+        self.retire_idle_interactive_process_calls
+            .lock()
+            .await
+            .clone()
+    }
+
+    pub async fn set_retire_idle_interactive_process_result(&self, result: bool) {
+        *self.retire_idle_interactive_process_result.lock().await = result;
     }
 
     /// Set the agent running state for a specific context.
@@ -379,6 +400,18 @@ impl ChatService for MockChatService {
     ) -> Result<SendResult, ChatServiceError> {
         self.send_queued_message_now(context_type, context_id, message_id)
             .await
+    }
+
+    async fn retire_idle_interactive_process(
+        &self,
+        context_type: ChatContextType,
+        context_id: &str,
+    ) -> Result<bool, ChatServiceError> {
+        self.retire_idle_interactive_process_calls
+            .lock()
+            .await
+            .push((context_type, context_id.to_string()));
+        Ok(*self.retire_idle_interactive_process_result.lock().await)
     }
 
     async fn get_or_create_conversation(
