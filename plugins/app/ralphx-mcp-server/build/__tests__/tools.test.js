@@ -8,6 +8,7 @@ import { getAllowedToolNames, getFilteredTools, getToolsByAgent, isToolAllowed, 
 import { canonicalAgentName, loadCanonicalMcpTools } from '../canonical-agent-metadata.js';
 import { setLegacyToolAllowlistEntryForTest } from '../tool-authorization.js';
 import { PLAN_TOOLS } from '../plan-tools.js';
+import { callGetParentContextTool } from '../ideation-tools.js';
 import { buildAppendTaskToIdeationPlanPayload } from '../append-task-payload.js';
 import { AGENT_WORKSPACE_TOOLS, callAgentWorkspaceTool, callCheckAgentWorkspacePublishReadinessTool, callCompleteAgentWorkspacePrFixTool, callCompleteWorkspaceReviewRunTool, callCompletePrReviewRunTool, callCompleteAgentWorkspaceRepairTool, callGetAgentWorkspacePrFixContextTool, callGetPrReviewContextTool, callGetWorkspaceReviewContextTool, callGetWorkspaceReviewDiffPageTool, callListWorkspaceReviewFilesTool, callGetAgentWorkspacePublishStatusTool, callPublishAgentWorkspaceTool, callProposePrReviewActionTool, callReadAgentWorkspacePrCommentTool, callSubmitAgentWorkspacePrDescriptionTool, callUpdateAgentWorkspaceFromBaseTool, callWriteWorkspaceReviewArtifactTool, callWriteWorkspaceReviewHunkAnnotationsTool, callWritePrReviewArtifactTool, isAgentWorkspaceToolName, } from '../agent-workspace-tools.js';
 import { ORCHESTRATOR_IDEATION, ORCHESTRATOR_IDEATION_READONLY, IDEATION_SPECIALIST_BACKEND, IDEATION_SPECIALIST_FRONTEND, IDEATION_SPECIALIST_INFRA, IDEATION_CRITIC, IDEATION_ADVOCATE, REVIEWER, GENERAL_EXPLORER, GENERAL_WORKER, PR_REVIEWER, AGENT_WORKSPACE_REPAIR, AGENT_WORKSPACE_PR_FIXER, PLAN_COMPLEXITY_ASSESSOR, WORKSPACE_REVIEWER, AUTOMATION_SETUP, WORKER, MERGER, CHAT_PROJECT, } from '../agentNames.js';
@@ -1811,6 +1812,7 @@ describe('delegation bridge tools', () => {
     });
     it('delegate_start should hide session selection and require only agent_name and prompt', () => {
         const tool = allTools.find((entry) => entry.name === 'delegate_start');
+        const properties = inputSchemaProperties('delegate_start');
         expect(tool?.inputSchema.type).toBe('object');
         expect(tool?.inputSchema.properties).toHaveProperty('parent_session_id');
         expect(tool?.inputSchema.properties).toHaveProperty('parent_turn_id');
@@ -1825,6 +1827,21 @@ describe('delegation bridge tools', () => {
         expect(tool?.inputSchema.additionalProperties).toBe(false);
         expect(tool?.inputSchema.required).toEqual(expect.arrayContaining(['agent_name', 'prompt']));
         expect(tool?.inputSchema.required).not.toContain('parent_session_id');
+        expect(properties.inherit_context.description).toContain('get_parent_context');
+        expect(properties.inherit_context.description).toContain('fully isolated');
+    });
+    it('get_parent_context dispatches only the bounded request with runtime identity headers', async () => {
+        const callTauri = vi.fn().mockResolvedValue({ success: true });
+        await callGetParentContextTool(callTauri, { limit: 7 }, {
+            conversationId: 'delegated-conversation',
+            agentRunId: 'delegated-run',
+        });
+        expect(callTauri).toHaveBeenCalledWith('coordination/delegate/parent-context', { limit: 7 }, {
+            headers: {
+                'x-ralphx-agent-run-id': 'delegated-run',
+                'x-ralphx-conversation-id': 'delegated-conversation',
+            },
+        });
     });
     it('delegate_wait should support delegated-status hydration options', () => {
         const tool = allTools.find((entry) => entry.name === 'delegate_wait');
@@ -2015,6 +2032,26 @@ describe('canonical specialist allowlist entries', () => {
     });
     it('IDEATION_SPECIALIST_BACKEND should include get_parent_session_context', () => {
         expect(toolsByAgent()[IDEATION_SPECIALIST_BACKEND]).toContain('get_parent_session_context');
+    });
+    const parentContextAgents = [
+        GENERAL_EXPLORER,
+        IDEATION_SPECIALIST_BACKEND,
+        IDEATION_SPECIALIST_FRONTEND,
+        IDEATION_SPECIALIST_INFRA,
+    ];
+    it.each(parentContextAgents)('%s should include get_parent_context', (agent) => {
+        expect(toolsByAgent()[agent]).toContain('get_parent_context');
+    });
+    it.each([GENERAL_WORKER, ORCHESTRATOR_IDEATION, CHAT_PROJECT])('%s should not include get_parent_context', (agent) => {
+        expect(toolsByAgent()[agent]).not.toContain('get_parent_context');
+    });
+    it('get_parent_context accepts only an optional limit', () => {
+        const tool = getAllTools().find((entry) => entry.name === 'get_parent_context');
+        expect(tool).toBeDefined();
+        expect(tool?.inputSchema.required).toBeUndefined();
+        expect(tool?.inputSchema.properties).toEqual({
+            limit: expect.objectContaining({ type: 'number' }),
+        });
     });
     it.each([
         IDEATION_SPECIALIST_BACKEND,
