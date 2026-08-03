@@ -21,6 +21,7 @@ import { useUiStore } from "@/stores/uiStore";
 
 import { AgentRoleDefaultRow } from "./AgentRoleDefaultRow";
 import type { AgentsTabValue } from "./settings-ui-state";
+import { RemoteHostOnlyNotice } from "@/components/remote/RemoteHostOnlyNotice";
 import { ErrorBanner, type SelectOption } from "./SettingsView.shared";
 import { useAgentsSettingsUiState } from "./useAgentsSettingsUiState";
 
@@ -278,6 +279,7 @@ export function AgentsSettingsSection() {
             removes only this project&apos;s UI override.
           </p>
         )}
+        {defaults.isHostOnly && <RemoteHostOnlyNotice subject="Role defaults" />}
         {defaults.isError && (
           <ErrorBanner
             error={
@@ -397,7 +399,10 @@ export function AgentsSettingsSection() {
             </section>
             );
           })}
-        {!defaults.isLoading && !defaults.isError && families.length === 0 && (
+        {!defaults.isHostOnly &&
+          !defaults.isLoading &&
+          !defaults.isError &&
+          families.length === 0 && (
           <p className="py-8 text-center text-sm text-[var(--text-muted)]">
             No agent roles match these filters.
           </p>

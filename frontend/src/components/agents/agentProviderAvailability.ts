@@ -155,11 +155,24 @@ export function getProviderAvailabilityMessage({
   provider,
   providerOptions,
   isReady,
+  isRemoteEnvironment = false,
 }: {
   provider: AgentProvider;
   providerOptions: readonly AgentProviderAvailabilityOption[];
   isReady: boolean;
+  /**
+   * Remote clients cannot verify a provider's CLI: `harness-providers.ts` deliberately
+   * projects `available: false` rather than faking it true, so every option arrives
+   * disabled with a "Configured on this host" note. Treating that as a SEND BLOCKER left
+   * the composer permanently dead on a paired device. The host is the authority — the
+   * start and continuation intents re-validate provider/model at claim time and fail
+   * closed with typed errors — so remotely this is informational only.
+   */
+  isRemoteEnvironment?: boolean;
 }): string | null {
+  if (isRemoteEnvironment) {
+    return null;
+  }
   if (!isReady) {
     return "Checking provider readiness.";
   }

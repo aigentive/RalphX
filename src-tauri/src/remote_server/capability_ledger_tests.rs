@@ -3,11 +3,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use ralphx_remote_protocol::{class_permits, AuditRefusalReason, Capability, RiskClass};
 
 use super::authority_audit::{
-    agent_consumed_content_writers, closure_is_arming, load_production_sources,
-    parse_registered_commands, repo_root, spawn_triggering_writers, tokens_reach_any, CallGraph,
-    StateSurfaceEntry, AGENT_CONSUMED_CONTENT_WRITE_SURFACE, CONTENT_WRITE_EXEMPTIONS,
-    PROCESS_LAUNCH_SINKS, SPAWN_TRIGGERING_STATE_SURFACE, TRANSITION_SINKS,
+    agent_consumed_content_writers, closure_is_arming, parse_registered_commands, repo_root,
+    spawn_triggering_writers, tokens_reach_any, CallGraph, StateSurfaceEntry,
+    AGENT_CONSUMED_CONTENT_WRITE_SURFACE, CONTENT_WRITE_EXEMPTIONS, PROCESS_LAUNCH_SINKS,
+    SPAWN_TRIGGERING_STATE_SURFACE, TRANSITION_SINKS,
 };
+use super::authority_audit_tests::load_production_sources;
 use super::capability_ledger::{
     audit_refusal_for, policy_for, AUDIT_REFUSALS, AUTHORITY_REDUCING_EXEMPTIONS,
     COMMAND_OVERRIDES, CONDITIONAL_CAPABILITIES, DECLARED_MEMBERSHIPS, MODULE_DEFAULTS,
@@ -4670,7 +4671,8 @@ fn b4_members_that_audit_dirty_stay_unregistered() {
 #[test]
 #[ignore = "calibration probe"]
 fn probe_workspace_crate_walk_verdict_shifts() {
-    use super::authority_audit::{collect_rs_files, crate_src_root};
+    use super::authority_audit::crate_src_root;
+    use super::authority_audit_tests::collect_rs_files;
 
     let app_only = {
         let root = crate_src_root();

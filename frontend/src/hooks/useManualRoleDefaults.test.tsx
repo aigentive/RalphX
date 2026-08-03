@@ -6,6 +6,7 @@ import {
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { LOCAL_ENVIRONMENT_ID, useEnvironmentStore } from "@/stores/environmentStore";
 import { manualRoleDefaultsApi } from "@/api/manual-role-defaults";
 import type { ManualRoleDefault } from "@/api/manual-role-defaults.types";
 
@@ -73,6 +74,44 @@ describe("useManualRoleDefaults", () => {
       role: "workspace_project",
       source: "project_ui",
       value,
+    });
+  });
+
+  it("does not fire the host-only role-defaults read on a paired client", async () => {
+    // `get_manual_role_defaults` is not on the remote facade, so the query used to run
+    // anyway and paint a raw REMOTE_COMMAND_UNAVAILABLE banner in Settings while burning a
+    // paced request on every mount and reconnect sweep.
+    useEnvironmentStore.setState({
+      activeEnvironmentId: "env-remote",
+      environments: [
+        { id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" },
+        { id: "env-remote", name: "Studio", kind: "remote" },
+      ],
+      connectionPresentations: {
+        "env-remote": {
+          presentation: "connected",
+          blockedFailure: null,
+          blockedMessage: null,
+        },
+      },
+      effectiveScopes: { "env-remote": ["ui:read", "ui:operate", "ui:agent"] },
+    });
+
+    const { wrapper } = createHarness();
+    const { result } = renderHook(() => useManualRoleDefaults("project-1"), {
+      wrapper,
+    });
+
+    expect(result.current.isHostOnly).toBe(true);
+    // Not "loading forever", and no doomed request.
+    expect(result.current.isLoading).toBe(false);
+    expect(manualRoleDefaultsApi.list).not.toHaveBeenCalled();
+
+    useEnvironmentStore.setState({
+      activeEnvironmentId: LOCAL_ENVIRONMENT_ID,
+      environments: [{ id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" }],
+      connectionPresentations: {},
+      effectiveScopes: {},
     });
   });
 

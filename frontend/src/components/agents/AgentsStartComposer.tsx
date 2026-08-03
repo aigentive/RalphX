@@ -443,6 +443,7 @@ export function AgentsStartComposer({
     provider,
     providerOptions,
     isReady: providerSettingsReady,
+    isRemoteEnvironment,
   });
   const codexProviderSettings = configuredProviders.find(
     (entry) => entry.provider === "codex",

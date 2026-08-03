@@ -1,6 +1,214 @@
 use super::authority_audit::*;
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::path::Path;
 use syn::visit::Visit;
+
+/// Loads every production `.rs` file under `src-tauri/src` and the linked workspace crates.
+///
+/// `*_tests.rs` files are excluded: test bodies would inject edges no production caller has.
+/// The cfg-gated-fixture exclusion applies per walk root, so a `#[cfg(test)]`-gated module in a
+/// workspace crate is skipped there exactly as it is in the app crate.
+///
+/// Every I/O failure is a hard error. An unreadable directory or file shrinks the call graph
+/// exactly the way an unparseable file does, and the parse path already panics rather than
+/// skip (see [`CallGraph::build`]); silent skipping here would have been the same
+/// silent-graph-shrinkage with a quieter failure mode.
+pub fn load_production_sources() -> Vec<(String, String)> {
+    let root = crate_src_root();
+    let mut files = Vec::new();
+    collect_rs_files(&root, &root, &mut files);
+
+    for crate_name in LINKED_WORKSPACE_CRATES {
+        let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("crates")
+            .join(crate_name)
+            .join("src");
+        let mut crate_files = Vec::new();
+        collect_rs_files(&crate_root, &crate_root, &mut crate_files);
+        assert!(
+            crate_files.len() >= MIN_WORKSPACE_CRATE_SOURCE_FILES,
+            "authority audit loaded {} sources from workspace crate {crate_name}: the walk lost the crate",
+            crate_files.len()
+        );
+        files.extend(
+            crate_files
+                .into_iter()
+                .map(|(relative, source)| (format!("crates/{crate_name}/src/{relative}"), source)),
+        );
+    }
+
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    assert!(
+        files.len() >= MIN_PRODUCTION_SOURCE_FILES,
+        "authority audit loaded only {} production sources, below the {MIN_PRODUCTION_SOURCE_FILES} floor: the graph collapsed",
+        files.len()
+    );
+    files
+}
+
+/// Whether a `cfg` attribute gates its item out of every production build.
+///
+/// Matched on whole words so `feature = "latest"` is not mistaken for a test gate; nested groups
+/// are walked so `all(test, feature = "test-utils")` is caught as well as bare `cfg(test)`.
+fn cfg_is_test_only(attr: &syn::Attribute) -> Option<String> {
+    let syn::Meta::List(list) = &attr.meta else {
+        return None;
+    };
+    if !list.path.is_ident("cfg") {
+        return None;
+    }
+    let rendered = list.tokens.to_string();
+    let is_test_only = rendered
+        .split(|character: char| {
+            !character.is_ascii_alphanumeric() && character != '_' && character != '-'
+        })
+        .any(|word| word == "test" || word == "test-utils");
+    is_test_only.then(|| format!("cfg({rendered})"))
+}
+
+/// The module declarations in `dir`'s owning module file that production builds never compile.
+///
+/// The owning file is `mod.rs`, or the crate roots when `dir` is the walk root.
+fn test_only_module_gates(root: &Path, dir: &Path) -> BTreeMap<String, String> {
+    let owners: &[&str] = if dir == root {
+        &["lib.rs", "main.rs"]
+    } else {
+        &["mod.rs"]
+    };
+    let mut gates = BTreeMap::new();
+    for owner in owners {
+        let path = dir.join(owner);
+        // Compile-time root (`crate_src_root` / `CARGO_MANIFEST_DIR`) walked downward; the
+        // only child component is a fixed owner name from the `owners` list above.
+        // codeql[rust/path-injection]
+        let Ok(source) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(parsed) = syn::parse_file(&source) else {
+            panic!("authority audit could not parse {}", path.display());
+        };
+        for item in parsed.items {
+            let syn::Item::Mod(module) = item else {
+                continue;
+            };
+            // Only declarations (`mod foo;`) name another file; inline modules carry their own
+            // bodies and are already scoped by the file they live in.
+            if module.content.is_some() {
+                continue;
+            }
+            if let Some(gate) = module.attrs.iter().find_map(cfg_is_test_only) {
+                gates.insert(module.ident.to_string(), gate);
+            }
+        }
+    }
+    gates
+}
+
+/// Every module file the tree declares behind a test-only `cfg`, as relative walk paths.
+///
+/// Exposed so the general rule — fixtures never contribute authority rows — can be asserted
+/// against the real tree, not just a synthetic fixture.
+pub(crate) fn test_gated_module_files(root: &Path) -> BTreeMap<String, String> {
+    let mut found = BTreeMap::new();
+    collect_test_gated_module_files(root, root, &mut found);
+    found
+}
+
+fn collect_test_gated_module_files(root: &Path, dir: &Path, out: &mut BTreeMap<String, String>) {
+    for (name, gate) in test_only_module_gates(root, dir) {
+        for candidate in [
+            dir.join(format!("{name}.rs")),
+            dir.join(&name).join("mod.rs"),
+        ] {
+            if candidate.is_file() {
+                let relative = candidate
+                    .strip_prefix(root)
+                    .unwrap_or(&candidate)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                out.insert(relative, gate.clone());
+            }
+        }
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_test_gated_module_files(root, &path, out);
+        }
+    }
+}
+
+/// Recursive `.rs` walk. Public so the fail-closed behaviour is testable against a fixture
+/// tree; production callers go through [`load_production_sources`].
+///
+/// Modules declared behind a test-only `cfg` are skipped. A fixture is not production authority
+/// surface, and the failure is not one-directional: PR 3.2's `feature = "test-utils"` harness
+/// fixture defined `start/0`, which arity-keyed dispatch fused with `ResearchProcess::start/0`
+/// and thereby OVER-attributed `start_research` to the `workspace-bridge` surface — the same
+/// collision could as easily have masked a real writer. Fixtures must never move authority
+/// verdicts in either direction.
+pub(crate) fn collect_rs_files(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
+    let test_only = test_only_module_gates(root, dir);
+    // `dir` is the compile-time crate root or a descendant discovered by this same walk;
+    // no runtime, env, request, or config value reaches it.
+    // codeql[rust/path-injection]
+    let entries = std::fs::read_dir(dir).unwrap_or_else(|error| {
+        panic!(
+            "authority audit could not read directory {}: {error}",
+            dir.display()
+        )
+    });
+    for entry in entries {
+        let entry = entry.unwrap_or_else(|error| {
+            panic!(
+                "authority audit could not read a directory entry under {}: {error}",
+                dir.display()
+            )
+        });
+        let path = entry.path();
+        let file_type = entry.file_type().unwrap_or_else(|error| {
+            panic!("authority audit could not stat {}: {error}", path.display())
+        });
+        if file_type.is_dir() {
+            let directory_name = path.file_name().and_then(|name| name.to_str());
+            if matches!(directory_name, Some("tests" | "testing")) {
+                continue;
+            }
+            if directory_name.is_some_and(|name| test_only.contains_key(name)) {
+                continue;
+            }
+            collect_rs_files(root, &path, out);
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !name.ends_with(".rs")
+            || name.ends_with("_tests.rs")
+            || matches!(name, "tests.rs" | "mocks.rs")
+        {
+            continue;
+        }
+        if test_only.contains_key(name.trim_end_matches(".rs")) {
+            continue;
+        }
+        // `path` is a `read_dir` entry under the compile-time crate root — the walk never
+        // joins a runtime-supplied component.
+        // codeql[rust/path-injection]
+        let source = std::fs::read_to_string(&path).unwrap_or_else(|error| {
+            panic!("authority audit could not read {}: {error}", path.display())
+        });
+        let relative = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        out.push((relative, source));
+    }
+}
 
 #[test]
 fn registered_command_parser_handles_layout_variants() {

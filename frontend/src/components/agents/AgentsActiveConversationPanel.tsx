@@ -988,6 +988,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     provider: normalizedActiveRuntime.provider,
     providerOptions,
     isReady: providerSettingsReady,
+    isRemoteEnvironment,
   });
   const codexProviderSettings = configuredProviders.find(
     (entry) => entry.provider === "codex",
