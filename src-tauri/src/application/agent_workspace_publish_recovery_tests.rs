@@ -5861,6 +5861,16 @@ async fn observed_open_push_effect_is_reconciled_before_lease_reacquire() {
         std::path::Path::new(&workspace.worktree_path),
         &["rev-parse", "HEAD"],
     );
+    let remote_tracking_ref = format!("refs/remotes/origin/{}", workspace.branch_name);
+    recovery_git(
+        std::path::Path::new(&workspace.worktree_path),
+        &["update-ref", "-d", &remote_tracking_ref],
+    );
+    assert!(recovery_git(
+        std::path::Path::new(&workspace.worktree_path),
+        &["for-each-ref", "--format=%(refname)", &remote_tracking_ref],
+    )
+    .is_empty());
     state
         .branch_update_repo
         .release_target_lease(&identity, &owner, old_epoch)
@@ -5948,6 +5958,11 @@ async fn observed_open_push_effect_is_reconciled_before_lease_reacquire() {
         .receipt_json
         .as_deref()
         .is_some_and(|receipt| receipt.contains(&intended_head)));
+    assert!(recovery_git(
+        std::path::Path::new(&workspace.worktree_path),
+        &["for-each-ref", "--format=%(refname)", &remote_tracking_ref],
+    )
+    .is_empty());
     drop(project_dir);
     drop(remote);
 }

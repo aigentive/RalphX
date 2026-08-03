@@ -6,6 +6,7 @@ use dashmap::DashMap;
 
 use crate::application::agent_conversation_workspace::resolve_effective_agent_conversation_workspace_path;
 use crate::application::agent_workspace_publish_repair_state::validate_agent_workspace_repair_target_lease;
+use crate::application::git_service::git_cmd;
 use crate::domain::entities::plan_branch::PrPushStatus;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation,
@@ -771,7 +772,8 @@ pub(crate) async fn retarget_agent_workspace_repair_pr_handoff(
         Ok(Some(workspace)) => {
             base_ref_for_blocker = Some(workspace.base_ref.clone());
             let target_ref = resolve_publish_freshness_target(repo_path, &workspace.base_ref).await;
-            if let Ok(current_base_commit) = GitService::get_branch_sha(repo_path, &target_ref).await
+            if let Ok(current_base_commit) =
+                GitService::get_branch_sha(repo_path, &target_ref).await
             {
                 if workspace.base_commit.as_deref() != Some(current_base_commit.as_str()) {
                     let mut refreshed = workspace;
@@ -801,9 +803,9 @@ pub(crate) async fn retarget_agent_workspace_repair_pr_handoff(
         }
     }
     let blocker = match base_ref_for_blocker {
-        Some(base_ref) => format!(
-            "Base changed to '{base_ref}' — retry to retarget the repair ({reason})"
-        ),
+        Some(base_ref) => {
+            format!("Base changed to '{base_ref}' — retry to retarget the repair ({reason})")
+        }
         None => reason.to_string(),
     };
     block_agent_workspace_repair_pr_handoff(state, attempt, &blocker).await
@@ -1302,6 +1304,24 @@ async fn read_origin_branch_oid(repo_path: &Path, branch_name: &str) -> AppResul
         .map(Some)
 }
 
+async fn read_remote_ref_oid_without_local_update(
+    repo_path: &Path,
+    full_ref: &str,
+) -> AppResult<Option<String>> {
+    let remote = git_cmd::run(&["ls-remote", "origin", full_ref], repo_path).await?;
+    if !remote.status.success() {
+        return Err(AppError::GitOperation(format!(
+            "workspace repair remote receipt lookup failed: {}",
+            String::from_utf8_lossy(&remote.stderr).trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&remote.stdout)
+        .lines()
+        .find_map(|line| line.split_whitespace().next())
+        .filter(|oid| !oid.is_empty())
+        .map(ToOwned::to_owned))
+}
+
 /// Reconciles only the read-observable postcondition of an initialized push effect after its
 /// repair attempt lost target-lease authority. A matching remote head proves the prior mutation
 /// completed and allows the normal continuation to reacquire later; every ambiguous shape remains
@@ -1384,7 +1404,9 @@ pub(crate) async fn reconcile_open_agent_workspace_repair_push_effect(
         ));
     }
 
-    let remote_oid = read_origin_branch_oid(&target.path, &target.branch_name).await?;
+    let remote_oid =
+        read_remote_ref_oid_without_local_update(&target.path, observed_identity.full_ref())
+            .await?;
     if remote_oid.as_deref() != Some(intended_head_oid.as_str()) {
         return Ok(AgentWorkspaceRepairOpenPushEffectReconciliation::Pending);
     }
