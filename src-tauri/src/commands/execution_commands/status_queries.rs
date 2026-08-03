@@ -97,7 +97,7 @@ pub(crate) async fn compute_execution_status(
     }
 
     let queued_message_count =
-        count_slot_consuming_queued_messages(effective_project_id.as_ref(), &app_state).await?;
+        count_slot_consuming_queued_messages(effective_project_id.as_ref(), app_state).await?;
 
     let registry_entries = app_state.running_agent_registry.list_all().await;
 
@@ -205,7 +205,7 @@ pub(crate) async fn compute_execution_status(
 
     let max_concurrent = execution_state.max_concurrent();
     let global_max = execution_state.global_max_concurrent();
-    let halt_mode = load_execution_halt_mode(&app_state).await?;
+    let halt_mode = load_execution_halt_mode(app_state).await?;
 
     let response = build_execution_status_response(ExecutionStatusInput {
         is_paused: execution_state.is_paused(),

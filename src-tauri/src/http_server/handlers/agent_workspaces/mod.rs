@@ -90,7 +90,9 @@ use crate::application::services::pr_merge_poller::import_agent_workspace_pr_com
 use crate::application::GitService;
 use crate::application::{AppState, ChatService};
 use crate::commands::unified_chat_commands::{
-    agent_workspace_response_for_state, get_agent_conversation_workspace_freshness_for_app_state,
+    agent_workspace_response_for_state,
+    agent_workspace_response_without_repair_recovery_for_state,
+    get_agent_conversation_workspace_freshness_for_app_state,
     publish_agent_conversation_workspace_for_app_state,
     publish_agent_conversation_workspace_for_app_state_with_repair_intent,
     resume_durable_agent_workspace_repair_publish,
@@ -99,6 +101,13 @@ use crate::commands::unified_chat_commands::{
     AgentConversationWorkspacePublicationEventResponse, AgentConversationWorkspaceResponse,
     AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE,
 };
+
+async fn agent_workspace_response_for_remote_snapshot(
+    state: &AppState,
+    workspace: AgentConversationWorkspace,
+) -> Result<AgentConversationWorkspaceResponse, String> {
+    agent_workspace_response_without_repair_recovery_for_state(state, workspace).await
+}
 use crate::domain::agents::{
     AgentHarnessKind, LogicalEffort, ManualRoleRuntimeOverride, ManualServiceTier,
 };

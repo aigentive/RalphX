@@ -4794,18 +4794,17 @@ fn b2_detector_clean_members_refused_on_their_own_findings() {
     // it were current. The helper now returns `AppResult` and every read propagates, so the
     // finding that held them no longer describes the code; they are registered and pinned by
     // `wp3_tool_call_detail_reads_are_registered_reviewed_read_rows`.
-    for (command, module) in [("list_agent_composer_skills", "agent_composer_commands")] {
-        let row = policy_for(command, module).expect("ledgered");
-        assert_ne!(
-            row.class,
-            RiskClass::Read,
-            "`{command}` is fail-open; a fail-open shape is fixed or refused, never registered"
-        );
-        assert!(
-            find_spec(command).is_none(),
-            "`{command}` must not register"
-        );
-    }
+    let (command, module) = ("list_agent_composer_skills", "agent_composer_commands");
+    let row = policy_for(command, module).expect("ledgered");
+    assert_ne!(
+        row.class,
+        RiskClass::Read,
+        "`{command}` is fail-open; a fail-open shape is fixed or refused, never registered"
+    );
+    assert!(
+        find_spec(command).is_none(),
+        "`{command}` must not register"
+    );
 
     // --- Reads that construct spawn-capable machinery to serve a read.
     //

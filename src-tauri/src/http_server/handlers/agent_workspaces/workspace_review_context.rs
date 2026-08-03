@@ -17,7 +17,6 @@ use crate::application::agent_workspace_review_context::{
     load_agent_workspace_review_presentation_context,
     load_persisted_workspace_review_snapshot_context, AgentWorkspaceReviewContextReadMode,
 };
-use crate::commands::unified_chat_commands::agent_workspace_response_without_repair_recovery_for_state;
 
 /// GET /api/agent-workspaces/{conversation_id}/workspace-review-context
 pub async fn get_agent_workspace_review_context(
@@ -127,7 +126,7 @@ pub async fn get_agent_workspace_review_context(
 ///    falls through to the calculating path, so even a cold monitor cannot trigger git here.
 /// 3. **No repair-recovery scheduling.** `agent_workspace_response_for_state` schedules PR
 ///    supervision recovery, which can fetch, enqueue an agent, or continue publication; the
-///    remote path uses `agent_workspace_response_without_repair_recovery_for_state`.
+///    remote path uses `agent_workspace_response_for_remote_snapshot`.
 ///
 /// Runtime authority is pinned closed rather than resolved: `x-ralphx-agent-run-id` /
 /// `x-ralphx-conversation-id` are agent-run trust headers a paired device must never be able to
@@ -148,12 +147,10 @@ pub async fn get_agent_workspace_review_context_remote_snapshot(
         load_persisted_workspace_review_snapshot_context(state.app_state.as_ref(), &workspace)
             .await
             .map_err(workspace_review_action_error)?;
-    let workspace_response = agent_workspace_response_without_repair_recovery_for_state(
-        state.app_state.as_ref(),
-        workspace,
-    )
-    .await
-    .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error, None))?;
+    let workspace_response =
+        agent_workspace_response_for_remote_snapshot(state.app_state.as_ref(), workspace)
+            .await
+            .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error, None))?;
     let events =
         load_agent_workspace_publication_events(state.app_state.as_ref(), &conversation_id).await?;
 

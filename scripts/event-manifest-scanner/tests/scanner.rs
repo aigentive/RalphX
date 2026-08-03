@@ -194,7 +194,7 @@ fn rejects_dynamic_event_bus_subscriptions() {
 #[test]
 fn renders_reason_coded_reviewed_unmatched_event_gaps() {
     let gaps = reviewed_unmatched_events();
-    assert_eq!(gaps.len(), 11);
+    assert_eq!(gaps.len(), 13);
     assert!(gaps.iter().any(|gap| gap.name() == "execution:stderr"));
     let rendered_value = serde_json::to_value(&gaps).expect("gaps serialize");
     let rendered = rendered_value.as_array().expect("gap list");

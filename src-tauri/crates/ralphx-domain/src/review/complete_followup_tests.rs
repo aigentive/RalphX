@@ -22,10 +22,10 @@ fn sample_task() -> Task {
 
 fn sample_task_context() -> TaskContext {
     let task = sample_task();
-    let project_id = task.project_id.clone();
+    let _project_id = task.project_id.clone();
 
     TaskContext {
-        task: task.into(),
+        task,
         source_proposal: Some(crate::entities::TaskProposalSummary {
             id: TaskProposalId::from_string("proposal-1"),
             title: "proposal".to_string(),

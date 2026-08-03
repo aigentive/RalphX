@@ -98,7 +98,11 @@ describe("Agents task-detail action gates", () => {
   ] as const)("HumanReview approve in %s", (environment, disabled, hint) => {
     renderGatedDetailView(<HumanReviewTaskDetail task={task("review_passed")} />, environment);
     const approve = screen.getByTestId("approve-button");
-    disabled ? expect(approve).toBeDisabled() : expect(approve).toBeEnabled();
+    if (disabled) {
+      expect(approve).toBeDisabled();
+    } else {
+      expect(approve).toBeEnabled();
+    }
     if (hint) {
       expectHint();
       expect(resolveAffordanceGate("taskApprove", true, ["ui:read", "ui:operate"]).reason).toBe(hint);
@@ -114,7 +118,11 @@ describe("Agents task-detail action gates", () => {
   ] as const)("Reviewing stop in %s", (environment, disabled) => {
     renderGatedDetailView(<ReviewingTaskDetail task={task("reviewing")} />, environment);
     const stop = screen.getByTestId("stop-review-action");
-    disabled ? expect(stop).toBeDisabled() : expect(stop).toBeEnabled();
+    if (disabled) {
+      expect(stop).toBeDisabled();
+    } else {
+      expect(stop).toBeEnabled();
+    }
     if (disabled) {
       expectHint();
       expect(resolveAffordanceGate("taskStop", true, ["ui:read", "ui:operate"]).reason)
@@ -156,12 +164,13 @@ describe("Agents task-detail action gates", () => {
 
     const stop = screen.getByTestId("stop-action");
     const cancel = screen.getByTestId("cancel-action");
-    disabled
-      ? expect(stop).toHaveAttribute("aria-disabled", "true")
-      : expect(stop).not.toHaveAttribute("aria-disabled");
-    disabled
-      ? expect(cancel).toHaveAttribute("aria-disabled", "true")
-      : expect(cancel).not.toHaveAttribute("aria-disabled");
+    if (disabled) {
+      expect(stop).toHaveAttribute("aria-disabled", "true");
+      expect(cancel).toHaveAttribute("aria-disabled", "true");
+    } else {
+      expect(stop).not.toHaveAttribute("aria-disabled");
+      expect(cancel).not.toHaveAttribute("aria-disabled");
+    }
     if (disabled) {
       expect(screen.getAllByTestId("agent-gate-tooltip")).toHaveLength(2);
     } else {

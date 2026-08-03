@@ -46,7 +46,7 @@ fn test_parse_review_issue_rejects_unknown_severity() {
 fn test_build_unrelated_drift_followup_prompt_includes_scope_context() {
     let task = Task::new(ProjectId::new(), "Fix scope drift".to_string());
     let context = TaskContext {
-        task: task.clone().into(),
+        task: task.clone(),
         source_proposal: Some(TaskProposalSummary {
             affected_paths: vec!["src-tauri/src/http_server".to_string()],
             ..Default::default()

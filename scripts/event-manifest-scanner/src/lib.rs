@@ -121,6 +121,16 @@ const UNMATCHED_EVENT_GAPS: &[ReviewedUnmatchedEvent] = &[
         "frontend consumer exists; no current Tauri event producer",
     ),
     ReviewedUnmatchedEvent::new(
+        "team:member_status",
+        "no-tauri-emitter",
+        "frontend compatibility consumer exists; no current Tauri event producer",
+    ),
+    ReviewedUnmatchedEvent::new(
+        "team:roster_updated",
+        "no-tauri-emitter",
+        "frontend compatibility consumer exists; no current Tauri event producer",
+    ),
+    ReviewedUnmatchedEvent::new(
         "supervisor:alert",
         "no-tauri-bridge",
         "frontend consumer exists; backend has internal Supervisor EventBus but no Tauri bridge",

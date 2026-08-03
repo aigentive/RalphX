@@ -150,11 +150,10 @@ fn event_classification_is_exact_and_snapshotted() {
         EventClassification::find("agent:chunk").unwrap().delivery,
         EventDelivery::Transient
     );
-    assert_eq!(
+    assert!(
         EventClassification::find("agent_terminal:event")
             .unwrap()
-            .excluded_from_v1,
-        true
+            .excluded_from_v1
     );
     assert_eq!(
         EventClassification::find("task:updated").unwrap().origin,
@@ -281,7 +280,7 @@ fn v1_resolution_wire_spelling_is_kebab_case_and_closed() {
     assert_eq!(
         V1_RESOLUTIONS
             .iter()
-            .map(|resolution| value(resolution))
+            .map(value)
             .collect::<Vec<_>>(),
         vec![
             json!("registerable"),
@@ -365,7 +364,7 @@ fn audit_refusal_overlays_registerable_and_never_masks_a_mechanical_refusal() {
     assert_eq!(
         AUDIT_REFUSAL_REASONS
             .iter()
-            .map(|reason| value(reason))
+            .map(value)
             .collect::<Vec<_>>(),
         vec![
             json!("fail-open-until-fixed"),
