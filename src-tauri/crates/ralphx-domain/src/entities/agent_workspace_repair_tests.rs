@@ -192,6 +192,12 @@ fn health_held_ready_repair_projects_typed_hold_reason() {
     );
     assert!(!held.automatic_continuation);
 
+    attempt.pending_reasons = vec!["pr_autofix_head_redrive:local-head".to_string()];
+    assert_eq!(
+        attempt.operation_snapshot().hold_reason,
+        Some(AgentWorkspaceRepairOperationHoldReason::PublishRedrive)
+    );
+
     attempt.pending_reasons.clear();
     assert_eq!(attempt.operation_snapshot().hold_reason, None);
 }

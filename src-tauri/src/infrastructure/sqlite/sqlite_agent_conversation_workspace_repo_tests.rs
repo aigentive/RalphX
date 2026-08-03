@@ -82,6 +82,70 @@ async fn publish_lease_reclaims_dead_owner_and_fences_stale_token() {
         AgentWorkspacePublishLeaseClaim::HeldByLiveOwner
     );
 }
+
+#[tokio::test]
+async fn publish_lease_heartbeat_and_release_are_exact_token_scoped() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .expect("workspace should persist");
+    let claimed_at = chrono::Utc::now();
+    repo.claim_publish_lease(
+        &conversation_id,
+        "run-one",
+        "token-one",
+        claimed_at,
+        None,
+        false,
+    )
+    .await
+    .expect("claim should succeed");
+
+    assert!(!repo
+        .heartbeat_publish_lease(&conversation_id, "wrong-token", claimed_at)
+        .await
+        .expect("stale heartbeat should be rejected"));
+    assert!(repo
+        .heartbeat_publish_lease(
+            &conversation_id,
+            "token-one",
+            claimed_at + chrono::Duration::seconds(1),
+        )
+        .await
+        .expect("owner heartbeat should apply"));
+    let heartbeated = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load heartbeated workspace")
+        .expect("workspace exists");
+    assert_eq!(
+        heartbeated.publish_lease_token.as_deref(),
+        Some("token-one")
+    );
+    assert_eq!(
+        heartbeated.publish_lease_heartbeat_at,
+        Some(claimed_at + chrono::Duration::seconds(1))
+    );
+
+    assert!(repo
+        .release_publish_lease(
+            &conversation_id,
+            "token-one",
+            Some("failed"),
+            claimed_at + chrono::Duration::seconds(2),
+        )
+        .await
+        .expect("owner release should apply"));
+    let released = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load released workspace")
+        .expect("workspace exists");
+    assert!(released.publish_lease_owner_run_id.is_none());
+    assert!(released.publish_lease_token.is_none());
+    assert!(released.publish_lease_heartbeat_at.is_none());
+    assert_eq!(released.publication_push_status.as_deref(), Some("failed"));
+}
 use crate::testing::SqliteTestDb;
 
 use super::SqliteAgentConversationWorkspaceRepository;
