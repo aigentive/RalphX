@@ -1,3 +1,13 @@
+---
+paths:
+  - "agents/**"
+  - "plugins/app/ralphx-mcp-server/src/**"
+  - "src-tauri/src/infrastructure/agents/**"
+  - "src-tauri/src/utils/runtime_log_paths.rs"
+  - "src-tauri/src/http_server/handlers/coordination/**"
+  - "src-tauri/tests/suite_http_handlers/delegation_handlers.rs"
+---
+
 > **Maintainer note:** Keep this file compact. Prefer one-line rules, links to source docs, and explicit non-negotiables over prose.
 
 # Runtime Root Vs Target Project

@@ -1,6 +1,5 @@
 ---
 paths:
-  - "plugins/app/.mcp.json"
   - "config/**"
   - "plugins/app/ralphx-mcp-server/**"
   - "plugins/app/ralphx-external-mcp/**"

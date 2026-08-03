@@ -48,9 +48,14 @@ jobs:
               - '.github/actions/**'
               - '.github/codeql/**'
               - '.github/dependabot.yml'
+              - 'CLAUDE.md'
+              - '**/CLAUDE.md'
+              - '.claude/rules/**'
               - 'scripts/test-rust-fast.sh'
+              - 'scripts/validate-claude-rules.py'
               - 'scripts/tests/test-ci-rust-full-integration-targets.sh'
               - 'scripts/tests/test-coverage-rust-shards.sh'
+              - 'scripts/tests/test-claude-rules-activation.py'
               - 'scripts/build-prod-release.sh'
               - 'scripts/render-homebrew-cask.sh'
               - 'scripts/reconcile-homebrew-cask.sh'
@@ -177,6 +182,13 @@ jobs:
       - name: Validate Rust coverage shard topology
         shell: bash
         run: bash scripts/tests/test-coverage-rust-shards.sh
+
+      - name: Validate Claude rule loading
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/validate-claude-rules.py
+          python3 scripts/tests/test-claude-rules-activation.py
 
       - name: Validate release scripts
         shell: bash
