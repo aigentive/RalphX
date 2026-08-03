@@ -1,7 +1,7 @@
 // MockGithubService — test double for GithubServiceTrait
 //
 // Configurable per-method return values and call tracking.
-// No real `gh` or `git` invocations.
+// No real `gh` or `git` invocations unless a test explicitly opts into real Git pushes.
 
 use async_trait::async_trait;
 use std::collections::VecDeque;
@@ -10,8 +10,9 @@ use std::sync::{Arc, Mutex};
 
 use crate::domain::services::github_service::{
     validate_pr_metadata_patch, GithubConnectionStatus, GithubServiceTrait, PrBranchMatch,
-    PrDetail, PrDiffAnnotations, PrHealth, PrHealthCheck, PrReviewFeedback, PrReviewSubmissionEvent,
-    PrReviewThread, PrSearchResult, PrStatus, PrSubmittedReview, PrSyncState,
+    PrDetail, PrDiffAnnotations, PrHealth, PrHealthCheck, PrReviewFeedback,
+    PrReviewSubmissionEvent, PrReviewThread, PrSearchResult, PrStatus, PrSubmittedReview,
+    PrSyncState,
 };
 use crate::error::AppError;
 use crate::AppResult;
@@ -50,6 +51,7 @@ pub struct MockGithubState {
     pub push_branch_delay_ms: u64,
     pub push_branch_started: Option<Arc<tokio::sync::Notify>>,
     pub push_branch_with_expected_remote_oid_lease_result: Option<AppResult<()>>,
+    pub perform_real_git_pushes: bool,
     pub push_branch_with_expected_remote_oid_lease_delay_ms: u64,
     pub push_branch_with_expected_remote_oid_lease_started: Option<Arc<tokio::sync::Notify>>,
     pub close_pr_result: Option<AppResult<()>>,
@@ -572,9 +574,7 @@ impl GithubServiceTrait for MockGithubService {
         let mut s = self.state.lock().expect("lock poisoned");
         s.rerun_failed_workflow_calls += 1;
         s.last_rerun_failed_workflow_id = Some(run_id);
-        s.rerun_failed_workflow_result
-            .take()
-            .unwrap_or(Ok(()))
+        s.rerun_failed_workflow_result.take().unwrap_or(Ok(()))
     }
 
     async fn enable_pr_auto_merge(
@@ -622,7 +622,7 @@ impl GithubServiceTrait for MockGithubService {
     }
 
     async fn push_branch(&self, _working_dir: &Path, branch: &str) -> AppResult<()> {
-        let (delay_ms, result) = {
+        let (delay_ms, perform_real_git_push, result) = {
             let mut state = self.state.lock().expect("lock poisoned");
             state.push_branch_calls += 1;
             state.last_push_branch_name = Some(branch.to_string());
@@ -631,11 +631,17 @@ impl GithubServiceTrait for MockGithubService {
             }
             (
                 state.push_branch_delay_ms,
+                state.perform_real_git_pushes,
                 state.push_branch_result.take().unwrap_or(Ok(())),
             )
         };
         if delay_ms > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+        }
+        if perform_real_git_push && result.is_ok() {
+            crate::infrastructure::GhCliGithubService::new()
+                .push_branch(_working_dir, branch)
+                .await?;
         }
         result
     }
@@ -646,7 +652,7 @@ impl GithubServiceTrait for MockGithubService {
         local_ref: &str,
         expected_remote_oid: &str,
     ) -> AppResult<()> {
-        let (delay_ms, result) = {
+        let (delay_ms, perform_real_git_push, result) = {
             let mut state = self.state.lock().expect("lock poisoned");
             state.push_branch_with_expected_remote_oid_lease_calls += 1;
             state.last_push_branch_with_expected_remote_oid_lease_args =
@@ -659,6 +665,7 @@ impl GithubServiceTrait for MockGithubService {
             }
             (
                 state.push_branch_with_expected_remote_oid_lease_delay_ms,
+                state.perform_real_git_pushes,
                 state
                     .push_branch_with_expected_remote_oid_lease_result
                     .take()
@@ -667,6 +674,15 @@ impl GithubServiceTrait for MockGithubService {
         };
         if delay_ms > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+        }
+        if perform_real_git_push && result.is_ok() {
+            crate::infrastructure::GhCliGithubService::new()
+                .push_branch_with_expected_remote_oid_lease(
+                    _working_dir,
+                    local_ref,
+                    expected_remote_oid,
+                )
+                .await?;
         }
         result
     }
