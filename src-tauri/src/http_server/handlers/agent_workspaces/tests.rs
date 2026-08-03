@@ -2718,6 +2718,159 @@ async fn get_publish_status_reports_in_progress_and_events() {
 }
 
 #[tokio::test]
+async fn get_publish_status_reconciles_a_stale_durable_continuation_once_before_projection() {
+    use crate::domain::entities::{
+        AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation,
+        AgentWorkspaceRepairOperationStatus, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
+        GitTargetIdentity, GitTargetLeaseOwner,
+    };
+    use crate::domain::repositories::{
+        AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, AgentWorkspaceRepairAttemptTransition,
+        AgentWorkspaceRepairAttemptTransitionOutcome, StartOrJoinAgentWorkspaceRepairAttempt,
+        StartOrJoinAgentWorkspaceRepairAttemptOutcome,
+    };
+
+    let app_state = Arc::new(AppState::new_test());
+    let conversation_id = ChatConversationId::new();
+    let workspace = test_workspace(conversation_id.clone());
+    app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    let started = match app_state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                conversation_id.clone(),
+                AgentWorkspaceRepairSource::Publish,
+                AgentWorkspaceRepairContinuation::Manual,
+                "main",
+                false,
+                true,
+                false,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: "stale continuation status-read fixture".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("durable repair attempt should start")
+    {
+        StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(attempt) => attempt,
+        outcome => panic!("expected a new durable repair attempt, got {outcome:?}"),
+    };
+    let target_identity = GitTargetIdentity::new(
+        std::path::PathBuf::from(&workspace.worktree_path),
+        format!("refs/heads/{}", workspace.branch_name),
+    )
+    .expect("test workspace branch should form a canonical target identity");
+    let repair_owner = GitTargetLeaseOwner::agent_workspace_repair(started.id.as_str());
+    let AcquireGitTargetLeaseOutcome::Acquired { fencing_epoch } = app_state
+        .branch_update_repo
+        .acquire_target_lease(AcquireGitTargetLease {
+            identity: target_identity.clone(),
+            owner: repair_owner,
+        })
+        .await
+        .expect("repair lease should acquire")
+    else {
+        panic!("repair attempt should own its canonical target lease");
+    };
+    let mut continuation = started.clone();
+    continuation.phase = AgentWorkspaceRepairPhase::ContinuationPending;
+    continuation.git_common_dir = Some(
+        target_identity
+            .git_common_dir()
+            .to_string_lossy()
+            .to_string(),
+    );
+    continuation.target_ref = Some(target_identity.full_ref().to_string());
+    continuation.target_identity_version = Some(1);
+    continuation.target_lease_epoch = Some(fencing_epoch);
+    continuation.updated_at = chrono::Utc::now() - chrono::Duration::seconds(61);
+    let continuation = match app_state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: continuation,
+            expected_phase: started.phase,
+            expected_updated_at: started.updated_at,
+            next_phase: AgentWorkspaceRepairPhase::ContinuationPending,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("stale continuation should persist")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("expected stale continuation to persist, got {outcome:?}"),
+    };
+    let state = test_http_state(Arc::clone(&app_state));
+
+    let Json(first_response) =
+        get_agent_workspace_publish_status(State(state.clone()), Path(conversation_id.to_string()))
+            .await
+            .expect("status read should reconcile the durable continuation");
+
+    assert_eq!(
+        first_response
+            .workspace
+            .maintenance_operation
+            .as_ref()
+            .map(|operation| operation.status),
+        Some(AgentWorkspaceRepairOperationStatus::Blocked),
+        "the response must be projected after the continuation has been reconciled"
+    );
+    let first_attempt = app_state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reconciled repair attempt should load")
+        .expect("reconciled repair attempt should remain current");
+    assert_eq!(first_attempt.id, continuation.id);
+    assert_eq!(first_attempt.phase, AgentWorkspaceRepairPhase::Blocked);
+    let first_events = app_state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("reconciliation events should load");
+
+    let Json(second_response) =
+        get_agent_workspace_publish_status(State(state), Path(conversation_id.to_string()))
+            .await
+            .expect("repeat status read should be idempotent");
+
+    assert_eq!(
+        second_response
+            .workspace
+            .maintenance_operation
+            .as_ref()
+            .map(|operation| operation.status),
+        Some(AgentWorkspaceRepairOperationStatus::Blocked)
+    );
+    let second_attempt = app_state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reconciled repair attempt should still load")
+        .expect("reconciled repair attempt should remain current");
+    assert_eq!(second_attempt.id, first_attempt.id);
+    assert_eq!(second_attempt.updated_at, first_attempt.updated_at);
+    assert_eq!(
+        app_state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("reconciliation events should still load"),
+        first_events,
+        "repeat status reads must not advance the same durable continuation twice"
+    );
+}
+
+#[tokio::test]
 async fn publish_agent_workspace_returns_in_progress_for_active_publish_state() {
     let app_state = Arc::new(AppState::new_test());
     let conversation_id = ChatConversationId::new();

@@ -1,3 +1,10 @@
+---
+paths:
+  - "frontend/src/**/*.{ts,tsx}"
+  - "src-tauri/src/commands/**/*.rs"
+  - "src-tauri/src/lib.rs"
+---
+
 > **Maintainer note:** This file optimizes for LLM context efficiency. Rules: (1) Tables > prose (2) One example max per concept (3) No redundant explanations (4) Use symbols: → = leads to, | = or, ❌/✅ = wrong/right (5) Before adding content, ask: "Can this be a single line?" If yes, make it one line.
 
 # Tauri Invoke Conventions

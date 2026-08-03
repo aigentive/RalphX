@@ -933,9 +933,10 @@ describe("AgentsView publish", () => {
 
   });
 
-  it("keeps exactly one explicit recovery action for blocked maintenance", async () => {
+  it("retries blocked maintenance through the normal non-task-pipeline publish flow", async () => {
     configurePublishPane({
       workspace: {
+        linkedPlanBranchId: null,
         maintenanceOperation: {
           operationId: "maintenance-2",
           generation: 2,
@@ -958,6 +959,23 @@ describe("AgentsView publish", () => {
       within(actionbar).getByTestId("agents-publish-retry-maintenance"),
     ).toBeEnabled();
     expect(within(actionbar).queryByTestId("agents-publish-confirm")).not.toBeInTheDocument();
+
+    fireEvent.click(
+      within(actionbar).getByTestId("agents-publish-retry-maintenance"),
+    );
+    const dialog = await screen.findByRole("dialog");
+    const confirm = within(dialog).getByRole("button", {
+      name: "Commit & Publish",
+    });
+    expect(confirm).toBeEnabled();
+
+    fireEvent.click(confirm);
+
+    await waitFor(() =>
+      expect(publishAgentConversationWorkspaceMock).toHaveBeenCalledWith(
+        "conversation-1",
+      ),
+    );
   });
 
   it("rebases directly onto a merged pull request's resolved base", async () => {
