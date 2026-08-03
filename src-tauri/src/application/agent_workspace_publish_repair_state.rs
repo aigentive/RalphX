@@ -74,6 +74,34 @@ const AGENT_WORKSPACE_REPAIR_DISPATCH_INITIAL_BACKOFF_SECS: i64 = 5;
 const AGENT_WORKSPACE_REPAIR_DISPATCH_MAX_BACKOFF_SECS: i64 = 60;
 const AGENT_WORKSPACE_REPAIR_DISPATCH_DEFERRED_DELAY_SECS: i64 = 15;
 
+pub(crate) fn is_machine_repair_reason_marker(reason: &str) -> bool {
+    let trimmed = reason.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    matches!(
+        trimmed,
+        NEEDS_HUMAN_REPAIR_REASON
+            | PRE_EXISTING_ON_BASE_REPAIR_REASON
+            | UNCHANGED_HEALTH_REPAIR_REASON
+    ) || trimmed.starts_with(
+        crate::application::agent_workspace_publish_recovery::AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX,
+    ) || trimmed.starts_with(
+        crate::application::agent_workspace_publish_recovery::AUTO_RETRY_READY_REPAIR_REASON_PREFIX,
+    ) || trimmed.starts_with(
+        crate::application::agent_workspace_publish_recovery::EXHAUSTED_PUBLISH_REDRIVE_CHECKED_REASON_PREFIX,
+    )
+}
+
+pub(crate) fn last_human_repair_reason(attempt: &AgentWorkspaceRepairAttempt) -> Option<&str> {
+    attempt
+        .pending_reasons
+        .iter()
+        .rev()
+        .map(String::as_str)
+        .find(|reason| !is_machine_repair_reason_marker(reason))
+}
+
 #[cfg(any(test, feature = "test-utils"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AgentWorkspaceRepairClaim {
