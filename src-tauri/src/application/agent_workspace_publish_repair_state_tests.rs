@@ -9,7 +9,8 @@ use crate::application::agent_workspace_publish_recovery::{
     EXHAUSTED_PUBLISH_REDRIVE_CHECKED_REASON_PREFIX,
 };
 use crate::application::agent_workspace_publish_repair_state::{
-    abort_agent_workspace_pr_fix_review_handoff, block_agent_workspace_pr_fix_claim,
+    abort_agent_workspace_pr_fix_review_handoff, agent_workspace_repair_is_ci_held,
+    agent_workspace_repair_is_health_held, block_agent_workspace_pr_fix_claim,
     block_agent_workspace_repair_needs_human, claim_agent_workspace_repair,
     classify_agent_workspace_repair_completion_authority, classify_agent_workspace_repair_delivery,
     complete_agent_workspace_pr_fix_claim, complete_agent_workspace_repair_claim,
@@ -19,7 +20,8 @@ use crate::application::agent_workspace_publish_repair_state::{
     is_machine_repair_reason_marker, last_human_repair_reason,
     reconcile_active_agent_workspace_repair,
     reopen_agent_workspace_repair_after_validation_failure, repair_event_authorizes_active_run,
-    reserve_agent_workspace_ci_rerun, reserve_agent_workspace_pre_existing_on_base,
+    reserve_agent_workspace_ci_await, reserve_agent_workspace_ci_rerun,
+    reserve_agent_workspace_pre_existing_on_base,
     reserve_agent_workspace_repair_completion_validation, reserve_agent_workspace_repair_dispatch,
     resume_current_agent_workspace_repair_publish, settle_agent_workspace_repair_dispatch_outcome,
     settle_agent_workspace_repair_failure, start_or_join_agent_workspace_repair,
@@ -30,10 +32,10 @@ use crate::application::agent_workspace_publish_repair_state::{
     AgentWorkspaceRepairStartOutcome, AgentWorkspaceRepairStartRequest,
     AgentWorkspaceRepairTransitionOutcome, DurableRepairWorkspaceReviewStartFuture,
     DurableRepairWorkspaceReviewStarter, PrAutofixCarryover, PublishAuthority,
-    AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION, DEFERRED_REPAIR_WAIT_TIMEOUT_SECS,
-    MAX_AGENT_WORKSPACE_CI_RERUN_RETRIES, MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES,
-    NEEDS_HUMAN_REPAIR_REASON, PRE_EXISTING_ON_BASE_REPAIR_REASON, REPAIR_SENT_STEP,
-    UNCHANGED_HEALTH_REPAIR_REASON,
+    AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION, AWAITING_CI_REPAIR_REASON,
+    DEFERRED_REPAIR_WAIT_TIMEOUT_SECS, MAX_AGENT_WORKSPACE_CI_RERUN_RETRIES,
+    MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES, NEEDS_HUMAN_REPAIR_REASON,
+    PRE_EXISTING_ON_BASE_REPAIR_REASON, REPAIR_SENT_STEP, UNCHANGED_HEALTH_REPAIR_REASON,
 };
 use crate::application::agent_workspace_review::{
     load_agent_workspace_review_context, AgentWorkspaceReviewStart,
@@ -83,13 +85,14 @@ fn repair_reason_helpers_exclude_every_machine_marker_and_preserve_latest_human_
         NEEDS_HUMAN_REPAIR_REASON.to_string(),
         PRE_EXISTING_ON_BASE_REPAIR_REASON.to_string(),
         UNCHANGED_HEALTH_REPAIR_REASON.to_string(),
+        AWAITING_CI_REPAIR_REASON.to_string(),
         format!("{AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX}2"),
         format!("{AUTO_RETRY_READY_REPAIR_REASON_PREFIX}1"),
         format!("{EXHAUSTED_PUBLISH_REDRIVE_CHECKED_REASON_PREFIX}bba066f"),
         newer_human_context.clone(),
     ];
 
-    for marker in &attempt.pending_reasons[1..7] {
+    for marker in &attempt.pending_reasons[1..8] {
         assert!(
             is_machine_repair_reason_marker(marker),
             "{marker:?} must remain internal scheduling state"
@@ -133,6 +136,31 @@ fn repair_reason_helpers_return_no_context_when_only_machine_markers_remain() {
     ];
 
     assert_eq!(last_human_repair_reason(&attempt), None);
+}
+
+#[test]
+fn ci_held_predicate_recognizes_rerun_reservations_and_await_holds() {
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        ChatConversationId::from_string("ci-held-predicate"),
+        AgentWorkspaceRepairSource::Publish,
+        AgentWorkspaceRepairContinuation::Publish,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+
+    assert!(!agent_workspace_repair_is_ci_held(&attempt));
+    attempt.ci_rerun_count = 1;
+    assert!(agent_workspace_repair_is_ci_held(&attempt));
+
+    attempt.ci_rerun_count = 0;
+    attempt
+        .pending_reasons
+        .push(AWAITING_CI_REPAIR_REASON.to_string());
+    assert!(agent_workspace_repair_is_ci_held(&attempt));
 }
 
 fn repair_workspace(conversation_id: ChatConversationId) -> AgentConversationWorkspace {
@@ -3455,5 +3483,188 @@ async fn reserve_ci_rerun_rejects_after_max_retries() {
     assert!(
         matches!(result, AgentWorkspaceRepairTransitionOutcome::Stale(_)),
         "exhausted ci rerun budget must return Stale"
+    );
+}
+
+#[tokio::test]
+async fn reserve_ci_await_parks_the_current_attempt_without_spending_rerun_budget() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let repair_repo = Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>;
+    let conversation_id = ChatConversationId::from_string("ci-await-reserve");
+    workspace_repo
+        .create_or_update(repair_workspace(conversation_id.clone()))
+        .await
+        .expect("persist workspace");
+    let attempt = start_or_join_agent_workspace_repair(
+        Arc::clone(&repair_repo),
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        repair_start_request(
+            conversation_id,
+            AgentWorkspaceRepairSource::Publish,
+            AgentWorkspaceRepairContinuation::Publish,
+            "await CI completion",
+        ),
+    )
+    .await
+    .expect("start repair")
+    .into_attempt();
+
+    let result = reserve_agent_workspace_ci_await(
+        Arc::clone(&repair_repo),
+        attempt,
+        "ci-hold:v1:head:17",
+        "waiting for the in-progress workflow run",
+        None,
+    )
+    .await
+    .expect("reserve CI await");
+
+    let AgentWorkspaceRepairTransitionOutcome::Applied(awaiting_ci) = result else {
+        panic!("current CI await reservation must apply");
+    };
+    assert_eq!(awaiting_ci.phase, AgentWorkspaceRepairPhase::Ready);
+    assert_eq!(
+        awaiting_ci.ci_rerun_count, 0,
+        "awaiting must not spend rerun budget"
+    );
+    assert_eq!(
+        awaiting_ci.ci_rerun_fingerprint.as_deref(),
+        Some("ci-hold:v1:head:17")
+    );
+    assert!(awaiting_ci
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == AWAITING_CI_REPAIR_REASON));
+    assert!(agent_workspace_repair_is_ci_held(&awaiting_ci));
+    assert!(
+        !agent_workspace_repair_is_health_held(&awaiting_ci),
+        "a CI await must not enter the classification-equality health hold"
+    );
+    assert_eq!(
+        awaiting_ci.summary.as_deref(),
+        Some("waiting for the in-progress workflow run")
+    );
+    assert!(awaiting_ci.blocker.is_none());
+}
+
+#[tokio::test]
+async fn reserve_ci_await_rejects_a_stale_attempt_without_overwriting_the_current_hold() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let repair_repo = Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>;
+    let conversation_id = ChatConversationId::from_string("ci-await-stale");
+    workspace_repo
+        .create_or_update(repair_workspace(conversation_id.clone()))
+        .await
+        .expect("persist workspace");
+    let attempt = start_or_join_agent_workspace_repair(
+        Arc::clone(&repair_repo),
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        repair_start_request(
+            conversation_id,
+            AgentWorkspaceRepairSource::Publish,
+            AgentWorkspaceRepairContinuation::Publish,
+            "await CI completion",
+        ),
+    )
+    .await
+    .expect("start repair")
+    .into_attempt();
+
+    let first = reserve_agent_workspace_ci_await(
+        Arc::clone(&repair_repo),
+        attempt.clone(),
+        "ci-hold:v1:head:18",
+        "first await reservation",
+        None,
+    )
+    .await
+    .expect("first reservation");
+    assert!(matches!(
+        first,
+        AgentWorkspaceRepairTransitionOutcome::Applied(_)
+    ));
+
+    let stale = reserve_agent_workspace_ci_await(
+        Arc::clone(&repair_repo),
+        attempt,
+        "ci-hold:v1:head:19",
+        "stale await reservation",
+        None,
+    )
+    .await
+    .expect("stale reservation returns an outcome");
+    assert!(matches!(
+        stale,
+        AgentWorkspaceRepairTransitionOutcome::Stale(_)
+    ));
+    let current = repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("current repair attempt should load")
+        .expect("current repair attempt should remain durable");
+    assert_eq!(
+        current.ci_rerun_fingerprint.as_deref(),
+        Some("ci-hold:v1:head:18"),
+        "a stale transition must not overwrite the current CI hold identity"
+    );
+}
+
+#[tokio::test]
+async fn reserve_ci_await_is_idempotent_for_the_await_reason_and_budget() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let repair_repo = Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>;
+    let conversation_id = ChatConversationId::from_string("ci-await-idempotent");
+    workspace_repo
+        .create_or_update(repair_workspace(conversation_id.clone()))
+        .await
+        .expect("persist workspace");
+    let attempt = start_or_join_agent_workspace_repair(
+        Arc::clone(&repair_repo),
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        repair_start_request(
+            conversation_id,
+            AgentWorkspaceRepairSource::Publish,
+            AgentWorkspaceRepairContinuation::Publish,
+            "await CI completion",
+        ),
+    )
+    .await
+    .expect("start repair")
+    .into_attempt();
+    let AgentWorkspaceRepairTransitionOutcome::Applied(first) = reserve_agent_workspace_ci_await(
+        Arc::clone(&repair_repo),
+        attempt,
+        "ci-hold:v1:head:20",
+        "first await reservation",
+        None,
+    )
+    .await
+    .expect("first reservation") else {
+        panic!("first CI await reservation must apply");
+    };
+
+    let AgentWorkspaceRepairTransitionOutcome::Applied(replayed) =
+        reserve_agent_workspace_ci_await(
+            Arc::clone(&repair_repo),
+            first,
+            "ci-hold:v1:head:20",
+            "replayed await reservation",
+            None,
+        )
+        .await
+        .expect("replayed reservation")
+    else {
+        panic!("replayed CI await reservation must apply");
+    };
+
+    assert_eq!(replayed.ci_rerun_count, 0);
+    assert_eq!(
+        replayed
+            .pending_reasons
+            .iter()
+            .filter(|reason| reason.as_str() == AWAITING_CI_REPAIR_REASON)
+            .count(),
+        1,
+        "a replay must not duplicate the durable await marker"
     );
 }

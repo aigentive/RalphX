@@ -4,7 +4,7 @@
 // No real `gh` or `git` invocations unless a test explicitly opts into real Git pushes.
 
 use async_trait::async_trait;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -42,6 +42,7 @@ pub struct MockGithubState {
     /// `None` leaves the trait default (unknown base state); `Some` overrides it.
     pub list_branch_check_conclusions_result: Option<AppResult<Option<Vec<PrHealthCheck>>>>,
     pub rerun_failed_workflow_result: Option<AppResult<()>>,
+    pub rerun_failed_workflow_results: HashMap<i64, AppResult<()>>,
     pub enable_pr_auto_merge_result: Option<AppResult<()>>,
     pub enable_pr_auto_merge_delay_ms: u64,
     pub disable_pr_auto_merge_result: Option<AppResult<()>>,
@@ -83,6 +84,7 @@ pub struct MockGithubState {
     pub fetch_github_connection_status_calls: u32,
     pub fetch_pr_health_calls: u32,
     pub rerun_failed_workflow_calls: u32,
+    pub rerun_failed_workflow_ids: Vec<i64>,
     pub enable_pr_auto_merge_calls: u32,
     pub disable_pr_auto_merge_calls: u32,
     pub push_branch_calls: u32,
@@ -574,7 +576,11 @@ impl GithubServiceTrait for MockGithubService {
         let mut s = self.state.lock().expect("lock poisoned");
         s.rerun_failed_workflow_calls += 1;
         s.last_rerun_failed_workflow_id = Some(run_id);
-        s.rerun_failed_workflow_result.take().unwrap_or(Ok(()))
+        s.rerun_failed_workflow_ids.push(run_id);
+        s.rerun_failed_workflow_results
+            .remove(&run_id)
+            .or_else(|| s.rerun_failed_workflow_result.take())
+            .unwrap_or(Ok(()))
     }
 
     async fn enable_pr_auto_merge(
