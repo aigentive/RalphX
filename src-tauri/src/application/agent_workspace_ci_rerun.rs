@@ -127,19 +127,19 @@ pub(crate) fn transient_ci_rerun_plan(health: &PrHealth) -> TransientCiPlan {
     let deterministic_failures = health
         .checks
         .iter()
-        .filter_map(|check| {
-            (check
+        .filter(|check| {
+            check
                 .conclusion
                 .as_deref()
                 .and_then(classify_check_conclusion)
-                == Some(CiFailureKind::Deterministic))
-            .then(|| {
-                format!(
-                    "{} ({})",
-                    check.name,
-                    check.conclusion.as_deref().unwrap_or_default()
-                )
-            })
+                == Some(CiFailureKind::Deterministic)
+        })
+        .map(|check| {
+            format!(
+                "{} ({})",
+                check.name,
+                check.conclusion.as_deref().unwrap_or_default()
+            )
         })
         .collect::<Vec<_>>();
     if !deterministic_failures.is_empty() {
