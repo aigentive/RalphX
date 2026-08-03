@@ -138,6 +138,7 @@ jobs:
   code-scanning-gate:
     name: Code scanning gate
     needs:
+      - changes
       - analyze-actions
       - analyze-javascript
       - analyze-rust
@@ -147,6 +148,26 @@ jobs:
       contents: read
       security-events: read
     steps:
+      - name: Finalize CodeQL analysis status
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ needs.changes.result }}" != "success" ]]; then
+            echo "CodeQL scope detection failed." >&2
+            exit 1
+          fi
+
+          for job_result in \
+            "${{ needs.analyze-actions.result }}" \
+            "${{ needs.analyze-javascript.result }}" \
+            "${{ needs.analyze-rust.result }}"; do
+            if [[ "${job_result}" != "success" && "${job_result}" != "skipped" ]]; then
+              echo "CodeQL analysis result: ${job_result}" >&2
+              exit 1
+            fi
+          done
+
       - name: Fail on open medium+ CodeQL alerts for this pull request
         env:
           GH_TOKEN: ${{ github.token }}

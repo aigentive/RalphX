@@ -168,6 +168,32 @@ class DocumentationOnlyScopeTests(unittest.TestCase):
             True,
         )
 
+    def test_code_scanning_gate_enforces_detection_and_analysis_results(self) -> None:
+        workflow = (ROOT / ".github/workflows/codeql.yml").read_text(encoding="utf-8")
+        gate = workflow.split("code-scanning-gate:", 1)[1]
+
+        self.assertIn(
+            "- changes",
+            gate,
+            "code-scanning-gate must depend on scope detection",
+        )
+        self.assertIn(
+            'needs.changes.result }}" != "success"',
+            gate,
+            "code-scanning-gate must fail when scope detection fails",
+        )
+        for analyze_job in ("analyze-actions", "analyze-javascript", "analyze-rust"):
+            self.assertIn(
+                f"needs.{analyze_job}.result",
+                gate,
+                f"code-scanning-gate must enforce {analyze_job} result",
+            )
+        self.assertIn(
+            '"${job_result}" != "success" && "${job_result}" != "skipped"',
+            gate,
+            "code-scanning-gate must reject non-success, non-skipped analysis results",
+        )
+
     def test_non_instruction_markdown_remains_product_relevant(self) -> None:
         plugin_doc = "plugins/app/ralphx-mcp-server/skills/review/SKILL.md"
 
