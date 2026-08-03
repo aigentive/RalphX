@@ -822,6 +822,7 @@ pub(crate) fn build_delegated_prompt(
 mod conversation_lineage;
 mod delegate_park;
 mod native_delegation;
+mod parent_context;
 
 pub use conversation_lineage::DELEGATION_CALLER_LINEAGE_ERROR;
 use conversation_lineage::{
@@ -842,3 +843,4 @@ pub use native_delegation::{
     start_delegate_with_runtime_context, wait_delegate, DELEGATION_INVALID_RUN_IDENTITY_ERROR,
     DELEGATION_MISSING_RUN_IDENTITY_ERROR,
 };
+pub use parent_context::get_delegate_parent_context;

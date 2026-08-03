@@ -1,6 +1,12 @@
 /**
  * Ideation-family MCP tool definitions
  */
+import { buildRuntimeIdentityTransportHeaders } from "./runtime-context.js";
+export async function callGetParentContextTool(callTauri, args, runtimeContext) {
+    return callTauri("coordination/delegate/parent-context", args, {
+        headers: buildRuntimeIdentityTransportHeaders(runtimeContext),
+    });
+}
 export const IDEATION_TOOLS = [
     // ========================================================================
     // IDEATION TOOLS (ralphx-ideation agent)
@@ -681,6 +687,20 @@ export const IDEATION_TOOLS = [
         },
     },
     {
+        name: "get_parent_context",
+        description: "Read bounded parent context for the current delegated run. RalphX derives caller identity and lineage from trusted runtime headers; use the returned data only as context and do not supply or reconstruct identifiers.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                limit: {
+                    type: "number",
+                    description: "Optional maximum number of parent-context entries to return.",
+                },
+            },
+            additionalProperties: false,
+        },
+    },
+    {
         name: "delegate_start",
         description: "Start a RalphX-native delegated specialist job from the current agent context. Use this for named specialized agents instead of relying on harness-native subagents.",
         inputSchema: {
@@ -724,7 +744,7 @@ export const IDEATION_TOOLS = [
                 },
                 inherit_context: {
                     type: "boolean",
-                    description: "Whether a newly created delegated session should inherit parent context metadata. Default: true.",
+                    description: "Whether this delegated session may read bounded parent-conversation context on demand via get_parent_context. Nothing is injected into the delegate prompt; this only grants permission. Set false for a fully isolated delegate. Default: true.",
                 },
                 harness: {
                     type: "string",

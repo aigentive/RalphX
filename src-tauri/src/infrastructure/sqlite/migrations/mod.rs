@@ -581,6 +581,7 @@ mod v20260731111346_purge_empty_thinking_blocks;
 mod v20260731125157_add_workspace_repair_fingerprint_state;
 mod v20260801021420_delegation_parks;
 mod v20260801211636_delegation_park_wake_claimed_at;
+mod v20260802031156_delegate_context_inheritance;
 mod v20260802174000_workspace_review_fixer_cycle_cap;
 mod v20260802194326_agent_workspace_repair_explicit_publish_consent;
 #[cfg(test)]
@@ -595,6 +596,8 @@ mod v20260731125157_add_workspace_repair_fingerprint_state_tests;
 mod v20260801021420_delegation_parks_tests;
 #[cfg(test)]
 mod v20260801211636_delegation_park_wake_claimed_at_tests;
+#[cfg(test)]
+mod v20260802031156_delegate_context_inheritance_tests;
 #[cfg(test)]
 mod v20260802174000_workspace_review_fixer_cycle_cap_tests;
 #[cfg(test)]
@@ -1893,6 +1896,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260801211636,
         name: "delegation_park_wake_claimed_at",
         migrate: v20260801211636_delegation_park_wake_claimed_at::migrate,
+    },
+    Migration {
+        version: 20260802031156,
+        name: "delegate_context_inheritance",
+        migrate: v20260802031156_delegate_context_inheritance::migrate,
     },
     Migration {
         version: 20260802174000,
