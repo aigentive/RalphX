@@ -148,6 +148,10 @@ const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   atlassianOauth: false,
   ticketingDashboard: false,
   agentConversationAutopilot: false,
+  // Client-owned flag (owner decision, 2026-08-03): the remote settings surfaces are
+  // visible by default, so a failed/slow boot fetch cannot latch them dark. The boot
+  // fetch below still overwrites this with the device's real config value.
+  remoteEnvironments: true,
 };
 
 // ============================================================================
@@ -912,17 +916,29 @@ if (typeof window !== "undefined" && !window.__TAURI_INTERNALS__) {
   window.__uiStore = useUiStore;
 }
 
-// One-time feature flag initialization on module load.
+// Feature flag initialization on module load.
 // Zustand stores cannot use React hooks, so flags are fetched via invoke directly.
 // Defaults to the app's startup flag baseline until the async fetch resolves.
-// Errors are silently ignored — those defaults remain active.
-void invoke<unknown>("get_ui_feature_flags")
-  .then((raw) => {
-    const result = featureFlagsSchema.safeParse(raw);
-    if (result.success) {
-      useUiStore.getState().setFeatureFlags(applyFeatureFlagOverrides(result.data));
+// A single silent-failure shot used to latch the client-owned flags at their
+// defaults for the whole session (e.g. when the invoke raced app startup), so the
+// fetch retries a few times before giving up and keeping the defaults.
+async function initializeFeatureFlags(): Promise<void> {
+  const FLAG_BOOT_ATTEMPTS = 5;
+  const FLAG_BOOT_RETRY_MS = 1_000;
+  for (let attempt = 1; attempt <= FLAG_BOOT_ATTEMPTS; attempt += 1) {
+    try {
+      const raw = await invoke<unknown>("get_ui_feature_flags");
+      const result = featureFlagsSchema.safeParse(raw);
+      if (result.success) {
+        useUiStore.getState().setFeatureFlags(applyFeatureFlagOverrides(result.data));
+      }
+      return;
+    } catch {
+      if (attempt === FLAG_BOOT_ATTEMPTS) {
+        return; // Keep the defaults — visible-by-default, so nothing latches dark.
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, FLAG_BOOT_RETRY_MS));
     }
-  })
-  .catch(() => {
-    // Keep all-enabled defaults on error
-  });
+  }
+}
+void initializeFeatureFlags();

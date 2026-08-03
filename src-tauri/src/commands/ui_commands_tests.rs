@@ -57,15 +57,16 @@ fn get_ui_feature_flags_includes_agent_personas() {
 }
 
 #[test]
-fn get_ui_feature_flags_ships_remote_environments_dark_by_default() {
+fn get_ui_feature_flags_ships_remote_environments_visible_by_default() {
     let state = AppState::new_test();
     let response = ui_feature_flags_response(&state);
     let json = serde_json::to_value(response).expect("feature flags response should serialize");
 
     assert_eq!(
         json.get("remoteEnvironments"),
-        Some(&serde_json::json!(false)),
-        "remoteEnvironments must default OFF — every Phase-2 PR ships dark behind it"
+        Some(&serde_json::json!(true)),
+        "remoteEnvironments defaults ON (owner decision, 2026-08-03) — the remote settings \
+         surfaces ship visible; config/env can still disable them"
     );
     assert!(json.get("remote_environments").is_none());
 }

@@ -1131,7 +1131,8 @@ fn runtime_config_env_override_remote_environments_true_and_false() {
     assert!(remote_environments_after_env(Some("true")));
     assert!(remote_environments_after_env(Some("1")));
     assert!(!remote_environments_after_env(Some("false")));
-    assert!(!remote_environments_after_env(None));
+    // No env var → the shipped default, which is ON (owner decision, 2026-08-03).
+    assert!(remote_environments_after_env(None));
 }
 
 #[test]
