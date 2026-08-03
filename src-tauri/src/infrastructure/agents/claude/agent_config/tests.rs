@@ -1159,6 +1159,7 @@ external_mcp:
   enabled: true
   port: 4949
   host: "0.0.0.0"
+  shutdown_grace_ms: 750
 "#,
     )
     .expect("overlay should parse");
@@ -1169,6 +1170,24 @@ external_mcp:
     assert_eq!(parsed.external_mcp.port, 4949);
     assert_eq!(parsed.external_mcp.host, "0.0.0.0");
     assert_eq!(parsed.external_mcp.max_restart_attempts, 3);
+    assert_eq!(parsed.external_mcp.shutdown_grace_ms, 750);
+}
+
+#[test]
+fn shutdown_watchdog_config_loads_yaml_and_env_override() {
+    let loaded = parse_config_with_lookup(
+        r#"
+shutdown:
+  watchdog_deadline_secs: 25
+"#,
+        &|name| match name {
+            "RALPHX_SHUTDOWN_WATCHDOG_DEADLINE_SECS" => Some("35".to_string()),
+            _ => None,
+        },
+    )
+    .expect("shutdown config should load");
+
+    assert_eq!(loaded.shutdown.watchdog_deadline_secs, 35);
 }
 
 #[test]
