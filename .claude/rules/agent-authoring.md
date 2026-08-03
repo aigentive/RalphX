@@ -6,7 +6,6 @@ paths:
   - "src-tauri/src/infrastructure/agents/**"
   - "src-tauri/src/application/chat_service/**"
   - "src-tauri/src/commands/**"
-  - "frontend/src/**"
   - "docs/architecture/harness-specific-agent-config.md"
 ---
 
