@@ -70,5 +70,8 @@ describe("ChatActivityVisualTestPage", () => {
     expect(screen.getByRole("button", {
       name: "Agent thought for 2s Expand thinking details.",
     })).toBeInTheDocument();
+    expect(screen.getByRole("button", {
+      name: "Agent thought for 6s · 3 steps Expand thinking details.",
+    })).toBeInTheDocument();
   });
 });

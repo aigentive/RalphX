@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { formatThinkingSummary } from "./thinking-summary";
+import { formatThinkingGroupSummary, formatThinkingSummary } from "./thinking-summary";
 
 describe("formatThinkingSummary", () => {
   it("returns active label when not settled", () => {
@@ -20,5 +20,21 @@ describe("formatThinkingSummary", () => {
 
   it("rounds sub-second durations down", () => {
     expect(formatThinkingSummary(true, 1400)).toBe("Agent thought for 1s");
+  });
+
+  it("keeps a single grouped block byte-identical to the existing formatter", () => {
+    expect(formatThinkingGroupSummary({
+      isSettled: true,
+      segmentCount: 1,
+      totalDurationMs: 5_000,
+    })).toBe(formatThinkingSummary(true, 5_000));
+  });
+
+  it("adds a step count to settled multi-segment groups", () => {
+    expect(formatThinkingGroupSummary({
+      isSettled: true,
+      segmentCount: 2,
+      totalDurationMs: 34_000,
+    })).toBe("Agent thought for 34s · 2 steps");
   });
 });
