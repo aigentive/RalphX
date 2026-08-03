@@ -1732,6 +1732,7 @@ async fn fixable_publish_failure_routes_repair_and_records_events() {
         true,
         &target,
         AgentWorkspacePostRepairAction::Publish,
+        false,
     )
     .await;
 
@@ -1799,6 +1800,7 @@ async fn fixable_update_failure_records_repair_send_failure() {
         true,
         &target,
         AgentWorkspacePostRepairAction::UpdateOnly,
+        false,
     )
     .await;
 
@@ -1885,6 +1887,7 @@ async fn fixable_update_failure_retries_an_uncertain_immediate_repair_delivery_o
         true,
         &target,
         AgentWorkspacePostRepairAction::UpdateOnly,
+        false,
     )
     .await;
 
@@ -1933,6 +1936,7 @@ async fn fixable_update_failure_retries_an_uncertain_immediate_repair_delivery_o
         true,
         &target,
         AgentWorkspacePostRepairAction::UpdateOnly,
+        false,
     )
     .await;
     assert_eq!(service.get_sent_messages().await.len(), 1);
@@ -2008,6 +2012,7 @@ async fn live_base_update_and_publish_repair_paths_coalesce_without_stale_author
         &publish_observation,
         "merge conflict while updating from base",
         None,
+        false,
         &service,
         &publish_target,
     )
@@ -2109,6 +2114,7 @@ async fn repair_request_event_failure_settles_without_dispatch() {
         true,
         &target,
         AgentWorkspacePostRepairAction::Publish,
+        false,
     )
     .await;
 
@@ -2170,6 +2176,7 @@ async fn successful_dispatch_remains_completable_when_success_event_write_fails(
         true,
         &target,
         AgentWorkspacePostRepairAction::Publish,
+        false,
     )
     .await;
 

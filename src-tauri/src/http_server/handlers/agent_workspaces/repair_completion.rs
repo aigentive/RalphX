@@ -20,7 +20,7 @@ use crate::application::agent_workspace_publish_repair_state::{
     reserve_agent_workspace_pre_existing_on_base,
     reserve_agent_workspace_repair_completion_validation,
     validate_agent_workspace_repair_target_lease, AgentWorkspaceRepairTransitionOutcome,
-    MAX_AGENT_WORKSPACE_CI_RERUN_RETRIES,
+    PublishAuthority, MAX_AGENT_WORKSPACE_CI_RERUN_RETRIES,
 };
 use crate::application::publish_resilience::continue_agent_workspace_repair_publish;
 use crate::domain::entities::{
@@ -1093,6 +1093,7 @@ async fn complete_reserved_agent_workspace_repair(
         AgentWorkspaceRepairPhase::Validating,
         summary,
         false,
+        PublishAuthority::VerifiedAutomation,
     ))
     .await
     .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
