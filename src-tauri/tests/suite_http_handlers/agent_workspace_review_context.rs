@@ -713,10 +713,7 @@ async fn workspace_review_context_surfaces_active_repair_runtime_and_kind() {
         parent_context.repair_runtime_conversation_id,
         Some(conversation_id.as_str())
     );
-    assert_eq!(
-        parent_context.repair_fixer_kind.as_deref(),
-        Some("workspace_repair")
-    );
+    assert_eq!(parent_context.repair_fixer_kind, Some("workspace_repair"));
     assert!(matches!(
         state
             .app_state
@@ -779,7 +776,7 @@ async fn workspace_review_context_surfaces_active_repair_runtime_and_kind() {
         context.repair_runtime_conversation_id,
         Some(runtime_conversation_id.as_str())
     );
-    assert_eq!(context.repair_fixer_kind.as_deref(), Some("pr_fixer"));
+    assert_eq!(context.repair_fixer_kind, Some("pr_fixer"));
 
     assert!(matches!(
         state

@@ -2057,18 +2057,13 @@ async fn route_agent_workspace_pr_conflict_repair_if_needed_with_repair_repo(
                 .to_string(),
         ));
     };
-    let chat_conversation_repo = match chat_conversation_repo {
-        Some(repo) => Some(repo),
-        None => {
-            #[cfg(not(test))]
-            return Err(AppError::Infrastructure(
-                "durable PR conflict repair dispatch requires fixer conversation persistence"
-                    .to_string(),
-            ));
-            #[cfg(test)]
-            None
-        }
-    };
+    #[cfg(not(test))]
+    let chat_conversation_repo = Some(chat_conversation_repo.ok_or_else(|| {
+        AppError::Infrastructure(
+            "durable PR conflict repair dispatch requires fixer conversation persistence"
+                .to_string(),
+        )
+    })?);
 
     let workspace = workspace_repo
         .get_by_conversation_id(conversation_id)
@@ -3741,17 +3736,12 @@ async fn dispatch_agent_workspace_pr_autofix(
             "durable PR autofix dispatch requires canonical Git target authority".to_string(),
         ));
     };
-    let chat_conversation_repo = match chat_conversation_repo {
-        Some(repo) => Some(repo),
-        None => {
-            #[cfg(not(test))]
-            return Err(AppError::Infrastructure(
-                "durable PR autofix dispatch requires fixer conversation persistence".to_string(),
-            ));
-            #[cfg(test)]
-            None
-        }
-    };
+    #[cfg(not(test))]
+    let chat_conversation_repo = Some(chat_conversation_repo.ok_or_else(|| {
+        AppError::Infrastructure(
+            "durable PR autofix dispatch requires fixer conversation persistence".to_string(),
+        )
+    })?);
     let preallocated_run_id = AgentRunId::new();
     let start = start_or_join_agent_workspace_repair(
         Arc::clone(&repair_repo),
