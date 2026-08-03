@@ -509,6 +509,22 @@ pub fn extract_codex_usage(event: &CodexStreamEvent) -> Option<CodexUsageSnapsho
         })
 }
 
+/// Returns provider-reported reasoning tokens only when the field is scoped to
+/// the completed turn. Session totals remain available through
+/// [`extract_codex_usage`] for accounting, but must not label one thinking block.
+pub fn extract_codex_turn_reasoning_tokens(event: &CodexStreamEvent) -> Option<u64> {
+    if event.event_type != "turn.completed" {
+        return None;
+    }
+
+    let payload = event.usage.as_ref()?;
+    if let Some(last_token_usage) = payload.last_token_usage.as_ref() {
+        return last_token_usage.reasoning_output_tokens;
+    }
+
+    payload.reasoning_output_tokens
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -95,6 +95,10 @@ export interface MessageItemProps {
   contentBlocks?: ContentBlockItem[] | null;
   /** Collapse consecutive content-block tool calls when no higher-level timeline grouping owns them. */
   groupContentBlockToolCalls?: boolean | undefined;
+  /** Stable parent scope used when ChatMessageList owns thinking-group intent across virtualization. */
+  contentThinkingGroupKeyPrefix?: string | undefined;
+  isContentThinkingGroupExpanded?: ((groupKey: string) => boolean) | undefined;
+  onToggleContentThinkingGroup?: ((groupKey: string) => void) | undefined;
   /** File attachments for user messages */
   attachments?: MessageAttachment[];
   /** Structured project and integration references for user messages */
@@ -228,6 +232,9 @@ export const MessageItem = React.memo(function MessageItem({
   toolCalls,
   contentBlocks,
   groupContentBlockToolCalls = true,
+  contentThinkingGroupKeyPrefix,
+  isContentThinkingGroupExpanded,
+  onToggleContentThinkingGroup,
   attachments,
   composerReferences,
   providerHarness,
@@ -452,8 +459,13 @@ export const MessageItem = React.memo(function MessageItem({
       if (!first) {
         return;
       }
-      const groupKey = `content-thinking-group:${first.index}`;
-      const isExpanded = !collapsedContentThinkingGroupKeys.has(groupKey);
+      const localGroupKey = `content-thinking-group:${first.index}`;
+      const groupKey = contentThinkingGroupKeyPrefix
+        ? `${contentThinkingGroupKeyPrefix}:${localGroupKey}`
+        : localGroupKey;
+      const isExpanded = isContentThinkingGroupExpanded
+        ? isContentThinkingGroupExpanded(groupKey)
+        : !collapsedContentThinkingGroupKeys.has(groupKey);
       const aggregate = aggregateThinkingSegments(pendingThinking.map(({ block }) => block), true);
       const text = joinThinkingSegmentTexts(pendingThinking.map(({ block }) => block.text));
       renderedBlocks.push(
@@ -462,7 +474,13 @@ export const MessageItem = React.memo(function MessageItem({
             isSettled={aggregate.isSettled} segmentCount={aggregate.segmentCount}
             {...(aggregate.totalDurationMs != null ? { durationMs: aggregate.totalDurationMs } : {})}
             {...(aggregate.reasoningTokens != null ? { reasoningTokens: aggregate.reasoningTokens } : {})}
-            onToggle={() => toggleContentThinkingGroup(groupKey)} />
+            onToggle={() => {
+              if (onToggleContentThinkingGroup) {
+                onToggleContentThinkingGroup(groupKey);
+              } else {
+                toggleContentThinkingGroup(groupKey);
+              }
+            }} />
           {isExpanded && text ? <ThinkingWidget text={text} /> : null}
         </div>,
       );
@@ -557,9 +575,12 @@ export const MessageItem = React.memo(function MessageItem({
   }, [
     buildContentBlockToolCall,
     collapsedContentThinkingGroupKeys,
+    contentThinkingGroupKeyPrefix,
     expandedContentToolGroupKeys,
     groupContentBlockToolCalls,
+    isContentThinkingGroupExpanded,
     isUser,
+    onToggleContentThinkingGroup,
     parsedContentBlocks,
     toggleContentThinkingGroup,
     toggleContentToolGroup,
@@ -685,6 +706,9 @@ export const MessageItem = React.memo(function MessageItem({
     && prev.toolCalls === next.toolCalls
     && prev.contentBlocks === next.contentBlocks
     && prev.groupContentBlockToolCalls === next.groupContentBlockToolCalls
+    && prev.contentThinkingGroupKeyPrefix === next.contentThinkingGroupKeyPrefix
+    && prev.isContentThinkingGroupExpanded === next.isContentThinkingGroupExpanded
+    && prev.onToggleContentThinkingGroup === next.onToggleContentThinkingGroup
     && prev.attachments === next.attachments
     && prev.composerReferences === next.composerReferences
     && prev.providerHarness === next.providerHarness

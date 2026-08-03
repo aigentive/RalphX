@@ -38,9 +38,9 @@ use crate::infrastructure::agents::claude::{
 use crate::infrastructure::agents::{
     extract_codex_agent_message, extract_codex_command_execution, extract_codex_error,
     extract_codex_file_change_snapshot, extract_codex_reasoning, extract_codex_thread_id,
-    extract_codex_tool_call_snapshot, extract_codex_usage, parse_codex_event_line,
-    CodexErrorSource, CodexFileChange, CodexFileChangeSnapshot, CodexToolCallPhase,
-    CodexToolCallSnapshot, CodexUsage, CodexUsageSource,
+    extract_codex_tool_call_snapshot, extract_codex_turn_reasoning_tokens, extract_codex_usage,
+    parse_codex_event_line, CodexErrorSource, CodexFileChange, CodexFileChangeSnapshot,
+    CodexToolCallPhase, CodexToolCallSnapshot, CodexUsage, CodexUsageSource,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -4070,8 +4070,7 @@ async fn process_codex_stream_background<R: Runtime>(
             }
 
             if let Some(event_usage) = extract_codex_usage(&event) {
-                let reasoning_tokens = event_usage.usage.reasoning_output_tokens;
-                if let Some(reasoning_tokens) = reasoning_tokens {
+                if let Some(reasoning_tokens) = extract_codex_turn_reasoning_tokens(&event) {
                     if let Some(block_index) = attach_codex_reasoning_tokens(
                         &mut content_blocks,
                         current_turn_thinking_block_index,

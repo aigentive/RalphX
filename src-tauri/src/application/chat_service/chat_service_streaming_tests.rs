@@ -1588,6 +1588,28 @@ async fn codex_stream_does_not_attach_later_turn_usage_to_prior_reasoning() {
 }
 
 #[tokio::test]
+async fn codex_stream_does_not_label_a_thinking_block_with_session_total_usage() {
+    let outcome = run_codex_stream_lines(&[
+        r#"{"type":"thread.started","thread_id":"session-total-reasoning"}"#,
+        r#"{"type":"turn.started"}"#,
+        r#"{"type":"item.completed","item":{"id":"reasoning-1","type":"reasoning","text":"Turn reasoning"}}"#,
+        r#"{"type":"item.completed","item":{"id":"message-1","type":"agent_message","text":"Turn response"}}"#,
+        r#"{"type":"turn.completed","usage":{"total_token_usage":{"reasoning_output_tokens":1169}}}"#,
+    ])
+    .await
+    .expect("Codex stream should complete");
+
+    assert!(matches!(
+        outcome.content_blocks.first(),
+        Some(ContentBlockItem::Thinking {
+            text,
+            reasoning_tokens: None,
+            ..
+        }) if text == "Turn reasoning"
+    ));
+}
+
+#[tokio::test]
 async fn claude_stream_turn_complete_persists_assistant_blocks_to_timeline() {
     // Regression: when a project/task chat Claude turn ends via TurnComplete (result event),
     // the assistant content must land in BOTH chat_messages and chat_message_blocks.

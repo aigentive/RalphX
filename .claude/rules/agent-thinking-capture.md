@@ -32,7 +32,7 @@ paths:
 | One wire contract | `AgentThinkingPayload` is the event authority. Any field change must keep Rust serialization fixtures and frontend fixture consumers aligned. |
 | Settle never erases | Claude settle uses empty text + append semantics; frontend merging must preserve accumulated text and ignore an unmatched empty settle. |
 | Empty blocks never surface | Reject empty/whitespace thinking at persistence and persisted/live render barriers; migrations are hygiene, not the compatibility boundary. |
-| One frontend owner | Event-driven thinking mutation stays in `useChatEvents`; `useChatRecovery` may hydrate the same transcript from durable/cache state; automatic expansion stays in `synchronizeThinkingGroupExpansion`. ❌ Parallel stores, settlement writers, or expansion effects. |
+| One frontend owner | Event-driven thinking mutation stays in `useChatEvents`; `useChatRecovery` may hydrate the same transcript from durable/cache state; `ChatMessageList` owns manual thinking-group intent and defaults every unrecorded group to expanded. ❌ Parallel stores, settlement writers, or expansion effects. |
 | Preserve legacy hydration | Persisted blocks without `isSettled` remain finalized by default; provider-neutral changes stay additive for historical Claude data. |
 | Test the seam | Prove native capture → normalized event → serialized payload → frontend merge/render. Parser-only or hand-written frontend payload tests are insufficient. |
 | Keep docs synchronized | Harness flag, native event-shape, payload, persistence, or UI lifecycle changes update the canonical architecture document in the same change. |

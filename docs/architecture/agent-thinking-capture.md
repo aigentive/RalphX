@@ -40,7 +40,7 @@ The harness parsers remain native because Claude and Codex do not expose the sam
 | Native input | `content_block_start` → `thinking_delta`* → `content_block_stop`; verbose `assistant.content[type=thinking]` fallback | Observed `item.completed` with `item.type == "reasoning"` and flat `text`; rollout `agent_reasoning`/`summary` compatibility |
 | RalphX event cadence | One unsettled event per non-empty delta, then one settle event | One settled event per extracted complete reasoning item |
 | Duration | Measured locally when start and stop are both present | `None` |
-| Token progress | Optional `system.subtype == "thinking_tokens"` → `agent:thinking_progress` | `turn.completed.usage.reasoning_output_tokens`, attached to the final complete reasoning block; no per-summary split is inferred. |
+| Token progress | Optional `system.subtype == "thinking_tokens"` → `agent:thinking_progress` | Turn-scoped `turn.completed` reasoning usage, attached to the final complete reasoning block; session-total-only usage is accounting-only and no per-summary split is inferred. |
 | Native fixture | Claude processor sidecar fixtures/tests | `codex/fixtures/exec_json_reasoning_0_146_0.jsonl` |
 
 ### Claude
@@ -70,7 +70,7 @@ Both Codex exec argument builders set `model_reasoning_summary="concise"`. `pars
 - Rollout compatibility: `agent_reasoning` completed items and `summary[]` text.
 - `agent_reasoning_delta` is intentionally not accepted because it is not a real event in the captured Codex exec schema.
 
-Each extracted item is complete. `process_codex_stream_background` appends and persists one thinking block, then emits `agent:thinking` with `append_to_previous: false`, `is_settled: true`, and no duration. A real `codex-cli 0.146.0` capture also exposes `turn.completed.usage.reasoning_output_tokens`; RalphX updates only the final reasoning block from that turn and emits one empty-text settled update with the aggregate. The CLI provides no per-item allocation or duration, so neither is inferred.
+Each extracted item is complete. `process_codex_stream_background` appends and persists one thinking block, then emits `agent:thinking` with `append_to_previous: false`, `is_settled: true`, and no duration. A real `codex-cli 0.146.0` capture also exposes direct `turn.completed.usage.reasoning_output_tokens`; RalphX updates only the final reasoning block from that turn and emits one empty-text settled update with the aggregate. When `last_token_usage` exists it is authoritative for the turn; `total_token_usage` alone remains available for accounting but never labels a single thinking block. The CLI provides no per-item allocation or duration, so neither is inferred.
 
 ## Capability probing
 
@@ -156,7 +156,7 @@ Migration `20260731111346_purge_empty_thinking_blocks` removes legacy empty/ASCI
 Presentation ownership:
 
 - `buildLiveTranscriptRows` hides settled-and-empty blocks, keeps running/token-only blocks visible, and coalesces visibly adjacent thinking blocks into `thinking_group` rows. Its tool-activity scan stops at thinking blocks so they cannot be consumed by a tool run.
-- `synchronizeThinkingGroupExpansion` is the sole automatic expansion writer: the latest running group expands, settled/older groups collapse, and explicit user intent wins. Group keys stay anchored to the first segment as later segments append.
+- Thinking groups default to expanded during live streaming and hydration, including after settlement. `ChatMessageList` keeps one manual-intent map; only an explicit user collapse closes a group, and group keys stay anchored to the first segment as later segments append.
 - Live rows treat missing `isSettled` as running for backward compatibility.
 - `MessageItem` drops empty persisted blocks, groups visibly adjacent thinking segments, and treats historical blocks without `isSettled` as settled. Hidden tool blocks do not split a group; visible transcript elements do.
 - `ThinkingGroupToggle` owns aggregate labels such as “Agent thinking…”, token progress, and “Agent thought for … · N steps”; expanded groups reuse one bounded `ThinkingWidget` body.

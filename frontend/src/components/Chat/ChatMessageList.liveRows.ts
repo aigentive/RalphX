@@ -83,42 +83,6 @@ export function isLiveThinkingGroupKey(groupKey: string): boolean {
   return groupKey.startsWith(LIVE_THINKING_GROUP_KEY_PREFIX);
 }
 
-export type ThinkingGroupIntent = "expanded" | "collapsed";
-
-/**
- * Sole owner of automatic live thinking-group expansion. Thinking defaults open
- * throughout its lifecycle; only a recorded manual collapse closes a group.
- * Returns `current` unchanged when nothing moved, keeping the Set identity
- * stable across deltas.
- */
-export function synchronizeThinkingGroupExpansion(
-  current: Set<string>,
-  rows: LiveTranscriptRow[],
-  intentByGroupKey: ReadonlyMap<string, ThinkingGroupIntent>,
-): Set<string> {
-  const thinkingRows = rows.filter((row) => row.kind === "thinking_group");
-  let next = current;
-
-  for (const row of thinkingRows) {
-    const groupKey = row.key;
-    const intent = intentByGroupKey.get(groupKey);
-    const shouldExpand = intent !== "collapsed";
-    if (current.has(groupKey) === shouldExpand) {
-      continue;
-    }
-    if (next === current) {
-      next = new Set(current);
-    }
-    if (shouldExpand) {
-      next.add(groupKey);
-    } else {
-      next.delete(groupKey);
-    }
-  }
-
-  return next;
-}
-
 export function liveToolGroupKey(
   entries: LiveTranscriptToolEntry[],
   taskEntries: LiveTranscriptTaskEntry[] = [],
