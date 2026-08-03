@@ -1,13 +1,13 @@
 ---
 paths:
-  - "src-tauri/**/*.rs"
+  - "src-tauri/**/*_tests.rs"
+  - "src-tauri/tests/**/*.rs"
   - "src-tauri/CLAUDE.md"
   - ".github/workflows/ci.yml"
   - ".github/workflows/coverage.yml"
   - "scripts/test-rust-fast.sh"
   - "scripts/tests/test-ci-rust-full-integration-targets.sh"
   - "scripts/tests/test-coverage-rust-shards.sh"
-  - ".claude/rules/*.md"
 ---
 
 # Rust Test Execution

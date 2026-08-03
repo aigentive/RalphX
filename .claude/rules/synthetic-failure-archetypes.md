@@ -2,11 +2,11 @@
 paths:
   - "src-tauri/src/domain/state_machine/**"
   - "src-tauri/src/application/task_transition_service.rs"
-  - "src-tauri/src/application/task_scheduler_service.rs"
+  - "src-tauri/src/application/task_scheduler_service/**"
   - "src-tauri/src/application/chat_service/**"
   - "src-tauri/src/commands/**"
   - "src-tauri/src/http_server/**"
-  - "frontend/frontend/src/hooks/useAgentEvents.ts"
+  - "frontend/src/hooks/useAgentEvents.ts"
   - "frontend/src/components/Chat/**"
   - "agents/ralphx-ideation/**"
   - "agents/ralphx-ideation-specialist-*/**"

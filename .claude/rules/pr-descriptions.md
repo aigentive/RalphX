@@ -1,3 +1,9 @@
+---
+paths:
+  - ".github/PULL_REQUEST_TEMPLATE.md"
+  - ".github/workflows/**"
+---
+
 > **Maintainer note:** Keep this file compact. PR bodies are for reviewers and users; CI is for command logs.
 
 # PR Description Rules
