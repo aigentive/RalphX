@@ -78,6 +78,7 @@ function blockedWorkspaceReviewCopy(error: unknown): string | null {
 
 const GENERIC_PREPARATION_ERROR =
   "Could not prepare this action. Cancel and try again.";
+const REVIEW_PREVIEW_CACHE_TTL_MS = 2_000;
 
 export function useWorkspaceReviewActions({
   conversationId,
@@ -102,6 +103,7 @@ export function useWorkspaceReviewActions({
   const reviewPreviewRef = useRef<{
     conversationId: string;
     promise: Promise<AgentWorkspaceReviewStartPreview>;
+    settledAt: number | null;
   } | null>(null);
   const reviewToastRef = useRef<AgentWorkspaceOperationToast | null>(null);
   const startReviewRef = useRef<(force: boolean) => void>(() => undefined);
@@ -111,16 +113,32 @@ export function useWorkspaceReviewActions({
       return Promise.reject(new Error("Workspace Review is unavailable"));
     }
     const current = reviewPreviewRef.current;
-    if (current?.conversationId === conversationId) {
+    if (
+      current?.conversationId === conversationId &&
+      (current.settledAt === null ||
+        Date.now() - current.settledAt < REVIEW_PREVIEW_CACHE_TTL_MS)
+    ) {
       return current.promise;
     }
     const promise = chatApi.getAgentWorkspaceReviewStartPreview(conversationId);
-    reviewPreviewRef.current = { conversationId, promise };
-    void promise.catch(() => {
-      if (reviewPreviewRef.current?.promise === promise) {
-        reviewPreviewRef.current = null;
-      }
-    });
+    const entry: {
+      conversationId: string;
+      promise: Promise<AgentWorkspaceReviewStartPreview>;
+      settledAt: number | null;
+    } = { conversationId, promise, settledAt: null };
+    reviewPreviewRef.current = entry;
+    void promise.then(
+      () => {
+        if (reviewPreviewRef.current === entry) {
+          entry.settledAt = Date.now();
+        }
+      },
+      () => {
+        if (reviewPreviewRef.current === entry) {
+          reviewPreviewRef.current = null;
+        }
+      },
+    );
     return promise;
   }, [conversationId]);
 
@@ -178,6 +196,7 @@ export function useWorkspaceReviewActions({
             confirmation: preview.confirmation,
             runtimeOverride,
           });
+          clearReviewPreview();
           if (reviewToastRef.current === reviewToast) {
             reviewToastRef.current = null;
           }

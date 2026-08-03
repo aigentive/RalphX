@@ -810,6 +810,66 @@ async fn workspace_delta_content_fingerprint_tracks_content_not_head_provenance(
 }
 
 #[tokio::test]
+async fn workspace_delta_fingerprint_rejects_conflicted_index_created_during_resolution() {
+    let (_temp, repo, base_sha) = init_repo();
+    git(&repo, &["checkout", "-b", "conflict-source"]);
+    std::fs::write(repo.join("README.md"), "source\n").expect("source file should change");
+    git(&repo, &["add", "README.md"]);
+    git(&repo, &["commit", "-m", "source change"]);
+    git(&repo, &["checkout", "main"]);
+    std::fs::write(repo.join("README.md"), "main\n").expect("main file should change");
+    git(&repo, &["add", "README.md"]);
+    git(&repo, &["commit", "-m", "main change"]);
+
+    let gate = StdArc::new(tokio::sync::Barrier::new(2));
+    workspace_delta_fingerprint_test_hook::set(&repo, StdArc::clone(&gate));
+    let fingerprint_repo = repo.clone();
+    let fingerprint_task = tokio::spawn(async move {
+        workspace_delta_tree_fingerprints(&fingerprint_repo, &base_sha).await
+    });
+
+    gate.wait().await;
+    let merge = Command::new("git")
+        .args(["merge", "conflict-source"])
+        .current_dir(&repo)
+        .output()
+        .expect("conflicting merge should spawn");
+    assert!(
+        !merge.status.success(),
+        "merge must create an unmerged index"
+    );
+    std::fs::remove_file(repo.join(".git/MERGE_HEAD"))
+        .expect("test should isolate an unmerged index without operation metadata");
+    assert!(
+        !GitService::unfinished_operation_state(&repo)
+            .expect("operation state should load")
+            .is_unfinished(),
+        "the trailing conflict-files read, not operation metadata, must reject this state"
+    );
+    assert!(
+        !GitService::get_conflict_files(&repo)
+            .await
+            .expect("conflict files should load")
+            .is_empty(),
+        "test precondition requires an unmerged index"
+    );
+    gate.wait().await;
+
+    let error = match fingerprint_task
+        .await
+        .expect("fingerprint task should join")
+    {
+        Ok(_) => panic!("a conflicted index created mid-fingerprint must be rejected"),
+        Err(error) => error,
+    };
+    workspace_delta_fingerprint_test_hook::clear(&repo);
+    assert!(matches!(
+        error,
+        AppError::WorkspaceReviewUnfinishedGitOperation
+    ));
+}
+
+#[tokio::test]
 async fn load_context_resolves_workspace_delta_and_monitor_fields() {
     let (_temp, repo, base_sha) = init_repo();
     committed_workspace_delta(&repo);

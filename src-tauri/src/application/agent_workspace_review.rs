@@ -4596,16 +4596,57 @@ struct WorkspaceDeltaTreeFingerprints {
     target_tree: String,
 }
 
+#[cfg(feature = "test-utils")]
+mod workspace_delta_fingerprint_test_hook {
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex, OnceLock};
+
+    use tokio::sync::Barrier;
+
+    static GATES: OnceLock<Mutex<HashMap<PathBuf, Arc<Barrier>>>> = OnceLock::new();
+
+    fn gates() -> &'static Mutex<HashMap<PathBuf, Arc<Barrier>>> {
+        GATES.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    pub(super) fn set(repo: &Path, gate: Arc<Barrier>) {
+        gates()
+            .lock()
+            .expect("workspace delta fingerprint gate lock")
+            .insert(repo.to_path_buf(), gate);
+    }
+
+    pub(super) fn clear(repo: &Path) {
+        gates()
+            .lock()
+            .expect("workspace delta fingerprint gate lock")
+            .remove(repo);
+    }
+
+    pub(super) async fn wait(repo: &Path) {
+        let gate = gates()
+            .lock()
+            .expect("workspace delta fingerprint gate lock")
+            .get(repo)
+            .cloned();
+        if let Some(gate) = gate {
+            gate.wait().await;
+            gate.wait().await;
+        }
+    }
+}
+
 async fn workspace_delta_tree_fingerprints(
     repo: &Path,
     base_ref: &str,
 ) -> AppResult<WorkspaceDeltaTreeFingerprints> {
-    ensure_workspace_review_git_is_settled(repo).await?;
+    ensure_workspace_review_git_operation_is_settled(repo)?;
     let base_tree = rev_parse(repo, &format!("{base_ref}^{{tree}}")).await?;
     let head_tree = rev_parse(repo, "HEAD^{tree}").await?;
     let index_tree = match git_stdout_lossy(&["write-tree"], repo).await {
         Ok(index_tree) => index_tree,
-        Err(write_tree_error) => match ensure_workspace_review_git_operation_is_settled(repo) {
+        Err(write_tree_error) => match ensure_workspace_review_git_is_settled(repo).await {
             Ok(()) => return Err(write_tree_error),
             Err(error) => return Err(error),
         },
@@ -4662,7 +4703,10 @@ async fn workspace_delta_tree_fingerprints(
         ));
     }
 
-    ensure_workspace_review_git_operation_is_settled(repo)?;
+    #[cfg(feature = "test-utils")]
+    workspace_delta_fingerprint_test_hook::wait(repo).await;
+
+    ensure_workspace_review_git_is_settled(repo).await?;
 
     Ok(WorkspaceDeltaTreeFingerprints {
         base_tree,

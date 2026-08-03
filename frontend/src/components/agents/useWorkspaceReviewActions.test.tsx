@@ -7,7 +7,7 @@ import {
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactElement } from "react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   AgentWorkspaceHttpError,
@@ -241,6 +241,10 @@ describe("useWorkspaceReviewActions", () => {
     }
   });
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("requires a prepared receipt before starting a manual review", async () => {
     const preview: AgentWorkspaceReviewStartPreview = {
       success: true,
@@ -427,6 +431,123 @@ describe("useWorkspaceReviewActions", () => {
         restoreAfterPublish: false,
       },
     });
+  });
+
+  it("expires a settled intent-warmed preview before a later dialog open", async () => {
+    const warmedPreview = {
+      success: true,
+      target: null,
+      willDisableAutoMerge: false,
+      prNumber: null,
+      mergeMethod: null,
+      restoreAfterPublish: false,
+      confirmation: {
+        targetScope: null,
+        diffFingerprint: "warmed",
+        headSha: null,
+        prNumber: null,
+        willDisableAutoMerge: false,
+        mergeMethod: null,
+        restoreAfterPublish: false,
+      },
+    } satisfies AgentWorkspaceReviewStartPreview;
+    const currentPreview = {
+      ...warmedPreview,
+      willDisableAutoMerge: true,
+      prNumber: 44,
+      confirmation: {
+        ...warmedPreview.confirmation,
+        diffFingerprint: "current",
+        prNumber: 44,
+        willDisableAutoMerge: true,
+      },
+    } satisfies AgentWorkspaceReviewStartPreview;
+    vi.mocked(chatApi.getAgentWorkspaceReviewStartPreview)
+      .mockResolvedValueOnce(warmedPreview)
+      .mockResolvedValueOnce(currentPreview);
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const user = userEvent.setup();
+
+    render(<Harness onStartReview={vi.fn()} />);
+    await user.hover(screen.getByRole("button", { name: "Warm review" }));
+    await waitFor(() =>
+      expect(chatApi.getAgentWorkspaceReviewStartPreview).toHaveBeenCalledTimes(1),
+    );
+    now.mockReturnValue(2_000);
+
+    await user.click(screen.getByRole("button", { name: "Run review" }));
+    const warmedDialog = await screen.findByRole("alertdialog");
+    expect(chatApi.getAgentWorkspaceReviewStartPreview).toHaveBeenCalledTimes(1);
+    await user.click(
+      within(warmedDialog).getByRole("button", { name: "Cancel" }),
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument(),
+    );
+    now.mockReturnValue(4_000);
+
+    await user.click(screen.getByRole("button", { name: "Run review" }));
+    const dialog = await screen.findByRole("alertdialog");
+    await waitFor(() =>
+      expect(
+        within(dialog).getByText(/GitHub auto-merge is enabled on PR #44/),
+      ).toBeInTheDocument(),
+    );
+    expect(chatApi.getAgentWorkspaceReviewStartPreview).toHaveBeenCalledTimes(2);
+    now.mockRestore();
+  });
+
+  it("clears the preview receipt after a successful review start", async () => {
+    const firstPreview = {
+      success: true,
+      target: null,
+      willDisableAutoMerge: false,
+      prNumber: null,
+      mergeMethod: null,
+      restoreAfterPublish: false,
+      confirmation: {
+        targetScope: null,
+        diffFingerprint: "first",
+        headSha: null,
+        prNumber: null,
+        willDisableAutoMerge: false,
+        mergeMethod: null,
+        restoreAfterPublish: false,
+      },
+    } satisfies AgentWorkspaceReviewStartPreview;
+    const secondPreview = {
+      ...firstPreview,
+      willDisableAutoMerge: true,
+      prNumber: 45,
+      confirmation: {
+        ...firstPreview.confirmation,
+        diffFingerprint: "second",
+        prNumber: 45,
+        willDisableAutoMerge: true,
+      },
+    } satisfies AgentWorkspaceReviewStartPreview;
+    vi.mocked(chatApi.getAgentWorkspaceReviewStartPreview)
+      .mockResolvedValueOnce(firstPreview)
+      .mockResolvedValueOnce(secondPreview);
+    const onStartReview = vi.fn().mockResolvedValue(undefined);
+    const user = userEvent.setup();
+
+    render(<Harness onStartReview={onStartReview} />);
+    await user.click(screen.getByRole("button", { name: "Run review" }));
+    const firstDialog = await screen.findByRole("alertdialog");
+    await user.click(
+      await within(firstDialog).findByRole("button", { name: "Start review" }),
+    );
+    await waitFor(() => expect(onStartReview).toHaveBeenCalledTimes(1));
+
+    await user.click(screen.getByRole("button", { name: "Run review" }));
+    const secondDialog = await screen.findByRole("alertdialog");
+    await waitFor(() =>
+      expect(
+        within(secondDialog).getByText(/GitHub auto-merge is enabled on PR #45/),
+      ).toBeInTheDocument(),
+    );
+    expect(chatApi.getAgentWorkspaceReviewStartPreview).toHaveBeenCalledTimes(2);
   });
 
   it("dismisses and reopens with a refreshed receipt after a start conflict", async () => {
