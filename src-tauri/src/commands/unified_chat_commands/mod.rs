@@ -2457,21 +2457,27 @@ fn timeline_item_content_block(
     }
 
     if item.kind.to_string() == "thinking" {
-        let duration_ms = item
+        let metadata = item
             .metadata
             .as_deref()
-            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
-            .and_then(|metadata| {
-                metadata
-                    .get("duration_ms")
-                    .and_then(serde_json::Value::as_u64)
-            });
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok());
+        let duration_ms = metadata
+            .as_ref()
+            .and_then(|value| value.get("duration_ms"))
+            .and_then(serde_json::Value::as_u64);
+        let reasoning_tokens = metadata
+            .as_ref()
+            .and_then(|value| value.get("reasoning_tokens"))
+            .and_then(serde_json::Value::as_u64);
         let mut block = serde_json::json!({
             "type": "thinking",
             "text": item.text.clone().unwrap_or_default(),
         });
         if let Some(duration_ms) = duration_ms {
             block["duration_ms"] = serde_json::json!(duration_ms);
+        }
+        if let Some(reasoning_tokens) = reasoning_tokens {
+            block["reasoning_tokens"] = serde_json::json!(reasoning_tokens);
         }
         return block;
     }

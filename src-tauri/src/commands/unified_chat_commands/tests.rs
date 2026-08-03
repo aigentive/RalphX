@@ -10903,7 +10903,7 @@ fn timeline_item_response_builds_text_message_block() {
 }
 
 #[test]
-fn timeline_item_response_builds_thinking_block_with_duration() {
+fn timeline_item_response_builds_thinking_block_with_duration_and_reasoning_tokens() {
     let conversation_id = ChatConversationId::new();
     let message_id = ChatMessageId::from_string("assistant-message-thinking");
     let mut item = ChatTimelineItem::for_message_block(
@@ -10914,7 +10914,7 @@ fn timeline_item_response_builds_thinking_block_with_duration() {
         ChatTimelineItemKind::Thinking,
     );
     item.text = Some("Considering the request".to_string());
-    item.metadata = Some(r#"{"duration_ms":1234}"#.to_string());
+    item.metadata = Some(r#"{"duration_ms":1234,"reasoning_tokens":321}"#.to_string());
 
     let response = AgentTimelineItemResponse::from(item);
 
@@ -10924,7 +10924,8 @@ fn timeline_item_response_builds_thinking_block_with_duration() {
         json!([{
             "type": "thinking",
             "text": "Considering the request",
-            "duration_ms": 1234
+            "duration_ms": 1234,
+            "reasoning_tokens": 321
         }])
     );
 }
@@ -10970,7 +10971,7 @@ async fn conversation_timeline_page_hydrates_persisted_thinking_item() {
         ChatTimelineItemKind::Thinking,
     );
     item.text = Some("Persisted reasoning".to_string());
-    item.metadata = Some(r#"{"duration_ms":1234}"#.to_string());
+    item.metadata = Some(r#"{"duration_ms":1234,"reasoning_tokens":321}"#.to_string());
     state
         .chat_timeline_repo
         .upsert_item(item)
@@ -10988,7 +10989,8 @@ async fn conversation_timeline_page_hydrates_persisted_thinking_item() {
         json!([{
             "type": "thinking",
             "text": "Persisted reasoning",
-            "duration_ms": 1234
+            "duration_ms": 1234,
+            "reasoning_tokens": 321
         }])
     );
     assert!(page.items[0].tool_call.is_none());

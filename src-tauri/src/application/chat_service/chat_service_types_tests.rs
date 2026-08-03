@@ -41,11 +41,19 @@ fn agent_thinking_payload_serializes_committed_streaming_and_settled_contracts()
         seq: 7,
         append_to_previous: true,
         duration_ms: None,
+        reasoning_tokens: None,
         is_settled: false,
     };
     let settled = AgentThinkingPayload {
         text: String::new(),
         duration_ms: Some(1_500),
+        is_settled: true,
+        ..streaming.clone()
+    };
+    let codex_settled = AgentThinkingPayload {
+        text: String::new(),
+        append_to_previous: true,
+        reasoning_tokens: Some(426),
         is_settled: true,
         ..streaming.clone()
     };
@@ -60,9 +68,18 @@ fn agent_thinking_payload_serializes_committed_streaming_and_settled_contracts()
         "/tests/fixtures/agent_thinking_payload.settled.json"
     )))
     .expect("settled fixture must be valid JSON");
+    let expected_codex_settled: serde_json::Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/agent_thinking_payload.codex_settled.json"
+    )))
+    .expect("Codex settled fixture must be valid JSON");
 
     assert_eq!(serde_json::to_value(streaming).unwrap(), expected_streaming);
     assert_eq!(serde_json::to_value(settled).unwrap(), expected_settled);
+    assert_eq!(
+        serde_json::to_value(codex_settled).unwrap(),
+        expected_codex_settled
+    );
 }
 
 /// The allowlist is intentionally triplicated (application helper plus both
@@ -368,6 +385,43 @@ fn message_render_ready_payload_serializes_canonical_message_and_timeline() {
         value["timeline_items"][0]["tool_call"]["diff_context"]["file_path"],
         "src/app.ts"
     );
+}
+
+#[test]
+fn message_render_ready_payload_serializes_thinking_timeline_metadata() {
+    let conversation_id = ChatConversationId::from_string("33333333-3333-3333-3333-333333333333");
+    let message_id = ChatMessageId::from_string("msg-thinking");
+    let mut message = ChatMessage::user_in_project(
+        ProjectId::from_string("project-1".to_string()),
+        "Considering the request",
+    );
+    message.id = message_id.clone();
+    message.conversation_id = Some(conversation_id.clone());
+    message.role = MessageRole::Orchestrator;
+
+    let mut item = ChatTimelineItem::for_message_block(
+        message_id,
+        conversation_id,
+        0,
+        MessageRole::Orchestrator,
+        ChatTimelineItemKind::Thinking,
+    );
+    item.status = ChatTimelineItemStatus::Finalized;
+    item.text = Some("Considering the request".to_string());
+    item.metadata = Some(r#"{"duration_ms":1234,"reasoning_tokens":321}"#.to_string());
+
+    let payload =
+        AgentMessageRenderReadyPayload::from_message_and_timeline_items(&message, vec![item])
+            .expect("payload");
+    let value = serde_json::to_value(payload).expect("serialization failed");
+    let block = &value["timeline_items"][0]["content_blocks"][0];
+
+    assert_eq!(block["type"], "thinking");
+    assert_eq!(block["text"], "Considering the request");
+    assert_eq!(block["duration_ms"], 1234);
+    assert_eq!(block["reasoning_tokens"], 321);
+    assert_ne!(block["type"], "tool_use");
+    assert!(value["timeline_items"][0]["tool_call"].is_null());
 }
 
 #[test]

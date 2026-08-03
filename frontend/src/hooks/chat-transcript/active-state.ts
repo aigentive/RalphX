@@ -317,6 +317,21 @@ function mergeToolCallBlock(
     next[existingIndex] = { type: "tool_use", toolCall };
     return next;
   }
+  // Only active-state snapshots have a durable logical block index. Preserve
+  // event arrival order when it is absent; recovery can safely insert a cached
+  // tool call between indexed text/thinking anchors when it is present.
+  if (toolCall.blockIndex != null) {
+    const insertAt = next.findIndex((block) => {
+      const blockIndex = block.type === "text" || block.type === "thinking"
+        ? block.blockIndex
+        : block.type === "tool_use" ? block.toolCall.blockIndex : undefined;
+      return blockIndex != null && blockIndex > toolCall.blockIndex!;
+    });
+    if (insertAt >= 0) {
+      next.splice(insertAt, 0, { type: "tool_use", toolCall });
+      return next;
+    }
+  }
   return [...next, { type: "tool_use", toolCall }];
 }
 
