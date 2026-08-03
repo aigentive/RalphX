@@ -215,7 +215,7 @@ pub async fn get_delegate_assignment(
     State(state): State<HttpServerState>,
     headers: HeaderMap,
 ) -> Json<DelegateAssignmentResponse> {
-    let (delegated_session_id, delegated_agent_run_id) =
+    let (delegated_session_id, delegated_agent_run_id, _delegated_conversation_id) =
         match trusted_delegate_identity(&state, &headers, "get_delegate_assignment").await {
             Ok(identity) => identity,
             Err(error) => return Json(assignment_error(error)),
@@ -245,7 +245,7 @@ pub async fn complete_delegate_assignment(
     headers: HeaderMap,
     Json(request): Json<CompleteDelegateAssignmentRequest>,
 ) -> Json<DelegateAssignmentResponse> {
-    let (delegated_session_id, delegated_agent_run_id) =
+    let (delegated_session_id, delegated_agent_run_id, _delegated_conversation_id) =
         match trusted_delegate_identity(&state, &headers, "complete_delegate_assignment").await {
             Ok(identity) => identity,
             Err(error) => return Json(assignment_error(error)),
@@ -277,7 +277,7 @@ pub async fn release_delegate_assignment(
             "release_delegate_assignment requires a non-empty reason".to_string(),
         ));
     }
-    let (delegated_session_id, delegated_agent_run_id) =
+    let (delegated_session_id, delegated_agent_run_id, _delegated_conversation_id) =
         match trusted_delegate_identity(&state, &headers, "release_delegate_assignment").await {
             Ok(identity) => identity,
             Err(error) => return Json(assignment_error(error)),
@@ -299,11 +299,11 @@ pub async fn release_delegate_assignment(
     )
 }
 
-async fn trusted_delegate_identity(
+pub(crate) async fn trusted_delegate_identity(
     state: &HttpServerState,
     headers: &HeaderMap,
     operation: &str,
-) -> Result<(DelegatedSessionId, AgentRunId), String> {
+) -> Result<(DelegatedSessionId, AgentRunId, ChatConversationId), String> {
     let conversation_id = header_value(headers, "x-ralphx-conversation-id", operation)?;
     let run_id = header_value(headers, "x-ralphx-agent-run-id", operation)?;
     let conversation_id = conversation_id
@@ -360,10 +360,14 @@ async fn trusted_delegate_identity(
             "{operation} delegated session is not currently running"
         ));
     }
-    Ok((delegated_session_id, run_id))
+    Ok((delegated_session_id, run_id, conversation_id))
 }
 
-fn header_value(headers: &HeaderMap, header_name: &str, operation: &str) -> Result<String, String> {
+pub(crate) fn header_value(
+    headers: &HeaderMap,
+    header_name: &str,
+    operation: &str,
+) -> Result<String, String> {
     headers
         .get(header_name)
         .and_then(|value| value.to_str().ok())

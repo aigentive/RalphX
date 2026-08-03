@@ -43,6 +43,8 @@ fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<DelegatedSession>
         parent_context_id: row.get("parent_context_id")?,
         parent_turn_id: row.get("parent_turn_id")?,
         parent_message_id: row.get("parent_message_id")?,
+        delegate_context_authorized: row.get("delegate_context_authorized")?,
+        caller_conversation_id: row.get("caller_conversation_id")?,
         agent_name: row.get("agent_name")?,
         title: row.get("title")?,
         harness: parse_harness(&harness)?,
@@ -81,14 +83,15 @@ impl DelegatedSessionRepository for SqliteDelegatedSessionRepository {
                 conn.execute(
                     "INSERT INTO delegated_sessions (
                         id, project_id, parent_context_type, parent_context_id,
-                        parent_turn_id, parent_message_id, agent_name, title,
-                        harness, status, provider_session_id, error,
-                        created_at, updated_at, completed_at
+                        parent_turn_id, parent_message_id, delegate_context_authorized,
+                        caller_conversation_id, agent_name, title, harness, status,
+                        provider_session_id, error, created_at, updated_at, completed_at
                     ) VALUES (
                         ?1, ?2, ?3, ?4,
                         ?5, ?6, ?7, ?8,
                         ?9, ?10, ?11, ?12,
-                        ?13, ?14, ?15
+                        ?13, ?14, ?15, ?16,
+                        ?17
                     )",
                     rusqlite::params![
                         session.id.as_str(),
@@ -97,6 +100,8 @@ impl DelegatedSessionRepository for SqliteDelegatedSessionRepository {
                         session.parent_context_id,
                         session.parent_turn_id,
                         session.parent_message_id,
+                        session.delegate_context_authorized,
+                        session.caller_conversation_id,
                         session.agent_name,
                         session.title,
                         session.harness.to_string(),
@@ -119,9 +124,9 @@ impl DelegatedSessionRepository for SqliteDelegatedSessionRepository {
             .run(move |conn| {
                 let result = conn.query_row(
                     "SELECT id, project_id, parent_context_type, parent_context_id,
-                            parent_turn_id, parent_message_id, agent_name, title,
-                            harness, status, provider_session_id, error,
-                            created_at, updated_at, completed_at
+                            parent_turn_id, parent_message_id, delegate_context_authorized,
+                            caller_conversation_id, agent_name, title, harness, status,
+                            provider_session_id, error, created_at, updated_at, completed_at
                      FROM delegated_sessions
                      WHERE id = ?1",
                     [id.as_str()],
@@ -147,9 +152,9 @@ impl DelegatedSessionRepository for SqliteDelegatedSessionRepository {
             .run(move |conn| {
                 let mut stmt = conn.prepare(
                     "SELECT id, project_id, parent_context_type, parent_context_id,
-                            parent_turn_id, parent_message_id, agent_name, title,
-                            harness, status, provider_session_id, error,
-                            created_at, updated_at, completed_at
+                            parent_turn_id, parent_message_id, delegate_context_authorized,
+                            caller_conversation_id, agent_name, title, harness, status,
+                            provider_session_id, error, created_at, updated_at, completed_at
                      FROM delegated_sessions
                      WHERE parent_context_type = ?1 AND parent_context_id = ?2
                      ORDER BY created_at DESC",
