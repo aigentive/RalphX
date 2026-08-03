@@ -81,6 +81,10 @@ pub(crate) enum PrAutofixSuccessorDecision {
     /// A successor is authorized. Carries freshly observed PR evidence when GitHub could be read,
     /// so downstream fingerprint suppression has something to compare on the next round.
     Proceed(Option<PrAutofixCarryover>),
+    /// The prior generation produced a validated local repair head that has not reached the PR.
+    /// Re-drive the durable publish continuation instead of holding or buying another fixer run:
+    /// GitHub health cannot change until that head is published.
+    RedrivePublish,
     /// GitHub reports the exact same failure identity. Another generation would re-read identical
     /// evidence and can only repeat the previous outcome, so the attempt parks instead.
     HoldUnchanged,
@@ -204,6 +208,16 @@ pub(crate) async fn evaluate_pr_autofix_successor(
         return PrAutofixSuccessorDecision::Withhold("pr_issue_resolved");
     };
     if current.pr_autofix_health_fingerprint.as_deref() == Some(issue.classification.as_str()) {
+        if current.repair_head_commit.as_deref().is_some_and(|head| {
+            !head.trim().is_empty()
+                && health
+                    .sync_state
+                    .head_ref_oid
+                    .as_deref()
+                    .is_some_and(|remote_head| head != remote_head)
+        }) {
+            return PrAutofixSuccessorDecision::RedrivePublish;
+        }
         return PrAutofixSuccessorDecision::HoldUnchanged;
     }
     PrAutofixSuccessorDecision::Proceed(Some(PrAutofixCarryover {
