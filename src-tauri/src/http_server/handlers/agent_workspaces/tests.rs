@@ -2638,10 +2638,12 @@ async fn get_publish_status_reconciles_a_stale_durable_continuation_once_before_
     use crate::domain::entities::{
         AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation,
         AgentWorkspaceRepairOperationStatus, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
+        GitTargetIdentity, GitTargetLeaseOwner,
     };
     use crate::domain::repositories::{
-        AgentWorkspaceRepairAttemptTransition, AgentWorkspaceRepairAttemptTransitionOutcome,
-        StartOrJoinAgentWorkspaceRepairAttempt, StartOrJoinAgentWorkspaceRepairAttemptOutcome,
+        AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, AgentWorkspaceRepairAttemptTransition,
+        AgentWorkspaceRepairAttemptTransitionOutcome, StartOrJoinAgentWorkspaceRepairAttempt,
+        StartOrJoinAgentWorkspaceRepairAttemptOutcome,
     };
 
     let app_state = Arc::new(AppState::new_test());
@@ -2649,7 +2651,7 @@ async fn get_publish_status_reconciles_a_stale_durable_continuation_once_before_
     let workspace = test_workspace(conversation_id.clone());
     app_state
         .agent_conversation_workspace_repo
-        .create_or_update(workspace)
+        .create_or_update(workspace.clone())
         .await
         .expect("workspace should persist");
     let started = match app_state
@@ -2677,8 +2679,34 @@ async fn get_publish_status_reconciles_a_stale_durable_continuation_once_before_
         StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(attempt) => attempt,
         outcome => panic!("expected a new durable repair attempt, got {outcome:?}"),
     };
+    let target_identity = GitTargetIdentity::new(
+        std::path::PathBuf::from(&workspace.worktree_path),
+        format!("refs/heads/{}", workspace.branch_name),
+    )
+    .expect("test workspace branch should form a canonical target identity");
+    let repair_owner = GitTargetLeaseOwner::agent_workspace_repair(started.id.as_str());
+    let AcquireGitTargetLeaseOutcome::Acquired { fencing_epoch } = app_state
+        .branch_update_repo
+        .acquire_target_lease(AcquireGitTargetLease {
+            identity: target_identity.clone(),
+            owner: repair_owner,
+        })
+        .await
+        .expect("repair lease should acquire")
+    else {
+        panic!("repair attempt should own its canonical target lease");
+    };
     let mut continuation = started.clone();
     continuation.phase = AgentWorkspaceRepairPhase::ContinuationPending;
+    continuation.git_common_dir = Some(
+        target_identity
+            .git_common_dir()
+            .to_string_lossy()
+            .to_string(),
+    );
+    continuation.target_ref = Some(target_identity.full_ref().to_string());
+    continuation.target_identity_version = Some(1);
+    continuation.target_lease_epoch = Some(fencing_epoch);
     continuation.updated_at = chrono::Utc::now() - chrono::Duration::seconds(61);
     let continuation = match app_state
         .agent_workspace_repair_repo

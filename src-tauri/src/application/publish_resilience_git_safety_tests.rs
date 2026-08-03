@@ -1848,10 +1848,10 @@ async fn startup_recovery_never_steals_a_foreign_target_lease_and_blocks_after_t
             .await
             .expect("read current repair after foreign lease conflict")
             .expect("repair remains durable");
-        assert!(current.pending_reasons.iter().any(|reason| {
-            reason == &format!("continuation_recovery_failure:{expected_streak}")
-        }));
         if expected_streak < 3 {
+            assert!(current.pending_reasons.iter().any(|reason| {
+                reason == &format!("continuation_recovery_failure:{expected_streak}")
+            }));
             assert!(matches!(
                 current.phase,
                 AgentWorkspaceRepairPhase::ContinuationPending
@@ -1862,7 +1862,7 @@ async fn startup_recovery_never_steals_a_foreign_target_lease_and_blocks_after_t
             assert!(current
                 .blocker
                 .as_deref()
-                .is_some_and(|blocker| blocker.contains("repeatedly failed reconciliation")));
+                .is_some_and(|blocker| blocker.contains("failed 3 times without settling")));
             assert!(current.blocker.as_deref().is_some_and(
                 |blocker| blocker.contains("workspace repair continuation target is owned")
             ));
@@ -1938,10 +1938,13 @@ async fn startup_recovery_does_not_reacquire_while_a_push_effect_is_open() {
     assert_eq!(current.generation, continuing.generation);
     assert_eq!(current.phase, AgentWorkspaceRepairPhase::Continuing);
     assert_eq!(current.target_lease_epoch, continuing.target_lease_epoch);
-    assert!(current
-        .pending_reasons
-        .iter()
-        .any(|reason| reason == "continuation_recovery_failure:1"));
+    assert!(
+        current
+            .pending_reasons
+            .iter()
+            .any(|reason| reason == "continuation_open_effect_recovery:1"),
+        "unexpected durable open-effect state: {current:#?}"
+    );
     assert!(
         state
             .branch_update_repo
