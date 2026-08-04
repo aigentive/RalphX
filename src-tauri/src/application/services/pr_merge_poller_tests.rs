@@ -526,6 +526,7 @@ async fn held_manual_unpublished_redrive_noop_falls_through_and_retains_the_hold
         Some(Arc::clone(&state.agent_run_repo)),
         Some(Arc::clone(&state.agent_workspace_repair_repo)),
         Some(branch_update_repo),
+        None,
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -588,6 +589,7 @@ async fn held_unpublished_redrive_noop_falls_through_to_base_advanced_supersessi
         Some(agent_run_repo),
         Some(Arc::clone(&state.agent_workspace_repair_repo)),
         Some(branch_update_repo),
+        None,
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -6158,6 +6160,7 @@ async fn conflict_router_defers_unpublished_repair_head_without_join_or_agent_in
         None,
         Some(Arc::clone(&repair_repo)),
         Some(branch_update_repo),
+        None,
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -7151,6 +7154,7 @@ async fn live_pr_autofix_new_base_evidence_supersedes_same_fingerprint_health_ho
         Some(agent_run_repo),
         Some(Arc::clone(&repair_repo)),
         Some(branch_update_repo),
+        None,
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await

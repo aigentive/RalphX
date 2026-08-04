@@ -248,6 +248,7 @@ async fn recover_review_pr_poller_fixture(fixture: &ReviewPrPollerRecoveryFixtur
         Arc::new(MockChatService::new()),
         None,
         Some(repair_repo),
+        None,
         Arc::new(HashSet::new()),
     )
     .await;

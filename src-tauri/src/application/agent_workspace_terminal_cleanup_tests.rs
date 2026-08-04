@@ -468,9 +468,12 @@ async fn terminalize_reports_missing_workspace_without_claiming_cleanup() {
     let conversation_id =
         ChatConversationId::from_string("69696969-6969-6969-6969-696969696969".to_string());
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let repair_repo: Arc<dyn crate::domain::repositories::AgentWorkspaceRepairRepository> =
+        workspace_repo.clone();
 
     let outcome = terminalize_agent_workspace_after_pr(
         workspace_repo,
+        repair_repo,
         Arc::new(MemoryAgentRunRepository::new()),
         None,
         None,
@@ -518,8 +521,11 @@ async fn terminalize_releases_the_observed_operation_owned_publish_lease() {
         .await
         .expect("claim operation-owned lease");
 
+    let repair_repo: Arc<dyn crate::domain::repositories::AgentWorkspaceRepairRepository> =
+        workspace_repo.clone();
     let outcome = terminalize_agent_workspace_after_pr(
         workspace_repo.clone(),
+        repair_repo,
         Arc::new(MemoryAgentRunRepository::new()),
         None,
         None,
@@ -577,8 +583,11 @@ async fn terminalize_never_releases_a_newer_publish_lease_token() {
         "new-redrive-token",
     );
 
+    let repair_repo: Arc<dyn crate::domain::repositories::AgentWorkspaceRepairRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let outcome = terminalize_agent_workspace_after_pr(
         workspace_repo.clone(),
+        repair_repo,
         Arc::new(MemoryAgentRunRepository::new()),
         None,
         None,
