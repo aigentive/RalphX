@@ -168,6 +168,7 @@ async fn scripted_claude_process_round_trips_second_turn_through_gate1_and_strea
             ChatContextType::Project,
             context_id,
             &stream_conversation_id,
+            None,
             Some(stream_handle),
             None,
             None,
