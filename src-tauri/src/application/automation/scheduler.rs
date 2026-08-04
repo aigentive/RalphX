@@ -2398,8 +2398,8 @@ impl AutomationScheduler {
         conversation_id: &ChatConversationId,
         workspace: &AgentConversationWorkspace,
     ) -> AppResult<bool> {
-        if !elapsed_since(workspace.updated_at)
-            .is_some_and(|elapsed| elapsed >= self.config.publish_grace)
+        if elapsed_since(workspace.updated_at)
+            .is_none_or(|elapsed| elapsed < self.config.publish_grace)
         {
             return Ok(false);
         }
