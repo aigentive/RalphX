@@ -2106,7 +2106,10 @@ export type AgentWorkspaceMaintenanceOperationStatus =
 export type AgentWorkspaceMaintenanceOperationHoldReason =
   | "pr_autofix_unchanged_health"
   | "pr_autofix_pre_existing_on_base"
-  | "pr_autofix_ci_rerun_pending";
+  | "pr_autofix_ci_rerun_pending"
+  | "base_stale"
+  | "health_evidence"
+  | "publish_redrive";
 
 export interface AgentWorkspaceMaintenanceOperation {
   operationId: string;
@@ -2712,6 +2715,9 @@ export const AgentWorkspaceMaintenanceOperationResponseSchema = z.object({
       "pr_autofix_unchanged_health",
       "pr_autofix_pre_existing_on_base",
       "pr_autofix_ci_rerun_pending",
+      "base_stale",
+      "health_evidence",
+      "publish_redrive",
     ])
     .nullable()
     .optional()

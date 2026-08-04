@@ -74,6 +74,7 @@ fn row_to_repair_attempt(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentWorks
         ci_rerun_fingerprint: row.get("ci_rerun_fingerprint")?,
         pr_autofix_dispatch_head_commit: row.get("pr_autofix_dispatch_head_commit")?,
         pr_autofix_health_fingerprint: row.get("pr_autofix_health_fingerprint")?,
+        base_update_target_commit: row.get("base_update_target_commit")?,
         repair_head_commit: row.get("repair_head_commit")?,
         summary: row.get("summary")?,
         blocker: row.get("blocker")?,
@@ -196,14 +197,14 @@ fn write_repair_attempt(conn: &Connection, attempt: &AgentWorkspaceRepairAttempt
             reserved_agent_run_id, target_base_ref, target_base_commit, pending_reasons_json,
             review_required, auto_publish_enabled, auto_merge_desired, auto_merge_method,
             dispatch_count, next_dispatch_at, ci_rerun_count, ci_rerun_fingerprint,
-            pr_autofix_dispatch_head_commit, pr_autofix_health_fingerprint,
+            pr_autofix_dispatch_head_commit, pr_autofix_health_fingerprint, base_update_target_commit,
             repair_head_commit, summary, blocker,
             git_common_dir, target_ref, target_identity_version, target_lease_epoch, outcome,
             created_at, updated_at, settled_at, explicit_publish_requested
          ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
             ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31,
-            ?32
+            ?32, ?33
          )",
         rusqlite::params![
             attempt.id.as_str(),
@@ -229,6 +230,7 @@ fn write_repair_attempt(conn: &Connection, attempt: &AgentWorkspaceRepairAttempt
             attempt.ci_rerun_fingerprint,
             attempt.pr_autofix_dispatch_head_commit,
             attempt.pr_autofix_health_fingerprint,
+            attempt.base_update_target_commit,
             attempt.repair_head_commit,
             attempt.summary,
             attempt.blocker,
@@ -287,20 +289,21 @@ fn update_repair_attempt(
              ci_rerun_fingerprint = ?17,
              pr_autofix_dispatch_head_commit = ?18,
              pr_autofix_health_fingerprint = ?19,
-             repair_head_commit = ?20,
-             summary = ?21,
-             blocker = ?22,
-             git_common_dir = ?23,
-             target_ref = ?24,
-             target_identity_version = ?25,
-             target_lease_epoch = ?26,
-             outcome = ?27,
-             updated_at = ?28,
-             settled_at = ?29,
-             explicit_publish_requested = ?30
+             base_update_target_commit = ?20,
+             repair_head_commit = ?21,
+             summary = ?22,
+             blocker = ?23,
+             git_common_dir = ?24,
+             target_ref = ?25,
+             target_identity_version = ?26,
+             target_lease_epoch = ?27,
+             outcome = ?28,
+             updated_at = ?29,
+             settled_at = ?30,
+             explicit_publish_requested = ?31
          WHERE id = ?1 AND generation = ?2 AND phase = ?3
-           AND (?31 IS NULL OR updated_at = ?31)
-           AND (?32 = 0 OR settled_at IS NULL)",
+           AND (?32 IS NULL OR updated_at = ?32)
+           AND (?33 = 0 OR settled_at IS NULL)",
         rusqlite::params![
             attempt.id.as_str(),
             i64::try_from(attempt.generation).map_err(|_| {
@@ -324,6 +327,7 @@ fn update_repair_attempt(
             attempt.ci_rerun_fingerprint,
             attempt.pr_autofix_dispatch_head_commit,
             attempt.pr_autofix_health_fingerprint,
+            attempt.base_update_target_commit,
             attempt.repair_head_commit,
             attempt.summary,
             attempt.blocker,
@@ -675,6 +679,12 @@ impl AgentWorkspaceRepairRepository for SqliteAgentConversationWorkspaceReposito
                         && attempt.target_base_commit != current.target_base_commit
                     {
                         current.target_base_commit = attempt.target_base_commit.clone();
+                    }
+                    if attempt.base_update_target_commit.is_some()
+                        && attempt.base_update_target_commit != current.base_update_target_commit
+                    {
+                        current.base_update_target_commit =
+                            attempt.base_update_target_commit.clone();
                     }
                     current.auto_publish_enabled = attempt.auto_publish_enabled;
                     current.explicit_publish_requested =

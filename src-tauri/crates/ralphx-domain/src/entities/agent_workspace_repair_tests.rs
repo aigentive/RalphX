@@ -96,6 +96,31 @@ fn new_repair_attempt_is_unsettled_and_projects_only_response_safe_fields() {
 }
 
 #[test]
+fn legacy_repair_attempt_json_defaults_missing_base_update_target() {
+    let attempt = AgentWorkspaceRepairAttempt::new(
+        conversation_id(),
+        AgentWorkspaceRepairSource::PrAutofix,
+        AgentWorkspaceRepairContinuation::ResumePrSupervision,
+        "origin/main",
+        false,
+        true,
+        true,
+        None,
+        Utc::now(),
+    );
+    let mut legacy = serde_json::to_value(attempt).expect("serialize repair attempt");
+    legacy
+        .as_object_mut()
+        .expect("repair attempt serializes as an object")
+        .remove("base_update_target_commit");
+
+    let decoded: AgentWorkspaceRepairAttempt =
+        serde_json::from_value(legacy).expect("legacy repair attempt remains readable");
+
+    assert_eq!(decoded.base_update_target_commit, None);
+}
+
+#[test]
 fn repair_operation_snapshots_project_every_terminal_and_active_stage() {
     let now = Utc::now();
     let mut attempt = AgentWorkspaceRepairAttempt::new(
@@ -196,6 +221,18 @@ fn stationary_ready_repair_holds_project_distinct_typed_identities() {
     attempt.pending_reasons = vec!["pr_autofix_pre_existing_on_base".to_string()];
     let pre_existing = attempt.operation_snapshot();
     assert_eq!(pre_existing.stage, AgentWorkspaceRepairOperationStage::Held);
+    attempt.pending_reasons = vec![
+        "pr_autofix_unchanged_health".to_string(),
+        "pr_autofix_base_stale_after_update".to_string(),
+    ];
+    assert_eq!(
+        attempt.operation_snapshot().hold_reason,
+        Some(AgentWorkspaceRepairOperationHoldReason::BaseStale),
+        "a pending base refresh must outrank stale health evidence"
+    );
+
+    attempt.pending_reasons = vec!["pr_autofix_pre_existing_on_base".to_string()];
+    let pre_existing = attempt.operation_snapshot();
     assert_eq!(
         pre_existing.status,
         AgentWorkspaceRepairOperationStatus::Held

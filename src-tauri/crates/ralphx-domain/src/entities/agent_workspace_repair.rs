@@ -160,10 +160,15 @@ repair_string_enum!(AgentWorkspaceRepairOperationHoldReason {
     UnchangedHealth => "pr_autofix_unchanged_health",
     PreExistingOnBase => "pr_autofix_pre_existing_on_base",
     CiRerunPending => "pr_autofix_ci_rerun_pending",
+    BaseStale => "base_stale",
+    HealthEvidence => "health_evidence",
+    PublishRedrive => "publish_redrive",
 });
 
 pub const PR_AUTOFIX_PRE_EXISTING_ON_BASE_PENDING_REASON: &str = "pr_autofix_pre_existing_on_base";
 pub const PR_AUTOFIX_UNCHANGED_HEALTH_PENDING_REASON: &str = "pr_autofix_unchanged_health";
+pub const PR_AUTOFIX_BASE_STALE_AFTER_UPDATE_PENDING_REASON: &str =
+    "pr_autofix_base_stale_after_update";
 pub const PR_AUTOFIX_HEAD_REDRIVE_PENDING_REASON_PREFIX: &str = "pr_autofix_head_redrive:";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -177,6 +182,9 @@ pub struct AgentWorkspaceRepairAttempt {
     pub reserved_agent_run_id: Option<AgentRunId>,
     pub target_base_ref: String,
     pub target_base_commit: Option<String>,
+    /// GitHub base tip targeted by a completed automatic update route for this attempt.
+    #[serde(default)]
+    pub base_update_target_commit: Option<String>,
     pub pending_reasons: Vec<String>,
     pub review_required: bool,
     pub auto_publish_enabled: bool,
@@ -230,6 +238,7 @@ impl AgentWorkspaceRepairAttempt {
             reserved_agent_run_id: None,
             target_base_ref: target_base_ref.into(),
             target_base_commit: None,
+            base_update_target_commit: None,
             pending_reasons: Vec::new(),
             review_required,
             auto_publish_enabled,
@@ -267,17 +276,27 @@ impl AgentWorkspaceRepairAttempt {
                 .iter()
                 .any(|reason| reason.starts_with(PR_AUTOFIX_HEAD_REDRIVE_PENDING_REASON_PREFIX));
         let hold_reason = if self.phase == AgentWorkspaceRepairPhase::Ready && !publish_redrive {
-            self.pending_reasons
+            if self
+                .pending_reasons
                 .iter()
-                .find_map(|reason| AgentWorkspaceRepairOperationHoldReason::from_str(reason).ok())
-                .or_else(|| {
-                    ((self.ci_rerun_count > 0 && self.ci_rerun_fingerprint.is_some())
-                        || self
-                            .pending_reasons
-                            .iter()
-                            .any(|reason| reason == "pr_autofix_awaiting_ci"))
-                    .then_some(AgentWorkspaceRepairOperationHoldReason::CiRerunPending)
-                })
+                .any(|reason| reason == PR_AUTOFIX_BASE_STALE_AFTER_UPDATE_PENDING_REASON)
+            {
+                Some(AgentWorkspaceRepairOperationHoldReason::BaseStale)
+            } else {
+                self.pending_reasons
+                    .iter()
+                    .find_map(|reason| {
+                        AgentWorkspaceRepairOperationHoldReason::from_str(reason).ok()
+                    })
+                    .or_else(|| {
+                        ((self.ci_rerun_count > 0 && self.ci_rerun_fingerprint.is_some())
+                            || self
+                                .pending_reasons
+                                .iter()
+                                .any(|reason| reason == "pr_autofix_awaiting_ci"))
+                        .then_some(AgentWorkspaceRepairOperationHoldReason::CiRerunPending)
+                    })
+            }
         } else {
             None
         };

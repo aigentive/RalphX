@@ -171,6 +171,12 @@ const HOLD_SUMMARIES = {
     "This failure already exists on the base branch, so fixing it on this PR branch would not help.",
   pr_autofix_ci_rerun_pending:
     "RalphX asked GitHub to re-run the failed jobs and is waiting for the result.",
+  base_stale:
+    "The branch is still behind its targeted base commit after RalphX attempted the update.",
+  health_evidence:
+    "RalphX is waiting for GitHub to report new PR health evidence before retrying.",
+  publish_redrive:
+    "RalphX is resuming publication for the rebased branch.",
 };
 
 export function getAgentWorkspacePrAutofixFingerprintSpendPresentation(
@@ -334,6 +340,37 @@ export function getAgentWorkspaceMaintenancePresentation(
       };
     }
     case "ready":
+      if (operation.holdReason === "publish_redrive") {
+        return {
+          title: "Pushing rebased branch…",
+          summary,
+          tone: "neutral",
+          busy: true,
+          action: "none",
+          automaticContinuation: "RalphX is resuming publication automatically.",
+        };
+      }
+      if (operation.holdReason === "base_stale") {
+        return {
+          title: "Behind base — update did not take",
+          summary,
+          tone: "warning",
+          busy: false,
+          action: "none",
+          automaticContinuation: null,
+        };
+      }
+      if (operation.holdReason === "health_evidence") {
+        return {
+          title: "Holding — waiting for new CI evidence",
+          summary,
+          tone: "warning",
+          busy: false,
+          action: "none",
+          automaticContinuation:
+            "RalphX will continue when the PR evidence changes.",
+        };
+      }
       return {
         title: "Base updated — ready to publish",
         summary,

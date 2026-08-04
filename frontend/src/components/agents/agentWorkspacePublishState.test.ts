@@ -268,6 +268,29 @@ describe("maintenance operation presentation", () => {
     });
   });
 
+  it("presents a stale base as a non-resumable update failure before CI evidence holds", () => {
+    const held = workspace({
+      maintenanceOperation: {
+        ...maintenanceOperation,
+        stage: "ready",
+        status: "ready",
+        holdReason: "base_stale",
+        summary: "The workspace is still behind its base branch.",
+        automaticContinuation: false,
+      },
+    });
+
+    expect(canResumeAgentWorkspacePublish(held)).toBe(false);
+    expect(getAgentWorkspaceMaintenancePresentation(held)).toEqual({
+      title: "Behind base — update did not take",
+      summary: "The workspace is still behind its base branch.",
+      tone: "warning",
+      busy: false,
+      action: "none",
+      automaticContinuation: null,
+    });
+  });
+
   it("presents a reserved unpublished-head re-drive as automatic publishing", () => {
     const redriving = workspace({
       maintenanceOperation: {

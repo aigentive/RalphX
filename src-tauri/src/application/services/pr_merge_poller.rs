@@ -16,6 +16,9 @@ use tokio::task::JoinHandle;
 use crate::application::agent_conversation_workspace::{
     agent_name_for_workspace_mode, resolve_valid_agent_conversation_workspace_path,
 };
+use crate::application::agent_workspace_base_staleness::{
+    classify_health_hold_disposition, BaseStalenessObservation, HealthHoldDisposition,
+};
 use crate::application::agent_workspace_ci_rerun::ci_rerun_hold_still_pending;
 use crate::application::agent_workspace_pr_autofix_attempt::{
     load_pr_autofix_attempt_decision, pr_autofix_action_metadata,
@@ -23,15 +26,17 @@ use crate::application::agent_workspace_pr_autofix_attempt::{
 use crate::application::agent_workspace_publish_recovery::{
     recover_stale_publish_repair_for_workspace_in_state_result, StalePublishRepairRecoveryOutcome,
 };
-use crate::application::agent_workspace_publish_repair_state::held_repair_has_unpublished_head;
 use crate::application::agent_workspace_publish_repair_state::{
-    agent_workspace_repair_is_ci_held, agent_workspace_repair_is_health_held,
-    classify_agent_workspace_repair_delivery, reserve_agent_workspace_repair_dispatch,
-    settle_agent_workspace_repair_dispatch_outcome, start_or_join_agent_workspace_repair,
-    start_or_join_agent_workspace_repair_without_projection,
+    agent_workspace_repair_is_base_stale_held, agent_workspace_repair_is_ci_held,
+    agent_workspace_repair_is_health_held, classify_agent_workspace_repair_delivery,
+    held_repair_has_unpublished_head, mark_agent_workspace_base_update_target,
+    release_agent_workspace_base_stale_hold, release_and_clear_agent_workspace_repair_target_lease,
+    reserve_agent_workspace_base_stale_hold, reserve_agent_workspace_base_update,
+    reserve_agent_workspace_repair_dispatch, settle_agent_workspace_repair_dispatch_outcome,
+    start_or_join_agent_workspace_repair, start_or_join_agent_workspace_repair_without_projection,
     validate_agent_workspace_repair_target_lease, AgentWorkspaceRepairDispatchOutcome,
     AgentWorkspaceRepairDispatchSettlement, AgentWorkspaceRepairStartOutcome,
-    AgentWorkspaceRepairStartRequest,
+    AgentWorkspaceRepairStartRequest, AgentWorkspaceRepairTransitionOutcome,
 };
 #[cfg(test)]
 use crate::application::agent_workspace_publish_repair_state::{
@@ -44,6 +49,10 @@ use crate::application::agent_workspace_terminal_cleanup::{
 };
 use crate::application::chat_service::{ChatService, SendMessageOptions, SendQueuePolicy};
 use crate::application::interactive_notification_producer::pr_review_notification_key;
+use crate::application::publish_resilience::{
+    ensure_publish_branch_fresh, verify_agent_workspace_settled_current_head,
+    AgentWorkspaceSettledHeadCheck, PublishBranchFreshnessOutcome,
+};
 use crate::application::services::pr_auto_merge_status::{
     auto_merge_disable_failure_summary, auto_merge_enable_failure_summary,
     AUTO_MERGE_SUPERVISION_STATUS_WAITING,
@@ -1396,6 +1405,7 @@ async fn agent_workspace_poll_loop(
                     branch_update_repo.as_ref().map(Arc::clone),
                     Arc::clone(&chat_service),
                     notification_service.as_ref().map(Arc::clone),
+                    Some(&project),
                 )
                 .await
                 {
@@ -3007,6 +3017,8 @@ async fn route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
         branch_update_repo,
         chat_service,
         None,
+        None,
+        None,
     )
     .await
 }
@@ -3023,6 +3035,7 @@ async fn route_agent_workspace_pr_autofix_if_needed_with_notifications(
     branch_update_repo: Option<Arc<dyn BranchUpdateRepository>>,
     chat_service: Arc<dyn ChatService>,
     notification_service: Option<Arc<NotificationService>>,
+    project: Option<&Project>,
 ) -> crate::AppResult<bool> {
     let workspace = workspace_repo
         .get_by_conversation_id(conversation_id)
@@ -3047,6 +3060,7 @@ async fn route_agent_workspace_pr_autofix_if_needed_with_notifications(
         branch_update_repo,
         chat_service,
         notification_service,
+        project,
         None,
     )
     .await
@@ -3143,7 +3157,316 @@ async fn recheck_agent_workspace_pr_health_once(
         Some(Arc::clone(&state.branch_update_repo)),
         chat_service,
         Some(state.notification_service()),
+        Some(&project),
         Some(authority),
+    )
+    .await
+}
+
+async fn agent_workspace_base_update_unsettled_reason(
+    working_dir: &Path,
+    workspace: &AgentConversationWorkspace,
+    attempt: &AgentWorkspaceRepairAttempt,
+) -> crate::AppResult<Option<String>> {
+    let current_branch = GitService::get_current_branch(working_dir).await?;
+    if current_branch != workspace.branch_name {
+        return Ok(Some(format!(
+            "workspace branch '{}' is checked out instead of '{}'",
+            current_branch, workspace.branch_name
+        )));
+    }
+
+    let workspace_head_sha = GitService::get_head_sha(working_dir).await?;
+    let reported_head_sha = attempt
+        .repair_head_commit
+        .as_deref()
+        .map(str::trim)
+        .filter(|head| !head.is_empty())
+        .unwrap_or(workspace_head_sha.as_str());
+    let unfinished = GitService::unfinished_operation_state(working_dir)?;
+    let settled = verify_agent_workspace_settled_current_head(AgentWorkspaceSettledHeadCheck {
+        reported_head_sha,
+        workspace_head_sha: &workspace_head_sha,
+        has_uncommitted_changes: GitService::has_uncommitted_changes(working_dir).await?,
+        is_merge_in_progress: unfinished.merge_in_progress,
+        is_rebase_in_progress: unfinished.rebase_in_progress,
+        has_conflict_files: !GitService::get_conflict_files(working_dir)
+            .await?
+            .is_empty(),
+        has_conflict_markers: GitService::has_conflict_markers(working_dir).await?,
+    });
+    Ok(settled.err())
+}
+
+async fn settle_ready_agent_workspace_repair_attempt(
+    repair_repo: &dyn AgentWorkspaceRepairRepository,
+    branch_update_repo: &dyn BranchUpdateRepository,
+    attempt: &AgentWorkspaceRepairAttempt,
+) -> crate::AppResult<bool> {
+    let attempt = match release_and_clear_agent_workspace_repair_target_lease(
+        repair_repo,
+        branch_update_repo,
+        attempt.clone(),
+    )
+    .await?
+    {
+        AgentWorkspaceRepairTransitionOutcome::Applied(attempt) => attempt,
+        AgentWorkspaceRepairTransitionOutcome::Stale(_)
+        | AgentWorkspaceRepairTransitionOutcome::Missing => {
+            return Ok(false);
+        }
+    };
+    let outcome = repair_repo
+        .settle_repair_attempt(SettleAgentWorkspaceRepairAttempt {
+            attempt_id: attempt.id.clone(),
+            generation: attempt.generation,
+            expected_phase: AgentWorkspaceRepairPhase::Ready,
+            expected_updated_at: attempt.updated_at,
+            outcome: crate::domain::entities::AgentWorkspaceRepairOutcome::Succeeded,
+            settled_at: chrono::Utc::now(),
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await?;
+    Ok(matches!(
+        outcome,
+        SettleAgentWorkspaceRepairAttemptOutcome::Applied(_)
+    ))
+}
+
+fn add_base_update_assignment(issue: &mut Option<AgentWorkspacePrAutofixIssue>, reason: &str) {
+    let Some(issue) = issue.as_mut() else {
+        return;
+    };
+    issue.summary = format!("{}; update the branch from base", issue.summary);
+    issue.details.insert(
+        0,
+        format!("Update the branch from its configured base and publish it: {reason}"),
+    );
+}
+
+async fn record_agent_workspace_base_update_route(
+    workspace_repo: &dyn AgentConversationWorkspaceRepository,
+    conversation_id: &ChatConversationId,
+    pr_number: i64,
+    observed_base_oid: &str,
+    status: &str,
+    summary: &str,
+) -> crate::AppResult<()> {
+    workspace_repo
+        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+            conversation_id.clone(),
+            "pr_base_update",
+            status,
+            summary,
+            Some(format!(
+                "github_pr_base_update:{pr_number}:{observed_base_oid}:{status}"
+            )),
+        ))
+        .await
+}
+
+async fn persist_agent_workspace_observed_base(
+    workspace_repo: &dyn AgentConversationWorkspaceRepository,
+    conversation_id: &ChatConversationId,
+    observed_base_oid: String,
+) -> crate::AppResult<AgentConversationWorkspace> {
+    let mut workspace = workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!(
+                "Agent conversation workspace not found for conversation {}",
+                conversation_id
+            ))
+        })?;
+    workspace.base_commit = Some(observed_base_oid);
+    workspace.updated_at = chrono::Utc::now();
+    workspace_repo.create_or_update(workspace).await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn hold_agent_workspace_base_update_route(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    workspace_repo: &dyn AgentConversationWorkspaceRepository,
+    attempt: AgentWorkspaceRepairAttempt,
+    conversation_id: &ChatConversationId,
+    pr_number: i64,
+    observed_base_oid: &str,
+    message: &str,
+    auto_merge_current: Option<bool>,
+) -> crate::AppResult<()> {
+    if let AgentWorkspaceRepairTransitionOutcome::Applied(_) =
+        reserve_agent_workspace_base_stale_hold(
+            repair_repo,
+            attempt,
+            observed_base_oid,
+            message,
+            auto_merge_current,
+        )
+        .await?
+    {
+        record_agent_workspace_base_update_route(
+            workspace_repo,
+            conversation_id,
+            pr_number,
+            observed_base_oid,
+            "blocked",
+            message,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+enum BehindBaseUpdateRoute {
+    Updated {
+        reserved: AgentWorkspaceRepairAttempt,
+    },
+    DeferToAgent {
+        reserved: AgentWorkspaceRepairAttempt,
+        reason: String,
+    },
+    Blocked {
+        reserved: AgentWorkspaceRepairAttempt,
+        message: String,
+    },
+    Rejected,
+}
+
+async fn mark_behind_base_update_route(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    route: BehindBaseUpdateRoute,
+    observed_base_oid: &str,
+    auto_merge_current: Option<bool>,
+) -> crate::AppResult<BehindBaseUpdateRoute> {
+    let (attempt, summary) = match &route {
+        BehindBaseUpdateRoute::Updated { reserved } => (
+            reserved.clone(),
+            "RalphX updated and pushed the branch from its current base.".to_string(),
+        ),
+        // A defer performs no automatic update. Settling it is the authority for dispatching a
+        // new fixer; persisting the anti-runaway marker first would make a crash look successful.
+        BehindBaseUpdateRoute::DeferToAgent { .. } => return Ok(route),
+        BehindBaseUpdateRoute::Blocked { reserved, message } => (reserved.clone(), message.clone()),
+        BehindBaseUpdateRoute::Rejected => return Ok(route),
+    };
+    let marked = match mark_agent_workspace_base_update_target(
+        repair_repo,
+        attempt,
+        observed_base_oid,
+        &summary,
+        auto_merge_current,
+    )
+    .await?
+    {
+        AgentWorkspaceRepairTransitionOutcome::Applied(attempt) => attempt,
+        AgentWorkspaceRepairTransitionOutcome::Stale(_)
+        | AgentWorkspaceRepairTransitionOutcome::Missing => {
+            return Ok(BehindBaseUpdateRoute::Rejected)
+        }
+    };
+    Ok(match route {
+        BehindBaseUpdateRoute::Updated { .. } => {
+            BehindBaseUpdateRoute::Updated { reserved: marked }
+        }
+        BehindBaseUpdateRoute::Blocked { message, .. } => BehindBaseUpdateRoute::Blocked {
+            reserved: marked,
+            message,
+        },
+        BehindBaseUpdateRoute::DeferToAgent { .. } | BehindBaseUpdateRoute::Rejected => {
+            unreachable!("returned before marking")
+        }
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn drive_agent_workspace_behind_base_update(
+    github: &dyn GithubServiceTrait,
+    working_dir: &Path,
+    project: &Project,
+    workspace: &AgentConversationWorkspace,
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    attempt: AgentWorkspaceRepairAttempt,
+    observed_base_oid: &str,
+    summary: &str,
+) -> crate::AppResult<BehindBaseUpdateRoute> {
+    let reserved = match reserve_agent_workspace_base_update(
+        Arc::clone(&repair_repo),
+        attempt,
+        observed_base_oid,
+        summary,
+        workspace.pr_auto_merge_current,
+    )
+    .await?
+    {
+        AgentWorkspaceRepairTransitionOutcome::Applied(attempt) => attempt,
+        AgentWorkspaceRepairTransitionOutcome::Stale(_)
+        | AgentWorkspaceRepairTransitionOutcome::Missing => {
+            return Ok(BehindBaseUpdateRoute::Rejected)
+        }
+    };
+    if let Some(reason) =
+        agent_workspace_base_update_unsettled_reason(working_dir, workspace, &reserved).await?
+    {
+        return mark_behind_base_update_route(
+            repair_repo,
+            BehindBaseUpdateRoute::DeferToAgent { reserved, reason },
+            observed_base_oid,
+            workspace.pr_auto_merge_current,
+        )
+        .await;
+    }
+
+    let outcome = ensure_publish_branch_fresh(
+        working_dir,
+        project,
+        &workspace.branch_name,
+        &workspace.base_ref,
+        &workspace.conversation_id.as_str(),
+        None,
+    )
+    .await;
+    let route = match outcome {
+        PublishBranchFreshnessOutcome::Updated { .. } => {
+            match github.push_branch(working_dir, &workspace.branch_name).await {
+                Ok(()) => BehindBaseUpdateRoute::Updated { reserved },
+                Err(error) => BehindBaseUpdateRoute::Blocked {
+                    reserved,
+                    message: format!(
+                        "RalphX updated the branch to {observed_base_oid} but could not push it: {error}"
+                    ),
+                },
+            }
+        }
+        PublishBranchFreshnessOutcome::AlreadyFresh { .. } => BehindBaseUpdateRoute::Blocked {
+            reserved,
+            message: format!(
+                "GitHub reports the PR behind {} at {}, but the local branch already contains that base tip.",
+                workspace.base_ref, observed_base_oid
+            ),
+        },
+        PublishBranchFreshnessOutcome::OperationalError { message } => {
+            BehindBaseUpdateRoute::Blocked { reserved, message }
+        }
+        PublishBranchFreshnessOutcome::NeedsAgent {
+            message,
+            conflict_files,
+            ..
+        } => BehindBaseUpdateRoute::DeferToAgent {
+            reserved,
+            reason: if conflict_files.is_empty() {
+                message
+            } else {
+                format!("{message} Conflicts: {}", conflict_files.join(", "))
+            },
+            },
+    };
+    mark_behind_base_update_route(
+        repair_repo,
+        route,
+        observed_base_oid,
+        workspace.pr_auto_merge_current,
     )
     .await
 }
@@ -3216,6 +3539,7 @@ async fn route_agent_workspace_pr_autofix_for_target(
     branch_update_repo: Option<Arc<dyn BranchUpdateRepository>>,
     chat_service: Arc<dyn ChatService>,
     notification_service: Option<Arc<NotificationService>>,
+    project: Option<&Project>,
     expected_held_attempt: Option<HeldPrHealthRecheckAuthority>,
 ) -> crate::AppResult<bool> {
     let target_matches_workspace_mode = matches!(
@@ -3255,7 +3579,7 @@ async fn route_agent_workspace_pr_autofix_for_target(
     let health = github
         .fetch_pr_health(working_dir, target.pr_number)
         .await?;
-    let current_issue = classify_agent_workspace_pr_autofix_issue(target.pr_number, &health);
+    let mut current_issue = classify_agent_workspace_pr_autofix_issue(target.pr_number, &health);
     let mut superseding_base_commit = None;
     // A durable completion may have already reserved a rerun or classified this exact state as
     // pre-existing on base. Neither outcome authorizes a new fixer until GitHub changes health.
@@ -3267,7 +3591,7 @@ async fn route_agent_workspace_pr_autofix_for_target(
         if expected_held_attempt.is_some() && current_attempt.is_none() {
             return Ok(false);
         }
-        if let Some(attempt) = current_attempt {
+        if let Some(mut attempt) = current_attempt {
             if expected_held_attempt.as_ref().is_some_and(|expected| {
                 attempt.id != expected.attempt_id
                     || attempt.generation != expected.generation
@@ -3277,77 +3601,268 @@ async fn route_agent_workspace_pr_autofix_for_target(
                 return Ok(false);
             }
             if attempt.phase == AgentWorkspaceRepairPhase::Ready {
-                let health_suppressed = agent_workspace_repair_is_health_held(&attempt);
-                let ci_held = agent_workspace_repair_is_ci_held(&attempt);
-                let advanced_base_commit = attempt
-                    .target_base_commit
+                let mut attempt_already_settled = false;
+                let mut health_suppressed = agent_workspace_repair_is_health_held(&attempt);
+                let mut ci_held = agent_workspace_repair_is_ci_held(&attempt);
+                let mut base_stale_held = agent_workspace_repair_is_base_stale_held(&attempt);
+                let disposition = classify_health_hold_disposition(BaseStalenessObservation {
+                    merge_state_status: health.sync_state.merge_state_status.as_ref(),
+                    observed_base_oid: health.sync_state.base_ref_oid.as_deref(),
+                    attempt_target_base_commit: attempt.target_base_commit.as_deref(),
+                    last_base_update_oid: attempt.base_update_target_commit.as_deref(),
+                });
+                let merge_state_is_known = !matches!(
+                    health.sync_state.merge_state_status.as_ref(),
+                    None | Some(PrMergeStateStatus::Unknown | PrMergeStateStatus::Other(_))
+                );
+                let observed_base_is_known = health
+                    .sync_state
+                    .base_ref_oid
                     .as_deref()
-                    .filter(|commit| !commit.trim().is_empty())
-                    .zip(
-                        health
-                            .sync_state
-                            .base_ref_oid
-                            .as_deref()
-                            .filter(|commit| !commit.trim().is_empty()),
+                    .is_some_and(|oid| !oid.trim().is_empty());
+                if base_stale_held
+                    && merge_state_is_known
+                    && observed_base_is_known
+                    && !matches!(
+                        disposition,
+                        HealthHoldDisposition::BlockedStaleAfterUpdate { .. }
                     )
-                    .and_then(|(targeted, observed)| {
-                        (targeted != observed).then(|| observed.to_string())
-                    });
-                if ci_held {
-                    if ci_rerun_hold_still_pending(&health, attempt.ci_rerun_fingerprint.as_deref())
+                {
+                    attempt = match release_agent_workspace_base_stale_hold(
+                        Arc::clone(repair_repo),
+                        attempt,
+                        "GitHub no longer reports the PR behind the targeted base tip; RalphX resumed CI evidence supervision.",
+                        workspace.pr_auto_merge_current,
+                    )
+                    .await?
                     {
+                        AgentWorkspaceRepairTransitionOutcome::Applied(attempt) => attempt,
+                        AgentWorkspaceRepairTransitionOutcome::Stale(_)
+                        | AgentWorkspaceRepairTransitionOutcome::Missing => return Ok(false),
+                    };
+                    health_suppressed = agent_workspace_repair_is_health_held(&attempt);
+                    ci_held = agent_workspace_repair_is_ci_held(&attempt);
+                    base_stale_held = agent_workspace_repair_is_base_stale_held(&attempt);
+                }
+                if base_stale_held && (!merge_state_is_known || !observed_base_is_known) {
+                    return Ok(false);
+                }
+                let hold_active = health_suppressed || ci_held || base_stale_held;
+                if hold_active {
+                    if let HealthHoldDisposition::BlockedStaleAfterUpdate { observed_base_oid } =
+                        &disposition
+                    {
+                        if base_stale_held {
+                            return Ok(false);
+                        }
+                        let summary = format!(
+                            "PR branch is still behind {} at {} after RalphX updated to that base tip.",
+                            health.sync_state.base_ref_name, observed_base_oid
+                        );
+                        hold_agent_workspace_base_update_route(
+                            Arc::clone(repair_repo),
+                            workspace_repo.as_ref(),
+                            attempt.clone(),
+                            conversation_id,
+                            target.pr_number,
+                            observed_base_oid,
+                            &summary,
+                            workspace.pr_auto_merge_current,
+                        )
+                        .await?;
                         return Ok(false);
                     }
-                } else if health_suppressed
-                    && current_issue.as_ref().is_some_and(|issue| {
-                        attempt.pr_autofix_health_fingerprint.as_deref()
-                            == Some(issue.classification.as_str())
-                    })
-                    && advanced_base_commit.is_none()
+                }
+
+                if hold_active
+                    && matches!(
+                        (&target.kind, &disposition, project),
+                        (
+                            AgentWorkspacePrAutofixTargetKind::DirectWorkspace,
+                            HealthHoldDisposition::SupersedeForBaseUpdate { .. },
+                            Some(_)
+                        )
+                    )
                 {
-                    if held_repair_has_unpublished_head(
+                    let HealthHoldDisposition::SupersedeForBaseUpdate { observed_base_oid } =
+                        disposition.clone()
+                    else {
+                        unreachable!("guarded by the disposition match above")
+                    };
+                    let project = project.expect("guarded by the project match above");
+                    let Some(branch_update_repo) = branch_update_repo.as_ref() else {
+                        return Ok(false);
+                    };
+                    let persisted_target = match validate_agent_workspace_repair_target_lease(
+                        branch_update_repo.as_ref(),
                         &attempt,
-                        health.sync_state.head_ref_oid.as_deref(),
-                    ) {
-                        tracing::info!(
+                    )
+                    .await
+                    {
+                        Ok(target) => target,
+                        Err(error) => {
+                            tracing::warn!(
+                                conversation_id = conversation_id.as_str(),
+                                pr_number = target.pr_number,
+                                attempt_id = attempt.id.as_str(),
+                                error = %error,
+                                "PR base update skipped because its durable target lease is not current"
+                            );
+                            return Ok(false);
+                        }
+                    };
+                    let observed_target =
+                        GitService::canonical_target_identity(working_dir, &workspace.branch_name)
+                            .await?;
+                    if observed_target != persisted_target {
+                        tracing::warn!(
                             conversation_id = conversation_id.as_str(),
                             pr_number = target.pr_number,
                             attempt_id = attempt.id.as_str(),
-                            "PR health hold retained while durable recovery re-drives its unpublished repair head"
+                            "PR base update skipped because the worktree no longer matches its durable target lease"
                         );
+                        return Ok(false);
                     }
-                    return Ok(false);
+                    let summary = format!(
+                        "PR branch is behind {} at {}; RalphX reserved a base update before accepting more CI evidence.",
+                        health.sync_state.base_ref_name, observed_base_oid
+                    );
+                    match drive_agent_workspace_behind_base_update(
+                        github.as_ref(),
+                        working_dir,
+                        project,
+                        &workspace,
+                        Arc::clone(repair_repo),
+                        attempt.clone(),
+                        &observed_base_oid,
+                        &summary,
+                    )
+                    .await?
+                    {
+                        BehindBaseUpdateRoute::Updated { .. } => {
+                            persist_agent_workspace_observed_base(
+                                workspace_repo.as_ref(),
+                                conversation_id,
+                                observed_base_oid.clone(),
+                            )
+                            .await?;
+                            record_agent_workspace_base_update_route(
+                                workspace_repo.as_ref(),
+                                conversation_id,
+                                target.pr_number,
+                                &observed_base_oid,
+                                "updated",
+                                "RalphX merged the current base and pushed the PR branch; waiting for fresh GitHub evidence.",
+                            )
+                            .await?;
+                            return Ok(false);
+                        }
+                        BehindBaseUpdateRoute::DeferToAgent { reserved, reason } => {
+                            if !settle_ready_agent_workspace_repair_attempt(
+                                repair_repo.as_ref(),
+                                branch_update_repo.as_ref(),
+                                &reserved,
+                            )
+                            .await?
+                            {
+                                return Ok(false);
+                            }
+                            record_agent_workspace_base_update_route(
+                                workspace_repo.as_ref(),
+                                conversation_id,
+                                target.pr_number,
+                                &observed_base_oid,
+                                "deferred",
+                                &reason,
+                            )
+                            .await?;
+                            superseding_base_commit = Some(observed_base_oid);
+                            add_base_update_assignment(&mut current_issue, &reason);
+                            attempt_already_settled = true;
+                        }
+                        BehindBaseUpdateRoute::Blocked { reserved, message } => {
+                            hold_agent_workspace_base_update_route(
+                                Arc::clone(repair_repo),
+                                workspace_repo.as_ref(),
+                                reserved,
+                                conversation_id,
+                                target.pr_number,
+                                &observed_base_oid,
+                                &message,
+                                workspace.pr_auto_merge_current,
+                            )
+                            .await?;
+                            return Ok(false);
+                        }
+                        BehindBaseUpdateRoute::Rejected => return Ok(false),
+                    }
                 }
-                if health_suppressed || ci_held {
-                    superseding_base_commit = advanced_base_commit;
+                if !attempt_already_settled {
+                    if ci_held
+                        && ci_rerun_hold_still_pending(
+                            &health,
+                            attempt.ci_rerun_fingerprint.as_deref(),
+                        )
+                    {
+                        return Ok(false);
+                    }
+                    if health_suppressed
+                        && matches!(disposition, HealthHoldDisposition::Retain)
+                        && current_issue.as_ref().is_some_and(|issue| {
+                            attempt.pr_autofix_health_fingerprint.as_deref()
+                                == Some(issue.classification.as_str())
+                        })
+                    {
+                        if held_repair_has_unpublished_head(
+                            &attempt,
+                            health.sync_state.head_ref_oid.as_deref(),
+                        ) {
+                            tracing::info!(
+                                conversation_id = conversation_id.as_str(),
+                                pr_number = target.pr_number,
+                                attempt_id = attempt.id.as_str(),
+                                "PR health hold retained while durable recovery re-drives its unpublished repair head"
+                            );
+                        }
+                        return Ok(false);
+                    }
+                }
+                if (health_suppressed || ci_held) && !attempt_already_settled {
+                    superseding_base_commit = match disposition {
+                        HealthHoldDisposition::SupersedeForNewEvidence { observed_base_oid }
+                        | HealthHoldDisposition::SupersedeForBaseUpdate { observed_base_oid } => {
+                            Some(observed_base_oid)
+                        }
+                        HealthHoldDisposition::Retain
+                        | HealthHoldDisposition::BlockedStaleAfterUpdate { .. } => None,
+                    };
                     // A changed conclusion ends the rerun-pending generation. The next normal
                     // dispatch below creates a fresh, independently fenced repair attempt.
-                    match repair_repo
-                        .settle_repair_attempt(SettleAgentWorkspaceRepairAttempt {
-                            attempt_id: attempt.id.clone(),
-                            generation: attempt.generation,
-                            expected_phase: AgentWorkspaceRepairPhase::Ready,
-                            expected_updated_at: attempt.updated_at,
-                            outcome:
-                                crate::domain::entities::AgentWorkspaceRepairOutcome::Succeeded,
-                            settled_at: chrono::Utc::now(),
-                            compatibility_projection: None,
-                            events: Vec::new(),
-                        })
-                        .await?
+                    if !settle_ready_agent_workspace_repair_attempt(
+                        repair_repo.as_ref(),
+                        branch_update_repo
+                            .as_ref()
+                            .expect(
+                                "durable repair dispatch requires canonical Git target authority",
+                            )
+                            .as_ref(),
+                        &attempt,
+                    )
+                    .await?
                     {
-                        SettleAgentWorkspaceRepairAttemptOutcome::Applied(_) => {}
-                        SettleAgentWorkspaceRepairAttemptOutcome::Stale(_)
-                        | SettleAgentWorkspaceRepairAttemptOutcome::Missing => return Ok(false),
+                        return Ok(false);
                     }
                 }
             }
         }
     }
     if let Some(base_commit) = superseding_base_commit {
-        workspace.base_commit = Some(base_commit);
-        workspace.updated_at = chrono::Utc::now();
-        workspace = workspace_repo.create_or_update(workspace).await?;
+        workspace = persist_agent_workspace_observed_base(
+            workspace_repo.as_ref(),
+            conversation_id,
+            base_commit,
+        )
+        .await?;
     }
     import_agent_workspace_pr_comment_evidence(
         Arc::clone(&workspace_repo),
