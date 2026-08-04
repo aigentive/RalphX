@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use crate::application::agent_lane_resolution::ResolvedAgentSpawnSettings;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
-use crate::domain::entities::{AgentRun, ChatConversation, ChatConversationId};
+use crate::domain::entities::{
+    AgentRun, AgentRunId, AgentRunStatus, ChatConversation, ChatConversationId,
+};
 use crate::domain::repositories::AgentRunRepository;
 use crate::error::AppResult;
 
@@ -54,29 +56,13 @@ impl ContinuationRuntime {
             .or(self.logical_model.as_deref())
     }
 
+    #[cfg(test)]
     pub(super) fn compare_model_identity(&self, requested_model: &str) -> ModelIdentityComparison {
-        let requested_model = normalize_model_identity(requested_model);
-        let known_models = [
+        compare_model_identity_fields(
             self.logical_model.as_deref(),
             self.effective_model_id.as_deref(),
-        ]
-        .into_iter()
-        .flatten()
-        .filter(|model| !model.trim().is_empty())
-        .collect::<Vec<_>>();
-
-        if known_models.is_empty() {
-            return ModelIdentityComparison::Unknown;
-        }
-
-        if known_models
-            .into_iter()
-            .any(|model| normalize_model_identity(model) == requested_model)
-        {
-            ModelIdentityComparison::Same
-        } else {
-            ModelIdentityComparison::Changed
-        }
+            requested_model,
+        )
     }
 
     pub(super) fn apply_defaults(
@@ -118,6 +104,57 @@ impl ContinuationRuntime {
 
 fn normalize_model_identity(model: &str) -> String {
     model.trim().to_ascii_lowercase()
+}
+
+pub(super) fn compare_model_identity_fields(
+    logical_model: Option<&str>,
+    effective_model_id: Option<&str>,
+    requested_model: &str,
+) -> ModelIdentityComparison {
+    let requested_model = normalize_model_identity(requested_model);
+    let known_models = [logical_model, effective_model_id]
+        .into_iter()
+        .flatten()
+        .filter(|model| !model.trim().is_empty())
+        .collect::<Vec<_>>();
+
+    if known_models.is_empty() {
+        return ModelIdentityComparison::Unknown;
+    }
+
+    if known_models
+        .into_iter()
+        .any(|model| normalize_model_identity(model) == requested_model)
+    {
+        ModelIdentityComparison::Same
+    } else {
+        ModelIdentityComparison::Changed
+    }
+}
+
+/// Compares the requested model with the run that owns the interactive process.
+///
+/// A missing, terminal, or unattributed run is unknown. Completed-run history is
+/// deliberately not consulted because it is not evidence about the live process.
+pub(super) async fn compare_live_run_model_identity(
+    repository: &Arc<dyn AgentRunRepository>,
+    agent_run_id: &AgentRunId,
+    requested_model: &str,
+) -> AppResult<ModelIdentityComparison> {
+    let Some(run) = repository.get_by_id(agent_run_id).await? else {
+        return Ok(ModelIdentityComparison::Unknown);
+    };
+
+    match run.status {
+        AgentRunStatus::Running => Ok(compare_model_identity_fields(
+            run.logical_model.as_deref(),
+            run.effective_model_id.as_deref(),
+            requested_model,
+        )),
+        AgentRunStatus::Completed | AgentRunStatus::Failed | AgentRunStatus::Cancelled => {
+            Ok(ModelIdentityComparison::Unknown)
+        }
+    }
 }
 
 pub(super) async fn resolve_for_conversation(
