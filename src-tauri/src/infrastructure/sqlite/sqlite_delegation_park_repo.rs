@@ -368,7 +368,8 @@ impl DelegationParkRepository for SqliteDelegationParkRepo {
         self.db
             .run(move |conn| {
                 conn.execute(
-                    "UPDATE delegation_parks SET state = ?1, last_error = ?2, updated_at = ?3 WHERE id = ?4",
+                    "UPDATE delegation_parks SET state = ?1, last_error = ?2, updated_at = ?3
+                     WHERE id = ?4 AND state = 'waking'",
                     params![state.as_str(), error, updated_at, id],
                 )?;
                 Ok(())

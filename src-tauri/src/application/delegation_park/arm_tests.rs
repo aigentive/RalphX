@@ -187,7 +187,12 @@ async fn arm_rejects_an_unknown_job() {
     let harness = harness();
     let service = harness.service();
     let conversation = ChatConversationId::new();
-    let run = AgentRunId::new();
+    let run = harness
+        .runs
+        .create(AgentRun::new(conversation))
+        .await
+        .unwrap()
+        .id;
     let delegation =
         FakeDelegationJobs::running("job", &conversation, &run, Some(&AgentRunId::new()));
 

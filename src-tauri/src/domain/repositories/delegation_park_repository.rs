@@ -104,7 +104,8 @@ pub trait DelegationParkRepository: Send + Sync {
     /// Returns an error when the compare-and-swap cannot be persisted.
     async fn reset_wake_claim(&self, id: &DelegationParkId) -> AppResult<bool>;
 
-    /// Settle a park into its terminal state, optionally recording an error.
+    /// Settle a currently waking park into its terminal state, optionally recording an error.
+    /// A missing or already transitioned park is an idempotent no-op.
     ///
     /// # Errors
     ///

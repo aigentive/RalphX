@@ -61,6 +61,7 @@ impl DelegationJobSource for FakeDelegationJobs {
 pub(super) struct MemoryParkRepository {
     pub(super) parks: Mutex<Vec<DelegationPark>>,
     pub(super) claim_result: AtomicBool,
+    pub(super) fail_get: AtomicBool,
     pub(super) supersede_on_get: AtomicBool,
     pub(super) supersede_count: Mutex<usize>,
     pub(super) settled: Mutex<Vec<DelegationParkState>>,
@@ -80,6 +81,11 @@ impl DelegationParkRepository for MemoryParkRepository {
     }
 
     async fn get(&self, id: &DelegationParkId) -> AppResult<Option<DelegationPark>> {
+        if self.fail_get.load(Ordering::SeqCst) {
+            return Err(crate::error::AppError::Infrastructure(
+                "injected delegation park read failure".to_string(),
+            ));
+        }
         let mut parks = self.parks.lock().await;
         if self.supersede_on_get.swap(false, Ordering::SeqCst) {
             if let Some(park) = parks.iter_mut().find(|park| &park.id == id) {
@@ -251,17 +257,21 @@ impl DelegationParkRepository for MemoryParkRepository {
         state: DelegationParkState,
         error: Option<&str>,
     ) -> AppResult<()> {
+        let mut transitioned = false;
         if let Some(park) = self
             .parks
             .lock()
             .await
             .iter_mut()
-            .find(|park| &park.id == id)
+            .find(|park| &park.id == id && park.state == DelegationParkState::Waking)
         {
             park.state = state;
             park.last_error = error.map(str::to_string);
+            transitioned = true;
         }
-        self.settled.lock().await.push(state);
+        if transitioned {
+            self.settled.lock().await.push(state);
+        }
         Ok(())
     }
 
