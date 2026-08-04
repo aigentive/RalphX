@@ -3474,6 +3474,9 @@ async fn route_agent_workspace_pr_autofix_for_target(
                     ci_held = agent_workspace_repair_is_ci_held(&attempt);
                     base_stale_held = agent_workspace_repair_is_base_stale_held(&attempt);
                 }
+                if base_stale_held && (!merge_state_is_known || !observed_base_is_known) {
+                    return Ok(false);
+                }
                 let hold_active = health_suppressed || ci_held || base_stale_held;
                 if hold_active {
                     if let HealthHoldDisposition::BlockedStaleAfterUpdate { observed_base_oid } =
@@ -3517,6 +3520,39 @@ async fn route_agent_workspace_pr_autofix_for_target(
                         unreachable!("guarded by the disposition match above")
                     };
                     let project = project.expect("guarded by the project match above");
+                    let Some(branch_update_repo) = branch_update_repo.as_ref() else {
+                        return Ok(false);
+                    };
+                    let persisted_target = match validate_agent_workspace_repair_target_lease(
+                        branch_update_repo.as_ref(),
+                        &attempt,
+                    )
+                    .await
+                    {
+                        Ok(target) => target,
+                        Err(error) => {
+                            tracing::warn!(
+                                conversation_id = conversation_id.as_str(),
+                                pr_number = target.pr_number,
+                                attempt_id = attempt.id.as_str(),
+                                error = %error,
+                                "PR base update skipped because its durable target lease is not current"
+                            );
+                            return Ok(false);
+                        }
+                    };
+                    let observed_target =
+                        GitService::canonical_target_identity(working_dir, &workspace.branch_name)
+                            .await?;
+                    if observed_target != persisted_target {
+                        tracing::warn!(
+                            conversation_id = conversation_id.as_str(),
+                            pr_number = target.pr_number,
+                            attempt_id = attempt.id.as_str(),
+                            "PR base update skipped because the worktree no longer matches its durable target lease"
+                        );
+                        return Ok(false);
+                    }
                     let summary = format!(
                         "PR branch is behind {} at {}; RalphX reserved a base update before accepting more CI evidence.",
                         health.sync_state.base_ref_name, observed_base_oid
