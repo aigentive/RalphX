@@ -1,7 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { seedAutomationRuntimeVisualState } from "../../../fixtures/agents-automation-runtime.fixtures";
-import { setupApp } from "../../../fixtures/setup.fixtures";
+import {
+  dismissProviderCliUpdateToasts,
+  setupApp,
+} from "../../../fixtures/setup.fixtures";
 import { revealAgentInboxConversation } from "../../../helpers/agents-inbox.helpers";
 import {
   AgentsPublishPage,
@@ -1117,15 +1120,6 @@ async function expectPublishVisualAtWidths(
   snapshotName: string,
 ) {
   const standardViewport = page.viewportSize() ?? { width: 1280, height: 720 };
-  const providerCliUpdateDismiss = page.getByTestId(
-    "provider-cli-update-dismiss-button",
-  );
-  const dismissProviderCliUpdateToast = async () => {
-    if (await providerCliUpdateDismiss.isVisible().catch(() => false)) {
-      await providerCliUpdateDismiss.click();
-    }
-  };
-  await dismissProviderCliUpdateToast();
   await publishPage.expectNoPaneOverflow();
   await expect(page).toHaveScreenshot(`${snapshotName}.png`, {
     fullPage: false,
@@ -1133,7 +1127,6 @@ async function expectPublishVisualAtWidths(
   });
 
   await page.setViewportSize({ width: 960, height: standardViewport.height });
-  await dismissProviderCliUpdateToast();
   await publishPage.expectNoPaneOverflow();
   await expect(page).toHaveScreenshot(`${snapshotName}-constrained.png`, {
     fullPage: false,
@@ -1406,10 +1399,10 @@ test.describe("Agents View", () => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.emulateMedia({ reducedMotion: "reduce" });
     await page.addInitScript(() => {
-      window.localStorage.clear();
       delete window.__mockGitAuthDiagnostics;
       delete window.__mockGhAuthStatus;
     });
+    await dismissProviderCliUpdateToasts(page);
   });
 
   test("starter composer mode and action menus are separated", async ({ page }) => {
