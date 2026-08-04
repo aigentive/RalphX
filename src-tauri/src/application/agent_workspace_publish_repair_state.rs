@@ -24,9 +24,8 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentRunId, AgentWorkspaceRepairAttempt,
     AgentWorkspaceRepairCompletionAuthority, AgentWorkspaceRepairContinuation,
-    AgentWorkspaceRepairHoldReason, AgentWorkspaceRepairOutcome, AgentWorkspaceRepairPhase,
-    AgentWorkspaceRepairSource, AgentWorkspaceReviewGateStatus, ChatConversationId,
-    GitTargetIdentity, GitTargetLeaseOwner,
+    AgentWorkspaceRepairOutcome, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
+    AgentWorkspaceReviewGateStatus, ChatConversationId, GitTargetIdentity, GitTargetLeaseOwner,
 };
 use crate::domain::repositories::{
     AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, AgentConversationWorkspaceRepository,
@@ -69,13 +68,11 @@ pub(crate) const CONTINUATION_RECOVERY_FAILURE_REASON_PREFIX: &str =
 /// A deliberately small cap: transient runner failures must not create an unbounded CI loop.
 pub(crate) const MAX_AGENT_WORKSPACE_CI_RERUN_RETRIES: u32 = 3;
 pub(crate) const NEEDS_HUMAN_REPAIR_REASON: &str = "pr_autofix_needs_human";
-pub(crate) const PRE_EXISTING_ON_BASE_REPAIR_REASON: &str =
-    AgentWorkspaceRepairHoldReason::PreExistingOnBase.as_str();
+pub(crate) const PRE_EXISTING_ON_BASE_REPAIR_REASON: &str = "pr_autofix_pre_existing_on_base";
 /// Held because GitHub still reports the exact failure the previous generation was dispatched for.
 /// Distinct from `PRE_EXISTING_ON_BASE_REPAIR_REASON`: RalphX has not proven anything about the
 /// base branch, only that spending another agent generation on identical evidence is waste.
-pub(crate) const UNCHANGED_HEALTH_REPAIR_REASON: &str =
-    AgentWorkspaceRepairHoldReason::UnchangedHealth.as_str();
+pub(crate) const UNCHANGED_HEALTH_REPAIR_REASON: &str = "pr_autofix_unchanged_health";
 /// Held because the workflow run RalphX intends to rerun has not finished yet.
 pub(crate) const AWAITING_CI_REPAIR_REASON: &str = "pr_autofix_awaiting_ci";
 pub(crate) const REPAIR_FINGERPRINT_HOLD_STEP: &str = "repair_fingerprint_hold";
