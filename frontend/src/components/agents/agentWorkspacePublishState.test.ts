@@ -147,6 +147,7 @@ describe("maintenance operation presentation", () => {
     status: "active" as const,
     summary: "Resolving the base conflict",
     blocker: null,
+    holdReason: null,
     automaticContinuation: true,
     startedAt: "2026-07-25T10:00:00Z",
     updatedAt: "2026-07-25T10:01:00Z",
@@ -223,6 +224,48 @@ describe("maintenance operation presentation", () => {
       title: "Repair blocked",
       summary: "Resolve the protected branch policy.",
       action: "retry",
+    });
+  });
+
+  it("presents a health-held repair as backend-owned waiting, not ready to publish", () => {
+    const held = workspace({
+      maintenanceOperation: {
+        ...maintenanceOperation,
+        source: "pr_autofix",
+        stage: "ready",
+        status: "ready",
+        holdReason: "health_evidence",
+        automaticContinuation: false,
+      },
+    });
+
+    expect(canResumeAgentWorkspacePublish(held)).toBe(false);
+    expect(getAgentWorkspaceMaintenancePresentation(held)).toMatchObject({
+      title: "Holding — waiting for new CI evidence",
+      action: "none",
+      busy: false,
+      automaticContinuation: "RalphX will continue when the PR evidence changes.",
+    });
+  });
+
+  it("presents a reserved unpublished-head re-drive as automatic publishing", () => {
+    const redriving = workspace({
+      maintenanceOperation: {
+        ...maintenanceOperation,
+        source: "pr_autofix",
+        stage: "ready",
+        status: "ready",
+        holdReason: "publish_redrive",
+        automaticContinuation: false,
+      },
+    });
+
+    expect(canResumeAgentWorkspacePublish(redriving)).toBe(false);
+    expect(getAgentWorkspaceMaintenancePresentation(redriving)).toMatchObject({
+      title: "Pushing rebased branch…",
+      action: "none",
+      busy: true,
+      automaticContinuation: "RalphX is resuming publication automatically.",
     });
   });
 
@@ -339,7 +382,15 @@ const base = {
 };
 
 describe("isAgentWorkspacePublishActive", () => {
-  it.each(["checking", "committing", "refreshing", "describing", "pushing"])(
+  it.each([
+    "checking",
+    "committing",
+    "refreshing",
+    "describing",
+    "pushing",
+    "redrive_pending",
+    "redrive_delivering",
+  ])(
     "treats %s as an active publish status",
     (publicationPushStatus) => {
       expect(
