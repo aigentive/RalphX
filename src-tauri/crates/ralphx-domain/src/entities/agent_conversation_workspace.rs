@@ -116,7 +116,21 @@ pub enum AgentWorkspaceReviewMonitorStatus {
     Blocked,
 }
 
+pub const WORKSPACE_REVIEW_FIXER_STATUS_ROUTING: &str = "routing";
+pub const WORKSPACE_REVIEW_FIXER_STATUS_QUEUED: &str = "queued";
+pub const WORKSPACE_REVIEW_FIXER_STATUS_RUNNING: &str = "running";
 pub const WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED: &str = "cycle_capped";
+
+pub fn workspace_review_fixer_status_is_active(status: Option<&str>) -> bool {
+    matches!(
+        status,
+        Some(
+            WORKSPACE_REVIEW_FIXER_STATUS_ROUTING
+                | WORKSPACE_REVIEW_FIXER_STATUS_QUEUED
+                | WORKSPACE_REVIEW_FIXER_STATUS_RUNNING
+        )
+    )
+}
 
 /// Response-only classification of whether the current runtime owns Review mutations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

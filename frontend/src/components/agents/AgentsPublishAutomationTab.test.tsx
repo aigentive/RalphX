@@ -17,6 +17,16 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 function renderAutomationTab(
   workspace = conversationWorkspaceFixture({
     mode: "edit",
@@ -51,6 +61,7 @@ describe("AgentsPublishAutomationTab", () => {
       prAutoMergeCurrent: false,
       prSupervisionStatus: "disabled",
       publicationPrNumber: 78,
+      reviewAutomationOverride: true,
     });
     const settledWorkspace = {
       ...workspace,
@@ -58,6 +69,7 @@ describe("AgentsPublishAutomationTab", () => {
       prAutoMergeDesired: true,
       prAutoMergeCurrent: true,
       prSupervisionStatus: "monitoring" as const,
+      reviewAutomationOverride: null,
     };
 
     expect(
@@ -69,7 +81,9 @@ describe("AgentsPublishAutomationTab", () => {
           autoFixEnabled: false,
           autoMergeDesired: false,
         },
+        pendingReviewAutomation: { enabled: null },
         settledPrSupervisionWorkspace: settledWorkspace,
+        settledReviewAutomationWorkspace: settledWorkspace,
         isAutoPublishSaving: true,
         isPrSupervisionSaving: true,
       }),
@@ -80,9 +94,18 @@ describe("AgentsPublishAutomationTab", () => {
       prAutoMergeDesired: false,
       prAutoMergeCurrent: true,
       prSupervisionStatus: "monitoring",
+      reviewAutomationOverride: null,
       isAutoPublishSaving: true,
       isPrSupervisionSaving: true,
     });
+
+    expect(
+      deriveAgentsPublishAutomationSnapshot({
+        workspace,
+        hasPublishedPr: true,
+        settledReviewAutomationWorkspace: settledWorkspace,
+      }).reviewAutomationOverride,
+    ).toBeNull();
   });
 
   it("renders the existing controls as accessible WebKit-safe cards", async () => {
@@ -152,9 +175,10 @@ describe("AgentsPublishAutomationTab", () => {
     const workspace = conversationWorkspaceFixture({
       reviewAutomationOverride: true,
     });
+    const result = deferred<typeof workspace>();
     const mutation = vi
       .spyOn(chatApi, "setAgentConversationWorkspaceReviewAutomation")
-      .mockResolvedValue({ ...workspace, reviewAutomationOverride: null });
+      .mockReturnValue(result.promise);
     renderAutomationTab(workspace);
 
     await user.click(screen.getByRole("button", { name: "Inherit" }));
@@ -166,6 +190,18 @@ describe("AgentsPublishAutomationTab", () => {
       expect(mutation).toHaveBeenCalledWith(workspace.conversationId, {
         enabled: null,
       }),
+    );
+    expect(screen.getByText("Inherit", { selector: "button" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    result.resolve({ ...workspace, reviewAutomationOverride: null });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Inherit" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      ),
     );
   });
 
@@ -182,10 +218,16 @@ describe("AgentsPublishAutomationTab", () => {
 
     expect(hasActiveAgentsPublishAutomation(base)).toBe(false);
     expect(
-      hasActiveAgentsPublishAutomation({ ...base, reviewAutomationOverride: true }),
+      hasActiveAgentsPublishAutomation({
+        ...base,
+        reviewAutomationOverride: true,
+      }),
     ).toBe(true);
     expect(
-      hasActiveAgentsPublishAutomation({ ...base, reviewAutomationOverride: false }),
+      hasActiveAgentsPublishAutomation({
+        ...base,
+        reviewAutomationOverride: false,
+      }),
     ).toBe(false);
   });
 

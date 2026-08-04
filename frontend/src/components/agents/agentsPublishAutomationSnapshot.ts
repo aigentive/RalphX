@@ -77,10 +77,11 @@ export function deriveAgentsPublishAutomationSnapshot({
     settledPrSupervisionWorkspace?.prSupervisionStatus ??
     workspace.prSupervisionStatus ??
     null;
-  const reviewAutomationOverride =
-    pendingReviewAutomation?.enabled ??
-    settledReviewAutomationWorkspace?.reviewAutomationOverride ??
-    workspace.reviewAutomationOverride;
+  const reviewAutomationOverride = pendingReviewAutomation
+    ? pendingReviewAutomation.enabled
+    : settledReviewAutomationWorkspace
+      ? settledReviewAutomationWorkspace.reviewAutomationOverride
+      : workspace.reviewAutomationOverride;
 
   return {
     conversationId: workspace.conversationId,

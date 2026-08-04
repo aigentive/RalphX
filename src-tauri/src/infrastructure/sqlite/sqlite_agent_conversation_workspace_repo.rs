@@ -23,6 +23,8 @@ use crate::domain::entities::{
     AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest, ArtifactId,
     ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD, WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED,
+    WORKSPACE_REVIEW_FIXER_STATUS_QUEUED, WORKSPACE_REVIEW_FIXER_STATUS_ROUTING,
+    WORKSPACE_REVIEW_FIXER_STATUS_RUNNING,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
@@ -2674,9 +2676,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                                  ELSE review_fixer_attempt_id
                              END,
                              updated_at = ?2
-                         WHERE conversation_id = ?1
-                           AND (review_fixer_status IS NULL
-                                OR review_fixer_status NOT IN ('routing', 'queued', 'running'))",
+                         WHERE conversation_id = ?1",
                         rusqlite::params![
                             conversation_id,
                             now,
@@ -4213,7 +4213,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
             .run(move |conn| {
                 Ok(conn.execute(
                     "UPDATE agent_workspace_review_monitors
-                     SET review_fixer_status = 'routing',
+                     SET review_fixer_status = ?12,
                          review_fixer_attempt_id = ?10,
                          review_fixer_cycle_count = review_fixer_cycle_count + 1,
                          review_fixer_run_id = NULL,
@@ -4236,7 +4236,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                        AND current_plan_context_fingerprint IS ?9
                        AND reviewed_plan_context_fingerprint IS ?9
                        AND (review_fixer_status IS NULL
-                            OR review_fixer_status NOT IN ('routing', 'queued', 'running'))",
+                            OR review_fixer_status NOT IN (?12, ?13, ?14))",
                     rusqlite::params![
                         conversation_id,
                         target_scope,
@@ -4249,6 +4249,9 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         plan_context_fingerprint,
                         attempt_id,
                         claimed_at,
+                        WORKSPACE_REVIEW_FIXER_STATUS_ROUTING,
+                        WORKSPACE_REVIEW_FIXER_STATUS_QUEUED,
+                        WORKSPACE_REVIEW_FIXER_STATUS_RUNNING,
                     ],
                 )? == 1)
             })
@@ -4360,7 +4363,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                      WHERE conversation_id = ?1
                        AND ((?2 IS NULL AND review_fixer_attempt_id IS NULL)
                             OR review_fixer_attempt_id = ?2)
-                       AND review_fixer_status IN ('routing', 'queued', 'running')
+                       AND review_fixer_status IN (?5, ?6, ?7)
                        AND (current_target_scope IS NULL
                             OR reviewed_target_scope IS NULL
                             OR current_target_scope != reviewed_target_scope
@@ -4378,7 +4381,15 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                             OR review_requested_changes_artifact_version <= 0
                             OR review_blocking_fingerprint IS NULL
                             OR TRIM(review_blocking_fingerprint) = '')",
-                    rusqlite::params![conversation_id, expected_attempt_id, error, updated_at,],
+                    rusqlite::params![
+                        conversation_id,
+                        expected_attempt_id,
+                        error,
+                        updated_at,
+                        WORKSPACE_REVIEW_FIXER_STATUS_ROUTING,
+                        WORKSPACE_REVIEW_FIXER_STATUS_QUEUED,
+                        WORKSPACE_REVIEW_FIXER_STATUS_RUNNING,
+                    ],
                 )? == 1)
             })
             .await?;
@@ -4488,7 +4499,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                        AND review_requested_changes_artifact_version IS NOT NULL
                        AND review_requested_changes_artifact_version > 0
                        AND (review_fixer_status IS NULL
-                            OR review_fixer_status NOT IN ('routing', 'queued', 'running'))
+                            OR review_fixer_status NOT IN (?7, ?8, ?9))
                        AND EXISTS (
                            SELECT 1
                              FROM agent_conversation_workspaces workspace
@@ -4509,6 +4520,9 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         artifact_id,
                         artifact_version,
                         approved_at_value,
+                        WORKSPACE_REVIEW_FIXER_STATUS_ROUTING,
+                        WORKSPACE_REVIEW_FIXER_STATUS_QUEUED,
+                        WORKSPACE_REVIEW_FIXER_STATUS_RUNNING,
                     ],
                 )?;
                 if changed == 0 {
@@ -4566,10 +4580,17 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
             .run(move |conn| {
                 let mut stmt = conn.prepare(
                     "SELECT * FROM agent_workspace_review_monitors
-                     WHERE review_fixer_status IN ('routing', 'queued', 'running')
+                     WHERE review_fixer_status IN (?1, ?2, ?3)
                      ORDER BY updated_at DESC",
                 )?;
-                let rows = stmt.query_map([], row_to_workspace_review_monitor)?;
+                let rows = stmt.query_map(
+                    rusqlite::params![
+                        WORKSPACE_REVIEW_FIXER_STATUS_ROUTING,
+                        WORKSPACE_REVIEW_FIXER_STATUS_QUEUED,
+                        WORKSPACE_REVIEW_FIXER_STATUS_RUNNING,
+                    ],
+                    row_to_workspace_review_monitor,
+                )?;
                 let mut monitors = Vec::new();
                 for row in rows {
                     monitors.push(row?);
