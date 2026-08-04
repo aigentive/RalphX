@@ -171,24 +171,20 @@ async fn test_update_runtime_fields() {
     let repo = SqliteDelegatedSessionRepository::from_shared(db.shared_conn());
     let project_id = create_project(&db).await;
 
-    let session = DelegatedSession::new(
+    let mut session = DelegatedSession::new(
         project_id,
         "merge",
         "task-42",
         "ralphx-execution-merger",
         AgentHarnessKind::Codex,
     );
+    session.caller_conversation_id = Some("original-caller".to_string());
     let id = session.id.clone();
     repo.create(session).await.unwrap();
 
-    repo.update_job_identity(
-        &id,
-        Some("caller-conversation".to_string()),
-        "job-42".to_string(),
-        Some("parent-run-42".to_string()),
-    )
-    .await
-    .unwrap();
+    repo.update_job_identity(&id, "job-42".to_string(), Some("parent-run-42".to_string()))
+        .await
+        .unwrap();
     repo.update_provider_session_id(&id, Some("provider-42".to_string()))
         .await
         .unwrap();
@@ -201,7 +197,7 @@ async fn test_update_runtime_fields() {
     assert_eq!(found.parent_agent_run_id.as_deref(), Some("parent-run-42"));
     assert_eq!(
         found.caller_conversation_id.as_deref(),
-        Some("caller-conversation")
+        Some("original-caller")
     );
     assert_eq!(found.provider_session_id.as_deref(), Some("provider-42"));
     assert_eq!(found.status, "completed");

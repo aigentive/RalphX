@@ -106,19 +106,19 @@ async fn test_list_active_by_caller_conversation_excludes_terminal_sessions() {
 #[tokio::test]
 async fn test_update_runtime_fields() {
     let repo = MemoryDelegatedSessionRepository::new();
-    let session = DelegatedSession::new(
+    let mut session = DelegatedSession::new(
         ProjectId::from_string("project-1".to_string()),
         "task_execution",
         "task-1",
         "ralphx-execution-coder",
         AgentHarnessKind::Codex,
     );
+    session.caller_conversation_id = Some("original-caller".to_string());
     let id = session.id.clone();
     repo.create(session).await.unwrap();
 
     repo.update_job_identity(
         &id,
-        Some("caller-conversation".to_string()),
         "job-123".to_string(),
         Some("parent-run-123".to_string()),
     )
@@ -136,7 +136,7 @@ async fn test_update_runtime_fields() {
     assert_eq!(found.parent_agent_run_id.as_deref(), Some("parent-run-123"));
     assert_eq!(
         found.caller_conversation_id.as_deref(),
-        Some("caller-conversation")
+        Some("original-caller")
     );
     assert_eq!(found.provider_session_id.as_deref(), Some("provider-123"));
     assert_eq!(found.status, "completed");

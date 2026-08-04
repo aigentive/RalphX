@@ -86,13 +86,11 @@ impl DelegatedSessionRepository for MemoryDelegatedSessionRepository {
     async fn update_job_identity(
         &self,
         id: &DelegatedSessionId,
-        caller_conversation_id: Option<String>,
         job_id: String,
         parent_agent_run_id: Option<String>,
     ) -> AppResult<()> {
         let mut sessions = self.sessions.write().unwrap();
         if let Some(session) = sessions.iter_mut().find(|session| session.id == *id) {
-            session.caller_conversation_id = caller_conversation_id;
             session.job_id = Some(job_id);
             session.parent_agent_run_id = parent_agent_run_id;
             session.updated_at = Utc::now();

@@ -206,7 +206,6 @@ impl DelegatedSessionRepository for SqliteDelegatedSessionRepository {
     async fn update_job_identity(
         &self,
         id: &DelegatedSessionId,
-        caller_conversation_id: Option<String>,
         job_id: String,
         parent_agent_run_id: Option<String>,
     ) -> AppResult<()> {
@@ -215,11 +214,9 @@ impl DelegatedSessionRepository for SqliteDelegatedSessionRepository {
             .run(move |conn| {
                 conn.execute(
                     "UPDATE delegated_sessions
-                     SET caller_conversation_id = ?1, job_id = ?2, parent_agent_run_id = ?3,
-                         updated_at = ?4
-                     WHERE id = ?5",
+                     SET job_id = ?1, parent_agent_run_id = ?2, updated_at = ?3
+                     WHERE id = ?4",
                     rusqlite::params![
-                        caller_conversation_id,
                         job_id,
                         parent_agent_run_id,
                         Utc::now().to_rfc3339(),

@@ -24,7 +24,6 @@ pub trait DelegatedSessionRepository: Send + Sync {
     async fn update_job_identity(
         &self,
         id: &DelegatedSessionId,
-        caller_conversation_id: Option<String>,
         job_id: String,
         parent_agent_run_id: Option<String>,
     ) -> AppResult<()>;

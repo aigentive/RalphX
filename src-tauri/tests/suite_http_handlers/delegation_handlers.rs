@@ -214,12 +214,11 @@ impl DelegatedSessionRepository for CompleteSessionOnThirdReadDelegatedSessionRe
     async fn update_job_identity(
         &self,
         id: &DelegatedSessionId,
-        caller_conversation_id: Option<String>,
         job_id: String,
         parent_agent_run_id: Option<String>,
     ) -> AppResult<()> {
         self.inner
-            .update_job_identity(id, caller_conversation_id, job_id, parent_agent_run_id)
+            .update_job_identity(id, job_id, parent_agent_run_id)
             .await
     }
 
@@ -278,12 +277,11 @@ impl DelegatedSessionRepository for RemoveWorkspaceOnRunningDelegatedSessionRepo
     async fn update_job_identity(
         &self,
         id: &DelegatedSessionId,
-        caller_conversation_id: Option<String>,
         job_id: String,
         parent_agent_run_id: Option<String>,
     ) -> AppResult<()> {
         self.inner
-            .update_job_identity(id, caller_conversation_id, job_id, parent_agent_run_id)
+            .update_job_identity(id, job_id, parent_agent_run_id)
             .await
     }
 
@@ -4403,9 +4401,9 @@ async fn delegate_start_reuses_delegated_session_created_under_the_legacy_anchor
         refreshed.parent_agent_run_id.as_deref(),
         Some(review_run.id.as_str().as_str())
     );
-    assert_eq!(
-        refreshed.caller_conversation_id.as_deref(),
-        Some(review_conversation.id.as_str().as_str())
+    assert!(
+        refreshed.caller_conversation_id.is_none(),
+        "reuse must preserve the legacy session's original caller authority"
     );
 }
 
