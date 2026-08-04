@@ -91,17 +91,16 @@ async fn session_recovery_provider_decision(
     };
 
     crate::application::ensure_provider_spawn_enabled(
-        &provider_repo,
+        provider_repo,
         recovery_harness,
         "session_recovery",
     )
     .await
     .map_err(SessionRecoveryProviderBlock::Disabled)?;
 
-    let provider_env =
-        provider_env_for_harness(&Some(Arc::clone(&provider_repo)), recovery_harness)
-            .await
-            .map_err(|error| SessionRecoveryProviderBlock::Env(error.to_string()))?;
+    let provider_env = provider_env_for_harness(&Some(Arc::clone(provider_repo)), recovery_harness)
+        .await
+        .map_err(|error| SessionRecoveryProviderBlock::Env(error.to_string()))?;
 
     Ok(SessionRecoveryProviderDecision::ApplyEnv(provider_env))
 }
@@ -483,7 +482,7 @@ pub(crate) async fn attempt_session_recovery(
         entity_status.as_deref(),
         _resolved_project_id.as_deref(),
         &spawn_context.folder_roots,
-        app_data_dir.as_deref().map(std::path::PathBuf::as_path),
+        app_data_dir.map(std::path::PathBuf::as_path),
         chat_attachment_repo,
         artifact_repo,
         agent_lane_settings_repo,

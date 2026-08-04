@@ -192,7 +192,7 @@ pub(super) async fn queue_provider_decision(
         };
     };
 
-    crate::application::ensure_provider_spawn_enabled(&provider_repo, harness, "queue_resume")
+    crate::application::ensure_provider_spawn_enabled(provider_repo, harness, "queue_resume")
         .await
         .map_err(QueueProviderBlock::Disabled)?;
 

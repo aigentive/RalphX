@@ -542,7 +542,7 @@ async fn retry_merge_inner(
         "Retry merge accepted, spawning background execution"
     );
 
-    let runtime_deps = RuntimeFactoryDeps::from_app_state(&app_state);
+    let runtime_deps = RuntimeFactoryDeps::from_app_state(app_state);
     let execution_state_clone = Arc::clone(&execution_state);
     let task_id_for_spawn = task_id_parsed.clone();
 
