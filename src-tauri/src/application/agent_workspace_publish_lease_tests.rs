@@ -120,3 +120,34 @@ async fn stop_heartbeat_only_removes_its_matching_token() {
         Some("current-token")
     ));
 }
+
+#[tokio::test]
+async fn concurrent_operation_scopes_keep_their_own_heartbeats() {
+    let state = AppState::new_test();
+    let conversation_id =
+        ChatConversationId::from_string("66666666-6666-6666-6666-666666666666".to_string());
+    let first_operation = begin_publish_operation_scope(&conversation_id);
+    let second_operation = begin_publish_operation_scope(&conversation_id);
+
+    spawn_publish_operation_lease_heartbeat_for_scope(
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        conversation_id.clone(),
+        "first-token".to_string(),
+        &first_operation,
+    );
+    spawn_publish_operation_lease_heartbeat_for_scope(
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        conversation_id.clone(),
+        "second-token".to_string(),
+        &second_operation,
+    );
+
+    assert!(publish_operation_lease_is_live(
+        &conversation_id,
+        Some("first-token")
+    ));
+    assert!(publish_operation_lease_is_live(
+        &conversation_id,
+        Some("second-token")
+    ));
+}

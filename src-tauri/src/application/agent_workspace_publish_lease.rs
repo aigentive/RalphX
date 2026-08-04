@@ -52,10 +52,8 @@ pub(crate) fn publish_operation_lease_token_for_scope(
     if operation_scope.conversation_key != conversation_id.as_str() {
         return None;
     }
-    let conversation_key = conversation_id.as_str();
     publish_operation_lease_heartbeats()
-        .get(&conversation_key)
-        .filter(|heartbeat| heartbeat.operation_id == operation_scope.operation_id)
+        .get(&operation_scope.scope_key())
         .map(|heartbeat| heartbeat.token.clone())
 }
 
@@ -82,13 +80,13 @@ pub(crate) fn publish_operation_lease_is_live(
         return false;
     };
     let conversation_key = conversation_id.as_str().to_string();
-    let Some(current) = publish_operation_lease_heartbeats().get(&conversation_key) else {
-        return false;
-    };
-    current.value().token == token
-        && publish_operation_scopes()
-            .get(&(conversation_key, current.value().operation_id.clone()))
-            .is_some_and(|count| *count > 0)
+    publish_operation_lease_heartbeats().iter().any(|entry| {
+        entry.key().0 == conversation_key
+            && entry.value().token == token
+            && publish_operation_scopes()
+                .get(entry.key())
+                .is_some_and(|count| *count > 0)
+    })
 }
 
 #[cfg(test)]
@@ -148,21 +146,19 @@ fn spawn_publish_operation_lease_heartbeat_for_operation(
     token: String,
     operation_id: String,
 ) {
-    let conversation_key = conversation_id.as_str().to_string();
-    match publish_operation_lease_heartbeats().entry(conversation_key.clone()) {
+    let heartbeat_key = (conversation_id.as_str().to_string(), operation_id.clone());
+    match publish_operation_lease_heartbeats().entry(heartbeat_key.clone()) {
         dashmap::mapref::entry::Entry::Occupied(mut entry) => {
-            if entry.get().token == token && entry.get().operation_id == operation_id {
+            if entry.get().token == token {
                 return;
             }
             entry.insert(PublishOperationLeaseHeartbeat {
                 token: token.clone(),
-                operation_id: operation_id.clone(),
             });
         }
         dashmap::mapref::entry::Entry::Vacant(entry) => {
             entry.insert(PublishOperationLeaseHeartbeat {
                 token: token.clone(),
-                operation_id: operation_id.clone(),
             });
         }
     }
@@ -193,12 +189,10 @@ fn spawn_publish_operation_lease_heartbeat_for_operation(
             }
         }
         let should_remove = publish_operation_lease_heartbeats()
-            .get(&conversation_key)
-            .is_some_and(|current| {
-                current.value().token == token && current.value().operation_id == operation_id
-            });
+            .get(&heartbeat_key)
+            .is_some_and(|current| current.value().token == token);
         if should_remove {
-            publish_operation_lease_heartbeats().remove(&conversation_key);
+            publish_operation_lease_heartbeats().remove(&heartbeat_key);
         }
     });
 }
@@ -207,22 +201,21 @@ pub(crate) fn stop_publish_operation_lease_heartbeat(
     conversation_id: &ChatConversationId,
     token: &str,
 ) {
-    publish_operation_lease_heartbeats()
-        .remove_if(&conversation_id.as_str().to_string(), |_, current| {
-            current.token == token
-        });
+    publish_operation_lease_heartbeats().retain(|(conversation_key, _), current| {
+        conversation_key.as_str() != conversation_id.as_str() || current.token != token
+    });
 }
 
 type PublishOperationScopeKey = (String, String);
 
 struct PublishOperationLeaseHeartbeat {
     token: String,
-    operation_id: String,
 }
 
-fn publish_operation_lease_heartbeats() -> &'static DashMap<String, PublishOperationLeaseHeartbeat>
-{
-    static HEARTBEATS: OnceLock<DashMap<String, PublishOperationLeaseHeartbeat>> = OnceLock::new();
+fn publish_operation_lease_heartbeats(
+) -> &'static DashMap<PublishOperationScopeKey, PublishOperationLeaseHeartbeat> {
+    static HEARTBEATS: OnceLock<DashMap<PublishOperationScopeKey, PublishOperationLeaseHeartbeat>> =
+        OnceLock::new();
     HEARTBEATS.get_or_init(DashMap::new)
 }
 
