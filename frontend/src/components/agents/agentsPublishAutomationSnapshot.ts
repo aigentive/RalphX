@@ -9,16 +9,22 @@ type PrSupervisionMutationInput = {
   autoMergeDesired: boolean;
 };
 
+type ReviewAutomationMutationInput = {
+  enabled: boolean | null;
+};
+
 export interface AgentsPublishAutomationSnapshot {
   conversationId: string;
   autoPublishEnabled: boolean;
   canRunPrSupervisionAutomation: boolean;
   isAutoPublishSaving: boolean;
   isPrSupervisionSaving: boolean;
+  isReviewAutomationSaving: boolean;
   prAutofixEnabled: boolean;
   prAutoMergeCurrent: boolean | null;
   prAutoMergeDesired: boolean;
   prSupervisionStatus: string | null;
+  reviewAutomationOverride: boolean | null;
 }
 
 export function deriveAgentsPublishAutomationSnapshot({
@@ -26,17 +32,23 @@ export function deriveAgentsPublishAutomationSnapshot({
   hasPublishedPr,
   pendingAutoPublish = null,
   pendingPrSupervision = null,
+  pendingReviewAutomation = null,
   settledPrSupervisionWorkspace = null,
+  settledReviewAutomationWorkspace = null,
   isAutoPublishSaving = false,
   isPrSupervisionSaving = false,
+  isReviewAutomationSaving = false,
 }: {
   workspace: AgentConversationWorkspace;
   hasPublishedPr: boolean;
   pendingAutoPublish?: AutoPublishMutationInput | null;
   pendingPrSupervision?: PrSupervisionMutationInput | null;
+  pendingReviewAutomation?: ReviewAutomationMutationInput | null;
   settledPrSupervisionWorkspace?: AgentConversationWorkspace | null;
+  settledReviewAutomationWorkspace?: AgentConversationWorkspace | null;
   isAutoPublishSaving?: boolean;
   isPrSupervisionSaving?: boolean;
+  isReviewAutomationSaving?: boolean;
 }): AgentsPublishAutomationSnapshot {
   const storedAutoPublishEnabled = workspace.autoPublishEnabled ?? true;
   const initialAutoPublishEnabled =
@@ -65,6 +77,11 @@ export function deriveAgentsPublishAutomationSnapshot({
     settledPrSupervisionWorkspace?.prSupervisionStatus ??
     workspace.prSupervisionStatus ??
     null;
+  const reviewAutomationOverride = pendingReviewAutomation
+    ? pendingReviewAutomation.enabled
+    : settledReviewAutomationWorkspace
+      ? settledReviewAutomationWorkspace.reviewAutomationOverride
+      : workspace.reviewAutomationOverride;
 
   return {
     conversationId: workspace.conversationId,
@@ -72,9 +89,22 @@ export function deriveAgentsPublishAutomationSnapshot({
     canRunPrSupervisionAutomation,
     isAutoPublishSaving,
     isPrSupervisionSaving,
+    isReviewAutomationSaving,
     prAutofixEnabled,
     prAutoMergeCurrent,
     prAutoMergeDesired,
     prSupervisionStatus,
+    reviewAutomationOverride,
   };
+}
+
+export function hasActiveAgentsPublishAutomation(
+  snapshot: AgentsPublishAutomationSnapshot,
+): boolean {
+  return (
+    snapshot.autoPublishEnabled ||
+    snapshot.prAutofixEnabled ||
+    snapshot.prAutoMergeDesired ||
+    snapshot.reviewAutomationOverride === true
+  );
 }

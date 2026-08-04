@@ -30,7 +30,7 @@ fn default_workspace_review_fixer_cycle_cap() -> i64 {
 /// - Whether to auto-create fix tasks
 /// - Human review requirements
 /// - Max fix attempts before giving up
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewSettings {
     /// Master toggle for AI review system
     /// Default: true
@@ -83,6 +83,12 @@ pub struct ReviewSettings {
     pub auto_create_followup_agent_conversation: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EffectiveWorkspaceReviewAutomation {
+    pub autofix_blocking_findings: bool,
+    pub auto_review: bool,
+}
+
 impl Default for ReviewSettings {
     fn default() -> Self {
         Self {
@@ -102,6 +108,17 @@ impl Default for ReviewSettings {
 }
 
 impl ReviewSettings {
+    pub fn effective_workspace_review_automation(
+        &self,
+        workspace_override: Option<bool>,
+    ) -> EffectiveWorkspaceReviewAutomation {
+        EffectiveWorkspaceReviewAutomation {
+            autofix_blocking_findings: workspace_override
+                .unwrap_or(self.autofix_workspace_review_blocking_findings),
+            auto_review: workspace_override.unwrap_or(self.require_workspace_review),
+        }
+    }
+
     /// Create review settings with AI review disabled
     pub fn ai_disabled() -> Self {
         Self {

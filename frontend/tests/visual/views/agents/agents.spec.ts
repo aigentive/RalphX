@@ -1,7 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { seedAutomationRuntimeVisualState } from "../../../fixtures/agents-automation-runtime.fixtures";
-import { setupApp } from "../../../fixtures/setup.fixtures";
+import {
+  dismissProviderCliUpdateToasts,
+  setupApp,
+} from "../../../fixtures/setup.fixtures";
 import { revealAgentInboxConversation } from "../../../helpers/agents-inbox.helpers";
 import {
   AgentsPublishPage,
@@ -1396,8 +1399,10 @@ test.describe("Agents View", () => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.emulateMedia({ reducedMotion: "reduce" });
     await page.addInitScript(() => {
-      window.localStorage.clear();
+      delete window.__mockGitAuthDiagnostics;
+      delete window.__mockGhAuthStatus;
     });
+    await dismissProviderCliUpdateToasts(page);
   });
 
   test("starter composer mode and action menus are separated", async ({ page }) => {
@@ -1619,6 +1624,9 @@ test.describe("Agents View", () => {
           workspaceReviewVisualLabels[reviewState],
           { exact: true },
         ),
+      ).toBeVisible();
+      await expect(
+        publishPage.reviewContent.getByTestId("agents-review-auto-review-fix"),
       ).toBeVisible();
       await publishPage.expectPrimaryActionContained(
         reviewState === "running"

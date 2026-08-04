@@ -1,7 +1,8 @@
 use chrono::Utc;
 
 use crate::domain::entities::{
-    is_publication_push_active, AgentConversationWorkspace, AgentWorkspaceReviewApprovalSnapshot,
+    is_publication_push_active, workspace_review_fixer_status_is_active,
+    AgentConversationWorkspace, AgentWorkspaceReviewApprovalSnapshot,
     AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
     AgentWorkspaceReviewOutcome,
 };
@@ -48,10 +49,8 @@ pub async fn approve_agent_workspace_review_anyway(
                     .to_string(),
             )
         })?;
-    let fixer_active = matches!(
-        monitor.review_fixer_status.as_deref(),
-        Some("routing" | "queued" | "running")
-    );
+    let fixer_active =
+        workspace_review_fixer_status_is_active(monitor.review_fixer_status.as_deref());
     let artifact_current = monitor.is_current_for_target(
         target.scope,
         target.head_sha.as_deref(),

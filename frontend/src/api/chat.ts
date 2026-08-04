@@ -1894,6 +1894,7 @@ export const chatApi = {
   commitAgentConversationWorkspaceLocally,
   setAgentConversationWorkspaceAutoPublish,
   setAgentConversationWorkspacePrSupervision,
+  setAgentConversationWorkspaceReviewAutomation,
   closeAgentWorkspacePr,
   getAgentWorkspacePrReviewContext,
   setAgentWorkspacePrReviewAutoApprove,
@@ -2161,6 +2162,7 @@ export interface AgentConversationWorkspace {
   prSupervisionStatus?: string | null;
   prSupervisionSummary?: string | null;
   prSupervisionUpdatedAt?: string | null;
+  reviewAutomationOverride: boolean | null;
   status: string;
   createdAt: string;
   updatedAt: string;
@@ -2352,6 +2354,10 @@ export interface SetAgentConversationWorkspacePrSupervisionInput {
 
 export interface SetAgentConversationWorkspaceAutoPublishInput {
   autoPublishEnabled: boolean;
+}
+
+export interface SetAgentConversationWorkspaceReviewAutomationInput {
+  enabled: boolean | null;
 }
 
 export type AgentWorkspacePrReviewMonitorStatus =
@@ -2777,6 +2783,7 @@ export const AgentConversationWorkspaceResponseSchema = z.object({
   pr_supervision_status: z.string().nullable().optional().default(null),
   pr_supervision_summary: z.string().nullable().optional().default(null),
   pr_supervision_updated_at: z.string().nullable().optional().default(null),
+  review_automation_override: z.boolean().nullable().optional().default(null),
   status: z.string(),
   created_at: z.string(),
   updated_at: z.string(),
@@ -3375,6 +3382,7 @@ function transformAgentConversationWorkspace(
     prSupervisionStatus: raw.pr_supervision_status,
     prSupervisionSummary: raw.pr_supervision_summary,
     prSupervisionUpdatedAt: raw.pr_supervision_updated_at,
+    reviewAutomationOverride: raw.review_automation_override,
     status: raw.status,
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,
@@ -4059,6 +4067,7 @@ export async function startAgentWorkspaceReview(
     force?: boolean;
     confirmation?: AgentWorkspaceReviewStartConfirmation;
     runtimeOverride?: ManualRoleRuntimeSelection;
+    enableReviewAutomation?: boolean;
   } = {},
 ): Promise<StartAgentWorkspaceReviewResult> {
   const raw = await fetchAgentWorkspaceJson(
@@ -4069,6 +4078,9 @@ export async function startAgentWorkspaceReview(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         force: options.force ?? false,
+        ...(options.enableReviewAutomation !== undefined
+          ? { enable_review_automation: options.enableReviewAutomation }
+          : {}),
         confirmation: options.confirmation
           ? {
               target_scope: options.confirmation.targetScope,
@@ -4573,6 +4585,21 @@ export async function setAgentConversationWorkspaceAutoPublish(
       input: {
         autoPublishEnabled: input.autoPublishEnabled,
       },
+    },
+    AgentConversationWorkspaceResponseSchema,
+  );
+  return transformAgentConversationWorkspace(raw);
+}
+
+export async function setAgentConversationWorkspaceReviewAutomation(
+  conversationId: string,
+  input: SetAgentConversationWorkspaceReviewAutomationInput,
+): Promise<AgentConversationWorkspace> {
+  const raw = await typedInvoke(
+    "set_agent_conversation_workspace_review_automation",
+    {
+      conversationId,
+      input: { enabled: input.enabled },
     },
     AgentConversationWorkspaceResponseSchema,
   );

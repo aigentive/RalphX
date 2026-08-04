@@ -1372,6 +1372,15 @@ impl AgentConversationWorkspaceRepository for ControlledWorkspaceRepo {
     ) -> AppResult<()> {
         Ok(())
     }
+    async fn set_review_automation_override(
+        &self,
+        conversation_id: &ChatConversationId,
+        value: Option<bool>,
+    ) -> AppResult<()> {
+        self.inner
+            .set_review_automation_override(conversation_id, value)
+            .await
+    }
     async fn create_or_update(
         &self,
         workspace: AgentConversationWorkspace,
