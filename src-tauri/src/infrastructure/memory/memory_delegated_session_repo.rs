@@ -61,6 +61,45 @@ impl DelegatedSessionRepository for MemoryDelegatedSessionRepository {
         Ok(sessions)
     }
 
+    async fn list_active_by_caller_conversation(
+        &self,
+        caller_conversation_id: &str,
+    ) -> AppResult<Vec<DelegatedSession>> {
+        let mut sessions: Vec<_> = self
+            .sessions
+            .read()
+            .unwrap()
+            .iter()
+            .filter(|session| {
+                session.caller_conversation_id.as_deref() == Some(caller_conversation_id)
+                    && !matches!(
+                        session.status.as_str(),
+                        "completed" | "failed" | "cancelled"
+                    )
+            })
+            .cloned()
+            .collect();
+        sessions.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+        Ok(sessions)
+    }
+
+    async fn update_job_identity(
+        &self,
+        id: &DelegatedSessionId,
+        caller_conversation_id: Option<String>,
+        job_id: String,
+        parent_agent_run_id: Option<String>,
+    ) -> AppResult<()> {
+        let mut sessions = self.sessions.write().unwrap();
+        if let Some(session) = sessions.iter_mut().find(|session| session.id == *id) {
+            session.caller_conversation_id = caller_conversation_id;
+            session.job_id = Some(job_id);
+            session.parent_agent_run_id = parent_agent_run_id;
+            session.updated_at = Utc::now();
+        }
+        Ok(())
+    }
+
     async fn update_provider_session_id(
         &self,
         id: &DelegatedSessionId,

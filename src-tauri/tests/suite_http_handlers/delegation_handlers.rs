@@ -202,6 +202,27 @@ impl DelegatedSessionRepository for CompleteSessionOnThirdReadDelegatedSessionRe
             .await
     }
 
+    async fn list_active_by_caller_conversation(
+        &self,
+        caller_conversation_id: &str,
+    ) -> AppResult<Vec<DelegatedSession>> {
+        self.inner
+            .list_active_by_caller_conversation(caller_conversation_id)
+            .await
+    }
+
+    async fn update_job_identity(
+        &self,
+        id: &DelegatedSessionId,
+        caller_conversation_id: Option<String>,
+        job_id: String,
+        parent_agent_run_id: Option<String>,
+    ) -> AppResult<()> {
+        self.inner
+            .update_job_identity(id, caller_conversation_id, job_id, parent_agent_run_id)
+            .await
+    }
+
     async fn update_provider_session_id(
         &self,
         id: &DelegatedSessionId,
@@ -242,6 +263,27 @@ impl DelegatedSessionRepository for RemoveWorkspaceOnRunningDelegatedSessionRepo
     ) -> AppResult<Vec<DelegatedSession>> {
         self.inner
             .get_by_parent_context(parent_context_type, parent_context_id)
+            .await
+    }
+
+    async fn list_active_by_caller_conversation(
+        &self,
+        caller_conversation_id: &str,
+    ) -> AppResult<Vec<DelegatedSession>> {
+        self.inner
+            .list_active_by_caller_conversation(caller_conversation_id)
+            .await
+    }
+
+    async fn update_job_identity(
+        &self,
+        id: &DelegatedSessionId,
+        caller_conversation_id: Option<String>,
+        job_id: String,
+        parent_agent_run_id: Option<String>,
+    ) -> AppResult<()> {
+        self.inner
+            .update_job_identity(id, caller_conversation_id, job_id, parent_agent_run_id)
             .await
     }
 
@@ -1624,7 +1666,8 @@ async fn native_delegation_launcher_does_not_create_http_delegation_job_state() 
                 ideation_verification: false,
             },
             inherit_context: false,
-            caller_agent_run_id: None,
+            job_id: Some("persisted-delegation-job".to_string()),
+            caller_agent_run_id: Some("persisted-parent-run".to_string()),
             target_agent_name: "ralphx-general-explorer".to_string(),
             reusable_delegated_session: None,
             task_ref: None,
@@ -1660,6 +1703,14 @@ async fn native_delegation_launcher_does_not_create_http_delegation_job_state() 
     assert_eq!(
         persisted_session.caller_conversation_id.as_deref(),
         Some(parent_conversation.id.as_str().as_str())
+    );
+    assert_eq!(
+        persisted_session.job_id.as_deref(),
+        Some("persisted-delegation-job")
+    );
+    assert_eq!(
+        persisted_session.parent_agent_run_id.as_deref(),
+        Some("persisted-parent-run")
     );
 }
 
@@ -4340,6 +4391,22 @@ async fn delegate_start_reuses_delegated_session_created_under_the_legacy_anchor
     .0;
 
     assert_eq!(started.delegated_session_id, legacy_delegated.id.as_str());
+    let refreshed = state
+        .app_state
+        .delegated_session_repo
+        .get_by_id(&legacy_delegated.id)
+        .await
+        .expect("read reused delegated session")
+        .expect("reused delegated session should remain present");
+    assert_eq!(refreshed.job_id.as_deref(), Some(started.job_id.as_str()));
+    assert_eq!(
+        refreshed.parent_agent_run_id.as_deref(),
+        Some(review_run.id.as_str().as_str())
+    );
+    assert_eq!(
+        refreshed.caller_conversation_id.as_deref(),
+        Some(review_conversation.id.as_str().as_str())
+    );
 }
 
 #[tokio::test]

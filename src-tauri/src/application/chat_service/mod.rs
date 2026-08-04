@@ -12,7 +12,7 @@
 // - ExecutionChatService (task_execution context)
 
 mod chat_service_composer_references;
-pub(crate) use chat_service_composer_references::MAX_ARTIFACT_REFERENCES;
+pub(crate) use chat_service_composer_references::{escape_attr, MAX_ARTIFACT_REFERENCES};
 pub(crate) mod chat_service_context;
 mod chat_service_errors;
 mod chat_service_folder_reference_metadata;
@@ -61,6 +61,11 @@ use crate::application::agent_conversation_workspace::{
     AGENT_CONVERSATION_WORKSPACE_CONTINUATION_MESSAGE,
 };
 use crate::application::agent_workspace_continuation::classify_agent_workspace_continuation_with_plan_branch;
+use crate::application::agent_runtime_context::{
+    branch_status::BranchStatusCache,
+    compose_agent_runtime_context, linked_plan_snapshot_resolver_from_app_state,
+    AgentRuntimeContextDeps, AgentRuntimeContextScope, LinkedPlanSnapshotResolver,
+};
 use crate::application::harness_runtime_registry::{
     default_harness_runtime_available, resolve_chat_service_bootstrap,
     resolve_default_chat_service_bootstrap, resolve_harness_plugin_dir,
@@ -68,6 +73,7 @@ use crate::application::harness_runtime_registry::{
 use crate::application::integration_reference_expansion::{
     expand_integration_references_for_prompt, log_skipped_integration_references,
 };
+use crate::application::delegation_park::DelegationParkService;
 use crate::application::interactive_process_registry::{
     InteractiveProcess, InteractiveProcessKey, InteractiveProcessMetadata,
     InteractiveProcessRegistry, InteractiveProcessToken, InteractiveProcessWriteError,
@@ -101,7 +107,7 @@ use crate::domain::entities::{
 use crate::domain::repositories::{
     ActivityEventRepository, AgentConversationGranolaNoteRepository,
     AgentConversationJiraIssueRepository, AgentConversationLinearIssueRepository,
-    AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
+    AgentConversationWorkspaceRepository, AgentLaneSettingsRepository, AgentTaskRepository,
     AgentProviderSettingsRepository, AgentRunRepository, ArtifactRepository,
     BranchUpdateRepository, ChatAttachmentRepository, ChatConversationRepository,
     ChatMessageRepository, ChatTimelineRepository, ConversationFolderReferenceRepository,
@@ -1658,6 +1664,7 @@ pub struct AppChatService<R: Runtime = tauri::Wry> {
     task_repo: Arc<dyn TaskRepository>,
     task_dependency_repo: Arc<dyn TaskDependencyRepository>,
     delegated_session_repo: Arc<dyn DelegatedSessionRepository>,
+    agent_runtime_context_deps: AgentRuntimeContextDeps,
     delegation_park_repo: Option<Arc<dyn DelegationParkRepository>>,
     execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
     agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
@@ -1772,6 +1779,60 @@ fn merge_conversation_integration_references(
         .collect()
 }
 
+async fn compose_agent_runtime_context_from_app_state(
+    state: &AppState,
+    conversation: &ChatConversation,
+    context_type: ChatContextType,
+    entity_status: Option<&str>,
+    project_id: Option<&str>,
+    working_directory: &Path,
+) -> Option<String> {
+    let workspace = match state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation.id)
+        .await
+    {
+        Ok(workspace) => workspace,
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = %conversation.id.as_str(),
+                error = %error,
+                "agent runtime workspace context unavailable"
+            );
+            None
+        }
+    };
+    let deps = AgentRuntimeContextDeps::new(
+        Arc::clone(&state.delegated_session_repo),
+        Arc::clone(&state.agent_task_repo),
+    )
+    .with_branch_status_cache(state.pr_poller_registry.branch_status_cache())
+    .with_team_repo(state.managed_team.team_repo())
+    .with_linked_plan_snapshot_resolver(linked_plan_snapshot_resolver_from_app_state(
+        state.clone(),
+    ));
+    if let Some(workspace) = workspace.as_ref() {
+        deps.schedule_branch_status_refresh_if_due(
+            working_directory,
+            Some(workspace.base_ref.as_str()),
+        );
+    }
+
+    compose_agent_runtime_context(
+        &AgentRuntimeContextScope {
+            conversation_id: &conversation.id,
+            context_type,
+            context_id: &conversation.context_id,
+            project_id,
+            workspace: workspace.as_ref(),
+            working_directory,
+            entity_status,
+        },
+        &deps,
+    )
+    .await
+}
+
 impl<R: Runtime> AppChatService<R> {
     pub fn new(
         chat_message_repo: Arc<dyn ChatMessageRepository>,
@@ -1790,6 +1851,10 @@ impl<R: Runtime> AppChatService<R> {
         memory_event_repo: Arc<dyn MemoryEventRepository>,
     ) -> Self {
         let bootstrap = resolve_default_chat_service_bootstrap();
+        let agent_runtime_context_deps = AgentRuntimeContextDeps::new(
+            Arc::clone(&delegated_session_repo),
+            Arc::new(crate::infrastructure::memory::MemoryAgentTaskRepository::new()),
+        );
 
         Self {
             cli_path: bootstrap.cli_path,
@@ -1810,6 +1875,7 @@ impl<R: Runtime> AppChatService<R> {
             task_repo,
             task_dependency_repo,
             delegated_session_repo,
+            agent_runtime_context_deps,
             delegation_park_repo: None,
             execution_settings_repo: None,
             agent_lane_settings_repo: None,
@@ -1862,6 +1928,41 @@ impl<R: Runtime> AppChatService<R> {
 
     pub fn with_notification_service(mut self, service: Arc<NotificationService>) -> Self {
         self.notification_service = Some(service);
+        self
+    }
+
+    pub(crate) fn with_agent_runtime_context_repos(
+        mut self,
+        delegated_session_repo: Arc<dyn DelegatedSessionRepository>,
+        agent_task_repo: Arc<dyn AgentTaskRepository>,
+    ) -> Self {
+        self.agent_runtime_context_deps =
+            AgentRuntimeContextDeps::new(delegated_session_repo, agent_task_repo);
+        self
+    }
+
+    pub(crate) fn with_linked_plan_snapshot_resolver(
+        mut self,
+        resolver: Arc<dyn LinkedPlanSnapshotResolver>,
+    ) -> Self {
+        self.agent_runtime_context_deps = self
+            .agent_runtime_context_deps
+            .with_linked_plan_snapshot_resolver(resolver);
+        self
+    }
+
+    pub(crate) fn with_team_runtime_context_repo(
+        mut self,
+        team_repo: Arc<dyn crate::domain::repositories::TeamRepository>,
+    ) -> Self {
+        self.agent_runtime_context_deps = self.agent_runtime_context_deps.with_team_repo(team_repo);
+        self
+    }
+
+    pub(crate) fn with_branch_status_cache(mut self, cache: BranchStatusCache) -> Self {
+        self.agent_runtime_context_deps = self
+            .agent_runtime_context_deps
+            .with_branch_status_cache(cache);
         self
     }
 
@@ -1948,6 +2049,42 @@ impl<R: Runtime> AppChatService<R> {
                 conversation_id = %conversation_id.as_str(),
                 %error,
                 "Failed to supersede delegation park on user send; wake dispatch still re-verifies parent-run authority"
+            ),
+        }
+    }
+
+    async fn disarm_armed_delegation_park_for_terminal_parent(
+        &self,
+        conversation_id: &str,
+        agent_run_id: &str,
+        terminal_path: &'static str,
+    ) {
+        let Some(repo) = self.delegation_park_repo.as_ref() else {
+            return;
+        };
+        let conversation_id = ChatConversationId::from_string(conversation_id.to_string());
+        let agent_run_id = AgentRunId::from_string(agent_run_id.to_string());
+        match DelegationParkService::disarm_armed_for_terminal_parent(
+            repo.as_ref(),
+            &conversation_id,
+            &agent_run_id,
+        )
+        .await
+        {
+            Ok(0) => {}
+            Ok(count) => tracing::info!(
+                conversation_id = %conversation_id,
+                agent_run_id = %agent_run_id,
+                disarmed = count,
+                terminal_path,
+                "Disarmed delegation parks for terminal parent run"
+            ),
+            Err(error) => tracing::warn!(
+                conversation_id = %conversation_id,
+                agent_run_id = %agent_run_id,
+                terminal_path,
+                %error,
+                "Failed to disarm delegation parks for terminal parent run"
             ),
         }
     }
@@ -3857,27 +3994,54 @@ impl<R: Runtime> AppChatService<R> {
         }
     }
 
-    async fn agent_workspace_prompt_context_for_send(
+    async fn agent_runtime_context_for_send(
         &self,
         context_type: ChatContextType,
         conversation: &ChatConversation,
+        entity_status: Option<&str>,
+        project_id: Option<&str>,
+        working_directory: &Path,
     ) -> Result<Option<String>, ChatServiceError> {
-        let Some(workspace) = self
+        let workspace = match self
             .load_agent_conversation_workspace(
                 context_type,
                 &conversation.context_id,
                 Some(&conversation.id),
             )
-            .await?
-        else {
-            return Ok(None);
+            .await
+        {
+            Ok(workspace) => workspace,
+            Err(error) => {
+                tracing::warn!(
+                    conversation_id = %conversation.id.as_str(),
+                    error = %error,
+                    "agent runtime workspace context unavailable"
+                );
+                None
+            }
         };
 
-        Ok(
-            chat_service_context::format_agent_workspace_source_pull_request_prompt_context(
-                &workspace,
-            ),
+        if let Some(workspace) = workspace.as_ref() {
+            self.agent_runtime_context_deps
+                .schedule_branch_status_refresh_if_due(
+                    working_directory,
+                    Some(workspace.base_ref.as_str()),
+                );
+        }
+
+        Ok(compose_agent_runtime_context(
+            &AgentRuntimeContextScope {
+                conversation_id: &conversation.id,
+                context_type,
+                context_id: &conversation.context_id,
+                project_id,
+                workspace: workspace.as_ref(),
+                working_directory,
+                entity_status,
+            },
+            &self.agent_runtime_context_deps,
         )
+        .await)
     }
 
     async fn resolve_agent_workspace_working_directory(
@@ -4286,6 +4450,15 @@ impl<R: Runtime> AppChatService<R> {
         total_available: usize,
     ) -> Result<crate::infrastructure::agents::claude::SpawnableCommand, ChatServiceError> {
         let app_data_dir = self.resolve_app_data_dir();
+        let agent_runtime_context = self
+            .agent_runtime_context_for_send(
+                conversation.context_type,
+                conversation,
+                entity_status,
+                project_id,
+                working_directory,
+            )
+            .await?;
         let mut spawnable = chat_service_context::build_command_with_app_data_dir(
             &self.cli_path,
             &self.plugin_dir,
@@ -4306,6 +4479,7 @@ impl<R: Runtime> AppChatService<R> {
             total_available,
             None, // effort_override: callers pre-resolve if needed
             None, // model_override: callers pre-resolve if needed
+            agent_runtime_context.as_deref(),
             None, // attachment_context_override
         )
         .await
@@ -4438,8 +4612,14 @@ impl<R: Runtime> AppChatService<R> {
             "chat_service.send_message spawn bootstrap resolved"
         );
 
-        let agent_workspace_prompt_context = self
-            .agent_workspace_prompt_context_for_send(context_type, conversation)
+        let agent_runtime_context = self
+            .agent_runtime_context_for_send(
+                context_type,
+                conversation,
+                entity_status,
+                project_id,
+                working_directory,
+            )
             .await?;
         let persona_ingest_app_data_dir: Option<std::path::PathBuf> = self.resolve_app_data_dir();
         let spawn_context = chat_service_context::resolve_conversation_spawn_context(
@@ -4492,7 +4672,7 @@ impl<R: Runtime> AppChatService<R> {
             is_external_mcp,
             stored_session_id.clone(),
             resolved_spawn_settings,
-            agent_workspace_prompt_context.as_deref(),
+            agent_runtime_context.as_deref(),
             attachment_context_override,
         )
         .await
@@ -8349,13 +8529,28 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 );
 
                 // Mark the agent run as failed with a stopped message
-                let _ = self
+                match self
                     .agent_run_repo
                     .fail(
                         &crate::domain::entities::AgentRunId::from_string(&info.agent_run_id),
                         "Agent stopped by user",
                     )
-                    .await;
+                    .await
+                {
+                    Ok(()) => {
+                        self.disarm_armed_delegation_park_for_terminal_parent(
+                            &info.conversation_id,
+                            &info.agent_run_id,
+                            "user_stop",
+                        )
+                        .await;
+                    }
+                    Err(error) => tracing::warn!(
+                        agent_run_id = %info.agent_run_id,
+                        %error,
+                        "Failed to terminalize parent run during user stop; preserving its delegation park"
+                    ),
+                }
                 self.reconcile_stopped_workspace_review_child(
                     context_type,
                     context_id,
@@ -9246,12 +9441,14 @@ mod agent_workspace_send_tests {
         AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
         AgentWorkspaceSourcePullRequest, ChatAttachment, ChatAttachmentId, ChatContextType,
         ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSession,
-        MessageRole, Project, ProjectId, TaskId,
+        DelegationPark, DelegationParkId, DelegationParkJob, DelegationParkState,
+        DelegationWakePolicy, MessageRole, Project, ProjectId, TaskId,
     };
     use crate::domain::services::{
         ComposerProjectReference, ComposerProjectReferenceKind, RunningAgentKey,
     };
     use std::sync::Arc;
+    use chrono::{Duration, Utc};
 
     #[test]
     fn persisted_user_metadata_strips_resume_flag_and_embeds_composer_references() {
@@ -9436,7 +9633,13 @@ mod agent_workspace_send_tests {
 
         let service = state.build_chat_service();
         let context = service
-            .agent_workspace_prompt_context_for_send(ChatContextType::Ideation, &conversation)
+            .agent_runtime_context_for_send(
+                ChatContextType::Ideation,
+                &conversation,
+                None,
+                None,
+                std::path::Path::new("/tmp/agent-linked-source-pr"),
+            )
             .await
             .expect("prompt context should resolve")
             .expect("linked workspace context should be present");
@@ -10026,6 +10229,99 @@ mod agent_workspace_send_tests {
             .expect("run read should succeed")
             .expect("run should exist");
         assert_eq!(run.status, AgentRunStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn user_stop_disarms_the_parent_park_without_stopping_its_delegate() {
+        let state = AppState::new_test();
+        let conversation = ChatConversation::new_project(ProjectId::new());
+        let conversation_id = conversation.id;
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("parent conversation should persist");
+        let parent_run = AgentRun::new(conversation_id);
+        let parent_run_id = parent_run.id;
+        state
+            .agent_run_repo
+            .create(parent_run)
+            .await
+            .expect("parent run should persist");
+        let delegate_run = AgentRun::new(ChatConversationId::new());
+        let delegate_run_id = delegate_run.id;
+        state
+            .agent_run_repo
+            .create(delegate_run)
+            .await
+            .expect("delegate run should persist");
+        let now = Utc::now();
+        let park = DelegationPark {
+            id: DelegationParkId::new(),
+            parent_conversation_id: conversation_id,
+            parent_agent_run_id: parent_run_id,
+            generation: 1,
+            wake_policy: DelegationWakePolicy::AllSettled,
+            wake_on_failure: false,
+            state: DelegationParkState::Armed,
+            deadline_at: now + Duration::minutes(5),
+            wake_claimed_at: None,
+            wake_attempts: 0,
+            last_error: None,
+            created_at: now,
+            updated_at: now,
+            jobs: vec![DelegationParkJob {
+                job_id: "delegate".to_string(),
+                delegated_session_id: "delegate-session".to_string(),
+                delegated_agent_run_id: delegate_run_id,
+                settled_status: None,
+            }],
+        };
+        state
+            .delegation_park_repo
+            .arm(park.clone())
+            .await
+            .expect("park should persist");
+        state
+            .running_agent_registry
+            .register(
+                RunningAgentKey::new("project", conversation_id.as_str()),
+                0,
+                conversation_id.as_str().to_string(),
+                parent_run_id.as_str().to_string(),
+                None,
+                None,
+            )
+            .await;
+
+        let stopped = state
+            .build_chat_service_with_execution_state(Arc::new(ExecutionState::new()))
+            .stop_agent(ChatContextType::Project, &conversation_id.as_str())
+            .await
+            .expect("parent stop should succeed");
+
+        assert!(stopped);
+        assert_eq!(
+            state
+                .delegation_park_repo
+                .get(&park.id)
+                .await
+                .expect("park should load")
+                .expect("park should exist")
+                .state,
+            DelegationParkState::Disarmed
+        );
+        assert_eq!(
+            state
+                .agent_run_repo
+                .get_by_id(&delegate_run_id)
+                .await
+                .expect("delegate run should load")
+                .expect("delegate run should exist")
+                .status,
+            AgentRunStatus::Running,
+            "stopping a parent coordinator must not stop its delegated process"
+        );
     }
 }
 

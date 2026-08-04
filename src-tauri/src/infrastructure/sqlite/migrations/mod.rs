@@ -587,6 +587,7 @@ mod v20260802194326_agent_workspace_repair_explicit_publish_consent;
 mod v20260802215754_add_workspace_review_automation_override;
 mod v20260803113302_agent_workspace_publish_lease;
 mod v20260804073002_jira_link_acceptance_criteria_backfill;
+mod v20260804125852_delegated_session_job_identity;
 #[cfg(test)]
 mod v20260730161032_agent_workspace_pr_autofix_completion_evidence_tests;
 #[cfg(test)]
@@ -614,6 +615,8 @@ mod v20260804073002_jira_link_acceptance_criteria_backfill_tests;
 mod v20260804120000_agent_workspace_base_stale_target;
 #[cfg(test)]
 mod v20260804120000_agent_workspace_base_stale_target_tests;
+#[cfg(test)]
+mod v20260804125852_delegated_session_job_identity_tests;
 #[cfg(test)]
 pub(super) fn migrate_scripted_agent_workflows_for_test(conn: &Connection) -> AppResult<()> {
     v20260715194617_scripted_agent_workflows::migrate(conn)
@@ -708,7 +711,8 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260804120000;
+<<<<<<< HEAD
+pub const SCHEMA_VERSION: i64 = 20260804125852;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1943,6 +1947,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260804120000,
         name: "agent_workspace_base_stale_target",
         migrate: v20260804120000_agent_workspace_base_stale_target::migrate,
+    },
+    Migration {
+        version: 20260804125852,
+        name: "delegated_session_job_identity",
+        migrate: v20260804125852_delegated_session_job_identity::migrate,
     },
 ];
 

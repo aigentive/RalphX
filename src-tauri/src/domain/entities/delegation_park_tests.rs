@@ -107,6 +107,7 @@ fn park_state_storage_contract_round_trips_every_variant() {
         (DelegationParkState::Armed, "armed"),
         (DelegationParkState::Waking, "waking"),
         (DelegationParkState::Woken, "woken"),
+        (DelegationParkState::Disarmed, "disarmed"),
         (DelegationParkState::Superseded, "superseded"),
         (DelegationParkState::Expired, "expired"),
         (DelegationParkState::Failed, "failed"),

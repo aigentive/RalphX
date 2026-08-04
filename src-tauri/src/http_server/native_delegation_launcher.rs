@@ -65,6 +65,8 @@ pub struct NativeDelegationLaunchRequest {
     pub caller_agent_profile: Option<String>,
     pub parent: NativeDelegationLaunchParent,
     pub inherit_context: bool,
+    /// Allocated by the native delegation entrypoint before any durable session write.
+    pub job_id: Option<String>,
     pub caller_agent_run_id: Option<String>,
     pub target_agent_name: String,
     pub reusable_delegated_session: Option<DelegatedSession>,
@@ -195,6 +197,8 @@ impl<'a> NativeDelegationLauncher<'a> {
             session.status = "pending".to_string();
             session.delegate_context_authorized = req.inherit_context;
             session.caller_conversation_id = parent.caller_conversation_id.clone();
+            session.job_id = req.job_id.clone();
+            session.parent_agent_run_id = parent_agent_run_id.clone();
             session.parent_turn_id = req.parent_turn_id.clone();
             session.parent_message_id = req.parent_message_id.clone();
             session.title = req.title.clone();
@@ -215,6 +219,26 @@ impl<'a> NativeDelegationLauncher<'a> {
         };
         let delegated_session_entity =
             DelegatedSessionId::from_string(delegated_session_id.clone());
+        if requested_session.is_some() {
+            if let Some(job_id) = req.job_id.clone() {
+                state
+                    .app_state
+                    .delegated_session_repo
+                    .update_job_identity(
+                        &delegated_session_entity,
+                        parent.caller_conversation_id.clone(),
+                        job_id,
+                        parent_agent_run_id.clone(),
+                    )
+                    .await
+                    .map_err(|error| {
+                        json_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("Failed to refresh delegated session job identity: {error}"),
+                        )
+                    })?;
+            }
+        }
         let assignment_service = AgentTaskService::new(state.app_state.agent_task_repo.clone());
         let planned_agent_run_id = req
             .preallocated_agent_run_id

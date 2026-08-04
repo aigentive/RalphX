@@ -2483,6 +2483,32 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 };
             }
 
+            let agent_runtime_context = if let (Some(handle), Some(conversation)) = (
+                app_handle.as_ref(),
+                queued_agent_context.conversation.as_ref(),
+            ) {
+                let state = handle.state::<AppState>();
+                let entity_status = chat_service_context::get_entity_status_for_resume(
+                    launch_context_type,
+                    launch_context_id,
+                    Arc::clone(&state.ideation_session_repo),
+                    Arc::clone(&state.delegated_session_repo),
+                    Arc::clone(&state.task_repo),
+                )
+                .await;
+                super::compose_agent_runtime_context_from_app_state(
+                    &state,
+                    conversation,
+                    launch_context_type,
+                    entity_status.as_deref(),
+                    project_id,
+                    working_directory,
+                )
+                .await
+            } else {
+                None
+            };
+
             // Build and spawn resume command
             let provider_spawnable =
                 match chat_service_context::build_resume_command_for_harness_with_continuation(
@@ -2528,6 +2554,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     Some(&continuation_runtime),
                     queued_msg.service_tier_override.as_deref(),
                     false,
+                    agent_runtime_context.as_deref(),
                     Some(attachment_context.as_str()),
                 )
                 .await
@@ -2743,6 +2770,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                         context_type,
                         context_id,
                         &conversation_id,
+                        Some(working_directory.to_path_buf()),
                         app_handle.clone(),
                         Some(Arc::clone(activity_event_repo)),
                         Some(Arc::clone(task_repo)),

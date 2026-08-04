@@ -19,6 +19,7 @@ use crate::application::agent_conversation_workspace::{
 use crate::application::agent_workspace_base_staleness::{
     classify_health_hold_disposition, BaseStalenessObservation, HealthHoldDisposition,
 };
+use crate::application::agent_runtime_context::branch_status::BranchStatusCache;
 use crate::application::agent_workspace_ci_rerun::ci_rerun_hold_still_pending;
 use crate::application::agent_workspace_pr_autofix_attempt::{
     load_pr_autofix_attempt_decision, pr_autofix_action_metadata,
@@ -168,6 +169,9 @@ pub struct PrPollerRegistry {
     /// Canonical Git target authority for durable repair dispatch. It is installed by the
     /// production AppState once and copied into each direct workspace poller.
     branch_update_repo: Arc<std::sync::RwLock<Option<Arc<dyn BranchUpdateRepository>>>>,
+
+    /// Last branch observations consumed synchronously by agent runtime-context composition.
+    branch_status_cache: BranchStatusCache,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -249,7 +253,12 @@ impl PrPollerRegistry {
             plan_branch_repo,
             notification_service: Arc::new(std::sync::RwLock::new(None)),
             branch_update_repo: Arc::new(std::sync::RwLock::new(None)),
+            branch_status_cache: BranchStatusCache::default(),
         }
+    }
+
+    pub(crate) fn branch_status_cache(&self) -> BranchStatusCache {
+        self.branch_status_cache.clone()
     }
 
     pub fn set_branch_update_repo(&self, repo: Arc<dyn BranchUpdateRepository>) {
@@ -390,6 +399,7 @@ impl PrPollerRegistry {
             .read()
             .ok()
             .and_then(|repo| repo.clone());
+        let branch_status_cache = self.branch_status_cache.clone();
         let conversation_id_for_spawn = conversation_id.clone();
 
         let handle = tokio::spawn(async move {
@@ -410,6 +420,7 @@ impl PrPollerRegistry {
                 chat_service,
                 notification_service,
                 recovery_state,
+                branch_status_cache,
             )
             .await;
         });
@@ -1119,6 +1130,7 @@ async fn agent_workspace_poll_loop(
     chat_service: Arc<dyn ChatService>,
     notification_service: Option<Arc<NotificationService>>,
     recovery_state: Option<Arc<AppState>>,
+    branch_status_cache: BranchStatusCache,
 ) {
     let interval = Duration::from_secs(60);
     let mut first_poll = true;
@@ -1247,6 +1259,11 @@ async fn agent_workspace_poll_loop(
 
                 match github.fetch_pr_health(&working_dir, pr_number).await {
                     Ok(health) => {
+                        branch_status_cache.observe_pr_sync(
+                            &working_dir,
+                            &health.sync_state,
+                            chrono::Utc::now(),
+                        );
                         if let Err(error) = import_agent_workspace_pr_comment_evidence(
                             Arc::clone(&workspace_repo),
                             &conversation_id,

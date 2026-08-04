@@ -16,6 +16,19 @@ pub trait DelegatedSessionRepository: Send + Sync {
         parent_context_id: &str,
     ) -> AppResult<Vec<DelegatedSession>>;
 
+    async fn list_active_by_caller_conversation(
+        &self,
+        caller_conversation_id: &str,
+    ) -> AppResult<Vec<DelegatedSession>>;
+
+    async fn update_job_identity(
+        &self,
+        id: &DelegatedSessionId,
+        caller_conversation_id: Option<String>,
+        job_id: String,
+        parent_agent_run_id: Option<String>,
+    ) -> AppResult<()>;
+
     async fn update_provider_session_id(
         &self,
         id: &DelegatedSessionId,

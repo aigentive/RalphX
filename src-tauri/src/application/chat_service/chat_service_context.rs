@@ -13,10 +13,10 @@ use tauri::{Manager, Runtime};
 
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, Artifact, ArtifactContent,
-    ArtifactId, ArtifactType, ChatAttachment, ChatContextType, ChatConversation,
-    ChatConversationId, ChatMessage, ChatMessageId, CoordinationMode, DelegatedSessionId, GitMode,
-    IdeationSessionId, MessageRole, ProjectId, TaskId,
+    AgentConversationWorkspaceMode, Artifact, ArtifactContent, ArtifactId, ArtifactType,
+    ChatAttachment, ChatContextType, ChatConversation, ChatConversationId, ChatMessage,
+    ChatMessageId, CoordinationMode, DelegatedSessionId, GitMode, IdeationSessionId, MessageRole,
+    ProjectId, TaskId,
 };
 use crate::domain::repositories::{
     AgentLaneSettingsRepository, ArtifactRepository, ChatAttachmentRepository,
@@ -42,6 +42,11 @@ use super::super::agent_lane_resolution::ResolvedAgentSpawnSettings;
 use super::chat_service_helpers::resolve_agent;
 use super::conversation_launch_security::{
     conversation_launch_security_class, validate_conversation_launch_identity,
+};
+#[cfg(test)]
+pub(crate) use crate::application::agent_runtime_context::format_agent_workspace_source_pull_request_prompt_context;
+pub(crate) use crate::application::agent_runtime_context::{
+    build_task_runtime_context_prompt, task_runtime_state_for_context,
 };
 use crate::application::harness_runtime_registry::{
     resolve_chat_harness_cli, ResolvedChatHarnessCli,
@@ -314,6 +319,7 @@ struct BuildHarnessCommandRequest<'a> {
     effort_override: Option<&'a str>,
     model_override: Option<&'a str>,
     is_external_mcp: bool,
+    agent_runtime_context: Option<&'a str>,
     attachment_context_override: Option<&'a str>,
 }
 
@@ -350,6 +356,7 @@ struct BuildHarnessResumeCommandRequest<'a> {
     continuation_runtime: Option<&'a super::continuation_runtime::ContinuationRuntime>,
     service_tier_override: Option<&'a str>,
     is_external_mcp: bool,
+    agent_runtime_context: Option<&'a str>,
     attachment_context_override: Option<&'a str>,
 }
 
@@ -381,7 +388,7 @@ struct BuildHarnessLaunchRequest<'a> {
     stored_session_id: Option<&'a str>,
     resolved_spawn_settings: &'a ResolvedAgentSpawnSettings,
     enforce_spawn_guard: bool,
-    agent_workspace_prompt_context: Option<&'a str>,
+    agent_runtime_context: Option<&'a str>,
     attachment_context_override: Option<&'a str>,
 }
 
@@ -536,6 +543,7 @@ impl ResolvedChatHarnessCli {
                     request.total_available,
                     request.effort_override,
                     request.model_override,
+                    request.agent_runtime_context,
                     request.attachment_context_override,
                 )
                 .await
@@ -578,7 +586,7 @@ impl ResolvedChatHarnessCli {
                         request.total_available,
                         request.is_external_mcp,
                         &resolved_spawn_settings,
-                        None,
+                        request.agent_runtime_context,
                         request.attachment_context_override,
                     )
                     .await
@@ -645,6 +653,7 @@ impl ResolvedChatHarnessCli {
                         request.total_available,
                         effort_override,
                         model_override,
+                        request.agent_runtime_context,
                         request.attachment_context_override,
                     )
                     .await
@@ -732,7 +741,7 @@ impl ResolvedChatHarnessCli {
                         request.total_available,
                         request.is_external_mcp,
                         &resolved_spawn_settings,
-                        None,
+                        request.agent_runtime_context,
                         request.attachment_context_override,
                     )
                     .await
@@ -779,7 +788,7 @@ impl ResolvedChatHarnessCli {
                     request.stored_session_id,
                     request.resolved_spawn_settings,
                     request.enforce_spawn_guard,
-                    request.agent_workspace_prompt_context,
+                    request.agent_runtime_context,
                     request.attachment_context_override,
                 )
                 .await?;
@@ -824,7 +833,7 @@ impl ResolvedChatHarnessCli {
                             request.total_available,
                             request.is_external_mcp,
                             request.resolved_spawn_settings,
-                            request.agent_workspace_prompt_context,
+                            request.agent_runtime_context,
                             request.attachment_context_override,
                         )
                         .await?
@@ -851,7 +860,7 @@ impl ResolvedChatHarnessCli {
                             request.total_available,
                             request.is_external_mcp,
                             request.resolved_spawn_settings,
-                            request.agent_workspace_prompt_context,
+                            request.agent_runtime_context,
                             request.attachment_context_override,
                         )
                         .await?
@@ -1362,10 +1371,16 @@ pub(super) fn build_initial_prompt_with_history(
     context_id: &str,
     user_message: &str,
     history: &str,
+    additional_context: Option<&str>,
     ideation_subagent_model_cap: Option<&str>,
     ideation_harness: Option<AgentHarnessKind>,
     ideation_bootstrap_mode: IdeationBootstrapMode,
 ) -> String {
+    let additional_context_block = additional_context
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("{value}\n"))
+        .unwrap_or_default();
     match context_type {
         ChatContextType::Ideation => {
             let history_block = if history.is_empty() {
@@ -1404,13 +1419,14 @@ pub(super) fn build_initial_prompt_with_history(
                  <context_id>{}</context_id>\n\
                  <session_id>{}</session_id>\n\
                  <session_bootstrap_mode>{}</session_bootstrap_mode>\n\
-                 {}{}<user_message>{}</user_message>\n\
+                 {}{}{}<user_message>{}</user_message>\n\
                  </data>",
                 context_id,
                 context_id,
                 ideation_bootstrap_mode.as_str(),
                 history_block,
                 subagent_policy_block,
+                additional_context_block,
                 user_message
             )
         }
@@ -1423,9 +1439,9 @@ pub(super) fn build_initial_prompt_with_history(
                  </instructions>\n\
                  <data>\n\
                  <delegated_session_id>{}</delegated_session_id>\n\
-                 <user_message>{}</user_message>\n\
+                 {}<user_message>{}</user_message>\n\
                  </data>",
-                context_id, user_message
+                context_id, additional_context_block, user_message
             )
         }
         ChatContextType::Task => {
@@ -1441,9 +1457,9 @@ pub(super) fn build_initial_prompt_with_history(
                  </instructions>\n\
                  <data>\n\
                  <task_id>{}</task_id>\n\
-                 {}<user_message>{}</user_message>\n\
+                 {}{}<user_message>{}</user_message>\n\
                  </data>",
-                context_id, history_block, user_message
+                context_id, history_block, additional_context_block, user_message
             )
         }
         ChatContextType::Project => {
@@ -1459,9 +1475,9 @@ pub(super) fn build_initial_prompt_with_history(
                  </instructions>\n\
                  <data>\n\
                  <project_id>{}</project_id>\n\
-                 {}<user_message>{}</user_message>\n\
+                 {}{}<user_message>{}</user_message>\n\
                  </data>",
-                context_id, history_block, user_message
+                context_id, history_block, additional_context_block, user_message
             )
         }
         ChatContextType::TaskExecution => {
@@ -1477,9 +1493,9 @@ pub(super) fn build_initial_prompt_with_history(
                  </instructions>\n\
                  <data>\n\
                  <task_id>{}</task_id>\n\
-                 {}<user_message>{}</user_message>\n\
+                 {}{}<user_message>{}</user_message>\n\
                  </data>",
-                context_id, runtime_context_block, user_message
+                context_id, runtime_context_block, additional_context_block, user_message
             )
         }
         ChatContextType::Review => {
@@ -1496,9 +1512,9 @@ pub(super) fn build_initial_prompt_with_history(
                  </instructions>\n\
                  <data>\n\
                  <task_id>{}</task_id>\n\
-                 {}<user_message>{}</user_message>\n\
+                 {}{}<user_message>{}</user_message>\n\
                  </data>",
-                context_id, runtime_context_block, user_message
+                context_id, runtime_context_block, additional_context_block, user_message
             )
         }
         ChatContextType::Merge => {
@@ -1510,9 +1526,9 @@ pub(super) fn build_initial_prompt_with_history(
                  </instructions>\n\
                  <data>\n\
                  <task_id>{}</task_id>\n\
-                 <user_message>{}</user_message>\n\
+                 {}<user_message>{}</user_message>\n\
                  </data>",
-                context_id, user_message
+                context_id, additional_context_block, user_message
             )
         }
         ChatContextType::BranchUpdate => {
@@ -1524,9 +1540,9 @@ pub(super) fn build_initial_prompt_with_history(
                  </instructions>\n\
                  <data>\n\
                  <task_id>{}</task_id>\n\
-                 <user_message>{}</user_message>\n\
+                 {}<user_message>{}</user_message>\n\
                  </data>",
-                context_id, user_message
+                context_id, additional_context_block, user_message
             )
         }
         ChatContextType::Standalone => {
@@ -1542,9 +1558,9 @@ pub(super) fn build_initial_prompt_with_history(
                  </instructions>\n\
                  <data>\n\
                  <conversation_id>{}</conversation_id>\n\
-                 {}<user_message>{}</user_message>\n\
+                 {}{}<user_message>{}</user_message>\n\
                  </data>",
-                context_id, history_block, user_message
+                context_id, history_block, additional_context_block, user_message
             )
         }
     }
@@ -1574,6 +1590,7 @@ fn build_project_maintenance_initial_prompt(
     assignment: ProjectMaintenanceAssignment,
     context_id: &str,
     user_message: &str,
+    additional_context: Option<&str>,
 ) -> String {
     let (title, description, request_tag) = match assignment {
         ProjectMaintenanceAssignment::WorkspaceRepair => (
@@ -1587,6 +1604,11 @@ fn build_project_maintenance_initial_prompt(
             "pr_fix_request",
         ),
     };
+    let additional_context = additional_context
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("{value}\n"))
+        .unwrap_or_default();
     format!(
         "<instructions>\n\
          {title}. This is an executable backend-routed {description}.\n\
@@ -1595,9 +1617,10 @@ fn build_project_maintenance_initial_prompt(
          </instructions>\n\
          <data>\n\
          <project_id>{}</project_id>\n\
-         <{request_tag}>{}</{request_tag}>\n\
+         {}<{request_tag}>{}</{request_tag}>\n\
          </data>",
         xml_escape(context_id),
+        additional_context,
         xml_escape(user_message),
     )
 }
@@ -1614,27 +1637,19 @@ pub(super) async fn build_initial_prompt_with_session_artifacts(
     ideation_bootstrap_mode: IdeationBootstrapMode,
     additional_context: Option<&str>,
 ) -> Result<String, String> {
-    let mut history = if context_type_supports_history_injection(context_type) {
+    let history = if context_type_supports_history_injection(context_type) {
         format_session_history_with_artifacts(session_messages, total_available, artifact_repo)
             .await?
     } else {
         String::new()
     };
-    if let Some(additional_context) = additional_context
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        if !history.is_empty() {
-            history.push('\n');
-        }
-        history.push_str(additional_context);
-    }
 
     Ok(build_initial_prompt_with_history(
         context_type,
         context_id,
         user_message,
         &history,
+        additional_context,
         ideation_subagent_model_cap,
         ideation_harness,
         ideation_bootstrap_mode,
@@ -1660,6 +1675,7 @@ pub(super) async fn build_initial_prompt_with_session_artifacts_for_agent(
                 assignment,
                 context_id,
                 user_message,
+                additional_context,
             ));
         }
     }
@@ -1677,103 +1693,6 @@ pub(super) async fn build_initial_prompt_with_session_artifacts_for_agent(
         additional_context,
     )
     .await
-}
-
-pub(crate) fn format_agent_workspace_source_pull_request_prompt_context(
-    workspace: &AgentConversationWorkspace,
-) -> Option<String> {
-    let mut block = format!(
-        "<agent_workspace_context>\n\
-         <current_workspace>\n\
-         <conversation_id>{}</conversation_id>\n\
-         <project_id>{}</project_id>\n\
-         <mode>{}</mode>\n\
-         <branch_name>{}</branch_name>\n\
-         <base_ref>{}</base_ref>\n\
-         <worktree_path>{}</worktree_path>\n",
-        xml_escape(&workspace.conversation_id.as_str()),
-        xml_escape(workspace.project_id.as_str()),
-        workspace.mode,
-        xml_escape(&workspace.branch_name),
-        xml_escape(&workspace.base_ref),
-        xml_escape(&workspace.worktree_path),
-    );
-    if let Some(session_id) = workspace.linked_ideation_session_id.as_ref() {
-        block.push_str(&format!(
-            "         <linked_ideation_session_id>{}</linked_ideation_session_id>\n",
-            xml_escape(session_id.as_str())
-        ));
-    }
-    if let Some(plan_branch_id) = workspace.linked_plan_branch_id.as_ref() {
-        block.push_str(&format!(
-            "         <linked_plan_branch_id>{}</linked_plan_branch_id>\n",
-            xml_escape(plan_branch_id.as_str())
-        ));
-    }
-    block.push_str("         </current_workspace>\n");
-
-    let Some(source) = workspace.source_pull_request.as_ref() else {
-        block.push_str("</agent_workspace_context>");
-        return Some(block);
-    };
-
-    block.push_str(&format!(
-        "         <source_pull_request>\n\
-         <origin_hint>This agent workspace is based on branch {} of PR #{}.</origin_hint>\n\
-         <number>{}</number>\n\
-         <head_branch>{}</head_branch>\n\
-         <workspace_base_ref>{}</workspace_base_ref>\n",
-        xml_escape(&source.head_ref_name),
-        source.number,
-        source.number,
-        xml_escape(&source.head_ref_name),
-        xml_escape(&workspace.base_ref)
-    ));
-    if let Some(title) = source
-        .title
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        block.push_str(&format!("         <title>{}</title>\n", xml_escape(title)));
-    }
-    if let Some(url) = source
-        .url
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        block.push_str(&format!("         <url>{}</url>\n", xml_escape(url)));
-    }
-    if let Some(base_ref) = source
-        .base_ref_name
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        block.push_str(&format!(
-            "         <original_pr_base_branch>{}</original_pr_base_branch>\n",
-            xml_escape(base_ref)
-        ));
-    }
-    if let Some(head_sha) = source
-        .head_ref_oid
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        block.push_str(&format!(
-            "         <source_pr_head_sha>{}</source_pr_head_sha>\n",
-            xml_escape(head_sha)
-        ));
-    }
-    block.push_str(&format!(
-        "         <publish_target_hint>If this workspace publishes changes, RalphX creates a new pull request targeting branch {}, which is the source PR head branch.</publish_target_hint>\n\
-         </source_pull_request>\n\
-         </agent_workspace_context>",
-        xml_escape(&source.head_ref_name)
-    ));
-    Some(block)
 }
 
 /// Resolve the project ID from a context
@@ -2266,6 +2185,7 @@ pub fn build_initial_prompt(
         &history,
         None,
         None,
+        None,
         bootstrap_mode,
     )
 }
@@ -2280,12 +2200,14 @@ pub fn build_resume_initial_prompt(
     user_message: &str,
     _session_messages: &[ChatMessage],
     _total_available: usize,
+    agent_runtime_context: Option<&str>,
 ) -> String {
     build_initial_prompt_with_history(
         context_type,
         context_id,
         user_message,
         "",
+        agent_runtime_context,
         None,
         None,
         IdeationBootstrapMode::ProviderResume,
@@ -2590,85 +2512,6 @@ pub(crate) fn capability_scoped_prompt(
     }
 }
 
-pub(super) fn task_runtime_state_for_context<'a>(
-    context_type: ChatContextType,
-    entity_status: Option<&'a str>,
-) -> Option<&'a str> {
-    match (context_type, entity_status) {
-        (ChatContextType::TaskExecution, Some(task_state @ ("executing" | "re_executing"))) => {
-            Some(task_state)
-        }
-        (ChatContextType::Review, Some(task_state @ "reviewing")) => Some(task_state),
-        _ => None,
-    }
-}
-
-pub(super) fn build_task_runtime_context_prompt(
-    context_type: ChatContextType,
-    context_id: &str,
-    entity_status: Option<&str>,
-    project_id: Option<&str>,
-    working_directory: &Path,
-) -> Result<Option<String>, String> {
-    let Some(task_state) = task_runtime_state_for_context(context_type, entity_status) else {
-        return Ok(None);
-    };
-    if context_id.trim().is_empty() {
-        return Err(format!(
-            "{} task runtime context missing task identity",
-            context_type
-        ));
-    }
-    let project_id = project_id
-        .filter(|id| !id.trim().is_empty())
-        .ok_or_else(|| {
-            format!(
-                "{} task runtime context missing project identity for task {}",
-                context_type, context_id
-            )
-        })?;
-    if working_directory.as_os_str().is_empty() {
-        return Err(format!(
-            "{} task runtime context missing working directory for task {}",
-            context_type, context_id
-        ));
-    }
-
-    let mut context = String::from("<task_runtime_context>\n");
-    context.push_str(&format!(
-        "<task_id>{}</task_id>\n",
-        escape_xml_text(context_id)
-    ));
-    context.push_str(&format!(
-        "<project_id>{}</project_id>\n",
-        escape_xml_text(project_id)
-    ));
-    context.push_str(&format!(
-        "<context_type>{}</context_type>\n",
-        escape_xml_text(&context_type.to_string())
-    ));
-    context.push_str(&format!(
-        "<task_state>{}</task_state>\n",
-        escape_xml_text(task_state)
-    ));
-    context.push_str(&format!(
-        "<working_directory>{}</working_directory>\n",
-        escape_xml_text(working_directory.to_string_lossy().as_ref())
-    ));
-    context.push_str(
-        "<full_context_hint>Use get_task_context and related task MCP tools when full or fresh task details are required.</full_context_hint>\n",
-    );
-    context.push_str("</task_runtime_context>");
-    Ok(Some(context))
-}
-
-fn escape_xml_text(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
-
 pub(super) fn mcp_lineage_parent_conversation_id(
     conversation: &ChatConversation,
 ) -> Option<String> {
@@ -2716,6 +2559,7 @@ pub async fn build_command(
     total_available: usize,
     effort_override: Option<&str>,
     model_override: Option<&str>,
+    agent_runtime_context: Option<&str>,
     attachment_context_override: Option<&str>,
 ) -> Result<SpawnableCommand, String> {
     build_command_with_app_data_dir(
@@ -2738,6 +2582,7 @@ pub async fn build_command(
         total_available,
         effort_override,
         model_override,
+        agent_runtime_context,
         attachment_context_override,
     )
     .await
@@ -2770,6 +2615,7 @@ pub async fn build_command_with_app_data_dir(
     total_available: usize,
     effort_override: Option<&str>,
     model_override: Option<&str>,
+    agent_runtime_context: Option<&str>,
     attachment_context_override: Option<&str>,
 ) -> Result<SpawnableCommand, String> {
     // Compute agent_name using the resolution system (context type + optional status).
@@ -2845,6 +2691,7 @@ pub async fn build_command_with_app_data_dir(
         total_available,
         effort_override,
         &resolved_spawn_settings,
+        agent_runtime_context,
     )
     .await
 }
@@ -2868,6 +2715,7 @@ async fn build_command_from_resolved_settings(
     total_available: usize,
     effort_override: Option<&str>,
     resolved_spawn_settings: &ResolvedAgentSpawnSettings,
+    agent_runtime_context: Option<&str>,
 ) -> Result<SpawnableCommand, String> {
     let resolved_model = resolved_spawn_settings.model.as_str();
     let ideation_subagent_model_cap = resolved_spawn_settings.subagent_model_cap.as_deref();
@@ -2879,6 +2727,19 @@ async fn build_command_from_resolved_settings(
     } else {
         ProviderResumeMode::Recovery
     };
+    let legacy_task_runtime_context = if agent_runtime_context.is_none() {
+        build_task_runtime_context_prompt(
+            conversation.context_type,
+            &conversation.context_id,
+            entity_status,
+            project_id,
+            working_directory,
+        )?
+    } else {
+        None
+    };
+    let additional_prompt_context =
+        agent_runtime_context.or(legacy_task_runtime_context.as_deref());
     let (prompt, resume_session) = match effective_resume_mode {
         ProviderResumeMode::Resume => {
             let session_id = claude_resume_session_id.ok_or_else(|| {
@@ -2890,18 +2751,12 @@ async fn build_command_from_resolved_settings(
                 user_message,
                 session_messages,
                 total_available,
+                additional_prompt_context,
             );
             let prompt_with_attachments = format!("{}{}", resume_prompt, attachment_context);
             (prompt_with_attachments, Some(session_id.to_string()))
         }
         ProviderResumeMode::Recovery => {
-            let task_runtime_context = build_task_runtime_context_prompt(
-                conversation.context_type,
-                &conversation.context_id,
-                entity_status,
-                project_id,
-                working_directory,
-            )?;
             let initial_prompt = build_initial_prompt_with_session_artifacts_for_agent(
                 Some(agent_name),
                 conversation.context_type,
@@ -2917,7 +2772,7 @@ async fn build_command_from_resolved_settings(
                 } else {
                     IdeationBootstrapMode::Continuation
                 },
-                task_runtime_context.as_deref(),
+                additional_prompt_context,
             )
             .await?;
             let prompt_with_attachments = format!("{}{}", initial_prompt, attachment_context);
@@ -2998,17 +2853,24 @@ async fn build_recovery_command_from_resolved_settings(
     total_available: usize,
     effort_override: Option<&str>,
     resolved_spawn_settings: &ResolvedAgentSpawnSettings,
+    agent_runtime_context: Option<&str>,
     attachment_context_override: Option<&str>,
 ) -> Result<SpawnableCommand, String> {
     let resolved_model = resolved_spawn_settings.model.as_str();
     let ideation_subagent_model_cap = resolved_spawn_settings.subagent_model_cap.as_deref();
-    let task_runtime_context = build_task_runtime_context_prompt(
-        context_type,
-        context_id,
-        entity_status,
-        project_id,
-        working_directory,
-    )?;
+    let legacy_task_runtime_context = if agent_runtime_context.is_none() {
+        build_task_runtime_context_prompt(
+            context_type,
+            context_id,
+            entity_status,
+            project_id,
+            working_directory,
+        )?
+    } else {
+        None
+    };
+    let additional_prompt_context =
+        agent_runtime_context.or(legacy_task_runtime_context.as_deref());
     let prompt = build_initial_prompt_with_session_artifacts_for_agent(
         Some(agent_name),
         context_type,
@@ -3020,7 +2882,7 @@ async fn build_recovery_command_from_resolved_settings(
         ideation_subagent_model_cap,
         Some(AgentHarnessKind::Claude),
         IdeationBootstrapMode::Recovery,
-        task_runtime_context.as_deref(),
+        additional_prompt_context,
     )
     .await?;
     let prompt = capability_scoped_prompt(
@@ -3102,7 +2964,7 @@ pub async fn build_codex_command(
     total_available: usize,
     is_external_mcp: bool,
     resolved_spawn_settings: &ResolvedAgentSpawnSettings,
-    agent_workspace_prompt_context: Option<&str>,
+    agent_runtime_context: Option<&str>,
     attachment_context_override: Option<&str>,
 ) -> Result<SpawnableCommand, String> {
     let total_started = Instant::now();
@@ -3159,16 +3021,19 @@ pub async fn build_codex_command(
     };
 
     let prompt_build_started = Instant::now();
-    let task_runtime_context = build_task_runtime_context_prompt(
-        conversation.context_type,
-        &conversation.context_id,
-        entity_status,
-        project_id,
-        working_directory,
-    )?;
-    let additional_prompt_context = task_runtime_context
-        .as_deref()
-        .or(agent_workspace_prompt_context);
+    let legacy_task_runtime_context = if agent_runtime_context.is_none() {
+        build_task_runtime_context_prompt(
+            conversation.context_type,
+            &conversation.context_id,
+            entity_status,
+            project_id,
+            working_directory,
+        )?
+    } else {
+        None
+    };
+    let additional_prompt_context =
+        agent_runtime_context.or(legacy_task_runtime_context.as_deref());
     let initial_prompt = build_initial_prompt_with_session_artifacts_for_agent(
         Some(agent_name),
         conversation.context_type,
@@ -3397,7 +3262,7 @@ pub(crate) async fn build_launch_plan_for_harness_with_persona(
     is_external_mcp: bool,
     stored_session_id: Option<&str>,
     resolved_spawn_settings: &ResolvedAgentSpawnSettings,
-    agent_workspace_prompt_context: Option<&str>,
+    agent_runtime_context: Option<&str>,
     attachment_context_override: Option<&str>,
 ) -> Result<ResolvedChatHarnessLaunch, String> {
     build_launch_plan_for_harness_with_spawn_guard(
@@ -3430,7 +3295,7 @@ pub(crate) async fn build_launch_plan_for_harness_with_persona(
         stored_session_id,
         resolved_spawn_settings,
         true,
-        agent_workspace_prompt_context,
+        agent_runtime_context,
         attachment_context_override,
     )
     .await
@@ -3465,7 +3330,7 @@ pub(crate) async fn build_launch_plan_for_harness_for_test(
     is_external_mcp: bool,
     stored_session_id: Option<&str>,
     resolved_spawn_settings: &ResolvedAgentSpawnSettings,
-    agent_workspace_prompt_context: Option<&str>,
+    agent_runtime_context: Option<&str>,
     attachment_context_override: Option<&str>,
 ) -> Result<ResolvedChatHarnessLaunch, String> {
     build_launch_plan_for_harness_with_spawn_guard(
@@ -3498,7 +3363,7 @@ pub(crate) async fn build_launch_plan_for_harness_for_test(
         stored_session_id,
         resolved_spawn_settings,
         false,
-        agent_workspace_prompt_context,
+        agent_runtime_context,
         attachment_context_override,
     )
     .await
@@ -3535,7 +3400,7 @@ pub async fn build_launch_plan_for_harness_with_persona_for_test(
     is_external_mcp: bool,
     stored_session_id: Option<&str>,
     resolved_spawn_settings: &ResolvedAgentSpawnSettings,
-    agent_workspace_prompt_context: Option<&str>,
+    agent_runtime_context: Option<&str>,
     attachment_context_override: Option<&str>,
 ) -> Result<ResolvedChatHarnessLaunch, String> {
     build_launch_plan_for_harness_with_spawn_guard(
@@ -3568,7 +3433,7 @@ pub async fn build_launch_plan_for_harness_with_persona_for_test(
         stored_session_id,
         resolved_spawn_settings,
         false,
-        agent_workspace_prompt_context,
+        agent_runtime_context,
         attachment_context_override,
     )
     .await
@@ -3605,7 +3470,7 @@ async fn build_launch_plan_for_harness_with_spawn_guard(
     stored_session_id: Option<&str>,
     resolved_spawn_settings: &ResolvedAgentSpawnSettings,
     enforce_spawn_guard: bool,
-    agent_workspace_prompt_context: Option<&str>,
+    agent_runtime_context: Option<&str>,
     attachment_context_override: Option<&str>,
 ) -> Result<ResolvedChatHarnessLaunch, String> {
     let conversation_id = conversation_id
@@ -3643,7 +3508,7 @@ async fn build_launch_plan_for_harness_with_spawn_guard(
             stored_session_id,
             resolved_spawn_settings,
             enforce_spawn_guard,
-            agent_workspace_prompt_context,
+            agent_runtime_context,
             attachment_context_override,
         },
     )
@@ -3672,6 +3537,7 @@ pub async fn build_command_for_harness(
     effort_override: Option<&str>,
     model_override: Option<&str>,
     is_external_mcp: bool,
+    agent_runtime_context: Option<&str>,
     attachment_context_override: Option<&str>,
 ) -> Result<ProviderSpawnableCommand, String> {
     let resolved_cli = resolve_chat_harness_cli(harness, cli_path)?;
@@ -3698,6 +3564,7 @@ pub async fn build_command_for_harness(
             effort_override,
             model_override,
             is_external_mcp,
+            agent_runtime_context,
             attachment_context_override,
         },
     )
@@ -3728,6 +3595,7 @@ pub async fn build_command_for_harness_with_folder_refs(
     effort_override: Option<&str>,
     model_override: Option<&str>,
     is_external_mcp: bool,
+    agent_runtime_context: Option<&str>,
     attachment_context_override: Option<&str>,
 ) -> Result<ProviderSpawnableCommand, String> {
     let resolved_cli = resolve_chat_harness_cli(harness, cli_path)?;
@@ -3754,6 +3622,7 @@ pub async fn build_command_for_harness_with_folder_refs(
             effort_override,
             model_override,
             is_external_mcp,
+            agent_runtime_context,
             attachment_context_override,
         },
     )
@@ -3791,7 +3660,7 @@ pub async fn build_interactive_command(
     stored_session_id: Option<&str>,
     resolved_spawn_settings: &ResolvedAgentSpawnSettings,
     enforce_spawn_guard: bool,
-    agent_workspace_prompt_context: Option<&str>,
+    agent_runtime_context: Option<&str>,
     attachment_context_override: Option<&str>,
 ) -> Result<SpawnableCommand, String> {
     let agent_started = Instant::now();
@@ -3849,16 +3718,19 @@ pub async fn build_interactive_command(
     };
 
     let prompt_started = Instant::now();
-    let task_runtime_context = build_task_runtime_context_prompt(
-        conversation.context_type,
-        &conversation.context_id,
-        entity_status,
-        project_id,
-        working_directory,
-    )?;
-    let additional_prompt_context = task_runtime_context
-        .as_deref()
-        .or(agent_workspace_prompt_context);
+    let legacy_task_runtime_context = if agent_runtime_context.is_none() {
+        build_task_runtime_context_prompt(
+            conversation.context_type,
+            &conversation.context_id,
+            entity_status,
+            project_id,
+            working_directory,
+        )?
+    } else {
+        None
+    };
+    let additional_prompt_context =
+        agent_runtime_context.or(legacy_task_runtime_context.as_deref());
     let initial_prompt = match resume_session {
         Some(_) => build_resume_initial_prompt(
             conversation.context_type,
@@ -3866,6 +3738,7 @@ pub async fn build_interactive_command(
             user_message,
             session_messages,
             total_available,
+            additional_prompt_context,
         ),
         None => {
             build_initial_prompt_with_session_artifacts_for_agent(
@@ -4057,6 +3930,7 @@ pub async fn build_resume_command(
     total_available: usize,
     effort_override: Option<&str>,
     model_override: Option<&str>,
+    agent_runtime_context: Option<&str>,
     attachment_context_override: Option<&str>,
 ) -> Result<SpawnableCommand, String> {
     // Fetch entity status for status-aware agent resolution
@@ -4107,6 +3981,7 @@ pub async fn build_resume_command(
         total_available,
         effort_override,
         &resolved_spawn_settings,
+        agent_runtime_context,
         attachment_context_override,
     )
     .await
@@ -4136,6 +4011,7 @@ async fn build_resume_command_from_resolved_settings(
     total_available: usize,
     effort_override: Option<&str>,
     resolved_spawn_settings: &ResolvedAgentSpawnSettings,
+    agent_runtime_context: Option<&str>,
     attachment_context_override: Option<&str>,
 ) -> Result<SpawnableCommand, String> {
     match provider_resume_mode_for_session(AgentHarnessKind::Claude, session_id) {
@@ -4148,6 +4024,7 @@ async fn build_resume_command_from_resolved_settings(
                 message,
                 session_messages,
                 total_available,
+                agent_runtime_context,
             );
             let resume_prompt = capability_scoped_prompt(
                 format!(
@@ -4230,6 +4107,7 @@ async fn build_resume_command_from_resolved_settings(
                 total_available,
                 effort_override,
                 resolved_spawn_settings,
+                agent_runtime_context,
                 attachment_context_override,
             )
             .await
@@ -4264,7 +4142,7 @@ pub async fn build_codex_resume_command(
     total_available: usize,
     is_external_mcp: bool,
     resolved_spawn_settings: &ResolvedAgentSpawnSettings,
-    agent_workspace_prompt_context: Option<&str>,
+    agent_runtime_context: Option<&str>,
     attachment_context_override: Option<&str>,
 ) -> Result<SpawnableCommand, String> {
     let entity_status = get_entity_status_for_resume(
@@ -4321,6 +4199,7 @@ pub async fn build_codex_resume_command(
                 message,
                 session_messages,
                 total_available,
+                agent_runtime_context,
             );
             let resume_prompt = capability_scoped_prompt(
                 format!(
@@ -4370,16 +4249,19 @@ pub async fn build_codex_resume_command(
             Ok(spawnable)
         }
         ProviderResumeMode::Recovery => {
-            let task_runtime_context = build_task_runtime_context_prompt(
-                context_type,
-                context_id,
-                entity_status.as_deref(),
-                project_id,
-                working_directory,
-            )?;
-            let additional_prompt_context = task_runtime_context
-                .as_deref()
-                .or(agent_workspace_prompt_context);
+            let legacy_task_runtime_context = if agent_runtime_context.is_none() {
+                build_task_runtime_context_prompt(
+                    context_type,
+                    context_id,
+                    entity_status.as_deref(),
+                    project_id,
+                    working_directory,
+                )?
+            } else {
+                None
+            };
+            let additional_prompt_context =
+                agent_runtime_context.or(legacy_task_runtime_context.as_deref());
             let recovery_prompt = build_initial_prompt_with_session_artifacts_for_agent(
                 Some(agent_name),
                 context_type,
@@ -4476,6 +4358,7 @@ pub async fn build_resume_command_for_harness(
     effort_override: Option<&str>,
     model_override: Option<&str>,
     is_external_mcp: bool,
+    agent_runtime_context: Option<&str>,
     attachment_context_override: Option<&str>,
 ) -> Result<ProviderSpawnableCommand, String> {
     build_resume_command_for_harness_with_continuation(
@@ -4513,6 +4396,7 @@ pub async fn build_resume_command_for_harness(
         None,
         None,
         is_external_mcp,
+        agent_runtime_context,
         attachment_context_override,
     )
     .await
@@ -4552,6 +4436,7 @@ pub async fn build_resume_command_for_harness_with_folder_refs(
     effort_override: Option<&str>,
     model_override: Option<&str>,
     is_external_mcp: bool,
+    agent_runtime_context: Option<&str>,
     attachment_context_override: Option<&str>,
 ) -> Result<ProviderSpawnableCommand, String> {
     build_resume_command_for_harness_with_continuation(
@@ -4589,6 +4474,7 @@ pub async fn build_resume_command_for_harness_with_folder_refs(
         None,
         None,
         is_external_mcp,
+        agent_runtime_context,
         attachment_context_override,
     )
     .await
@@ -4630,6 +4516,7 @@ pub(super) async fn build_resume_command_for_harness_with_continuation(
     continuation_runtime: Option<&super::continuation_runtime::ContinuationRuntime>,
     service_tier_override: Option<&str>,
     is_external_mcp: bool,
+    agent_runtime_context: Option<&str>,
     attachment_context_override: Option<&str>,
 ) -> Result<ProviderSpawnableCommand, String> {
     let resolved_cli = resolve_chat_harness_cli(harness, cli_path)?;
@@ -4668,6 +4555,7 @@ pub(super) async fn build_resume_command_for_harness_with_continuation(
             continuation_runtime,
             service_tier_override,
             is_external_mcp,
+            agent_runtime_context,
             attachment_context_override,
         },
     )

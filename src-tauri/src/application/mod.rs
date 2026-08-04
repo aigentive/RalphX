@@ -32,6 +32,15 @@ mod mcp_policy_config_tests;
 #[cfg(test)]
 mod mcp_policy_service_tests;
 pub mod agent_lane_settings_bootstrap;
+pub(crate) mod agent_runtime_context;
+#[cfg(test)]
+mod agent_runtime_context_tests;
+#[cfg(test)]
+mod agent_runtime_context_branch_status_tests;
+#[cfg(test)]
+mod agent_runtime_context_linked_plan_tests;
+#[cfg(test)]
+mod agent_runtime_context_team_tests;
 pub(crate) mod agent_planning_session_titles;
 pub mod agent_task_assignment_recovery;
 pub(crate) mod agent_task_pipeline_service;
