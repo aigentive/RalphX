@@ -226,7 +226,7 @@ impl<'a> NativeDelegationLauncher<'a> {
                     .delegated_session_repo
                     .update_job_identity(
                         &delegated_session_entity,
-                        session.caller_conversation_id.clone(),
+                        parent.caller_conversation_id.clone(),
                         job_id,
                         parent_agent_run_id.clone(),
                     )
