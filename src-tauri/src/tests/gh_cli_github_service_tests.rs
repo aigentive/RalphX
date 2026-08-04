@@ -8,12 +8,13 @@ use crate::error::AppError;
 use crate::infrastructure::services::gh_cli_github_service::{
     parse_branch_check_conclusions, parse_check_run_annotations_output, parse_check_runs_output,
     parse_code_scanning_alert_annotations_output, parse_gh_auth_status_lines,
-    parse_issue_create_plain_output, parse_pr_annotation_head_sha_output, parse_pr_create_output,
-    parse_pr_create_plain_output, parse_pr_detail_output, parse_pr_health_output,
-    parse_pr_review_comment_annotations_output, parse_pr_review_decision_output,
-    parse_pr_review_feedback_output, parse_pr_review_thread_output, parse_pr_search_output,
-    parse_pr_status_output, parse_pr_sync_state_output, parse_submit_pr_review_output,
-    sanitize_stderr_line, scrub_token_urls, CheckRunAnnotationSource,
+    parse_issue_create_plain_output, parse_pr_annotation_head_sha_output,
+    parse_pr_auto_merge_state_output, parse_pr_create_output, parse_pr_create_plain_output,
+    parse_pr_detail_output, parse_pr_health_output, parse_pr_review_comment_annotations_output,
+    parse_pr_review_decision_output, parse_pr_review_feedback_output,
+    parse_pr_review_thread_output, parse_pr_search_output, parse_pr_status_output,
+    parse_pr_sync_state_output, parse_submit_pr_review_output, sanitize_stderr_line,
+    scrub_token_urls, CheckRunAnnotationSource,
 };
 
 // ── parse_pr_create_output ─────────────────────────────────────────────────
@@ -472,6 +473,37 @@ fn parse_pr_health_collects_rollup_comments_and_auto_merge() {
     );
     assert_eq!(health.issue_comments.len(), 1);
     assert!(health.issue_comments[0].is_codecov);
+}
+
+#[test]
+fn parse_pr_auto_merge_state_reads_only_the_auto_merge_request() {
+    let state = parse_pr_auto_merge_state_output(
+        r#"{
+            "autoMergeRequest": {
+                "mergeMethod": "SQUASH",
+                "enabledBy": {"login": "maintainer"}
+            }
+        }"#,
+    )
+    .expect("auto-merge response should parse");
+
+    assert_eq!(
+        state,
+        Some(
+            crate::domain::services::github_service::PrAutoMergeRequest {
+                enabled_by: Some("maintainer".to_string()),
+                merge_method: Some("squash".to_string()),
+            }
+        )
+    );
+}
+
+#[test]
+fn parse_pr_auto_merge_state_returns_none_for_missing_request() {
+    let state = parse_pr_auto_merge_state_output(r#"{"autoMergeRequest": null}"#)
+        .expect("null auto-merge request should parse");
+
+    assert_eq!(state, None);
 }
 
 #[test]
@@ -2156,6 +2188,40 @@ mod mock_roundtrip {
             .into_iter()
             .map(str::to_string)
             .collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_pr_auto_merge_state_uses_narrow_pr_view_request() {
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![Ok(vec![r#"{
+                "autoMergeRequest": {
+                    "mergeMethod": "REBASE",
+                    "enabledBy": {"login": "maintainer"}
+                }
+            }"#
+        .to_string()])]));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        let state = service
+            .fetch_pr_auto_merge_state(Path::new("/tmp"), 68)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            state,
+            Some(
+                crate::domain::services::github_service::PrAutoMergeRequest {
+                    enabled_by: Some("maintainer".to_string()),
+                    merge_method: Some("rebase".to_string()),
+                }
+            )
+        );
+        assert_eq!(
+            runner.gh_calls(),
+            vec![vec!["pr", "view", "68", "--json", "autoMergeRequest"]
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>()]
         );
     }
 

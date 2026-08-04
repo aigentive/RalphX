@@ -120,6 +120,7 @@ interface AgentReviewPanelProps {
   onOpenPublish?: () => void;
   onViewTranscript?: () => void;
   onStartReview: (force: boolean) => void;
+  onStartReviewIntent?: () => void;
   onFixIssues: () => void;
   onApproveAnyway?: () => Promise<void>;
   isReviewPrWorkspace?: boolean;
@@ -399,6 +400,7 @@ export function AgentReviewPanel({
   onOpenPublish,
   onViewTranscript,
   onStartReview,
+  onStartReviewIntent,
   onFixIssues,
   onApproveAnyway,
   isReviewPrWorkspace = false,
@@ -674,6 +676,8 @@ export function AgentReviewPanel({
             <DropdownMenuContent align="end" className="min-w-[160px]">
               <DropdownMenuItem
                 data-testid="agents-review-rerun"
+                onPointerEnter={onStartReviewIntent}
+                onFocus={onStartReviewIntent}
                 onSelect={(event) => {
                   event.preventDefault();
                   if (action.kind === "review") {
@@ -764,6 +768,12 @@ export function AgentReviewPanel({
         onClick={() =>
           action.kind === "fix" ? onFixIssues() : onStartReview(action.force)
         }
+        {...(action.kind === "review" && onStartReviewIntent
+          ? {
+              onPointerEnter: onStartReviewIntent,
+              onFocus: onStartReviewIntent,
+            }
+          : {})}
         disabled={isActionDisabled}
         className={
           isEmbeddedRerun
@@ -804,6 +814,7 @@ export function AgentReviewPanel({
     onApproveAnyway,
     onFixIssues,
     onStartReview,
+    onStartReviewIntent,
   ]);
 
   const selectedReviewArtifact =

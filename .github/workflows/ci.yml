@@ -355,7 +355,7 @@ jobs:
           retention-days: 1
 
   rust-lib-tests:
-    name: Rust Lib Tests (Shard ${{ matrix.shard }}/4)
+    name: Rust Lib Tests (Shard ${{ matrix.shard }}/2)
     needs:
       - changes
       - rust-lib-nextest-archive
@@ -365,7 +365,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2]
     env:
       RALPHX_TEST_MODE: "1"
     steps:
@@ -390,19 +390,19 @@ jobs:
           name: rust-lib-tests-nextest-archive
           path: .
 
-      - name: Run Rust lib tests shard ${{ matrix.shard }}/4
+      - name: Run Rust lib tests shard ${{ matrix.shard }}/2
         run: |
           cargo nextest run \
             --archive-file rust-lib-tests.tar.zst \
             --workspace-remap "${GITHUB_WORKSPACE}/src-tauri" \
             --profile ci \
-            --partition hash:${{ matrix.shard }}/4
+            --partition hash:${{ matrix.shard }}/2
 
       - name: Upload Rust lib test timings
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: rust-lib-tests-junit-${{ matrix.shard }}-of-4
+          name: rust-lib-tests-junit-${{ matrix.shard }}-of-2
           path: src-tauri/target/nextest/ci/junit.xml
           if-no-files-found: warn
           retention-days: 7
@@ -550,7 +550,7 @@ jobs:
           retention-days: 1
 
   rust-full-integration:
-    name: Rust Full Integration (Shard ${{ matrix.shard }}/3)
+    name: Rust Full Integration (Shard ${{ matrix.shard }}/2)
     needs:
       - changes
       - rust-integration-nextest-archive
@@ -560,7 +560,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2]
     env:
       RALPHX_TEST_MODE: "1"
     steps:
@@ -585,7 +585,7 @@ jobs:
           name: rust-integration-tests-nextest-archive
           path: .
 
-      - name: Run Rust integration tests shard ${{ matrix.shard }}/3
+      - name: Run Rust integration tests shard ${{ matrix.shard }}/2
         run: |
           heartbeat() {
             while true; do
@@ -608,13 +608,13 @@ jobs:
             --archive-file rust-integration-tests.tar.zst \
             --workspace-remap "${GITHUB_WORKSPACE}/src-tauri" \
             --profile ci \
-            --partition slice:${{ matrix.shard }}/3
+            --partition slice:${{ matrix.shard }}/2
 
       - name: Upload Rust integration test timings
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: rust-integration-tests-junit-${{ matrix.shard }}-of-3
+          name: rust-integration-tests-junit-${{ matrix.shard }}-of-2
           path: src-tauri/target/nextest/ci/junit.xml
           if-no-files-found: warn
           retention-days: 7

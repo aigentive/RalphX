@@ -287,6 +287,33 @@ fn open_review_pr_health() -> PrHealth {
     }
 }
 
+#[tokio::test]
+async fn workspace_review_start_preview_does_not_wait_for_the_lifecycle_lock() {
+    let app_state = Arc::new(AppState::new_test());
+    let conversation_id = ChatConversationId::from_string("preview-without-lifecycle-lock");
+    let mut workspace = test_workspace(conversation_id.clone());
+    workspace.mode = AgentConversationWorkspaceMode::Plan;
+    app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    let state = test_http_state(app_state);
+    let _lifecycle_guard = lock_workspace_review_lifecycle(&conversation_id).await;
+
+    let preview = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        get_agent_workspace_review_start_preview(State(state), Path(conversation_id.to_string())),
+    )
+    .await
+    .expect("preview must not wait for a held workspace Review lifecycle lock");
+
+    assert!(
+        preview.is_err(),
+        "Plan mode still rejects local Workspace Review"
+    );
+}
+
 async fn pr_review_submission_context() -> (
     Arc<AppState>,
     HttpServerState,

@@ -20,6 +20,7 @@ use crate::domain::services::{QueueKey, QueuedMessage};
 use crate::infrastructure::MockAgenticClient;
 use std::collections::BTreeSet;
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc as StdArc, Mutex as StdMutex};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -34,6 +35,109 @@ struct WorkspaceReviewTimingEvent {
 
 struct WorkspaceReviewTimingLayer {
     captured: StdArc<StdMutex<Vec<WorkspaceReviewTimingEvent>>>,
+}
+
+#[derive(Clone, Debug)]
+struct WorkspaceReviewGitLaneEvent {
+    command: String,
+    lane: String,
+}
+
+struct WorkspaceReviewGitLaneLayer {
+    captured: StdArc<StdMutex<Vec<WorkspaceReviewGitLaneEvent>>>,
+}
+
+struct WorkspaceReviewGitWriteTreeGateLayer {
+    completed_write_trees: AtomicUsize,
+    reached: std::sync::mpsc::SyncSender<()>,
+    resume: StdMutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl<S: tracing::Subscriber> Layer<S> for WorkspaceReviewGitWriteTreeGateLayer {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        #[derive(Default)]
+        struct CommandVisitor {
+            command: Option<String>,
+        }
+
+        impl tracing::field::Visit for CommandVisitor {
+            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                if field.name() == "command" {
+                    self.command = Some(value.to_string());
+                }
+            }
+
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "command" {
+                    self.command = Some(format!("{value:?}").replace('"', ""));
+                }
+            }
+        }
+
+        let mut visitor = CommandVisitor::default();
+        event.record(&mut visitor);
+        if visitor.command.as_deref() != Some("write-tree") {
+            return;
+        }
+        let completed = self.completed_write_trees.fetch_add(1, Ordering::SeqCst) + 1;
+        if completed != 2 {
+            return;
+        }
+        self.reached
+            .send(())
+            .expect("fingerprint test should wait for the final settle check");
+        self.resume
+            .lock()
+            .expect("fingerprint resume receiver lock should remain available")
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("fingerprint test should resume the final settle check");
+    }
+}
+
+impl<S: tracing::Subscriber> Layer<S> for WorkspaceReviewGitLaneLayer {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        #[derive(Default)]
+        struct GitLaneVisitor {
+            command: Option<String>,
+            lane: Option<String>,
+        }
+
+        impl tracing::field::Visit for GitLaneVisitor {
+            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                match field.name() {
+                    "command" => self.command = Some(value.to_string()),
+                    "lane" => self.lane = Some(value.to_string()),
+                    _ => {}
+                }
+            }
+
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                let value = format!("{value:?}").replace('"', "");
+                match field.name() {
+                    "command" => self.command = Some(value),
+                    "lane" => self.lane = Some(value),
+                    _ => {}
+                }
+            }
+        }
+
+        let mut visitor = GitLaneVisitor::default();
+        event.record(&mut visitor);
+        if let (Some(command), Some(lane)) = (visitor.command, visitor.lane) {
+            self.captured
+                .lock()
+                .expect("git lane capture lock should remain available")
+                .push(WorkspaceReviewGitLaneEvent { command, lane });
+        }
+    }
 }
 
 impl<S: tracing::Subscriber> Layer<S> for WorkspaceReviewTimingLayer {
@@ -815,6 +919,127 @@ async fn workspace_delta_content_fingerprint_tracks_content_not_head_provenance(
         .expect("changed content should fingerprint");
 
     assert_ne!(changed_fingerprint, uncommitted_fingerprint);
+}
+
+#[tokio::test]
+async fn workspace_review_source_snapshot_fingerprint_uses_background_git_lane() {
+    let (_temp, repo, base_sha) = init_repo();
+    std::fs::write(repo.join("README.md"), "base\nupdated\n")
+        .expect("tracked file should be changed");
+    let target = AgentWorkspaceReviewTarget {
+        scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        base_ref: base_sha,
+        base_sha: None,
+        head_ref: "HEAD".to_string(),
+        head_sha: None,
+        diff_fingerprint: "initial".to_string(),
+        working_directory: repo,
+        source_pull_request_number: None,
+        review_packet: AgentWorkspaceReviewPacket::default(),
+    };
+    let captured = StdArc::new(StdMutex::new(Vec::new()));
+    let subscriber = tracing_subscriber::registry().with(WorkspaceReviewGitLaneLayer {
+        captured: StdArc::clone(&captured),
+    });
+    let _guard = subscriber.set_default();
+
+    workspace_review_source_snapshot_fingerprint(&target)
+        .await
+        .expect("source snapshot should fingerprint");
+
+    let events = captured
+        .lock()
+        .expect("git lane capture lock should remain available");
+    assert!(
+        !events.is_empty(),
+        "fingerprinting must execute git commands"
+    );
+    assert!(
+        events.iter().all(|event| event.lane == "background"),
+        "all source snapshot commands must use the background lane: {events:?}"
+    );
+    assert!(
+        events.iter().any(|event| event.command == "add -A -- ."),
+        "the lane assertion must cover the whole-worktree add: {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn workspace_delta_fingerprint_rejects_conflicted_index_created_during_resolution() {
+    let (_temp, repo, base_sha) = init_repo();
+    git(&repo, &["checkout", "-b", "conflict-source"]);
+    std::fs::write(repo.join("README.md"), "source\n").expect("source file should change");
+    git(&repo, &["add", "README.md"]);
+    git(&repo, &["commit", "-m", "source change"]);
+    git(&repo, &["checkout", "main"]);
+    std::fs::write(repo.join("README.md"), "main\n").expect("main file should change");
+    git(&repo, &["add", "README.md"]);
+    git(&repo, &["commit", "-m", "main change"]);
+
+    let (reached_tx, reached_rx) = std::sync::mpsc::sync_channel(1);
+    let (resume_tx, resume_rx) = std::sync::mpsc::sync_channel(1);
+    let fingerprint_repo = repo.clone();
+    let fingerprint_task = std::thread::spawn(move || {
+        let subscriber =
+            tracing_subscriber::registry().with(WorkspaceReviewGitWriteTreeGateLayer {
+                completed_write_trees: AtomicUsize::new(0),
+                reached: reached_tx,
+                resume: StdMutex::new(resume_rx),
+            });
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("fingerprint test runtime should build");
+        tracing::subscriber::with_default(subscriber, || {
+            runtime.block_on(workspace_delta_tree_fingerprints(
+                &fingerprint_repo,
+                &base_sha,
+            ))
+        })
+    });
+
+    reached_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("fingerprinting should pause before the final settle check");
+    let merge = Command::new("git")
+        .args(["merge", "conflict-source"])
+        .current_dir(&repo)
+        .output()
+        .expect("conflicting merge should spawn");
+    assert!(
+        !merge.status.success(),
+        "merge must create an unmerged index"
+    );
+    std::fs::remove_file(repo.join(".git/MERGE_HEAD"))
+        .expect("test should isolate an unmerged index without operation metadata");
+    assert!(
+        !GitService::unfinished_operation_state(&repo)
+            .expect("operation state should load")
+            .is_unfinished(),
+        "the trailing conflict-files read, not operation metadata, must reject this state"
+    );
+    assert!(
+        !GitService::get_conflict_files(&repo)
+            .await
+            .expect("conflict files should load")
+            .is_empty(),
+        "test precondition requires an unmerged index"
+    );
+    resume_tx
+        .send(())
+        .expect("fingerprint test should resume the final settle check");
+
+    let error = match fingerprint_task
+        .join()
+        .expect("fingerprint task should join")
+    {
+        Ok(_) => panic!("a conflicted index created mid-fingerprint must be rejected"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        AppError::WorkspaceReviewUnfinishedGitOperation
+    ));
 }
 
 #[tokio::test]
@@ -2072,6 +2297,46 @@ async fn start_review_blocks_monitor_when_child_chat_send_fails() {
                 "failed to start workspace reviewer chat: Agent not available: Mock agent not available"
             )
         );
+}
+
+#[tokio::test]
+async fn start_review_reuses_revalidated_target_without_resolving_git_again() {
+    let (_temp, repo, base_sha) = init_repo();
+    committed_workspace_delta(&repo);
+
+    let agent_client: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let state = Arc::new(AppState::new_test().with_agent_client(agent_client));
+    let chat_service = MockChatService::new();
+    let project = seed_project(&state, &repo).await;
+    let workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    seed_conversation(&state, &workspace).await;
+    let target = resolve_review_target(&workspace, &project)
+        .await
+        .expect("target resolution should succeed")
+        .expect("workspace delta target should exist");
+
+    let parked_repo = repo.with_extension("parked-after-confirmation");
+    std::fs::rename(&repo, &parked_repo).expect("park confirmed repository");
+
+    let start = start_agent_workspace_review_with_revalidated_target_and_chat_service(
+        Arc::clone(&state),
+        &workspace,
+        true,
+        None,
+        Some(target),
+        &chat_service,
+    )
+    .await
+    .expect("revalidated target should avoid a second git resolution");
+
+    assert!(start.started);
+    assert_eq!(chat_service.get_sent_messages().await.len(), 1);
 }
 
 #[tokio::test]

@@ -1,8 +1,21 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  fireEvent,
+  render as renderTestingLibrary,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { ReactElement } from "react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { manualRoleDefaultsApi } from "@/api/manual-role-defaults";
+import {
+  harnessProvidersApi,
+  type AgentProvidersSettingsResponse,
+} from "@/api/harness-providers";
+import { harnessProviderKeys } from "@/hooks/useHarnessProviders";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 
 import { useRoleRuntimeConfirmation } from "./useRoleRuntimeConfirmation";
@@ -39,6 +52,55 @@ function catalog(role: "workspace_reviewer" | "workspace_repair") {
         persona: { enabled: false, disabledReason: "Personas are unavailable" },
       },
     }],
+  };
+}
+
+function render(ui: ReactElement) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  return renderTestingLibrary(
+    <QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>,
+  );
+}
+
+function providerSettings(
+  available = true,
+): AgentProvidersSettingsResponse {
+  return {
+    defaultProvider: "claude",
+    requiresOnboarding: false,
+    providers: [
+      {
+        provider: "claude",
+        enabled: true,
+        isDefault: true,
+        claudeDangerouslySkipPermissions: false,
+        claudeAllowDangerouslySkipPermissions: false,
+        available,
+        binaryFound: available,
+        missingCoreExecFeatures: [],
+        error: available ? null : "Claude CLI is unavailable",
+        status: available ? "ready" : "unavailable",
+        ultraSupportedModels: [],
+        supportsFastMode: false,
+        fastModeSupportedModels: [],
+        updatedAt: "2026-08-03T00:00:00.000Z",
+      },
+    ],
+  };
+}
+
+function renderWithCachedProviders(ui: ReactElement) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  queryClient.setQueryData(harnessProviderKeys.list(false), providerSettings());
+  return {
+    queryClient,
+    ...renderTestingLibrary(
+      <QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>,
+    ),
   };
 }
 
@@ -143,6 +205,108 @@ function Harness({
 describe("useRoleRuntimeConfirmation", () => {
   beforeEach(() => {
     useAgentSessionStore.setState({ roleRuntimeOverridesByConversationId: {} });
+    vi.mocked(manualRoleDefaultsApi.list).mockReset();
+    vi.mocked(harnessProvidersApi.list)
+      .mockReset()
+      .mockResolvedValue(providerSettings());
+  });
+
+  it("becomes actionable from cached providers without awaiting runtime refresh", async () => {
+    let resolveRefresh!: (value: AgentProvidersSettingsResponse) => void;
+    vi.mocked(manualRoleDefaultsApi.list).mockResolvedValue(
+      catalog("workspace_reviewer"),
+    );
+    vi.mocked(harnessProvidersApi.list).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveRefresh = resolve;
+        }),
+    );
+    const user = userEvent.setup();
+
+    renderWithCachedProviders(
+      <Harness onReview={vi.fn()} onRepair={vi.fn()} />,
+    );
+    await user.click(screen.getByRole("button", { name: "Open review" }));
+    const dialog = await screen.findByRole("alertdialog");
+
+    await waitFor(() =>
+      expect(
+        within(dialog).getByRole("button", { name: "Start review" }),
+      ).toBeEnabled(),
+    );
+    expect(harnessProvidersApi.list).toHaveBeenCalledWith({ refreshRuntime: true });
+    resolveRefresh(providerSettings());
+  });
+
+  it("disables the current confirmation when background refresh invalidates it", async () => {
+    let resolveRefresh!: (value: AgentProvidersSettingsResponse) => void;
+    vi.mocked(manualRoleDefaultsApi.list).mockResolvedValue(
+      catalog("workspace_reviewer"),
+    );
+    vi.mocked(harnessProvidersApi.list).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveRefresh = resolve;
+        }),
+    );
+    const user = userEvent.setup();
+
+    const { queryClient } = renderWithCachedProviders(
+      <Harness onReview={vi.fn()} onRepair={vi.fn()} />,
+    );
+    await user.click(screen.getByRole("button", { name: "Open review" }));
+    const dialog = await screen.findByRole("alertdialog");
+    await waitFor(() =>
+      expect(
+        within(dialog).getByRole("button", { name: "Start review" }),
+      ).toBeEnabled(),
+    );
+
+    resolveRefresh(providerSettings(false));
+
+    await waitFor(() =>
+      expect(
+        within(dialog).getByRole("button", { name: "Start review" }),
+      ).toBeDisabled(),
+    );
+    expect(queryClient.getQueryData(harnessProviderKeys.list(false))).toEqual(
+      providerSettings(false),
+    );
+  });
+
+  it("awaits a runtime refresh when no provider cache exists", async () => {
+    let resolveRefresh!: (value: AgentProvidersSettingsResponse) => void;
+    vi.mocked(manualRoleDefaultsApi.list).mockResolvedValue(
+      catalog("workspace_reviewer"),
+    );
+    vi.mocked(harnessProvidersApi.list).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveRefresh = resolve;
+        }),
+    );
+    const user = userEvent.setup();
+
+    render(<Harness onReview={vi.fn()} onRepair={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: "Open review" }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(
+      within(dialog).getByRole("button", { name: "Preparing..." }),
+    ).toBeDisabled();
+    await waitFor(() =>
+      expect(harnessProvidersApi.list).toHaveBeenCalledWith({
+        refreshRuntime: true,
+      }),
+    );
+
+    resolveRefresh(providerSettings());
+
+    await waitFor(() =>
+      expect(
+        within(dialog).getByRole("button", { name: "Start review" }),
+      ).toBeEnabled(),
+    );
   });
 
   it("does not let superseded preparation overwrite the current runtime tuple", async () => {
