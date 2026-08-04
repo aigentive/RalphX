@@ -1,5 +1,6 @@
 //! HTTP handlers for the managed-Team lifecycle surface (`/api/managed_team/*`).
 
+pub mod authority;
 pub mod lifecycle;
 pub mod members;
 pub mod messaging;
