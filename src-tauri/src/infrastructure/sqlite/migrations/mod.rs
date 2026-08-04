@@ -711,7 +711,6 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-<<<<<<< HEAD
 pub const SCHEMA_VERSION: i64 = 20260804125852;
 
 /// Migration function signature
