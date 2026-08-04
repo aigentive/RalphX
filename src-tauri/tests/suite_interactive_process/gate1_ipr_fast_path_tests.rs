@@ -38,6 +38,7 @@ use ralphx_lib::domain::services::running_agent_registry::{
 };
 use ralphx_lib::domain::services::QueueKey;
 use ralphx_lib::infrastructure::memory::MemoryChatConversationRepository;
+use ralphx_lib::testing::{GetByIdFailingAgentRunRepository, AGENT_RUN_GET_BY_ID_FAILURE};
 
 use crate::support::erroring_persona_repository::ErroringPersonaRepository;
 use crate::support::failing_chat_message_repository::{
@@ -1922,6 +1923,77 @@ async fn gate1_live_run_without_model_does_not_queue() {
         .remove(&interactive_key)
         .await;
     let _ = child.wait().await;
+}
+
+#[tokio::test]
+async fn gate1_live_run_read_failure_returns_repository_error_without_stdin_delivery() {
+    let mut state = AppState::new_test();
+    state.agent_run_repo = Arc::new(GetByIdFailingAgentRunRepository::new(Arc::clone(
+        &state.agent_run_repo,
+    )));
+    let context_id = "project-gate1-live-run-read-failure";
+    let (_project_dir, conversation_id, _live_run_id, interactive_key, mut child) =
+        setup_live_project_continuation(
+            &state,
+            context_id,
+            None,
+            Some(("sonnet", "claude-sonnet-4-6")),
+        )
+        .await;
+
+    let error = state
+        .build_chat_service_with_execution_state(Arc::new(ExecutionState::new()))
+        .send_message(
+            ChatContextType::Project,
+            context_id,
+            "must not write without live-run authority",
+            SendMessageOptions {
+                conversation_id_override: Some(conversation_id),
+                model_override: Some("sonnet".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("an authoritative live-run read failure must abort Gate 1");
+
+    assert!(
+        matches!(
+            error,
+            ChatServiceError::RepositoryError(ref message)
+                if message.contains(AGENT_RUN_GET_BY_ID_FAILURE)
+        ),
+        "live-run read failures must remain repository errors: {error}"
+    );
+    assert!(
+        state
+            .queued_message_repo
+            .list(&QueueKey::new(
+                ChatContextType::Project,
+                conversation_id.as_str(),
+            ))
+            .await
+            .expect("read durable queue")
+            .is_empty(),
+        "a failed authority read must not queue or claim delivery"
+    );
+
+    state
+        .interactive_process_registry
+        .remove(&interactive_key)
+        .await;
+    let mut observed = Vec::new();
+    child
+        .stdout
+        .take()
+        .expect("observer stdout")
+        .read_to_end(&mut observed)
+        .await
+        .expect("read observer stdout");
+    let _ = child.wait().await;
+    assert!(
+        observed.is_empty(),
+        "a failed authority read must not write to stdin"
+    );
 }
 
 // ============================================================================
