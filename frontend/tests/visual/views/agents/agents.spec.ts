@@ -1407,6 +1407,8 @@ test.describe("Agents View", () => {
     await page.emulateMedia({ reducedMotion: "reduce" });
     await page.addInitScript(() => {
       window.localStorage.clear();
+      delete window.__mockGitAuthDiagnostics;
+      delete window.__mockGhAuthStatus;
     });
   });
 
