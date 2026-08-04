@@ -3371,7 +3371,7 @@ async fn reserve_pre_existing_on_base_settles_to_ready_with_marker() {
             .expect("workspace exists")
             .pr_supervision_status
             .as_deref(),
-        Some("held")
+        Some("paused")
     );
 }
 
@@ -3649,7 +3649,7 @@ async fn reserve_ci_rerun_increments_count_and_settles_to_ready() {
             .expect("workspace exists")
             .pr_supervision_status
             .as_deref(),
-        Some("held")
+        Some("paused")
     );
 }
 
