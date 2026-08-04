@@ -913,7 +913,7 @@ async fn review_pr_autofix_route_rejects_stale_automation_before_github_or_side_
         &conversation_id,
         Arc::clone(&workspace_repo),
         None,
-        chat as Arc<dyn crate::application::chat_service::ChatService>,
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
     .expect("Review PR guard should no-op");
