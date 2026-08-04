@@ -1117,6 +1117,15 @@ async function expectPublishVisualAtWidths(
   snapshotName: string,
 ) {
   const standardViewport = page.viewportSize() ?? { width: 1280, height: 720 };
+  const providerCliUpdateDismiss = page.getByTestId(
+    "provider-cli-update-dismiss-button",
+  );
+  const dismissProviderCliUpdateToast = async () => {
+    if (await providerCliUpdateDismiss.isVisible().catch(() => false)) {
+      await providerCliUpdateDismiss.click();
+    }
+  };
+  await dismissProviderCliUpdateToast();
   await publishPage.expectNoPaneOverflow();
   await expect(page).toHaveScreenshot(`${snapshotName}.png`, {
     fullPage: false,
@@ -1124,6 +1133,7 @@ async function expectPublishVisualAtWidths(
   });
 
   await page.setViewportSize({ width: 960, height: standardViewport.height });
+  await dismissProviderCliUpdateToast();
   await publishPage.expectNoPaneOverflow();
   await expect(page).toHaveScreenshot(`${snapshotName}-constrained.png`, {
     fullPage: false,
@@ -1619,6 +1629,9 @@ test.describe("Agents View", () => {
           workspaceReviewVisualLabels[reviewState],
           { exact: true },
         ),
+      ).toBeVisible();
+      await expect(
+        publishPage.reviewContent.getByTestId("agents-review-auto-review-fix"),
       ).toBeVisible();
       await publishPage.expectPrimaryActionContained(
         reviewState === "running"
