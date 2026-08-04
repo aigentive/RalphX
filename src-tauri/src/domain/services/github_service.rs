@@ -590,6 +590,18 @@ pub trait GithubServiceTrait: Send + Sync {
         })
     }
 
+    /// Fetch only the current auto-merge request state for a pull request.
+    ///
+    /// The conservative default keeps runtimes without GitHub support from
+    /// treating an unavailable read as evidence that auto-merge is disabled.
+    async fn fetch_pr_auto_merge_state(
+        &self,
+        _working_dir: &Path,
+        _pr_number: i64,
+    ) -> AppResult<Option<PrAutoMergeRequest>> {
+        Ok(None)
+    }
+
     /// Re-run only failed jobs for an authoritative GitHub Actions workflow run.
     /// The run id must be derived from fresh PR health by the caller, never model input.
     /// Completed check conclusions on the tip of `branch_ref`, used to tell "this PR broke it"

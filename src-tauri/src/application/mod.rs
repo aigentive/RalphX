@@ -464,6 +464,8 @@ mod granola_integration_prompt_tests;
 #[cfg(test)]
 mod granola_integration_service_tests;
 #[cfg(test)]
+pub(crate) mod harness_runtime_test_support;
+#[cfg(test)]
 mod harness_runtime_registry_tests;
 #[cfg(test)]
 mod ideation_harness_availability_tests;

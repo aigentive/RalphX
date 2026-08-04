@@ -342,7 +342,7 @@ async fn workspace_review_unfinished_git_rolls_back_attempt_guard_without_rereso
     assert_unfinished_operation(error);
     assert_eq!(github.state().disable_pr_auto_merge_calls, 1);
     assert_eq!(github.state().enable_pr_auto_merge_calls, 1);
-    assert_eq!(github.state().fetch_pr_health_calls, 2);
+    assert_eq!(github.state().fetch_pr_health_calls, 1);
     let monitor = state
         .agent_conversation_workspace_repo
         .get_workspace_review_monitor(&fixture.workspace.conversation_id)
@@ -369,7 +369,7 @@ async fn workspace_review_unfinished_git_records_restore_failed_without_launchin
     assert_unfinished_operation(error);
     assert_eq!(github.state().disable_pr_auto_merge_calls, 1);
     assert_eq!(github.state().enable_pr_auto_merge_calls, 1);
-    assert_eq!(github.state().fetch_pr_health_calls, 1);
+    assert_eq!(github.state().fetch_pr_health_calls, 0);
     let monitor = state
         .agent_conversation_workspace_repo
         .get_workspace_review_monitor(&fixture.workspace.conversation_id)

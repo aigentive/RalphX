@@ -1608,7 +1608,6 @@ pub async fn get_agent_workspace_review_start_preview(
 ) -> Result<Json<AgentWorkspaceReviewStartPreviewResponse>, JsonError> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
-    let _lifecycle_guard = lock_workspace_review_lifecycle(&conversation_id).await;
     let preview = preview_manual_workspace_review_start(state.app_state.as_ref(), &workspace)
         .await
         .map_err(workspace_review_action_error)?;

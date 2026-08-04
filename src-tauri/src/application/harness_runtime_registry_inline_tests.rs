@@ -1,11 +1,10 @@
 use super::*;
+use crate::application::harness_runtime_test_support::HARNESS_RUNTIME_TEST_MUTEX;
 use std::ffi::OsStr;
 use tempfile::TempDir;
 
 fn plugin_override_lock() -> &'static std::sync::Mutex<()> {
-    use std::sync::{Mutex, OnceLock};
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+    &HARNESS_RUNTIME_TEST_MUTEX
 }
 
 struct EnvGuard {
