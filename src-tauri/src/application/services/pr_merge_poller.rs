@@ -28,11 +28,10 @@ use crate::application::agent_workspace_publish_recovery::{
 };
 use crate::application::agent_workspace_publish_repair_state::{
     agent_workspace_repair_is_base_stale_held, agent_workspace_repair_is_ci_held,
-    agent_workspace_repair_is_health_held,
-    classify_agent_workspace_repair_delivery, held_repair_has_unpublished_head,
-    mark_agent_workspace_base_update_target, release_agent_workspace_base_stale_hold,
-    reserve_agent_workspace_base_stale_hold, reserve_agent_workspace_base_update,
-    reserve_agent_workspace_repair_dispatch,
+    agent_workspace_repair_is_health_held, classify_agent_workspace_repair_delivery,
+    held_repair_has_unpublished_head, mark_agent_workspace_base_update_target,
+    release_agent_workspace_base_stale_hold, reserve_agent_workspace_base_stale_hold,
+    reserve_agent_workspace_base_update, reserve_agent_workspace_repair_dispatch,
     settle_agent_workspace_repair_dispatch_outcome, start_or_join_agent_workspace_repair,
     start_or_join_agent_workspace_repair_without_projection,
     validate_agent_workspace_repair_target_lease, AgentWorkspaceRepairDispatchOutcome,
@@ -3435,15 +3434,25 @@ async fn route_agent_workspace_pr_autofix_for_target(
                 let mut attempt_already_settled = false;
                 let mut health_suppressed = agent_workspace_repair_is_health_held(&attempt);
                 let mut ci_held = agent_workspace_repair_is_ci_held(&attempt);
-                let mut base_stale_held =
-                    agent_workspace_repair_is_base_stale_held(&attempt);
+                let mut base_stale_held = agent_workspace_repair_is_base_stale_held(&attempt);
                 let disposition = classify_health_hold_disposition(BaseStalenessObservation {
                     merge_state_status: health.sync_state.merge_state_status.as_ref(),
                     observed_base_oid: health.sync_state.base_ref_oid.as_deref(),
                     attempt_target_base_commit: attempt.target_base_commit.as_deref(),
                     last_base_update_oid: attempt.base_update_target_commit.as_deref(),
                 });
+                let merge_state_is_known = !matches!(
+                    health.sync_state.merge_state_status.as_ref(),
+                    None | Some(PrMergeStateStatus::Unknown | PrMergeStateStatus::Other(_))
+                );
+                let observed_base_is_known = health
+                    .sync_state
+                    .base_ref_oid
+                    .as_deref()
+                    .is_some_and(|oid| !oid.trim().is_empty());
                 if base_stale_held
+                    && merge_state_is_known
+                    && observed_base_is_known
                     && !matches!(
                         disposition,
                         HealthHoldDisposition::BlockedStaleAfterUpdate { .. }

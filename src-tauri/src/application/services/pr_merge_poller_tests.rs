@@ -21,7 +21,10 @@ use super::{AgentWorkspacePrPollerStart, PrPollerRegistry, RateLimitState};
 use crate::application::agent_conversation_workspace::{
     agent_conversation_branch_name, resolve_agent_conversation_workspace_path,
 };
-use crate::application::agent_workspace_publish_repair_state::current_agent_workspace_repair_claim_for_completion;
+use crate::application::agent_workspace_publish_repair_state::{
+    agent_workspace_repair_is_base_stale_held, agent_workspace_repair_is_ci_held,
+    current_agent_workspace_repair_claim_for_completion,
+};
 use crate::application::agent_workspace_terminal_cleanup::{
     cleanup_terminal_agent_workspace_after_pr, terminalize_agent_workspace_after_pr,
     TerminalAgentWorkspaceCause,
@@ -7274,6 +7277,213 @@ async fn live_pr_autofix_behind_at_already_updated_tip_enters_base_stale_hold() 
 }
 
 #[tokio::test]
+async fn live_pr_autofix_ci_hold_base_stale_marker_clears_once_when_no_longer_behind() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let mut workspace = supervised_workspace(
+        "ci-base-stale-lifecycle",
+        "project-ci-base-stale-lifecycle",
+        worktree.path(),
+    );
+    init_repair_dispatch_repo(worktree.path(), &workspace.branch_name);
+    workspace.base_commit = Some("base-updated-tip".to_string());
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
+    let branch_update_repo: Arc<dyn BranchUpdateRepository> =
+        Arc::new(MemoryBranchUpdateRepository::new());
+    let agent_run_repo = seeded_latest_pr_fixer_run_repo(&conversation_id).await;
+    let ci_fingerprint = "ci-hold:v1:ci-base-stale-head:924";
+    let held =
+        reserve_pending_ci_rerun_attempt(repair_repo.as_ref(), &conversation_id, ci_fingerprint)
+            .await;
+    assert!(held.pr_autofix_health_fingerprint.is_none());
+    let mut targeted = held.clone();
+    targeted.target_base_commit = Some("base-updated-tip".to_string());
+    targeted.base_update_target_commit = Some("base-updated-tip".to_string());
+    targeted.updated_at += chrono::Duration::microseconds(1);
+    let targeted = match repair_repo
+        .transition_repair_attempt(
+            crate::domain::repositories::AgentWorkspaceRepairAttemptTransition {
+                attempt: targeted,
+                expected_phase: AgentWorkspaceRepairPhase::Ready,
+                expected_updated_at: held.updated_at,
+                next_phase: AgentWorkspaceRepairPhase::Ready,
+                compatibility_projection: None,
+                events: Vec::new(),
+            },
+        )
+        .await
+        .expect("persist CI-only base authority")
+    {
+        crate::domain::repositories::AgentWorkspaceRepairAttemptTransitionOutcome::Applied(
+            attempt,
+        ) => attempt,
+        outcome => panic!("CI-only base authority must persist, got {outcome:?}"),
+    };
+    let mut health = open_pr_health("ci-base-stale-head");
+    health.sync_state.base_ref_oid = Some("base-updated-tip".to_string());
+    health.sync_state.merge_state_status = Some(PrMergeStateStatus::Behind);
+    health.checks.push(PrHealthCheck {
+        name: "Rust tests / cancelled".to_string(),
+        status: Some("completed".to_string()),
+        conclusion: Some("cancelled".to_string()),
+        details_url: Some("https://github.com/owner/repo/actions/runs/924/jobs/1".to_string()),
+    });
+    health.checks.push(PrHealthCheck {
+        name: "Rust tests / sibling".to_string(),
+        status: Some("in_progress".to_string()),
+        conclusion: None,
+        details_url: Some("https://github.com/owner/repo/actions/runs/924/jobs/2".to_string()),
+    });
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health.clone()));
+    let chat = Arc::new(MockChatService::with_agent_run_repo(Arc::clone(
+        &agent_run_repo,
+    )));
+
+    let routed = super::route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        workspace_repo.clone(),
+        Some(agent_run_repo.clone()),
+        Some(Arc::clone(&repair_repo)),
+        Some(Arc::clone(&branch_update_repo)),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("CI-only repeated base tip should enter base-stale hold");
+    assert!(!routed);
+    let stale_held = repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load base-stale attempt")
+        .expect("base-stale attempt remains current");
+    assert_eq!(stale_held.id, targeted.id);
+    assert!(agent_workspace_repair_is_base_stale_held(&stale_held));
+    assert!(agent_workspace_repair_is_ci_held(&stale_held));
+    assert_eq!(github.state().push_branch_calls, 0);
+    assert!(chat.get_sent_messages().await.is_empty());
+
+    health.sync_state.merge_state_status = Some(PrMergeStateStatus::Unknown);
+    github.state().fetch_pr_health_result = Some(Ok(health.clone()));
+    let routed = super::route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        workspace_repo.clone(),
+        Some(agent_run_repo.clone()),
+        Some(Arc::clone(&repair_repo)),
+        Some(Arc::clone(&branch_update_repo)),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("unknown merge state must retain base_stale");
+    assert!(!routed);
+    let unknown_retained = repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load unknown-state attempt")
+        .expect("base-stale attempt remains current");
+    assert!(agent_workspace_repair_is_base_stale_held(&unknown_retained));
+    assert_eq!(unknown_retained.updated_at, stale_held.updated_at);
+
+    health.sync_state.merge_state_status = Some(PrMergeStateStatus::Clean);
+    health.sync_state.base_ref_oid = None;
+    github.state().fetch_pr_health_result = Some(Ok(health.clone()));
+    let routed = super::route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        workspace_repo.clone(),
+        Some(agent_run_repo.clone()),
+        Some(Arc::clone(&repair_repo)),
+        Some(Arc::clone(&branch_update_repo)),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("missing base OID must retain base_stale");
+    assert!(!routed);
+    let missing_oid_retained = repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load missing-OID attempt")
+        .expect("base-stale attempt remains current");
+    assert!(agent_workspace_repair_is_base_stale_held(
+        &missing_oid_retained
+    ));
+    assert_eq!(missing_oid_retained.updated_at, stale_held.updated_at);
+
+    health.sync_state.base_ref_oid = Some("base-updated-tip".to_string());
+    github.state().fetch_pr_health_result = Some(Ok(health.clone()));
+    let routed = super::route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        workspace_repo.clone(),
+        Some(agent_run_repo.clone()),
+        Some(Arc::clone(&repair_repo)),
+        Some(Arc::clone(&branch_update_repo)),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("known cleared behind state should release only base_stale");
+    assert!(!routed);
+    let released = repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load released attempt")
+        .expect("CI hold remains current");
+    assert!(!agent_workspace_repair_is_base_stale_held(&released));
+    assert!(agent_workspace_repair_is_ci_held(&released));
+    assert!(released.updated_at > stale_held.updated_at);
+
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    let routed = super::route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        workspace_repo.clone(),
+        Some(agent_run_repo),
+        Some(Arc::clone(&repair_repo)),
+        Some(branch_update_repo),
+        chat as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("re-entry should retain the underlying CI hold");
+    assert!(!routed);
+    let reentered = repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load re-entered attempt")
+        .expect("CI hold remains current");
+    assert_eq!(
+        reentered.updated_at, released.updated_at,
+        "base_stale release must happen exactly once"
+    );
+    assert_eq!(
+        workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("list base update events")
+            .into_iter()
+            .filter(|event| event.step == "pr_base_update" && event.status == "blocked")
+            .count(),
+        1,
+        "the base-stale transition event must not duplicate on release or re-entry"
+    );
+}
+
+#[tokio::test]
 async fn live_pr_autofix_ci_rerun_hold_behind_base_dirty_worktree_defers_without_push() {
     let worktree = tempfile::tempdir().expect("worktree path");
     let mut workspace = supervised_workspace(
@@ -7315,12 +7525,9 @@ async fn live_pr_autofix_ci_rerun_hold_behind_base_dirty_worktree_defers_without
         conclusion: None,
         details_url: Some("https://github.com/owner/repo/actions/runs/923/jobs/2".to_string()),
     });
-    let held = reserve_pending_ci_rerun_attempt(
-        repair_repo.as_ref(),
-        &conversation_id,
-        ci_fingerprint,
-    )
-    .await;
+    let held =
+        reserve_pending_ci_rerun_attempt(repair_repo.as_ref(), &conversation_id, ci_fingerprint)
+            .await;
     let mut targeted = held.clone();
     targeted.target_base_commit = Some("base-behind-dirty".to_string());
     targeted.updated_at += chrono::Duration::microseconds(1);
