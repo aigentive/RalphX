@@ -147,6 +147,37 @@ function SupersedingConfirmationHarness({
   );
 }
 
+function IntentConfirmationHarness({
+  onConfirm,
+  onIntent,
+}: {
+  onConfirm: () => Promise<void>;
+  onIntent: () => void;
+}) {
+  const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => {
+          void confirm({
+            title: "Start Workspace Review?",
+            description: "Review details are still loading.",
+            confirmText: "Start review",
+            closeOnConfirm: true,
+            onConfirm,
+            onIntent,
+          });
+        }}
+      >
+        Open intent confirmation
+      </button>
+      <ConfirmationDialog {...confirmationDialogProps} />
+    </>
+  );
+}
+
 describe("useConfirmation", () => {
   it("opens immediately and keeps Confirm disabled until async preparation supplies its copy", async () => {
     let finishPrepare!: (value: { description: string }) => void;
@@ -371,5 +402,33 @@ describe("useConfirmation", () => {
       within(secondDialog).getByRole("button", { name: "Confirm second" }),
     );
     await waitFor(() => expect(onSecondResult).toHaveBeenCalledWith(true));
+  });
+
+  it("captures intent and closes before its detached action settles", async () => {
+    let finishConfirm!: () => void;
+    const onConfirm = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishConfirm = resolve;
+        }),
+    );
+    const onIntent = vi.fn();
+    const user = userEvent.setup();
+
+    render(<IntentConfirmationHarness onConfirm={onConfirm} onIntent={onIntent} />);
+    await user.click(
+      screen.getByRole("button", { name: "Open intent confirmation" }),
+    );
+    await user.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Start review",
+      }),
+    );
+
+    expect(onIntent).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    await waitFor(() => expect(onConfirm).toHaveBeenCalledOnce());
+
+    finishConfirm();
   });
 });

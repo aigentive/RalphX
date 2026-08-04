@@ -8,7 +8,8 @@ export type AgentWorkspaceOperationToastKind =
   | "local-commit"
   | "publish"
   | "rebase"
-  | "update-from-base";
+  | "update-from-base"
+  | "workspace-review";
 
 export interface AgentWorkspaceOperationToast {
   dismiss: () => void;

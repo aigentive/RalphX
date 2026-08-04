@@ -23,6 +23,12 @@ export interface ConfirmOptions {
   /** Keep body controls visible but immutable after a partial backend commit. */
   bodyDisabled?: boolean;
   confirmDisabled?: boolean;
+  /** Close once the user has committed intent; the action continues outside the dialog. */
+  closeOnConfirm?: boolean;
+  /** Starts progress UI immediately when `closeOnConfirm` captures intent. */
+  onIntent?: () => void;
+  /** Reports a detached action failure after its dialog has closed. */
+  onErrorAfterClose?: (error: unknown) => void;
   onConfirm?: () => Promise<unknown> | unknown;
   /** Runs after the dialog shell opens; return copy updates for the same dialog. */
   prepare?: (controller: ConfirmationController) =>
@@ -256,6 +262,17 @@ export function useConfirmation(): UseConfirmationReturn {
     const recoverFromError = options?.recoverFromError;
     if (!action) {
       settle(requestId, true);
+      return;
+    }
+
+    if (options.closeOnConfirm) {
+      options.onIntent?.();
+      settle(requestId, true);
+      void Promise.resolve()
+        .then(action)
+        .catch((error: unknown) => {
+          options.onErrorAfterClose?.(error);
+        });
       return;
     }
 

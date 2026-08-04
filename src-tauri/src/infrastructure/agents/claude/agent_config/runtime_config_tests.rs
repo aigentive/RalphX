@@ -44,6 +44,7 @@ fn test_all_defaults_are_sensible() {
     assert_eq!(cfg.git.cmd_timeout_secs, 60);
     assert_eq!(cfg.git.startup_auth_preflight_timeout_secs, 10);
     assert_eq!(cfg.git.retry_backoff_secs, vec![1, 2, 4]);
+    assert_eq!(cfg.git.provider_probe_cache_ttl_secs, 300);
     assert_eq!(cfg.git.workspace_freshness_cache_ttl_ms, 2_000);
     assert_eq!(cfg.git.workspace_review_cache_ttl_ms, 2_000);
     assert_eq!(cfg.git.workspace_pr_description_cache_ttl_ms, 300_000);
@@ -187,6 +188,7 @@ fn test_env_overrides_apply() {
         "RALPHX_GIT_CMD_TIMEOUT_SECS" => Some("120".to_string()),
         "RALPHX_GIT_STARTUP_AUTH_PREFLIGHT_TIMEOUT_SECS" => Some("9".to_string()),
         "RALPHX_GIT_RETRY_BACKOFF_SECS" => Some("2,4,8,16".to_string()),
+        "RALPHX_GIT_PROVIDER_PROBE_CACHE_TTL_SECS" => Some("120".to_string()),
         "RALPHX_GIT_WORKSPACE_FRESHNESS_CACHE_TTL_MS" => Some("750".to_string()),
         "RALPHX_GIT_WORKSPACE_REVIEW_CACHE_TTL_MS" => Some("900".to_string()),
         "RALPHX_GIT_WORKSPACE_PR_DESCRIPTION_CACHE_TTL_MS" => Some("1200".to_string()),
@@ -235,6 +237,7 @@ fn test_env_overrides_apply() {
     assert_eq!(cfg.git.cmd_timeout_secs, 120);
     assert_eq!(cfg.git.startup_auth_preflight_timeout_secs, 9);
     assert_eq!(cfg.git.retry_backoff_secs, vec![2, 4, 8, 16]);
+    assert_eq!(cfg.git.provider_probe_cache_ttl_secs, 120);
     assert_eq!(cfg.git.workspace_freshness_cache_ttl_ms, 750);
     assert_eq!(cfg.git.workspace_review_cache_ttl_ms, 900);
     assert_eq!(cfg.git.workspace_pr_description_cache_ttl_ms, 1200);
