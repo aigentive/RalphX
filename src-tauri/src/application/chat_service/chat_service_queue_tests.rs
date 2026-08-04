@@ -1,11 +1,138 @@
 use super::*;
 use crate::domain::agents::LogicalEffort;
-use crate::domain::entities::ChatAttachmentId;
+use crate::domain::entities::{ChatAttachmentId, ChatContextType, ChatConversationId};
+use crate::domain::repositories::{ChatMessageRepository, QueuedMessageRepository};
 use crate::domain::services::{
     ComposerArtifactReference, ComposerExcerptReference, ComposerIntegrationReference,
     ComposerProjectReference, ComposerProjectReferenceKind,
 };
 use crate::infrastructure::agents::claude::agent_names;
+use chrono::{Duration, Utc};
+use std::sync::{Arc, Mutex};
+use tauri::{Listener, Manager};
+
+fn recovered_pending_turn(queued_at: String) -> PendingStdinTurn {
+    PendingStdinTurn {
+        persisted_message_id: "recovered-pending-message".to_string(),
+        content: "already answered".to_string(),
+        metadata_override: None,
+        queued_at,
+    }
+}
+
+#[tokio::test]
+async fn requeue_pending_stdin_turns_suppresses_later_assistant_evidence() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let mut assistant = super::chat_service_context::create_assistant_message(
+        ChatContextType::Project,
+        "recovery-context",
+        "I already handled that.",
+        conversation_id,
+        &[],
+        &[],
+    );
+    assistant.created_at = Utc::now();
+    let queued_at = (assistant.created_at - Duration::seconds(1)).to_rfc3339();
+    state
+        .chat_message_repo
+        .create(assistant)
+        .await
+        .expect("assistant evidence");
+
+    let app = tauri::test::mock_builder()
+        .manage(state)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app");
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&events);
+    let _listener = app.listen("agent:message_queued", move |event| {
+        captured.lock().unwrap().push(event.payload().to_string());
+    });
+
+    let state = app.state::<AppState>();
+    requeue_pending_stdin_turns(
+        Some(&state.queued_message_repo),
+        &state.message_queue,
+        Some(app.handle()),
+        ChatContextType::Project,
+        "recovery-context",
+        Some(conversation_id.as_str()),
+        vec![recovered_pending_turn(queued_at)],
+        Some(AnsweredTurnEvidence {
+            chat_message_repo: &state.chat_message_repo,
+            conversation_id: &conversation_id,
+        }),
+    )
+    .await;
+
+    let key = QueueKey::new(ChatContextType::Project, "recovery-context");
+    assert!(state
+        .queued_message_repo
+        .list(&key)
+        .await
+        .expect("durable queue")
+        .is_empty());
+    assert!(state.message_queue.get_queued_with_key(&key).is_empty());
+    assert!(events.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn requeue_pending_stdin_turns_retains_unparseable_timestamp() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let assistant = super::chat_service_context::create_assistant_message(
+        ChatContextType::Project,
+        "recovery-context",
+        "I already handled that.",
+        conversation_id,
+        &[],
+        &[],
+    );
+    state
+        .chat_message_repo
+        .create(assistant)
+        .await
+        .expect("assistant evidence");
+    let app = tauri::test::mock_builder()
+        .manage(state)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app");
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&events);
+    let _listener = app.listen("agent:message_queued", move |event| {
+        captured.lock().unwrap().push(event.payload().to_string());
+    });
+
+    let state = app.state::<AppState>();
+    requeue_pending_stdin_turns(
+        Some(&state.queued_message_repo),
+        &state.message_queue,
+        Some(app.handle()),
+        ChatContextType::Project,
+        "recovery-context",
+        Some(conversation_id.as_str()),
+        vec![recovered_pending_turn("not-a-timestamp".to_string())],
+        Some(AnsweredTurnEvidence {
+            chat_message_repo: &state.chat_message_repo,
+            conversation_id: &conversation_id,
+        }),
+    )
+    .await;
+
+    let key = QueueKey::new(ChatContextType::Project, "recovery-context");
+    assert_eq!(
+        state
+            .queued_message_repo
+            .list(&key)
+            .await
+            .expect("durable queue")
+            .len(),
+        1
+    );
+    assert_eq!(state.message_queue.get_queued_with_key(&key).len(), 1);
+    assert_eq!(events.lock().unwrap().len(), 1);
+}
 
 #[test]
 fn queue_reference_merge_uses_the_live_deduplication_seam() {

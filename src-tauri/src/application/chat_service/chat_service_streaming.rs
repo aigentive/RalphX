@@ -2723,6 +2723,10 @@ pub async fn process_stream_background<R: Runtime>(
                                         .unwrap_or(context_id),
                                     Some(conversation_id.as_str()),
                                     pending_turns,
+                                    Some(super::chat_service_queue::AnsweredTurnEvidence {
+                                        chat_message_repo: &state.chat_message_repo,
+                                        conversation_id,
+                                    }),
                                 )
                                 .await;
                             }

@@ -3,6 +3,7 @@
 // Handles queued messages that were sent while an agent was running.
 // These messages are automatically processed via --resume after the initial run completes.
 
+use chrono::{DateTime, Utc};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
@@ -333,6 +334,13 @@ fn emit_backend_message_queued<R: Runtime>(
 ///
 /// Durable failures retain the in-memory retry and surface an error instead of claiming
 /// backend confirmation to the frontend.
+///
+/// Transcript evidence used to suppress recovery of an already-answered turn.
+pub(crate) struct AnsweredTurnEvidence<'a> {
+    pub chat_message_repo: &'a Arc<dyn ChatMessageRepository>,
+    pub conversation_id: &'a ChatConversationId,
+}
+
 pub(crate) async fn requeue_pending_stdin_turns<R: Runtime>(
     queued_message_repo: Option<&Arc<dyn QueuedMessageRepository>>,
     message_queue: &MessageQueue,
@@ -341,10 +349,60 @@ pub(crate) async fn requeue_pending_stdin_turns<R: Runtime>(
     queue_context_id: &str,
     conversation_id: Option<String>,
     pending_turns: Vec<PendingStdinTurn>,
+    evidence: Option<AnsweredTurnEvidence<'_>>,
 ) {
+    let answered_at = if let Some(evidence) = evidence {
+        match evidence
+            .chat_message_repo
+            .get_recent_by_conversation_paginated(evidence.conversation_id, 20, 0)
+            .await
+        {
+            Ok(messages) => messages
+                .into_iter()
+                .filter(|message| message.role == get_assistant_role(&context_type))
+                .last()
+                .map(|message| message.created_at),
+            Err(error) => {
+                tracing::warn!(
+                    conversation_id = %evidence.conversation_id,
+                    error = %error,
+                    "[QUEUE] Could not read transcript evidence for recovered stdin turns"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let key = QueueKey::new(context_type, queue_context_id);
     let queued_messages = pending_turns
         .into_iter()
+        .filter(|turn| {
+            let Some(answered_at) = answered_at.as_ref() else {
+                return true;
+            };
+            let Ok(queued_at) = DateTime::parse_from_rfc3339(&turn.queued_at) else {
+                tracing::warn!(
+                    queued_message_id = %turn.persisted_message_id,
+                    queued_at = %turn.queued_at,
+                    "[QUEUE] Could not parse recovered stdin timestamp; retaining turn"
+                );
+                return true;
+            };
+            let queued_at = queued_at.with_timezone(&Utc);
+            if queued_at >= *answered_at {
+                return true;
+            }
+            tracing::info!(
+                queued_message_id = %turn.persisted_message_id,
+                persisted_message_id = %turn.persisted_message_id,
+                queued_at = %turn.queued_at,
+                assistant_created_at = %answered_at.to_rfc3339(),
+                "[QUEUE] Suppressed recovered stdin turn with later assistant evidence"
+            );
+            false
+        })
         .map(|turn| {
             let mut queued = QueuedMessage::new(turn.content);
             queued.created_at = turn.queued_at.clone();

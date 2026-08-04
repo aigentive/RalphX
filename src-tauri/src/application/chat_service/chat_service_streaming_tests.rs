@@ -25,7 +25,7 @@ use crate::domain::entities::{
     ProjectId, ProviderUsageSnapshot, TaskId, UsageCapture, UsageProvenance,
 };
 use crate::domain::repositories::{
-    AgentRunRepository, ChatMessageRepository, ChatTimelineRepository,
+    AgentRunRepository, ChatMessageRepository, ChatTimelineRepository, QueuedMessageRepository,
 };
 use crate::domain::services::{
     MemoryRunningAgentRegistry, QueueKey, RunningAgentKey, RunningAgentRegistry,
@@ -900,6 +900,115 @@ async fn claude_stream_error_turn_complete_does_not_wait_for_interactive_timeout
         ),
         "expected overloaded provider error, got {error:?}"
     );
+}
+
+#[tokio::test]
+async fn error_turn_complete_with_persisted_output_does_not_requeue_pending_stdin() {
+    let mut child = spawn_interactive_jsonl_process_that_stays_alive(
+        r#"{"type":"result","session_id":"sess-error-recovery","is_error":true,"errors":["API Error: 529 Overloaded"],"result":"partial assistant output","cost_usd":0.0}"#,
+    )
+    .await;
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let context_id = "error-recovery-context";
+    let interactive_key = InteractiveProcessKey::new("project", context_id);
+    let interactive_registry = Arc::clone(&state.interactive_process_registry);
+    let token = interactive_registry
+        .register_with_metadata(
+            interactive_key.clone(),
+            child.stdin.take().expect("error fixture stdin"),
+            InteractiveProcessMetadata::default(),
+        )
+        .await;
+    let pre_assistant = create_assistant_message(
+        ChatContextType::Project,
+        context_id,
+        "",
+        conversation_id,
+        &[],
+        &[],
+    );
+    let pending_queued_at = (pre_assistant.created_at - Duration::seconds(1)).to_rfc3339();
+    let pre_assistant_id = pre_assistant.id.as_str().to_string();
+    state
+        .chat_message_repo
+        .create(pre_assistant)
+        .await
+        .expect("seed assistant message");
+    assert!(
+        interactive_registry
+            .push_pending_turn(
+                &interactive_key,
+                token,
+                PendingStdinTurn {
+                    persisted_message_id: "already-answered-error-turn".to_string(),
+                    content: "do not replay me".to_string(),
+                    metadata_override: None,
+                    queued_at: pending_queued_at,
+                },
+            )
+            .await
+    );
+
+    let app = mock_builder()
+        .manage(state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let queued_events = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&queued_events);
+    let _listener = app.listen("agent:message_queued", move |event| {
+        captured.lock().unwrap().push(event.payload().to_string());
+    });
+    let app_state = app.state::<AppState>();
+
+    let error = process_stream_background::<MockRuntime>(
+        child,
+        AgentHarnessKind::Claude,
+        ChatContextType::Project,
+        context_id,
+        &conversation_id,
+        Some(app.handle().clone()),
+        None,
+        None,
+        Some(Arc::clone(&app_state.chat_message_repo)),
+        Some(Arc::clone(&app_state.chat_timeline_repo)),
+        Some(pre_assistant_id.clone()),
+        CancellationToken::new(),
+        StreamingStateCache::new(),
+        None,
+        None,
+        Some("error-recovery-run".to_string()),
+        None,
+        None,
+        false,
+        false,
+        Some(interactive_registry.clone()),
+        Some(interactive_key),
+        Some(token),
+    )
+    .await
+    .expect_err("provider error must end the stream");
+    assert!(matches!(error, StreamError::ProviderError { .. }));
+
+    let persisted = app_state
+        .chat_message_repo
+        .get_by_id(&ChatMessageId::from_string(pre_assistant_id))
+        .await
+        .expect("assistant read")
+        .expect("assistant persisted");
+    assert_eq!(persisted.content, "partial assistant output");
+    let queue_key = QueueKey::new(ChatContextType::Project, context_id);
+    assert!(app_state
+        .queued_message_repo
+        .list(&queue_key)
+        .await
+        .expect("durable queue")
+        .is_empty());
+    assert!(app_state
+        .message_queue
+        .get_queued_with_key(&queue_key)
+        .is_empty());
+    assert!(queued_events.lock().unwrap().is_empty());
 }
 
 #[tokio::test]

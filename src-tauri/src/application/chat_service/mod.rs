@@ -2127,6 +2127,9 @@ impl<R: Runtime> AppChatService<R> {
             return;
         };
         let turns = removed.take_pending_stdin_turns();
+        let evidence_conversation_id = conversation_id
+            .as_ref()
+            .map(ChatConversationId::from_string);
         chat_service_queue::requeue_pending_stdin_turns(
             self.queued_message_repo.as_ref(),
             &self.message_queue,
@@ -2135,6 +2138,12 @@ impl<R: Runtime> AppChatService<R> {
             queue_context_id,
             conversation_id,
             turns,
+            evidence_conversation_id.as_ref().map(|conversation_id| {
+                chat_service_queue::AnsweredTurnEvidence {
+                    chat_message_repo: &self.chat_message_repo,
+                    conversation_id,
+                }
+            }),
         )
         .await;
     }
