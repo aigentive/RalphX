@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import type { ElementType } from "react";
 import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
+import { RemoteHostOnlyNotice } from "@/components/remote/RemoteHostOnlyNotice";
 import {
   memo,
   Suspense,
@@ -760,6 +761,9 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       : null;
   const canHydrateIdeationArtifacts = Boolean(
     conversation?.contextType === "ideation" ||
+    conversation?.agentMode === "ideation" ||
+    conversation?.agentMode === "tasks" ||
+    conversation?.agentMode === "plan" ||
     focusedIdeationSessionId ||
     focusedRunTarget ||
     scopedWorkspace?.mode === "ideation" ||
@@ -1568,7 +1572,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           available: availableTab?.enabled === true,
           unavailableReason:
             availableTab?.disabledReason ??
-            (isRemoteEnvironment && ["jira", "linear", "clickup"].includes(definition.id)
+            (isRemoteEnvironment && ["jira", "linear", "clickup", "granola"].includes(definition.id)
               ? `${definition.label} integration runs on the host.`
               : ARTIFACT_TAB_UNAVAILABLE_REASONS[definition.id]),
         };
@@ -2338,6 +2342,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                 tasksSurfaceCapabilities={tasksSurfaceCapabilities}
                 conversation={conversation}
                 workspace={scopedWorkspace}
+                isRemoteEnvironment={isRemoteEnvironment}
                 conversationId={conversationId}
                 activeWorkspaceFreshness={scopedLocalFreshness}
                 conversationTitle={conversation?.title ?? null}
@@ -2491,6 +2496,7 @@ type ArtifactContentProps = {
   tasksSurfaceCapabilities: TasksSurfaceCapabilities;
   conversation: AgentConversation | null;
   workspace: AgentConversationWorkspace | null;
+  isRemoteEnvironment: boolean;
   conversationId: string | null;
   activeWorkspaceFreshness: AgentConversationWorkspaceFreshness | undefined;
   conversationTitle: string | null;
@@ -2586,6 +2592,7 @@ function ArtifactContent({
   tasksSurfaceCapabilities,
   conversation,
   workspace,
+  isRemoteEnvironment,
   conversationId,
   activeWorkspaceFreshness,
   conversationTitle,
@@ -2732,6 +2739,9 @@ function ArtifactContent({
   }
 
   if (activeTab === "publish") {
+    if (isRemoteEnvironment) {
+      return <RemoteHostOnlyNotice subject="Workspace publishing and pull requests" />;
+    }
     return (
       <AgentPublishPanel
         workspace={workspace}

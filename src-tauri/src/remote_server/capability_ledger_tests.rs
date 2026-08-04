@@ -1051,7 +1051,9 @@ fn detector_b_is_calibrated_and_floor_enforced() {
         // 567 -> 568: `resolve_remote_user_question`, the spawn-free question answer twin.
         // Measured a=b=c=false at 455 nodes; its source-level no-authority-carriers test
         // independently protects the seam omitted by the detector-silent closure.
-        568,
+        // 568 -> 569: `get_remote_agent_conversation_workspace`, the recovery-free workspace
+        // hydration twin. Its builder omits repair recovery and the facade blanks host paths.
+        569,
         "review the detector against the full command census"
     );
     let flagged = spawn_triggering_writers(
@@ -4036,9 +4038,10 @@ const B2_REGISTERED_GETTERS: &[&str] = &[
     "list_agent_conversation_workspace_publication_events",
     "get_bulk_workspace_publication_states",
     "list_agent_models",
+    "get_remote_agent_conversation_workspace",
 ];
 
-/// The six registered getters are reviewed `Read` rows, not module-default inheritance.
+/// The seven registered getters are reviewed `Read` rows, not module-default inheritance.
 #[test]
 fn the_b2_getters_are_reviewed_read_rows() {
     let rows = census().into_iter().collect::<BTreeMap<_, _>>();
@@ -5749,6 +5752,10 @@ fn the_registered_twin_pairings_that_justified_the_batch10_registrations_hold() 
         // Twin-classified by batch 10: the facade answers the query under the right-hand name.
         ("resolve_permission_request", "approve_permission_request"),
         ("get_agent_conversation", "get_remote_agent_conversation"),
+        (
+            "get_agent_conversation_workspace",
+            "get_remote_agent_conversation_workspace",
+        ),
         (
             "get_agent_conversation_messages_page",
             "get_remote_agent_conversation_messages_page",

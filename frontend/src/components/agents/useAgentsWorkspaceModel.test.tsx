@@ -102,6 +102,33 @@ describe("useAgentsWorkspaceModel", () => {
     getAgentConversationWorkspaceFreshnessMock.mockResolvedValue(null);
   });
 
+  it("surfaces a failed workspace read instead of presenting it as no workspace", async () => {
+    const readError = new Error("remote workspace read failed");
+    getAgentConversationWorkspaceMock.mockRejectedValue(readError);
+
+    const { result } = renderHook(
+      () =>
+        useAgentsWorkspaceModel({
+          activeConversation: projectConversation({ agentMode: "plan" }),
+          modelRegistry: AGENT_MODEL_CATALOG,
+          optimisticWorkspacesByConversationId: {},
+          runtimeByConversationId: {},
+          selectedConversationId: "conversation-1",
+          workspaceReviewerRuntime: null,
+        }),
+      { wrapper: wrapper() },
+    );
+
+    await waitFor(() =>
+      expect(result.current.workspaceHydrationError).toBe(readError),
+    );
+    expect(result.current.activeWorkspace).toBeNull();
+    expect(result.current.workspaceHydrationStatus).toBe("error");
+    expect(result.current.terminalUnavailableReason).toContain(
+      "Workspace details could not be loaded",
+    );
+  });
+
   it("uses the backend-resolved Reviewer role runtime before the child runtime loads", () => {
     const { result } = renderHook(
       () =>

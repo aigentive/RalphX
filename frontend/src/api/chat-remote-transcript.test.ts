@@ -29,6 +29,7 @@ vi.mock("#tauri-core-primitive", async (importOriginal) => {
 });
 
 import {
+  getAgentConversationWorkspace,
   getConversation,
   getConversationMessagesPage,
   getConversationTimelinePage,
@@ -100,6 +101,65 @@ beforeEach(() => {
 });
 
 describe("remote transcript read routing", () => {
+  it("hydrates a remote workspace through the twin so artifact query gates can open", async () => {
+    useRemoteEnvironment();
+    remoteOk({
+      conversation_id: CONVERSATION_ID,
+      project_id: PROJECT_ID,
+      mode: "plan",
+      base_ref_kind: "project_default",
+      base_ref: "main",
+      base_display_name: "Project default (main)",
+      base_commit: null,
+      branch_name: "agent/plan",
+      worktree_path: "",
+      linked_ideation_session_id: "session-1",
+      linked_plan_branch_id: null,
+      publication_pr_number: null,
+      publication_pr_url: null,
+      publication_pr_status: null,
+      publication_push_status: null,
+      status: "active",
+      created_at: "2026-07-28T12:00:00Z",
+      updated_at: "2026-07-28T12:00:00Z",
+    });
+
+    const workspace = await getAgentConversationWorkspace(CONVERSATION_ID);
+
+    expect(wireInput().cmd).toBe("get_remote_agent_conversation_workspace");
+    expect(workspace).toMatchObject({
+      conversationId: CONVERSATION_ID,
+      mode: "plan",
+      linkedIdeationSessionId: "session-1",
+      worktreePath: "",
+    });
+  });
+
+  it("reads workspace hydration via the literal remote twin name", async () => {
+    useRemoteEnvironment();
+    remoteOk(null);
+
+    await expect(getAgentConversationWorkspace(CONVERSATION_ID)).rejects.toThrow(
+      `Agent workspace ${CONVERSATION_ID} was not found on this host.`,
+    );
+
+    const input = wireInput();
+    expect(input.cmd).toBe("get_remote_agent_conversation_workspace");
+    expect(input.cmd).not.toBe("get_agent_conversation_workspace");
+    expect(input.args).toEqual({ conversationId: CONVERSATION_ID });
+  });
+
+  it("keeps local workspace hydration on the literal local command name", async () => {
+    primitiveInvoke.mockResolvedValue(null);
+
+    await expect(getAgentConversationWorkspace(CONVERSATION_ID)).resolves.toBeNull();
+
+    expect(primitiveInvoke.mock.calls[0]?.[0]).toBe("get_agent_conversation_workspace");
+    expect(primitiveInvoke.mock.calls[0]?.[1]).toEqual({
+      conversationId: "conversation-1",
+    });
+  });
+
   it("lists conversations via list_remote_agent_conversations, never the unregistered local one", async () => {
     useRemoteEnvironment();
     remoteOk([RAW_CONVERSATION]);

@@ -187,6 +187,8 @@ pub struct MemoryAgentConversationWorkspaceRepository {
     #[cfg(test)]
     next_auto_merge_restore_completion_error: Mutex<Option<String>>,
     #[cfg(test)]
+    next_current_repair_attempt_read_error: Mutex<Option<String>>,
+    #[cfg(test)]
     next_create_repair_effect_outcome: Mutex<Option<ForcedCreateAgentWorkspaceRepairEffectOutcome>>,
 }
 
@@ -219,6 +221,8 @@ impl MemoryAgentConversationWorkspaceRepository {
             next_worktree_path_list_error: Mutex::new(None),
             #[cfg(test)]
             next_auto_merge_restore_completion_error: Mutex::new(None),
+            #[cfg(test)]
+            next_current_repair_attempt_read_error: Mutex::new(None),
             #[cfg(test)]
             next_create_repair_effect_outcome: Mutex::new(None),
         }
@@ -261,6 +265,11 @@ impl MemoryAgentConversationWorkspaceRepository {
             .next_auto_merge_restore_completion_error
             .lock()
             .unwrap() = Some(message.into());
+    }
+
+    #[cfg(test)]
+    pub fn fail_next_current_repair_attempt_read(&self, message: impl Into<String>) {
+        *self.next_current_repair_attempt_read_error.lock().unwrap() = Some(message.into());
     }
 
     #[cfg(test)]

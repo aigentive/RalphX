@@ -425,6 +425,7 @@ macro_rules! register_tauri_commands {
             commands::remote_chat_commands::send_remote_chat_message,
             // Spawn-free remote conversation reads (see remote_transcript_commands)
             commands::remote_transcript_commands::get_remote_agent_conversation,
+            commands::remote_transcript_commands::get_remote_agent_conversation_workspace,
             commands::remote_transcript_commands::get_remote_agent_conversation_messages_page,
             commands::remote_transcript_commands::get_remote_agent_conversation_timeline_page,
             commands::remote_transcript_commands::list_remote_agent_conversations,

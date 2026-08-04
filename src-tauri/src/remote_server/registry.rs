@@ -1639,6 +1639,19 @@ crate::remote_commands! {
         call: async,
         result: fallible,
     },
+    // Audit: this twin uses the recovery-free persisted-workspace builder, performs no
+    // freshness inspection, blanks host paths at the facade, and propagates repository errors.
+    "get_remote_agent_conversation_workspace"
+        => crate::commands::remote_transcript_commands::get_remote_agent_conversation_workspace {
+        class: Read,
+        caps: [],
+        params: [
+            (arg conversation_id: String),
+            (app_state),
+        ],
+        call: async,
+        result: fallible,
+    },
     "get_remote_agent_conversation_messages_page"
         => crate::commands::remote_transcript_commands::get_remote_agent_conversation_messages_page {
         class: Read,

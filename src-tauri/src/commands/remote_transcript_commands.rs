@@ -2,9 +2,14 @@
 //!
 //! # Why this module exists
 //!
-//! PR 3.2 (two-instance chat validation) needs a paired device to READ a conversation — and,
-//! since batch 5, to pick one from a LIST first. Transcripts without a list are useless, so the
-//! two halves of that read surface live here together.
+//! PR 3.2 (two-instance chat validation) needs a paired device to READ a conversation, select it
+//! from a LIST, and hydrate its persisted workspace metadata. The local workspace command cannot
+//! cross the facade because `agent_workspace_response_for_state` schedules PR-supervision repair
+//! recovery, whose dependency construction reaches the git, Node, and Codex CLI resolvers. The
+//! workspace twin instead uses `agent_workspace_response_without_repair_recovery_for_state`: it
+//! deliberately performs no repair recovery and no freshness inspection. This is a `Read` with
+//! no capabilities because it performs repository reads only, propagates failures, strips host
+//! paths, and emits no events.
 //!
 //! The module holds two different splits, and the difference between them is worth keeping
 //! straight because it changes what the tests can honestly assert:
@@ -72,12 +77,13 @@ use crate::commands::agent_sidebar_commands::{
     AgentSidebarConversationGroupsResponse, AgentSidebarConversationsInput,
 };
 use crate::commands::unified_chat_commands::{
+    agent_workspace_response_without_repair_recovery_for_state,
     get_agent_conversation_for_app_state, get_agent_conversation_messages_page_for_app_state,
     get_agent_conversation_timeline_page_for_app_state, list_agent_conversations_for_app_state,
     list_agent_conversations_page_for_app_state, parse_context_type,
     AgentConversationListPageResponse, AgentConversationMessagesPageResponse,
     AgentConversationResponse, AgentConversationTimelinePageResponse,
-    AgentConversationWithMessagesResponse,
+    AgentConversationWithMessagesResponse, AgentConversationWorkspaceResponse,
 };
 use ralphx_domain::entities::ChatConversationId;
 
@@ -143,6 +149,38 @@ pub async fn get_remote_agent_conversation(
 ) -> Result<Option<AgentConversationWithMessagesResponse>, String> {
     get_agent_conversation_for_app_state(&state, ChatConversationId::from_string(&conversation_id))
         .await
+}
+
+/// Read persisted workspace metadata without scheduling repair recovery or exposing host paths.
+#[tauri::command]
+pub async fn get_remote_agent_conversation_workspace(
+    conversation_id: String,
+    state: State<'_, AppState>,
+) -> Result<Option<AgentConversationWorkspaceResponse>, String> {
+    get_remote_agent_conversation_workspace_for_app_state(&conversation_id, state.inner()).await
+}
+
+#[doc(hidden)]
+pub async fn get_remote_agent_conversation_workspace_for_app_state(
+    conversation_id: &str,
+    state: &AppState,
+) -> Result<Option<AgentConversationWorkspaceResponse>, String> {
+    let Some(workspace) = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&ChatConversationId::from_string(conversation_id))
+        .await
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+    let mut response =
+        agent_workspace_response_without_repair_recovery_for_state(state, workspace).await?;
+    strip_host_paths_from_workspace(&mut response);
+    Ok(Some(response))
+}
+
+fn strip_host_paths_from_workspace(workspace: &mut AgentConversationWorkspaceResponse) {
+    workspace.worktree_path.clear();
 }
 
 /// Read a tail-first page of messages, without waking the conversation's agent.
@@ -221,7 +259,7 @@ pub(crate) fn strip_worktree_paths_from_sidebar_groups(
     for group in &mut groups.groups {
         for row in &mut group.rows {
             if let Some(workspace) = row.workspace.as_mut() {
-                workspace.worktree_path = String::new();
+                strip_host_paths_from_workspace(workspace);
             }
         }
     }

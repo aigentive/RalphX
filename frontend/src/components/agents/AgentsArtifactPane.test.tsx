@@ -2195,6 +2195,28 @@ describe("AgentsArtifactPane", () => {
     useChatStore.getState().setActiveConversation("project:project-1", null);
   });
 
+  it("hydrates plan artifacts when only the conversation mode identifies plan work", async () => {
+    getIdeationSessionMock.mockResolvedValue(ideationSessionResponse());
+
+    // The session id flows through the workspace link (the resolver never reads a
+    // conversation-level session field); the GATE under test is that hydration opens from
+    // `conversation.agentMode` alone even though the workspace mode says "chat".
+    renderPane(
+      "plan",
+      workspace({ mode: "chat", linkedIdeationSessionId: "session-1" }),
+      vi.fn(),
+      false,
+      {
+        ...conversation(),
+        agentMode: "plan",
+      },
+    );
+
+    await waitFor(() =>
+      expect(getIdeationSessionMock).toHaveBeenCalledWith("session-1"),
+    );
+  });
+
   it("keeps one workspace toolbar fixed between the tabs and scrolling content", async () => {
     const user = userEvent.setup();
     renderControlledPane("publish", workspace({ mode: "edit" }));

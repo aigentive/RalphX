@@ -104,6 +104,8 @@ pub mod remote_question_commands;
 #[cfg(test)]
 mod remote_question_commands_tests;
 pub mod remote_transcript_commands;
+#[cfg(test)]
+mod remote_transcript_commands_tests;
 #[cfg(debug_assertions)]
 pub mod remote_transport_spike_commands;
 pub mod remote_workspace_commands;
@@ -307,6 +309,7 @@ pub use methodology_commands::{
 };
 pub use remote_execution_status_commands::get_remote_execution_status;
 pub use remote_question_commands::resolve_remote_user_question;
+pub use remote_transcript_commands::get_remote_agent_conversation_workspace;
 
 #[cfg(test)]
 mod manual_role_default_commands_tests;

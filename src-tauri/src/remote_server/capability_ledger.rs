@@ -1224,6 +1224,14 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
         ),
     },
     CommandOverride {
+        command: "get_remote_agent_conversation_workspace",
+        policy: policy(
+            RiskClass::Read,
+            NONE,
+            "recovery-free persisted workspace read via agent_workspace_response_without_repair_recovery_for_state; blanks host paths and propagates read errors",
+        ),
+    },
+    CommandOverride {
         command: "get_remote_agent_conversation_messages_page",
         policy: policy(
             RiskClass::Read,
@@ -1994,7 +2002,7 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
         "get_agent_conversation_workspace",
         "detector-c: the workspace hydrator reaches resolve_git_cli_path, resolve_node_cli_path \
          and find_codex_cli_candidates; it also arms, but the process launch is what forecloses \
-         every v1 scope",
+         every v1 scope; get_remote_agent_conversation_workspace is the registered recovery-free twin",
     ),
     process_refusal(
         "list_agent_conversation_workspaces_by_project",

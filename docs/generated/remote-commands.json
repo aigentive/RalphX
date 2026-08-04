@@ -2941,6 +2941,15 @@
       "argumentSensitive": false,
       "capabilities": [],
       "class": "read",
+      "command": "get_remote_agent_conversation_workspace",
+      "pins": [],
+      "scopeConfined": false,
+      "target": "crate::commands::remote_transcript_commands::get_remote_agent_conversation_workspace"
+    },
+    {
+      "argumentSensitive": false,
+      "capabilities": [],
+      "class": "read",
       "command": "get_remote_agent_conversation_messages_page",
       "pins": [],
       "scopeConfined": false,
@@ -8843,6 +8852,15 @@
     {
       "capabilities": [],
       "class": "read",
+      "command": "get_remote_agent_conversation_workspace",
+      "module": "remote_transcript_commands",
+      "reason": "recovery-free persisted workspace read via agent_workspace_response_without_repair_recovery_for_state; blanks host paths and propagates read errors",
+      "registered": true,
+      "v1Resolution": "registerable"
+    },
+    {
+      "capabilities": [],
+      "class": "read",
       "command": "get_remote_agent_conversation_messages_page",
       "module": "remote_transcript_commands",
       "reason": "pure repository read of a message page; no wake, no spawn; propagates read errors",
@@ -9335,7 +9353,7 @@
       "class": "elevated",
       "command": "get_agent_conversation_workspace",
       "module": "unified_chat_commands",
-      "reason": "detector-c: the workspace hydrator reaches resolve_git_cli_path, resolve_node_cli_path and find_codex_cli_candidates; it also arms, but the process launch is what forecloses every v1 scope",
+      "reason": "detector-c: the workspace hydrator reaches resolve_git_cli_path, resolve_node_cli_path and find_codex_cli_candidates; it also arms, but the process launch is what forecloses every v1 scope; get_remote_agent_conversation_workspace is the registered recovery-free twin",
       "registered": false,
       "v1Resolution": "host-denied-spawns-process"
     },

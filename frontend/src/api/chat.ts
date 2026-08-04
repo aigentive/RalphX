@@ -4149,11 +4149,22 @@ function transformUpdateAgentConversationWorkspaceFromBaseResponse(
 export async function getAgentConversationWorkspace(
   conversationId: string,
 ): Promise<AgentConversationWorkspace | null> {
-  const raw = await typedInvoke(
-    "get_agent_conversation_workspace",
-    { conversationId },
-    AgentConversationWorkspaceResponseSchema.nullable(),
-  );
+  const args = { conversationId };
+  const remote = remoteTranscriptReadsEnabled();
+  const raw = remote
+    ? await typedInvoke(
+        "get_remote_agent_conversation_workspace",
+        args,
+        AgentConversationWorkspaceResponseSchema.nullable(),
+      )
+    : await typedInvoke(
+        "get_agent_conversation_workspace",
+        args,
+        AgentConversationWorkspaceResponseSchema.nullable(),
+      );
+  if (remote && !raw) {
+    throw new Error(`Agent workspace ${conversationId} was not found on this host.`);
+  }
   return raw ? transformAgentConversationWorkspace(raw) : null;
 }
 

@@ -138,6 +138,15 @@ impl AgentWorkspaceRepairRepository for MemoryAgentConversationWorkspaceReposito
         &self,
         conversation_id: &ChatConversationId,
     ) -> AppResult<Option<AgentWorkspaceRepairAttempt>> {
+        #[cfg(test)]
+        if let Some(message) = self
+            .next_current_repair_attempt_read_error
+            .lock()
+            .unwrap()
+            .take()
+        {
+            return Err(AppError::Database(message));
+        }
         Ok(self
             .repair_attempts
             .read()
