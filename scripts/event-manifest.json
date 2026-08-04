@@ -2,6 +2,12 @@
   "schema_version": 1,
   "emitted": [
     {
+      "name": "agent-workspace:publish-redrive-requested",
+      "file": "src-tauri/src/application/agent_workspace_publish_recovery.rs",
+      "line": 646,
+      "kind": "method"
+    },
+    {
       "name": "agent:ask_user_question",
       "file": "src-tauri/src/http_server/handlers/questions.rs",
       "line": 78,
@@ -34,13 +40,13 @@
     {
       "name": "agent:conversation_created",
       "file": "src-tauri/src/commands/unified_chat_commands/mod.rs",
-      "line": 2292,
+      "line": 2325,
       "kind": "method"
     },
     {
       "name": "agent:conversation_forked",
       "file": "src-tauri/src/commands/unified_chat_commands/mod.rs",
-      "line": 2300,
+      "line": 2333,
       "kind": "method"
     },
     {
@@ -538,13 +544,13 @@
     {
       "name": "agent:workspace_changed",
       "file": "src-tauri/src/application/agent_workspace_external_pr_reconciliation.rs",
-      "line": 793,
+      "line": 799,
       "kind": "method"
     },
     {
       "name": "agent:workspace_changed",
       "file": "src-tauri/src/application/agent_workspace_pr_supervision_recovery.rs",
-      "line": 1124,
+      "line": 1125,
       "kind": "method"
     },
     {
@@ -556,13 +562,13 @@
     {
       "name": "agent:workspace_changed",
       "file": "src-tauri/src/commands/agent_workspace_auto_publish.rs",
-      "line": 619,
+      "line": 801,
       "kind": "method"
     },
     {
       "name": "agent:workspace_changed",
       "file": "src-tauri/src/commands/agent_workspace_auto_review.rs",
-      "line": 206,
+      "line": 208,
       "kind": "method"
     },
     {
@@ -574,25 +580,25 @@
     {
       "name": "agent:workspace_changed",
       "file": "src-tauri/src/commands/unified_chat_commands/mod.rs",
-      "line": 1011,
+      "line": 1028,
       "kind": "method"
     },
     {
       "name": "agent:workspace_changed",
       "file": "src-tauri/src/commands/unified_chat_commands/mod.rs",
-      "line": 4385,
+      "line": 4418,
       "kind": "method"
     },
     {
       "name": "agent:workspace_changed",
       "file": "src-tauri/src/commands/unified_chat_commands/mod.rs",
-      "line": 6634,
+      "line": 6770,
       "kind": "method"
     },
     {
       "name": "agent:workspace_changed",
       "file": "src-tauri/src/commands/unified_chat_commands/mod.rs",
-      "line": 6714,
+      "line": 6850,
       "kind": "method"
     },
     {
@@ -718,13 +724,13 @@
     {
       "name": "execution:status_changed",
       "file": "src-tauri/src/commands/execution_commands/lifecycle.rs",
-      "line": 300,
+      "line": 311,
       "kind": "method"
     },
     {
       "name": "execution:status_changed",
       "file": "src-tauri/src/commands/execution_commands/lifecycle.rs",
-      "line": 559,
+      "line": 570,
       "kind": "method"
     },
     {
@@ -1060,7 +1066,7 @@
     {
       "name": "plan_artifact:approved",
       "file": "src-tauri/src/http_server/handlers/artifacts/approval.rs",
-      "line": 73,
+      "line": 81,
       "kind": "wrapper"
     },
     {
@@ -1396,7 +1402,7 @@
     {
       "name": "task:archived",
       "file": "src-tauri/src/commands/task_commands/mutation.rs",
-      "line": 2244,
+      "line": 2272,
       "kind": "wrapper"
     },
     {
@@ -1480,19 +1486,19 @@
     {
       "name": "task:list_changed",
       "file": "src-tauri/src/commands/task_commands/mutation.rs",
-      "line": 2029,
+      "line": 2038,
       "kind": "method"
     },
     {
       "name": "task:list_changed",
       "file": "src-tauri/src/commands/task_commands/mutation.rs",
-      "line": 2175,
+      "line": 2203,
       "kind": "method"
     },
     {
       "name": "task:list_changed",
       "file": "src-tauri/src/commands/task_commands/mutation.rs",
-      "line": 2262,
+      "line": 2290,
       "kind": "method"
     },
     {
@@ -1552,7 +1558,7 @@
     {
       "name": "task:paused",
       "file": "src-tauri/src/commands/task_commands/mutation.rs",
-      "line": 2011,
+      "line": 2020,
       "kind": "wrapper"
     },
     {
@@ -1576,7 +1582,7 @@
     {
       "name": "task:restarted",
       "file": "src-tauri/src/commands/execution_commands.rs",
-      "line": 390,
+      "line": 403,
       "kind": "method"
     },
     {
@@ -1588,19 +1594,19 @@
     {
       "name": "task:resumed",
       "file": "src-tauri/src/commands/task_commands/mutation.rs",
-      "line": 1689,
+      "line": 1698,
       "kind": "wrapper"
     },
     {
       "name": "task:resumed",
       "file": "src-tauri/src/commands/task_commands/mutation.rs",
-      "line": 1761,
+      "line": 1770,
       "kind": "wrapper"
     },
     {
       "name": "task:resumed",
       "file": "src-tauri/src/commands/task_commands/mutation.rs",
-      "line": 2165,
+      "line": 2193,
       "kind": "wrapper"
     },
     {
@@ -1750,7 +1756,7 @@
     {
       "name": "ticketing:cache_invalidated",
       "file": "src-tauri/src/application/agent_workspace_external_pr_reconciliation.rs",
-      "line": 635,
+      "line": 641,
       "kind": "method"
     },
     {
@@ -1774,19 +1780,19 @@
     {
       "name": "workspace_review_artifact:created",
       "file": "src-tauri/src/http_server/handlers/agent_workspaces/mod.rs",
-      "line": 2014,
+      "line": 2033,
       "kind": "wrapper"
     },
     {
       "name": "workspace_review_artifact:updated",
       "file": "src-tauri/src/http_server/handlers/agent_workspaces/mod.rs",
-      "line": 2014,
+      "line": 2033,
       "kind": "wrapper"
     },
     {
       "name": "workspace_review_artifact:updated",
       "file": "src-tauri/src/http_server/handlers/agent_workspaces/mod.rs",
-      "line": 2229,
+      "line": 2248,
       "kind": "wrapper"
     }
   ],
@@ -2106,6 +2112,7 @@
     }
   ],
   "unclassified_backend_emits": [
+    "agent-workspace:publish-redrive-requested",
     "artifact:archived",
     "execution:active_project_changed",
     "execution:completed",

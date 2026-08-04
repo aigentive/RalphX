@@ -150,7 +150,7 @@ describe("harnessProvidersApi", () => {
 
     expect(typedInvoke).toHaveBeenCalledWith(
       "get_agent_provider_settings",
-      { input: { refreshRuntime: true } },
+      { input: { refreshRuntime: true, forceRuntime: false } },
       expect.any(Object),
     );
   });

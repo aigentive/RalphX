@@ -214,7 +214,7 @@ pub(crate) async fn restart_task_for_state(
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Task not found: {}", task_id.as_str()))?;
-    crate::application::tasks_feature_policy::TasksFeaturePolicy::from_state(&state)
+    crate::application::tasks_feature_policy::TasksFeaturePolicy::from_state(state)
         .authorize_session(
             task.ideation_session_id.as_ref(),
             crate::domain::ideation::TasksFeatureAction::Progress,
@@ -223,7 +223,7 @@ pub(crate) async fn restart_task_for_state(
         .map_err(|error| error.to_string())?;
 
     if task.internal_status == InternalStatus::Failed {
-        let classification = classify_failed_restart(&state, &task).await;
+        let classification = classify_failed_restart(state, &task).await;
         match classification {
             FailedRestartClassification::RecoverToReview(_) => {
                 // Repeat the complete proof immediately before the corrective CAS so a
@@ -235,7 +235,7 @@ pub(crate) async fn restart_task_for_state(
                     .map_err(|error| error.to_string())?
                     .ok_or_else(|| format!("Task not found: {}", task_id.as_str()))?;
                 let FailedRestartClassification::RecoverToReview(evidence) =
-                    classify_failed_restart(&state, &current_task).await
+                    classify_failed_restart(state, &current_task).await
                 else {
                     return Ok(RestartResult::Blocked {
                         warnings: vec![ResumeValidationWarning {
@@ -245,7 +245,7 @@ pub(crate) async fn restart_task_for_state(
                     });
                 };
                 let transition_service =
-                    build_transition_service_for_recovery(&state, Arc::clone(&execution_state));
+                    build_transition_service_for_recovery(state, Arc::clone(execution_state));
                 let updated_task = transition_service
                     .recover_failed_completed_task_to_review(&task_id, &evidence)
                     .await
@@ -265,7 +265,7 @@ pub(crate) async fn restart_task_for_state(
                         "Failed task restart did not produce a terminal plan".to_string()
                     })?;
                 let transition_service =
-                    build_transition_service_for_recovery(&state, Arc::clone(&execution_state));
+                    build_transition_service_for_recovery(state, Arc::clone(execution_state));
                 let updated_task = transition_service
                     .restart_terminal_task_to_ready(
                         plan,
@@ -274,8 +274,8 @@ pub(crate) async fn restart_task_for_state(
                     .await
                     .map_err(|error| error.to_string())?;
                 schedule_ready_tasks_for_project(
-                    &state,
-                    Arc::clone(&execution_state),
+                    state,
+                    Arc::clone(execution_state),
                     Some(updated_task.project_id.clone()),
                 )
                 .await;
@@ -331,7 +331,7 @@ pub(crate) async fn restart_task_for_state(
 
     // 5. For Validated category, run validation (unless forced)
     if categorized.category == ResumeCategory::Validated && !force {
-        let validation_result = validate_resume(&task, &state).await;
+        let validation_result = validate_resume(&task, state).await;
         if !validation_result.passed {
             return Ok(RestartResult::ValidationFailed {
                 warnings: validation_result.warnings,
@@ -342,7 +342,7 @@ pub(crate) async fn restart_task_for_state(
 
     // 6. Build transition service
     let transition_service =
-        build_transition_service_for_recovery(&state, Arc::clone(&execution_state));
+        build_transition_service_for_recovery(state, Arc::clone(execution_state));
 
     let transition_target = restart_transition_target(stopped_from_status);
     if !task.internal_status.can_transition_to(transition_target) {
@@ -383,8 +383,8 @@ pub(crate) async fn restart_task_for_state(
 
     if transition_target == InternalStatus::Ready {
         schedule_ready_tasks_for_project(
-            &state,
-            Arc::clone(&execution_state),
+            state,
+            Arc::clone(execution_state),
             Some(updated_task.project_id.clone()),
         )
         .await;

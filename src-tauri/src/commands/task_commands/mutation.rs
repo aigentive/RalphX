@@ -1608,7 +1608,7 @@ pub(crate) async fn resume_task_for_state(
         if !execution_state.can_start_any_execution_context() {
             return Err("Cannot resume: max concurrent task limit reached".to_string());
         }
-        if !project_has_execution_capacity_for_state(&state, &execution_state, &task.project_id)
+        if !project_has_execution_capacity_for_state(state, execution_state, &task.project_id)
             .await?
         {
             return Err("Cannot resume: project execution capacity reached".to_string());
@@ -1636,7 +1636,7 @@ pub(crate) async fn resume_task_for_state(
             return Err(format!("Branch-update resume lost authority: {outcome:?}"));
         }
 
-        let transition_service = build_transition_service(&state, &execution_state, Some(&app));
+        let transition_service = build_transition_service(state, execution_state, Some(&app));
         if matches!(
             operation.phase,
             BranchUpdatePhase::ContinuationPending | BranchUpdatePhase::ContinuationInProgress
@@ -1716,25 +1716,25 @@ pub(crate) async fn resume_task_for_state(
                         "Invalid previous_status in pause metadata, falling back to history"
                     );
                     // Fall back to status history
-                    get_restore_status_from_history(&state, &task_id).await?
+                    get_restore_status_from_history(state, &task_id).await?
                 }
             }
         } else {
-            get_restore_status_from_history(&state, &task_id).await?
+            get_restore_status_from_history(state, &task_id).await?
         };
 
     if !execution_state.can_start_any_execution_context() {
         return Err("Cannot resume: max concurrent task limit reached".to_string());
     }
-    if !project_has_execution_capacity_for_state(&state, &execution_state, &task.project_id).await?
+    if !project_has_execution_capacity_for_state(state, execution_state, &task.project_id).await?
     {
         return Err("Cannot resume: project execution capacity reached".to_string());
     }
 
     // Build transition service
-    let task_scheduler = build_task_scheduler(&state, &execution_state, &app);
+    let task_scheduler = build_task_scheduler(state, execution_state, &app);
 
-    let transition_service = build_transition_service(&state, &execution_state, Some(&app))
+    let transition_service = build_transition_service(state, execution_state, Some(&app))
         .with_task_scheduler(task_scheduler);
 
     // Transition to restore status
@@ -2123,9 +2123,9 @@ pub(crate) async fn resume_tasks_in_group_for_state(
         .filter(|t| t.internal_status == InternalStatus::Paused)
         .collect();
 
-    let task_scheduler = build_task_scheduler(&state, &execution_state, &app);
+    let task_scheduler = build_task_scheduler(state, execution_state, &app);
 
-    let transition_service = build_transition_service(&state, &execution_state, Some(&app))
+    let transition_service = build_transition_service(state, execution_state, Some(&app))
         .with_task_scheduler(task_scheduler);
 
     let mut resumed_count = 0;
@@ -2135,7 +2135,7 @@ pub(crate) async fn resume_tasks_in_group_for_state(
             tracing::warn!(task_id = %task.id, "Skipping resume: max concurrent task limit reached");
             continue;
         }
-        if !project_has_execution_capacity_for_state(&state, &execution_state, &task.project_id)
+        if !project_has_execution_capacity_for_state(state, execution_state, &task.project_id)
             .await?
         {
             tracing::warn!(
@@ -2150,7 +2150,7 @@ pub(crate) async fn resume_tasks_in_group_for_state(
             if let Some(reason) = PauseReason::from_task_metadata(task.metadata.as_deref()) {
                 match reason.previous_status().parse::<InternalStatus>() {
                     Ok(status) => status,
-                    Err(_) => match get_restore_status_from_history(&state, &task.id).await {
+                    Err(_) => match get_restore_status_from_history(state, &task.id).await {
                         Ok(s) => s,
                         Err(e) => {
                             tracing::warn!(task_id = %task.id, error = %e, "Cannot restore task");
@@ -2159,7 +2159,7 @@ pub(crate) async fn resume_tasks_in_group_for_state(
                     },
                 }
             } else {
-                match get_restore_status_from_history(&state, &task.id).await {
+                match get_restore_status_from_history(state, &task.id).await {
                     Ok(s) => s,
                     Err(e) => {
                         tracing::warn!(task_id = %task.id, error = %e, "Cannot restore task");

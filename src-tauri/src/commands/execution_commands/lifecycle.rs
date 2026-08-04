@@ -182,14 +182,14 @@ pub(crate) async fn resume_execution_for_state(
     execution_state: &Arc<ExecutionState>,
     app_state: &AppState,
 ) -> Result<ExecutionCommandResponse, String> {
-    let previous_halt_mode = load_execution_halt_mode(&app_state).await?;
+    let previous_halt_mode = load_execution_halt_mode(app_state).await?;
 
     // Sync runtime quota with persisted project settings before can_start_task() loops
     let project_id = project_id.map(|id| ProjectId::from_string(id));
     let (effective_project_id, _max_concurrent) =
         sync_quota_from_project(project_id, active_project_state, execution_state, app_state)
             .await?;
-    persist_execution_halt_mode(&app_state, ExecutionHaltMode::Running).await?;
+    persist_execution_halt_mode(app_state, ExecutionHaltMode::Running).await?;
 
     // Build transition service for proper state machine transitions
     let transition_service =
@@ -338,7 +338,7 @@ pub(crate) async fn resume_execution_for_state(
         let execution_state_arc = Arc::clone(execution_state);
         if let Err(error) = resume_paused_workspace_queues_with_chat_service(
             effective_project_id.as_ref(),
-            &app_state,
+            app_state,
             &execution_state_arc,
             || {
                 Arc::new(
@@ -357,7 +357,7 @@ pub(crate) async fn resume_execution_for_state(
 
         if let Err(error) = resume_paused_slot_consuming_queues_with_chat_service(
             effective_project_id.as_ref(),
-            &app_state,
+            app_state,
             &execution_state_arc,
             || {
                 Arc::new(
@@ -376,7 +376,7 @@ pub(crate) async fn resume_execution_for_state(
 
         if let Err(error) = resume_paused_ideation_queues_with_chat_service(
             effective_project_id.as_ref(),
-            &app_state,
+            app_state,
             &execution_state_arc,
             || {
                 Arc::new(
@@ -392,7 +392,7 @@ pub(crate) async fn resume_execution_for_state(
 
         if let Err(error) = resume_paused_non_slot_chat_queues_with_chat_service(
             effective_project_id.as_ref(),
-            &app_state,
+            app_state,
             || {
                 Arc::new(
                     app_state
