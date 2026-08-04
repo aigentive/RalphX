@@ -27,6 +27,23 @@ pub(crate) fn classify_health_hold_disposition(
         return HealthHoldDisposition::Retain;
     };
 
+    let behind = matches!(
+        observation.merge_state_status,
+        Some(PrMergeStateStatus::Behind)
+    );
+
+    if behind && normalized_oid(observation.last_base_update_oid) == Some(observed_base_oid) {
+        return HealthHoldDisposition::BlockedStaleAfterUpdate {
+            observed_base_oid: observed_base_oid.to_string(),
+        };
+    }
+
+    if behind {
+        return HealthHoldDisposition::SupersedeForBaseUpdate {
+            observed_base_oid: observed_base_oid.to_string(),
+        };
+    }
+
     if normalized_oid(observation.attempt_target_base_commit)
         .is_some_and(|targeted| targeted != observed_base_oid)
     {
@@ -35,20 +52,5 @@ pub(crate) fn classify_health_hold_disposition(
         };
     }
 
-    if !matches!(
-        observation.merge_state_status,
-        Some(PrMergeStateStatus::Behind)
-    ) {
-        return HealthHoldDisposition::Retain;
-    }
-
-    if normalized_oid(observation.last_base_update_oid) == Some(observed_base_oid) {
-        return HealthHoldDisposition::BlockedStaleAfterUpdate {
-            observed_base_oid: observed_base_oid.to_string(),
-        };
-    }
-
-    HealthHoldDisposition::SupersedeForBaseUpdate {
-        observed_base_oid: observed_base_oid.to_string(),
-    }
+    HealthHoldDisposition::Retain
 }

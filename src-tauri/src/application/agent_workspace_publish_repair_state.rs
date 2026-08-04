@@ -620,6 +620,15 @@ pub(crate) fn agent_workspace_repair_is_ci_held(attempt: &AgentWorkspaceRepairAt
             .any(|reason| reason == AWAITING_CI_REPAIR_REASON)
 }
 
+pub(crate) fn agent_workspace_repair_is_base_stale_held(
+    attempt: &AgentWorkspaceRepairAttempt,
+) -> bool {
+    attempt
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == BASE_STALE_AFTER_UPDATE_REPAIR_REASON)
+}
+
 /// True when a held repair has a concrete local head that GitHub has not observed yet.
 ///
 /// Whitespace-only values never grant a re-drive; nonempty head values are compared exactly. A
@@ -751,14 +760,28 @@ pub(crate) async fn mark_agent_workspace_base_update_target(
 /// Hold after a reserved automatic update failed to make GitHub observe the branch as current.
 pub(crate) async fn reserve_agent_workspace_base_stale_hold(
     repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
-    attempt: AgentWorkspaceRepairAttempt,
+    mut attempt: AgentWorkspaceRepairAttempt,
+    observed_base_commit: &str,
     summary: &str,
     auto_merge_current: Option<bool>,
 ) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
-    reserve_agent_workspace_repair_health_hold(
+    let observed_base_commit = observed_base_commit.trim();
+    let targeted_base_commit = attempt
+        .base_update_target_commit
+        .as_deref()
+        .map(str::trim)
+        .filter(|commit| !commit.is_empty());
+    if observed_base_commit.is_empty() || targeted_base_commit != Some(observed_base_commit) {
+        return Ok(AgentWorkspaceRepairTransitionOutcome::Stale(attempt));
+    }
+    if !agent_workspace_repair_is_base_stale_held(&attempt) {
+        attempt
+            .pending_reasons
+            .push(BASE_STALE_AFTER_UPDATE_REPAIR_REASON.to_string());
+    }
+    transition_agent_workspace_repair_ready_pending_reasons(
         repair_repo,
         attempt,
-        BASE_STALE_AFTER_UPDATE_REPAIR_REASON,
         summary,
         auto_merge_current,
         Vec::new(),
@@ -779,8 +802,6 @@ async fn reserve_agent_workspace_repair_health_hold(
     let Some(_) = attempt.pr_autofix_health_fingerprint.as_deref() else {
         return Ok(AgentWorkspaceRepairTransitionOutcome::Stale(attempt));
     };
-    let expected_phase = attempt.phase;
-    let expected_updated_at = attempt.updated_at;
     if !attempt
         .pending_reasons
         .iter()
@@ -788,6 +809,47 @@ async fn reserve_agent_workspace_repair_health_hold(
     {
         attempt.pending_reasons.push(hold_reason.to_string());
     }
+    transition_agent_workspace_repair_ready_pending_reasons(
+        repair_repo,
+        attempt,
+        summary,
+        auto_merge_current,
+        events,
+    )
+    .await
+}
+
+pub(crate) async fn release_agent_workspace_base_stale_hold(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    mut attempt: AgentWorkspaceRepairAttempt,
+    summary: &str,
+    auto_merge_current: Option<bool>,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    if !agent_workspace_repair_is_base_stale_held(&attempt) {
+        return Ok(AgentWorkspaceRepairTransitionOutcome::Stale(attempt));
+    }
+    attempt
+        .pending_reasons
+        .retain(|reason| reason != BASE_STALE_AFTER_UPDATE_REPAIR_REASON);
+    transition_agent_workspace_repair_ready_pending_reasons(
+        repair_repo,
+        attempt,
+        summary,
+        auto_merge_current,
+        Vec::new(),
+    )
+    .await
+}
+
+async fn transition_agent_workspace_repair_ready_pending_reasons(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    mut attempt: AgentWorkspaceRepairAttempt,
+    summary: &str,
+    auto_merge_current: Option<bool>,
+    events: Vec<AgentConversationWorkspacePublicationEvent>,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    let expected_phase = attempt.phase;
+    let expected_updated_at = attempt.updated_at;
     attempt.phase = AgentWorkspaceRepairPhase::Ready;
     attempt.summary = Some(summary.to_string());
     attempt.blocker = None;

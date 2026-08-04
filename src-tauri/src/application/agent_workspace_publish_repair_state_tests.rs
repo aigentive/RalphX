@@ -20,7 +20,9 @@ use crate::application::agent_workspace_publish_repair_state::{
     is_machine_repair_reason_marker, last_human_repair_reason,
     mark_agent_workspace_base_update_target, reconcile_active_agent_workspace_repair,
     reopen_agent_workspace_repair_after_validation_failure, repair_event_authorizes_active_run,
-    reserve_agent_workspace_base_stale_hold, reserve_agent_workspace_base_update,
+    agent_workspace_repair_is_base_stale_held,
+    release_agent_workspace_base_stale_hold, reserve_agent_workspace_base_stale_hold,
+    reserve_agent_workspace_base_update,
     reserve_agent_workspace_ci_await, reserve_agent_workspace_ci_rerun,
     reserve_agent_workspace_pre_existing_on_base,
     reserve_agent_workspace_repair_completion_validation, reserve_agent_workspace_repair_dispatch,
@@ -3366,7 +3368,7 @@ async fn reserve_pre_existing_on_base_settles_to_ready_with_marker() {
 }
 
 #[tokio::test]
-async fn reserve_base_update_fences_the_observed_base_tip_before_effects() {
+async fn base_stale_hold_uses_base_tip_authority_and_preserves_ci_hold_on_release() {
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let repair_repo = Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>;
     let conversation_id = ChatConversationId::from_string("base-stale-hold");
@@ -3387,7 +3389,13 @@ async fn reserve_base_update_fences_the_observed_base_tip_before_effects() {
     .await
     .expect("start repair")
     .into_attempt();
-    attempt.pr_autofix_health_fingerprint = Some("checks:failing".to_string());
+    attempt.ci_rerun_count = 1;
+    attempt.ci_rerun_fingerprint = Some("ci-hold:v1:repair-head:901".to_string());
+    attempt.pending_reasons.push(
+        crate::application::agent_workspace_publish_repair_state::AWAITING_CI_REPAIR_REASON
+            .to_string(),
+    );
+    assert!(attempt.pr_autofix_health_fingerprint.is_none());
     let stale_pre_reservation = attempt.clone();
 
     let AgentWorkspaceRepairTransitionOutcome::Applied(reserved) =
@@ -3451,10 +3459,26 @@ async fn reserve_base_update_fences_the_observed_base_tip_before_effects() {
         Some("observed-base-tip")
     );
 
+    for invalid_observed_tip in ["", "different-base-tip"] {
+        assert!(matches!(
+            reserve_agent_workspace_base_stale_hold(
+                Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>,
+                marked.clone(),
+                invalid_observed_tip,
+                "invalid base authority must not hold",
+                None,
+            )
+            .await
+            .expect("invalid base authority returns stale"),
+            AgentWorkspaceRepairTransitionOutcome::Stale(_)
+        ));
+    }
+
     let AgentWorkspaceRepairTransitionOutcome::Applied(held) =
         reserve_agent_workspace_base_stale_hold(
             Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>,
             marked,
+            "observed-base-tip",
             "base update did not take",
             None,
         )
@@ -3467,6 +3491,30 @@ async fn reserve_base_update_fences_the_observed_base_tip_before_effects() {
         &crate::application::agent_workspace_publish_repair_state::BASE_STALE_AFTER_UPDATE_REPAIR_REASON
             .to_string()
     ));
+    assert!(agent_workspace_repair_is_base_stale_held(&held));
+    assert!(agent_workspace_repair_is_ci_held(&held));
+
+    let AgentWorkspaceRepairTransitionOutcome::Applied(released) =
+        release_agent_workspace_base_stale_hold(
+            Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>,
+            held,
+            "base stale condition cleared",
+            None,
+        )
+        .await
+        .expect("release base-stale marker")
+    else {
+        panic!("current base-stale marker release must apply");
+    };
+    assert!(!agent_workspace_repair_is_base_stale_held(&released));
+    assert!(
+        agent_workspace_repair_is_ci_held(&released),
+        "releasing base_stale must preserve the underlying CI hold"
+    );
+    assert!(released.pending_reasons.iter().any(|reason| {
+        reason
+            == crate::application::agent_workspace_publish_repair_state::AWAITING_CI_REPAIR_REASON
+    }));
 }
 
 #[tokio::test]

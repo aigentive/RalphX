@@ -73,13 +73,28 @@ fn blocked_merge_state_retains() {
 }
 
 #[test]
-fn advanced_base_takes_priority_over_behind() {
+fn behind_at_advanced_base_still_supersedes_for_base_update() {
     assert_eq!(
         classify(
             Some(&PrMergeStateStatus::Behind),
             Some("base-after"),
             Some("base-before"),
+            None,
+        ),
+        HealthHoldDisposition::SupersedeForBaseUpdate {
+            observed_base_oid: "base-after".to_string(),
+        }
+    );
+}
+
+#[test]
+fn advanced_base_without_behind_supersedes_for_new_evidence() {
+    assert_eq!(
+        classify(
+            Some(&PrMergeStateStatus::Clean),
             Some("base-after"),
+            Some("base-before"),
+            None,
         ),
         HealthHoldDisposition::SupersedeForNewEvidence {
             observed_base_oid: "base-after".to_string(),

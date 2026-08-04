@@ -27,16 +27,17 @@ use crate::application::agent_workspace_publish_recovery::{
     recover_stale_publish_repair_for_workspace_in_state_result, StalePublishRepairRecoveryOutcome,
 };
 use crate::application::agent_workspace_publish_repair_state::{
-    agent_workspace_repair_is_ci_held, agent_workspace_repair_is_health_held,
+    agent_workspace_repair_is_base_stale_held, agent_workspace_repair_is_ci_held,
+    agent_workspace_repair_is_health_held,
     classify_agent_workspace_repair_delivery, held_repair_has_unpublished_head,
-    mark_agent_workspace_base_update_target, reserve_agent_workspace_base_stale_hold,
-    reserve_agent_workspace_base_update, reserve_agent_workspace_repair_dispatch,
+    mark_agent_workspace_base_update_target, release_agent_workspace_base_stale_hold,
+    reserve_agent_workspace_base_stale_hold, reserve_agent_workspace_base_update,
+    reserve_agent_workspace_repair_dispatch,
     settle_agent_workspace_repair_dispatch_outcome, start_or_join_agent_workspace_repair,
     start_or_join_agent_workspace_repair_without_projection,
     validate_agent_workspace_repair_target_lease, AgentWorkspaceRepairDispatchOutcome,
     AgentWorkspaceRepairDispatchSettlement, AgentWorkspaceRepairStartOutcome,
     AgentWorkspaceRepairStartRequest, AgentWorkspaceRepairTransitionOutcome,
-    BASE_STALE_AFTER_UPDATE_REPAIR_REASON,
 };
 #[cfg(test)]
 use crate::application::agent_workspace_publish_repair_state::{
@@ -3139,8 +3140,14 @@ async fn hold_agent_workspace_base_update_route(
     auto_merge_current: Option<bool>,
 ) -> crate::AppResult<()> {
     if let AgentWorkspaceRepairTransitionOutcome::Applied(_) =
-        reserve_agent_workspace_base_stale_hold(repair_repo, attempt, message, auto_merge_current)
-            .await?
+        reserve_agent_workspace_base_stale_hold(
+            repair_repo,
+            attempt,
+            observed_base_oid,
+            message,
+            auto_merge_current,
+        )
+        .await?
     {
         record_agent_workspace_base_update_route(
             workspace_repo,
@@ -3420,34 +3427,50 @@ async fn route_agent_workspace_pr_autofix_for_target(
     // pre-existing on base. Neither outcome authorizes a new fixer until GitHub changes health.
     // Do not launch a new fixer generation until GitHub reports a different conclusion.
     if let Some(repair_repo) = repair_repo.as_ref() {
-        if let Some(attempt) = repair_repo
+        if let Some(mut attempt) = repair_repo
             .get_current_repair_attempt(conversation_id)
             .await?
         {
             if attempt.phase == AgentWorkspaceRepairPhase::Ready {
                 let mut attempt_already_settled = false;
-                let health_suppressed = agent_workspace_repair_is_health_held(&attempt);
-                let ci_held = agent_workspace_repair_is_ci_held(&attempt);
+                let mut health_suppressed = agent_workspace_repair_is_health_held(&attempt);
+                let mut ci_held = agent_workspace_repair_is_ci_held(&attempt);
+                let mut base_stale_held =
+                    agent_workspace_repair_is_base_stale_held(&attempt);
                 let disposition = classify_health_hold_disposition(BaseStalenessObservation {
                     merge_state_status: health.sync_state.merge_state_status.as_ref(),
                     observed_base_oid: health.sync_state.base_ref_oid.as_deref(),
                     attempt_target_base_commit: attempt.target_base_commit.as_deref(),
                     last_base_update_oid: attempt.base_update_target_commit.as_deref(),
                 });
-                if ci_held {
-                    if ci_rerun_hold_still_pending(&health, attempt.ci_rerun_fingerprint.as_deref())
+                if base_stale_held
+                    && !matches!(
+                        disposition,
+                        HealthHoldDisposition::BlockedStaleAfterUpdate { .. }
+                    )
+                {
+                    attempt = match release_agent_workspace_base_stale_hold(
+                        Arc::clone(repair_repo),
+                        attempt,
+                        "GitHub no longer reports the PR behind the targeted base tip; RalphX resumed CI evidence supervision.",
+                        workspace.pr_auto_merge_current,
+                    )
+                    .await?
                     {
-                        return Ok(false);
-                    }
-                } else if health_suppressed {
+                        AgentWorkspaceRepairTransitionOutcome::Applied(attempt) => attempt,
+                        AgentWorkspaceRepairTransitionOutcome::Stale(_)
+                        | AgentWorkspaceRepairTransitionOutcome::Missing => return Ok(false),
+                    };
+                    health_suppressed = agent_workspace_repair_is_health_held(&attempt);
+                    ci_held = agent_workspace_repair_is_ci_held(&attempt);
+                    base_stale_held = agent_workspace_repair_is_base_stale_held(&attempt);
+                }
+                let hold_active = health_suppressed || ci_held || base_stale_held;
+                if hold_active {
                     if let HealthHoldDisposition::BlockedStaleAfterUpdate { observed_base_oid } =
                         &disposition
                     {
-                        if attempt
-                            .pending_reasons
-                            .iter()
-                            .any(|reason| reason == BASE_STALE_AFTER_UPDATE_REPAIR_REASON)
-                        {
+                        if base_stale_held {
                             return Ok(false);
                         }
                         let summary = format!(
@@ -3467,29 +3490,9 @@ async fn route_agent_workspace_pr_autofix_for_target(
                         .await?;
                         return Ok(false);
                     }
-
-                    if matches!(disposition, HealthHoldDisposition::Retain)
-                        && current_issue.as_ref().is_some_and(|issue| {
-                            attempt.pr_autofix_health_fingerprint.as_deref()
-                                == Some(issue.classification.as_str())
-                        })
-                    {
-                        if held_repair_has_unpublished_head(
-                            &attempt,
-                            health.sync_state.head_ref_oid.as_deref(),
-                        ) {
-                            tracing::info!(
-                                conversation_id = conversation_id.as_str(),
-                                pr_number = target.pr_number,
-                                attempt_id = attempt.id.as_str(),
-                                "PR health hold retained while durable recovery re-drives its unpublished repair head"
-                            );
-                        }
-                        return Ok(false);
-                    }
                 }
 
-                if health_suppressed
+                if hold_active
                     && matches!(
                         (&target.kind, &disposition, project),
                         (
@@ -3576,6 +3579,36 @@ async fn route_agent_workspace_pr_autofix_for_target(
                             return Ok(false);
                         }
                         BehindBaseUpdateRoute::Rejected => return Ok(false),
+                    }
+                }
+                if !attempt_already_settled {
+                    if ci_held
+                        && ci_rerun_hold_still_pending(
+                            &health,
+                            attempt.ci_rerun_fingerprint.as_deref(),
+                        )
+                    {
+                        return Ok(false);
+                    }
+                    if health_suppressed
+                        && matches!(disposition, HealthHoldDisposition::Retain)
+                        && current_issue.as_ref().is_some_and(|issue| {
+                            attempt.pr_autofix_health_fingerprint.as_deref()
+                                == Some(issue.classification.as_str())
+                        })
+                    {
+                        if held_repair_has_unpublished_head(
+                            &attempt,
+                            health.sync_state.head_ref_oid.as_deref(),
+                        ) {
+                            tracing::info!(
+                                conversation_id = conversation_id.as_str(),
+                                pr_number = target.pr_number,
+                                attempt_id = attempt.id.as_str(),
+                                "PR health hold retained while durable recovery re-drives its unpublished repair head"
+                            );
+                        }
+                        return Ok(false);
                     }
                 }
                 if (health_suppressed || ci_held) && !attempt_already_settled {

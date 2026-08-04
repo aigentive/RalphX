@@ -7274,7 +7274,7 @@ async fn live_pr_autofix_behind_at_already_updated_tip_enters_base_stale_hold() 
 }
 
 #[tokio::test]
-async fn live_pr_autofix_behind_base_with_dirty_worktree_defers_without_push() {
+async fn live_pr_autofix_ci_rerun_hold_behind_base_dirty_worktree_defers_without_push() {
     let worktree = tempfile::tempdir().expect("worktree path");
     let mut workspace = supervised_workspace(
         "behind-base-dirty-worktree",
@@ -7302,20 +7302,23 @@ async fn live_pr_autofix_behind_base_with_dirty_worktree_defers_without_push() {
     let mut health = open_pr_health("behind-base-dirty-head");
     health.sync_state.base_ref_oid = Some("base-behind-dirty".to_string());
     health.sync_state.merge_state_status = Some(PrMergeStateStatus::Behind);
+    let ci_fingerprint = "ci-hold:v1:behind-base-dirty-head:923";
     health.checks.push(PrHealthCheck {
-        name: "Rust tests".to_string(),
+        name: "Rust tests / cancelled".to_string(),
         status: Some("completed".to_string()),
-        conclusion: Some("failure".to_string()),
-        details_url: None,
+        conclusion: Some("cancelled".to_string()),
+        details_url: Some("https://github.com/owner/repo/actions/runs/923/jobs/1".to_string()),
     });
-    let fingerprint = super::classify_agent_workspace_pr_autofix_issue(101, &health)
-        .expect("failed check should classify")
-        .classification;
-    let held = reserve_health_held_attempt(
+    health.checks.push(PrHealthCheck {
+        name: "Rust tests / sibling".to_string(),
+        status: Some("in_progress".to_string()),
+        conclusion: None,
+        details_url: Some("https://github.com/owner/repo/actions/runs/923/jobs/2".to_string()),
+    });
+    let held = reserve_pending_ci_rerun_attempt(
         repair_repo.as_ref(),
         &conversation_id,
-        &fingerprint,
-        crate::application::agent_workspace_publish_repair_state::UNCHANGED_HEALTH_REPAIR_REASON,
+        ci_fingerprint,
     )
     .await;
     let mut targeted = held.clone();
@@ -7382,7 +7385,7 @@ async fn live_pr_autofix_behind_base_with_dirty_worktree_defers_without_push() {
 }
 
 #[tokio::test]
-async fn live_pr_autofix_behind_base_updates_and_pushes_before_retaining_hold() {
+async fn live_pr_autofix_advanced_base_and_behind_updates_advanced_tip_first() {
     let fixture = tempfile::tempdir().expect("fixture root");
     let remote = fixture.path().join("remote.git");
     let worktree = fixture.path().join("worktree");
@@ -7397,6 +7400,7 @@ async fn live_pr_autofix_behind_base_updates_and_pushes_before_retaining_hold() 
     run_git(&worktree, &["add", "."]);
     run_git(&worktree, &["commit", "-m", "initial"]);
     run_git(&worktree, &["push", "-u", "origin", "main"]);
+    let attempt_base_oid = git_stdout(&worktree, &["rev-parse", "main"]);
 
     let mut workspace = supervised_workspace(
         "behind-base-direct-update",
@@ -7450,7 +7454,7 @@ async fn live_pr_autofix_behind_base_updates_and_pushes_before_retaining_hold() 
     )
     .await;
     let mut targeted = held.clone();
-    targeted.target_base_commit = Some(observed_base_oid.clone());
+    targeted.target_base_commit = Some(attempt_base_oid);
     targeted.updated_at += chrono::Duration::microseconds(1);
     match repair_repo
         .transition_repair_attempt(
