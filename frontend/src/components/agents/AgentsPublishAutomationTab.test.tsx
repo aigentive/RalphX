@@ -12,6 +12,7 @@ import {
   deriveAgentsPublishAutomationSnapshot,
   hasActiveAgentsPublishAutomation,
 } from "./agentsPublishAutomationSnapshot";
+import { WORKSPACE_REVIEW_AUTOMATION_COPY } from "./workspaceReviewAutomationCopy";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -123,6 +124,10 @@ describe("AgentsPublishAutomationTab", () => {
     expect(
       screen.getByRole("button", { name: "About Auto Publish" }),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "About Auto Review & Fix" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getAllByText(WORKSPACE_REVIEW_AUTOMATION_COPY)).toHaveLength(1);
     expect(screen.getByRole("button", { name: "Inherit" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "On" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Off" })).toBeInTheDocument();

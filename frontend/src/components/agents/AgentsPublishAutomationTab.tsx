@@ -435,9 +435,6 @@ export function AgentsPublishAutomationTab({
             <div className="min-w-0">
               <div className="flex items-center gap-1.5 text-[var(--text-secondary)]">
                 <span className="text-xs font-medium">Auto Review &amp; Fix</span>
-                <PublishSwitchInfoTooltip label="About Auto Review & Fix">
-                  {WORKSPACE_REVIEW_AUTOMATION_COPY}
-                </PublishSwitchInfoTooltip>
               </div>
               <p className="mt-1 text-xs leading-relaxed text-[var(--text-muted)]">
                 {WORKSPACE_REVIEW_AUTOMATION_COPY}
