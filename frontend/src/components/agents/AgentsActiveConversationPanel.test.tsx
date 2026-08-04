@@ -3013,6 +3013,70 @@ describe("AgentsActiveConversationPanel", () => {
     expect(panel).toHaveAttribute("data-send-codex-fast-mode", "false");
   });
 
+  it("uses the active Codex reviewer runtime and fast mode for a focused workspace Review send", async () => {
+    setActiveReviewerRuntime({
+      provider: "codex",
+      model: "gpt-5.5",
+      effort: "high",
+      serviceTier: "fast",
+    });
+    renderPanel({
+      chatFocus: {
+        type: "workspace_review",
+        conversationId: "review-conversation-1",
+      },
+      normalizedActiveRuntime: {
+        provider: "claude",
+        modelId: "opus",
+        effort: "high",
+      },
+    });
+
+    await screen.findByTestId("agents-role-runtime-banner");
+
+    await waitFor(() => {
+      const panel = screen.getByTestId("integrated-chat-panel");
+      expect(panel).toHaveAttribute(
+        "data-send-conversation-id",
+        "review-conversation-1",
+      );
+      expect(panel).toHaveAttribute("data-send-provider-harness", "codex");
+      expect(panel).toHaveAttribute("data-send-model-id", "gpt-5.5");
+      expect(panel).toHaveAttribute("data-send-logical-effort", "high");
+      expect(panel).toHaveAttribute("data-send-codex-fast-mode", "true");
+    });
+  });
+
+  it("sends no fast-mode flag for an active Claude reviewer in focused workspace Review", async () => {
+    setActiveReviewerRuntime({
+      provider: "claude",
+      model: "sonnet",
+      effort: "medium",
+      serviceTier: "fast",
+    });
+    renderPanel({
+      chatFocus: {
+        type: "workspace_review",
+        conversationId: "review-conversation-1",
+      },
+      normalizedActiveRuntime: {
+        provider: "codex",
+        modelId: "gpt-5.5",
+        effort: "high",
+      },
+    });
+
+    await screen.findByTestId("agents-role-runtime-banner");
+
+    await waitFor(() => {
+      const panel = screen.getByTestId("integrated-chat-panel");
+      expect(panel).toHaveAttribute("data-send-provider-harness", "claude");
+      expect(panel).toHaveAttribute("data-send-model-id", "sonnet");
+      expect(panel).toHaveAttribute("data-send-logical-effort", "medium");
+      expect(panel).toHaveAttribute("data-send-codex-fast-mode", "null");
+    });
+  });
+
   it("uses durable focused Review speed ahead of the client speed projection", () => {
     useAgentSessionStore.getState().setServiceTierForConversation(
       "review-conversation-1",

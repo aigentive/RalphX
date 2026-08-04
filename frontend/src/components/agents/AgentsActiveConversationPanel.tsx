@@ -1389,16 +1389,16 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const workspaceSendRuntime = usesWorkspaceRuntimeControls
     ? selectableComposerRuntime
     : normalizedActiveRuntime;
-  const panelCodexFastModeOption = focusedWorkspaceReviewConversationId
-    ? workspaceSendRuntime.provider === "codex"
-      ? false
+  const panelCodexFastModeOption = activeRole && activeRoleSelection
+    ? selectableComposerRuntime.provider === "codex" &&
+      composerCodexFastModeAvailability.supported
+      ? activeRoleSelection.serviceTier === "provider_default"
+        ? null
+        : activeRoleSelection.serviceTier === "fast"
       : null
-    : activeRole
-      ? selectableComposerRuntime.provider === "codex" &&
-        composerCodexFastModeAvailability.supported
-        ? activeRoleSelection?.serviceTier === "provider_default"
-          ? null
-          : activeRoleSelection?.serviceTier === "fast"
+    : focusedWorkspaceReviewConversationId
+      ? workspaceSendRuntime.provider === "codex"
+        ? false
         : null
       : activeCodexFastModeOption;
   const handleActiveRoleProviderChange = useCallback(
