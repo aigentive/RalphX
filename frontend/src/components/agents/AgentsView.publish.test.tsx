@@ -1035,6 +1035,46 @@ describe("AgentsView publish", () => {
     );
   });
 
+  it("lets terminal PR state override stale held maintenance data", async () => {
+    configurePublishPane({
+      workspace: {
+        publicationPushStatus: "pushed",
+        publicationPrNumber: 78,
+        publicationPrStatus: "merged",
+        maintenanceOperation: {
+          operationId: "maintenance-held-after-merge",
+          generation: 2,
+          source: "pr_autofix",
+          stage: "held",
+          status: "held",
+          holdReason: "pr_autofix_unchanged_health",
+          summary: "Stale repair hold.",
+          blocker: null,
+          automaticContinuation: false,
+          startedAt: "2026-08-02T10:00:00Z",
+          updatedAt: "2026-08-02T10:01:00Z",
+        },
+      },
+      changes: [],
+    });
+
+    const actionbar = await openPublishPane();
+    expect(
+      within(actionbar).getByRole("heading", { name: "Pull Request Merged" }),
+    ).toBeInTheDocument();
+    expect(within(actionbar).getByTestId("agents-publish-confirm")).toBeDisabled();
+    expect(screen.queryByTestId("agents-publish-hold-card")).not.toBeInTheDocument();
+    expect(
+      within(actionbar).queryByTestId("agents-publish-recheck-pr-health"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Retry repair anyway/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Stop auto-repair/i })).not.toBeInTheDocument();
+    expect(within(actionbar).queryByTestId("agents-publish-actions-menu")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-publish-hold-commit-publish"),
+    ).not.toBeInTheDocument();
+  });
+
   it("rebases directly onto a merged pull request's resolved base", async () => {
     configurePublishPane({
       workspace: {

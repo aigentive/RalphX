@@ -157,9 +157,15 @@ fn ci_held_predicate_recognizes_rerun_reservations_and_await_holds() {
 
     assert!(!agent_workspace_repair_is_ci_held(&attempt));
     attempt.ci_rerun_count = 1;
+    assert!(
+        !agent_workspace_repair_is_ci_held(&attempt),
+        "a rerun count without its fingerprint is not a projected CI hold"
+    );
+    attempt.ci_rerun_fingerprint = Some("ci-rerun:123".to_string());
     assert!(agent_workspace_repair_is_ci_held(&attempt));
 
     attempt.ci_rerun_count = 0;
+    attempt.ci_rerun_fingerprint = None;
     attempt
         .pending_reasons
         .push(AWAITING_CI_REPAIR_REASON.to_string());

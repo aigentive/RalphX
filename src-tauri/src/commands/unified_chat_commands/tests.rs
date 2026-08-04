@@ -2920,6 +2920,12 @@ async fn pr_supervision_enable_marks_draft_ready_and_enables_auto_merge() {
         .create_or_update(workspace.clone())
         .await
         .expect("workspace should persist");
+    seed_command_pr_autofix_health_hold(
+        &state,
+        &workspace.conversation_id,
+        "checks:toggle-enable-success",
+    )
+    .await;
 
     let response = set_agent_conversation_workspace_pr_supervision_for_state(
         workspace.conversation_id.as_str(),
@@ -2937,10 +2943,7 @@ async fn pr_supervision_enable_marks_draft_ready_and_enables_auto_merge() {
     assert!(response.pr_auto_merge_desired);
     assert_eq!(response.pr_auto_merge_method, "rebase");
     assert_eq!(response.pr_auto_merge_current, Some(true));
-    assert_eq!(
-        response.pr_supervision_status.as_deref(),
-        Some("monitoring")
-    );
+    assert_eq!(response.pr_supervision_status.as_deref(), Some("held"));
     assert!(response
         .pr_supervision_summary
         .as_deref()
@@ -3035,7 +3038,6 @@ async fn pr_supervision_enable_uses_linked_plan_branch_pr_for_ideation_workspace
         .create_or_update(workspace.clone())
         .await
         .expect("workspace should persist");
-
     let response = set_agent_conversation_workspace_pr_supervision_for_state(
         workspace.conversation_id.as_str(),
         AgentConversationWorkspacePrSupervisionInput {
@@ -3337,6 +3339,12 @@ async fn pr_supervision_enable_records_waiting_when_auto_merge_enable_fails() {
         .create_or_update(workspace.clone())
         .await
         .expect("workspace should persist");
+    seed_command_pr_autofix_health_hold(
+        &state,
+        &workspace.conversation_id,
+        "checks:toggle-enable-failure",
+    )
+    .await;
 
     let response = set_agent_conversation_workspace_pr_supervision_for_state(
         workspace.conversation_id.as_str(),
@@ -3353,7 +3361,7 @@ async fn pr_supervision_enable_records_waiting_when_auto_merge_enable_fails() {
     assert!(response.pr_autofix_enabled);
     assert!(response.pr_auto_merge_desired);
     assert_eq!(response.pr_auto_merge_current, Some(false));
-    assert_eq!(response.pr_supervision_status.as_deref(), Some("waiting"));
+    assert_eq!(response.pr_supervision_status.as_deref(), Some("held"));
     assert!(response
         .pr_supervision_summary
         .as_deref()
@@ -3640,6 +3648,26 @@ async fn pr_supervision_disable_records_waiting_when_auto_merge_disable_fails() 
         .create_or_update(workspace.clone())
         .await
         .expect("workspace should persist");
+    seed_command_pr_autofix_health_hold(
+        &state,
+        &workspace.conversation_id,
+        "checks:toggle-disable-failure",
+    )
+    .await;
+    let mut held_workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&workspace.conversation_id)
+        .await
+        .expect("held workspace lookup")
+        .expect("held workspace exists");
+    held_workspace.pr_autofix_enabled = true;
+    held_workspace.pr_auto_merge_desired = true;
+    held_workspace.pr_auto_merge_current = Some(true);
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(held_workspace)
+        .await
+        .expect("held disable fixture should persist");
 
     let response = set_agent_conversation_workspace_pr_supervision_for_state(
         workspace.conversation_id.as_str(),
@@ -3656,7 +3684,7 @@ async fn pr_supervision_disable_records_waiting_when_auto_merge_disable_fails() 
     assert!(!response.pr_autofix_enabled);
     assert!(!response.pr_auto_merge_desired);
     assert_eq!(response.pr_auto_merge_current, Some(true));
-    assert_eq!(response.pr_supervision_status.as_deref(), Some("waiting"));
+    assert_eq!(response.pr_supervision_status.as_deref(), Some("held"));
     assert!(response
         .pr_supervision_summary
         .as_deref()
