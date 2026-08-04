@@ -1,4 +1,4 @@
-import { screen } from "@testing-library/react";
+import { fireEvent, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
 import { describe, expect, it, vi } from "vitest";
@@ -211,6 +211,17 @@ function renderPanel(
 }
 
 describe("AgentReviewPanel", () => {
+  it("warms review preparation on pointer and keyboard intent", () => {
+    const onStartReviewIntent = vi.fn();
+    renderPanel({ onStartReviewIntent });
+
+    const action = screen.getByRole("button", { name: "Update review" });
+    fireEvent.pointerEnter(action);
+    fireEvent.focus(action);
+
+    expect(onStartReviewIntent).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps the Review status shell visible while documents load", () => {
     renderPanel({
       reviewArtifact: null,

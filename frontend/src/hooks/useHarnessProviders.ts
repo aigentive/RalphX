@@ -24,6 +24,10 @@ interface UseHarnessProvidersOptions {
   enabled?: boolean;
 }
 
+interface RefetchProviderOptions {
+  forceRuntime?: boolean;
+}
+
 export function useHarnessProviders(options: UseHarnessProvidersOptions = {}) {
   const queryClient = useQueryClient();
   const refreshRuntime = options.refreshRuntime ?? false;
@@ -52,6 +56,26 @@ export function useHarnessProviders(options: UseHarnessProvidersOptions = {}) {
     },
   });
 
+  const refetchProviders = async (
+    options: RefetchProviderOptions = {},
+  ) => {
+    if (!options.forceRuntime) {
+      return query.refetch();
+    }
+
+    const settings = await queryClient.fetchQuery({
+      queryKey: harnessProviderKeys.list(true),
+      queryFn: () =>
+        harnessProvidersApi.list({ refreshRuntime: true, forceRuntime: true }),
+      staleTime: 0,
+    });
+    queryClient.setQueriesData<AgentProvidersSettingsResponse>(
+      { queryKey: harnessProviderKeys.all },
+      settings,
+    );
+    return { data: settings };
+  };
+
   return {
     settings: query.data ?? EMPTY_PROVIDER_SETTINGS,
     providers: query.data?.providers ?? [],
@@ -59,7 +83,7 @@ export function useHarnessProviders(options: UseHarnessProvidersOptions = {}) {
     isPlaceholderData: query.isPlaceholderData,
     isError: query.isError,
     error: query.error,
-    refetchProviders: query.refetch,
+    refetchProviders,
     updateProviderAsync: mutation.mutateAsync,
     isUpdating: mutation.isPending,
     updateError: mutation.error,

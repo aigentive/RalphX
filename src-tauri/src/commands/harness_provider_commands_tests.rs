@@ -1,5 +1,10 @@
+use crate::application::harness_runtime_registry::{
+    clear_harness_runtime_caches_for_tests, refresh_harness_runtime_probe_with_force,
+    HarnessRuntimeProbe,
+};
+use crate::application::harness_runtime_test_support::HARNESS_RUNTIME_TEST_MUTEX;
 use crate::application::managed_provider_cli::override_managed_codex_binary_path_for_tests;
-use crate::application::{harness_runtime_registry::HarnessRuntimeProbe, AppState, AGENT_LANES};
+use crate::application::{AppState, AGENT_LANES};
 use crate::domain::agents::{
     AgentHarnessKind, AgentLane, AgentProviderCliManagementMode, AgentProviderSettings,
     LogicalEffort, CODEX_DEFAULT_APPROVAL_POLICY, CODEX_DEFAULT_SANDBOX_MODE,
@@ -8,13 +13,25 @@ use crate::infrastructure::memory::MemoryAgentProviderSettingsRepository;
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::sync::Arc;
+use tauri::Manager;
 
 use super::{
     apply_provider_to_global_lanes, merge_input, parse_effort, parse_provider,
     provider_settings_snapshot_probe, provider_status, read_provider_settings,
     read_provider_settings_with_probes, snapshot_probes_from_provider_settings, to_lane_settings,
-    to_response, update_provider_settings_with_probes, UpdateAgentProviderSettingsInput,
+    to_response, update_agent_provider_settings, update_provider_settings_with_probes,
+    GetAgentProviderSettingsInput, UpdateAgentProviderSettingsInput,
 };
+
+#[test]
+fn provider_settings_refresh_input_defaults_force_runtime_to_false() {
+    let input: GetAgentProviderSettingsInput =
+        serde_json::from_value(serde_json::json!({ "refreshRuntime": true }))
+            .expect("deserialize refresh input");
+
+    assert!(input.refresh_runtime);
+    assert!(!input.force_runtime);
+}
 
 fn input(provider: &str) -> UpdateAgentProviderSettingsInput {
     UpdateAgentProviderSettingsInput {
@@ -630,7 +647,7 @@ fn lane_settings_inherit_provider_defaults() {
 #[tokio::test]
 async fn read_settings_returns_ordered_provider_defaults() {
     let state = AppState::new_test();
-    let response = read_provider_settings(&state, false)
+    let response = read_provider_settings(&state, false, false)
         .await
         .expect("read provider settings");
 
@@ -657,6 +674,67 @@ async fn read_settings_uses_fallback_probe_when_provider_probe_is_missing() {
         .expect("claude response");
     assert!(!claude.available);
     assert_eq!(claude.error.as_deref(), Some("claude probe unavailable"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn enabling_user_managed_provider_forces_a_fresh_runtime_probe() {
+    let _runtime_lock = HARNESS_RUNTIME_TEST_MUTEX
+        .lock()
+        .expect("harness runtime mutex");
+    let _env_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("test env mutex");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let bin_dir = temp_dir.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).expect("create bin dir");
+    let claude_cli = bin_dir.join("claude");
+    write_claude_cli(&claude_cli, "2.1.110");
+
+    let _path = EnvGuard::set_os("PATH", &bin_dir);
+    let _home = EnvGuard::set_os("HOME", temp_dir.path());
+    let _zdotdir = EnvGuard::set_os("ZDOTDIR", temp_dir.path());
+    let _nvm = EnvGuard::set_os("NVM_BIN", "");
+    let _volta = EnvGuard::set_os("VOLTA_HOME", "");
+    let _login_shell =
+        EnvGuard::set_os(crate::infrastructure::login_shell_env::DISABLE_ENV_VAR, "1");
+
+    clear_harness_runtime_caches_for_tests(AgentHarnessKind::Claude);
+    let cached_probe = refresh_harness_runtime_probe_with_force(AgentHarnessKind::Claude, false);
+    assert_eq!(cached_probe.cli_version.as_deref(), Some("2.1.110"));
+
+    let original_modified = std::fs::metadata(&claude_cli)
+        .expect("fake Claude metadata")
+        .modified()
+        .expect("fake Claude modification time");
+    write_claude_cli(&claude_cli, "2.1.219");
+    let file = std::fs::File::open(&claude_cli).expect("open fake Claude");
+    file.set_times(std::fs::FileTimes::new().set_modified(original_modified))
+        .expect("restore fake Claude modification time");
+
+    let app = tauri::test::mock_builder()
+        .manage(AppState::new_test())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app");
+    let response = update_agent_provider_settings(
+        UpdateAgentProviderSettingsInput {
+            enabled: Some(true),
+            ..input("claude")
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("enable Claude provider");
+
+    let claude = response
+        .providers
+        .iter()
+        .find(|provider| provider.provider == "claude")
+        .expect("Claude provider response");
+    assert_eq!(claude.cli_version.as_deref(), Some("2.1.219"));
+
+    clear_harness_runtime_caches_for_tests(AgentHarnessKind::Claude);
 }
 
 #[tokio::test]
@@ -1236,6 +1314,36 @@ fi
         permissions.set_mode(0o755);
         std::fs::set_permissions(path, permissions).expect("chmod fake codex");
     }
+}
+
+#[cfg(unix)]
+fn write_claude_cli(path: &std::path::Path, version: &str) {
+    std::fs::write(
+        path,
+        format!(
+            r#"#!/bin/sh
+case "$1" in
+  --version)
+    echo "{version} (Claude Code)"
+    ;;
+  --help)
+    echo "Options:"
+    echo "  --effort <level>  Effort level (low, medium, high, xhigh, max)"
+    ;;
+  *)
+    exit 2
+    ;;
+esac
+"#
+        ),
+    )
+    .expect("write fake Claude");
+    use std::os::unix::fs::PermissionsExt;
+    let mut permissions = std::fs::metadata(path)
+        .expect("fake Claude metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(path, permissions).expect("chmod fake Claude");
 }
 
 struct EnvGuard {

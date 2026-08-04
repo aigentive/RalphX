@@ -72,21 +72,21 @@ grep -Fq 'bash scripts/test-rust-fast.sh full-integration-archive rust-integrati
   || fail "Rust integration archive does not use the canonical explicit-target runner"
 grep -Fq 'name: rust-integration-tests-nextest-archive' <<< "${integration_archive_job}" \
   || fail "Rust integration archive is not uploaded for shard reuse"
-grep -Fq 'shard: [1, 2, 3]' <<< "${integration_job}" \
-  || fail "Rust Full Integration does not define three execution shards"
+grep -Fq 'shard: [1, 2]' <<< "${integration_job}" \
+  || fail "Rust Full Integration does not define two execution shards"
 grep -Fq -- '--archive-file rust-integration-tests.tar.zst' <<< "${integration_job}" \
   || fail "Rust Full Integration does not execute the shared archive"
-grep -Fq -- "--partition slice:${MATRIX_SHARD_EXPR}/3" <<< "${integration_job}" \
+grep -Fq -- "--partition slice:${MATRIX_SHARD_EXPR}/2" <<< "${integration_job}" \
   || fail "Rust Full Integration does not use balanced slice partitioning"
 
 if grep -Fq 'CARGO_BUILD_JOBS' <<< "${integration_archive_job}${integration_job}"; then
   fail "Rust integration compilation is still artificially serialized"
 fi
 
-grep -Fq 'shard: [1, 2, 3, 4]' <<< "${lib_shard_job}" \
-  || fail "Rust lib tests do not define four execution shards"
-grep -Fq -- "--partition hash:${MATRIX_SHARD_EXPR}/4" <<< "${lib_shard_job}" \
-  || fail "Rust lib tests do not execute four deterministic archive partitions"
+grep -Fq 'shard: [1, 2]' <<< "${lib_shard_job}" \
+  || fail "Rust lib tests do not define two execution shards"
+grep -Fq -- "--partition hash:${MATRIX_SHARD_EXPR}/2" <<< "${lib_shard_job}" \
+  || fail "Rust lib tests do not execute two deterministic archive partitions"
 
 grep -Fq 'shared-key: rust-test-deps' <<< "${lib_archive_job}" \
   || fail "Rust lib archive does not restore the shared test dependency cache"
@@ -115,9 +115,9 @@ grep -Fq '[profile.ci.junit]' "${NEXTEST_CONFIG}" \
   || fail "The CI nextest profile does not emit JUnit timing data"
 grep -Fq 'path = "junit.xml"' "${NEXTEST_CONFIG}" \
   || fail "The CI nextest profile does not use the canonical JUnit output path"
-grep -Fq "name: rust-lib-tests-junit-${MATRIX_SHARD_EXPR}-of-4" <<< "${lib_shard_job}" \
+grep -Fq "name: rust-lib-tests-junit-${MATRIX_SHARD_EXPR}-of-2" <<< "${lib_shard_job}" \
   || fail "Rust lib shards do not publish uniquely named JUnit artifacts"
-grep -Fq "name: rust-integration-tests-junit-${MATRIX_SHARD_EXPR}-of-3" <<< "${integration_job}" \
+grep -Fq "name: rust-integration-tests-junit-${MATRIX_SHARD_EXPR}-of-2" <<< "${integration_job}" \
   || fail "Rust integration shards do not publish uniquely named JUnit artifacts"
 for shard_job in "${lib_shard_job}" "${integration_job}"; do
   grep -Fq 'if: always()' <<< "${shard_job}" \

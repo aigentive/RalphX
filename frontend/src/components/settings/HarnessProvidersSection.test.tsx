@@ -354,7 +354,7 @@ describe("HarnessProvidersSection", () => {
     ).toBeNull();
 
     await user.click(screen.getByRole("button", { name: /Re-check/ }));
-    expect(refetchProviders).toHaveBeenCalledTimes(1);
+    expect(refetchProviders).toHaveBeenCalledWith({ forceRuntime: true });
 
     await user.click(screen.getAllByRole("switch")[0]!);
     expect(updateProviderAsync).toHaveBeenCalledWith({
