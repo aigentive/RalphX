@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use futures::{stream, StreamExt as _};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::application::agent_conversation_workspace::resolve_valid_agent_conversation_workspace_path;
 use crate::application::agent_workspace_publication_reconciliation::{
@@ -25,7 +25,7 @@ use crate::application::git_service::GitService;
 use crate::application::ticketing_cache_invalidator::{
     TicketingCacheInvalidatedEvent, TICKETING_CACHE_INVALIDATED_EVENT,
 };
-use crate::application::PrPollerRegistry;
+use crate::application::{AppState, PrPollerRegistry};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
@@ -485,7 +485,12 @@ fn start_agent_workspace_pr_poller(
     };
 
     if let Some(repair_repo) = deps.agent_workspace_repair_repo.as_ref() {
-        registry.start_agent_workspace_polling_with_repair_repo(
+        let recovery_state = deps
+            .app_handle
+            .as_ref()
+            .and_then(|app_handle| app_handle.try_state::<AppState>())
+            .map(|state| Arc::new(state.inner().clone()));
+        registry.start_agent_workspace_polling_with_repair_repo_and_recovery_state(
             conversation_id,
             pr_number,
             project,
@@ -494,6 +499,7 @@ fn start_agent_workspace_pr_poller(
             Arc::clone(&deps.agent_run_repo),
             Arc::clone(repair_repo),
             Arc::clone(chat_service),
+            recovery_state,
         );
     }
 }

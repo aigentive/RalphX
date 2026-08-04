@@ -29,7 +29,7 @@ use crate::domain::repositories::{
     AgentWorkspacePrReviewActionMutation, AgentWorkspacePrReviewStateTransition,
     AgentWorkspacePrTerminalSettlement, AgentWorkspacePublicationGuard,
     AgentWorkspacePublicationMetadataReceiptClaim, AgentWorkspacePublicationMetadataReceiptRefresh,
-    AgentWorkspacePublicationUpdate,
+    AgentWorkspacePublicationUpdate, AgentWorkspacePublishLeaseClaim,
 };
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::git_runtime_config;
@@ -132,6 +132,11 @@ fn row_to_workspace(row: &rusqlite::Row<'_>) -> AppResult<AgentConversationWorks
         publication_pr_url: row.get("publication_pr_url")?,
         publication_pr_status: row.get("publication_pr_status")?,
         publication_push_status: row.get("publication_push_status")?,
+        publish_lease_owner_run_id: row.get("publish_lease_owner_run_id")?,
+        publish_lease_token: row.get("publish_lease_token")?,
+        publish_lease_heartbeat_at: row
+            .get::<_, Option<String>>("publish_lease_heartbeat_at")?
+            .map(|value| parse_datetime(&value)),
         publication_metadata_phase,
         publication_metadata_state,
         publication_metadata_attempt_id: row.get("publication_metadata_attempt_id")?,
@@ -1513,10 +1518,10 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                 let mut stmt = conn.prepare(
                     "SELECT * FROM agent_conversation_workspaces
                      WHERE status = 'active'
-                       AND publication_push_status IN ('refreshing', 'checking', 'committing', 'describing', 'pushing')
+                       AND publication_push_status IN ('refreshing', 'checking', 'committing', 'describing', 'pushing', 'redrive_pending', 'redrive_delivering')
                        AND COALESCE(publication_pr_status, '') NOT IN ('closed', 'merged')
-                       AND updated_at <= ?1
-                     ORDER BY updated_at ASC",
+                       AND COALESCE(publish_lease_heartbeat_at, updated_at) <= ?1
+                     ORDER BY COALESCE(publish_lease_heartbeat_at, updated_at) ASC",
                 )?;
                 let rows = stmt.query([cutoff])?;
                 collect_workspaces(rows)
@@ -1742,6 +1747,115 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                     ],
                 )?;
                 Ok(())
+            })
+            .await
+    }
+
+    async fn claim_publish_lease(
+        &self,
+        conversation_id: &ChatConversationId,
+        owner_run_id: &str,
+        token: &str,
+        now: DateTime<Utc>,
+        expected_previous_token: Option<&str>,
+        previous_owner_is_dead: bool,
+    ) -> AppResult<AgentWorkspacePublishLeaseClaim> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let owner_run_id = owner_run_id.to_string();
+        let token = token.to_string();
+        let expected_previous_token = expected_previous_token.map(str::to_string);
+        let now = now.to_rfc3339();
+        self.db
+            .run(move |conn| {
+                let existing = conn
+                    .query_row(
+                        "SELECT publish_lease_token FROM agent_conversation_workspaces WHERE conversation_id = ?1",
+                        rusqlite::params![conversation_id],
+                        |row| row.get::<_, Option<String>>(0),
+                    )
+                    .optional()?;
+                let Some(existing_token) = existing else {
+                    return Err(AppError::NotFound(
+                        "Agent conversation workspace not found while claiming publish lease"
+                            .to_string(),
+                    ));
+                };
+                let outcome = match (existing_token.as_deref(), expected_previous_token.as_deref()) {
+                    (None, None) => AgentWorkspacePublishLeaseClaim::Claimed,
+                    (Some(current), Some(expected))
+                        if current == expected && previous_owner_is_dead =>
+                    {
+                        AgentWorkspacePublishLeaseClaim::Reclaimed
+                    }
+                    _ => return Ok(AgentWorkspacePublishLeaseClaim::HeldByLiveOwner),
+                };
+                let changed = match existing_token {
+                    Some(expected_token) => conn.execute(
+                        "UPDATE agent_conversation_workspaces
+                         SET publish_lease_owner_run_id = ?2, publish_lease_token = ?3,
+                             publish_lease_heartbeat_at = ?4, updated_at = ?4
+                         WHERE conversation_id = ?1 AND publish_lease_token = ?5",
+                        rusqlite::params![conversation_id, owner_run_id, token, now, expected_token],
+                    )?,
+                    None => conn.execute(
+                        "UPDATE agent_conversation_workspaces
+                         SET publish_lease_owner_run_id = ?2, publish_lease_token = ?3,
+                             publish_lease_heartbeat_at = ?4, updated_at = ?4
+                         WHERE conversation_id = ?1 AND publish_lease_token IS NULL",
+                        rusqlite::params![conversation_id, owner_run_id, token, now],
+                    )?,
+                };
+                if changed == 1 {
+                    Ok(outcome)
+                } else {
+                    Ok(AgentWorkspacePublishLeaseClaim::HeldByLiveOwner)
+                }
+            })
+            .await
+    }
+
+    async fn heartbeat_publish_lease(
+        &self,
+        conversation_id: &ChatConversationId,
+        token: &str,
+        now: DateTime<Utc>,
+    ) -> AppResult<bool> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let token = token.to_string();
+        let now = now.to_rfc3339();
+        self.db
+            .run(move |conn| {
+                Ok(conn.execute(
+                    "UPDATE agent_conversation_workspaces
+             SET publish_lease_heartbeat_at = ?3, updated_at = ?3
+             WHERE conversation_id = ?1 AND publish_lease_token = ?2",
+                    rusqlite::params![conversation_id, token, now],
+                )? == 1)
+            })
+            .await
+    }
+
+    async fn release_publish_lease(
+        &self,
+        conversation_id: &ChatConversationId,
+        token: &str,
+        terminal_status: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> AppResult<bool> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let token = token.to_string();
+        let terminal_status = terminal_status.map(str::to_string);
+        let now = now.to_rfc3339();
+        self.db
+            .run(move |conn| {
+                Ok(conn.execute(
+                    "UPDATE agent_conversation_workspaces
+             SET publish_lease_owner_run_id = NULL, publish_lease_token = NULL,
+                 publish_lease_heartbeat_at = NULL,
+                 publication_push_status = COALESCE(?3, publication_push_status), updated_at = ?4
+             WHERE conversation_id = ?1 AND publish_lease_token = ?2",
+                    rusqlite::params![conversation_id, token, terminal_status, now],
+                )? == 1)
             })
             .await
     }

@@ -18,12 +18,202 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
-    AgentWorkspacePrReviewActionMutation, AgentWorkspaceRepairRepository,
-    AgentWorkspaceRepairStateGuard, AgentWorkspaceRepairStateTransition,
-    SettleAndStartAgentWorkspaceRepairSuccessor,
+    AgentWorkspacePrReviewActionMutation, AgentWorkspacePublishLeaseClaim,
+    AgentWorkspaceRepairRepository, AgentWorkspaceRepairStateGuard,
+    AgentWorkspaceRepairStateTransition, SettleAndStartAgentWorkspaceRepairSuccessor,
     SettleAndStartAgentWorkspaceRepairSuccessorOutcome, StartOrJoinAgentWorkspaceRepairAttempt,
     StartOrJoinAgentWorkspaceRepairAttemptOutcome,
 };
+
+#[tokio::test]
+async fn publish_lease_claim_rejects_a_missing_workspace() {
+    let (_db, repo, _seeded_conversation_id) = setup_repo();
+    let missing_conversation_id =
+        ChatConversationId::from_string("29292929-2929-2929-2929-292929292929");
+
+    let error = repo
+        .claim_publish_lease(
+            &missing_conversation_id,
+            "run-one",
+            "token-one",
+            chrono::Utc::now(),
+            None,
+            false,
+        )
+        .await
+        .expect_err("missing workspace must fail closed");
+
+    assert!(matches!(error, crate::error::AppError::NotFound(_)));
+}
+
+#[tokio::test]
+async fn publish_lease_reclaims_dead_owner_and_fences_stale_token() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .expect("workspace should persist");
+    let now = chrono::Utc::now();
+    assert_eq!(
+        repo.claim_publish_lease(&conversation_id, "run-one", "token-one", now, None, false)
+            .await
+            .expect("claim should succeed"),
+        AgentWorkspacePublishLeaseClaim::Claimed
+    );
+    assert_eq!(
+        repo.claim_publish_lease(
+            &conversation_id,
+            "run-two",
+            "token-two",
+            now,
+            Some("token-one"),
+            false
+        )
+        .await
+        .expect("live owner must hold lease"),
+        AgentWorkspacePublishLeaseClaim::HeldByLiveOwner
+    );
+    assert!(!repo
+        .release_publish_lease(&conversation_id, "wrong-token", None, now)
+        .await
+        .expect("stale release should be rejected"));
+    assert_eq!(
+        repo.claim_publish_lease(
+            &conversation_id,
+            "run-two",
+            "token-two",
+            now,
+            Some("token-one"),
+            true,
+        )
+        .await
+        .expect("dead owner should be reclaimed"),
+        AgentWorkspacePublishLeaseClaim::Reclaimed
+    );
+    assert_eq!(
+        repo.claim_publish_lease(
+            &conversation_id,
+            "late-run",
+            "late-token",
+            now,
+            Some("token-one"),
+            true,
+        )
+        .await
+        .expect("stale reclaim proof should be rejected"),
+        AgentWorkspacePublishLeaseClaim::HeldByLiveOwner
+    );
+}
+
+#[tokio::test]
+async fn publish_lease_heartbeat_and_release_are_exact_token_scoped() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .expect("workspace should persist");
+    let claimed_at = chrono::Utc::now();
+    repo.claim_publish_lease(
+        &conversation_id,
+        "run-one",
+        "token-one",
+        claimed_at,
+        None,
+        false,
+    )
+    .await
+    .expect("claim should succeed");
+
+    assert!(!repo
+        .heartbeat_publish_lease(&conversation_id, "wrong-token", claimed_at)
+        .await
+        .expect("stale heartbeat should be rejected"));
+    assert!(repo
+        .heartbeat_publish_lease(
+            &conversation_id,
+            "token-one",
+            claimed_at + chrono::Duration::seconds(1),
+        )
+        .await
+        .expect("owner heartbeat should apply"));
+    let heartbeated = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load heartbeated workspace")
+        .expect("workspace exists");
+    assert_eq!(
+        heartbeated.publish_lease_token.as_deref(),
+        Some("token-one")
+    );
+    assert_eq!(
+        heartbeated.publish_lease_heartbeat_at,
+        Some(claimed_at + chrono::Duration::seconds(1))
+    );
+
+    assert!(repo
+        .release_publish_lease(
+            &conversation_id,
+            "token-one",
+            Some("failed"),
+            claimed_at + chrono::Duration::seconds(2),
+        )
+        .await
+        .expect("owner release should apply"));
+    let released = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load released workspace")
+        .expect("workspace exists");
+    assert!(released.publish_lease_owner_run_id.is_none());
+    assert!(released.publish_lease_token.is_none());
+    assert!(released.publish_lease_heartbeat_at.is_none());
+    assert_eq!(released.publication_push_status.as_deref(), Some("failed"));
+}
+
+#[tokio::test]
+async fn normal_workspace_upsert_preserves_publish_lease_authority() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .expect("workspace should persist");
+    let mut stale_workspace = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace read should succeed")
+        .expect("workspace should exist");
+    let claimed_at = chrono::Utc::now();
+    repo.claim_publish_lease(
+        &conversation_id,
+        "run-one",
+        "token-one",
+        claimed_at,
+        None,
+        false,
+    )
+    .await
+    .expect("publish lease should claim");
+
+    stale_workspace.base_commit = Some("updated-base".to_string());
+    let updated = repo
+        .create_or_update(stale_workspace)
+        .await
+        .expect("normal workspace fields should update");
+
+    assert_eq!(updated.base_commit.as_deref(), Some("updated-base"));
+    assert_eq!(
+        updated.publish_lease_owner_run_id.as_deref(),
+        Some("run-one")
+    );
+    assert_eq!(updated.publish_lease_token.as_deref(), Some("token-one"));
+    assert_eq!(updated.publish_lease_heartbeat_at, Some(claimed_at));
+    assert!(repo
+        .release_publish_lease(
+            &conversation_id,
+            "token-one",
+            Some("refreshed"),
+            claimed_at + chrono::Duration::seconds(1),
+        )
+        .await
+        .expect("the original owner should still release the lease"));
+}
 use crate::testing::SqliteTestDb;
 
 use super::SqliteAgentConversationWorkspaceRepository;
@@ -3938,6 +4128,32 @@ async fn list_active_transient_publish_status_workspaces_filters_stale_open_rows
     repo.create_or_update(describing.clone()).await.unwrap();
     set_workspace_updated_at(&db, &describing.conversation_id, older);
 
+    let pending_id = ChatConversationId::from_string("abababab-abab-abab-abab-abababababab");
+    seed_conversation(&db, &pending_id);
+    let mut pending = make_workspace(pending_id);
+    pending.publication_pr_number = Some(97);
+    pending.publication_pr_status = Some("open".to_string());
+    pending.publication_push_status = Some("redrive_pending".to_string());
+    repo.create_or_update(pending.clone()).await.unwrap();
+    set_workspace_updated_at(
+        &db,
+        &pending.conversation_id,
+        chrono::Utc::now() - chrono::Duration::minutes(30),
+    );
+
+    let delivering_id = ChatConversationId::from_string("acacacac-acac-acac-acac-acacacacacac");
+    seed_conversation(&db, &delivering_id);
+    let mut delivering = make_workspace(delivering_id);
+    delivering.publication_pr_number = Some(98);
+    delivering.publication_pr_status = Some("open".to_string());
+    delivering.publication_push_status = Some("redrive_delivering".to_string());
+    repo.create_or_update(delivering.clone()).await.unwrap();
+    set_workspace_updated_at(
+        &db,
+        &delivering.conversation_id,
+        chrono::Utc::now() - chrono::Duration::minutes(40),
+    );
+
     let recent_id = ChatConversationId::from_string("cccccccc-cccc-cccc-cccc-cccccccccccc");
     seed_conversation(&db, &recent_id);
     let mut recent = make_workspace(recent_id);
@@ -3984,7 +4200,12 @@ async fn list_active_transient_publish_status_workspaces_filters_stale_open_rows
             .into_iter()
             .map(|workspace| workspace.conversation_id)
             .collect::<Vec<_>>(),
-        vec![describing.conversation_id, refreshing.conversation_id]
+        vec![
+            delivering.conversation_id,
+            pending.conversation_id,
+            describing.conversation_id,
+            refreshing.conversation_id,
+        ]
     );
 }
 

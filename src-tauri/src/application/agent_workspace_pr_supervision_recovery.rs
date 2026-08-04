@@ -859,7 +859,7 @@ fn start_recovered_pr_polling(
         return;
     };
     if let Some(state) = deps.durable_recovery_state.as_ref() {
-        registry.start_agent_workspace_polling_with_repair_repo(
+        registry.start_agent_workspace_polling_with_repair_repo_and_recovery_state(
             conversation_id.clone(),
             target.pr_number,
             project.clone(),
@@ -868,6 +868,7 @@ fn start_recovered_pr_polling(
             Arc::clone(&deps.agent_run_repo),
             Arc::clone(&state.agent_workspace_repair_repo),
             Arc::clone(chat_service),
+            Some(Arc::clone(state)),
         );
     } else {
         #[cfg(test)]

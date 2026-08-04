@@ -394,6 +394,11 @@ ignore:
   - "src-tauri/src/commands/unified_chat_commands/mod.rs"
   - "src-tauri/src/commands/agent_workspace_auto_publish.rs"
   - "frontend/src/components/agents/AgentsPublishPanel.tsx"
+  # Publish-recovery coordination owns process-local lease heartbeats, Tauri
+  # event delivery, and durable re-drive scheduling. The authorization and
+  # fencing outcomes are covered by the focused sidecar and repository tests.
+  - "src-tauri/src/application/agent_workspace_publish_lease.rs"
+  - "src-tauri/src/application/agent_workspace_publish_recovery.rs"
   # Dedicated branch-update repair similarly spans command wrappers, Axum/MCP
   # handlers, reconciliation adapters, real git subprocess/worktree
   # orchestration, and persistence glue. Deterministic behavior is covered by

@@ -456,6 +456,7 @@ async fn startup_agent_workspace_pr_recovery_does_not_poll_edit_workspace_source
         Arc::new(MockChatService::new()),
         None,
         None,
+        None,
         Arc::new(HashSet::new()),
     )
     .await;
@@ -667,6 +668,7 @@ async fn startup_agent_workspace_pr_recovery_preserves_active_durable_repair_aut
         chat.clone(),
         None,
         Some(Arc::clone(&repair_repo)),
+        None,
         Arc::new(HashSet::new()),
     )
     .await;
@@ -679,6 +681,7 @@ async fn startup_agent_workspace_pr_recovery_preserves_active_durable_repair_aut
         chat.clone(),
         None,
         Some(Arc::clone(&repair_repo)),
+        None,
         Arc::new(HashSet::new()),
     )
     .await;

@@ -603,8 +603,9 @@ pub(crate) async fn block_agent_workspace_repair_needs_human(
 }
 
 /// True while a PR autofix generation is parked against a backend-derived health fingerprint.
-/// Only the poller may end such a hold, and only after GitHub reports different health; no other
-/// retry path may consume the hold's budget or settle it on a timer.
+/// The poller ends a hold after GitHub reports different health. Durable recovery may instead
+/// re-drive the existing publish continuation once when GitHub proves a validated local repair
+/// head is still unpublished; neither path may buy another fixer generation or settle on a timer.
 pub(crate) fn agent_workspace_repair_is_health_held(attempt: &AgentWorkspaceRepairAttempt) -> bool {
     attempt.pending_reasons.iter().any(|reason| {
         reason == PRE_EXISTING_ON_BASE_REPAIR_REASON || reason == UNCHANGED_HEALTH_REPAIR_REASON
@@ -617,6 +618,24 @@ pub(crate) fn agent_workspace_repair_is_ci_held(attempt: &AgentWorkspaceRepairAt
             .pending_reasons
             .iter()
             .any(|reason| reason == AWAITING_CI_REPAIR_REASON)
+}
+
+/// True when a held repair has a concrete local head that GitHub has not observed yet.
+///
+/// Whitespace-only values never grant a re-drive; nonempty head values are compared exactly. A
+/// missing remote head also withholds the effect, because it is not proof that the local repair is
+/// unpublished.
+pub(crate) fn held_repair_has_unpublished_head(
+    attempt: &AgentWorkspaceRepairAttempt,
+    remote_head: Option<&str>,
+) -> bool {
+    let Some(local_head) = attempt.repair_head_commit.as_deref() else {
+        return false;
+    };
+    let Some(remote_head) = remote_head else {
+        return false;
+    };
+    !local_head.trim().is_empty() && !remote_head.trim().is_empty() && local_head != remote_head
 }
 
 /// Holds a PR autofix generation at a backend-derived health fingerprint without pretending the

@@ -71,11 +71,32 @@ const AUTO_RETRY_READY_REPAIR_MAX_DELAY_SECS: i64 = 15 * 60;
 const MAX_AUTO_RETRY_READY_REPAIR_STREAK: u32 = 3;
 pub(crate) const EXHAUSTED_PUBLISH_REDRIVE_CHECKED_REASON_PREFIX: &str =
     "exhausted_publish_redrive_checked:";
+pub(crate) const PR_AUTOFIX_HEAD_REDRIVE_REASON_PREFIX: &str = "pr_autofix_head_redrive:";
+const PR_AUTOFIX_HEAD_REDRIVE_RETRY_REASON_PREFIX: &str = "pr_autofix_head_redrive_retry:";
 const CONTINUATION_RECOVERY_FAILURE_REASON_PREFIX: &str = "continuation_recovery_failure:";
 const CONTINUATION_OPEN_EFFECT_RECOVERY_REASON_PREFIX: &str = "continuation_open_effect_recovery:";
 const CONTINUATION_OPEN_EFFECT_ATTENTION_REASON: &str =
     "continuation_open_effect_attention_required";
 const MAX_CONTINUATION_RECOVERY_FAILURE_STREAK: u32 = 3;
+
+/// Only a marker written after a current health check proves that this repair owns the
+/// unpublished-head continuation. A repair head by itself is not enough: it might already have
+/// reached the remote, in which case the fingerprint hold remains authoritative.
+pub(crate) fn agent_workspace_repair_owns_unpublished_publish_continuation(
+    attempt: &AgentWorkspaceRepairAttempt,
+) -> bool {
+    let Some(head) = attempt.repair_head_commit.as_deref().map(str::trim) else {
+        return false;
+    };
+    if head.is_empty() {
+        return false;
+    }
+    let marker = format!("{PR_AUTOFIX_HEAD_REDRIVE_REASON_PREFIX}{head}");
+    attempt
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == &marker)
+}
 
 pub(crate) async fn recover_stale_publish_repair_for_workspace_in_state_result(
     state: &AppState,
@@ -477,6 +498,22 @@ fn automatic_ready_repair_streak(attempt: &AgentWorkspaceRepairAttempt) -> u32 {
         .unwrap_or_default()
 }
 
+fn automatic_held_head_redrive_streak(
+    attempt: &AgentWorkspaceRepairAttempt,
+    repair_head: &str,
+) -> u32 {
+    let prefix = format!("{PR_AUTOFIX_HEAD_REDRIVE_RETRY_REASON_PREFIX}{repair_head}:");
+    attempt
+        .pending_reasons
+        .iter()
+        .filter_map(|reason| reason.strip_prefix(&prefix))
+        .filter_map(|streak| streak.parse::<u32>().ok())
+        .max()
+        .unwrap_or_else(|| {
+            u32::from(agent_workspace_repair_owns_unpublished_publish_continuation(attempt))
+        })
+}
+
 fn automatic_ready_repair_retry_delay(streak: u32) -> Duration {
     let multiplier = 1_i64 << streak.min(4);
     Duration::seconds(
@@ -498,13 +535,50 @@ async fn retry_safe_ready_agent_workspace_repair_publish(
     {
         return Ok(DurableRepairRecoveryOutcome::Noop);
     }
-    // A health hold parks at Ready deliberately. Re-driving its publish continuation on a timer
-    // would spend the hold's retry budget against evidence that has not changed and then settle
-    // the generation, freeing the poller to dispatch a fresh one on the identical failure.
-    // Only the poller, comparing live GitHub health, may end a hold.
-    if agent_workspace_repair_is_health_held(&current) {
-        return Ok(DurableRepairRecoveryOutcome::Noop);
-    }
+    let (held_head_redrive_authorized, held_head_redrive_marker, held_repair_head) =
+        if agent_workspace_repair_is_health_held(&current) {
+            // A health hold normally survives recovery. The one exception is a concrete repair head
+            // GitHub has not seen: without publishing it, the health evidence can never change. The
+            // successor evaluator resolves the workspace/project/path/GitHub evidence fail-closed.
+            let workspace = match state
+                .agent_conversation_workspace_repo
+                .get_by_conversation_id(&current.conversation_id)
+                .await
+            {
+                Ok(Some(workspace)) => workspace,
+                Ok(None) => return Ok(DurableRepairRecoveryOutcome::Noop),
+                Err(error) => {
+                    tracing::warn!(
+                        conversation_id = current.conversation_id.as_str(),
+                        attempt_id = current.id.as_str(),
+                        %error,
+                        "Could not read workspace evidence for held repair publish re-drive"
+                    );
+                    return Ok(DurableRepairRecoveryOutcome::Noop);
+                }
+            };
+            if !matches!(
+                evaluate_pr_autofix_successor(state, &current, &workspace).await,
+                PrAutofixSuccessorDecision::RedrivePublish
+            ) {
+                return Ok(DurableRepairRecoveryOutcome::Noop);
+            }
+            let Some(head) = current.repair_head_commit.as_deref().map(str::trim) else {
+                return Ok(DurableRepairRecoveryOutcome::Noop);
+            };
+            if head.is_empty() {
+                return Ok(DurableRepairRecoveryOutcome::Noop);
+            }
+            let marker = format!("{PR_AUTOFIX_HEAD_REDRIVE_REASON_PREFIX}{head}");
+            (
+                true,
+                (!agent_workspace_repair_owns_unpublished_publish_continuation(&current))
+                    .then_some(marker),
+                Some(head.to_string()),
+            )
+        } else {
+            (false, None, None)
+        };
 
     let redrive_authorized = match current.continuation {
         AgentWorkspaceRepairContinuation::ResumePrSupervision => true,
@@ -524,20 +598,48 @@ async fn retry_safe_ready_agent_workspace_repair_publish(
         return Ok(DurableRepairRecoveryOutcome::Noop);
     }
 
-    let streak = automatic_ready_repair_streak(&current);
-    if streak >= MAX_AUTO_RETRY_READY_REPAIR_STREAK {
-        return settle_exhausted_ready_agent_workspace_repair(state, current).await;
-    }
-    if Utc::now() - current.updated_at < automatic_ready_repair_retry_delay(streak) {
-        return Ok(DurableRepairRecoveryOutcome::Noop);
+    let streak = if let Some(head) = held_repair_head.as_deref() {
+        automatic_held_head_redrive_streak(&current, head)
+    } else {
+        automatic_ready_repair_streak(&current)
+    };
+    if held_head_redrive_authorized {
+        if streak >= MAX_AUTO_RETRY_READY_REPAIR_STREAK {
+            // The unchanged-health hold remains authoritative after this head exhausts its
+            // publish retries. Settling it would permit a fresh fixer generation on identical
+            // evidence. A different repair head gets an independent counter and re-arms here.
+            return Ok(DurableRepairRecoveryOutcome::Noop);
+        }
+        if held_head_redrive_marker.is_none()
+            && Utc::now() - current.updated_at < automatic_ready_repair_retry_delay(streak)
+        {
+            return Ok(DurableRepairRecoveryOutcome::Noop);
+        }
+    } else {
+        if streak >= MAX_AUTO_RETRY_READY_REPAIR_STREAK {
+            return settle_exhausted_ready_agent_workspace_repair(state, current).await;
+        }
+        if Utc::now() - current.updated_at < automatic_ready_repair_retry_delay(streak) {
+            return Ok(DurableRepairRecoveryOutcome::Noop);
+        }
     }
 
     let expected_updated_at = current.updated_at;
     let mut marked = current;
-    marked.pending_reasons.push(format!(
-        "{AUTO_RETRY_READY_REPAIR_REASON_PREFIX}{}",
-        streak + 1
-    ));
+    if let Some(marker) = held_head_redrive_marker {
+        marked.pending_reasons.push(marker);
+    }
+    if let Some(head) = held_repair_head.as_deref() {
+        marked.pending_reasons.push(format!(
+            "{PR_AUTOFIX_HEAD_REDRIVE_RETRY_REASON_PREFIX}{head}:{}",
+            streak + 1
+        ));
+    } else {
+        marked.pending_reasons.push(format!(
+            "{AUTO_RETRY_READY_REPAIR_REASON_PREFIX}{}",
+            streak + 1
+        ));
+    }
     marked.updated_at = std::cmp::max(Utc::now(), expected_updated_at + Duration::microseconds(1));
     let marked = match state
         .agent_workspace_repair_repo
@@ -558,8 +660,9 @@ async fn retry_safe_ready_agent_workspace_repair_publish(
         }
     };
 
-    // A failed re-drive must not abort the whole recovery sweep for other workspaces; the
-    // persisted streak marker keeps this attempt on backoff until it re-drives or settles.
+    // A failed re-drive must not abort the whole recovery sweep for other workspaces. Ordinary
+    // Ready retries persist a bounded backoff streak. Authorized unpublished-head retries use a
+    // per-head counter so an exhausted head stays held while a different repair head re-arms.
     // The authority gate above proves re-drive authority from durable consent, current Auto
     // Publish policy, or supervision of an already-created PR; it does not grant user consent.
     let resumed = match resume_current_agent_workspace_repair_publish(

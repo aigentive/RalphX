@@ -11,6 +11,7 @@ use crate::application::agent_conversation_workspace::{
     resolve_linked_plan_branch_agent_worktree_path, validate_workspace_linked_plan_branch,
 };
 use crate::application::agent_workspace_fixer_conversation::agent_workspace_fixer_runtime_conversations;
+use crate::application::agent_workspace_publish_lease::stop_publish_operation_lease_heartbeat;
 use crate::application::chat_service::ChatService;
 use crate::application::git_artifact_cleanup::{
     cleanup_terminal_agent_workspace_local_artifacts,
@@ -22,7 +23,8 @@ use crate::application::git_service::git_cmd::{self, GitCommandLane};
 use crate::application::interactive_notification_producer::pr_review_notification_key;
 use crate::application::NotificationService;
 use crate::domain::entities::{
-    AgentConversationWorkspaceStatus, ChatContextType, ChatConversationId, PlanBranch, Project,
+    AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, ChatContextType,
+    ChatConversationId, PlanBranch, Project,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, AgentWorkspaceLocalCleanupClaim,
@@ -140,6 +142,7 @@ pub(crate) async fn terminalize_agent_workspace_after_pr(
             ));
         }
     };
+    let observed_publish_lease_token = workspace.publish_lease_token.clone();
     let mut runtime_conversations = match agent_workspace_fixer_runtime_conversations(
         &workspace,
         workspace_repo.as_ref(),
@@ -231,6 +234,37 @@ pub(crate) async fn terminalize_agent_workspace_after_pr(
             Err(error) => {
                 return TerminalAgentWorkspaceOutcome::runtime_blocked(format!(
                     "Failed to verify the stopped workspace runtime: {error}"
+                ));
+            }
+        }
+    }
+
+    if let Some(token) = observed_publish_lease_token.as_deref() {
+        let release = workspace_repo
+            .release_publish_lease(conversation_id, token, Some("failed"), Utc::now())
+            .await;
+        stop_publish_operation_lease_heartbeat(conversation_id, token);
+        let released = match release {
+            Ok(released) => released,
+            Err(error) => {
+                return TerminalAgentWorkspaceOutcome::runtime_blocked(format!(
+                    "Failed to release the terminal workspace publication lease: {error}"
+                ));
+            }
+        };
+        if released {
+            if let Err(error) = workspace_repo
+                .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                    conversation_id.clone(),
+                    "publish_lease_released",
+                    "succeeded",
+                    "Released the publication lease after terminal workspace cleanup.",
+                    None,
+                ))
+                .await
+            {
+                return TerminalAgentWorkspaceOutcome::runtime_blocked(format!(
+                    "Failed to record terminal workspace publication lease release: {error}"
                 ));
             }
         }

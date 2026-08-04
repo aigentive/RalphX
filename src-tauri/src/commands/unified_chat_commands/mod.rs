@@ -26,6 +26,7 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use tauri::{Emitter, Manager, Runtime, State};
+use uuid::Uuid;
 
 use crate::application::agent_conversation_archive::{
     archive_agent_conversation_for_state, close_agent_workspace_pr_for_state,
@@ -92,8 +93,15 @@ use crate::application::agent_workspace_pr_supervision_recovery::{
     schedule_agent_workspace_pr_supervision_recovery_with_lazy_deps,
     AgentWorkspacePrFixReviewPublishResumer, AgentWorkspacePrSupervisionRecoveryTrigger,
 };
+use crate::application::agent_workspace_publish_lease::{
+    begin_publish_operation_scope, publish_operation_lease_is_live,
+    publish_operation_lease_token_for_scope,
+    spawn_publish_operation_lease_heartbeat_for_scope, stop_publish_operation_lease_heartbeat,
+    PublishOperationScopeGuard,
+};
 use crate::application::agent_workspace_publish_recovery::{
-    pr_autofix_fingerprint_spend, recover_stale_publish_repair_for_workspace_in_state,
+    agent_workspace_repair_owns_unpublished_publish_continuation, pr_autofix_fingerprint_spend,
+    recover_stale_publish_repair_for_workspace_in_state,
 };
 use crate::application::agent_workspace_publish_repair_state::{
     classify_agent_workspace_repair_delivery, last_human_repair_reason,
@@ -1640,15 +1648,31 @@ fn agent_workspace_publish_locks() -> &'static DashMap<String, Arc<tokio::sync::
     LOCKS.get_or_init(DashMap::new)
 }
 
+struct AgentWorkspacePublishGuard {
+    _mutex: tokio::sync::OwnedMutexGuard<()>,
+    _operation_scope: PublishOperationScopeGuard,
+}
+
+impl AgentWorkspacePublishGuard {
+    fn operation_scope(&self) -> &PublishOperationScopeGuard {
+        &self._operation_scope
+    }
+}
+
 fn try_acquire_agent_workspace_publish_guard(
     conversation_id: &ChatConversationId,
-) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
+) -> Result<AgentWorkspacePublishGuard, String> {
     let lock = agent_workspace_publish_locks()
         .entry(conversation_id.as_str())
         .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
         .clone();
-    lock.try_lock_owned()
-        .map_err(|_| AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE.to_string())
+    let mutex = lock
+        .try_lock_owned()
+        .map_err(|_| AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE.to_string())?;
+    Ok(AgentWorkspacePublishGuard {
+        _mutex: mutex,
+        _operation_scope: begin_publish_operation_scope(conversation_id),
+    })
 }
 
 fn agent_workspace_freshness_cache_ttl() -> Duration {
@@ -5204,7 +5228,7 @@ pub async fn set_agent_conversation_workspace_pr_supervision_for_state(
                 let chat_service: Arc<dyn ChatService> = Arc::new(state.build_chat_service());
                 state
                     .pr_poller_registry
-                    .start_agent_workspace_polling_with_repair_repo(
+                    .start_agent_workspace_polling_with_repair_repo_and_recovery_state(
                         conversation_id.clone(),
                         target.pr_number,
                         project,
@@ -5213,6 +5237,7 @@ pub async fn set_agent_conversation_workspace_pr_supervision_for_state(
                         Arc::clone(&state.agent_run_repo),
                         Arc::clone(&state.agent_workspace_repair_repo),
                         chat_service,
+                        Some(Arc::new(state.clone())),
                     );
             }
         }
@@ -6143,6 +6168,7 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
     selection: AgentConversationWorkspaceBaseSelection,
     created_by_run_id: Option<&str>,
 ) -> Result<UpdateAgentConversationWorkspaceFromBaseResponse, String> {
+    let publish_guard = try_acquire_agent_workspace_publish_guard(&conversation_id)?;
     let _freshness_invalidation = AgentWorkspaceFreshnessInvalidationGuard::new(&conversation_id);
     let _pr_description_invalidation =
         AgentWorkspacePrDescriptionInvalidationGuard::new(&conversation_id, true);
@@ -6287,27 +6313,25 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
                 &explicit_base.base_ref,
             )
             .await;
-        let selected_base_commit = match GitService::get_branch_sha(
-            &publish_target.worktree_path,
-            &selected_base_target,
-        )
-        .await
-        {
-            Ok(commit) => commit,
-            Err(error) => {
-                let message = format!("Failed to resolve selected base branch: {error}");
-                mark_agent_workspace_update_failure_with_target(
-                    state,
-                    &workspace,
-                    &message,
-                    None,
-                    &repair_service,
-                    &publish_target.repair_target(),
-                )
-                .await;
-                return Err(message);
-            }
-        };
+        let selected_base_commit =
+            match GitService::get_branch_sha(&publish_target.worktree_path, &selected_base_target)
+                .await
+            {
+                Ok(commit) => commit,
+                Err(error) => {
+                    let message = format!("Failed to resolve selected base branch: {error}");
+                    mark_agent_workspace_update_failure_with_target(
+                        state,
+                        &workspace,
+                        &message,
+                        None,
+                        &repair_service,
+                        &publish_target.repair_target(),
+                    )
+                    .await;
+                    return Err(message);
+                }
+            };
         let previous_base_ref = workspace.base_ref.clone();
         // Persist before any retry so start_attempt_from_workspace captures the new target.
         workspace.base_ref_kind = explicit_base.kind;
@@ -6418,9 +6442,14 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
     };
 
     if !preserve_pr_autofix_claim {
-        mark_agent_workspace_publish_status(state, &workspace, "refreshing")
-            .await
-            .map_err(|e| e.to_string())?;
+        mark_agent_workspace_publish_status(
+            state,
+            &workspace,
+            "refreshing",
+            publish_guard.operation_scope(),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
     }
 
     let freshness_conversation_id = workspace.conversation_id.as_str();
@@ -6512,11 +6541,23 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
                 .await;
                 return Err(message);
             }
-            state
+            if let Err(error) = state
                 .plan_branch_repo
                 .update_pr_push_status(&plan_branch.id, PrPushStatus::Pushed)
                 .await
-                .map_err(|e| e.to_string())?;
+            {
+                let message = error.to_string();
+                mark_agent_workspace_update_failure_with_target(
+                    state,
+                    &workspace,
+                    &message,
+                    None,
+                    &repair_service,
+                    &publish_target.repair_target(),
+                )
+                .await;
+                return Err(message);
+            }
             push_status = "pushed";
         }
     }
@@ -6528,31 +6569,70 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
         workspace.source_pull_request = explicit_base.source_pull_request.clone();
         workspace.updated_at = chrono::Utc::now();
     } else if let Some(base_resolution) = base_resolution.as_ref() {
-        persist_workspace_base_resolution_if_retargeted(state, &mut workspace, base_resolution)
-            .await?;
+        if let Err(message) =
+            persist_workspace_base_resolution_if_retargeted(state, &mut workspace, base_resolution)
+                .await
+        {
+            mark_agent_workspace_update_failure_with_target(
+                state,
+                &workspace,
+                &message,
+                None,
+                &repair_service,
+                &publish_target.repair_target(),
+            )
+            .await;
+            return Err(message);
+        }
     }
     workspace.base_commit = Some(base_commit.clone());
-    workspace = state
+    workspace = match state
         .agent_conversation_workspace_repo
-        .create_or_update(workspace)
+        .create_or_update(workspace.clone())
         .await
-        .map_err(|e| e.to_string())?;
+    {
+        Ok(workspace) => workspace,
+        Err(error) => {
+            let message = error.to_string();
+            mark_agent_workspace_update_failure_with_target(
+                state,
+                &workspace,
+                &message,
+                None,
+                &repair_service,
+                &publish_target.repair_target(),
+            )
+            .await;
+            return Err(message);
+        }
+    };
     let final_push_status = if preserve_pr_autofix_claim {
         "needs_agent"
     } else {
         push_status
     };
-    state
-        .agent_conversation_workspace_repo
-        .update_publication(
-            &workspace.conversation_id,
-            workspace.publication_pr_number,
-            workspace.publication_pr_url.as_deref(),
-            workspace.publication_pr_status.as_deref(),
-            Some(final_push_status),
+    if preserve_pr_autofix_claim {
+        state
+            .agent_conversation_workspace_repo
+            .update_publication(
+                &workspace.conversation_id,
+                workspace.publication_pr_number,
+                workspace.publication_pr_url.as_deref(),
+                workspace.publication_pr_status.as_deref(),
+                Some(final_push_status),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+    } else {
+        mark_agent_workspace_publish_status(
+            state,
+            &workspace,
+            final_push_status,
+            publish_guard.operation_scope(),
         )
         .await
         .map_err(|e| e.to_string())?;
+    }
     append_agent_workspace_publication_event(
         state,
         &workspace.conversation_id,
@@ -7233,6 +7313,7 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
     route_fixable_failures_to_agent: bool,
     repair_handoff: Option<&AgentWorkspaceRepairPrHandoff>,
     explicit_user_publish: bool,
+    operation_scope: &PublishOperationScopeGuard,
 ) -> Result<PublishAgentConversationWorkspaceResponse, String> {
     let branch_already_pushed = repair_handoff.is_some();
     let publish_started = Instant::now();
@@ -7396,7 +7477,7 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
         }
     }
 
-    mark_agent_workspace_publish_status(state, &workspace, "checking")
+    mark_agent_workspace_publish_status(state, &workspace, "checking", operation_scope)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -7421,7 +7502,7 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
         };
 
     let commit_sha = if has_uncommitted_changes {
-        mark_agent_workspace_publish_status(state, &workspace, "committing")
+        mark_agent_workspace_publish_status(state, &workspace, "committing", operation_scope)
             .await
             .map_err(|e| e.to_string())?;
         let message = build_agent_workspace_commit_message(&conversation);
@@ -7449,7 +7530,7 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
         None
     };
 
-    mark_agent_workspace_publish_status(state, &workspace, "refreshing")
+    mark_agent_workspace_publish_status(state, &workspace, "refreshing", operation_scope)
         .await
         .map_err(|e| e.to_string())?;
     let freshness = match inspect_publish_branch_freshness_for_source(
@@ -7497,14 +7578,31 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
     }
     if workspace.base_commit.as_deref() != Some(freshness.target_base_commit.as_str()) {
         workspace.base_commit = Some(freshness.target_base_commit.clone());
-        workspace = state
+        workspace = match state
             .agent_conversation_workspace_repo
-            .create_or_update(workspace)
+            .create_or_update(workspace.clone())
             .await
-            .map_err(|e| e.to_string())?;
+        {
+            Ok(workspace) => workspace,
+            Err(error) => {
+                let error = error.to_string();
+                mark_agent_workspace_publish_failure_with_routing(
+                    state,
+                    &workspace,
+                    &error,
+                    None,
+                    &repair_service,
+                    route_fixable_failures_to_agent,
+                    &repair_target,
+                    explicit_user_publish,
+                )
+                .await;
+                return Err(error);
+            }
+        };
     }
 
-    mark_agent_workspace_publish_status(state, &workspace, "checking")
+    mark_agent_workspace_publish_status(state, &workspace, "checking", operation_scope)
         .await
         .map_err(|e| e.to_string())?;
     let reviewable_commit_count = match count_publish_reviewable_commits(
@@ -7532,11 +7630,13 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
         }
     };
     if reviewable_commit_count == 0 {
-        let _ = mark_agent_workspace_publish_status(state, &workspace, "no_changes").await;
+        let _ =
+            mark_agent_workspace_publish_status(state, &workspace, "no_changes", operation_scope)
+                .await;
         return Err("No committed changes to publish on this plan branch".to_string());
     }
 
-    mark_agent_workspace_publish_status(state, &workspace, "pushing")
+    mark_agent_workspace_publish_status(state, &workspace, "pushing", operation_scope)
         .await
         .map_err(|e| e.to_string())?;
     if let Some(handoff) = repair_handoff {
@@ -7611,20 +7711,29 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
         "Pushed linked ideation plan publish branch"
     );
 
-    state
+    if let Err(error) = state
         .plan_branch_repo
         .update_pr_push_status(&plan_branch.id, PrPushStatus::Pushed)
         .await
-        .map_err(|e| e.to_string())?;
-    state
-        .agent_conversation_workspace_repo
-        .update_publication(
-            &workspace.conversation_id,
-            Some(pr_number),
-            plan_branch.pr_url.as_deref(),
-            plan_branch_publication_status(plan_branch).as_deref(),
-            Some("pushed"),
+    {
+        let error = error.to_string();
+        mark_agent_workspace_publish_failure_with_routing(
+            state,
+            &workspace,
+            &error,
+            None,
+            &repair_service,
+            route_fixable_failures_to_agent,
+            &repair_target,
+            explicit_user_publish,
         )
+        .await;
+        return Err(error);
+    }
+    workspace.publication_pr_number = Some(pr_number);
+    workspace.publication_pr_url = plan_branch.pr_url.clone();
+    workspace.publication_pr_status = plan_branch_publication_status(plan_branch);
+    mark_agent_workspace_publish_status(state, &workspace, "pushed", operation_scope)
         .await
         .map_err(|e| e.to_string())?;
     append_agent_workspace_publication_event(
@@ -7716,7 +7825,7 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
     let review_chat_service: Arc<dyn ChatService> = Arc::new(repair_service);
     state
         .pr_poller_registry
-        .start_agent_workspace_polling_with_repair_repo(
+        .start_agent_workspace_polling_with_repair_repo_and_recovery_state(
             refreshed.conversation_id.clone(),
             pr_number,
             project.clone(),
@@ -7725,6 +7834,7 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
             Arc::clone(&state.agent_run_repo),
             Arc::clone(&state.agent_workspace_repair_repo),
             review_chat_service,
+            Some(Arc::new(state.clone())),
         );
 
     tracing::info!(
@@ -7953,7 +8063,7 @@ async fn publish_agent_conversation_workspace_for_app_state_inner(
     repair_handoff: Option<AgentWorkspaceRepairPrHandoff>,
     explicit_user_publish: bool,
 ) -> Result<PublishAgentConversationWorkspaceResponse, String> {
-    let _publish_guard = try_acquire_agent_workspace_publish_guard(&conversation_id)?;
+    let publish_guard = try_acquire_agent_workspace_publish_guard(&conversation_id)?;
     let _workspace_review_lifecycle_guard = lock_workspace_review_lifecycle(&conversation_id).await;
     publish_agent_conversation_workspace_for_app_state_unlocked(
         state,
@@ -7962,6 +8072,7 @@ async fn publish_agent_conversation_workspace_for_app_state_inner(
         route_fixable_failures_to_agent,
         repair_handoff,
         explicit_user_publish,
+        publish_guard.operation_scope(),
     )
     .await
 }
@@ -7973,6 +8084,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
     route_fixable_failures_to_agent: bool,
     repair_handoff: Option<AgentWorkspaceRepairPrHandoff>,
     explicit_user_publish: bool,
+    operation_scope: &PublishOperationScopeGuard,
 ) -> Result<PublishAgentConversationWorkspaceResponse, String> {
     let branch_already_pushed = repair_handoff.is_some();
     let _freshness_invalidation = AgentWorkspaceFreshnessInvalidationGuard::new(&conversation_id);
@@ -8005,6 +8117,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
             route_fixable_failures_to_agent,
             repair_handoff.as_ref(),
             explicit_user_publish,
+            operation_scope,
         )
         .await;
     }
@@ -8195,7 +8308,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
         .await?;
     repair_target = AgentConversationWorkspaceRepairTarget::from_workspace(&workspace);
 
-    mark_agent_workspace_publish_status(state, &workspace, "checking")
+    mark_agent_workspace_publish_status(state, &workspace, "checking", operation_scope)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -8219,7 +8332,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
     };
 
     let commit_sha = if has_uncommitted_changes {
-        mark_agent_workspace_publish_status(state, &workspace, "committing")
+        mark_agent_workspace_publish_status(state, &workspace, "committing", operation_scope)
             .await
             .map_err(|e| e.to_string())?;
         let message = build_agent_workspace_commit_message(&conversation);
@@ -8262,7 +8375,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
         return Err(error);
     }
 
-    mark_agent_workspace_publish_status(state, &workspace, "refreshing")
+    mark_agent_workspace_publish_status(state, &workspace, "refreshing", operation_scope)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -8277,10 +8390,12 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
         )
         .await
         {
-            Ok(RepairPrHandoffVerification::Ok(freshness)) => PublishBranchFreshnessOutcome::AlreadyFresh {
-                base_commit: freshness.target_base_commit,
-                target_ref: freshness.target_ref,
-            },
+            Ok(RepairPrHandoffVerification::Ok(freshness)) => {
+                PublishBranchFreshnessOutcome::AlreadyFresh {
+                    base_commit: freshness.target_base_commit,
+                    target_ref: freshness.target_ref,
+                }
+            }
             Ok(RepairPrHandoffVerification::Retargetable { reason })
             | Ok(RepairPrHandoffVerification::Fatal(reason)) => {
                 PublishBranchFreshnessOutcome::OperationalError { message: reason }
@@ -8335,11 +8450,28 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
 
     if workspace.base_commit.as_deref() != Some(refreshed_base_commit.as_str()) {
         workspace.base_commit = Some(refreshed_base_commit);
-        workspace = state
+        workspace = match state
             .agent_conversation_workspace_repo
-            .create_or_update(workspace)
+            .create_or_update(workspace.clone())
             .await
-            .map_err(|e| e.to_string())?;
+        {
+            Ok(workspace) => workspace,
+            Err(error) => {
+                let error = error.to_string();
+                mark_agent_workspace_publish_failure_with_routing(
+                    state,
+                    &workspace,
+                    &error,
+                    None,
+                    &repair_service,
+                    route_fixable_failures_to_agent,
+                    &repair_target,
+                    explicit_user_publish,
+                )
+                .await;
+                return Err(error);
+            }
+        };
     }
 
     let review_base =
@@ -8361,7 +8493,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
             }
         };
 
-    mark_agent_workspace_publish_status(state, &workspace, "checking")
+    mark_agent_workspace_publish_status(state, &workspace, "checking", operation_scope)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -8387,7 +8519,9 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
             }
         };
     if reviewable_commit_count == 0 {
-        let _ = mark_agent_workspace_publish_status(state, &workspace, "no_changes").await;
+        let _ =
+            mark_agent_workspace_publish_status(state, &workspace, "no_changes", operation_scope)
+                .await;
         return Err("No committed changes to publish on this agent branch".to_string());
     }
 
@@ -8421,7 +8555,13 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
     {
         Ok(target) => target,
         Err(error) => {
-            mark_agent_workspace_publish_description_failure(state, &workspace, &error).await;
+            mark_agent_workspace_publish_description_failure(
+                state,
+                &workspace,
+                &error,
+                operation_scope,
+            )
+            .await;
             return Err(error);
         }
     };
@@ -8433,7 +8573,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
         &pr_target,
     );
 
-    mark_agent_workspace_publish_status(state, &workspace, "describing")
+    mark_agent_workspace_publish_status(state, &workspace, "describing", operation_scope)
         .await
         .map_err(|e| e.to_string())?;
     let describe_started = Instant::now();
@@ -8493,7 +8633,13 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
         Ok(decision) => decision,
         Err(error) => {
             let error = error.to_string();
-            mark_agent_workspace_publish_description_failure(state, &workspace, &error).await;
+            mark_agent_workspace_publish_description_failure(
+                state,
+                &workspace,
+                &error,
+                operation_scope,
+            )
+            .await;
             return Err(error);
         }
     };
@@ -8537,7 +8683,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
         return Err(error);
     }
 
-    mark_agent_workspace_publish_status(state, &workspace, "pushing")
+    mark_agent_workspace_publish_status(state, &workspace, "pushing", operation_scope)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -8579,7 +8725,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
         );
     }
 
-    mark_agent_workspace_publish_status(state, &workspace, "pushed")
+    mark_agent_workspace_publish_status(state, &workspace, "pushed", operation_scope)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -8598,11 +8744,23 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
             Ok(ResolvedAgentWorkspacePrTarget::NewPr) => {
                 let error =
                     "existing pull request disappeared before metadata mutation".to_string();
-                mark_agent_workspace_publish_description_failure(state, &workspace, &error).await;
+                mark_agent_workspace_publish_description_failure(
+                    state,
+                    &workspace,
+                    &error,
+                    operation_scope,
+                )
+                .await;
                 return Err(error);
             }
             Err(error) => {
-                mark_agent_workspace_publish_description_failure(state, &workspace, &error).await;
+                mark_agent_workspace_publish_description_failure(
+                    state,
+                    &workspace,
+                    &error,
+                    operation_scope,
+                )
+                .await;
                 return Err(error);
             }
         };
@@ -8646,8 +8804,13 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
                 }
                 Err(error) => {
                     let error = error.to_string();
-                    mark_agent_workspace_publish_description_failure(state, &workspace, &error)
-                        .await;
+                    mark_agent_workspace_publish_description_failure(
+                        state,
+                        &workspace,
+                        &error,
+                        operation_scope,
+                    )
+                    .await;
                     return Err(error);
                 }
             };
@@ -8668,8 +8831,13 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
                             ResolvedAgentWorkspacePrTarget::Existing(Box::new(confirmed_snapshot));
                     }
                     Err(error) => {
-                        mark_agent_workspace_publish_description_failure(state, &workspace, &error)
-                            .await;
+                        mark_agent_workspace_publish_description_failure(
+                            state,
+                            &workspace,
+                            &error,
+                            operation_scope,
+                        )
+                        .await;
                         return Err(error);
                     }
                 }
@@ -8930,7 +9098,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
     let review_chat_service: Arc<dyn ChatService> = Arc::new(repair_service);
     state
         .pr_poller_registry
-        .start_agent_workspace_polling_with_repair_repo(
+        .start_agent_workspace_polling_with_repair_repo_and_recovery_state(
             refreshed.conversation_id.clone(),
             outcome.pr_number,
             project.clone(),
@@ -8939,6 +9107,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
             Arc::clone(&state.agent_run_repo),
             Arc::clone(&state.agent_workspace_repair_repo),
             review_chat_service,
+            Some(Arc::new(state.clone())),
         );
 
     tracing::info!(
@@ -8996,18 +9165,199 @@ async fn mark_agent_workspace_publish_status(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
     push_status: &str,
+    operation_scope: &PublishOperationScopeGuard,
 ) -> crate::error::AppResult<()> {
-    state
+    let now = chrono::Utc::now();
+    let current = state
         .agent_conversation_workspace_repo
-        .update_publication(
-            &workspace.conversation_id,
-            workspace.publication_pr_number,
-            workspace.publication_pr_url.as_deref(),
-            workspace.publication_pr_status.as_deref(),
-            Some(push_status),
-        )
-        .await?;
-    append_agent_workspace_publication_event(
+        .get_by_conversation_id(&workspace.conversation_id)
+        .await?
+        .unwrap_or_else(|| workspace.clone());
+    let mut active_token = None;
+    let mut publication_status_persisted = false;
+    if matches!(
+        push_status,
+        "refreshed" | "pushed" | "failed" | "no_changes"
+    ) {
+        let owned_token = publish_operation_lease_token_for_scope(
+            &current.conversation_id,
+            operation_scope,
+        );
+        if let Some(token) = owned_token.as_deref() {
+            let release = state
+                .agent_conversation_workspace_repo
+                .release_publish_lease(&current.conversation_id, token, Some(push_status), now)
+                .await;
+            stop_publish_operation_lease_heartbeat(&current.conversation_id, token);
+            let released = release?;
+            if released {
+                if let Err(error) = append_agent_workspace_publication_event(
+                    state,
+                    &current.conversation_id,
+                    "publish_lease_released",
+                    "succeeded",
+                    "Released the owned workspace publication lease.",
+                    None,
+                )
+                .await
+                {
+                    tracing::warn!(
+                        conversation_id = %current.conversation_id,
+                        error = %error,
+                        "Released the workspace publication lease but could not record its audit event"
+                    );
+                }
+            } else {
+                return Err(AppError::Validation(
+                    "publish lease release lost ownership".to_string(),
+                ));
+            }
+        } else {
+            state
+                .agent_conversation_workspace_repo
+                .update_publication(
+                    &workspace.conversation_id,
+                    workspace.publication_pr_number,
+                    workspace.publication_pr_url.as_deref(),
+                    workspace.publication_pr_status.as_deref(),
+                    Some(push_status),
+                )
+                .await?;
+            publication_status_persisted = true;
+        }
+    } else {
+        let owner_run_id = state
+            .agent_run_repo
+            .get_active_for_conversation(&current.conversation_id)
+            .await?
+            .map(|run| run.id.as_str().to_string())
+            .unwrap_or_else(|| format!("publish-operation:{}", current.conversation_id));
+        if current.publish_lease_owner_run_id.as_deref() == Some(owner_run_id.as_str()) {
+            let token = current.publish_lease_token.as_deref().ok_or_else(|| {
+                AppError::Validation("publish lease owner is missing its fencing token".to_string())
+            })?;
+            if !state
+                .agent_conversation_workspace_repo
+                .heartbeat_publish_lease(&current.conversation_id, token, now)
+                .await?
+            {
+                return Err(AppError::Validation(
+                    "publish lease heartbeat lost ownership".to_string(),
+                ));
+            }
+            spawn_publish_operation_lease_heartbeat_for_scope(
+                Arc::clone(&state.agent_conversation_workspace_repo),
+                current.conversation_id.clone(),
+                token.to_string(),
+                operation_scope,
+            );
+            active_token = Some(token.to_string());
+        } else {
+            let previous_owner_is_dead = match current.publish_lease_owner_run_id.as_deref() {
+                Some(owner) if owner.starts_with("publish-operation:") => {
+                    !publish_operation_lease_is_live(
+                        &current.conversation_id,
+                        current.publish_lease_token.as_deref(),
+                    )
+                }
+                Some(owner) => state
+                    .agent_run_repo
+                    .get_by_id(&AgentRunId::from_string(owner))
+                    .await?
+                    .is_none_or(|run| !run.status.is_active()),
+                None => {
+                    current.updated_at
+                        <= now
+                            - chrono::Duration::seconds(
+                                i64::try_from(
+                                    git_runtime_config().agent_workspace_publish_lease_stale_secs,
+                                )
+                                .unwrap_or(i64::MAX),
+                            )
+                }
+            };
+            let token = Uuid::new_v4().to_string();
+            let outcome = state
+                .agent_conversation_workspace_repo
+                .claim_publish_lease(
+                    &current.conversation_id,
+                    &owner_run_id,
+                    &token,
+                    now,
+                    current.publish_lease_token.as_deref(),
+                    previous_owner_is_dead,
+                )
+                .await?;
+            if matches!(
+                outcome,
+                crate::domain::repositories::AgentWorkspacePublishLeaseClaim::HeldByLiveOwner
+            ) {
+                return Err(AppError::Validation(
+                    "publication is owned by a live workspace operation".to_string(),
+                ));
+            }
+            spawn_publish_operation_lease_heartbeat_for_scope(
+                Arc::clone(&state.agent_conversation_workspace_repo),
+                current.conversation_id.clone(),
+                token.clone(),
+                operation_scope,
+            );
+            active_token = Some(token.clone());
+            if let Err(error) = append_agent_workspace_publication_event(
+                state,
+                &current.conversation_id,
+                if matches!(
+                    outcome,
+                    crate::domain::repositories::AgentWorkspacePublishLeaseClaim::Reclaimed
+                ) {
+                    "publish_lease_reclaimed"
+                } else {
+                    "publish_lease_claimed"
+                },
+                "succeeded",
+                "Claimed the owned workspace publication lease.",
+                None,
+            )
+            .await
+            {
+                tracing::warn!(
+                    conversation_id = %current.conversation_id,
+                    error = %error,
+                    "Claimed the workspace publication lease but could not record its audit event"
+                );
+            }
+        }
+    }
+    let update = if publication_status_persisted {
+        Ok(())
+    } else {
+        state
+            .agent_conversation_workspace_repo
+            .update_publication(
+                &workspace.conversation_id,
+                workspace.publication_pr_number,
+                workspace.publication_pr_url.as_deref(),
+                workspace.publication_pr_status.as_deref(),
+                Some(push_status),
+            )
+            .await
+    };
+    if let Err(error) = update {
+        if let Some(token) = active_token.as_deref() {
+            let _ = state
+                .agent_conversation_workspace_repo
+                .release_publish_lease(
+                    &current.conversation_id,
+                    token,
+                    Some("failed"),
+                    chrono::Utc::now(),
+                )
+                .await;
+            stop_publish_operation_lease_heartbeat(&current.conversation_id, token);
+        }
+        return Err(error);
+    }
+    if let Err(error) = append_agent_workspace_publication_event(
         state,
         &workspace.conversation_id,
         push_status,
@@ -9016,6 +9366,15 @@ async fn mark_agent_workspace_publish_status(
         None,
     )
     .await
+    {
+        tracing::warn!(
+            conversation_id = %workspace.conversation_id,
+            push_status,
+            error = %error,
+            "Workspace publication status changed but its audit event could not be recorded"
+        );
+    }
+    Ok(())
 }
 
 async fn clear_terminal_agent_workspace_publication_for_republish(
@@ -9043,17 +9402,17 @@ async fn mark_agent_workspace_publish_description_failure(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
     error: &str,
+    operation_scope: &PublishOperationScopeGuard,
 ) {
-    let _ = state
-        .agent_conversation_workspace_repo
-        .update_publication(
-            &workspace.conversation_id,
-            workspace.publication_pr_number,
-            workspace.publication_pr_url.as_deref(),
-            workspace.publication_pr_status.as_deref(),
-            Some("description_failed"),
-        )
-        .await;
+    let owned_token =
+        publish_operation_lease_token_for_scope(&workspace.conversation_id, operation_scope);
+    let _ = settle_agent_workspace_publish_lease_status(
+        state,
+        workspace,
+        "description_failed",
+        owned_token.as_deref(),
+    )
+    .await;
     let _ = append_agent_workspace_publication_event(
         state,
         &workspace.conversation_id,
@@ -9355,6 +9714,42 @@ async fn mark_agent_workspace_failure_with_routing_and_action<S>(
 ) where
     S: ChatService + ?Sized,
 {
+    if matches!(post_repair_action, AgentWorkspacePostRepairAction::Publish)
+        && durable_repair_owns_publish_continuation(state, workspace).await
+    {
+        let owned_token = match releasable_orphaned_publish_operation_lease_token(state, workspace)
+            .await
+        {
+            Ok(token) => token,
+            Err(error) => {
+                tracing::warn!(
+                    conversation_id = %workspace.conversation_id,
+                    error = %error,
+                    "Could not prove orphaned publish-operation lease ownership during durable continuation suppression"
+                );
+                None
+            }
+        };
+        if let Err(error) = settle_agent_workspace_publish_lease_status(
+            state,
+            workspace,
+            "needs_agent",
+            owned_token.as_deref(),
+        )
+        .await
+        {
+            tracing::warn!(
+                conversation_id = %workspace.conversation_id,
+                error = %error,
+                "Failed to settle the durable unpublished-head continuation lease after publish failure"
+            );
+        }
+        tracing::info!(
+            conversation_id = %workspace.conversation_id,
+            "Suppressing generic publish-failure repair instruction while the durable continuation owns an unpublished repair head"
+        );
+        return;
+    }
     let failure_class = classify_publish_failure(error);
     mark_agent_workspace_failure_with_routing_and_action_classified(
         state,
@@ -9370,6 +9765,55 @@ async fn mark_agent_workspace_failure_with_routing_and_action<S>(
         explicit_user_publish,
     )
     .await;
+}
+
+async fn releasable_orphaned_publish_operation_lease_token(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+) -> crate::error::AppResult<Option<String>> {
+    let Some(current) = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&workspace.conversation_id)
+        .await?
+    else {
+        return Ok(None);
+    };
+    let expected_owner = format!("publish-operation:{}", current.conversation_id);
+    if current.publish_lease_owner_run_id.as_deref() != Some(expected_owner.as_str()) {
+        return Ok(None);
+    }
+    let token = current.publish_lease_token.ok_or_else(|| {
+        AppError::Validation("publish-operation lease is missing its fencing token".to_string())
+    })?;
+    if publish_operation_lease_is_live(&current.conversation_id, Some(&token)) {
+        return Ok(None);
+    }
+    Ok(Some(token))
+}
+
+/// A generic failure may not enqueue a fixer when a current durable attempt already owns the
+/// exact unpublished-head continuation. Repository errors deliberately do not suppress normal
+/// failure handling: unreadable state is never proof that a continuation is authoritative.
+async fn durable_repair_owns_publish_continuation(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+) -> bool {
+    match state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&workspace.conversation_id)
+        .await
+    {
+        Ok(Some(attempt)) => agent_workspace_repair_owns_unpublished_publish_continuation(&attempt),
+        Ok(None) => false,
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = %workspace.conversation_id,
+                error = %error,
+                "Could not prove durable publish continuation ownership before generic failure routing"
+            );
+            false
+        }
+    }
 }
 
 /// Only direct user actions may supersede a blocked repair generation. Background failure
@@ -9420,7 +9864,9 @@ where
             }
         };
     let mut retry_workspace = workspace.clone();
-    if let Some(base_commit) = resolve_current_base_commit(&resolved.path, &workspace.base_ref).await {
+    if let Some(base_commit) =
+        resolve_current_base_commit(&resolved.path, &workspace.base_ref).await
+    {
         if retry_workspace.base_commit.as_deref() != Some(base_commit.as_str()) {
             retry_workspace.base_commit = Some(base_commit);
             retry_workspace.updated_at = chrono::Utc::now();
@@ -9469,13 +9915,14 @@ where
 /// generation is still allowed when origin cannot be read; it retains its persisted base commit.
 async fn resolve_current_base_commit(worktree_path: &Path, base_ref: &str) -> Option<String> {
     let _ = GitService::fetch_origin(worktree_path).await;
-    let target =
-        crate::application::publish_resilience::resolve_publish_freshness_target(
-            worktree_path,
-            base_ref,
-        )
-        .await;
-    GitService::get_branch_sha(worktree_path, &target).await.ok()
+    let target = crate::application::publish_resilience::resolve_publish_freshness_target(
+        worktree_path,
+        base_ref,
+    )
+    .await;
+    GitService::get_branch_sha(worktree_path, &target)
+        .await
+        .ok()
 }
 
 fn repair_handoff_verification_result(
@@ -9546,6 +9993,21 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
         || !matches!(failure_class, PublishFailureClass::AgentFixable)
     {
         let push_status = "failed";
+        if let Err(release_error) =
+            settle_agent_workspace_publish_lease_status(
+                state,
+                workspace,
+                push_status,
+                None,
+            )
+            .await
+        {
+            tracing::warn!(
+                conversation_id = %workspace.conversation_id,
+                error = %release_error,
+                "Failed to settle the workspace publication lease after a terminal publish failure"
+            );
+        }
         let _ = state
             .agent_conversation_workspace_repo
             .update_publication(
@@ -9600,6 +10062,26 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
         },
     )
     .await;
+    let lease_settlement_status = if start.is_ok() {
+        "needs_agent"
+    } else {
+        "failed"
+    };
+    if let Err(release_error) =
+        settle_agent_workspace_publish_lease_status(
+            state,
+            workspace,
+            lease_settlement_status,
+            None,
+        )
+        .await
+    {
+        tracing::warn!(
+            conversation_id = %workspace.conversation_id,
+            error = %release_error,
+            "Failed to settle the workspace publication lease after repair routing"
+        );
+    }
     let attempt = match start {
         Ok(
             AgentWorkspaceRepairStartOutcome::Started(attempt)
@@ -9808,6 +10290,48 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
             .await;
         }
     }
+}
+
+async fn settle_agent_workspace_publish_lease_status(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    push_status: &str,
+    owned_token: Option<&str>,
+) -> crate::error::AppResult<()> {
+    let current = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&workspace.conversation_id)
+        .await?
+        .unwrap_or_else(|| workspace.clone());
+    if let Some(token) = owned_token {
+        let release = state
+            .agent_conversation_workspace_repo
+            .release_publish_lease(
+                &current.conversation_id,
+                token,
+                Some(push_status),
+                chrono::Utc::now(),
+            )
+            .await;
+        stop_publish_operation_lease_heartbeat(&current.conversation_id, token);
+        if !release? {
+            return Err(AppError::Validation(
+                "publish lease settlement lost ownership".to_string(),
+            ));
+        }
+    } else {
+        state
+            .agent_conversation_workspace_repo
+            .update_publication(
+                &workspace.conversation_id,
+                workspace.publication_pr_number,
+                workspace.publication_pr_url.as_deref(),
+                workspace.publication_pr_status.as_deref(),
+                Some(push_status),
+            )
+            .await?;
+    }
+    Ok(())
 }
 
 async fn should_defer_agent_workspace_repair_message(

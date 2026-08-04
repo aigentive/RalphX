@@ -2097,6 +2097,9 @@ export type AgentWorkspaceMaintenanceOperationStatus =
   | "active"
   | "ready"
   | "blocked";
+export type AgentWorkspaceMaintenanceOperationHoldReason =
+  | "health_evidence"
+  | "publish_redrive";
 
 export interface AgentWorkspaceMaintenanceOperation {
   operationId: string;
@@ -2104,6 +2107,7 @@ export interface AgentWorkspaceMaintenanceOperation {
   source: AgentWorkspaceMaintenanceOperationSource;
   stage: AgentWorkspaceMaintenanceOperationStage;
   status: AgentWorkspaceMaintenanceOperationStatus;
+  holdReason?: AgentWorkspaceMaintenanceOperationHoldReason | null;
   summary: string | null;
   blocker: string | null;
   automaticContinuation: boolean;
@@ -2686,6 +2690,11 @@ export const AgentWorkspaceMaintenanceOperationResponseSchema = z.object({
     "blocked",
   ]),
   status: z.enum(["active", "ready", "blocked"]),
+  hold_reason: z
+    .enum(["health_evidence", "publish_redrive"])
+    .nullable()
+    .optional()
+    .default(null),
   summary: z.string().nullable(),
   blocker: z.string().nullable(),
   automatic_continuation: z.boolean(),
@@ -3341,6 +3350,7 @@ function transformAgentConversationWorkspace(
           source: raw.maintenance_operation.source,
           stage: raw.maintenance_operation.stage,
           status: raw.maintenance_operation.status,
+          holdReason: raw.maintenance_operation.hold_reason,
           summary: raw.maintenance_operation.summary,
           blocker: raw.maintenance_operation.blocker,
           automaticContinuation: raw.maintenance_operation.automatic_continuation,
