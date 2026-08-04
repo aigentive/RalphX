@@ -30,10 +30,10 @@ use crate::application::agent_workspace_publish_repair_state::{
     agent_workspace_repair_is_base_stale_held, agent_workspace_repair_is_ci_held,
     agent_workspace_repair_is_health_held, classify_agent_workspace_repair_delivery,
     held_repair_has_unpublished_head, mark_agent_workspace_base_update_target,
-    release_agent_workspace_base_stale_hold, reserve_agent_workspace_base_stale_hold,
-    reserve_agent_workspace_base_update, reserve_agent_workspace_repair_dispatch,
-    settle_agent_workspace_repair_dispatch_outcome, start_or_join_agent_workspace_repair,
-    start_or_join_agent_workspace_repair_without_projection,
+    release_agent_workspace_base_stale_hold, release_and_clear_agent_workspace_repair_target_lease,
+    reserve_agent_workspace_base_stale_hold, reserve_agent_workspace_base_update,
+    reserve_agent_workspace_repair_dispatch, settle_agent_workspace_repair_dispatch_outcome,
+    start_or_join_agent_workspace_repair, start_or_join_agent_workspace_repair_without_projection,
     validate_agent_workspace_repair_target_lease, AgentWorkspaceRepairDispatchOutcome,
     AgentWorkspaceRepairDispatchSettlement, AgentWorkspaceRepairStartOutcome,
     AgentWorkspaceRepairStartRequest, AgentWorkspaceRepairTransitionOutcome,
@@ -3056,8 +3056,22 @@ async fn agent_workspace_base_update_unsettled_reason(
 
 async fn settle_ready_agent_workspace_repair_attempt(
     repair_repo: &dyn AgentWorkspaceRepairRepository,
+    branch_update_repo: &dyn BranchUpdateRepository,
     attempt: &AgentWorkspaceRepairAttempt,
 ) -> crate::AppResult<bool> {
+    let attempt = match release_and_clear_agent_workspace_repair_target_lease(
+        repair_repo,
+        branch_update_repo,
+        attempt.clone(),
+    )
+    .await?
+    {
+        AgentWorkspaceRepairTransitionOutcome::Applied(attempt) => attempt,
+        AgentWorkspaceRepairTransitionOutcome::Stale(_)
+        | AgentWorkspaceRepairTransitionOutcome::Missing => {
+            return Ok(false);
+        }
+    };
     let outcome = repair_repo
         .settle_repair_attempt(SettleAgentWorkspaceRepairAttempt {
             attempt_id: attempt.id.clone(),
@@ -3590,6 +3604,7 @@ async fn route_agent_workspace_pr_autofix_for_target(
                         BehindBaseUpdateRoute::DeferToAgent { reserved, reason } => {
                             if !settle_ready_agent_workspace_repair_attempt(
                                 repair_repo.as_ref(),
+                                branch_update_repo.as_ref(),
                                 &reserved,
                             )
                             .await?
@@ -3667,8 +3682,17 @@ async fn route_agent_workspace_pr_autofix_for_target(
                     };
                     // A changed conclusion ends the rerun-pending generation. The next normal
                     // dispatch below creates a fresh, independently fenced repair attempt.
-                    if !settle_ready_agent_workspace_repair_attempt(repair_repo.as_ref(), &attempt)
-                        .await?
+                    if !settle_ready_agent_workspace_repair_attempt(
+                        repair_repo.as_ref(),
+                        branch_update_repo
+                            .as_ref()
+                            .expect(
+                                "durable repair dispatch requires canonical Git target authority",
+                            )
+                            .as_ref(),
+                        &attempt,
+                    )
+                    .await?
                     {
                         return Ok(false);
                     }
