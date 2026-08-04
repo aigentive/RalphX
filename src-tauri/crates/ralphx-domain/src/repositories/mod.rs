@@ -92,6 +92,7 @@ pub use agent_conversation_jira_issue_repository::AgentConversationJiraIssueRepo
 pub use agent_conversation_linear_issue_repository::AgentConversationLinearIssueRepository;
 pub use agent_conversation_workspace_repository::{
     AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
+    AgentWorkspacePublishLeaseClaim,
     AgentWorkspacePrReviewActionMutation, AgentWorkspacePrReviewStateTransition,
     AgentWorkspacePrTerminalSettlement, AgentWorkspacePublicationGuard,
     AgentWorkspacePublicationMetadataReceiptClaim, AgentWorkspacePublicationMetadataReceiptRefresh,

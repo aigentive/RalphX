@@ -1642,6 +1642,7 @@ describe("chat api", () => {
           source: "base_update",
           stage: "repairing",
           status: "active",
+          hold_reason: null,
           summary: "Resolving the base conflict",
           blocker: null,
           automatic_continuation: true,
@@ -1682,6 +1683,7 @@ describe("chat api", () => {
         generation: 2,
         stage: "repairing",
         status: "active",
+        holdReason: null,
         automaticContinuation: true,
       },
       prAutofixFingerprintSpend: {
@@ -1698,6 +1700,31 @@ describe("chat api", () => {
       AgentConversationWorkspaceResponseSchema.parse(planSeedWorkspaceResponse())
         .maintenance_operation,
     ).toBeNull();
+  });
+
+  it("transforms a typed repair hold reason", async () => {
+    mockInvoke.mockResolvedValueOnce([
+      {
+        ...planSeedWorkspaceResponse(),
+        maintenance_operation: {
+          operation_id: "maintenance-held",
+          generation: 3,
+          source: "pr_autofix",
+          stage: "ready",
+          status: "ready",
+          hold_reason: "health_evidence",
+          summary: "RalphX is holding the repair on identical CI evidence.",
+          blocker: null,
+          automatic_continuation: false,
+          started_at: "2026-01-24T10:00:00Z",
+          updated_at: "2026-01-24T10:01:00Z",
+        },
+      },
+    ]);
+
+    const result = await listAgentConversationWorkspacesByProject("project-1");
+
+    expect(result[0]?.maintenanceOperation?.holdReason).toBe("health_evidence");
   });
 
   it("rejects an unknown maintenance operation stage", () => {
