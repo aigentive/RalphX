@@ -606,6 +606,7 @@ mod v20260802174000_workspace_review_fixer_cycle_cap_tests;
 mod v20260802194326_agent_workspace_repair_explicit_publish_consent_tests;
 #[cfg(test)]
 mod v20260802215754_add_workspace_review_automation_override_tests;
+#[cfg(test)]
 mod v20260804073002_jira_link_acceptance_criteria_backfill_tests;
 #[cfg(test)]
 pub(super) fn migrate_scripted_agent_workflows_for_test(conn: &Connection) -> AppResult<()> {
