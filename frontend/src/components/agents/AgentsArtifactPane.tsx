@@ -1850,6 +1850,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   );
   const {
     startReview: confirmAndStartWorkspaceReview,
+    prefetchStartReview: prefetchWorkspaceReview,
     startFixer: confirmAndStartWorkspaceReviewFixer,
     confirmationDialogProps: workspaceReviewConfirmationDialogProps,
     ConfirmationDialog: WorkspaceReviewConfirmationDialog,
@@ -2422,6 +2423,9 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                 onStartReview={
                   isReviewPrWorkspace ? () => {} : handleStartReview
                 }
+                {...(!isReviewPrWorkspace
+                  ? { onStartReviewIntent: prefetchWorkspaceReview }
+                  : {})}
                 onFixIssues={
                   isReviewPrWorkspace ? () => {} : handleFixReviewIssues
                 }
@@ -2527,6 +2531,7 @@ type ArtifactContentProps = {
   isApproveAnywayActionPending: boolean;
   isWorkspaceRuntimeGenerating: boolean;
   onStartReview: (force: boolean) => void;
+  onStartReviewIntent?: () => void;
   onFixIssues: () => void;
   onApproveAnyway: () => Promise<void>;
   onViewTranscript?: () => void;
@@ -2614,6 +2619,7 @@ function ArtifactContent({
   isApproveAnywayActionPending,
   isWorkspaceRuntimeGenerating,
   onStartReview,
+  onStartReviewIntent,
   onFixIssues,
   onApproveAnyway,
   onViewTranscript,
@@ -2674,6 +2680,7 @@ function ArtifactContent({
       reviewActionBlocker={reviewActionBlocker}
       onOpenPublish={onOpenPublish}
       onStartReview={onStartReview}
+      {...(onStartReviewIntent ? { onStartReviewIntent } : {})}
       onFixIssues={onFixIssues}
       onApproveAnyway={onApproveAnyway}
       embedded={embedded}

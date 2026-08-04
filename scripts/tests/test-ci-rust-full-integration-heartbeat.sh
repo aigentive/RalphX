@@ -26,7 +26,7 @@ grep -Fq 'sleep 60' <<< "${integration_job}" \
   || fail "Rust Full Integration heartbeat interval is not bounded"
 grep -Fq 'trap cleanup EXIT' <<< "${integration_job}" \
   || fail "Rust Full Integration does not clean up its heartbeat"
-grep -Fq -- '--partition slice:${{ matrix.shard }}/3' <<< "${integration_job}" \
-  || fail "Rust Full Integration does not use the three-shard integration topology"
+grep -Fq -- '--partition slice:${{ matrix.shard }}/2' <<< "${integration_job}" \
+  || fail "Rust Full Integration does not use the two-shard integration topology"
 
 echo "PASS: Rust Full Integration reports progress across all integration shards"

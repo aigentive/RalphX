@@ -153,6 +153,18 @@ async fn default_pr_diff_annotations_are_empty_for_pr_number() {
 }
 
 #[tokio::test]
+async fn default_pr_auto_merge_state_is_unknown() {
+    let service = DefaultOnlyGithubService;
+
+    let state = service
+        .fetch_pr_auto_merge_state(Path::new("/tmp"), 123)
+        .await
+        .expect("default auto-merge state should be conservative");
+
+    assert_eq!(state, None);
+}
+
+#[tokio::test]
 async fn default_metadata_patch_rejects_an_empty_patch_before_unsupported() {
     let service = DefaultOnlyGithubService;
 
