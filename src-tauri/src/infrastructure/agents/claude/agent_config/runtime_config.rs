@@ -641,9 +641,6 @@ pub struct GitRuntimeConfig {
     /// TTL for external PR reconciliation attempts on an unlinked agent workspace.
     #[serde(default = "default_agent_workspace_pr_reconciliation_cache_ttl_ms")]
     pub agent_workspace_pr_reconciliation_cache_ttl_ms: u64,
-    /// Maximum seconds to wait for a workflow run to conclude before blocking a deferred CI rerun.
-    #[serde(default = "default_agent_workspace_ci_rerun_deferral_deadline_secs")]
-    pub agent_workspace_ci_rerun_deferral_deadline_secs: u64,
     /// Seconds between background terminal PR local artifact cleanup passes.
     #[serde(default = "default_terminal_pr_local_cleanup_interval_secs")]
     pub terminal_pr_local_cleanup_interval_secs: u64,
@@ -686,7 +683,6 @@ impl Default for GitRuntimeConfig {
             workspace_pr_annotations_cache_ttl_ms: 30_000,
             workspace_pr_annotations_check_run_fetch_limit: 10,
             agent_workspace_pr_reconciliation_cache_ttl_ms: 30_000,
-            agent_workspace_ci_rerun_deferral_deadline_secs: 3_600,
             terminal_pr_local_cleanup_interval_secs: 900,
             terminal_pr_local_cleanup_retry_secs: 3_600,
             orphan_worktree_cleanup_marker_retry_secs: 86_400,
@@ -703,10 +699,6 @@ impl Default for GitRuntimeConfig {
 
 fn default_agent_workspace_pr_reconciliation_cache_ttl_ms() -> u64 {
     30_000
-}
-
-fn default_agent_workspace_ci_rerun_deferral_deadline_secs() -> u64 {
-    3_600
 }
 
 fn default_terminal_pr_local_cleanup_interval_secs() -> u64 {
@@ -1212,10 +1204,6 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
     env_u64!(
         cfg.git.agent_workspace_pr_reconciliation_cache_ttl_ms,
         "RALPHX_GIT_AGENT_WORKSPACE_PR_RECONCILIATION_CACHE_TTL_MS"
-    );
-    env_u64!(
-        cfg.git.agent_workspace_ci_rerun_deferral_deadline_secs,
-        "RALPHX_GIT_AGENT_WORKSPACE_CI_RERUN_DEFERRAL_DEADLINE_SECS"
     );
     env_u64!(
         cfg.git.terminal_pr_local_cleanup_interval_secs,

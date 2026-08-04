@@ -24,7 +24,7 @@ use crate::domain::services::github_service::{
     PrDiffAnnotations, PrHealth, PrHealthCheck, PrIssueCommentSummary, PrMergeStateStatus,
     PrMergeableState, PrReviewCommentFeedback, PrReviewFeedback, PrReviewSubmissionEvent,
     PrReviewThread, PrReviewThreadComment, PrSearchResult, PrStatus, PrSubmittedReview,
-    PrSyncState, WorkflowRunLifecycle,
+    PrSyncState,
 };
 use crate::error::AppError;
 use crate::infrastructure::agents::claude::git_runtime_config;
@@ -1046,32 +1046,6 @@ impl GithubServiceTrait for GhCliGithubService {
             .map(|_| ())
     }
 
-    async fn fetch_workflow_run_status(
-        &self,
-        working_dir: &Path,
-        run_id: i64,
-    ) -> AppResult<Option<WorkflowRunLifecycle>> {
-        if run_id <= 0 {
-            return Err(AppError::Validation(
-                "GitHub Actions run id must be positive".to_string(),
-            ));
-        }
-        let stdout = self
-            .runner
-            .run_gh(
-                working_dir,
-                &[
-                    "run".to_string(),
-                    "view".to_string(),
-                    run_id.to_string(),
-                    "--json".to_string(),
-                    "status".to_string(),
-                ],
-            )
-            .await?;
-        Ok(parse_workflow_run_lifecycle(&stdout.join("\n")))
-    }
-
     async fn enable_pr_auto_merge(
         &self,
         working_dir: &Path,
@@ -1908,26 +1882,6 @@ pub(crate) fn parse_branch_check_conclusions(json_str: &str) -> Vec<PrHealthChec
         });
     }
     newest_by_name.into_values().collect()
-}
-
-/// Parses the lifecycle reported by `gh run view --json status`.
-/// Unknown statuses intentionally remain unknown so callers cannot authorize a rerun from a
-/// future GitHub status value.
-pub(crate) fn parse_workflow_run_lifecycle(stdout: &str) -> Option<WorkflowRunLifecycle> {
-    let value = serde_json::from_str::<Value>(stdout).ok()?;
-    match value
-        .get("status")?
-        .as_str()?
-        .trim()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "completed" => Some(WorkflowRunLifecycle::Concluded),
-        "queued" | "in_progress" | "waiting" | "requested" | "pending" => {
-            Some(WorkflowRunLifecycle::Active)
-        }
-        _ => None,
-    }
 }
 
 fn parse_auto_merge_request(view_value: &Value) -> Option<PrAutoMergeRequest> {

@@ -498,11 +498,6 @@ async fn retry_safe_ready_agent_workspace_repair_publish(
     if agent_workspace_repair_is_health_held(&current) {
         return Ok(DurableRepairRecoveryOutcome::Noop);
     }
-    // A deferred rerun is parked at Ready waiting for the in-flight run to conclude; only the
-    // poller, which observes the live workflow lifecycle, may issue the rerun.
-    if current.ci_rerun_pending_run_id.is_some() {
-        return Ok(DurableRepairRecoveryOutcome::Noop);
-    }
 
     let redrive_authorized = match current.continuation {
         AgentWorkspaceRepairContinuation::ResumePrSupervision => true,

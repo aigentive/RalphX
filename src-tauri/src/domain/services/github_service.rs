@@ -88,15 +88,6 @@ pub struct PrHealthCheck {
     pub details_url: Option<String>,
 }
 
-/// Lifecycle state of one GitHub Actions workflow run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum WorkflowRunLifecycle {
-    /// `queued` / `in_progress` / `waiting` / `requested` / `pending`.
-    Active,
-    /// `completed`.
-    Concluded,
-}
-
 /// PR issue comment summary used for bot-only feedback such as Codecov.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PrIssueCommentSummary {
@@ -619,19 +610,6 @@ pub trait GithubServiceTrait: Send + Sync {
         Err(AppError::Infrastructure(
             "GitHub Actions rerun is unavailable for this runtime".to_string(),
         ))
-    }
-
-    /// Lifecycle of one workflow run.
-    ///
-    /// `None` means RalphX could not determine the run's state — an unimplemented backend, API
-    /// error, or unparseable payload. Callers must treat `None` as unknown and must never read it
-    /// as "concluded": a rerun may only be issued on an explicit `Concluded`.
-    async fn fetch_workflow_run_status(
-        &self,
-        _working_dir: &Path,
-        _run_id: i64,
-    ) -> AppResult<Option<WorkflowRunLifecycle>> {
-        Ok(None)
     }
 
     /// Enable GitHub auto-merge for a PR with the selected merge method.

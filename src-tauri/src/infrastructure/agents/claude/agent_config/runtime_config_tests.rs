@@ -53,10 +53,6 @@ fn test_all_defaults_are_sensible() {
         cfg.git.agent_workspace_pr_reconciliation_cache_ttl_ms,
         30_000
     );
-    assert_eq!(
-        cfg.git.agent_workspace_ci_rerun_deferral_deadline_secs,
-        3_600
-    );
     assert_eq!(cfg.git.terminal_pr_local_cleanup_interval_secs, 900);
     assert_eq!(cfg.git.terminal_pr_local_cleanup_retry_secs, 3_600);
     assert_eq!(cfg.git.orphan_worktree_cleanup_marker_retry_secs, 86_400);
@@ -181,7 +177,6 @@ fn test_env_overrides_apply() {
         "RALPHX_GIT_WORKSPACE_PR_ANNOTATIONS_CACHE_TTL_MS" => Some("45000".to_string()),
         "RALPHX_GIT_WORKSPACE_PR_ANNOTATIONS_CHECK_RUN_FETCH_LIMIT" => Some("7".to_string()),
         "RALPHX_GIT_AGENT_WORKSPACE_PR_RECONCILIATION_CACHE_TTL_MS" => Some("45000".to_string()),
-        "RALPHX_GIT_AGENT_WORKSPACE_CI_RERUN_DEFERRAL_DEADLINE_SECS" => Some("7200".to_string()),
         "RALPHX_GIT_TERMINAL_PR_LOCAL_CLEANUP_INTERVAL_SECS" => Some("300".to_string()),
         "RALPHX_GIT_TERMINAL_PR_LOCAL_CLEANUP_RETRY_SECS" => Some("1800".to_string()),
         "RALPHX_GIT_ORPHAN_WORKTREE_CLEANUP_MARKER_RETRY_SECS" => Some("3600".to_string()),
@@ -227,10 +222,6 @@ fn test_env_overrides_apply() {
     assert_eq!(
         cfg.git.agent_workspace_pr_reconciliation_cache_ttl_ms,
         45_000
-    );
-    assert_eq!(
-        cfg.git.agent_workspace_ci_rerun_deferral_deadline_secs,
-        7_200
     );
     assert_eq!(cfg.git.terminal_pr_local_cleanup_interval_secs, 300);
     assert_eq!(cfg.git.terminal_pr_local_cleanup_retry_secs, 1800);
