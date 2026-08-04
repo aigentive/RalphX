@@ -39,6 +39,10 @@ import type { AgentModelRegistry } from "@/lib/agent-models";
 interface UseAgentsWorkspaceModelArgs {
   activeConversation: AgentConversation | null;
   activeProject?: Project | null;
+  composerRuntimeOverridesByConversationId?: Record<
+    string,
+    AgentRuntimeSelection
+  >;
   focusedWorkspaceReviewConversation?: AgentConversation | null;
   optimisticWorkspacesByConversationId: Record<string, AgentConversationWorkspace>;
   modelRegistry: AgentModelRegistry;
@@ -52,6 +56,7 @@ interface UseAgentsWorkspaceModelArgs {
 export function useAgentsWorkspaceModel({
   activeConversation,
   activeProject = null,
+  composerRuntimeOverridesByConversationId = {},
   focusedWorkspaceReviewConversation = null,
   focusedWorkspaceReviewConversationId = null,
   focusedWorkspaceReviewRuntimeHint = null,
@@ -94,6 +99,9 @@ export function useAgentsWorkspaceModel({
           null,
         workspaceReviewerRuntime,
         focusedWorkspaceReviewRuntimeHint,
+        composerRuntimeOverridesByConversationId[
+          focusedWorkspaceReviewConversationId
+        ] ?? null,
       )
     : workspaceRuntime;
   const focusedWorkspaceReviewServiceTier = serviceTierFromConversation(

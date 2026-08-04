@@ -123,8 +123,15 @@ export function runtimeForWorkspaceReviewFocus(
   reviewRuntime: AgentRuntimeSelection | null,
   reviewerRoleRuntime: AgentRuntimeSelection | null,
   reviewRuntimeHint: AgentRuntimeSelection | null = null,
+  explicitComposerRuntime: AgentRuntimeSelection | null = null,
 ): AgentRuntimeSelection | null {
-  return reviewRuntime ?? reviewRuntimeHint ?? reviewerRoleRuntime ?? workspaceRuntime;
+  return (
+    explicitComposerRuntime ??
+    reviewRuntime ??
+    reviewRuntimeHint ??
+    reviewerRoleRuntime ??
+    workspaceRuntime
+  );
 }
 
 function effortFromConversation(
