@@ -15,12 +15,14 @@ import {
   useState,
   type ElementType,
 } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import type {
   AgentWorkspacePrReviewMonitor,
   AgentWorkspaceReviewContext,
   StartAgentWorkspaceReviewResult,
 } from "@/api/chat";
+import { chatApi } from "@/api/chat";
 import { lazyWithRetry } from "@/lib/lazy-with-retry";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -46,6 +48,7 @@ import {
 } from "@/components/ui/tooltip";
 import { withAlpha } from "@/lib/theme-colors";
 import { useConfirmation } from "@/hooks/useConfirmation";
+import { useReviewSettings } from "@/hooks/useReviewSettings";
 import type { Artifact } from "@/types/artifact";
 
 import { EmptyArtifactState } from "./AgentsArtifactEmptyState";
@@ -54,6 +57,11 @@ import {
   hasWorkspaceReviewPublishAuthorization,
   isWorkspaceReviewApprovedAnyway,
 } from "./workspaceReviewAuthorization";
+import {
+  agentWorkspaceKeys,
+  invalidateWorkspaceQueries,
+} from "./agentWorkspaceQueries";
+import { WORKSPACE_REVIEW_AUTOMATION_COPY } from "./workspaceReviewAutomationCopy";
 import {
   ReviewArtifactTabs,
   type ReviewArtifactBodyMode,
@@ -67,6 +75,7 @@ const LazyPlanDisplay = lazyWithRetry(() =>
 
 type ReviewDisplayContext = Pick<
   AgentWorkspaceReviewContext,
+  | "workspace"
   | "target"
   | "monitor"
   | "reviewArtifactIsCurrent"
@@ -111,6 +120,7 @@ interface AgentReviewPanelProps {
   onOpenPublish?: () => void;
   onViewTranscript?: () => void;
   onStartReview: (force: boolean) => void;
+  onStartReviewIntent?: () => void;
   onFixIssues: () => void;
   onApproveAnyway?: () => Promise<void>;
   isReviewPrWorkspace?: boolean;
@@ -390,6 +400,7 @@ export function AgentReviewPanel({
   onOpenPublish,
   onViewTranscript,
   onStartReview,
+  onStartReviewIntent,
   onFixIssues,
   onApproveAnyway,
   isReviewPrWorkspace = false,
@@ -407,6 +418,8 @@ export function AgentReviewPanel({
     useState(false);
   const { confirm, confirmationDialogProps, ConfirmationDialog } =
     useConfirmation();
+  const queryClient = useQueryClient();
+  const reviewSettingsQuery = useReviewSettings();
 
   useEffect(() => {
     setIsReviewExpanded(true);
@@ -430,6 +443,57 @@ export function AgentReviewPanel({
   const isFixerActive =
     isFixIssuesActionPending ||
     isWorkspaceReviewFixerActive(displayContext?.monitor.reviewFixerStatus);
+  const reviewAutomationWorkspace = displayContext?.workspace ?? null;
+  const reviewAutomationOverride =
+    reviewAutomationWorkspace?.reviewAutomationOverride ?? null;
+  const reviewAutomationEnabled = reviewAutomationWorkspace
+    ? (reviewAutomationOverride ??
+      Boolean(
+        reviewSettingsQuery.data?.require_workspace_review &&
+          reviewSettingsQuery.data?.autofix_workspace_review_blocking_findings,
+      ))
+    : false;
+  const reviewAutomationMutation = useMutation({
+    mutationFn: ({
+      conversationId,
+      enabled,
+    }: {
+      conversationId: string;
+      enabled: boolean;
+    }) =>
+      chatApi.setAgentConversationWorkspaceReviewAutomation(conversationId, {
+        enabled,
+      }),
+    onSuccess: (updatedWorkspace) => {
+      queryClient.setQueryData(
+        agentWorkspaceKeys.workspace(updatedWorkspace.conversationId),
+        updatedWorkspace,
+      );
+      queryClient.setQueryData(
+        agentWorkspaceKeys.workspaceReview(updatedWorkspace.conversationId),
+        (previous: AgentWorkspaceReviewContext | undefined) =>
+          previous ? { ...previous, workspace: updatedWorkspace } : previous,
+      );
+      void invalidateWorkspaceQueries(queryClient, updatedWorkspace.conversationId);
+    },
+  });
+  const isReviewAutomationSaving =
+    reviewAutomationMutation.isPending &&
+    reviewAutomationMutation.variables?.conversationId ===
+      reviewAutomationWorkspace?.conversationId;
+  const reviewAutomationStatus = (() => {
+    if (!displayContext) return null;
+    if (displayContext.monitor.reviewFixerStatus === "cycle_capped") {
+      return "Turn Auto Review & Fix off, then on to re-arm the loop with a fresh cycle budget.";
+    }
+    if (isFixerActive) {
+      return `Auto Review & Fix · cycle ${displayContext.monitor.reviewFixerCycleCount} — fixing…`;
+    }
+    if (displayContext.monitor.reviewOutcome === "passed") {
+      return "Auto Review & Fix will run again when new changes need review.";
+    }
+    return `Auto Review & Fix · cycle ${displayContext.monitor.reviewFixerCycleCount}`;
+  })();
   const canApproveAnyway =
     !isReviewPrWorkspace &&
     Boolean(onApproveAnyway) &&
@@ -612,6 +676,8 @@ export function AgentReviewPanel({
             <DropdownMenuContent align="end" className="min-w-[160px]">
               <DropdownMenuItem
                 data-testid="agents-review-rerun"
+                onPointerEnter={onStartReviewIntent}
+                onFocus={onStartReviewIntent}
                 onSelect={(event) => {
                   event.preventDefault();
                   if (action.kind === "review") {
@@ -702,6 +768,12 @@ export function AgentReviewPanel({
         onClick={() =>
           action.kind === "fix" ? onFixIssues() : onStartReview(action.force)
         }
+        {...(action.kind === "review" && onStartReviewIntent
+          ? {
+              onPointerEnter: onStartReviewIntent,
+              onFocus: onStartReviewIntent,
+            }
+          : {})}
         disabled={isActionDisabled}
         className={
           isEmbeddedRerun
@@ -742,6 +814,7 @@ export function AgentReviewPanel({
     onApproveAnyway,
     onFixIssues,
     onStartReview,
+    onStartReviewIntent,
   ]);
 
   const selectedReviewArtifact =
@@ -896,6 +969,54 @@ export function AgentReviewPanel({
             Review will be available after the current agent run.
           </div>
         )}
+
+        {!isReviewPrWorkspace &&
+          reviewAutomationWorkspace &&
+          reviewAutomationStatus && (
+            <div
+              className="mt-3 border-t pt-3"
+              style={{ borderColor: "var(--border-subtle)" }}
+              data-testid="agents-review-auto-review-fix"
+            >
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                <label className="flex min-h-8 items-center gap-2 text-[var(--text-secondary)]">
+                  <Switch
+                    checked={reviewAutomationEnabled}
+                    disabled={isReviewAutomationSaving}
+                    onCheckedChange={(enabled) =>
+                      reviewAutomationMutation.mutate({
+                        conversationId: reviewAutomationWorkspace.conversationId,
+                        enabled,
+                      })
+                    }
+                    aria-label="Auto Review & Fix"
+                    data-testid="agents-review-auto-review-fix-switch"
+                  />
+                  <span>Auto Review &amp; Fix</span>
+                </label>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      aria-label="About Auto Review & Fix"
+                      className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[var(--text-muted)] hover:text-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+                    >
+                      <Info className="h-3.5 w-3.5" aria-hidden="true" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" className="max-w-[320px] text-xs leading-relaxed">
+                    {WORKSPACE_REVIEW_AUTOMATION_COPY}
+                  </TooltipContent>
+                </Tooltip>
+                {isReviewAutomationSaving && (
+                  <span className="text-[var(--text-muted)]">Saving…</span>
+                )}
+              </div>
+              <p className="mt-1 text-xs text-[var(--text-muted)]">
+                {reviewAutomationStatus}
+              </p>
+            </div>
+          )}
 
         {isReviewPrWorkspace && (
           <div className="mt-3 space-y-3 border-t pt-3">

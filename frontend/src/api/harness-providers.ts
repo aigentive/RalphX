@@ -83,6 +83,7 @@ export interface UpdateAgentProviderSettingsInput {
 
 export interface ListAgentProviderSettingsOptions {
   refreshRuntime?: boolean;
+  forceRuntime?: boolean;
 }
 
 /**
@@ -181,7 +182,12 @@ export const harnessProvidersApi = {
     }
     return typedInvoke(
       "get_agent_provider_settings",
-      { input: { refreshRuntime: options.refreshRuntime ?? false } },
+      {
+        input: {
+          refreshRuntime: options.refreshRuntime ?? false,
+          forceRuntime: options.forceRuntime ?? false,
+        },
+      },
       AgentProvidersSettingsResponseSchema,
     );
   },

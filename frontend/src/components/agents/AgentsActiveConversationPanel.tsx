@@ -143,6 +143,7 @@ import {
   AGENT_PROVIDER_OPTIONS,
   agentEffortOptions,
   agentModelOptions,
+  defaultEffortForModel,
   defaultModelForProvider,
   normalizeRuntimeSelection,
 } from "./agentOptions";
@@ -984,12 +985,6 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
 
     return () => window.clearTimeout(timer);
   }, [composerActivityTick, isComposerHydrationPaused]);
-  const workspaceProviderStatusMessage = getProviderAvailabilityMessage({
-    provider: normalizedActiveRuntime.provider,
-    providerOptions,
-    isReady: providerSettingsReady,
-    isRemoteEnvironment,
-  });
   const codexProviderSettings = configuredProviders.find(
     (entry) => entry.provider === "codex",
   );
@@ -1262,16 +1257,6 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     automationSetupConversationId && automationDetailQuery.data
       ? automationDetailQuery.data
       : null;
-  const usesWorkspaceRuntimeControls =
-    !isFocusedChildChat || chatFocus.type === "workspace_review";
-  const workspaceSendRuntime = usesWorkspaceRuntimeControls
-    ? selectableWorkspaceRuntime
-    : normalizedActiveRuntime;
-  const panelCodexFastModeOption = focusedWorkspaceReviewConversationId
-    ? workspaceSendRuntime.provider === "codex"
-      ? false
-      : null
-    : activeCodexFastModeOption;
   const runtimeStatusConversationId =
     activeConversation.parentConversationId ?? selectedConversationId;
   const runtimeStatusStoreKey = runtimeStatusConversationId
@@ -1371,6 +1356,101 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       );
     },
     [activeRole, activeRoleSelection, selectedConversationId],
+  );
+  const composerProviderSupportedEfforts = useMemo(
+    () =>
+      supportedEffortsForProvider(providerOptions, composerRuntime.provider),
+    [composerRuntime.provider, providerOptions],
+  );
+  const composerProviderSupportedModelAliases = useMemo(
+    () =>
+      supportedModelAliasesForProvider(
+        providerOptions,
+        composerRuntime.provider,
+      ),
+    [composerRuntime.provider, providerOptions],
+  );
+  const selectableComposerRuntime = useMemo(
+    () =>
+      normalizeRuntimeSelection(
+        composerRuntime,
+        modelRegistry,
+        composerProviderSupportedEfforts,
+        composerProviderSupportedModelAliases,
+      ),
+    [
+      composerProviderSupportedEfforts,
+      composerProviderSupportedModelAliases,
+      composerRuntime,
+      modelRegistry,
+    ],
+  );
+  const composerProviderStatusMessage = getProviderAvailabilityMessage({
+    provider: selectableComposerRuntime.provider,
+    providerOptions,
+    isReady: providerSettingsReady,
+    isRemoteEnvironment,
+  });
+  const composerCodexFastModeAvailability = codexFastModeAvailabilityForProvider({
+    provider: codexProviderSettings,
+    modelId: selectableComposerRuntime.modelId,
+    isReady: providerSettingsReady,
+  });
+  const usesWorkspaceRuntimeControls =
+    !isFocusedChildChat || chatFocus.type === "workspace_review";
+  const workspaceSendRuntime = usesWorkspaceRuntimeControls
+    ? selectableComposerRuntime
+    : normalizedActiveRuntime;
+  const panelCodexFastModeOption = activeRole && activeRoleSelection
+    ? selectableComposerRuntime.provider === "codex" &&
+      composerCodexFastModeAvailability.supported
+      ? activeRoleSelection.serviceTier === "provider_default"
+        ? null
+        : activeRoleSelection.serviceTier === "fast"
+      : null
+    : focusedWorkspaceReviewConversationId
+      ? workspaceSendRuntime.provider === "codex"
+        ? false
+        : null
+      : activeCodexFastModeOption;
+  const handleActiveRoleProviderChange = useCallback(
+    (provider: AgentProvider) => {
+      if (!activeRole || !activeRoleSelection) return;
+      const supportedEfforts = supportedEffortsForProvider(
+        providerOptions,
+        provider,
+      );
+      const supportedModelAliases = supportedModelAliasesForProvider(
+        providerOptions,
+        provider,
+      );
+      const modelId = defaultModelForProvider(
+        provider,
+        modelRegistry,
+        supportedModelAliases,
+      );
+      const runtime = normalizeRuntimeSelection(
+        {
+          provider,
+          modelId,
+          effort: defaultEffortForModel(provider, modelId, modelRegistry),
+        },
+        modelRegistry,
+        supportedEfforts,
+        supportedModelAliases,
+      );
+      updateActiveRoleRuntime({
+        provider: runtime.provider,
+        model: runtime.modelId,
+        effort: runtime.effort,
+      });
+    }, [
+      activeRole,
+      activeRoleSelection,
+      modelRegistry,
+      providerOptions,
+      updateActiveRoleRuntime,
+    ],
   );
   const activeConversationIsSending = useChatStore(
     (state) => state.isSending[activeConversationStoreKey] ?? false,
@@ -1742,29 +1822,29 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const workspaceModelOptions = useMemo(
     () =>
       agentModelOptions(
-        selectableWorkspaceRuntime.provider,
+        selectableComposerRuntime.provider,
         modelRegistry,
-        workspaceProviderSupportedModelAliases,
+        composerProviderSupportedModelAliases,
       ),
     [
+      composerProviderSupportedModelAliases,
       modelRegistry,
-      selectableWorkspaceRuntime.provider,
-      workspaceProviderSupportedModelAliases,
+      selectableComposerRuntime.provider,
     ]
   );
   const workspaceEffortOptions = useMemo(
     () =>
       agentEffortOptions(
-        selectableWorkspaceRuntime.provider,
-        selectableWorkspaceRuntime.modelId,
+        selectableComposerRuntime.provider,
+        selectableComposerRuntime.modelId,
         modelRegistry,
-        workspaceProviderSupportedEfforts
+        composerProviderSupportedEfforts
       ),
     [
+      composerProviderSupportedEfforts,
       modelRegistry,
-      selectableWorkspaceRuntime.modelId,
-      selectableWorkspaceRuntime.provider,
-      workspaceProviderSupportedEfforts,
+      selectableComposerRuntime.modelId,
+      selectableComposerRuntime.provider,
     ]
   );
   const automationConfig = automationSetupDetail?.automation ?? null;
@@ -2450,7 +2530,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
             providerHarness: workspaceSendRuntime.provider,
             modelId: workspaceSendRuntime.modelId,
             logicalEffort: workspaceSendRuntime.effort,
-            codexFastMode: activeCodexFastModeOption,
+            codexFastMode: panelCodexFastModeOption,
           },
         );
         onAgentUserMessageSent({
@@ -2469,9 +2549,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       }
     },
     [
-      activeCodexFastModeOption,
       activeProjectId,
       onAgentUserMessageSent,
+      panelCodexFastModeOption,
       workspaceSendRuntime,
     ],
   );
@@ -2888,7 +2968,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                         providerHarness: workspaceSendRuntime.provider,
                         modelId: workspaceSendRuntime.modelId,
                         logicalEffort: workspaceSendRuntime.effort,
-                        codexFastMode: activeCodexFastModeOption,
+                        codexFastMode: panelCodexFastModeOption,
                         ...(options?.capabilityIntent
                           ? { capabilityIntent: options.capabilityIntent }
                           : {}),
@@ -3111,7 +3191,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                       capabilityBlockedReason ??
                       automationRunReadOnlyReason ??
                       (usesWorkspaceRuntimeControls
-                        ? workspaceProviderStatusMessage
+                        ? composerProviderStatusMessage
                         : null)
                     }
                     hasQueuedMessages={composerProps.hasQueuedMessages}
@@ -3248,10 +3328,10 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                       if (usesWorkspaceRuntimeControls) {
                         return {
                           provider: {
-                            value: composerRuntime.provider,
+                            value: selectableComposerRuntime.provider,
                             onValueChange: (provider) =>
                               activeRole
-                                ? updateActiveRoleRuntime({ provider })
+                                ? handleActiveRoleProviderChange(provider)
                                 : onActiveProviderChange(
                                 provider,
                                 supportedEffortsForProvider(
@@ -3283,9 +3363,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                             ),
                           },
                           model: {
-                            value: activeRole
-                              ? composerRuntime.modelId
-                              : selectableWorkspaceRuntime.modelId,
+                            value: selectableComposerRuntime.modelId,
                             onValueChange: (modelId) =>
                               activeRole
                                 ? updateActiveRoleRuntime({ model: modelId })
@@ -3295,9 +3373,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                                 workspaceProviderSupportedModelAliases,
                               ),
                             options: workspaceModelOptions,
-                            disabled: Boolean(workspaceProviderStatusMessage),
+                            disabled: Boolean(composerProviderStatusMessage),
                             fastMode: {
-                              visible: composerRuntime.provider === "codex",
+                              visible: selectableComposerRuntime.provider === "codex",
                               value: (activeRole
                                 ? activeRoleSelection?.serviceTier
                                 : activeServiceTier) === "fast",
@@ -3311,16 +3389,16 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                                 ),
                               disabled:
                                 !providerSettingsReady ||
-                                !codexFastModeAvailability.supported,
+                                !composerCodexFastModeAvailability.supported,
                               description:
-                                codexFastModeAvailability.reason ??
+                                composerCodexFastModeAvailability.reason ??
                                 CODEX_FAST_MODE_DESCRIPTION,
                             },
                             onOpenModelSettings: () =>
                               openModal("settings", { section: "models" }),
                           },
                           effort: {
-                            value: selectableWorkspaceRuntime.effort,
+                            value: selectableComposerRuntime.effort,
                             onValueChange: (effort) =>
                               activeRole
                                 ? updateActiveRoleRuntime({ effort })
@@ -3330,10 +3408,10 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                                 workspaceProviderSupportedModelAliases,
                               ),
                             options: workspaceEffortOptions,
-                            disabled: Boolean(workspaceProviderStatusMessage),
+                            disabled: Boolean(composerProviderStatusMessage),
                             testId: "agents-conversation-effort",
                           },
-                          ...(composerRuntime.provider === "codex"
+                          ...(selectableComposerRuntime.provider === "codex"
                             ? {
                                 speed: {
                                   value: activeRole
@@ -3361,14 +3439,14 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                                       id: "fast",
                                       label: "Fast",
                                       description:
-                                        codexFastModeAvailability.reason ??
+                                        composerCodexFastModeAvailability.reason ??
                                         CODEX_FAST_MODE_DESCRIPTION,
                                       ...(!providerSettingsReady ||
-                                      !codexFastModeAvailability.supported
+                                      !composerCodexFastModeAvailability.supported
                                         ? {
                                             disabled: true,
                                             disabledReason:
-                                              codexFastModeAvailability.reason ??
+                                              composerCodexFastModeAvailability.reason ??
                                               "Fast processing is unavailable.",
                                           }
                                         : {}),
@@ -3416,7 +3494,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                       };
                     })()}
                   />
-                  {usesWorkspaceRuntimeControls && workspaceProviderStatusMessage && (
+                  {usesWorkspaceRuntimeControls && composerProviderStatusMessage && (
                     <div
                       className="mx-2 mt-2 flex flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2 text-[0.8125rem]"
                       style={{
@@ -3426,7 +3504,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                       }}
                       data-testid="agents-conversation-provider-status"
                     >
-                      <span>{workspaceProviderStatusMessage}</span>
+                      <span>{composerProviderStatusMessage}</span>
                       <button
                         type="button"
                         className="rounded-md px-2 py-1 text-[0.75rem] font-medium"

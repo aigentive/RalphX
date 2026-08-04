@@ -3392,47 +3392,10 @@ crate::remote_commands! {
         call: async,
         result: fallible,
     },
-    // The four MCP override writes. Each runs three fail-closed guards before the write.
-    "update_mcp_server_override" => crate::commands::mcp_policy_commands::update_mcp_server_override {
-        class: AgentControl,
-        caps: [AgentControl],
-        params: [
-            (arg input: crate::commands::mcp_policy_commands::McpServerOverrideInput),
-            (app_state),
-        ],
-        call: async,
-        result: fallible,
-    },
-    "clear_mcp_server_override" => crate::commands::mcp_policy_commands::clear_mcp_server_override {
-        class: AgentControl,
-        caps: [AgentControl],
-        params: [
-            (arg input: crate::commands::mcp_policy_commands::ClearMcpServerOverrideInput),
-            (app_state),
-        ],
-        call: async,
-        result: fallible,
-    },
-    "update_mcp_tool_override" => crate::commands::mcp_policy_commands::update_mcp_tool_override {
-        class: AgentControl,
-        caps: [AgentControl],
-        params: [
-            (arg input: crate::commands::mcp_policy_commands::McpToolOverrideInput),
-            (app_state),
-        ],
-        call: async,
-        result: fallible,
-    },
-    "clear_mcp_tool_override" => crate::commands::mcp_policy_commands::clear_mcp_tool_override {
-        class: AgentControl,
-        caps: [AgentControl],
-        params: [
-            (arg input: crate::commands::mcp_policy_commands::ClearMcpToolOverrideInput),
-            (app_state),
-        ],
-        call: async,
-        result: fallible,
-    },
+    // The four MCP override writes were registered here until the #976 probe cache put
+    // CLI-path resolution inside their ensure_mutation_ready eligibility guard; the
+    // process-launch floor forecloses them (see their capability_ledger process_refusal
+    // rows). A spawn-free intent twin can restore them.
     "update_ui_feature_flags" => crate::commands::ui_commands::update_ui_feature_flags {
         class: AgentControl,
         caps: [AgentControl],

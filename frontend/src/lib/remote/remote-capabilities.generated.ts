@@ -140,18 +140,6 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: ["agentControl"],
     pins: [],
   },
-  "clear_mcp_server_override": {
-    opClass: "agentControl",
-    argumentSensitive: false,
-    capabilities: ["agentControl"],
-    pins: [],
-  },
-  "clear_mcp_tool_override": {
-    opClass: "agentControl",
-    argumentSensitive: false,
-    capabilities: ["agentControl"],
-    pins: [],
-  },
   "complete_step": {
     opClass: "agentControl",
     argumentSensitive: false,
@@ -1461,18 +1449,6 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     pins: [],
   },
   "update_ideation_settings": {
-    opClass: "agentControl",
-    argumentSensitive: false,
-    capabilities: ["agentControl"],
-    pins: [],
-  },
-  "update_mcp_server_override": {
-    opClass: "agentControl",
-    argumentSensitive: false,
-    capabilities: ["agentControl"],
-    pins: [],
-  },
-  "update_mcp_tool_override": {
     opClass: "agentControl",
     argumentSensitive: false,
     capabilities: ["agentControl"],

@@ -222,6 +222,11 @@ interface AgentSessionState {
     AgentAutomationRunFocusRequest
   >;
   runtimeByConversationId: Record<string, AgentRuntimeSelection>;
+  /** Explicit composer edits made in this app session; intentionally not persisted. */
+  composerRuntimeOverridesByConversationId: Record<
+    string,
+    AgentRuntimeSelection
+  >;
   serviceTierByConversationId: Record<string, ManualServiceTier>;
   roleRuntimeOverridesByConversationId: Record<
     string,
@@ -280,6 +285,11 @@ interface AgentSessionActions {
     requestId?: number
   ) => void;
   setRuntimeForConversation: (
+    conversationId: string,
+    projectId: string | null,
+    runtime: AgentRuntimeSelection
+  ) => void;
+  setComposerRuntimeForConversation: (
     conversationId: string,
     projectId: string | null,
     runtime: AgentRuntimeSelection
@@ -629,6 +639,7 @@ export function mergeAgentSessionStore(
   return {
     ...currentState,
     ...persisted,
+    composerRuntimeOverridesByConversationId: {},
     serviceTierByConversationId: normalizeServiceTierRecord(
       persisted.serviceTierByConversationId,
     ),
@@ -721,6 +732,7 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
       taskArtifactFocusRequestByConversationId: {},
       automationRunFocusRequestByConversationId: {},
       runtimeByConversationId: {},
+      composerRuntimeOverridesByConversationId: {},
       serviceTierByConversationId: {},
       roleRuntimeOverridesByConversationId: {},
       lastRuntimeByProjectId: {},
@@ -978,6 +990,21 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
       setRuntimeForConversation: (conversationId, projectId, runtime) =>
         set((state) => {
           const normalizedRuntime = normalizeAgentRuntimeForPersistence(runtime);
+          state.runtimeByConversationId[conversationId] = normalizedRuntime;
+          if (projectId) {
+            state.lastRuntimeByProjectId[projectId] = normalizedRuntime;
+          }
+          state.lastModelEffortByProvider[normalizedRuntime.provider] = {
+            modelId: normalizedRuntime.modelId,
+            effort: normalizedRuntime.effort,
+          };
+        }),
+
+      setComposerRuntimeForConversation: (conversationId, projectId, runtime) =>
+        set((state) => {
+          const normalizedRuntime = normalizeAgentRuntimeForPersistence(runtime);
+          state.composerRuntimeOverridesByConversationId[conversationId] =
+            normalizedRuntime;
           state.runtimeByConversationId[conversationId] = normalizedRuntime;
           if (projectId) {
             state.lastRuntimeByProjectId[projectId] = normalizedRuntime;

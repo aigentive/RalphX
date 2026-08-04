@@ -12,7 +12,11 @@ import {
 import { getAgentArtifactStateSnapshot } from "./agentArtifactState";
 import { useAgentArtifactUiStore, persistTaskMode } from "./agentArtifactUiStore";
 import { preloadAgentsArtifactPane } from "./agentArtifactPanePreload";
-import type { DeferredFrameJob } from "./agentDeferredFrame";
+import {
+  cancelDeferredFrameJob,
+  scheduleDeferredFrameJob,
+  type DeferredFrameJob,
+} from "./agentDeferredFrame";
 import { useAgentTerminalStore } from "./agentTerminalStore";
 
 interface UseAgentArtifactControllerArgs {
@@ -64,16 +68,7 @@ export function useAgentArtifactController({
   }, [setArtifactState]);
 
   const cancelArtifactPanePreloadJob = useCallback(() => {
-    const job = artifactPanePreloadJobRef.current;
-    if (!job) {
-      return;
-    }
-    if (job.frame !== null) {
-      window.cancelAnimationFrame(job.frame);
-    }
-    if (job.timer !== null) {
-      window.clearTimeout(job.timer);
-    }
+    cancelDeferredFrameJob(artifactPanePreloadJobRef.current);
     artifactPanePreloadJobRef.current = null;
   }, []);
 
@@ -81,19 +76,10 @@ export function useAgentArtifactController({
     if (artifactPanePreloadJobRef.current) {
       return;
     }
-    const job: DeferredFrameJob = {
-      frame: null,
-      timer: null,
-    };
-    job.frame = window.requestAnimationFrame(() => {
-      job.frame = null;
-      job.timer = window.setTimeout(() => {
-        job.timer = null;
-        artifactPanePreloadJobRef.current = null;
-        void preloadAgentsArtifactPane().catch(() => undefined);
-      }, 0);
+    artifactPanePreloadJobRef.current = scheduleDeferredFrameJob(() => {
+      artifactPanePreloadJobRef.current = null;
+      void preloadAgentsArtifactPane().catch(() => undefined);
     });
-    artifactPanePreloadJobRef.current = job;
   }, []);
 
   const scheduleArtifactStatePersistence = useCallback(

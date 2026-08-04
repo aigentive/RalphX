@@ -29,6 +29,7 @@ import type {
   PublishAgentConversationWorkspaceResult,
   QueuedMessageResponse,
   SendAgentMessageResult,
+  SetAgentConversationWorkspaceReviewAutomationInput,
   SetAgentConversationWorkspacePrSupervisionInput,
   StartAgentConversationInput,
   StartAgentConversationResult,
@@ -1162,6 +1163,7 @@ function createMockWorkspace(
     publicationMetadataAttemptId: null,
     publicationMetadataPhase: null,
     publicationMetadataState: null,
+    reviewAutomationOverride: null,
     status: "active",
     createdAt: conversation.createdAt,
     updatedAt: conversation.updatedAt,
@@ -1254,6 +1256,23 @@ export async function mockSetAgentConversationWorkspacePrSupervision(
         ? "RalphX PR supervision is enabled."
         : null,
     prSupervisionUpdatedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  mockWorkspaces.set(conversationId, updated);
+  return updated;
+}
+
+export async function mockSetAgentConversationWorkspaceReviewAutomation(
+  conversationId: string,
+  input: SetAgentConversationWorkspaceReviewAutomationInput,
+): Promise<AgentConversationWorkspace> {
+  const workspace = mockWorkspaces.get(conversationId);
+  if (!workspace) {
+    throw new Error(`No mock workspace seeded for ${conversationId}`);
+  }
+  const updated: AgentConversationWorkspace = {
+    ...workspace,
+    reviewAutomationOverride: input.enabled,
     updatedAt: new Date().toISOString(),
   };
   mockWorkspaces.set(conversationId, updated);
@@ -1406,6 +1425,8 @@ export const mockChatApi = {
   publishAgentConversationWorkspace: mockPublishAgentConversationWorkspace,
   setAgentConversationWorkspacePrSupervision:
     mockSetAgentConversationWorkspacePrSupervision,
+  setAgentConversationWorkspaceReviewAutomation:
+    mockSetAgentConversationWorkspaceReviewAutomation,
   startAgentConversation: mockStartAgentConversation,
   switchAgentConversationMode: mockSwitchAgentConversationMode,
   updateAgentConversationCoordinationMode:

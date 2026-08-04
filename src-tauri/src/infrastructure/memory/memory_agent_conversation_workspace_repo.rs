@@ -7,11 +7,11 @@ use chrono::{DateTime, Utc};
 use tokio::sync::RwLock;
 
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode,
-    AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
-    AgentWorkspaceFollowupProvenance, AgentWorkspacePrCommentEvidence,
-    AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
-    AgentWorkspacePrMetadataDecision, AgentWorkspacePrReviewAction,
+    workspace_review_fixer_status_is_active, AgentConversationWorkspace,
+    AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent,
+    AgentConversationWorkspaceStatus, AgentWorkspaceFollowupProvenance,
+    AgentWorkspacePrCommentEvidence, AgentWorkspacePrCommentEvidenceUpsert,
+    AgentWorkspacePrDescription, AgentWorkspacePrMetadataDecision, AgentWorkspacePrReviewAction,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
     AgentWorkspacePrReviewMonitorStatus, AgentWorkspacePublicationMetadataPhase,
     AgentWorkspacePublicationMetadataReceipt, AgentWorkspacePublicationMetadataState,
@@ -22,13 +22,15 @@ use crate::domain::entities::{
     AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewTargetScope, ArtifactId, ChatConversationId, IdeationSessionId,
     PlanBranchId, ProjectId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED, WORKSPACE_REVIEW_FIXER_STATUS_ROUTING,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
     AgentWorkspacePrReviewActionMutation, AgentWorkspacePrReviewStateTransition,
     AgentWorkspacePrTerminalSettlement, AgentWorkspacePublicationGuard,
     AgentWorkspacePublicationMetadataReceiptClaim, AgentWorkspacePublicationMetadataReceiptRefresh,
-    AgentWorkspacePublicationUpdate, ImportLegacyAgentWorkspaceRepairAttemptOutcome,
+    AgentWorkspacePublicationUpdate, AgentWorkspacePublishLeaseClaim,
+    ImportLegacyAgentWorkspaceRepairAttemptOutcome,
 };
 use crate::error::{AppError, AppResult};
 
@@ -307,6 +309,11 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         let mut workspaces = self.workspaces.write().await;
         if let Some(existing) = workspaces.get(&workspace.conversation_id) {
             workspace.created_at = existing.created_at;
+            // Lease authority is changed only by the token-scoped claim, heartbeat, and release
+            // methods. Normal workspace upserts may carry a snapshot loaded before the claim.
+            workspace.publish_lease_owner_run_id = existing.publish_lease_owner_run_id.clone();
+            workspace.publish_lease_token = existing.publish_lease_token.clone();
+            workspace.publish_lease_heartbeat_at = existing.publish_lease_heartbeat_at;
             // Receipt authority is changed only by its attempt-scoped CAS methods.
             // Normal workspace upserts must not erase an in-flight receipt.
             if workspace.publication_metadata_attempt_id.is_none() {
@@ -744,6 +751,78 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             workspace.updated_at = now;
         }
         Ok(())
+    }
+
+    async fn claim_publish_lease(
+        &self,
+        conversation_id: &ChatConversationId,
+        owner_run_id: &str,
+        token: &str,
+        now: DateTime<Utc>,
+        expected_previous_token: Option<&str>,
+        previous_owner_is_dead: bool,
+    ) -> AppResult<AgentWorkspacePublishLeaseClaim> {
+        let mut workspaces = self.workspaces.write().await;
+        let workspace = workspaces
+            .get_mut(conversation_id)
+            .ok_or_else(|| AppError::NotFound(format!("Workspace not found: {conversation_id}")))?;
+        let outcome = match (
+            workspace.publish_lease_token.as_deref(),
+            expected_previous_token,
+        ) {
+            (None, None) => AgentWorkspacePublishLeaseClaim::Claimed,
+            (Some(current), Some(expected)) if current == expected && previous_owner_is_dead => {
+                AgentWorkspacePublishLeaseClaim::Reclaimed
+            }
+            _ => return Ok(AgentWorkspacePublishLeaseClaim::HeldByLiveOwner),
+        };
+        workspace.publish_lease_owner_run_id = Some(owner_run_id.to_string());
+        workspace.publish_lease_token = Some(token.to_string());
+        workspace.publish_lease_heartbeat_at = Some(now);
+        workspace.updated_at = now;
+        Ok(outcome)
+    }
+
+    async fn heartbeat_publish_lease(
+        &self,
+        conversation_id: &ChatConversationId,
+        token: &str,
+        now: DateTime<Utc>,
+    ) -> AppResult<bool> {
+        let mut workspaces = self.workspaces.write().await;
+        let Some(workspace) = workspaces.get_mut(conversation_id) else {
+            return Ok(false);
+        };
+        if workspace.publish_lease_token.as_deref() != Some(token) {
+            return Ok(false);
+        }
+        workspace.publish_lease_heartbeat_at = Some(now);
+        workspace.updated_at = now;
+        Ok(true)
+    }
+
+    async fn release_publish_lease(
+        &self,
+        conversation_id: &ChatConversationId,
+        token: &str,
+        terminal_status: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> AppResult<bool> {
+        let mut workspaces = self.workspaces.write().await;
+        let Some(workspace) = workspaces.get_mut(conversation_id) else {
+            return Ok(false);
+        };
+        if workspace.publish_lease_token.as_deref() != Some(token) {
+            return Ok(false);
+        }
+        workspace.publish_lease_owner_run_id = None;
+        workspace.publish_lease_token = None;
+        workspace.publish_lease_heartbeat_at = None;
+        if let Some(status) = terminal_status {
+            workspace.publication_push_status = Some(status.to_string());
+        }
+        workspace.updated_at = now;
+        Ok(true)
     }
 
     async fn claim_publication_metadata_receipt(
@@ -1316,6 +1395,36 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             let now = Utc::now();
             workspace.pr_supervision_updated_at = Some(now);
             workspace.updated_at = now;
+        }
+        Ok(())
+    }
+
+    async fn set_review_automation_override(
+        &self,
+        conversation_id: &ChatConversationId,
+        value: Option<bool>,
+    ) -> AppResult<()> {
+        let now = Utc::now();
+        if let Some(workspace) = self.workspaces.write().await.get_mut(conversation_id) {
+            workspace.review_automation_override = value;
+            workspace.updated_at = now;
+        }
+        if value == Some(true) {
+            if let Some(monitor) = self
+                .workspace_review_monitors
+                .write()
+                .await
+                .get_mut(conversation_id)
+            {
+                monitor.review_fixer_cycle_count = 0;
+                if monitor.review_fixer_status.as_deref()
+                    == Some(WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED)
+                {
+                    monitor.review_fixer_status = None;
+                    monitor.review_fixer_attempt_id = None;
+                }
+                monitor.updated_at = now;
+            }
         }
         Ok(())
     }
@@ -2172,14 +2281,11 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
                 != Some(snapshot.requested_changes_artifact_version)
             || monitor.review_blocking_fingerprint.as_deref()
                 != Some(snapshot.blocking_fingerprint.as_str())
-            || matches!(
-                monitor.review_fixer_status.as_deref(),
-                Some("routing" | "queued" | "running")
-            )
+            || workspace_review_fixer_status_is_active(monitor.review_fixer_status.as_deref())
         {
             return Ok(None);
         }
-        monitor.review_fixer_status = Some("routing".to_string());
+        monitor.review_fixer_status = Some(WORKSPACE_REVIEW_FIXER_STATUS_ROUTING.to_string());
         monitor.review_fixer_attempt_id = Some(attempt_id.to_string());
         monitor.review_fixer_cycle_count = monitor.review_fixer_cycle_count.saturating_add(1);
         monitor.review_fixer_run_id = None;
@@ -2240,10 +2346,7 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             return Ok(None);
         };
         if current.review_fixer_attempt_id.as_deref() != expected_attempt_id
-            || !matches!(
-                current.review_fixer_status.as_deref(),
-                Some("routing" | "queued" | "running")
-            )
+            || !workspace_review_fixer_status_is_active(current.review_fixer_status.as_deref())
             || AgentWorkspaceReviewFixerSnapshot::from_monitor(current).is_some()
         {
             return Ok(None);
@@ -2311,10 +2414,8 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         let Some(monitor) = monitors.get_mut(conversation_id) else {
             return Ok(None);
         };
-        let fixer_active = matches!(
-            monitor.review_fixer_status.as_deref(),
-            Some("routing" | "queued" | "running")
-        );
+        let fixer_active =
+            workspace_review_fixer_status_is_active(monitor.review_fixer_status.as_deref());
         if monitor.status != AgentWorkspaceReviewMonitorStatus::Ready
             || monitor.review_outcome != AgentWorkspaceReviewOutcome::Blocking
             || monitor.review_gate_status != AgentWorkspaceReviewGateStatus::Blocking
@@ -2372,10 +2473,7 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .await
             .values()
             .filter(|monitor| {
-                matches!(
-                    monitor.review_fixer_status.as_deref(),
-                    Some("routing" | "queued" | "running")
-                )
+                workspace_review_fixer_status_is_active(monitor.review_fixer_status.as_deref())
             })
             .cloned()
             .collect::<Vec<_>>();
@@ -2879,13 +2977,22 @@ fn is_stale_transient_publish_status_workspace(
     workspace.status == AgentConversationWorkspaceStatus::Active
         && matches!(
             workspace.publication_push_status.as_deref(),
-            Some("refreshing") | Some("checking") | Some("committing") | Some("describing")
+            Some("refreshing")
+                | Some("checking")
+                | Some("committing")
+                | Some("describing")
+                | Some("pushing")
+                | Some("redrive_pending")
+                | Some("redrive_delivering")
         )
         && !matches!(
             workspace.publication_pr_status.as_deref(),
             Some("closed") | Some("merged")
         )
-        && workspace.updated_at <= cutoff
+        && workspace
+            .publish_lease_heartbeat_at
+            .unwrap_or(workspace.updated_at)
+            <= cutoff
 }
 
 fn is_active_pending_publication_metadata_receipt_workspace(

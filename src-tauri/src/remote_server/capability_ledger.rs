@@ -368,6 +368,22 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
             "detector-b: arms require_workspace_review consumed by the auto-review spawner",
         ),
     },
+    // Same dual-evidence shape as `set_agent_conversation_workspace_auto_publish`: the write
+    // itself is a clean fail-closed repo update (detector b — it arms the per-conversation
+    // Auto Review & Fix override the auto-review spawner consumes), but the response
+    // projection goes through `agent_workspace_response_for_state`, whose repair-recovery
+    // arm resolves CLI paths — the process floor forecloses it at every v1 scope. A future
+    // spawn-free twin can serve it via the without-repair-recovery builder.
+    CommandOverride {
+        command: "set_agent_conversation_workspace_review_automation",
+        policy: policy(
+            RiskClass::Elevated,
+            PROCESS_AND_SEEDS,
+            "detector-c: agent_workspace_response_for_state -> repair recovery -> CLI path \
+             resolution; ALSO detector-b: arms the Auto Review & Fix override consumed by \
+             the auto-review spawner (tag retained)",
+        ),
+    },
     // Detector-(d) writers: each names a content repository handle and a write verb in its own
     // body, so the §3.3 backstop-#2 gate requires the capability on the row.
     CommandOverride {
@@ -2924,57 +2940,42 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
         ),
     },
     //
-    // MCP policy. Four bounded override writes registered; three members refused below.
-    CommandOverride {
-        command: "update_mcp_server_override",
-        policy: policy(
-            RiskClass::AgentControl,
-            AGENT,
-            "batch-13 audit: three fail-closed guards run BEFORE the write — \
-             ensure_project_scope_exists, ensure_mutation_ready (provider eligibility) and \
-             mutable_key (which rejects reserved server ids) — then one \
-             McpPolicyService::set_server_state. Registered on the update_agent_lane_settings \
-             precedent: choosing the harness a future agent spawns with is already at ui:agent, \
-             and an MCP server override is strictly less authority than that. Declared \
-             configures-future-agent-tool-authority. The census B6 plan asks for \
-             ConfiguresFutureProcessAuthority on exactly this shape, and `class_permits` makes \
-             that literal reading UNREPRESENTABLE: the capability is admitted only under \
-             Elevated, which v1 grants no scope for, so declaring it would silently convert an \
-             audited-clean write into a deferral. This ledger's idiom for deferred authority at a \
-             registerable class is AgentControl plus a declaration — exactly what \
-             `update_agent_lane_settings` carries for picking the harness a live agent spawns \
-             with, which is strictly more authority than an MCP override",
-        ),
-    },
-    CommandOverride {
-        command: "clear_mcp_server_override",
-        policy: policy(
-            RiskClass::AgentControl,
-            AGENT,
-            "batch-13 audit: same three guards, then McpPolicyService::clear_server, which \
-             returns whether a row was actually removed rather than asserting success. Declared \
-             configures-future-agent-tool-authority, as its update half is",
-        ),
-    },
-    CommandOverride {
-        command: "update_mcp_tool_override",
-        policy: policy(
-            RiskClass::AgentControl,
-            AGENT,
-            "batch-13 audit: same three guards, then McpPolicyService::set_tool_state for one \
-             named tool. Declared configures-future-agent-tool-authority, as its server-scoped \
-             sibling is",
-        ),
-    },
-    CommandOverride {
-        command: "clear_mcp_tool_override",
-        policy: policy(
-            RiskClass::AgentControl,
-            AGENT,
-            "batch-13 audit: same three guards, then McpPolicyService::clear_tool, reporting \
-             whether a row was removed. Declared configures-future-agent-tool-authority",
-        ),
-    },
+    // MCP policy. Seven refusals.
+    // The four MCP override writes were registered at AgentControl on the
+    // update_agent_lane_settings precedent (batch-13 audit: three fail-closed guards —
+    // ensure_project_scope_exists, ensure_mutation_ready, mutable_key — then one audited-clean
+    // McpPolicyService write). The #976 probe cache voided that disposition: the eligibility
+    // guard's probe fallback now resolves CLI paths, so every member reaches the absolute
+    // floor. The write bodies are still clean; a spawn-free intent twin can restore remote
+    // parity without touching the local seam.
+    process_refusal(
+        "update_mcp_server_override",
+        "detector-c: ensure_mutation_ready -> resolve_provider_management_eligibility -> \
+         refresh_harness_runtime_probe -> cached_harness_runtime_refresh_probe -> \
+         resolved_harness_binary_path -> find_claude_cli. The eligibility guard that runs \
+         BEFORE the write resolves the harness binary path even on the cache-hit branch, so \
+         the floor forecloses the row at every v1 scope. Declared \
+         configures-future-agent-tool-authority — the membership states what the command DOES \
+         and survives the class correction",
+    ),
+    process_refusal(
+        "clear_mcp_server_override",
+        "detector-c: the SAME ensure_mutation_ready -> resolve_provider_management_eligibility \
+         -> refresh_harness_runtime_probe chain as update_mcp_server_override. Declared \
+         configures-future-agent-tool-authority, as its update half is",
+    ),
+    process_refusal(
+        "update_mcp_tool_override",
+        "detector-c: the SAME ensure_mutation_ready -> resolve_provider_management_eligibility \
+         -> refresh_harness_runtime_probe chain as update_mcp_server_override. Declared \
+         configures-future-agent-tool-authority, as its server-scoped sibling is",
+    ),
+    process_refusal(
+        "clear_mcp_tool_override",
+        "detector-c: the SAME ensure_mutation_ready -> resolve_provider_management_eligibility \
+         -> refresh_harness_runtime_probe chain as update_mcp_server_override. Declared \
+         configures-future-agent-tool-authority",
+    ),
     CommandOverride {
         command: "update_ui_feature_flags",
         policy: policy(
@@ -3008,18 +3009,40 @@ pub const COMMAND_OVERRIDES: &[CommandOverride] = &[
     ),
     process_refusal(
         "retry_legacy_mcp_registration_repair",
-        "detector-c-MISS, hand-traced: detector (c) reports c=FALSE and is WRONG. This command \
-         runs `claude mcp remove ralphx -s user` through tokio::process::Command::new at \
+        "detector-c: ensure_mutation_ready -> resolve_provider_management_eligibility -> \
+         refresh_harness_runtime_probe -> resolved_harness_binary_path -> find_claude_cli — \
+         the #976 probe-cache path made this command detector-visible, so the row moved from \
+         the hand-traced miss to a measured refusal. The ORIGINAL launch it was refused for is \
+         still invisible: it runs `claude mcp remove ralphx -s user` through \
+         tokio::process::Command::new at \
          infrastructure/agents/claude/mcp_registration_repair.rs, via \
          retry_reserved_claude_registration_repair -> reconcile_reserved_claude_registration -> \
-         {resolve_claude_cleanup_cli, remove_reserved_user_registration}. Two mechanisms hide it: \
-         resolve_claude_cleanup_cli reaches find_claude_cli only by passing it to spawn_blocking \
-         as a bare function VALUE, which creates no call edge, and remove_reserved_user_registration \
-         spawns an already-resolved path, naming no resolver for the sink model to match. Refused \
-         on the SOURCE, not the boolean — the floor is a safety floor, so a hand-traced launch \
-         outranks detector silence. Its reason intentionally does not start with `detector-c:`, so \
-         batch9_detector_c_refusals_declare_the_capability_they_reach correctly excludes it; \
-         batch13_detector_gap_is_measured_not_inherited pins it instead",
+         {resolve_claude_cleanup_cli, remove_reserved_user_registration}, and two mechanisms \
+         still hide that path: resolve_claude_cleanup_cli reaches find_claude_cli only by \
+         passing it to spawn_blocking as a bare function VALUE, which creates no call edge, and \
+         remove_reserved_user_registration spawns an already-resolved path, naming no resolver \
+         for the sink model to match. batch13_detector_gap_is_measured_not_inherited pins both \
+         mechanisms as still-open root-level gaps",
+    ),
+    // Same #976 root cause as the MCP override block, reached through the availability helper
+    // instead of the mutation guard. Their batch-11 FailOpenUntilFixed findings (the
+    // .ok().flatten() answer-changing fail-open in get_harness_availability_for_lanes) are
+    // still real, but the mechanical floor supersedes the audit rows — batch 9 requires audit
+    // rows only where the mechanical resolution would otherwise be Registerable.
+    process_refusal(
+        "get_agent_harness_availability",
+        "detector-c: get_harness_availability_for_lanes -> \
+         refreshed_provider_aware_runtime_probes -> refresh_supported_harnesses -> \
+         refresh_harness_runtime_probe_with_force -> cached_harness_runtime_refresh_probe -> \
+         resolved_harness_binary_path -> find_claude_cli. The #976 probe cache keys rows by \
+         the resolved binary path, so even the cache-hit branch resolves CLI paths; a READ by \
+         intent that reaches the launch floor, and the floor does not care which",
+    ),
+    process_refusal(
+        "get_ideation_harness_availability",
+        "detector-c: the SAME get_harness_availability_for_lanes chain as \
+         get_agent_harness_availability, over IDEATION_LANES instead of AGENT_LANES — one \
+         shared helper, two ledger rows, so re-auditing the helper clears both",
     ),
     CommandOverride {
         command: "set_update_channel",
@@ -3698,28 +3721,15 @@ pub const AUDIT_REFUSALS: &[AuditRefusal] = &[
                   after the proposal INSERT has already committed",
         batch: "audited and classified 11",
     },
-    AuditRefusal {
-        command: "get_agent_harness_availability",
-        reason: AuditRefusalReason::FailOpenUntilFixed,
-        finding: "ideation_harness_availability.rs:344 and :360 discard the lane-settings read \
-                  with .ok().flatten(), and resolve_lane_harness_config returns infallibly, so a \
-                  DB error is indistinguishable from 'no row configured'. A lane configured to \
-                  Codex with Codex unavailable then probes DEFAULT_AGENT_HARNESS (Claude) and \
-                  reports available:true, configured_harness:null, error:null — a fully green \
-                  lane. This is the list_agent_composer_skills shape exactly: a fail-open that \
-                  changes the answer, not its completeness",
-        batch: "audited and classified 11",
-    },
-    AuditRefusal {
-        command: "get_ideation_harness_availability",
-        reason: AuditRefusalReason::FailOpenUntilFixed,
-        finding: "the same helper, get_harness_availability_for_lanes, over IDEATION_LANES \
-                  instead of AGENT_LANES — identical .ok().flatten() at \
-                  ideation_harness_availability.rs:344/:360 and identical fail-open. Classified \
-                  alongside its sibling rather than left implicit: one shared defect, two \
-                  ledger rows, so fixing the helper clears both",
-        batch: "audited and classified 11",
-    },
+    // `get_agent_harness_availability` and `get_ideation_harness_availability` carried
+    // batch-11 FailOpenUntilFixed audit refusals here (the shared helper discards the
+    // lane-settings read with .ok().flatten() at ideation_harness_availability.rs:344/:360, so
+    // a DB error is indistinguishable from 'no row configured' and a broken lane can report
+    // fully green). That finding is still true — but main's #976 probe cache moved both
+    // commands to the process floor, and the mechanical HostDeniedSpawnsProcess resolution
+    // supersedes the audit row: batch 9 requires audit rows only where the mechanical
+    // resolution would otherwise be Registerable. The fail-open stays recorded on their
+    // process_refusal rows' cluster comment and in the batch-11 table.
     AuditRefusal {
         command: "create_cross_project_session",
         reason: AuditRefusalReason::FailOpenUntilFixed,

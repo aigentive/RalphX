@@ -5,6 +5,7 @@ use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use serde::Deserialize;
 use tauri::{Emitter, Listener, Manager, Runtime};
+use uuid::Uuid;
 
 use crate::application::agent_conversation_workspace::is_terminal_agent_conversation_publication_status;
 use crate::application::agent_conversation_workspace_base::{resolve_workspace_base, BaseStatus};
@@ -15,7 +16,14 @@ use crate::application::agent_workspace_pr_supervision_recovery::{
     build_agent_workspace_pr_supervision_recovery_deps,
     schedule_agent_workspace_pr_supervision_recovery, AgentWorkspacePrSupervisionRecoveryTrigger,
 };
+use crate::application::agent_workspace_publish_lease::{
+    begin_publish_operation_scope, publish_operation_lease_is_live,
+    spawn_publish_operation_lease_heartbeat_for_scope, stop_publish_operation_lease_heartbeat,
+};
 use crate::application::agent_workspace_publish_recovery::is_blocked_and_not_auto_retryable;
+use crate::application::agent_workspace_publish_recovery::{
+    AGENT_WORKSPACE_PUBLISH_REDRIVE_PENDING_STATUS, AGENT_WORKSPACE_PUBLISH_REDRIVE_REQUESTED,
+};
 use crate::application::chat_service::events::{AGENT_RUN_COMPLETED, AGENT_TURN_COMPLETED};
 use crate::application::git_service::git_cmd;
 use crate::application::publish_resilience::{
@@ -147,6 +155,36 @@ where
             event.payload(),
         );
     });
+
+    let recovery_redrive_handle = app_handle.clone();
+    app_handle.listen_any(AGENT_WORKSPACE_PUBLISH_REDRIVE_REQUESTED, move |event| {
+        spawn_auto_publish_from_recovery_event(recovery_redrive_handle.clone(), event.payload());
+    });
+}
+
+fn spawn_auto_publish_from_recovery_event<R>(app_handle: tauri::AppHandle<R>, payload: &str)
+where
+    R: Runtime,
+{
+    let conversation_id = match serde_json::from_str::<String>(payload) {
+        Ok(conversation_id) if !conversation_id.trim().is_empty() => {
+            ChatConversationId::from_string(conversation_id)
+        }
+        Ok(_) => return,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "Skipping recovered agent workspace publication re-drive: event payload could not be parsed"
+            );
+            return;
+        }
+    };
+    spawn_auto_publish_existing_pr(
+        app_handle,
+        AGENT_WORKSPACE_PUBLISH_REDRIVE_REQUESTED,
+        AutoPublishTrigger::BaseFreshness,
+        conversation_id,
+    );
 }
 
 fn spawn_pr_supervision_recovery_from_run_completed_event<R>(
@@ -184,6 +222,37 @@ fn spawn_pr_supervision_recovery_from_run_completed_event<R>(
             );
             return;
         };
+        let run_id_string = run_id.to_string();
+        match state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+        {
+            Ok(Some(workspace))
+                if workspace.publish_lease_owner_run_id.as_deref()
+                    == Some(run_id_string.as_str()) =>
+            {
+                if let Some(token) = workspace.publish_lease_token.as_deref() {
+                    let release = state
+                        .agent_conversation_workspace_repo
+                        .release_publish_lease(
+                            &conversation_id,
+                            token,
+                            Some("refreshed"),
+                            chrono::Utc::now(),
+                        )
+                        .await;
+                    stop_publish_operation_lease_heartbeat(&conversation_id, token);
+                    if let Err(error) = release {
+                        tracing::warn!(conversation_id = %conversation_id, agent_run_id = %run_id, error = %error, "Failed to settle completed agent publish lease");
+                    }
+                }
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(conversation_id = %conversation_id, agent_run_id = %run_id, error = %error, "Failed to inspect completed agent publish lease")
+            }
+        }
         match crate::application::agent_workspace_publish_recovery::
             recover_agent_workspace_repair_after_terminal_run(state.inner(), &conversation_id, &run_id)
             .await
@@ -536,7 +605,8 @@ pub(crate) async fn auto_publish_existing_agent_workspace_pr<R>(
 where
     R: Runtime,
 {
-    let Some(workspace) = state
+    let operation_scope = begin_publish_operation_scope(&conversation_id);
+    let Some(mut workspace) = state
         .agent_conversation_workspace_repo
         .get_by_conversation_id(&conversation_id)
         .await
@@ -546,6 +616,118 @@ where
             AutoPublishSkipReason::WorkspaceMissing,
         ));
     };
+
+    if workspace.publication_push_status.as_deref()
+        == Some(AGENT_WORKSPACE_PUBLISH_REDRIVE_PENDING_STATUS)
+    {
+        state
+            .agent_conversation_workspace_repo
+            .update_publication(
+                &conversation_id,
+                workspace.publication_pr_number,
+                workspace.publication_pr_url.as_deref(),
+                workspace.publication_pr_status.as_deref(),
+                Some("refreshed"),
+            )
+            .await
+            .map_err(|error| format!("publish re-drive admission failed: {error}"))?;
+        workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "workspace disappeared during publish re-drive admission".to_string())?;
+    }
+
+    if workspace
+        .publication_push_status
+        .as_deref()
+        .is_some_and(is_active_publish_status)
+    {
+        let now = chrono::Utc::now();
+        let stale_cutoff = now
+            - chrono::Duration::seconds(
+                i64::try_from(
+                    crate::infrastructure::agents::claude::git_runtime_config()
+                        .agent_workspace_publish_lease_stale_secs,
+                )
+                .unwrap_or(i64::MAX),
+            );
+        let previous_owner_is_dead = match workspace.publish_lease_owner_run_id.as_deref() {
+            Some(owner_run_id) if owner_run_id.starts_with("publish-operation:") => {
+                !publish_operation_lease_is_live(
+                    &conversation_id,
+                    workspace.publish_lease_token.as_deref(),
+                )
+            }
+            Some(owner_run_id) => match state
+                .agent_run_repo
+                .get_by_id(&AgentRunId::from_string(owner_run_id))
+                .await
+            {
+                Ok(Some(run)) => !run.status.is_active(),
+                Ok(None) => true,
+                Err(error) => {
+                    tracing::warn!(conversation_id = %conversation_id, error = %error, "Refused auto-publish lease reclaim after an unreadable owner run");
+                    false
+                }
+            },
+            None => workspace.updated_at <= stale_cutoff,
+        };
+        if !previous_owner_is_dead {
+            return Ok(AutoPublishDecision::Skip(
+                AutoPublishSkipReason::PublishAlreadyActive,
+            ));
+        }
+        let admission_token = Uuid::new_v4().to_string();
+        let claim = state
+            .agent_conversation_workspace_repo
+            .claim_publish_lease(
+                &conversation_id,
+                &format!("publish-operation:{conversation_id}"),
+                &admission_token,
+                now,
+                workspace.publish_lease_token.as_deref(),
+                true,
+            )
+            .await
+            .map_err(|error| format!("publish lease reclaim failed closed: {error}"))?;
+        if matches!(
+            claim,
+            crate::domain::repositories::AgentWorkspacePublishLeaseClaim::HeldByLiveOwner
+        ) {
+            return Ok(AutoPublishDecision::Skip(
+                AutoPublishSkipReason::PublishAlreadyActive,
+            ));
+        }
+        spawn_publish_operation_lease_heartbeat_for_scope(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            conversation_id.clone(),
+            admission_token.clone(),
+            &operation_scope,
+        );
+        let release = state
+            .agent_conversation_workspace_repo
+            .release_publish_lease(
+                &conversation_id,
+                &admission_token,
+                Some("refreshed"),
+                chrono::Utc::now(),
+            )
+            .await;
+        stop_publish_operation_lease_heartbeat(&conversation_id, &admission_token);
+        let released =
+            release.map_err(|error| format!("publish lease re-drive release failed: {error}"))?;
+        if !released {
+            return Err("publish lease re-drive release lost ownership".to_string());
+        }
+        workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "workspace disappeared after publish lease reclaim".to_string())?;
+    }
 
     if let Some(reason) = static_auto_publish_skip_reason(&workspace) {
         return Ok(AutoPublishDecision::Skip(reason));

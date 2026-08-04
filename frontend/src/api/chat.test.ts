@@ -43,6 +43,7 @@ import {
   precomputeAgentConversationWorkspacePrDescription,
   setAgentConversationWorkspaceAutoPublish,
   setAgentConversationWorkspacePrSupervision,
+  setAgentConversationWorkspaceReviewAutomation,
   startAgentConversation,
   startAgentConversationInvokeInput,
   transformStartAgentConversationResponse,
@@ -1642,6 +1643,7 @@ describe("chat api", () => {
           source: "base_update",
           stage: "repairing",
           status: "active",
+          hold_reason: null,
           summary: "Resolving the base conflict",
           blocker: null,
           automatic_continuation: true,
@@ -1682,6 +1684,7 @@ describe("chat api", () => {
         generation: 2,
         stage: "repairing",
         status: "active",
+        holdReason: null,
         automaticContinuation: true,
       },
       prAutofixFingerprintSpend: {
@@ -1698,6 +1701,31 @@ describe("chat api", () => {
       AgentConversationWorkspaceResponseSchema.parse(planSeedWorkspaceResponse())
         .maintenance_operation,
     ).toBeNull();
+  });
+
+  it("transforms a typed repair hold reason", async () => {
+    mockInvoke.mockResolvedValueOnce([
+      {
+        ...planSeedWorkspaceResponse(),
+        maintenance_operation: {
+          operation_id: "maintenance-held",
+          generation: 3,
+          source: "pr_autofix",
+          stage: "ready",
+          status: "ready",
+          hold_reason: "health_evidence",
+          summary: "RalphX is holding the repair on identical CI evidence.",
+          blocker: null,
+          automatic_continuation: false,
+          started_at: "2026-01-24T10:00:00Z",
+          updated_at: "2026-01-24T10:01:00Z",
+        },
+      },
+    ]);
+
+    const result = await listAgentConversationWorkspacesByProject("project-1");
+
+    expect(result[0]?.maintenanceOperation?.holdReason).toBe("health_evidence");
   });
 
   it("rejects an unknown maintenance operation stage", () => {
@@ -2307,6 +2335,54 @@ describe("chat api", () => {
       prAutoMergeMethod: "squash",
       prSupervisionStatus: "monitoring",
     });
+  });
+
+  it("sets the tri-state workspace review automation override", async () => {
+    mockInvoke.mockResolvedValue({
+      conversation_id: "conversation-1",
+      project_id: "project-1",
+      mode: "edit",
+      base_ref_kind: "project_default",
+      base_ref: "main",
+      base_display_name: "Project default (main)",
+      base_commit: "base-sha",
+      branch_name: "ralphx/demo/agent-conversation-1",
+      worktree_path: "/tmp/ralphx/conversation-1",
+      linked_ideation_session_id: null,
+      linked_plan_branch_id: null,
+      publication_pr_number: null,
+      publication_pr_url: null,
+      publication_pr_status: null,
+      publication_push_status: null,
+      auto_publish_enabled: true,
+      auto_publish_paused_pr_autofix_enabled: null,
+      auto_publish_paused_pr_auto_merge_desired: null,
+      pr_autofix_enabled: false,
+      pr_auto_merge_desired: false,
+      pr_auto_merge_method: "squash",
+      pr_auto_merge_current: null,
+      pr_supervision_status: null,
+      pr_supervision_summary: null,
+      pr_supervision_updated_at: null,
+      review_automation_override: true,
+      status: "active",
+      created_at: "2026-01-24T10:00:00Z",
+      updated_at: "2026-01-24T10:01:00Z",
+    });
+
+    const result = await setAgentConversationWorkspaceReviewAutomation(
+      "conversation-1",
+      { enabled: true },
+    );
+
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "set_agent_conversation_workspace_review_automation",
+      {
+        conversationId: "conversation-1",
+        input: { enabled: true },
+      },
+    );
+    expect(result.reviewAutomationOverride).toBe(true);
   });
 
   it("sets agent conversation workspace auto publish", async () => {
@@ -3892,6 +3968,7 @@ describe("getConversationActiveState", () => {
 
     const result = await startAgentWorkspaceReview("conversation/1", {
       force: true,
+      enableReviewAutomation: true,
       runtimeOverride: {
         provider: "codex",
         model: "gpt-5.5",
@@ -3909,6 +3986,7 @@ describe("getConversationActiveState", () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           force: true,
+          enable_review_automation: true,
           runtime_override: {
             provider: "codex",
             model: "gpt-5.5",

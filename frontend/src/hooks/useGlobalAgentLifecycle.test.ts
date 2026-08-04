@@ -122,6 +122,7 @@ vi.mock("@/lib/logger", () => ({
 // ============================================================================
 
 import { useGlobalAgentLifecycle } from "./useGlobalAgentLifecycle";
+import { agentSidebarConversationKeys } from "./agentSidebarConversationKeys";
 import { useIdeationStore } from "@/stores/ideationStore";
 import { toast } from "sonner";
 import { requestRuntimeIndexReconcile } from "@/lib/remote/runtime-index-reconcile";
@@ -622,6 +623,32 @@ describe("useGlobalAgentLifecycle", () => {
     );
   });
 
+  it.each(["project", "standalone"])(
+    "run_started invalidates sidebar conversation groups for %s agents",
+    (contextType) => {
+      renderHook(() => useGlobalAgentLifecycle());
+
+      act(() => {
+        fireEvent("agent:run_started", mkRunStarted(contextType, `${contextType}-1`));
+      });
+
+      expect(mockInvalidateQueries).toHaveBeenCalledTimes(1);
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: agentSidebarConversationKeys.all,
+      });
+    }
+  );
+
+  it("run_started does not invalidate sidebar groups for a task agent", () => {
+    renderHook(() => useGlobalAgentLifecycle());
+
+    act(() => {
+      fireEvent("agent:run_started", mkRunStarted("task_execution", "task-1"));
+    });
+
+    expect(mockInvalidateQueries).not.toHaveBeenCalled();
+  });
+
   // --------------------------------------------------------------------------
   // Cross-session integration (core bug scenario)
   // --------------------------------------------------------------------------
@@ -776,6 +803,7 @@ describe("useGlobalAgentLifecycle", () => {
     expect(chatStoreMocks.clearActiveAgentRun).not.toHaveBeenCalled();
     expect(chatStoreMocks.activeAgentRunIds["project:conv-project-1"]).toBe("run-new");
     expect(chatStoreMocks.activeAgentRunHarnesses["project:conv-project-1"]).toBe("codex");
+    expect(mockInvalidateQueries).not.toHaveBeenCalled();
   });
 
   it("run_completed without an id preserves a newer run and harness pair", () => {
@@ -800,6 +828,7 @@ describe("useGlobalAgentLifecycle", () => {
     expect(chatStoreMocks.clearActiveAgentRun).not.toHaveBeenCalled();
     expect(chatStoreMocks.activeAgentRunIds["project:conv-project-1"]).toBe("run-new");
     expect(chatStoreMocks.activeAgentRunHarnesses["project:conv-project-1"]).toBe("codex");
+    expect(mockInvalidateQueries).not.toHaveBeenCalled();
   });
 
   it("run_completed clears the active run id when the terminal event matches", () => {
@@ -824,6 +853,26 @@ describe("useGlobalAgentLifecycle", () => {
       "project:conv-project-1",
       "run-new"
     );
+  });
+
+  it("run_completed invalidates sidebar groups after accepting the current project run", () => {
+    chatStoreMocks.activeConversationIds = { "project:conv-project-1": "conv-project-1" };
+    chatStoreMocks.activeAgentRunIds = { "project:conv-project-1": "run-current" };
+    renderHook(() => useGlobalAgentLifecycle());
+
+    act(() => {
+      fireEvent("agent:run_completed", {
+        context_type: "project",
+        context_id: "project-1",
+        conversation_id: "conv-project-1",
+        run_id: "run-current",
+      });
+    });
+
+    expect(mockInvalidateQueries).toHaveBeenCalledTimes(1);
+    expect(mockInvalidateQueries).toHaveBeenCalledWith({
+      queryKey: agentSidebarConversationKeys.all,
+    });
   });
 
   // --------------------------------------------------------------------------
@@ -901,6 +950,27 @@ describe("useGlobalAgentLifecycle", () => {
       "project:conv-project-1",
       "waiting_for_input"
     );
+    expect(mockInvalidateQueries).not.toHaveBeenCalled();
+  });
+
+  it("turn_completed invalidates sidebar groups after accepting the current project run", () => {
+    chatStoreMocks.activeConversationIds = { "project:conv-project-1": "conv-project-1" };
+    chatStoreMocks.activeAgentRunIds = { "project:conv-project-1": "run-current" };
+    renderHook(() => useGlobalAgentLifecycle());
+
+    act(() => {
+      fireEvent("agent:turn_completed", {
+        context_type: "project",
+        context_id: "project-1",
+        conversation_id: "conv-project-1",
+        run_id: "run-current",
+      });
+    });
+
+    expect(mockInvalidateQueries).toHaveBeenCalledTimes(1);
+    expect(mockInvalidateQueries).toHaveBeenCalledWith({
+      queryKey: agentSidebarConversationKeys.all,
+    });
   });
 
   // --------------------------------------------------------------------------
@@ -937,6 +1007,29 @@ describe("useGlobalAgentLifecycle", () => {
       "idle"
     );
     expect(chatStoreMocks.clearActiveAgentRun).not.toHaveBeenCalled();
+    expect(mockInvalidateQueries).not.toHaveBeenCalled();
+  });
+
+  it("stopped invalidates sidebar groups after accepting the current standalone run", () => {
+    chatStoreMocks.activeConversationIds = {
+      "standalone:standalone-1": "conv-standalone-1",
+    };
+    chatStoreMocks.activeAgentRunIds = { "standalone:standalone-1": "run-current" };
+    renderHook(() => useGlobalAgentLifecycle());
+
+    act(() => {
+      fireEvent("agent:stopped", {
+        context_type: "standalone",
+        context_id: "standalone-1",
+        conversation_id: "conv-standalone-1",
+        agent_run_id: "run-current",
+      });
+    });
+
+    expect(mockInvalidateQueries).toHaveBeenCalledTimes(1);
+    expect(mockInvalidateQueries).toHaveBeenCalledWith({
+      queryKey: agentSidebarConversationKeys.all,
+    });
   });
 
   // --------------------------------------------------------------------------
@@ -1023,6 +1116,47 @@ describe("useGlobalAgentLifecycle", () => {
       "idle"
     );
     expect(toast.error).not.toHaveBeenCalled();
+    expect(mockInvalidateQueries).not.toHaveBeenCalled();
+  });
+
+  it("error does not invalidate sidebar groups for a stale project run", () => {
+    chatStoreMocks.activeConversationIds = { "project:conv-project-1": "conv-project-1" };
+    chatStoreMocks.activeAgentRunIds = { "project:conv-project-1": "run-new" };
+    renderHook(() => useGlobalAgentLifecycle());
+
+    act(() => {
+      fireEvent("agent:error", {
+        context_type: "project",
+        context_id: "project-1",
+        conversation_id: "conv-project-1",
+        agent_run_id: "run-old",
+        error: "old run failed after resume",
+      });
+    });
+
+    expect(chatStoreMocks.clearActiveAgentRun).not.toHaveBeenCalled();
+    expect(mockInvalidateQueries).not.toHaveBeenCalled();
+  });
+
+  it("error invalidates sidebar groups after accepting the current project run", () => {
+    chatStoreMocks.activeConversationIds = { "project:conv-project-1": "conv-project-1" };
+    chatStoreMocks.activeAgentRunIds = { "project:conv-project-1": "run-current" };
+    renderHook(() => useGlobalAgentLifecycle());
+
+    act(() => {
+      fireEvent("agent:error", {
+        context_type: "project",
+        context_id: "project-1",
+        conversation_id: "conv-project-1",
+        agent_run_id: "run-current",
+        error: "current run failed",
+      });
+    });
+
+    expect(mockInvalidateQueries).toHaveBeenCalledTimes(1);
+    expect(mockInvalidateQueries).toHaveBeenCalledWith({
+      queryKey: agentSidebarConversationKeys.all,
+    });
   });
 
   // --------------------------------------------------------------------------

@@ -25,8 +25,8 @@ use crate::domain::entities::plan_branch::{
     PrPushStatus as PlanPrPushStatus, PrStatus as PlanPrStatus,
 };
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunId,
-    AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
+    AgentRun, AgentRunId, AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
     AgentWorkspacePrMetadataDecision, AgentWorkspaceReviewGateStatus,
     AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewRuntimeState, AgentWorkspaceSourcePullRequest, ArtifactId, ChatContextType,
@@ -71,6 +71,193 @@ fn test_http_state(app_state: Arc<AppState>) -> HttpServerState {
     }
 }
 
+#[tokio::test]
+async fn review_automation_start_opt_in_persists_before_the_review_decision() {
+    let repo = tempfile::TempDir::new().expect("repo tempdir");
+    git(repo.path(), &["init", "-b", "main"]);
+    git(repo.path(), &["config", "user.email", "test@example.com"]);
+    git(repo.path(), &["config", "user.name", "RalphX Test"]);
+    std::fs::write(repo.path().join("README.md"), "base\n").expect("write base file");
+    git(repo.path(), &["add", "README.md"]);
+    git(repo.path(), &["commit", "-m", "base"]);
+    let base_sha = git(repo.path(), &["rev-parse", "HEAD"]);
+
+    let app_state = Arc::new(AppState::new_test());
+    app_state
+        .review_settings_repo
+        .update_settings(&ReviewSettings {
+            require_workspace_review: false,
+            autofix_workspace_review_blocking_findings: false,
+            ..ReviewSettings::default()
+        })
+        .await
+        .expect("review settings should update");
+    let mut project = Project::new(
+        "Review start opt-in".to_string(),
+        repo.path().to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .expect("project should persist");
+
+    let conversation_id = ChatConversationId::new();
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.id = conversation_id.clone();
+    conversation.agent_mode = Some(AgentConversationWorkspaceMode::Edit);
+    app_state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("conversation should persist");
+    let workspace = AgentConversationWorkspace::new(
+        conversation_id.clone(),
+        project.id,
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("Project default (main)".to_string()),
+        Some(base_sha),
+        "main".to_string(),
+        repo.path().to_string_lossy().to_string(),
+    );
+    app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    let Json(preview) = get_agent_workspace_review_start_preview(
+        State(test_http_state(Arc::clone(&app_state))),
+        Path(conversation_id.as_str()),
+    )
+    .await
+    .expect("review preview should provide a fresh confirmation");
+    let confirmation = preview.confirmation;
+
+    let Json(response) = start_agent_workspace_review_run(
+        State(test_http_state(Arc::clone(&app_state))),
+        Path(conversation_id.as_str()),
+        Json(StartAgentWorkspaceReviewRequest {
+            force: Some(false),
+            enable_review_automation: Some(true),
+            confirmation: Some(StartAgentWorkspaceReviewConfirmationRequest {
+                target_scope: confirmation.target_scope,
+                diff_fingerprint: confirmation.diff_fingerprint,
+                head_sha: confirmation.head_sha,
+                pr_number: confirmation.pr_number,
+                will_disable_auto_merge: confirmation.will_disable_auto_merge,
+                merge_method: confirmation.merge_method,
+                restore_after_publish: confirmation.restore_after_publish,
+            }),
+            runtime_override: None,
+        }),
+    )
+    .await
+    .expect("review start should evaluate the newly armed workspace");
+
+    assert!(!response.started);
+    assert_eq!(
+        response.skipped_reason.as_deref(),
+        Some("no_reviewable_changes")
+    );
+    assert_eq!(
+        app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace should load")
+            .expect("workspace should exist")
+            .review_automation_override,
+        Some(true)
+    );
+}
+
+#[tokio::test]
+async fn review_automation_start_rejects_archived_workspace_without_side_effects() {
+    let repo = tempfile::TempDir::new().expect("repo tempdir");
+    git(repo.path(), &["init", "-b", "main"]);
+    git(repo.path(), &["config", "user.email", "test@example.com"]);
+    git(repo.path(), &["config", "user.name", "RalphX Test"]);
+    std::fs::write(repo.path().join("README.md"), "base\n").expect("write base file");
+    git(repo.path(), &["add", "README.md"]);
+    git(repo.path(), &["commit", "-m", "base"]);
+    let base_sha = git(repo.path(), &["rev-parse", "HEAD"]);
+
+    let app_state = Arc::new(AppState::new_test());
+    let mut project = Project::new(
+        "Archived review start".to_string(),
+        repo.path().to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .expect("project should persist");
+
+    let conversation_id = ChatConversationId::new();
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.id = conversation_id.clone();
+    conversation.agent_mode = Some(AgentConversationWorkspaceMode::Edit);
+    app_state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("conversation should persist");
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation_id.clone(),
+        project.id,
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("Project default (main)".to_string()),
+        Some(base_sha),
+        "main".to_string(),
+        repo.path().to_string_lossy().to_string(),
+    );
+    workspace.status = AgentConversationWorkspaceStatus::Archived;
+    app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("archived workspace should persist");
+
+    let error = start_agent_workspace_review_run(
+        State(test_http_state(Arc::clone(&app_state))),
+        Path(conversation_id.as_str()),
+        Json(StartAgentWorkspaceReviewRequest {
+            force: Some(false),
+            enable_review_automation: Some(true),
+            confirmation: None,
+            runtime_override: None,
+        }),
+    )
+    .await
+    .expect_err("archived workspace review start should fail closed");
+
+    assert_eq!(error.0, StatusCode::CONFLICT);
+    assert_eq!(
+        error.1["error"].as_str(),
+        Some("Workspace Review cannot be started for an archived workspace")
+    );
+    let workspace = app_state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace should load")
+        .expect("workspace should exist");
+    assert_eq!(workspace.review_automation_override, None);
+    assert!(app_state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&conversation_id)
+        .await
+        .expect("review monitor lookup should succeed")
+        .is_none());
+}
+
 /// Legacy fixture coverage remains isolated from the production compatibility endpoint, which
 /// delegates exclusively through the durable repair coordinator.
 async fn complete_agent_workspace_pr_fix(
@@ -98,6 +285,33 @@ fn open_review_pr_health() -> PrHealth {
         issue_comments: Vec::new(),
         auto_merge_request: None,
     }
+}
+
+#[tokio::test]
+async fn workspace_review_start_preview_does_not_wait_for_the_lifecycle_lock() {
+    let app_state = Arc::new(AppState::new_test());
+    let conversation_id = ChatConversationId::from_string("preview-without-lifecycle-lock");
+    let mut workspace = test_workspace(conversation_id.clone());
+    workspace.mode = AgentConversationWorkspaceMode::Plan;
+    app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    let state = test_http_state(app_state);
+    let _lifecycle_guard = lock_workspace_review_lifecycle(&conversation_id).await;
+
+    let preview = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        get_agent_workspace_review_start_preview(State(state), Path(conversation_id.to_string())),
+    )
+    .await
+    .expect("preview must not wait for a held workspace Review lifecycle lock");
+
+    assert!(
+        preview.is_err(),
+        "Plan mode still rejects local Workspace Review"
+    );
 }
 
 async fn pr_review_submission_context() -> (

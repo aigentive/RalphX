@@ -629,6 +629,12 @@ mod v20260802174000_workspace_review_fixer_cycle_cap_tests;
 mod v20260802194326_agent_workspace_repair_explicit_publish_consent;
 #[cfg(test)]
 mod v20260802194326_agent_workspace_repair_explicit_publish_consent_tests;
+mod v20260802215754_add_workspace_review_automation_override;
+#[cfg(test)]
+mod v20260802215754_add_workspace_review_automation_override_tests;
+mod v20260803113302_agent_workspace_publish_lease;
+#[cfg(test)]
+mod v20260803113302_agent_workspace_publish_lease_tests;
 mod v20260804073002_jira_link_acceptance_criteria_backfill;
 #[cfg(test)]
 mod v20260804073002_jira_link_acceptance_criteria_backfill_tests;
@@ -1989,6 +1995,16 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260802194326,
         name: "agent_workspace_repair_explicit_publish_consent",
         migrate: v20260802194326_agent_workspace_repair_explicit_publish_consent::migrate,
+    },
+    Migration {
+        version: 20260802215754,
+        name: "add_workspace_review_automation_override",
+        migrate: v20260802215754_add_workspace_review_automation_override::migrate,
+    },
+    Migration {
+        version: 20260803113302,
+        name: "agent_workspace_publish_lease",
+        migrate: v20260803113302_agent_workspace_publish_lease::migrate,
     },
     Migration {
         version: 20260804073002,

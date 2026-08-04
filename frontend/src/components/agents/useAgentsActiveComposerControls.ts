@@ -41,9 +41,9 @@ interface UseAgentsActiveComposerControlsArgs {
   runtimeConversationId: string | null;
   runtimeByConversationId: Record<string, AgentRuntimeSelection>;
   selectedConversationId: string | null;
-  setRuntimeForConversation: (
+  setComposerRuntimeForConversation: (
     conversationId: string,
-    projectId: string,
+    projectId: string | null,
     runtime: AgentRuntimeSelection
   ) => void;
 }
@@ -62,7 +62,7 @@ export function useAgentsActiveComposerControls({
   runtimeConversationId,
   runtimeByConversationId,
   selectedConversationId,
-  setRuntimeForConversation,
+  setComposerRuntimeForConversation,
 }: UseAgentsActiveComposerControlsArgs) {
   const [switchingConversationModeId, setSwitchingConversationModeId] = useState<string | null>(null);
   const [updatingCapabilityConversationId, setUpdatingCapabilityConversationId] =
@@ -93,8 +93,8 @@ export function useAgentsActiveComposerControls({
       providerSupportedEfforts?: readonly string[] | null,
       providerSupportedModelAliases?: readonly string[] | null,
     ) => {
-      if (!runtimeConversationId || !activeProjectId) {
-        return;
+      if (!runtimeConversationId) {
+        return null;
       }
       const defaultModelId = defaultModelForProvider(
         provider,
@@ -110,22 +110,24 @@ export function useAgentsActiveComposerControls({
           modelRegistry,
         ),
       };
-      setRuntimeForConversation(
+      const normalizedRuntime = normalizeRuntimeSelection(
+        runtime,
+        modelRegistry,
+        providerSupportedEfforts,
+        providerSupportedModelAliases,
+      );
+      setComposerRuntimeForConversation(
         runtimeConversationId,
         activeProjectId,
-        normalizeRuntimeSelection(
-          runtime,
-          modelRegistry,
-          providerSupportedEfforts,
-          providerSupportedModelAliases,
-        )
+        normalizedRuntime,
       );
+      return normalizedRuntime;
     },
     [
       activeProjectId,
       modelRegistry,
       runtimeConversationId,
-      setRuntimeForConversation,
+      setComposerRuntimeForConversation,
     ]
   );
 
@@ -135,34 +137,36 @@ export function useAgentsActiveComposerControls({
       providerSupportedEfforts?: readonly string[] | null,
       providerSupportedModelAliases?: readonly string[] | null,
     ) => {
-      if (!runtimeConversationId || !activeProjectId) {
-        return;
+      if (!runtimeConversationId) {
+        return null;
       }
-      setRuntimeForConversation(
+      const normalizedRuntime = normalizeRuntimeSelection(
+        {
+          provider: normalizedActiveRuntime.provider,
+          modelId,
+          effort: defaultEffortForModel(
+            normalizedActiveRuntime.provider,
+            modelId,
+            modelRegistry
+          ),
+        },
+        modelRegistry,
+        providerSupportedEfforts,
+        providerSupportedModelAliases
+      );
+      setComposerRuntimeForConversation(
         runtimeConversationId,
         activeProjectId,
-        normalizeRuntimeSelection(
-          {
-            provider: normalizedActiveRuntime.provider,
-            modelId,
-            effort: defaultEffortForModel(
-              normalizedActiveRuntime.provider,
-              modelId,
-              modelRegistry
-            ),
-          },
-          modelRegistry,
-          providerSupportedEfforts,
-          providerSupportedModelAliases
-        )
+        normalizedRuntime,
       );
+      return normalizedRuntime;
     },
     [
       activeProjectId,
       modelRegistry,
       normalizedActiveRuntime.provider,
       runtimeConversationId,
-      setRuntimeForConversation,
+      setComposerRuntimeForConversation,
     ]
   );
 
@@ -172,23 +176,25 @@ export function useAgentsActiveComposerControls({
       providerSupportedEfforts?: readonly string[] | null,
       providerSupportedModelAliases?: readonly string[] | null,
     ) => {
-      if (!runtimeConversationId || !activeProjectId) {
-        return;
+      if (!runtimeConversationId) {
+        return null;
       }
-      setRuntimeForConversation(
+      const normalizedRuntime = normalizeRuntimeSelection(
+        {
+          provider: normalizedActiveRuntime.provider,
+          modelId: normalizedActiveRuntime.modelId,
+          effort: effort as AgentEffort,
+        },
+        modelRegistry,
+        providerSupportedEfforts,
+        providerSupportedModelAliases
+      );
+      setComposerRuntimeForConversation(
         runtimeConversationId,
         activeProjectId,
-        normalizeRuntimeSelection(
-          {
-            provider: normalizedActiveRuntime.provider,
-            modelId: normalizedActiveRuntime.modelId,
-            effort: effort as AgentEffort,
-          },
-          modelRegistry,
-          providerSupportedEfforts,
-          providerSupportedModelAliases
-        ),
+        normalizedRuntime,
       );
+      return normalizedRuntime;
     },
     [
       activeProjectId,
@@ -196,7 +202,7 @@ export function useAgentsActiveComposerControls({
       normalizedActiveRuntime.modelId,
       normalizedActiveRuntime.provider,
       runtimeConversationId,
-      setRuntimeForConversation,
+      setComposerRuntimeForConversation,
     ]
   );
 

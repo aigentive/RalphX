@@ -104,6 +104,7 @@ import {
 } from "@/hooks/useChat";
 import { ideationKeys } from "@/hooks/useIdeation";
 import { useIdeationSettings } from "@/hooks/useIdeationSettings";
+import { useReviewSettings } from "@/hooks/useReviewSettings";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
 import { ticketingKeys } from "@/hooks/useTicketing";
@@ -1159,17 +1160,24 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       force,
       confirmation,
       runtimeOverride,
+      enableReviewAutomation,
     }: {
       conversationId: string;
       force: boolean;
       confirmation?: AgentWorkspaceReviewStartConfirmation;
       runtimeOverride?: import("@/api/manual-role-defaults.types").ManualRoleRuntimeSelection;
+      enableReviewAutomation?: boolean;
     }) =>
       chatApi.startAgentWorkspaceReview(
         conversationId,
         confirmation
-          ? { force, confirmation, ...(runtimeOverride ? { runtimeOverride } : {}) }
-          : { force },
+          ? {
+              force,
+              confirmation,
+              ...(runtimeOverride ? { runtimeOverride } : {}),
+              ...(enableReviewAutomation ? { enableReviewAutomation } : {}),
+            }
+          : { force, ...(enableReviewAutomation ? { enableReviewAutomation } : {}) },
       ),
     onSuccess: (result, variables) => {
       queryClient.setQueryData(
@@ -1835,10 +1843,12 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       force,
       confirmation,
       runtimeOverride,
+      enableReviewAutomation,
     }: {
       force: boolean;
       confirmation?: AgentWorkspaceReviewStartConfirmation;
       runtimeOverride?: import("@/api/manual-role-defaults.types").ManualRoleRuntimeSelection;
+      enableReviewAutomation?: boolean;
     }) => {
       if (!workspaceReviewConversationId) {
         return Promise.resolve();
@@ -1849,6 +1859,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
             force,
             confirmation,
             ...(runtimeOverride ? { runtimeOverride } : {}),
+            ...(enableReviewAutomation ? { enableReviewAutomation } : {}),
           })
         : startWorkspaceReviewMutation.mutateAsync({
             conversationId: workspaceReviewConversationId,
@@ -1857,8 +1868,24 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     },
     [startWorkspaceReviewMutation, workspaceReviewConversationId],
   );
+  const reviewSettingsQuery = useReviewSettings();
+  const reviewAutomation = useMemo(() => {
+    if (!scopedWorkspace || !reviewSettingsQuery.data) {
+      return null;
+    }
+    const override = scopedWorkspace.reviewAutomationOverride;
+    const effectiveAutofix =
+      override ?? reviewSettingsQuery.data.autofix_workspace_review_blocking_findings;
+    const effectiveAutoReview =
+      override ?? reviewSettingsQuery.data.require_workspace_review;
+    return {
+      effectiveLoopActive: effectiveAutofix && effectiveAutoReview,
+      overrideOn: override === true,
+    };
+  }, [reviewSettingsQuery.data, scopedWorkspace]);
   const {
     startReview: confirmAndStartWorkspaceReview,
+    prefetchStartReview: prefetchWorkspaceReview,
     startFixer: confirmAndStartWorkspaceReviewFixer,
     confirmationDialogProps: workspaceReviewConfirmationDialogProps,
     ConfirmationDialog: WorkspaceReviewConfirmationDialog,
@@ -1866,6 +1893,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     conversationId: workspaceReviewConversationId,
     onStartReview: startWorkspaceReviewWithConfirmation,
     projectId: scopedWorkspace?.projectId ?? null,
+    reviewAutomation,
     onStartFixer: ({ confirmation, runtimeOverride }) => {
       if (!workspaceReviewConversationId) return Promise.resolve();
       return startWorkspaceReviewFixerMutation.mutateAsync({
@@ -2432,6 +2460,9 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                 onStartReview={
                   isReviewPrWorkspace ? () => {} : handleStartReview
                 }
+                {...(!isReviewPrWorkspace
+                  ? { onStartReviewIntent: prefetchWorkspaceReview }
+                  : {})}
                 onFixIssues={
                   isReviewPrWorkspace ? () => {} : handleFixReviewIssues
                 }
@@ -2538,6 +2569,7 @@ type ArtifactContentProps = {
   isApproveAnywayActionPending: boolean;
   isWorkspaceRuntimeGenerating: boolean;
   onStartReview: (force: boolean) => void;
+  onStartReviewIntent?: () => void;
   onFixIssues: () => void;
   onApproveAnyway: () => Promise<void>;
   onViewTranscript?: () => void;
@@ -2626,6 +2658,7 @@ function ArtifactContent({
   isApproveAnywayActionPending,
   isWorkspaceRuntimeGenerating,
   onStartReview,
+  onStartReviewIntent,
   onFixIssues,
   onApproveAnyway,
   onViewTranscript,
@@ -2686,6 +2719,7 @@ function ArtifactContent({
       reviewActionBlocker={reviewActionBlocker}
       onOpenPublish={onOpenPublish}
       onStartReview={onStartReview}
+      {...(onStartReviewIntent ? { onStartReviewIntent } : {})}
       onFixIssues={onFixIssues}
       onApproveAnyway={onApproveAnyway}
       embedded={embedded}

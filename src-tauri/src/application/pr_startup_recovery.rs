@@ -29,7 +29,7 @@ use crate::application::git_artifact_cleanup::{
 use crate::application::git_service::{git_cmd, FetchOriginOutcome, GitService};
 use crate::application::services::PrPollerRegistry;
 use crate::application::task_transition_service::PrBranchFreshnessOutcome;
-use crate::application::{NotificationService, TaskTransitionService};
+use crate::application::{AppState, NotificationService, TaskTransitionService};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentWorkspacePrReviewMonitor,
     AgentWorkspacePrReviewMonitorStatus, ExecutionPlanId, ExecutionPlanStatus, InternalStatus,
@@ -1159,6 +1159,7 @@ pub async fn recover_agent_workspace_pr_pollers(
         chat_service,
         None,
         None,
+        None,
         blocked_git_project_ids,
     )
     .await;
@@ -1174,6 +1175,7 @@ pub async fn recover_agent_workspace_pr_pollers_with_notifications(
     chat_service: Arc<dyn ChatService>,
     notification_service: Option<Arc<NotificationService>>,
     agent_workspace_repair_repo: Option<Arc<dyn AgentWorkspaceRepairRepository>>,
+    recovery_state: Option<Arc<AppState>>,
     blocked_git_project_ids: Arc<HashSet<ProjectId>>,
 ) {
     let mut workspaces = match workspace_repo
@@ -1238,6 +1240,7 @@ pub async fn recover_agent_workspace_pr_pollers_with_notifications(
                 let notification_service = notification_service.as_ref().map(Arc::clone);
                 let agent_workspace_repair_repo =
                     agent_workspace_repair_repo.as_ref().map(Arc::clone);
+                let recovery_state = recovery_state.as_ref().map(Arc::clone);
                 let blocked_git_project_ids = Arc::clone(&blocked_git_project_ids);
                 async move {
                     recover_one_agent_workspace_pr_poller(
@@ -1250,6 +1253,7 @@ pub async fn recover_agent_workspace_pr_pollers_with_notifications(
                         chat_service,
                         notification_service,
                         agent_workspace_repair_repo,
+                        recovery_state,
                         blocked_git_project_ids,
                     )
                     .await;
@@ -1269,6 +1273,7 @@ pub(crate) async fn recover_one_agent_workspace_pr_poller(
     chat_service: Arc<dyn ChatService>,
     notification_service: Option<Arc<NotificationService>>,
     agent_workspace_repair_repo: Option<Arc<dyn AgentWorkspaceRepairRepository>>,
+    recovery_state: Option<Arc<AppState>>,
     blocked_git_project_ids: Arc<HashSet<ProjectId>>,
 ) {
     let Some(pr_number) = agent_workspace_pr_poller_number(&workspace) else {
@@ -1611,7 +1616,7 @@ pub(crate) async fn recover_one_agent_workspace_pr_poller(
     }
 
     if let Some(repair_repo) = agent_workspace_repair_repo {
-        pr_poller_registry.start_agent_workspace_polling_with_repair_repo(
+        pr_poller_registry.start_agent_workspace_polling_with_repair_repo_and_recovery_state(
             workspace.conversation_id,
             pr_number,
             project,
@@ -1620,6 +1625,7 @@ pub(crate) async fn recover_one_agent_workspace_pr_poller(
             agent_run_repo,
             repair_repo,
             chat_service,
+            recovery_state,
         );
     } else {
         #[cfg(test)]

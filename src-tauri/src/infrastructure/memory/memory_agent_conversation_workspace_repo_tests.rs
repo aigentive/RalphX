@@ -12,15 +12,170 @@ use crate::domain::entities::{
     AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest, ArtifactId,
     ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
+    WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED, WORKSPACE_REVIEW_FIXER_STATUS_QUEUED,
+    WORKSPACE_REVIEW_FIXER_STATUS_ROUTING, WORKSPACE_REVIEW_FIXER_STATUS_RUNNING,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
-    AgentWorkspacePrReviewActionMutation, AgentWorkspaceRepairRepository,
-    AgentWorkspaceRepairStateGuard, AgentWorkspaceRepairStateTransition,
-    SettleAndStartAgentWorkspaceRepairSuccessor,
+    AgentWorkspacePrReviewActionMutation, AgentWorkspacePublishLeaseClaim,
+    AgentWorkspaceRepairRepository, AgentWorkspaceRepairStateGuard,
+    AgentWorkspaceRepairStateTransition, SettleAndStartAgentWorkspaceRepairSuccessor,
     SettleAndStartAgentWorkspaceRepairSuccessorOutcome, StartOrJoinAgentWorkspaceRepairAttempt,
     StartOrJoinAgentWorkspaceRepairAttemptOutcome,
 };
+
+#[tokio::test]
+async fn publish_lease_claim_rejects_a_missing_workspace() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("19191919-1919-1919-1919-191919191919");
+
+    let error = repo
+        .claim_publish_lease(
+            &conversation_id,
+            "run-one",
+            "token-one",
+            chrono::Utc::now(),
+            None,
+            false,
+        )
+        .await
+        .expect_err("missing workspace must fail closed");
+
+    assert!(matches!(error, crate::error::AppError::NotFound(_)));
+}
+
+#[tokio::test]
+async fn publish_lease_rejects_live_owner_and_fences_stale_token() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("conversation-publish-lease");
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .expect("workspace should persist");
+    let now = chrono::Utc::now();
+
+    assert_eq!(
+        repo.claim_publish_lease(&conversation_id, "run-one", "token-one", now, None, false)
+            .await
+            .expect("first lease should claim"),
+        AgentWorkspacePublishLeaseClaim::Claimed
+    );
+    assert_eq!(
+        repo.claim_publish_lease(
+            &conversation_id,
+            "run-two",
+            "token-two",
+            now,
+            Some("token-one"),
+            false
+        )
+        .await
+        .expect("live owner must hold lease"),
+        AgentWorkspacePublishLeaseClaim::HeldByLiveOwner
+    );
+    assert!(!repo
+        .release_publish_lease(&conversation_id, "stale-token", None, now)
+        .await
+        .expect("stale release is a clean rejection"));
+    let held = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("read should succeed")
+        .expect("workspace should remain");
+    assert_eq!(held.publish_lease_token.as_deref(), Some("token-one"));
+}
+
+#[tokio::test]
+async fn normal_workspace_upsert_preserves_publish_lease_authority() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("39393939-3939-4939-8939-393939393939");
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .expect("workspace should persist");
+    let mut stale_workspace = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace read should succeed")
+        .expect("workspace should exist");
+    let claimed_at = chrono::Utc::now();
+    repo.claim_publish_lease(
+        &conversation_id,
+        "run-one",
+        "token-one",
+        claimed_at,
+        None,
+        false,
+    )
+    .await
+    .expect("publish lease should claim");
+
+    stale_workspace.base_commit = Some("updated-base".to_string());
+    let updated = repo
+        .create_or_update(stale_workspace)
+        .await
+        .expect("normal workspace fields should update");
+
+    assert_eq!(updated.base_commit.as_deref(), Some("updated-base"));
+    assert_eq!(
+        updated.publish_lease_owner_run_id.as_deref(),
+        Some("run-one")
+    );
+    assert_eq!(updated.publish_lease_token.as_deref(), Some("token-one"));
+    assert_eq!(updated.publish_lease_heartbeat_at, Some(claimed_at));
+    assert!(repo
+        .release_publish_lease(
+            &conversation_id,
+            "token-one",
+            Some("refreshed"),
+            claimed_at + chrono::Duration::seconds(1),
+        )
+        .await
+        .expect("the original owner should still release the lease"));
+}
+
+#[tokio::test]
+async fn publish_lease_immediately_reclaims_a_dead_owner() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("conversation-publish-reclaim");
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .expect("workspace should persist");
+    let now = chrono::Utc::now();
+    repo.claim_publish_lease(&conversation_id, "dead-run", "dead-token", now, None, false)
+        .await
+        .expect("initial claim should succeed");
+
+    assert_eq!(
+        repo.claim_publish_lease(
+            &conversation_id,
+            "live-run",
+            "fresh-token",
+            now,
+            Some("dead-token"),
+            true,
+        )
+        .await
+        .expect("dead owner should be reclaimed"),
+        AgentWorkspacePublishLeaseClaim::Reclaimed
+    );
+    assert!(repo
+        .heartbeat_publish_lease(&conversation_id, "fresh-token", now)
+        .await
+        .expect("current owner heartbeat should succeed"));
+
+    assert_eq!(
+        repo.claim_publish_lease(
+            &conversation_id,
+            "late-run",
+            "late-token",
+            now,
+            Some("dead-token"),
+            true,
+        )
+        .await
+        .expect("stale reclaim proof should be rejected"),
+        AgentWorkspacePublishLeaseClaim::HeldByLiveOwner
+    );
+}
 
 fn pr_review_action(
     conversation_id: ChatConversationId,
@@ -785,6 +940,118 @@ fn make_workspace(conversation_id: ChatConversationId) -> AgentConversationWorks
         "ralphx/project-memory/agent".to_string(),
         "/tmp/ralphx/project-memory/agent".to_string(),
     )
+}
+
+#[tokio::test]
+async fn review_automation_override_resets_budget_and_preserves_active_attempt_identity() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("review-automation-memory");
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .expect("workspace should persist");
+    let mut capped = AgentWorkspaceReviewMonitor::new(
+        conversation_id.clone(),
+        ProjectId::from_string("project-memory".to_string()),
+    );
+    capped.review_fixer_cycle_count = 3;
+    capped.review_fixer_status = Some(WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED.to_string());
+    capped.review_fixer_attempt_id = Some("capped-attempt".to_string());
+    repo.upsert_workspace_review_monitor(capped)
+        .await
+        .expect("capped monitor should persist");
+
+    repo.set_review_automation_override(&conversation_id, Some(true))
+        .await
+        .expect("rearm should persist");
+    assert_eq!(
+        repo.get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace should load")
+            .expect("workspace should exist")
+            .review_automation_override,
+        Some(true)
+    );
+    let rearmed = repo
+        .get_workspace_review_monitor(&conversation_id)
+        .await
+        .expect("monitor should load")
+        .expect("monitor should exist");
+    assert_eq!(rearmed.review_fixer_cycle_count, 0);
+    assert!(rearmed.review_fixer_status.is_none());
+    assert!(rearmed.review_fixer_attempt_id.is_none());
+
+    let mut idle = rearmed;
+    idle.review_fixer_cycle_count = 2;
+    repo.upsert_workspace_review_monitor(idle)
+        .await
+        .expect("idle monitor should persist");
+    repo.set_review_automation_override(&conversation_id, Some(false))
+        .await
+        .expect("disarm should persist without resetting the budget");
+    let idle = repo
+        .get_workspace_review_monitor(&conversation_id)
+        .await
+        .expect("idle monitor should load")
+        .expect("idle monitor should exist");
+    assert_eq!(idle.review_fixer_cycle_count, 2);
+
+    repo.set_review_automation_override(&conversation_id, Some(true))
+        .await
+        .expect("arming should reset an idle budget");
+    let mut failed = repo
+        .get_workspace_review_monitor(&conversation_id)
+        .await
+        .expect("rearmed idle monitor should load")
+        .expect("rearmed idle monitor should exist");
+    assert_eq!(failed.review_fixer_cycle_count, 0);
+    failed.review_fixer_cycle_count = 2;
+    failed.review_fixer_status = Some("failed".to_string());
+    failed.review_fixer_attempt_id = Some("failed-attempt".to_string());
+    repo.upsert_workspace_review_monitor(failed)
+        .await
+        .expect("failed monitor should persist");
+    repo.set_review_automation_override(&conversation_id, Some(true))
+        .await
+        .expect("arming should reset a settled failed budget");
+    let failed = repo
+        .get_workspace_review_monitor(&conversation_id)
+        .await
+        .expect("failed monitor should load")
+        .expect("failed monitor should exist");
+    assert_eq!(failed.review_fixer_cycle_count, 0);
+    assert_eq!(failed.review_fixer_status.as_deref(), Some("failed"));
+    assert_eq!(
+        failed.review_fixer_attempt_id.as_deref(),
+        Some("failed-attempt")
+    );
+
+    for status in [
+        WORKSPACE_REVIEW_FIXER_STATUS_ROUTING,
+        WORKSPACE_REVIEW_FIXER_STATUS_QUEUED,
+        WORKSPACE_REVIEW_FIXER_STATUS_RUNNING,
+    ] {
+        let mut active = failed.clone();
+        active.review_fixer_cycle_count = 2;
+        active.review_fixer_status = Some(status.to_string());
+        active.review_fixer_attempt_id = Some(format!("{status}-attempt"));
+        repo.upsert_workspace_review_monitor(active)
+            .await
+            .expect("active monitor should persist");
+        repo.set_review_automation_override(&conversation_id, Some(true))
+            .await
+            .expect("active automation preference should persist");
+        let active = repo
+            .get_workspace_review_monitor(&conversation_id)
+            .await
+            .expect("active monitor should load")
+            .expect("active monitor should exist");
+        assert_eq!(active.review_fixer_cycle_count, 0);
+        assert_eq!(active.review_fixer_status.as_deref(), Some(status));
+        assert_eq!(
+            active.review_fixer_attempt_id.as_deref(),
+            Some(format!("{status}-attempt").as_str())
+        );
+    }
 }
 
 #[tokio::test]
@@ -2471,6 +2738,18 @@ mod tests {
         refreshing.publication_push_status = Some("refreshing".to_string());
         refreshing.updated_at = stale;
 
+        let mut pending = candidate_workspace("redrive-pending");
+        pending.publication_pr_number = Some(22);
+        pending.publication_pr_status = Some("open".to_string());
+        pending.publication_push_status = Some("redrive_pending".to_string());
+        pending.updated_at = stale;
+
+        let mut delivering = candidate_workspace("redrive-delivering");
+        delivering.publication_pr_number = Some(25);
+        delivering.publication_pr_status = Some("open".to_string());
+        delivering.publication_push_status = Some("redrive_delivering".to_string());
+        delivering.updated_at = stale;
+
         let mut closed = candidate_workspace("closed");
         closed.publication_pr_number = Some(23);
         closed.publication_pr_status = Some("closed".to_string());
@@ -2484,7 +2763,13 @@ mod tests {
         archived.publication_push_status = Some("describing".to_string());
         archived.updated_at = stale;
 
-        for workspace in [refreshing.clone(), closed, archived] {
+        for workspace in [
+            refreshing.clone(),
+            pending.clone(),
+            delivering.clone(),
+            closed,
+            archived,
+        ] {
             repo.create_or_update(workspace).await.unwrap();
         }
 
@@ -2493,8 +2778,16 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(workspaces.len(), 1);
-        assert_eq!(workspaces[0].conversation_id, refreshing.conversation_id);
+        assert_eq!(workspaces.len(), 3);
+        assert!(workspaces
+            .iter()
+            .any(|workspace| workspace.conversation_id == refreshing.conversation_id));
+        assert!(workspaces
+            .iter()
+            .any(|workspace| workspace.conversation_id == pending.conversation_id));
+        assert!(workspaces
+            .iter()
+            .any(|workspace| workspace.conversation_id == delivering.conversation_id));
     }
 
     #[tokio::test]

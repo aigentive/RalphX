@@ -399,6 +399,16 @@ fn build_pr_health_view_args(pr_number: i64) -> Vec<String> {
     ]
 }
 
+fn build_pr_auto_merge_state_view_args(pr_number: i64) -> Vec<String> {
+    vec![
+        "pr".to_string(),
+        "view".to_string(),
+        pr_number.to_string(),
+        "--json".to_string(),
+        "autoMergeRequest".to_string(),
+    ]
+}
+
 fn build_pr_detail_view_args(pr_number: i64) -> Vec<String> {
     vec![
         "pr".to_string(),
@@ -992,6 +1002,18 @@ impl GithubServiceTrait for GhCliGithubService {
             .run_gh(working_dir, &build_pr_issue_comments_api_args(pr_number))
             .await?;
         parse_pr_health_output(&view_stdout.join("\n"), &comments_stdout.join("\n"))
+    }
+
+    async fn fetch_pr_auto_merge_state(
+        &self,
+        working_dir: &Path,
+        pr_number: i64,
+    ) -> AppResult<Option<PrAutoMergeRequest>> {
+        let stdout = self
+            .runner
+            .run_gh(working_dir, &build_pr_auto_merge_state_view_args(pr_number))
+            .await?;
+        parse_pr_auto_merge_state_output(&stdout.join("\n"))
     }
 
     async fn list_branch_check_conclusions(
@@ -1798,6 +1820,18 @@ pub(crate) fn parse_pr_health_output(view_json: &str, comments_json: &str) -> Ap
         issue_comments: parse_pr_issue_comments_value(&comments_value)?,
         auto_merge_request: parse_auto_merge_request(&view_value),
     })
+}
+
+pub(crate) fn parse_pr_auto_merge_state_output(
+    view_json: &str,
+) -> AppResult<Option<PrAutoMergeRequest>> {
+    let view_value: Value = serde_json::from_str(view_json).map_err(|e| {
+        AppError::Infrastructure(format!(
+            "Failed to parse gh pr auto-merge state JSON: {e}\nRaw: {view_json}"
+        ))
+    })?;
+
+    Ok(parse_auto_merge_request(&view_value))
 }
 
 fn parse_status_check_rollup(view_value: &Value) -> Vec<PrHealthCheck> {

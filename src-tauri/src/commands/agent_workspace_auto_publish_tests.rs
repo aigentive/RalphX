@@ -358,6 +358,11 @@ async fn installed_listeners_handle_completion_events() {
         }),
     )
     .expect("turn completion event should emit");
+    app.emit(
+        crate::application::agent_workspace_publish_recovery::AGENT_WORKSPACE_PUBLISH_REDRIVE_REQUESTED,
+        "88888888-8888-8888-8888-888888888888",
+    )
+    .expect("publish re-drive event should emit");
 
     wait_for_spawned_auto_publish().await;
 }
@@ -700,6 +705,63 @@ async fn direct_auto_publish_skips_valid_current_base_without_local_work() {
     assert_eq!(
         decision,
         AutoPublishDecision::Skip(AutoPublishSkipReason::NoPendingLocalWork)
+    );
+}
+
+#[tokio::test]
+async fn stale_active_admission_reclaim_does_not_leave_an_orphan_publish_lease() {
+    let (_repo, project, mut workspace) = git_workspace_fixture();
+    workspace.publication_push_status = Some("refreshing".to_string());
+    let state = AppState::new_test();
+    let conversation_id = workspace.conversation_id.clone();
+    state
+        .project_repo
+        .create(project)
+        .await
+        .expect("project should seed");
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should seed");
+    state
+        .agent_conversation_workspace_repo
+        .claim_publish_lease(
+            &conversation_id,
+            &format!("publish-operation:{conversation_id}"),
+            "orphaned-admission-token",
+            chrono::Utc::now(),
+            None,
+            false,
+        )
+        .await
+        .expect("orphaned operation lease should seed");
+
+    let decision = auto_publish_existing_agent_workspace_pr::<MockRuntime>(
+        &state,
+        &Arc::new(ExecutionState::new()),
+        None,
+        conversation_id.clone(),
+        AutoPublishTrigger::AgentCompletion,
+    )
+    .await
+    .expect("stale active admission should recover and evaluate normally");
+
+    assert_eq!(
+        decision,
+        AutoPublishDecision::Skip(AutoPublishSkipReason::NoPendingLocalWork)
+    );
+    let recovered = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace should load")
+        .expect("workspace should exist");
+    assert_eq!(recovered.publish_lease_owner_run_id, None);
+    assert_eq!(recovered.publish_lease_token, None);
+    assert_eq!(
+        recovered.publication_push_status.as_deref(),
+        Some("refreshed")
     );
 }
 

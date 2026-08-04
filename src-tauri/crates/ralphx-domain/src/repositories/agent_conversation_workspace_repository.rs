@@ -22,6 +22,14 @@ pub enum AgentWorkspaceLocalCleanupClaim {
     AlreadyCleaned,
 }
 
+/// Result of atomically acquiring the workspace-scoped publication lease.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentWorkspacePublishLeaseClaim {
+    Claimed,
+    HeldByLiveOwner,
+    Reclaimed,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentWorkspacePrTerminalSettlement {
     pub superseded_action_ids: Vec<String>,
@@ -326,9 +334,9 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
 
     /// Lists active workspaces whose current PR metadata receipt still requires recovery.
     ///
-    /// This is intentionally separate from generic transient publish statuses because receipt
-    /// recovery owns `pushing`, while generic stale recovery must never downgrade it. The age
-    /// cutoff prevents periodic recovery from preempting an in-flight metadata mutation.
+    /// This is intentionally separate from generic transient publish-status recovery because a
+    /// durable metadata receipt needs effect reconciliation before the normal publish re-drive.
+    /// The age cutoff prevents periodic recovery from preempting an in-flight metadata mutation.
     async fn list_active_pending_publication_metadata_receipt_workspaces(
         &self,
         stale_older_than_secs: u64,
@@ -369,6 +377,47 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         pr_status: Option<&str>,
         push_status: Option<&str>,
     ) -> AppResult<()>;
+
+    /// Claims a lease, or reclaims it only after the caller has proved the previous owner dead.
+    /// Legacy rows without an owner are reclaimable only after their timestamp fallback expires.
+    async fn claim_publish_lease(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _owner_run_id: &str,
+        _token: &str,
+        _now: DateTime<Utc>,
+        _expected_previous_token: Option<&str>,
+        _previous_owner_is_dead: bool,
+    ) -> AppResult<AgentWorkspacePublishLeaseClaim> {
+        Err(crate::error::AppError::Infrastructure(
+            "publish leases are unsupported by this workspace repository".to_string(),
+        ))
+    }
+
+    /// Extends a lease only for its exact fencing token.
+    async fn heartbeat_publish_lease(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _token: &str,
+        _now: DateTime<Utc>,
+    ) -> AppResult<bool> {
+        Err(crate::error::AppError::Infrastructure(
+            "publish lease heartbeats are unsupported by this workspace repository".to_string(),
+        ))
+    }
+
+    /// Clears a lease only for its exact fencing token and optionally settles a terminal status.
+    async fn release_publish_lease(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _token: &str,
+        _terminal_status: Option<&str>,
+        _now: DateTime<Utc>,
+    ) -> AppResult<bool> {
+        Err(crate::error::AppError::Infrastructure(
+            "publish lease release is unsupported by this workspace repository".to_string(),
+        ))
+    }
 
     /// Exclusively starts an existing-PR metadata receipt and its first audit event.
     /// Terminal prior receipts may be replaced; pending receipts remain authoritative.
@@ -466,6 +515,14 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         &self,
         conversation_id: &ChatConversationId,
         fingerprint: Option<&str>,
+    ) -> AppResult<()>;
+
+    /// Sets the per-workspace Auto Review & Fix override. Enabling re-arms only a capped fixer
+    /// cycle, leaving any active routing/queued/running reservation untouched.
+    async fn set_review_automation_override(
+        &self,
+        conversation_id: &ChatConversationId,
+        value: Option<bool>,
     ) -> AppResult<()>;
 
     async fn update_auto_publish_preferences(

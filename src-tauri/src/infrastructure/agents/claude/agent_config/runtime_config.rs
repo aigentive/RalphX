@@ -628,6 +628,8 @@ pub struct GitRuntimeConfig {
     pub max_retries: u64,
     pub retry_backoff_secs: Vec<u64>,
     pub index_lock_stale_secs: u64,
+    /// TTL for reusable provider CLI runtime probes, in seconds.
+    pub provider_probe_cache_ttl_secs: u64,
     /// Short TTL for agent workspace freshness responses, in milliseconds.
     pub workspace_freshness_cache_ttl_ms: u64,
     /// Short TTL for agent workspace review context and payload cache, in milliseconds.
@@ -641,6 +643,15 @@ pub struct GitRuntimeConfig {
     /// TTL for external PR reconciliation attempts on an unlinked agent workspace.
     #[serde(default = "default_agent_workspace_pr_reconciliation_cache_ttl_ms")]
     pub agent_workspace_pr_reconciliation_cache_ttl_ms: u64,
+    /// Legacy fallback age for transient publish rows that have no owner identity.
+    #[serde(default = "default_agent_workspace_publish_lease_stale_secs")]
+    pub agent_workspace_publish_lease_stale_secs: u64,
+    /// Heartbeat cadence while a live publication operation owns its durable lease.
+    #[serde(default = "default_agent_workspace_publish_lease_heartbeat_interval_secs")]
+    pub agent_workspace_publish_lease_heartbeat_interval_secs: u64,
+    /// Cadence for liveness-aware workspace publish recovery.
+    #[serde(default = "default_agent_workspace_publish_recovery_interval_secs")]
+    pub agent_workspace_publish_recovery_interval_secs: u64,
     /// Seconds between background terminal PR local artifact cleanup passes.
     #[serde(default = "default_terminal_pr_local_cleanup_interval_secs")]
     pub terminal_pr_local_cleanup_interval_secs: u64,
@@ -677,12 +688,16 @@ impl Default for GitRuntimeConfig {
             max_retries: 3,
             retry_backoff_secs: vec![1, 2, 4],
             index_lock_stale_secs: 5,
+            provider_probe_cache_ttl_secs: 300,
             workspace_freshness_cache_ttl_ms: 2_000,
             workspace_review_cache_ttl_ms: 2_000,
             workspace_pr_description_cache_ttl_ms: 300_000,
             workspace_pr_annotations_cache_ttl_ms: 30_000,
             workspace_pr_annotations_check_run_fetch_limit: 10,
             agent_workspace_pr_reconciliation_cache_ttl_ms: 30_000,
+            agent_workspace_publish_lease_stale_secs: 300,
+            agent_workspace_publish_lease_heartbeat_interval_secs: 30,
+            agent_workspace_publish_recovery_interval_secs: 120,
             terminal_pr_local_cleanup_interval_secs: 900,
             terminal_pr_local_cleanup_retry_secs: 3_600,
             orphan_worktree_cleanup_marker_retry_secs: 86_400,
@@ -699,6 +714,18 @@ impl Default for GitRuntimeConfig {
 
 fn default_agent_workspace_pr_reconciliation_cache_ttl_ms() -> u64 {
     30_000
+}
+
+fn default_agent_workspace_publish_lease_stale_secs() -> u64 {
+    300
+}
+
+fn default_agent_workspace_publish_lease_heartbeat_interval_secs() -> u64 {
+    30
+}
+
+fn default_agent_workspace_publish_recovery_interval_secs() -> u64 {
+    120
 }
 
 fn default_terminal_pr_local_cleanup_interval_secs() -> u64 {
@@ -1182,6 +1209,10 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
         "RALPHX_GIT_INDEX_LOCK_STALE_SECS"
     );
     env_u64!(
+        cfg.git.provider_probe_cache_ttl_secs,
+        "RALPHX_GIT_PROVIDER_PROBE_CACHE_TTL_SECS"
+    );
+    env_u64!(
         cfg.git.workspace_freshness_cache_ttl_ms,
         "RALPHX_GIT_WORKSPACE_FRESHNESS_CACHE_TTL_MS"
     );
@@ -1204,6 +1235,19 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
     env_u64!(
         cfg.git.agent_workspace_pr_reconciliation_cache_ttl_ms,
         "RALPHX_GIT_AGENT_WORKSPACE_PR_RECONCILIATION_CACHE_TTL_MS"
+    );
+    env_u64!(
+        cfg.git.agent_workspace_publish_lease_stale_secs,
+        "RALPHX_GIT_AGENT_WORKSPACE_PUBLISH_LEASE_STALE_SECS"
+    );
+    env_u64!(
+        cfg.git
+            .agent_workspace_publish_lease_heartbeat_interval_secs,
+        "RALPHX_GIT_AGENT_WORKSPACE_PUBLISH_LEASE_HEARTBEAT_INTERVAL_SECS"
+    );
+    env_u64!(
+        cfg.git.agent_workspace_publish_recovery_interval_secs,
+        "RALPHX_GIT_AGENT_WORKSPACE_PUBLISH_RECOVERY_INTERVAL_SECS"
     );
     env_u64!(
         cfg.git.terminal_pr_local_cleanup_interval_secs,

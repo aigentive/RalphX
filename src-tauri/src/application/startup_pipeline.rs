@@ -5,7 +5,10 @@ use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
 use crate::application::agent_workspace_bridge::AgentWorkspaceBridgeDeps;
-use crate::application::agent_workspace_publish_recovery::recover_stale_agent_workspace_publish_repairs_on_startup_for_state;
+use crate::application::agent_workspace_publish_recovery::{
+    recover_stale_agent_workspace_publish_repairs_on_startup_for_state,
+    recover_stale_transient_publish_statuses_for_state,
+};
 use crate::application::git_service::git_cmd::{self, GitCommandLane};
 use crate::application::runtime_factory::{ChatRuntimeFactoryDeps, RuntimeFactoryDeps};
 use crate::application::startup_git_auth_preflight::StartupGitAuthRecoveryState;
@@ -703,6 +706,15 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     // across a restart instead of allowing the poller to replay legacy workspace state first.
     let phase_started_at = startup_phase_started("stale_workspace_publish_repair");
     recover_stale_agent_workspace_publish_repairs_on_startup_for_state(&app_state).await;
+    if let Err(error) = recover_stale_transient_publish_statuses_for_state(
+        &app_state,
+        crate::infrastructure::agents::claude::git_runtime_config()
+            .agent_workspace_publish_lease_stale_secs,
+    )
+    .await
+    {
+        tracing::warn!(error = %error, "Failed to re-drive stale workspace publication statuses on startup");
+    }
     startup_phase_completed("stale_workspace_publish_repair", phase_started_at);
 
     let phase_started_at = Instant::now();
@@ -791,6 +803,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         Arc::clone(&recovery_chat_service),
         Some(app_state.notification_service()),
         Some(Arc::clone(&app_state.agent_workspace_repair_repo)),
+        Some(Arc::new(app_state.clone())),
         Arc::clone(&blocked_git_project_ids),
     )
     .await;

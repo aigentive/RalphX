@@ -22,17 +22,20 @@ use crate::application::chat_service::{
 use crate::application::git_service::git_cmd::{self, GitCommandLane};
 use crate::application::{AppState, GitService};
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunAction,
-    AgentRunActionKind, AgentRunId, AgentRunStatus, AgentWorkspaceReviewFixerSnapshot,
-    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
-    AgentWorkspaceReviewOutcome, AgentWorkspaceReviewRuntimeState, AgentWorkspaceReviewTargetScope,
-    Artifact, ArtifactContent, ArtifactId, ChatContextType, ChatConversation, ChatConversationId,
-    MessageRole, Project,
+    workspace_review_fixer_status_is_active, AgentConversationWorkspace,
+    AgentConversationWorkspaceMode, AgentRun, AgentRunAction, AgentRunActionKind, AgentRunId,
+    AgentRunStatus, AgentWorkspaceReviewFixerSnapshot, AgentWorkspaceReviewGateStatus,
+    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+    AgentWorkspaceReviewRuntimeState, AgentWorkspaceReviewTargetScope, Artifact, ArtifactContent,
+    ArtifactId, ChatContextType, ChatConversation, ChatConversationId, MessageRole, Project,
+    WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED, WORKSPACE_REVIEW_FIXER_STATUS_QUEUED,
+    WORKSPACE_REVIEW_FIXER_STATUS_ROUTING, WORKSPACE_REVIEW_FIXER_STATUS_RUNNING,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, QueuedMessageRepository,
     ORPHANED_AGENT_RUN_ON_APP_RESTART,
 };
+use crate::domain::review::ReviewSettings;
 use crate::domain::services::{
     ComposerArtifactReference, ComposerIntegrationReference, ComposerProjectReference,
     ComposerProjectReferenceKind,
@@ -68,11 +71,7 @@ const WORKSPACE_REVIEW_FIXER_INTERRUPTED_ON_STARTUP_ERROR: &str =
     "Workspace Review fixer routing was interrupted when the app restarted";
 const WORKSPACE_REVIEW_FIXER_INVALID_AUTHORITY_ON_STARTUP_ERROR: &str =
     "Workspace Review fixer recovery found invalid attempt authority";
-const WORKSPACE_REVIEW_FIXER_STATUS_ROUTING: &str = "routing";
-const WORKSPACE_REVIEW_FIXER_STATUS_QUEUED: &str = "queued";
-const WORKSPACE_REVIEW_FIXER_STATUS_RUNNING: &str = "running";
 const WORKSPACE_REVIEW_FIXER_STATUS_FAILED: &str = "failed";
-const WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED: &str = "cycle_capped";
 const WORKSPACE_REVIEW_FIXER_SKIPPED_ALREADY_ACTIVE: &str = "fixer_already_active";
 const WORKSPACE_REVIEW_PLAN_CONTEXT_CHANGED_ERROR: &str =
     "The linked plan changed after this Workspace Review. Run Workspace Review again before repairing its findings.";
@@ -813,25 +812,67 @@ pub(crate) async fn start_agent_workspace_review_unlocked_with_runtime_override(
     force: bool,
     runtime_override: Option<&crate::domain::agents::ManualRoleRuntimeOverride>,
 ) -> AppResult<AgentWorkspaceReviewStart> {
-    let chat_service = state.build_chat_service();
-    // Box::pin keeps this large review-start state machine off caller poll frames;
-    // the guarded/repair chains embed this future several levels deep and overflow
-    // debug/test stacks when it is inlined (see rule: Large async state entry).
-    Box::pin(start_agent_workspace_review_with_chat_service(
+    start_agent_workspace_review_unlocked_with_revalidated_target(
         state,
         workspace,
         force,
         runtime_override,
-        &chat_service,
-    ))
+        None,
+    )
     .await
 }
 
+pub(crate) async fn start_agent_workspace_review_unlocked_with_revalidated_target(
+    state: Arc<AppState>,
+    workspace: &AgentConversationWorkspace,
+    force: bool,
+    runtime_override: Option<&crate::domain::agents::ManualRoleRuntimeOverride>,
+    revalidated_target: Option<AgentWorkspaceReviewTarget>,
+) -> AppResult<AgentWorkspaceReviewStart> {
+    let chat_service = state.build_chat_service();
+    // Box::pin keeps this large review-start state machine off caller poll frames;
+    // the guarded/repair chains embed this future several levels deep and overflow
+    // debug/test stacks when it is inlined (see rule: Large async state entry).
+    Box::pin(
+        start_agent_workspace_review_with_revalidated_target_and_chat_service(
+            state,
+            workspace,
+            force,
+            runtime_override,
+            revalidated_target,
+            &chat_service,
+        ),
+    )
+    .await
+}
+
+#[cfg(test)]
 async fn start_agent_workspace_review_with_chat_service<S: ChatService + ?Sized>(
     state: Arc<AppState>,
     workspace: &AgentConversationWorkspace,
     force: bool,
     runtime_override: Option<&crate::domain::agents::ManualRoleRuntimeOverride>,
+    chat_service: &S,
+) -> AppResult<AgentWorkspaceReviewStart> {
+    start_agent_workspace_review_with_revalidated_target_and_chat_service(
+        state,
+        workspace,
+        force,
+        runtime_override,
+        None,
+        chat_service,
+    )
+    .await
+}
+
+async fn start_agent_workspace_review_with_revalidated_target_and_chat_service<
+    S: ChatService + ?Sized,
+>(
+    state: Arc<AppState>,
+    workspace: &AgentConversationWorkspace,
+    force: bool,
+    runtime_override: Option<&crate::domain::agents::ManualRoleRuntimeOverride>,
+    revalidated_target: Option<AgentWorkspaceReviewTarget>,
     chat_service: &S,
 ) -> AppResult<AgentWorkspaceReviewStart> {
     let request_started = Instant::now();
@@ -854,28 +895,45 @@ async fn start_agent_workspace_review_with_chat_service<S: ChatService + ?Sized>
         force,
         "Received workspace Review start request"
     );
-    let phase_started = Instant::now();
-    let project = state
-        .project_repo
-        .get_by_id(&workspace.project_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Project not found".to_string()))?;
-    log_workspace_review_phase(
-        "workspace_review_start_phase",
-        workspace,
-        "load_project",
-        phase_started,
-        request_started,
-    );
-    let phase_started = Instant::now();
-    let target = resolve_review_target(workspace, &project).await?;
-    log_workspace_review_phase(
-        "workspace_review_start_phase",
-        workspace,
-        "resolve_target",
-        phase_started,
-        request_started,
-    );
+    let target = if let Some(target) = revalidated_target {
+        info!(
+            target: WORKSPACE_REVIEW_LOG_TARGET,
+            operation = "workspace_review_start_phase",
+            phase = "resolve_target",
+            source = "revalidated",
+            conversation_id = %workspace.conversation_id,
+            project_id = %workspace.project_id,
+            branch = %workspace.branch_name,
+            elapsed_ms = 0u128,
+            total_elapsed_ms = request_started.elapsed().as_millis(),
+            "Workspace Review phase completed"
+        );
+        Some(target)
+    } else {
+        let phase_started = Instant::now();
+        let project = state
+            .project_repo
+            .get_by_id(&workspace.project_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Project not found".to_string()))?;
+        log_workspace_review_phase(
+            "workspace_review_start_phase",
+            workspace,
+            "load_project",
+            phase_started,
+            request_started,
+        );
+        let phase_started = Instant::now();
+        let target = resolve_review_target(workspace, &project).await?;
+        log_workspace_review_phase(
+            "workspace_review_start_phase",
+            workspace,
+            "resolve_target",
+            phase_started,
+            request_started,
+        );
+        target
+    };
     let phase_started = Instant::now();
     let mut monitor = load_or_create_monitor(&state, workspace).await?;
     log_workspace_review_phase(
@@ -2724,11 +2782,57 @@ async fn workspace_review_autofix_blocking_findings_policy(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
 ) -> (bool, i64) {
+    let workspace = match state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&workspace.conversation_id)
+        .await
+    {
+        Ok(Some(workspace)) => workspace,
+        Ok(None) => return (false, 0),
+        Err(error) => {
+            warn!(
+                target: WORKSPACE_REVIEW_LOG_TARGET,
+                operation = "blocking_fixer_workspace_load_failed",
+                conversation_id = %workspace.conversation_id,
+                project_id = %workspace.project_id,
+                branch = %workspace.branch_name,
+                error = %error,
+                "Failed to load current workspace; automatic workspace Review fixer routing is disabled for this completion"
+            );
+            return (false, 0);
+        }
+    };
+    let workspace_override = workspace.review_automation_override;
+    if workspace_override == Some(false) {
+        let effective =
+            ReviewSettings::default().effective_workspace_review_automation(workspace_override);
+        return (effective.autofix_blocking_findings, 0);
+    }
     match state.review_settings_repo.get_settings().await {
-        Ok(settings) => (
-            settings.autofix_workspace_review_blocking_findings,
-            settings.workspace_review_fixer_cycle_cap.max(0),
-        ),
+        Ok(settings) => {
+            let effective = settings.effective_workspace_review_automation(workspace_override);
+            (
+                effective.autofix_blocking_findings,
+                settings.workspace_review_fixer_cycle_cap.max(0),
+            )
+        }
+        Err(error) if workspace_override == Some(true) => {
+            warn!(
+                target: WORKSPACE_REVIEW_LOG_TARGET,
+                operation = "blocking_fixer_autofix_settings_load_failed",
+                conversation_id = %workspace.conversation_id,
+                project_id = %workspace.project_id,
+                branch = %workspace.branch_name,
+                error = %error,
+                "Failed to load Review settings; explicit workspace automation remains enabled with the default cycle cap"
+            );
+            let settings = ReviewSettings::default();
+            let effective = settings.effective_workspace_review_automation(workspace_override);
+            (
+                effective.autofix_blocking_findings,
+                settings.workspace_review_fixer_cycle_cap,
+            )
+        }
         Err(error) => {
             warn!(
                 target: WORKSPACE_REVIEW_LOG_TARGET,
@@ -2742,17 +2846,6 @@ async fn workspace_review_autofix_blocking_findings_policy(
             (false, 0)
         }
     }
-}
-
-fn workspace_review_fixer_status_is_active(status: Option<&str>) -> bool {
-    matches!(
-        status,
-        Some(
-            WORKSPACE_REVIEW_FIXER_STATUS_ROUTING
-                | WORKSPACE_REVIEW_FIXER_STATUS_QUEUED
-                | WORKSPACE_REVIEW_FIXER_STATUS_RUNNING
-        )
-    )
 }
 
 pub async fn start_agent_workspace_review_blocking_fixer(
@@ -4322,7 +4415,22 @@ pub(crate) async fn resolve_review_target(
     workspace: &AgentConversationWorkspace,
     project: &Project,
 ) -> AppResult<Option<AgentWorkspaceReviewTarget>> {
-    git_cmd::with_git_command_lane(GitCommandLane::Background, async {
+    resolve_review_target_in_lane(workspace, project, GitCommandLane::Background).await
+}
+
+pub(crate) async fn resolve_review_target_for_user(
+    workspace: &AgentConversationWorkspace,
+    project: &Project,
+) -> AppResult<Option<AgentWorkspaceReviewTarget>> {
+    resolve_review_target_in_lane(workspace, project, GitCommandLane::Foreground).await
+}
+
+async fn resolve_review_target_in_lane(
+    workspace: &AgentConversationWorkspace,
+    project: &Project,
+    lane: GitCommandLane,
+) -> AppResult<Option<AgentWorkspaceReviewTarget>> {
+    git_cmd::with_git_command_lane(lane, async {
         ensure_workspace_review_supported_mode(workspace)?;
         if let Some(workspace_target) = resolve_workspace_delta_target(workspace).await? {
             return Ok(Some(workspace_target));
@@ -4392,11 +4500,22 @@ async fn resolve_workspace_delta_target(
         total_started,
     );
     let phase_started = Instant::now();
-    let committed_diff = git_stdout_lossy(
-        &["diff", "--binary", "--no-ext-diff", &base_ref, &head_ref],
-        &worktree_path,
-    )
-    .await?;
+    let committed_diff_args = [
+        "diff",
+        "--binary",
+        "--no-ext-diff",
+        base_ref.as_str(),
+        head_ref.as_str(),
+    ];
+    let staged_diff_args = ["diff", "--cached", "--binary", "--no-ext-diff"];
+    let unstaged_diff_args = ["diff", "--binary", "--no-ext-diff"];
+    let status_args = ["status", "--porcelain=v1", "-uall"];
+    let (committed_diff, staged_diff, unstaged_diff, status) = tokio::try_join!(
+        git_stdout_lossy(&committed_diff_args, &worktree_path),
+        git_stdout_lossy(&staged_diff_args, &worktree_path),
+        git_stdout_lossy(&unstaged_diff_args, &worktree_path),
+        git_stdout_lossy(&status_args, &worktree_path),
+    )?;
     log_workspace_review_phase(
         "workspace_review_target_phase",
         workspace,
@@ -4404,12 +4523,6 @@ async fn resolve_workspace_delta_target(
         phase_started,
         total_started,
     );
-    let phase_started = Instant::now();
-    let staged_diff = git_stdout_lossy(
-        &["diff", "--cached", "--binary", "--no-ext-diff"],
-        &worktree_path,
-    )
-    .await?;
     log_workspace_review_phase(
         "workspace_review_target_phase",
         workspace,
@@ -4417,9 +4530,6 @@ async fn resolve_workspace_delta_target(
         phase_started,
         total_started,
     );
-    let phase_started = Instant::now();
-    let unstaged_diff =
-        git_stdout_lossy(&["diff", "--binary", "--no-ext-diff"], &worktree_path).await?;
     log_workspace_review_phase(
         "workspace_review_target_phase",
         workspace,
@@ -4427,8 +4537,6 @@ async fn resolve_workspace_delta_target(
         phase_started,
         total_started,
     );
-    let phase_started = Instant::now();
-    let status = git_stdout_lossy(&["status", "--porcelain=v1", "-uall"], &worktree_path).await?;
     log_workspace_review_phase(
         "workspace_review_target_phase",
         workspace,
@@ -4452,8 +4560,12 @@ async fn resolve_workspace_delta_target(
     }
 
     let phase_started = Instant::now();
-    let base_sha = rev_parse(&worktree_path, &base_ref).await.ok();
-    let head_sha = rev_parse(&worktree_path, &head_ref).await.ok();
+    let (base_sha, head_sha) = tokio::join!(
+        rev_parse(&worktree_path, &base_ref),
+        rev_parse(&worktree_path, &head_ref),
+    );
+    let base_sha = base_sha.ok();
+    let head_sha = head_sha.ok();
     log_workspace_review_phase(
         "workspace_review_target_phase",
         workspace,
@@ -4522,7 +4634,7 @@ async fn workspace_delta_tree_fingerprints(
     repo: &Path,
     base_ref: &str,
 ) -> AppResult<WorkspaceDeltaTreeFingerprints> {
-    ensure_workspace_review_git_is_settled(repo).await?;
+    ensure_workspace_review_git_operation_is_settled(repo)?;
     let base_tree = rev_parse(repo, &format!("{base_ref}^{{tree}}")).await?;
     let head_tree = rev_parse(repo, "HEAD^{tree}").await?;
     let index_tree = match git_stdout_lossy(&["write-tree"], repo).await {
@@ -4595,9 +4707,16 @@ async fn workspace_delta_tree_fingerprints(
 }
 
 async fn ensure_workspace_review_git_is_settled(repo: &Path) -> AppResult<()> {
-    let unfinished_operation = GitService::unfinished_operation_state(repo)?;
+    ensure_workspace_review_git_operation_is_settled(repo)?;
     let conflict_files = GitService::get_conflict_files(repo).await?;
-    if unfinished_operation.is_unfinished() || !conflict_files.is_empty() {
+    if !conflict_files.is_empty() {
+        return Err(AppError::WorkspaceReviewUnfinishedGitOperation);
+    }
+    Ok(())
+}
+
+fn ensure_workspace_review_git_operation_is_settled(repo: &Path) -> AppResult<()> {
+    if GitService::unfinished_operation_state(repo)?.is_unfinished() {
         return Err(AppError::WorkspaceReviewUnfinishedGitOperation);
     }
     Ok(())
@@ -4609,9 +4728,11 @@ pub(crate) async fn workspace_review_source_snapshot_fingerprint(
     match target.scope {
         AgentWorkspaceReviewTargetScope::SelectedSource => Ok(target.diff_fingerprint.clone()),
         AgentWorkspaceReviewTargetScope::WorkspaceDelta => {
-            let trees =
-                workspace_delta_tree_fingerprints(&target.working_directory, &target.base_ref)
-                    .await?;
+            let trees = git_cmd::with_git_command_lane(
+                GitCommandLane::Background,
+                workspace_delta_tree_fingerprints(&target.working_directory, &target.base_ref),
+            )
+            .await?;
             Ok(fingerprint_parts([
                 "workspace_delta_sources_v1",
                 &trees.base_tree,
@@ -4822,10 +4943,7 @@ async fn git_success(args: &[&str], cwd: &Path) -> bool {
 }
 
 async fn git_stdout_lossy(args: &[&str], cwd: &Path) -> AppResult<String> {
-    let output = git_cmd::with_git_command_lane(GitCommandLane::Background, async {
-        git_cmd::run(args, cwd).await
-    })
-    .await?;
+    let output = git_cmd::run(args, cwd).await?;
     if !output.status.success() {
         return Err(AppError::GitOperation(
             String::from_utf8_lossy(&output.stderr).trim().to_string(),
@@ -4839,10 +4957,7 @@ async fn git_stdout_lossy_with_env(
     cwd: &Path,
     env: &[(&str, &str)],
 ) -> AppResult<String> {
-    let output = git_cmd::with_git_command_lane(GitCommandLane::Background, async {
-        git_cmd::run_with_env(args, cwd, env).await
-    })
-    .await?;
+    let output = git_cmd::run_with_env(args, cwd, env).await?;
     if !output.status.success() {
         return Err(AppError::GitOperation(
             String::from_utf8_lossy(&output.stderr).trim().to_string(),

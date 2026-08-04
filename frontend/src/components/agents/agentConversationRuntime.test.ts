@@ -347,6 +347,22 @@ describe("workspace review runtime", () => {
     });
   });
 
+  it("uses a current-session composer override ahead of hydrated child metadata", () => {
+    expect(
+      runtimeForWorkspaceReviewFocus(
+        null,
+        { provider: "codex", modelId: "gpt-5.5", effort: "high" },
+        null,
+        null,
+        { provider: "claude", modelId: "sonnet", effort: "high" },
+      ),
+    ).toEqual({
+      provider: "claude",
+      modelId: "sonnet",
+      effort: "high",
+    });
+  });
+
   it("falls back to the workspace runtime while the role default is unavailable", () => {
     const workspaceRuntime = {
       provider: "codex" as const,

@@ -1,16 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-export type DeferredFrameJob = { frame: number | null; timer: number | null };
+export type DeferredFrameJob = {
+  frame: number | null;
+  timer: number | null;
+  cancelFrame: (frame: number) => void;
+  cancelTimer: (timer: number) => void;
+};
 
 export function cancelDeferredFrameJob(job: DeferredFrameJob | null) {
   if (!job) {
     return;
   }
   if (job.frame !== null) {
-    window.cancelAnimationFrame(job.frame);
+    job.cancelFrame(job.frame);
   }
   if (job.timer !== null) {
-    window.clearTimeout(job.timer);
+    job.cancelTimer(job.timer);
   }
 }
 
@@ -18,6 +23,8 @@ export function scheduleDeferredFrameJob(callback: () => void): DeferredFrameJob
   const job: DeferredFrameJob = {
     frame: null,
     timer: null,
+    cancelFrame: window.cancelAnimationFrame.bind(window),
+    cancelTimer: window.clearTimeout.bind(window),
   };
   job.frame = window.requestAnimationFrame(() => {
     job.frame = null;

@@ -1,11 +1,15 @@
 use super::harness_runtime_registry::{
     clear_harness_runtime_caches_for_tests, probe_supported_harnesses,
-    refresh_harness_runtime_probe, refresh_supported_harnesses, HarnessRuntimeProbe,
+    refresh_harness_runtime_probe_with_force, refresh_supported_harnesses_with_force,
+    HarnessRuntimeProbe,
 };
 use crate::domain::agents::AgentHarnessKind;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::Path;
+use std::time::{Duration, SystemTime};
+
+use super::harness_runtime_test_support::HARNESS_RUNTIME_TEST_MUTEX;
 
 struct EnvGuard {
     key: &'static str,
@@ -108,8 +112,135 @@ fn model_aliases(probe: &HarnessRuntimeProbe) -> Vec<String> {
 }
 
 #[cfg(unix)]
+fn set_modified_time(path: &Path, modified: SystemTime) {
+    let file = std::fs::File::open(path).expect("open fake executable");
+    file.set_times(std::fs::FileTimes::new().set_modified(modified))
+        .expect("set fake executable modified time");
+}
+
+#[cfg(unix)]
+fn with_fake_harness_binaries(test: impl FnOnce(&Path, &Path)) {
+    let _runtime_lock = HARNESS_RUNTIME_TEST_MUTEX
+        .lock()
+        .expect("harness runtime mutex");
+    let _env_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let bin_dir = temp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).expect("create bin dir");
+    let claude_cli = bin_dir.join("claude");
+    let codex_cli = bin_dir.join("codex");
+    write_fake_claude(&claude_cli, "2.1.110");
+    write_fake_codex(&codex_cli);
+
+    let _path = EnvGuard::set_os("PATH", &bin_dir);
+    let _home = EnvGuard::set_os("HOME", temp.path());
+    let _zdotdir = EnvGuard::set_os("ZDOTDIR", temp.path());
+    let _nvm = EnvGuard::unset("NVM_BIN");
+    let _volta = EnvGuard::unset("VOLTA_HOME");
+
+    clear_harness_runtime_caches_for_tests(AgentHarnessKind::Claude);
+    clear_harness_runtime_caches_for_tests(AgentHarnessKind::Codex);
+    test(&claude_cli, &codex_cli);
+    clear_harness_runtime_caches_for_tests(AgentHarnessKind::Claude);
+    clear_harness_runtime_caches_for_tests(AgentHarnessKind::Codex);
+}
+
+#[cfg(unix)]
+#[test]
+fn refresh_harness_runtime_probe_reuses_unchanged_binary_cache_entry() {
+    with_fake_harness_binaries(|claude_cli, _| {
+        let initial_probe =
+            refresh_harness_runtime_probe_with_force(AgentHarnessKind::Claude, false);
+        let original_modified = std::fs::metadata(claude_cli)
+            .expect("fake executable metadata")
+            .modified()
+            .expect("fake executable modification time");
+
+        write_fake_claude(claude_cli, "2.1.219");
+        set_modified_time(claude_cli, original_modified);
+
+        let cached_probe =
+            refresh_harness_runtime_probe_with_force(AgentHarnessKind::Claude, false);
+        assert_eq!(initial_probe.cli_version.as_deref(), Some("2.1.110"));
+        assert_eq!(cached_probe.cli_version.as_deref(), Some("2.1.110"));
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn refresh_harness_runtime_probe_reprobes_when_binary_mtime_changes() {
+    with_fake_harness_binaries(|claude_cli, _| {
+        let initial_probe =
+            refresh_harness_runtime_probe_with_force(AgentHarnessKind::Claude, false);
+        write_fake_claude(claude_cli, "2.1.219");
+        set_modified_time(claude_cli, SystemTime::now() + Duration::from_secs(1));
+
+        let refreshed_probe =
+            refresh_harness_runtime_probe_with_force(AgentHarnessKind::Claude, false);
+        assert_eq!(initial_probe.cli_version.as_deref(), Some("2.1.110"));
+        assert_eq!(refreshed_probe.cli_version.as_deref(), Some("2.1.219"));
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn refresh_harness_runtime_probe_force_bypasses_unchanged_binary_cache_entry() {
+    with_fake_harness_binaries(|claude_cli, _| {
+        let initial_probe =
+            refresh_harness_runtime_probe_with_force(AgentHarnessKind::Claude, false);
+        let original_modified = std::fs::metadata(claude_cli)
+            .expect("fake executable metadata")
+            .modified()
+            .expect("fake executable modification time");
+        write_fake_claude(claude_cli, "2.1.219");
+        set_modified_time(claude_cli, original_modified);
+
+        let refreshed_probe =
+            refresh_harness_runtime_probe_with_force(AgentHarnessKind::Claude, true);
+        assert_eq!(initial_probe.cli_version.as_deref(), Some("2.1.110"));
+        assert_eq!(refreshed_probe.cli_version.as_deref(), Some("2.1.219"));
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn refresh_harness_runtime_probe_does_not_cache_failed_probe_as_available() {
+    with_fake_harness_binaries(|claude_cli, _| {
+        write_fake_executable(claude_cli, "#!/bin/sh\nexit 1\n");
+        let failed_probe =
+            refresh_harness_runtime_probe_with_force(AgentHarnessKind::Claude, false);
+        write_fake_claude(claude_cli, "2.1.219");
+
+        let recovered_probe =
+            refresh_harness_runtime_probe_with_force(AgentHarnessKind::Claude, false);
+        assert!(!failed_probe.probe_succeeded);
+        assert!(recovered_probe.probe_succeeded);
+        assert!(recovered_probe.available);
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn probe_harness_keeps_existing_no_refresh_cache_behavior() {
+    with_fake_harness_binaries(|claude_cli, _| {
+        let initial_probe =
+            super::harness_runtime_registry::probe_harness(AgentHarnessKind::Claude);
+        write_fake_claude(claude_cli, "2.1.219");
+
+        let cached_probe = super::harness_runtime_registry::probe_harness(AgentHarnessKind::Claude);
+        assert_eq!(initial_probe.cli_version.as_deref(), Some("2.1.110"));
+        assert_eq!(cached_probe.cli_version.as_deref(), Some("2.1.110"));
+    });
+}
+
+#[cfg(unix)]
 #[test]
 fn refresh_supported_harnesses_reprobes_claude_aliases_after_cli_update() {
+    let _runtime_lock = HARNESS_RUNTIME_TEST_MUTEX
+        .lock()
+        .expect("harness runtime mutex");
     let _env_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
         .lock()
         .expect("env mutex");
@@ -130,7 +261,7 @@ fn refresh_supported_harnesses_reprobes_claude_aliases_after_cli_update() {
     clear_harness_runtime_caches_for_tests(AgentHarnessKind::Claude);
     clear_harness_runtime_caches_for_tests(AgentHarnessKind::Codex);
 
-    let initial_probe = refresh_harness_runtime_probe(AgentHarnessKind::Claude);
+    let initial_probe = refresh_harness_runtime_probe_with_force(AgentHarnessKind::Claude, true);
     assert_eq!(initial_probe.cli_version.as_deref(), Some("2.1.110"));
     assert!(!model_aliases(&initial_probe).contains(&"claude-opus-4-7".to_string()));
     assert!(!model_aliases(&initial_probe).contains(&"claude-opus-4-8".to_string()));
@@ -147,7 +278,7 @@ fn refresh_supported_harnesses_reprobes_claude_aliases_after_cli_update() {
     assert!(!model_aliases(&cached_probe).contains(&"claude-opus-5".to_string()));
     assert!(!model_aliases(&cached_probe).contains(&"fable".to_string()));
 
-    let refreshed_probe = claude_probe(&mut refresh_supported_harnesses());
+    let refreshed_probe = claude_probe(&mut refresh_supported_harnesses_with_force(true));
     assert_eq!(refreshed_probe.cli_version.as_deref(), Some("2.1.219"));
     assert!(model_aliases(&refreshed_probe).contains(&"claude-opus-4-7".to_string()));
     assert!(model_aliases(&refreshed_probe).contains(&"claude-opus-4-8".to_string()));

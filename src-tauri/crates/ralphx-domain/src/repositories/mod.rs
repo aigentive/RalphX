@@ -99,6 +99,7 @@ pub use agent_conversation_linear_issue_repository::AgentConversationLinearIssue
 pub use agent_conversation_mute_repository::AgentConversationMuteRepository;
 pub use agent_conversation_workspace_repository::{
     AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
+    AgentWorkspacePublishLeaseClaim,
     AgentWorkspacePrReviewActionMutation, AgentWorkspacePrReviewStateTransition,
     AgentWorkspacePrTerminalSettlement, AgentWorkspacePublicationGuard,
     AgentWorkspacePublicationMetadataReceiptClaim, AgentWorkspacePublicationMetadataReceiptRefresh,

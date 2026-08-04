@@ -120,8 +120,9 @@ use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus as PlanDbPrSta
 use crate::domain::entities::PlanBranch;
 use crate::domain::entities::{
     is_publication_push_active, pr_comment_body_excerpt, AgentConversationWorkspace,
-    AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent, AgentRunId,
-    AgentWorkspacePrCommentEvidence, AgentWorkspacePrMetadataDecision,
+    AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent,
+    AgentConversationWorkspaceStatus, AgentRunId, AgentWorkspacePrCommentEvidence,
+    AgentWorkspacePrMetadataDecision,
     AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
     AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewGateStatus,
@@ -863,6 +864,7 @@ pub struct AgentWorkspaceReviewContextQuery {
 #[serde(deny_unknown_fields)]
 pub struct StartAgentWorkspaceReviewRequest {
     pub force: Option<bool>,
+    pub enable_review_automation: Option<bool>,
     pub confirmation: Option<StartAgentWorkspaceReviewConfirmationRequest>,
     pub runtime_override: Option<ManualRoleRuntimeOverrideRequest>,
 }
@@ -1614,7 +1616,6 @@ pub async fn get_agent_workspace_review_start_preview(
 ) -> Result<Json<AgentWorkspaceReviewStartPreviewResponse>, JsonError> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
-    let _lifecycle_guard = lock_workspace_review_lifecycle(&conversation_id).await;
     let preview = preview_manual_workspace_review_start(state.app_state.as_ref(), &workspace)
         .await
         .map_err(workspace_review_action_error)?;
@@ -1658,7 +1659,25 @@ pub async fn start_agent_workspace_review_run(
         .transpose()
         .map_err(workspace_review_action_error)?;
     let conversation_id = ChatConversationId::from_string(conversation_id);
-    let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
+    let mut workspace =
+        load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
+    if workspace.status == AgentConversationWorkspaceStatus::Archived {
+        return Err(workspace_review_action_error(AppError::Conflict(
+            "Workspace Review cannot be started for an archived workspace".to_string(),
+        )));
+    }
+    if req.enable_review_automation == Some(true) {
+        state
+            .app_state
+            .agent_conversation_workspace_repo
+            .set_review_automation_override(&conversation_id, Some(true))
+            .await
+            .map_err(|error| {
+                json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+            })?;
+        workspace =
+            load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
+    }
     let runtime_override = req.runtime_override.map(ManualRoleRuntimeOverride::from);
     let start = start_guarded_agent_workspace_review_with_runtime_override(
         std::sync::Arc::clone(&state.app_state),

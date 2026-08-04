@@ -556,6 +556,7 @@
     "get_agent_conversation_workspace",
     "set_agent_conversation_workspace_auto_publish",
     "set_agent_conversation_workspace_pr_supervision",
+    "set_agent_conversation_workspace_review_automation",
     "list_agent_conversation_workspaces_by_project",
     "get_agent_conversation_workspace_freshness",
     "reconcile_agent_conversation_workspace_publication",
@@ -662,7 +663,11 @@
       "kind": "tokio::spawn",
       "readSurface": [],
       "sinksReached": [
+        "execute_entry_actions",
         "send_message",
+        "transition_task",
+        "transition_task_corrective_with_exit",
+        "try_schedule_ready_tasks",
         "write_message"
       ]
     },
@@ -680,6 +685,15 @@
         "transition_task_corrective_with_exit",
         "try_schedule_ready_tasks"
       ]
+    },
+    {
+      "authorityBearing": false,
+      "enclosingFunction": "application/agent_workspace_publish_lease.rs:::::spawn_publish_operation_lease_heartbeat_for_operation",
+      "file": "application/agent_workspace_publish_lease.rs",
+      "id": "application/agent_workspace_publish_lease.rs::application/agent_workspace_publish_lease.rs:::::spawn_publish_operation_lease_heartbeat_for_operation@f3bbfb85280204e7",
+      "kind": "tokio::spawn",
+      "readSurface": [],
+      "sinksReached": []
     },
     {
       "authorityBearing": false,
@@ -981,11 +995,15 @@
       "authorityBearing": true,
       "enclosingFunction": "application/services/pr_merge_poller.rs::PrPollerRegistry::start_agent_workspace_polling_with_optional_repair_repo",
       "file": "application/services/pr_merge_poller.rs",
-      "id": "application/services/pr_merge_poller.rs::application/services/pr_merge_poller.rs::PrPollerRegistry::start_agent_workspace_polling_with_optional_repair_repo@78202415007560a4",
+      "id": "application/services/pr_merge_poller.rs::application/services/pr_merge_poller.rs::PrPollerRegistry::start_agent_workspace_polling_with_optional_repair_repo@60472b2fcca58014",
       "kind": "tokio::spawn",
       "readSurface": [],
       "sinksReached": [
-        "send_message"
+        "execute_entry_actions",
+        "send_message",
+        "transition_task",
+        "transition_task_corrective_with_exit",
+        "try_schedule_ready_tasks"
       ]
     },
     {
@@ -1053,8 +1071,11 @@
         "automation-active"
       ],
       "sinksReached": [
+        "execute_entry_actions",
         "send_message",
         "transition_task",
+        "transition_task_corrective_with_exit",
+        "try_schedule_ready_tasks",
         "write_message"
       ]
     },
@@ -1102,7 +1123,11 @@
         "remote-conversation-start"
       ],
       "sinksReached": [
+        "execute_entry_actions",
         "send_message",
+        "transition_task",
+        "transition_task_corrective_with_exit",
+        "try_schedule_ready_tasks",
         "write_message"
       ]
     },
@@ -1397,9 +1422,24 @@
     },
     {
       "authorityBearing": true,
+      "enclosingFunction": "commands/agent_workspace_auto_publish.rs:::::install_agent_workspace_auto_publish_listeners",
+      "file": "commands/agent_workspace_auto_publish.rs",
+      "id": "commands/agent_workspace_auto_publish.rs::commands/agent_workspace_auto_publish.rs:::::install_agent_workspace_auto_publish_listeners@df1d3f2407db9b84",
+      "kind": "listen_any",
+      "readSurface": [],
+      "sinksReached": [
+        "execute_entry_actions",
+        "send_message",
+        "transition_task",
+        "transition_task_corrective_with_exit",
+        "try_schedule_ready_tasks"
+      ]
+    },
+    {
+      "authorityBearing": true,
       "enclosingFunction": "commands/agent_workspace_auto_publish.rs:::::spawn_pr_supervision_recovery_from_run_completed_event",
       "file": "commands/agent_workspace_auto_publish.rs",
-      "id": "commands/agent_workspace_auto_publish.rs::commands/agent_workspace_auto_publish.rs:::::spawn_pr_supervision_recovery_from_run_completed_event@aa2decb29c143a67",
+      "id": "commands/agent_workspace_auto_publish.rs::commands/agent_workspace_auto_publish.rs:::::spawn_pr_supervision_recovery_from_run_completed_event@fd751fcb1dd83895",
       "kind": "async_runtime::spawn",
       "readSurface": [],
       "sinksReached": [
@@ -4661,50 +4701,6 @@
         "agentControl"
       ],
       "class": "agentControl",
-      "command": "update_mcp_server_override",
-      "pins": [],
-      "scopeConfined": false,
-      "target": "crate::commands::mcp_policy_commands::update_mcp_server_override"
-    },
-    {
-      "argumentSensitive": false,
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
-      "command": "clear_mcp_server_override",
-      "pins": [],
-      "scopeConfined": false,
-      "target": "crate::commands::mcp_policy_commands::clear_mcp_server_override"
-    },
-    {
-      "argumentSensitive": false,
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
-      "command": "update_mcp_tool_override",
-      "pins": [],
-      "scopeConfined": false,
-      "target": "crate::commands::mcp_policy_commands::update_mcp_tool_override"
-    },
-    {
-      "argumentSensitive": false,
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
-      "command": "clear_mcp_tool_override",
-      "pins": [],
-      "scopeConfined": false,
-      "target": "crate::commands::mcp_policy_commands::clear_mcp_tool_override"
-    },
-    {
-      "argumentSensitive": false,
-      "capabilities": [
-        "agentControl"
-      ],
-      "class": "agentControl",
       "command": "update_ui_feature_flags",
       "pins": [],
       "scopeConfined": false,
@@ -7089,7 +7085,7 @@
       "class": "elevated",
       "command": "resume_execution",
       "module": "execution_commands",
-      "reason": "detector-c-MISS (M2+M3), hand-traced: THREE independent launch chains. (1) execute_entry_actions -> TransitionHandler::on_enter -> enter_executing_state -> send_task_execution_message; (2) try_schedule_ready_tasks transitions a Ready task to Executing into the same spine; (3) four paused-queue relaunchers reach ChatService::send_message. All terminate at ChatHarnessLaunchPlan::spawn -> Command::new(cli_path) (claude/mod.rs:664, codex/mod.rs:1156), which names no resolver. It ALSO fails open at lifecycle.rs:273: the task is transitioned into an agent-active status at :258, then `if let Ok(Some(..))` collapses read error and absence, so entry actions never run, restoring_count is never incremented, and the capacity guard admits MORE tasks than the cap while the command returns success; request_remote_execution_resume is the spawn-free intent twin and the host dispatcher alone calls this seam",
+      "reason": "detector-c after the Wave B1 shared-seam extraction; THREE independent launch chains. (1) execute_entry_actions -> TransitionHandler::on_enter -> enter_executing_state -> send_task_execution_message; (2) try_schedule_ready_tasks transitions a Ready task to Executing into the same spine; (3) four paused-queue relaunchers reach ChatService::send_message. All terminate at ChatHarnessLaunchPlan::spawn -> Command::new(cli_path) (claude/mod.rs:664, codex/mod.rs:1156), which names no resolver. It ALSO fails open at lifecycle.rs:273: the task is transitioned into an agent-active status at :258, then `if let Ok(Some(..))` collapses read error and absence, so entry actions never run, restoring_count is never incremented, and the capacity guard admits MORE tasks than the cap while the command returns success; request_remote_execution_resume is the spawn-free intent twin and the host dispatcher alone calls this seam",
       "registered": false,
       "v1Resolution": "host-denied-spawns-process"
     },
@@ -7906,36 +7902,26 @@
       "v1Resolution": "registerable"
     },
     {
-      "auditRefusal": {
-        "batch": "audited and classified 11",
-        "finding": "ideation_harness_availability.rs:344 and :360 discard the lane-settings read with .ok().flatten(), and resolve_lane_harness_config returns infallibly, so a DB error is indistinguishable from 'no row configured'. A lane configured to Codex with Codex unavailable then probes DEFAULT_AGENT_HARNESS (Claude) and reports available:true, configured_harness:null, error:null — a fully green lane. This is the list_agent_composer_skills shape exactly: a fail-open that changes the answer, not its completeness",
-        "reason": "fail-open-until-fixed"
-      },
       "capabilities": [
-        "agentControl"
+        "spawnsProcess"
       ],
-      "class": "agentControl",
+      "class": "elevated",
       "command": "get_agent_harness_availability",
       "module": "ideation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-c: get_harness_availability_for_lanes -> refreshed_provider_aware_runtime_probes -> refresh_supported_harnesses -> refresh_harness_runtime_probe_with_force -> cached_harness_runtime_refresh_probe -> resolved_harness_binary_path -> find_claude_cli. The #976 probe cache keys rows by the resolved binary path, so even the cache-hit branch resolves CLI paths; a READ by intent that reaches the launch floor, and the floor does not care which",
       "registered": false,
-      "v1Resolution": "v1-audit-refused"
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
-      "auditRefusal": {
-        "batch": "audited and classified 11",
-        "finding": "the same helper, get_harness_availability_for_lanes, over IDEATION_LANES instead of AGENT_LANES — identical .ok().flatten() at ideation_harness_availability.rs:344/:360 and identical fail-open. Classified alongside its sibling rather than left implicit: one shared defect, two ledger rows, so fixing the helper clears both",
-        "reason": "fail-open-until-fixed"
-      },
       "capabilities": [
-        "agentControl"
+        "spawnsProcess"
       ],
-      "class": "agentControl",
+      "class": "elevated",
       "command": "get_ideation_harness_availability",
       "module": "ideation_commands",
-      "reason": "conservative-module-default: may steer or arm autonomous work",
+      "reason": "detector-c: the SAME get_harness_availability_for_lanes chain as get_agent_harness_availability, over IDEATION_LANES instead of AGENT_LANES — one shared helper, two ledger rows, so re-auditing the helper clears both",
       "registered": false,
-      "v1Resolution": "v1-audit-refused"
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -8077,53 +8063,53 @@
       "class": "elevated",
       "command": "retry_legacy_mcp_registration_repair",
       "module": "mcp_policy_commands",
-      "reason": "detector-c-MISS, hand-traced: detector (c) reports c=FALSE and is WRONG. This command runs `claude mcp remove ralphx -s user` through tokio::process::Command::new at infrastructure/agents/claude/mcp_registration_repair.rs, via retry_reserved_claude_registration_repair -> reconcile_reserved_claude_registration -> {resolve_claude_cleanup_cli, remove_reserved_user_registration}. Two mechanisms hide it: resolve_claude_cleanup_cli reaches find_claude_cli only by passing it to spawn_blocking as a bare function VALUE, which creates no call edge, and remove_reserved_user_registration spawns an already-resolved path, naming no resolver for the sink model to match. Refused on the SOURCE, not the boolean — the floor is a safety floor, so a hand-traced launch outranks detector silence. Its reason intentionally does not start with `detector-c:`, so batch9_detector_c_refusals_declare_the_capability_they_reach correctly excludes it; batch13_detector_gap_is_measured_not_inherited pins it instead",
+      "reason": "detector-c: ensure_mutation_ready -> resolve_provider_management_eligibility -> refresh_harness_runtime_probe -> resolved_harness_binary_path -> find_claude_cli — the #976 probe-cache path made this command detector-visible, so the row moved from the hand-traced miss to a measured refusal. The ORIGINAL launch it was refused for is still invisible: it runs `claude mcp remove ralphx -s user` through tokio::process::Command::new at infrastructure/agents/claude/mcp_registration_repair.rs, via retry_reserved_claude_registration_repair -> reconcile_reserved_claude_registration -> {resolve_claude_cleanup_cli, remove_reserved_user_registration}, and two mechanisms still hide that path: resolve_claude_cleanup_cli reaches find_claude_cli only by passing it to spawn_blocking as a bare function VALUE, which creates no call edge, and remove_reserved_user_registration spawns an already-resolved path, naming no resolver for the sink model to match. batch13_detector_gap_is_measured_not_inherited pins both mechanisms as still-open root-level gaps",
       "registered": false,
       "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
-        "agentControl"
+        "spawnsProcess"
       ],
-      "class": "agentControl",
+      "class": "elevated",
       "command": "update_mcp_server_override",
       "module": "mcp_policy_commands",
-      "reason": "batch-13 audit: three fail-closed guards run BEFORE the write — ensure_project_scope_exists, ensure_mutation_ready (provider eligibility) and mutable_key (which rejects reserved server ids) — then one McpPolicyService::set_server_state. Registered on the update_agent_lane_settings precedent: choosing the harness a future agent spawns with is already at ui:agent, and an MCP server override is strictly less authority than that. Declared configures-future-agent-tool-authority. The census B6 plan asks for ConfiguresFutureProcessAuthority on exactly this shape, and `class_permits` makes that literal reading UNREPRESENTABLE: the capability is admitted only under Elevated, which v1 grants no scope for, so declaring it would silently convert an audited-clean write into a deferral. This ledger's idiom for deferred authority at a registerable class is AgentControl plus a declaration — exactly what `update_agent_lane_settings` carries for picking the harness a live agent spawns with, which is strictly more authority than an MCP override",
-      "registered": true,
-      "v1Resolution": "registerable"
+      "reason": "detector-c: ensure_mutation_ready -> resolve_provider_management_eligibility -> refresh_harness_runtime_probe -> cached_harness_runtime_refresh_probe -> resolved_harness_binary_path -> find_claude_cli. The eligibility guard that runs BEFORE the write resolves the harness binary path even on the cache-hit branch, so the floor forecloses the row at every v1 scope. Declared configures-future-agent-tool-authority — the membership states what the command DOES and survives the class correction",
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
-        "agentControl"
+        "spawnsProcess"
       ],
-      "class": "agentControl",
+      "class": "elevated",
       "command": "clear_mcp_server_override",
       "module": "mcp_policy_commands",
-      "reason": "batch-13 audit: same three guards, then McpPolicyService::clear_server, which returns whether a row was actually removed rather than asserting success. Declared configures-future-agent-tool-authority, as its update half is",
-      "registered": true,
-      "v1Resolution": "registerable"
+      "reason": "detector-c: the SAME ensure_mutation_ready -> resolve_provider_management_eligibility -> refresh_harness_runtime_probe chain as update_mcp_server_override. Declared configures-future-agent-tool-authority, as its update half is",
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
-        "agentControl"
+        "spawnsProcess"
       ],
-      "class": "agentControl",
+      "class": "elevated",
       "command": "update_mcp_tool_override",
       "module": "mcp_policy_commands",
-      "reason": "batch-13 audit: same three guards, then McpPolicyService::set_tool_state for one named tool. Declared configures-future-agent-tool-authority, as its server-scoped sibling is",
-      "registered": true,
-      "v1Resolution": "registerable"
+      "reason": "detector-c: the SAME ensure_mutation_ready -> resolve_provider_management_eligibility -> refresh_harness_runtime_probe chain as update_mcp_server_override. Declared configures-future-agent-tool-authority, as its server-scoped sibling is",
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
-        "agentControl"
+        "spawnsProcess"
       ],
-      "class": "agentControl",
+      "class": "elevated",
       "command": "clear_mcp_tool_override",
       "module": "mcp_policy_commands",
-      "reason": "batch-13 audit: same three guards, then McpPolicyService::clear_tool, reporting whether a row was removed. Declared configures-future-agent-tool-authority",
-      "registered": true,
-      "v1Resolution": "registerable"
+      "reason": "detector-c: the SAME ensure_mutation_ready -> resolve_provider_management_eligibility -> refresh_harness_runtime_probe chain as update_mcp_server_override. Declared configures-future-agent-tool-authority",
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
     },
     {
       "capabilities": [
@@ -9541,6 +9527,18 @@
       "command": "set_agent_conversation_workspace_pr_supervision",
       "module": "unified_chat_commands",
       "reason": "detector-c: the same resolve_agent_workspace_pr_automation_target worktree path as set_agent_conversation_workspace_auto_publish, genuinely shared",
+      "registered": false,
+      "v1Resolution": "host-denied-spawns-process"
+    },
+    {
+      "capabilities": [
+        "spawnsProcess",
+        "seedsSpawnTriggeringState"
+      ],
+      "class": "elevated",
+      "command": "set_agent_conversation_workspace_review_automation",
+      "module": "unified_chat_commands",
+      "reason": "detector-c: agent_workspace_response_for_state -> repair recovery -> CLI path resolution; ALSO detector-b: arms the Auto Review & Fix override consumed by the auto-review spawner (tag retained)",
       "registered": false,
       "v1Resolution": "host-denied-spawns-process"
     },
@@ -11049,6 +11047,7 @@
         "set_agent_conversation_muted",
         "set_agent_conversation_workspace_auto_publish",
         "set_agent_conversation_workspace_pr_supervision",
+        "set_agent_conversation_workspace_review_automation",
         "start_agent_conversation",
         "start_ralphx_work_from_ticket",
         "switch_agent_conversation_mode",
@@ -11095,6 +11094,7 @@
         "set_agent_conversation_muted",
         "set_agent_conversation_workspace_auto_publish",
         "set_agent_conversation_workspace_pr_supervision",
+        "set_agent_conversation_workspace_review_automation",
         "start_agent_conversation",
         "start_agent_task_pipeline",
         "start_ralphx_work_from_ticket",

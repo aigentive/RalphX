@@ -40,6 +40,9 @@ pub mod agent_workspace_pr_description;
 #[cfg(test)]
 pub(crate) mod agent_workspace_pr_metadata_reconciliation;
 pub(crate) mod agent_workspace_pr_supervision_recovery;
+pub(crate) mod agent_workspace_publish_lease;
+#[cfg(test)]
+mod agent_workspace_publish_lease_tests;
 pub mod agent_workspace_publish_recovery;
 pub(crate) mod agent_workspace_ci_rerun;
 pub(crate) mod agent_workspace_publish_repair_state;
@@ -468,6 +471,8 @@ mod granola_integration_prompt_edge_tests;
 mod granola_integration_prompt_tests;
 #[cfg(test)]
 mod granola_integration_service_tests;
+#[cfg(test)]
+pub(crate) mod harness_runtime_test_support;
 #[cfg(test)]
 mod harness_runtime_registry_tests;
 #[cfg(test)]

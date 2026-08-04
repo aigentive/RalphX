@@ -1057,7 +1057,13 @@ fn detector_b_is_calibrated_and_floor_enforced() {
         // family-specific poll reads. The four writes are detector-(b) members through the
         // `remote-execution-resume` / `remote-task-action` surfaces; all six remain silent on
         // (a)/(c), with the host-owned dispatcher as the only caller of the denied local seams.
-        575,
+        // 575 -> 576: `set_agent_conversation_workspace_review_automation`, main's #965
+        // per-conversation Auto Review & Fix override setter, classified at the merge: a clean
+        // fail-closed repo write whose response projection reaches CLI resolution through
+        // `agent_workspace_response_for_state`'s repair recovery, so its ledger row sits at the
+        // process floor (Elevated, PROCESS_AND_SEEDS). A census-count change, not a detector
+        // change.
+        576,
         "review the detector against the full command census"
     );
     let flagged = spawn_triggering_writers(
@@ -5093,15 +5099,18 @@ fn batch9_detector_c_refusals_declare_the_capability_they_reach() {
     }
 
     assert_eq!(
-        checked, 26,
+        checked, 33,
         "batch 9 classified thirteen detector-(c) refusals, batch 10 closed the fourteenth \
          (`resolve_user_question`), batch 13 added `get_mcp_catalog` and `refresh_mcp_catalog`, \
          and batch 14 added TEN more — its twelve detector-DETECTED floor rows, of which \
          `set_agent_conversation_workspace_auto_publish` was already counted here and one other \
-         was already an override. All are genuinely detector-visible, so they belong UNDER this \
-         gate's re-measurement rather than beside it. Rows deliberately absent: batch 12's three \
-         floor rows open `detector-c, hand-traced:` rather than `detector-c:`, batch 13's third \
-         refusal (`retry_legacy_mcp_registration_repair`) is excluded on purpose, and batch 14's \
+         was already an override. Main's #976 probe cache then moved SEVEN more under this gate: \
+         the four MCP override writes, both harness-availability reads, and \
+         `retry_legacy_mcp_registration_repair` — previously excluded on purpose as the \
+         hand-traced miss, now genuinely detector-visible through its `ensure_mutation_ready` \
+         eligibility path. All are detector-visible, so they belong UNDER this gate's \
+         re-measurement rather than beside it. Rows deliberately absent: batch 12's three \
+         floor rows open `detector-c, hand-traced:` rather than `detector-c:`, and batch 14's \
          THIRTEEN hand-traced floor rows open `detector-c-MISS, hand-traced:` — detector (c) \
          cannot see their launches, so a gate that re-measures the sink would fail on rows that \
          are nonetheless \
@@ -5195,7 +5204,9 @@ fn batch10_closes_the_declared_membership_process_launch_gap() {
 /// stale refusal is as dishonest as a stale registration, and `host-denied-spawns-process`
 /// asserts a reachable sink, not a historical one.
 ///
-/// This test is also the live pin for the seven `v1-audit-refused` rows batch 11 added: each is
+/// This test is also the live pin for the `v1-audit-refused` rows batch 11 added (seven then;
+/// five remain after main's #976 probe cache moved the two harness-availability reads to the
+/// mechanical floor and retired their audit rows): each is
 /// named below, so deleting the table takes the classifications down with it.
 #[test]
 fn batch11_closes_the_b4_remainder() {
@@ -5254,15 +5265,21 @@ fn batch11_closes_the_b4_remainder() {
         ("analyze_dependencies", "ideation_commands", FailOpen),
         ("export_ideation_session", "ideation_commands", FailOpen),
         ("create_task_proposal", "ideation_commands", FailOpen),
+        // The two availability reads were FailOpen (audit-refused for the .ok().flatten()
+        // answer-changing fail-open — still true, now recorded on their ledger cluster
+        // comment) until main's #976 probe cache made their shared
+        // get_harness_availability_for_lanes helper resolve CLI paths; the mechanical floor
+        // supersedes the audit refusal, so both moved to Floor and their AuditRefusal rows
+        // were retired per batch 9's load-bearing-fact rule.
         (
             "get_agent_harness_availability",
             "ideation_commands",
-            FailOpen,
+            Floor,
         ),
         (
             "get_ideation_harness_availability",
             "ideation_commands",
-            FailOpen,
+            Floor,
         ),
         (
             "create_cross_project_session",
@@ -5527,15 +5544,18 @@ fn batch9_audit_refusals_are_tied_to_a_live_pin() {
     }
     assert_eq!(
         AUDIT_REFUSALS.len(),
-        24,
+        22,
         "batch 9 recorded eleven audit refusals, batch 10 added seven, batch 11 added seven more \
          (the B4 fail-opens), and batch 14 added the final nine that closed the ratchet. WP3 \
          then REMOVED two — the tool-call-detail pair, whose `FailOpenUntilFixed` finding was \
          fixed at its source and cleared by a per-command audit — and WP4 (a) REMOVED the eight \
          `TransportShapeDeferred` rows because the finding they shared (`AppError` is not \
          `Serialize`) was false when it was written; all eight are registered and \
-         `the_transport_shape_refusal_premise_stays_disproven` holds the disproof. Changing \
-         that count is a census decision"
+         `the_transport_shape_refusal_premise_stays_disproven` holds the disproof. Main's #976 \
+         probe cache then RETIRED the two harness-availability rows: their fail-open finding is \
+         still true, but both commands moved to the mechanical process floor, which batch 9's \
+         load-bearing-fact rule says supersedes an audit row. Changing that count is a census \
+         decision"
     );
 }
 
@@ -6530,12 +6550,12 @@ fn probe_b13_notification_detector_b_entry() {
 /// Same contract as [`batch12_closes_the_b5_block`]: every one of the 52 ratchet members is named
 /// with its disposition and the detector-(c) floor is RE-MEASURED per member.
 ///
-/// One rung is NEW. Batch 12's table had a single `Floor` variant that asserted
-/// `reaches_launch`, because until now every refused member was one detector (c) could see.
-/// `retry_legacy_mcp_registration_repair` is the first that it CANNOT, so the table splits the
-/// floor into `FloorDetected` and `FloorHandTraced` — and the hand-traced arm asserts detector (c)
-/// is *silent*, so if the engine is ever widened to close the gap this test fails loudly and the
-/// row is re-classified deliberately rather than drifting into agreement.
+/// This table once split the floor into `FloorDetected` and `FloorHandTraced` because
+/// `retry_legacy_mcp_registration_repair` was the first refused member detector (c) could NOT
+/// see. Main's #976 probe cache made it detector-visible through its `ensure_mutation_ready`
+/// eligibility guard, retiring the hand-traced rung here — batch 14 still carries its own
+/// `FloorHandTraced` members, and the still-open hiding mechanisms are pinned in
+/// [`batch13_detector_gap_is_measured_not_inherited`].
 #[test]
 fn batch13_closes_the_b7_block_and_two_b6_modules() {
     #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -6554,9 +6574,12 @@ fn batch13_closes_the_b7_block_and_two_b6_modules() {
         /// this ledger's registerable idiom for the same finding.
         AgentFutureAuthority,
         /// `host-denied-spawns-process`, and detector (c) sees the launch.
+        ///
+        /// A `FloorHandTraced` rung (source-traced launch, detector silent) existed for
+        /// `retry_legacy_mcp_registration_repair` until main's #976 probe cache made that last
+        /// member detector-visible through its eligibility guard; the hand-traced mechanisms
+        /// remain pinned in `batch13_detector_gap_is_measured_not_inherited`.
         FloorDetected,
-        /// `host-denied-spawns-process` on a SOURCE trace while detector (c) is silent.
-        FloorHandTraced,
         /// Ledgered `Elevated`/`HostManagement`: deferred by authority, not denied.
         DeferredHost,
     }
@@ -6646,33 +6669,41 @@ fn batch13_closes_the_b7_block_and_two_b6_modules() {
             "update_channel_commands",
             DeferredHost,
         ),
-        // --- mcp_policy_commands: four writes and three refusals ---------------------------
+        // --- mcp_policy_commands: seven refusals -------------------------------------------
+        // The four override writes were AgentFutureAuthority (registered) until main's #976
+        // probe cache put CLI-path resolution inside ensure_mutation_ready's eligibility
+        // fallback; the re-measured floor moved all four to FloorDetected. Their
+        // DECLARED_MEMBERSHIPS rows survive the correction (resolve_user_question precedent).
+        // retry_legacy_mcp_registration_repair moved FloorHandTraced -> FloorDetected for the
+        // same reason: the NEW eligibility path is detector-visible even though its ORIGINAL
+        // hand-traced launch still is not — batch13_detector_gap_is_measured_not_inherited
+        // pins both original mechanisms as still-open root-level gaps.
         (
             "update_mcp_server_override",
             "mcp_policy_commands",
-            AgentFutureAuthority,
+            FloorDetected,
         ),
         (
             "clear_mcp_server_override",
             "mcp_policy_commands",
-            AgentFutureAuthority,
+            FloorDetected,
         ),
         (
             "update_mcp_tool_override",
             "mcp_policy_commands",
-            AgentFutureAuthority,
+            FloorDetected,
         ),
         (
             "clear_mcp_tool_override",
             "mcp_policy_commands",
-            AgentFutureAuthority,
+            FloorDetected,
         ),
         ("get_mcp_catalog", "mcp_policy_commands", FloorDetected),
         ("refresh_mcp_catalog", "mcp_policy_commands", FloorDetected),
         (
             "retry_legacy_mcp_registration_repair",
             "mcp_policy_commands",
-            FloorHandTraced,
+            FloorDetected,
         ),
     ];
 
@@ -6697,13 +6728,6 @@ fn batch13_closes_the_b7_block_and_two_b6_modules() {
                 "`{command}` is classified host-denied-spawns-process on detector (c) but no \
                  longer reaches a process-launch sink; the claim is now false and the row must \
                  be re-audited"
-            ),
-            FloorHandTraced => assert!(
-                !reaches_launch,
-                "`{command}` is now VISIBLE to detector (c). The refusal itself stays correct — \
-                 it really does run `claude mcp remove` — but the reason string says the detector \
-                 cannot see it, and that has stopped being true. Move the row to FloorDetected \
-                 and re-derive whether the gap it documents still exists"
             ),
             _ => assert!(
                 !reaches_launch,
@@ -6771,7 +6795,7 @@ fn batch13_closes_the_b7_block_and_two_b6_modules() {
                     .unwrap_or_else(|| panic!("`{command}` audited clean and must be registered"));
                 assert_eq!(spec.class, RiskClass::AgentControl);
             }
-            FloorDetected | FloorHandTraced => {
+            FloorDetected => {
                 assert_eq!(
                     row.class,
                     RiskClass::Elevated,
@@ -6835,12 +6859,19 @@ fn batch13_detector_gap_is_measured_not_inherited() {
     // ---------------------------------------------------------------------------------------
     // (1) The detector-(c) false negative, and BOTH mechanisms that cause it.
     // ---------------------------------------------------------------------------------------
+    // Since main's #976 probe cache, the COMMAND is detector-visible — but only through the
+    // new ensure_mutation_ready -> resolve_provider_management_eligibility -> probe path, which
+    // has nothing to do with the launch it was originally refused for. The command-level
+    // closure therefore reaches a sink, while BOTH original hiding mechanisms remain open and
+    // are still pinned individually below. If this assertion ever fails, the eligibility path
+    // stopped reaching the floor and the row's detector-c reason must be re-derived against
+    // whichever launch evidence remains.
     let repair = graph.closure(["retry_legacy_mcp_registration_repair".to_string()]);
     assert!(
-        !tokens_reach_any(&repair.tokens, PROCESS_LAUNCH_SINKS),
-        "detector (c) now SEES `retry_legacy_mcp_registration_repair`. Its ledger row and the \
-         batch-13 table both document a gap that would no longer exist; re-derive both rather \
-         than deleting this assertion"
+        tokens_reach_any(&repair.tokens, PROCESS_LAUNCH_SINKS),
+        "`retry_legacy_mcp_registration_repair` is no longer detector-visible; the #976 \
+         eligibility-probe path its FloorDetected row cites has closed, and the row must be \
+         re-derived against the still-open hand-traced mechanisms pinned below"
     );
 
     // Mechanism A: `spawn_blocking(bare_fn_path)` creates no call edge. The resolver is named in
@@ -7539,3 +7570,4 @@ fn zz_temp_probe_loop_ids() {
         }
     }
 }
+

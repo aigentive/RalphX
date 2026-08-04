@@ -106,6 +106,22 @@ The last one needs an answer to: what happens to the paired session across the r
 
 **Tier 2 —** settings sweep (M), global execution twin (S), ticketing short-circuit + linked-chip state (S), automation twins (M), queue twins (M), notification dead-ends (S), host version surfacing (S), publish/close-PR twins (L), mute/fork/archive twins (M).
 
+**Tier 2b — parity lost to main's #976 probe cache (2026-08-04 merge).** `#976` keys its harness
+probe cache by the resolved binary path, which put CLI-path resolution inside
+`ensure_mutation_ready`'s eligibility fallback and `get_harness_availability_for_lanes`. The
+measured process floor then foreclosed SEVEN previously classified commands — the four MCP
+override writes (`update/clear_mcp_server_override`, `update/clear_mcp_tool_override`, all four
+formerly REGISTERED at AgentControl), both harness-availability reads, and it also made
+`retry_legacy_mcp_registration_repair` detector-visible. Client MCP-policy management is
+therefore currently refused (honest unavailability, absence-derived). Restoration options, in
+preference order: (a) an MCP-override intent twin (`request_remote_mcp_override` + host
+dispatcher through the existing local seam) — proven pattern, no local behavior change; (b) a
+cached-availability read twin for the two availability reads; (c) upstream: a non-resolving
+cache-hit path in `cached_harness_runtime_refresh_probe` would clear all seven at the source,
+but changes #976's local behavior and needs owner sign-off. Same floor also keeps main's #965
+`set_agent_conversation_workspace_review_automation` unregistered (response projection reaches
+repair recovery); a spawn-free twin via the without-repair-recovery builder restores it.
+
 **Tier 3 — substrate:** unknown-outcome reconciliation as a seam rather than per-call-site (M); degraded/read-only mode reaching surfaces beyond `useAgentGate` (M); extend `GATE_WIRED_FILES` to 7 files whose gates could be deleted today with no CI failure (S).
 
 ---
