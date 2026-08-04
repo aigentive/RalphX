@@ -5518,25 +5518,29 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 None,
             );
         }
+        let mut gate_requested_model = None;
+        let mut gate_live_model_comparison = None;
         if has_ipr_entry && !provider_switch_requires_fresh_session {
             if let Some(requested_model) = options.model_override.as_deref() {
-                let continuation_runtime = match existing_conv.as_ref() {
-                    Some(conversation) => continuation_runtime::resolve_for_conversation(
+                gate_requested_model = Some(requested_model);
+                let live_run_id = interactive_process_metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.agent_run_id.as_deref());
+                let comparison = match live_run_id {
+                    Some(run_id) => continuation_runtime::compare_live_run_model_identity(
                         &self.agent_run_repo,
-                        conversation,
+                        &AgentRunId::from_string(run_id.to_string()),
+                        requested_model,
                     )
                     .await
                     .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?,
-                    None => None,
+                    None => continuation_runtime::ModelIdentityComparison::Unknown,
                 };
-                provider_switch_requires_fresh_session = match continuation_runtime {
-                    Some(runtime) => match runtime.compare_model_identity(requested_model) {
-                        continuation_runtime::ModelIdentityComparison::Changed => true,
-                        continuation_runtime::ModelIdentityComparison::Same
-                        | continuation_runtime::ModelIdentityComparison::Unknown => false,
-                    },
-                    None => false,
-                };
+                gate_live_model_comparison = Some(comparison);
+                provider_switch_requires_fresh_session = matches!(
+                    comparison,
+                    continuation_runtime::ModelIdentityComparison::Changed
+                );
             }
         }
         let gate_workspace = if let Some(conversation) = existing_conv.as_ref() {
@@ -5638,6 +5642,8 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             has_ipr_entry,
             force_new_provider_session,
             provider_switch_requires_fresh_session,
+            requested_model = ?gate_requested_model,
+            live_model_comparison = ?gate_live_model_comparison,
             persona_switch_requires_process_invalidation,
             launch_identity_requires_process_invalidation,
             agent_override_requires_fresh_session,
