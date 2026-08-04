@@ -280,6 +280,41 @@ fn publication_event(
 }
 
 #[tokio::test]
+async fn supervision_preferences_can_preserve_repair_owned_status_in_memory() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("repair-owned-preferences-memory");
+    let mut held = workspace(conversation_id.clone());
+    held.pr_supervision_status = Some("held".to_string());
+    held.pr_supervision_summary = Some("Repair owns this projection.".to_string());
+    repo.create_or_update(held)
+        .await
+        .expect("persist held workspace");
+
+    repo.update_pr_supervision_preferences_preserving_status(
+        &conversation_id,
+        true,
+        true,
+        "rebase",
+    )
+    .await
+    .expect("update preferences without competing projection");
+
+    let updated = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load held workspace")
+        .expect("held workspace exists");
+    assert!(updated.pr_autofix_enabled);
+    assert!(updated.pr_auto_merge_desired);
+    assert_eq!(updated.pr_auto_merge_method, "rebase");
+    assert_eq!(updated.pr_supervision_status.as_deref(), Some("held"));
+    assert_eq!(
+        updated.pr_supervision_summary.as_deref(),
+        Some("Repair owns this projection.")
+    );
+}
+
+#[tokio::test]
 async fn repair_attempt_cas_effect_and_successor_match_sqlite_behavior() {
     let repo = MemoryAgentConversationWorkspaceRepository::new();
     let conversation_id = ChatConversationId::from_string("repair-attempt-memory");

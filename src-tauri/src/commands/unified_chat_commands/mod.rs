@@ -146,7 +146,11 @@ use crate::application::services::pr_auto_merge_status::{
     auto_merge_disable_failure_summary, auto_merge_enable_failure_summary,
     AUTO_MERGE_SUPERVISION_STATUS_WAITING,
 };
-use crate::application::services::pr_merge_poller::sync_agent_workspace_auto_merge_preference_for_workspace;
+use crate::application::services::pr_merge_poller::{
+    sync_agent_workspace_auto_merge_preference_for_workspace,
+    update_agent_workspace_pr_supervision_preferences,
+    update_agent_workspace_pr_supervision_state,
+};
 use crate::application::session_namer_agent::{spawn_session_namer_agent, SessionNamerTarget};
 use crate::application::{AppChatService, AppState, ChatService, SendResult};
 use crate::commands::agent_model_commands::load_agent_model_registry;
@@ -5171,16 +5175,16 @@ async fn reconcile_agent_workspace_auto_merge_for_supervision_toggle(
 
         match enable_result {
             Ok(()) => {
-                state
-                    .agent_conversation_workspace_repo
-                    .update_pr_auto_merge_state(
-                        conversation_id,
-                        Some(true),
-                        Some("monitoring"),
-                        Some("GitHub auto-merge is enabled for this PR."),
-                    )
-                    .await
-                    .map_err(|e| e.to_string())?;
+                update_agent_workspace_pr_supervision_state(
+                    state.agent_conversation_workspace_repo.as_ref(),
+                    Some(state.agent_workspace_repair_repo.as_ref()),
+                    conversation_id,
+                    Some(true),
+                    Some("monitoring"),
+                    Some("GitHub auto-merge is enabled for this PR."),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
             }
             Err(error) => {
                 tracing::warn!(
@@ -5189,16 +5193,16 @@ async fn reconcile_agent_workspace_auto_merge_for_supervision_toggle(
                     error = %error,
                     "Agent workspace PR supervision deferred GitHub auto-merge enable"
                 );
-                state
-                    .agent_conversation_workspace_repo
-                    .update_pr_auto_merge_state(
-                        conversation_id,
-                        Some(false),
-                        Some(AUTO_MERGE_SUPERVISION_STATUS_WAITING),
-                        Some(&auto_merge_enable_failure_summary(&error)),
-                    )
-                    .await
-                    .map_err(|e| e.to_string())?;
+                update_agent_workspace_pr_supervision_state(
+                    state.agent_conversation_workspace_repo.as_ref(),
+                    Some(state.agent_workspace_repair_repo.as_ref()),
+                    conversation_id,
+                    Some(false),
+                    Some(AUTO_MERGE_SUPERVISION_STATUS_WAITING),
+                    Some(&auto_merge_enable_failure_summary(&error)),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
             }
         }
     } else {
@@ -5222,16 +5226,16 @@ async fn reconcile_agent_workspace_auto_merge_for_supervision_toggle(
                 error = %error,
                 "Agent workspace PR supervision deferred GitHub auto-merge disable"
             );
-            state
-                .agent_conversation_workspace_repo
-                .update_pr_auto_merge_state(
-                    conversation_id,
-                    Some(true),
-                    Some(AUTO_MERGE_SUPERVISION_STATUS_WAITING),
-                    Some(&auto_merge_disable_failure_summary(&error)),
-                )
-                .await
-                .map_err(|e| e.to_string())?;
+            update_agent_workspace_pr_supervision_state(
+                state.agent_conversation_workspace_repo.as_ref(),
+                Some(state.agent_workspace_repair_repo.as_ref()),
+                conversation_id,
+                Some(true),
+                Some(AUTO_MERGE_SUPERVISION_STATUS_WAITING),
+                Some(&auto_merge_disable_failure_summary(&error)),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
         }
     }
 
@@ -5314,16 +5318,16 @@ pub async fn set_agent_conversation_workspace_pr_supervision_for_state(
         .await?;
     }
 
-    state
-        .agent_conversation_workspace_repo
-        .update_pr_supervision_preferences(
-            &conversation_id,
-            input.auto_fix_enabled,
-            input.auto_merge_desired,
-            &auto_merge_method,
-        )
-        .await
-        .map_err(|e| e.to_string())?;
+    update_agent_workspace_pr_supervision_preferences(
+        state.agent_conversation_workspace_repo.as_ref(),
+        state.agent_workspace_repair_repo.as_ref(),
+        &conversation_id,
+        input.auto_fix_enabled,
+        input.auto_merge_desired,
+        &auto_merge_method,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
 
     reconcile_agent_workspace_auto_merge_for_supervision_toggle(
         state,

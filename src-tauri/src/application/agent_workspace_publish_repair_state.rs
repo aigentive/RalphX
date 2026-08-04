@@ -24,8 +24,9 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentRunId, AgentWorkspaceRepairAttempt,
     AgentWorkspaceRepairCompletionAuthority, AgentWorkspaceRepairContinuation,
-    AgentWorkspaceRepairOutcome, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
-    AgentWorkspaceReviewGateStatus, ChatConversationId, GitTargetIdentity, GitTargetLeaseOwner,
+    AgentWorkspaceRepairOperationHoldReason, AgentWorkspaceRepairOutcome,
+    AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource, AgentWorkspaceReviewGateStatus,
+    ChatConversationId, GitTargetIdentity, GitTargetLeaseOwner,
 };
 use crate::domain::repositories::{
     AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, AgentConversationWorkspaceRepository,
@@ -625,26 +626,35 @@ pub(crate) async fn block_agent_workspace_repair_needs_human(
 /// re-drive the existing publish continuation once when GitHub proves a validated local repair
 /// head is still unpublished; neither path may buy another fixer generation or settle on a timer.
 pub(crate) fn agent_workspace_repair_is_health_held(attempt: &AgentWorkspaceRepairAttempt) -> bool {
-    attempt.pending_reasons.iter().any(|reason| {
-        reason == PRE_EXISTING_ON_BASE_REPAIR_REASON || reason == UNCHANGED_HEALTH_REPAIR_REASON
-    })
+    matches!(
+        agent_workspace_repair_hold_reason(attempt),
+        Some(
+            AgentWorkspaceRepairOperationHoldReason::PreExistingOnBase
+                | AgentWorkspaceRepairOperationHoldReason::UnchangedHealth
+        )
+    )
 }
 
 pub(crate) fn agent_workspace_repair_is_ci_held(attempt: &AgentWorkspaceRepairAttempt) -> bool {
-    attempt.ci_rerun_count > 0
-        || attempt
-            .pending_reasons
-            .iter()
-            .any(|reason| reason == AWAITING_CI_REPAIR_REASON)
+    matches!(
+        agent_workspace_repair_hold_reason(attempt),
+        Some(AgentWorkspaceRepairOperationHoldReason::CiRerunPending)
+    )
 }
 
 pub(crate) fn agent_workspace_repair_is_base_stale_held(
     attempt: &AgentWorkspaceRepairAttempt,
 ) -> bool {
-    attempt
-        .pending_reasons
-        .iter()
-        .any(|reason| reason == BASE_STALE_AFTER_UPDATE_REPAIR_REASON)
+    matches!(
+        agent_workspace_repair_hold_reason(attempt),
+        Some(AgentWorkspaceRepairOperationHoldReason::BaseStale)
+    )
+}
+
+pub(crate) fn agent_workspace_repair_hold_reason(
+    attempt: &AgentWorkspaceRepairAttempt,
+) -> Option<AgentWorkspaceRepairOperationHoldReason> {
+    attempt.operation_snapshot().hold_reason
 }
 
 /// True when a held repair has a concrete local head that GitHub has not observed yet.

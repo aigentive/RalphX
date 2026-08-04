@@ -35,8 +35,7 @@ use crate::application::agent_workspace_publish_repair_state::{
     start_or_join_agent_workspace_repair, AgentWorkspaceRepairDispatchOutcome,
     AgentWorkspaceRepairStartOutcome, AgentWorkspaceRepairStartRequest,
     BASE_STALE_AFTER_UPDATE_REPAIR_REASON, MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES,
-    NEEDS_HUMAN_REPAIR_REASON, PRE_EXISTING_ON_BASE_REPAIR_REASON,
-    UNCHANGED_HEALTH_REPAIR_REASON,
+    NEEDS_HUMAN_REPAIR_REASON, PRE_EXISTING_ON_BASE_REPAIR_REASON, UNCHANGED_HEALTH_REPAIR_REASON,
 };
 use crate::application::agent_workspace_review::{
     resolve_review_target, AgentWorkspaceReviewPacket, AgentWorkspaceReviewTarget,
@@ -2273,7 +2272,10 @@ async fn ready_ci_and_base_stale_holds_remain_untouched_by_recovery() {
             .await
             .expect("reload stationary hold")
             .expect("stationary hold remains current");
-        assert_eq!(current, held, "{hold_kind} recovery must not mutate the attempt");
+        assert_eq!(
+            current, held,
+            "{hold_kind} recovery must not mutate the attempt"
+        );
         assert!(!current
             .pending_reasons
             .iter()

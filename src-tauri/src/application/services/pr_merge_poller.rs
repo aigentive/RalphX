@@ -109,7 +109,50 @@ struct HeldPrHealthRecheckAuthority {
     updated_at: chrono::DateTime<chrono::Utc>,
 }
 
-async fn update_agent_workspace_pr_supervision_state(
+async fn repair_owns_agent_workspace_pr_supervision_status(
+    repair_repo: Option<&dyn AgentWorkspaceRepairRepository>,
+    conversation_id: &ChatConversationId,
+) -> crate::AppResult<bool> {
+    match repair_repo {
+        Some(repair_repo) => Ok(repair_repo
+            .get_current_repair_attempt(conversation_id)
+            .await?
+            .is_some_and(|attempt| attempt.is_unsettled())),
+        None => Ok(false),
+    }
+}
+
+pub(crate) async fn update_agent_workspace_pr_supervision_preferences(
+    workspace_repo: &dyn AgentConversationWorkspaceRepository,
+    repair_repo: &dyn AgentWorkspaceRepairRepository,
+    conversation_id: &ChatConversationId,
+    autofix_enabled: bool,
+    auto_merge_desired: bool,
+    auto_merge_method: &str,
+) -> crate::AppResult<()> {
+    if repair_owns_agent_workspace_pr_supervision_status(Some(repair_repo), conversation_id).await?
+    {
+        workspace_repo
+            .update_pr_supervision_preferences_preserving_status(
+                conversation_id,
+                autofix_enabled,
+                auto_merge_desired,
+                auto_merge_method,
+            )
+            .await
+    } else {
+        workspace_repo
+            .update_pr_supervision_preferences(
+                conversation_id,
+                autofix_enabled,
+                auto_merge_desired,
+                auto_merge_method,
+            )
+            .await
+    }
+}
+
+pub(crate) async fn update_agent_workspace_pr_supervision_state(
     workspace_repo: &dyn AgentConversationWorkspaceRepository,
     repair_repo: Option<&dyn AgentWorkspaceRepairRepository>,
     conversation_id: &ChatConversationId,
@@ -117,13 +160,8 @@ async fn update_agent_workspace_pr_supervision_state(
     status: Option<&str>,
     summary: Option<&str>,
 ) -> crate::AppResult<()> {
-    let repair_owns_status = match repair_repo {
-        Some(repair_repo) => repair_repo
-            .get_current_repair_attempt(conversation_id)
-            .await?
-            .is_some_and(|attempt| attempt.is_unsettled()),
-        None => false,
-    };
+    let repair_owns_status =
+        repair_owns_agent_workspace_pr_supervision_status(repair_repo, conversation_id).await?;
 
     workspace_repo
         .update_pr_auto_merge_state(

@@ -154,6 +154,7 @@ fn ci_held_predicate_recognizes_rerun_reservations_and_await_holds() {
         None,
         chrono::Utc::now(),
     );
+    attempt.phase = AgentWorkspaceRepairPhase::Ready;
 
     assert!(!agent_workspace_repair_is_ci_held(&attempt));
     attempt.ci_rerun_count = 1;

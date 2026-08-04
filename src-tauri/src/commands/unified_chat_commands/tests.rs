@@ -3038,6 +3038,7 @@ async fn pr_supervision_enable_uses_linked_plan_branch_pr_for_ideation_workspace
         .create_or_update(workspace.clone())
         .await
         .expect("workspace should persist");
+
     let response = set_agent_conversation_workspace_pr_supervision_for_state(
         workspace.conversation_id.as_str(),
         AgentConversationWorkspacePrSupervisionInput {

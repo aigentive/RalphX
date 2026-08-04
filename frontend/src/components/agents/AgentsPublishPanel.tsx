@@ -377,7 +377,7 @@ export function AgentPublishPanel({
   }, [conversationId]);
   const maintenancePresentation = getAgentWorkspaceMaintenancePresentation(workspace);
   const fingerprintSpend = getAgentWorkspacePrAutofixFingerprintSpendPresentation(workspace);
-  const isHeld = workspace?.maintenanceOperation?.stage === "held";
+  const isHeld = maintenancePresentation?.action === "hold";
   const isMaintenanceActive = isAgentWorkspaceMaintenanceActive(workspace);
   const blocksGitInspection = blocksAgentWorkspaceGitInspection(workspace);
   const isPublishingWorkspace =

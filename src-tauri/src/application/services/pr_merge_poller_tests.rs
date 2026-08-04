@@ -1062,6 +1062,27 @@ async fn supervision_write_fails_closed_when_repair_authority_lookup_fails() {
         .await
         .expect("workspace lookup should succeed");
 
+    let preference_error = super::update_agent_workspace_pr_supervision_preferences(
+        workspace_repo.as_ref(),
+        &LookupErrorRepairRepository,
+        &conversation_id,
+        true,
+        true,
+        "squash",
+    )
+    .await
+    .expect_err("repair authority lookup failure must block preference writes");
+    assert!(preference_error
+        .to_string()
+        .contains("repair authority lookup failed"));
+    assert_eq!(
+        workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed"),
+        before
+    );
+
     let error = super::update_agent_workspace_pr_supervision_state(
         workspace_repo.as_ref(),
         Some(&LookupErrorRepairRepository),
