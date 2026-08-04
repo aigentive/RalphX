@@ -106,4 +106,27 @@ describe("useAgentsSessionBindings", () => {
 
     expect(useUiStore.getState().taskHistoryState).toBeNull();
   });
+
+  it("exposes transient composer runtime state through the session binding seam", () => {
+    const { result } = renderHook(() =>
+      useAgentsSessionBindings({ setOptimisticSelectedConversationId: vi.fn() })
+    );
+
+    act(() => {
+      result.current.setComposerRuntimeForConversation(
+        "conversation-a",
+        null,
+        { provider: "claude", modelId: "sonnet", effort: "high" },
+      );
+    });
+
+    expect(result.current.composerRuntimeOverridesByConversationId).toEqual({
+      "conversation-a": {
+        provider: "claude",
+        modelId: "sonnet",
+        effort: "high",
+      },
+    });
+    expect(useAgentSessionStore.getState().lastRuntimeByProjectId).toEqual({});
+  });
 });
