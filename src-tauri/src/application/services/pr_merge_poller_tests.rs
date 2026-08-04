@@ -6080,6 +6080,7 @@ async fn ci_rerun_hold_settles_once_reran_runs_are_terminal() {
         Some(agent_run_repo),
         Some(Arc::clone(&repair_repo)),
         Some(branch_update_repo),
+        None,
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -6152,6 +6153,7 @@ async fn ci_await_hold_suppresses_dispatch_and_survives_unchanged_classification
         Some(agent_run_repo),
         Some(Arc::clone(&repair_repo)),
         Some(branch_update_repo),
+        None,
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -6217,6 +6219,7 @@ async fn ci_hold_settles_when_head_moves() {
         Some(agent_run_repo),
         Some(Arc::clone(&repair_repo)),
         Some(branch_update_repo),
+        None,
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -6294,6 +6297,7 @@ async fn unrelated_conversation_dispatch_does_not_settle_a_ci_hold() {
         Some(agent_run_repo),
         Some(Arc::clone(&repair_repo)),
         Some(branch_update_repo),
+        None,
         chat as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
