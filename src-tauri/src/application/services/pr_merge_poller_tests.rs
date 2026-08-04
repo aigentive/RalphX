@@ -10,7 +10,7 @@
 // - RateLimitState default values
 
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -21,7 +21,11 @@ use super::{AgentWorkspacePrPollerStart, PrPollerRegistry, RateLimitState};
 use crate::application::agent_conversation_workspace::{
     agent_conversation_branch_name, resolve_agent_conversation_workspace_path,
 };
-use crate::application::agent_workspace_publish_repair_state::current_agent_workspace_repair_claim_for_completion;
+use crate::application::agent_workspace_publish_repair_state::{
+    agent_workspace_repair_is_base_stale_held, agent_workspace_repair_is_ci_held,
+    current_agent_workspace_repair_claim_for_completion,
+    AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION,
+};
 use crate::application::agent_workspace_terminal_cleanup::{
     cleanup_terminal_agent_workspace_after_pr, terminalize_agent_workspace_after_pr,
     TerminalAgentWorkspaceCause,
@@ -39,18 +43,26 @@ use crate::domain::entities::{
     AgentRunActionKind, AgentRunStatus, AgentWorkspacePrDescription, AgentWorkspacePrReviewAction,
     AgentWorkspacePrReviewActionKind, AgentWorkspacePrReviewActionStatus,
     AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewMonitorStatus,
-    AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation, AgentWorkspaceRepairPhase,
-    AgentWorkspaceRepairSource, AgentWorkspaceReviewAutoMergeGuard,
-    AgentWorkspaceReviewAutoMergeGuardStatus, AgentWorkspaceReviewMonitor,
-    AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest, ArtifactId, ChatContextType,
-    ChatConversationId, GitTargetLeaseOwner, IdeationAnalysisBaseRefKind, IdeationSessionId,
-    NewNotification, NotificationCategory, NotificationSeverity, NotificationTarget, PlanBranch,
-    PlanBranchId, Project, TaskId,
+    AgentWorkspaceRepairAttempt, AgentWorkspaceRepairAttemptId, AgentWorkspaceRepairContinuation,
+    AgentWorkspaceRepairEffect, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
+    AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewAutoMergeGuardStatus,
+    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest,
+    ArtifactId, ChatContextType, ChatConversationId, GitTargetLeaseOwner,
+    IdeationAnalysisBaseRefKind, IdeationSessionId, NewNotification, NotificationCategory,
+    NotificationSeverity, NotificationTarget, PlanBranch, PlanBranchId, Project, TaskId,
 };
 use crate::domain::repositories::{
     AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, AgentConversationWorkspaceRepository,
-    AgentRunRepository, AgentWorkspaceRepairRepository, BranchUpdateRepository,
-    NotificationRepository,
+    AgentRunRepository, AgentWorkspaceRepairAttemptTransition,
+    AgentWorkspaceRepairAttemptTransitionOutcome, AgentWorkspaceRepairRepository,
+    BindAgentWorkspaceRepairAttemptRun, BranchUpdateRepository, CompleteAgentWorkspaceRepairEffect,
+    CompleteAgentWorkspaceRepairEffectOutcome, CreateAgentWorkspaceRepairEffect,
+    CreateAgentWorkspaceRepairEffectOutcome, ImportLegacyAgentWorkspaceRepairAttempt,
+    ImportLegacyAgentWorkspaceRepairAttemptOutcome, NotificationRepository,
+    SettleAgentWorkspaceRepairAttempt, SettleAgentWorkspaceRepairAttemptOutcome,
+    SettleAndStartAgentWorkspaceRepairSuccessor,
+    SettleAndStartAgentWorkspaceRepairSuccessorOutcome, StartOrJoinAgentWorkspaceRepairAttempt,
+    StartOrJoinAgentWorkspaceRepairAttemptOutcome,
 };
 use crate::domain::services::github_service::{
     PrAutoMergeRequest, PrHealth, PrHealthCheck, PrIssueCommentSummary, PrMergeStateStatus,
@@ -112,6 +124,22 @@ fn run_git(repo: &std::path::Path, args: &[&str]) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn git_stdout(repo: &std::path::Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .expect("git command should run");
+    assert!(
+        output.status.success(),
+        "git {:?} failed\nstdout:\n{}\nstderr:\n{}",
+        args,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
 fn init_cleanup_repo() -> tempfile::TempDir {
@@ -395,6 +423,176 @@ async fn reserve_health_held_attempt(
     {
         AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
         outcome => panic!("expected health-held reservation, got {outcome:?}"),
+    }
+}
+
+/// Simulates another writer winning only the post-push target-marker checkpoint. Keeping this at
+/// the repository seam exercises the poller's authority handling without exposing test controls
+/// through production orchestration surfaces.
+struct RejectPostPushBaseTargetCheckpointRepo {
+    inner: Arc<dyn AgentWorkspaceRepairRepository>,
+    reject_next_base_target: AtomicBool,
+}
+
+impl RejectPostPushBaseTargetCheckpointRepo {
+    fn new(inner: Arc<dyn AgentWorkspaceRepairRepository>) -> Self {
+        Self {
+            inner,
+            reject_next_base_target: AtomicBool::new(true),
+        }
+    }
+}
+
+#[async_trait]
+impl AgentWorkspaceRepairRepository for RejectPostPushBaseTargetCheckpointRepo {
+    async fn get_current_repair_attempt(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentWorkspaceRepairAttempt>> {
+        self.inner.get_current_repair_attempt(conversation_id).await
+    }
+
+    async fn get_latest_repair_attempt_for_conversation(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentWorkspaceRepairAttempt>> {
+        self.inner
+            .get_latest_repair_attempt_for_conversation(conversation_id)
+            .await
+    }
+
+    async fn get_repair_attempt(
+        &self,
+        attempt_id: &AgentWorkspaceRepairAttemptId,
+    ) -> AppResult<Option<AgentWorkspaceRepairAttempt>> {
+        self.inner.get_repair_attempt(attempt_id).await
+    }
+
+    async fn get_repair_attempt_for_run(
+        &self,
+        conversation_id: &ChatConversationId,
+        run_id: &crate::domain::entities::AgentRunId,
+    ) -> AppResult<Option<AgentWorkspaceRepairAttempt>> {
+        self.inner
+            .get_repair_attempt_for_run(conversation_id, run_id)
+            .await
+    }
+
+    async fn list_recoverable_repair_attempts(
+        &self,
+    ) -> AppResult<Vec<AgentWorkspaceRepairAttempt>> {
+        self.inner.list_recoverable_repair_attempts().await
+    }
+
+    async fn list_repair_attempts_for_conversation(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Vec<AgentWorkspaceRepairAttempt>> {
+        self.inner
+            .list_repair_attempts_for_conversation(conversation_id)
+            .await
+    }
+
+    async fn start_or_join_repair_attempt(
+        &self,
+        request: StartOrJoinAgentWorkspaceRepairAttempt,
+    ) -> AppResult<StartOrJoinAgentWorkspaceRepairAttemptOutcome> {
+        self.inner.start_or_join_repair_attempt(request).await
+    }
+
+    async fn bind_repair_attempt_run(
+        &self,
+        request: BindAgentWorkspaceRepairAttemptRun,
+    ) -> AppResult<AgentWorkspaceRepairAttemptTransitionOutcome> {
+        self.inner.bind_repair_attempt_run(request).await
+    }
+
+    async fn transition_repair_attempt(
+        &self,
+        request: AgentWorkspaceRepairAttemptTransition,
+    ) -> AppResult<AgentWorkspaceRepairAttemptTransitionOutcome> {
+        if request.attempt.base_update_target_commit.is_some()
+            && self.reject_next_base_target.swap(false, Ordering::SeqCst)
+        {
+            let current = self
+                .inner
+                .get_current_repair_attempt(&request.attempt.conversation_id)
+                .await?
+                .expect("base-target checkpoint needs a current attempt");
+            let mut winning_attempt = current.clone();
+            winning_attempt.summary = Some("concurrent checkpoint writer".to_string());
+            winning_attempt.updated_at += chrono::Duration::microseconds(1);
+            let outcome = self
+                .inner
+                .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+                    attempt: winning_attempt.clone(),
+                    expected_phase: current.phase,
+                    expected_updated_at: current.updated_at,
+                    next_phase: current.phase,
+                    compatibility_projection: None,
+                    events: Vec::new(),
+                })
+                .await?;
+            assert!(matches!(
+                outcome,
+                AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_)
+            ));
+            return Ok(AgentWorkspaceRepairAttemptTransitionOutcome::Stale(
+                winning_attempt,
+            ));
+        }
+        self.inner.transition_repair_attempt(request).await
+    }
+
+    async fn settle_repair_attempt(
+        &self,
+        request: SettleAgentWorkspaceRepairAttempt,
+    ) -> AppResult<SettleAgentWorkspaceRepairAttemptOutcome> {
+        self.inner.settle_repair_attempt(request).await
+    }
+
+    async fn settle_and_start_repair_successor(
+        &self,
+        request: SettleAndStartAgentWorkspaceRepairSuccessor,
+    ) -> AppResult<SettleAndStartAgentWorkspaceRepairSuccessorOutcome> {
+        self.inner.settle_and_start_repair_successor(request).await
+    }
+
+    async fn create_repair_effect(
+        &self,
+        request: CreateAgentWorkspaceRepairEffect,
+    ) -> AppResult<CreateAgentWorkspaceRepairEffectOutcome> {
+        self.inner.create_repair_effect(request).await
+    }
+
+    async fn get_repair_effect_by_idempotency_key(
+        &self,
+        idempotency_key: &str,
+    ) -> AppResult<Option<AgentWorkspaceRepairEffect>> {
+        self.inner
+            .get_repair_effect_by_idempotency_key(idempotency_key)
+            .await
+    }
+
+    async fn get_open_repair_effect(
+        &self,
+        attempt_id: &AgentWorkspaceRepairAttemptId,
+    ) -> AppResult<Option<AgentWorkspaceRepairEffect>> {
+        self.inner.get_open_repair_effect(attempt_id).await
+    }
+
+    async fn complete_repair_effect(
+        &self,
+        request: CompleteAgentWorkspaceRepairEffect,
+    ) -> AppResult<CompleteAgentWorkspaceRepairEffectOutcome> {
+        self.inner.complete_repair_effect(request).await
+    }
+
+    async fn import_legacy_repair_attempt(
+        &self,
+        request: ImportLegacyAgentWorkspaceRepairAttempt,
+    ) -> AppResult<ImportLegacyAgentWorkspaceRepairAttemptOutcome> {
+        self.inner.import_legacy_repair_attempt(request).await
     }
 }
 
@@ -1527,7 +1725,7 @@ async fn agent_workspace_pr_conflict_repair_send_failure_settles_blocked() {
         &conversation_id,
         Arc::clone(&workspace_repo),
         None,
-        chat as Arc<dyn crate::application::chat_service::ChatService>,
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
     .expect("send failure should be settled"));
@@ -7131,6 +7329,1235 @@ async fn live_pr_autofix_new_base_evidence_supersedes_same_fingerprint_health_ho
     assert_eq!(
         updated_workspace.base_commit.as_deref(),
         Some("base-after-hold")
+    );
+}
+
+#[tokio::test]
+async fn live_pr_autofix_behind_at_already_updated_tip_enters_base_stale_hold() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let mut workspace = supervised_workspace(
+        "behind-at-updated-tip",
+        "project-behind-at-updated-tip",
+        worktree.path(),
+    );
+    init_repair_dispatch_repo(worktree.path(), &workspace.branch_name);
+    workspace.base_commit = Some("base-updated-tip".to_string());
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
+    let branch_update_repo: Arc<dyn BranchUpdateRepository> =
+        Arc::new(MemoryBranchUpdateRepository::new());
+    let agent_run_repo = seeded_latest_pr_fixer_run_repo(&conversation_id).await;
+    let mut health = open_pr_health("behind-at-updated-tip-head");
+    health.sync_state.base_ref_oid = Some("base-updated-tip".to_string());
+    health.sync_state.merge_state_status = Some(PrMergeStateStatus::Behind);
+    health.checks.push(PrHealthCheck {
+        name: "Rust tests".to_string(),
+        status: Some("completed".to_string()),
+        conclusion: Some("failure".to_string()),
+        details_url: None,
+    });
+    let fingerprint = super::classify_agent_workspace_pr_autofix_issue(101, &health)
+        .expect("failed check should classify")
+        .classification;
+    let held = reserve_health_held_attempt(
+        repair_repo.as_ref(),
+        &conversation_id,
+        &fingerprint,
+        crate::application::agent_workspace_publish_repair_state::UNCHANGED_HEALTH_REPAIR_REASON,
+    )
+    .await;
+    let mut targeted = held.clone();
+    targeted.target_base_commit = Some("base-updated-tip".to_string());
+    targeted.base_update_target_commit = Some("base-updated-tip".to_string());
+    targeted.updated_at += chrono::Duration::microseconds(1);
+    match repair_repo
+        .transition_repair_attempt(
+            crate::domain::repositories::AgentWorkspaceRepairAttemptTransition {
+                attempt: targeted,
+                expected_phase: AgentWorkspaceRepairPhase::Ready,
+                expected_updated_at: held.updated_at,
+                next_phase: AgentWorkspaceRepairPhase::Ready,
+                compatibility_projection: None,
+                events: Vec::new(),
+            },
+        )
+        .await
+        .expect("persist update target")
+    {
+        crate::domain::repositories::AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_) => {}
+        outcome => panic!("update target must persist, got {outcome:?}"),
+    }
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health.clone()));
+    let chat = Arc::new(MockChatService::with_agent_run_repo(Arc::clone(
+        &agent_run_repo,
+    )));
+
+    let routed = super::route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        workspace_repo.clone(),
+        Some(agent_run_repo.clone()),
+        Some(Arc::clone(&repair_repo)),
+        Some(Arc::clone(&branch_update_repo)),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("repeated behind observation should hold");
+
+    assert!(!routed);
+    assert_eq!(github.state().push_branch_calls, 0);
+    assert!(chat.get_sent_messages().await.is_empty());
+    let current = repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load held attempt")
+        .expect("attempt remains held");
+    assert_eq!(current.id, held.id);
+    assert!(current.pending_reasons.iter().any(|reason| {
+        reason
+            == crate::application::agent_workspace_publish_repair_state::BASE_STALE_AFTER_UPDATE_REPAIR_REASON
+    }));
+
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    let routed = super::route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        workspace_repo.clone(),
+        Some(agent_run_repo),
+        Some(Arc::clone(&repair_repo)),
+        Some(branch_update_repo),
+        chat as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("re-entry should retain the same base-stale hold");
+    assert!(!routed);
+    assert_eq!(github.state().push_branch_calls, 0);
+    assert_eq!(
+        workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("list base update events")
+            .into_iter()
+            .filter(|event| event.step == "pr_base_update" && event.status == "blocked")
+            .count(),
+        1,
+        "re-entry must not duplicate the blocked route event"
+    );
+}
+
+#[tokio::test]
+async fn live_pr_autofix_ci_hold_base_stale_marker_clears_once_when_no_longer_behind() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let mut workspace = supervised_workspace(
+        "ci-base-stale-lifecycle",
+        "project-ci-base-stale-lifecycle",
+        worktree.path(),
+    );
+    init_repair_dispatch_repo(worktree.path(), &workspace.branch_name);
+    workspace.base_commit = Some("base-updated-tip".to_string());
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
+    let branch_update_repo: Arc<dyn BranchUpdateRepository> =
+        Arc::new(MemoryBranchUpdateRepository::new());
+    let agent_run_repo = seeded_latest_pr_fixer_run_repo(&conversation_id).await;
+    let ci_fingerprint = "ci-hold:v1:ci-base-stale-head:924";
+    let held =
+        reserve_pending_ci_rerun_attempt(repair_repo.as_ref(), &conversation_id, ci_fingerprint)
+            .await;
+    assert!(held.pr_autofix_health_fingerprint.is_none());
+    let mut targeted = held.clone();
+    targeted.target_base_commit = Some("base-updated-tip".to_string());
+    targeted.base_update_target_commit = Some("base-updated-tip".to_string());
+    targeted.updated_at += chrono::Duration::microseconds(1);
+    let targeted = match repair_repo
+        .transition_repair_attempt(
+            crate::domain::repositories::AgentWorkspaceRepairAttemptTransition {
+                attempt: targeted,
+                expected_phase: AgentWorkspaceRepairPhase::Ready,
+                expected_updated_at: held.updated_at,
+                next_phase: AgentWorkspaceRepairPhase::Ready,
+                compatibility_projection: None,
+                events: Vec::new(),
+            },
+        )
+        .await
+        .expect("persist CI-only base authority")
+    {
+        crate::domain::repositories::AgentWorkspaceRepairAttemptTransitionOutcome::Applied(
+            attempt,
+        ) => attempt,
+        outcome => panic!("CI-only base authority must persist, got {outcome:?}"),
+    };
+    let mut health = open_pr_health("ci-base-stale-head");
+    health.sync_state.base_ref_oid = Some("base-updated-tip".to_string());
+    health.sync_state.merge_state_status = Some(PrMergeStateStatus::Behind);
+    health.checks.push(PrHealthCheck {
+        name: "Rust tests / cancelled".to_string(),
+        status: Some("completed".to_string()),
+        conclusion: Some("cancelled".to_string()),
+        details_url: Some("https://github.com/owner/repo/actions/runs/924/jobs/1".to_string()),
+    });
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health.clone()));
+    let chat = Arc::new(MockChatService::with_agent_run_repo(Arc::clone(
+        &agent_run_repo,
+    )));
+
+    let routed = super::route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        workspace_repo.clone(),
+        Some(agent_run_repo.clone()),
+        Some(Arc::clone(&repair_repo)),
+        Some(Arc::clone(&branch_update_repo)),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("CI-only repeated base tip should enter base-stale hold");
+    assert!(!routed);
+    let stale_held = repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load base-stale attempt")
+        .expect("base-stale attempt remains current");
+    assert_eq!(stale_held.id, targeted.id);
+    assert!(agent_workspace_repair_is_base_stale_held(&stale_held));
+    assert!(agent_workspace_repair_is_ci_held(&stale_held));
+    assert_eq!(github.state().push_branch_calls, 0);
+    assert!(chat.get_sent_messages().await.is_empty());
+    let events_before_unknown = workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("list base-stale events")
+        .len();
+
+    health.sync_state.merge_state_status = Some(PrMergeStateStatus::Unknown);
+    github.state().fetch_pr_health_result = Some(Ok(health.clone()));
+    let routed = super::route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        workspace_repo.clone(),
+        Some(agent_run_repo.clone()),
+        Some(Arc::clone(&repair_repo)),
+        Some(Arc::clone(&branch_update_repo)),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("unknown merge state must retain base_stale");
+    assert!(!routed);
+    let unknown_retained = repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load unknown-state attempt")
+        .expect("base-stale attempt remains current");
+    assert!(agent_workspace_repair_is_base_stale_held(&unknown_retained));
+    assert_eq!(unknown_retained.updated_at, stale_held.updated_at);
+    assert!(chat.get_sent_messages().await.is_empty());
+    assert_eq!(github.state().push_branch_calls, 0);
+    assert_eq!(
+        workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("unknown state must not emit events")
+            .len(),
+        events_before_unknown
+    );
+
+    health.sync_state.merge_state_status = Some(PrMergeStateStatus::Other("pending".to_string()));
+    health.sync_state.base_ref_oid = Some("base-updated-tip".to_string());
+    github.state().fetch_pr_health_result = Some(Ok(health.clone()));
+    let routed = super::route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        workspace_repo.clone(),
+        Some(agent_run_repo.clone()),
+        Some(Arc::clone(&repair_repo)),
+        Some(Arc::clone(&branch_update_repo)),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("other merge state must retain base_stale");
+    assert!(!routed);
+    let other_retained = repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load other-state attempt")
+        .expect("base-stale attempt remains current");
+    assert!(agent_workspace_repair_is_base_stale_held(&other_retained));
+    assert_eq!(other_retained.updated_at, stale_held.updated_at);
+
+    health.sync_state.merge_state_status = Some(PrMergeStateStatus::Clean);
+    health.sync_state.base_ref_oid = None;
+    github.state().fetch_pr_health_result = Some(Ok(health.clone()));
+    let routed = super::route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        workspace_repo.clone(),
+        Some(agent_run_repo.clone()),
+        Some(Arc::clone(&repair_repo)),
+        Some(Arc::clone(&branch_update_repo)),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("missing base OID must retain base_stale");
+    assert!(!routed);
+    let missing_oid_retained = repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load missing-OID attempt")
+        .expect("base-stale attempt remains current");
+    assert!(agent_workspace_repair_is_base_stale_held(
+        &missing_oid_retained
+    ));
+    assert_eq!(missing_oid_retained.updated_at, stale_held.updated_at);
+    assert!(chat.get_sent_messages().await.is_empty());
+    assert_eq!(github.state().push_branch_calls, 0);
+    assert_eq!(
+        workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("missing OID must not emit events")
+            .len(),
+        events_before_unknown
+    );
+
+    health.sync_state.base_ref_oid = Some("base-updated-tip".to_string());
+    github.state().fetch_pr_health_result = Some(Ok(health.clone()));
+    let routed = super::route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        workspace_repo.clone(),
+        Some(agent_run_repo.clone()),
+        Some(Arc::clone(&repair_repo)),
+        Some(Arc::clone(&branch_update_repo)),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("known cleared behind state should release base_stale and handle terminal CI");
+    assert!(
+        routed,
+        "terminal CI evidence must resume the normal repair path"
+    );
+    let released = repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load released attempt")
+        .expect("terminal CI should start a successor repair");
+    assert!(!agent_workspace_repair_is_base_stale_held(&released));
+    assert!(!agent_workspace_repair_is_ci_held(&released));
+    assert_eq!(released.generation, stale_held.generation + 1);
+    assert_eq!(chat.get_sent_messages().await.len(), 1);
+
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    let routed = super::route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        workspace_repo.clone(),
+        Some(agent_run_repo),
+        Some(Arc::clone(&repair_repo)),
+        Some(branch_update_repo),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("re-entry should not duplicate the successor repair");
+    assert!(!routed);
+    assert_eq!(chat.get_sent_messages().await.len(), 1);
+    assert_eq!(
+        workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("list base update events")
+            .into_iter()
+            .filter(|event| event.step == "pr_base_update" && event.status == "blocked")
+            .count(),
+        1,
+        "the base-stale transition event must not duplicate on release or re-entry"
+    );
+}
+
+#[tokio::test]
+async fn live_pr_autofix_ci_rerun_hold_behind_base_dirty_worktree_defers_without_push() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let mut workspace = supervised_workspace(
+        "behind-base-dirty-worktree",
+        "project-behind-base-dirty-worktree",
+        worktree.path(),
+    );
+    init_repair_dispatch_repo(worktree.path(), &workspace.branch_name);
+    workspace.base_commit = Some("base-behind-dirty".to_string());
+    let conversation_id = workspace.conversation_id.clone();
+    let mut project = Project::new(
+        "Behind base dirty worktree".to_string(),
+        worktree.path().to_string_lossy().to_string(),
+    );
+    project.id = workspace.project_id.clone();
+    project.base_branch = Some("main".to_string());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
+    let branch_update_repo: Arc<dyn BranchUpdateRepository> =
+        Arc::new(MemoryBranchUpdateRepository::new());
+    let agent_run_repo = seeded_latest_pr_fixer_run_repo(&conversation_id).await;
+    let mut health = open_pr_health("behind-base-dirty-head");
+    health.sync_state.base_ref_oid = Some("base-behind-dirty".to_string());
+    health.sync_state.merge_state_status = Some(PrMergeStateStatus::Behind);
+    let ci_fingerprint = "ci-hold:v1:behind-base-dirty-head:923";
+    health.checks.push(PrHealthCheck {
+        name: "Rust tests / cancelled".to_string(),
+        status: Some("completed".to_string()),
+        conclusion: Some("cancelled".to_string()),
+        details_url: Some("https://github.com/owner/repo/actions/runs/923/jobs/1".to_string()),
+    });
+    health.checks.push(PrHealthCheck {
+        name: "Rust tests / sibling".to_string(),
+        status: Some("in_progress".to_string()),
+        conclusion: None,
+        details_url: Some("https://github.com/owner/repo/actions/runs/923/jobs/2".to_string()),
+    });
+    let held =
+        reserve_pending_ci_rerun_attempt(repair_repo.as_ref(), &conversation_id, ci_fingerprint)
+            .await;
+    let mut targeted = held.clone();
+    targeted.target_base_commit = Some("base-behind-dirty".to_string());
+    targeted.updated_at += chrono::Duration::microseconds(1);
+    let targeted = match repair_repo
+        .transition_repair_attempt(
+            crate::domain::repositories::AgentWorkspaceRepairAttemptTransition {
+                attempt: targeted,
+                expected_phase: AgentWorkspaceRepairPhase::Ready,
+                expected_updated_at: held.updated_at,
+                next_phase: AgentWorkspaceRepairPhase::Ready,
+                compatibility_projection: None,
+                events: Vec::new(),
+            },
+        )
+        .await
+        .expect("persist held base authority")
+    {
+        crate::domain::repositories::AgentWorkspaceRepairAttemptTransitionOutcome::Applied(
+            attempt,
+        ) => attempt,
+        outcome => panic!("held base authority must apply, got {outcome:?}"),
+    };
+    let target_identity =
+        GitService::canonical_target_identity(worktree.path(), &workspace.branch_name)
+            .await
+            .expect("resolve direct-update target identity");
+    let owner = GitTargetLeaseOwner::agent_workspace_repair(targeted.id.as_str());
+    let AcquireGitTargetLeaseOutcome::Acquired { fencing_epoch } = branch_update_repo
+        .acquire_target_lease(AcquireGitTargetLease {
+            identity: target_identity.clone(),
+            owner,
+        })
+        .await
+        .expect("acquire direct-update target lease")
+    else {
+        panic!("direct update fixture should acquire its target lease");
+    };
+    let mut leased = targeted.clone();
+    leased.git_common_dir = Some(
+        target_identity
+            .git_common_dir()
+            .to_string_lossy()
+            .into_owned(),
+    );
+    leased.target_ref = Some(target_identity.full_ref().to_string());
+    leased.target_identity_version = Some(AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION);
+    leased.target_lease_epoch = Some(fencing_epoch);
+    leased.updated_at += chrono::Duration::microseconds(1);
+    match repair_repo
+        .transition_repair_attempt(
+            crate::domain::repositories::AgentWorkspaceRepairAttemptTransition {
+                attempt: leased,
+                expected_phase: AgentWorkspaceRepairPhase::Ready,
+                expected_updated_at: targeted.updated_at,
+                next_phase: AgentWorkspaceRepairPhase::Ready,
+                compatibility_projection: None,
+                events: Vec::new(),
+            },
+        )
+        .await
+        .expect("checkpoint direct-update target lease")
+    {
+        crate::domain::repositories::AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_) => {}
+        outcome => panic!("direct-update target lease must apply, got {outcome:?}"),
+    };
+    std::fs::write(worktree.path().join("DIRTY.md"), "uncommitted\n").expect("dirty the worktree");
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    let chat = Arc::new(MockChatService::with_agent_run_repo(Arc::clone(
+        &agent_run_repo,
+    )));
+
+    let routed = super::route_agent_workspace_pr_autofix_if_needed_with_notifications(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        workspace_repo,
+        Some(agent_run_repo),
+        Some(Arc::clone(&repair_repo)),
+        Some(branch_update_repo),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        None,
+        Some(&project),
+    )
+    .await
+    .expect("dirty worktree should defer to the fixer");
+
+    assert!(
+        routed,
+        "a fresh fixer generation should receive the base update"
+    );
+    assert_eq!(github.state().push_branch_calls, 0);
+    let messages = chat.get_sent_messages().await;
+    assert_eq!(messages.len(), 1);
+    assert!(messages[0].contains("Update the branch from its configured base"));
+    let current = repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load successor")
+        .expect("successor exists");
+    assert_eq!(current.generation, held.generation + 1);
+    assert_eq!(
+        current.base_update_target_commit, None,
+        "a defer must not transfer an automatic-update marker to the fixer generation"
+    );
+}
+
+#[tokio::test]
+async fn live_pr_autofix_advanced_base_and_behind_updates_advanced_tip_first() {
+    let fixture = tempfile::tempdir().expect("fixture root");
+    let remote = fixture.path().join("remote.git");
+    let worktree = fixture.path().join("worktree");
+    let remote_arg = remote.to_string_lossy().to_string();
+    let worktree_arg = worktree.to_string_lossy().to_string();
+    run_git(fixture.path(), &["init", "--bare", &remote_arg]);
+    run_git(fixture.path(), &["clone", &remote_arg, &worktree_arg]);
+    run_git(&worktree, &["config", "user.email", "test@example.com"]);
+    run_git(&worktree, &["config", "user.name", "Test User"]);
+    run_git(&worktree, &["checkout", "-b", "main"]);
+    std::fs::write(worktree.join("README.md"), "initial\n").expect("write initial file");
+    run_git(&worktree, &["add", "."]);
+    run_git(&worktree, &["commit", "-m", "initial"]);
+    run_git(&worktree, &["push", "-u", "origin", "main"]);
+    let attempt_base_oid = git_stdout(&worktree, &["rev-parse", "main"]);
+
+    let mut workspace = supervised_workspace(
+        "behind-base-direct-update",
+        "project-behind-base-direct-update",
+        &worktree,
+    );
+    run_git(&worktree, &["checkout", "-b", &workspace.branch_name]);
+    run_git(&worktree, &["push", "-u", "origin", &workspace.branch_name]);
+    run_git(&worktree, &["checkout", "main"]);
+    std::fs::write(worktree.join("BASE.md"), "advanced base\n").expect("advance base");
+    run_git(&worktree, &["add", "."]);
+    run_git(&worktree, &["commit", "-m", "advance base"]);
+    run_git(&worktree, &["push", "origin", "main"]);
+    let observed_base_oid = git_stdout(&worktree, &["rev-parse", "main"]);
+    run_git(&worktree, &["checkout", &workspace.branch_name]);
+
+    workspace.base_commit = Some(observed_base_oid.clone());
+    let conversation_id = workspace.conversation_id.clone();
+    let mut project = Project::new(
+        "Behind base direct update".to_string(),
+        worktree.to_string_lossy().to_string(),
+    );
+    project.id = workspace.project_id.clone();
+    project.base_branch = Some("main".to_string());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
+    let branch_update_repo: Arc<dyn BranchUpdateRepository> =
+        Arc::new(MemoryBranchUpdateRepository::new());
+    let agent_run_repo = seeded_latest_pr_fixer_run_repo(&conversation_id).await;
+    let mut health = open_pr_health("behind-base-direct-head");
+    health.sync_state.base_ref_oid = Some(observed_base_oid.clone());
+    health.sync_state.merge_state_status = Some(PrMergeStateStatus::Behind);
+    health.checks.push(PrHealthCheck {
+        name: "Rust tests".to_string(),
+        status: Some("completed".to_string()),
+        conclusion: Some("failure".to_string()),
+        details_url: None,
+    });
+    let fingerprint = super::classify_agent_workspace_pr_autofix_issue(101, &health)
+        .expect("failed check should classify")
+        .classification;
+    let held = reserve_health_held_attempt(
+        repair_repo.as_ref(),
+        &conversation_id,
+        &fingerprint,
+        crate::application::agent_workspace_publish_repair_state::UNCHANGED_HEALTH_REPAIR_REASON,
+    )
+    .await;
+    let mut targeted = held.clone();
+    targeted.target_base_commit = Some(attempt_base_oid);
+    targeted.updated_at += chrono::Duration::microseconds(1);
+    let targeted = match repair_repo
+        .transition_repair_attempt(
+            crate::domain::repositories::AgentWorkspaceRepairAttemptTransition {
+                attempt: targeted,
+                expected_phase: AgentWorkspaceRepairPhase::Ready,
+                expected_updated_at: held.updated_at,
+                next_phase: AgentWorkspaceRepairPhase::Ready,
+                compatibility_projection: None,
+                events: Vec::new(),
+            },
+        )
+        .await
+        .expect("persist held base authority")
+    {
+        crate::domain::repositories::AgentWorkspaceRepairAttemptTransitionOutcome::Applied(
+            attempt,
+        ) => attempt,
+        outcome => panic!("held base authority must apply, got {outcome:?}"),
+    };
+    let target_identity = GitService::canonical_target_identity(&worktree, &workspace.branch_name)
+        .await
+        .expect("resolve direct-update target identity");
+    let owner = GitTargetLeaseOwner::agent_workspace_repair(targeted.id.as_str());
+    let AcquireGitTargetLeaseOutcome::Acquired { fencing_epoch } = branch_update_repo
+        .acquire_target_lease(AcquireGitTargetLease {
+            identity: target_identity.clone(),
+            owner,
+        })
+        .await
+        .expect("acquire direct-update target lease")
+    else {
+        panic!("direct update fixture should acquire its target lease");
+    };
+    let mut leased = targeted.clone();
+    leased.git_common_dir = Some(
+        target_identity
+            .git_common_dir()
+            .to_string_lossy()
+            .into_owned(),
+    );
+    leased.target_ref = Some(target_identity.full_ref().to_string());
+    leased.target_identity_version = Some(AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION);
+    leased.target_lease_epoch = Some(fencing_epoch);
+    leased.updated_at += chrono::Duration::microseconds(1);
+    match repair_repo
+        .transition_repair_attempt(
+            crate::domain::repositories::AgentWorkspaceRepairAttemptTransition {
+                attempt: leased,
+                expected_phase: AgentWorkspaceRepairPhase::Ready,
+                expected_updated_at: targeted.updated_at,
+                next_phase: AgentWorkspaceRepairPhase::Ready,
+                compatibility_projection: None,
+                events: Vec::new(),
+            },
+        )
+        .await
+        .expect("checkpoint direct-update target lease")
+    {
+        crate::domain::repositories::AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_) => {}
+        outcome => panic!("direct-update target lease must apply, got {outcome:?}"),
+    }
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    let chat = Arc::new(MockChatService::with_agent_run_repo(Arc::clone(
+        &agent_run_repo,
+    )));
+
+    let routed = super::route_agent_workspace_pr_autofix_if_needed_with_notifications(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        &worktree,
+        101,
+        &conversation_id,
+        workspace_repo.clone(),
+        Some(agent_run_repo),
+        Some(Arc::clone(&repair_repo)),
+        Some(branch_update_repo),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        None,
+        Some(&project),
+    )
+    .await
+    .expect("settled worktree should update directly");
+
+    assert!(!routed, "the pre-push health snapshot must not redispatch");
+    assert_eq!(github.state().push_branch_calls, 1);
+    assert!(chat.get_sent_messages().await.is_empty());
+    run_git(
+        &worktree,
+        &["merge-base", "--is-ancestor", "origin/main", "HEAD"],
+    );
+    let current = repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load retained attempt")
+        .expect("attempt remains current");
+    assert_eq!(current.id, held.id);
+    assert_eq!(
+        current.base_update_target_commit.as_deref(),
+        Some(observed_base_oid.as_str())
+    );
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Ready);
+    assert_eq!(
+        workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("list route events")
+            .into_iter()
+            .filter(|event| event.step == "pr_base_update" && event.status == "updated")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn live_pr_autofix_ci_rerun_hold_behind_base_updates_before_waiting() {
+    let fixture = tempfile::tempdir().expect("fixture root");
+    let remote = fixture.path().join("remote.git");
+    let worktree = fixture.path().join("worktree");
+    let remote_arg = remote.to_string_lossy().to_string();
+    let worktree_arg = worktree.to_string_lossy().to_string();
+    run_git(fixture.path(), &["init", "--bare", &remote_arg]);
+    run_git(fixture.path(), &["clone", &remote_arg, &worktree_arg]);
+    run_git(&worktree, &["config", "user.email", "test@example.com"]);
+    run_git(&worktree, &["config", "user.name", "Test User"]);
+    run_git(&worktree, &["checkout", "-b", "main"]);
+    std::fs::write(worktree.join("README.md"), "initial\n").expect("write initial file");
+    run_git(&worktree, &["add", "."]);
+    run_git(&worktree, &["commit", "-m", "initial"]);
+    run_git(&worktree, &["push", "-u", "origin", "main"]);
+    let attempt_base_oid = git_stdout(&worktree, &["rev-parse", "main"]);
+
+    let mut workspace = supervised_workspace(
+        "behind-base-ci-rerun-direct-update",
+        "project-behind-base-ci-rerun-direct-update",
+        &worktree,
+    );
+    run_git(&worktree, &["checkout", "-b", &workspace.branch_name]);
+    run_git(&worktree, &["push", "-u", "origin", &workspace.branch_name]);
+    run_git(&worktree, &["checkout", "main"]);
+    std::fs::write(worktree.join("BASE.md"), "advanced base\n").expect("advance base");
+    run_git(&worktree, &["add", "."]);
+    run_git(&worktree, &["commit", "-m", "advance base"]);
+    run_git(&worktree, &["push", "origin", "main"]);
+    let observed_base_oid = git_stdout(&worktree, &["rev-parse", "main"]);
+    run_git(&worktree, &["checkout", &workspace.branch_name]);
+
+    workspace.base_commit = Some(observed_base_oid.clone());
+    let conversation_id = workspace.conversation_id.clone();
+    let mut project = Project::new(
+        "Behind base CI rerun direct update".to_string(),
+        worktree.to_string_lossy().to_string(),
+    );
+    project.id = workspace.project_id.clone();
+    project.base_branch = Some("main".to_string());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
+    let branch_update_repo: Arc<dyn BranchUpdateRepository> =
+        Arc::new(MemoryBranchUpdateRepository::new());
+    let agent_run_repo = seeded_latest_pr_fixer_run_repo(&conversation_id).await;
+    let ci_fingerprint = "ci-hold:v1:behind-base-ci-rerun-direct-head:925";
+    let mut health = open_pr_health("behind-base-ci-rerun-direct-head");
+    health.sync_state.base_ref_oid = Some(observed_base_oid.clone());
+    health.sync_state.merge_state_status = Some(PrMergeStateStatus::Behind);
+    health.checks.push(PrHealthCheck {
+        name: "Rust tests / cancelled".to_string(),
+        status: Some("completed".to_string()),
+        conclusion: Some("cancelled".to_string()),
+        details_url: Some("https://github.com/owner/repo/actions/runs/925/jobs/1".to_string()),
+    });
+    health.checks.push(PrHealthCheck {
+        name: "Rust tests / sibling".to_string(),
+        status: Some("in_progress".to_string()),
+        conclusion: None,
+        details_url: Some("https://github.com/owner/repo/actions/runs/925/jobs/2".to_string()),
+    });
+    let held =
+        reserve_pending_ci_rerun_attempt(repair_repo.as_ref(), &conversation_id, ci_fingerprint)
+            .await;
+    let mut targeted = held.clone();
+    targeted.target_base_commit = Some(attempt_base_oid);
+    targeted.updated_at += chrono::Duration::microseconds(1);
+    let targeted = match repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: targeted,
+            expected_phase: AgentWorkspaceRepairPhase::Ready,
+            expected_updated_at: held.updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Ready,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("persist held base authority")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("held base authority must apply, got {outcome:?}"),
+    };
+    let target_identity = GitService::canonical_target_identity(&worktree, &workspace.branch_name)
+        .await
+        .expect("resolve direct-update target identity");
+    let AcquireGitTargetLeaseOutcome::Acquired { fencing_epoch } = branch_update_repo
+        .acquire_target_lease(AcquireGitTargetLease {
+            identity: target_identity.clone(),
+            owner: GitTargetLeaseOwner::agent_workspace_repair(targeted.id.as_str()),
+        })
+        .await
+        .expect("acquire direct-update target lease")
+    else {
+        panic!("direct update fixture should acquire its target lease");
+    };
+    let mut leased = targeted.clone();
+    leased.git_common_dir = Some(
+        target_identity
+            .git_common_dir()
+            .to_string_lossy()
+            .into_owned(),
+    );
+    leased.target_ref = Some(target_identity.full_ref().to_string());
+    leased.target_identity_version = Some(AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION);
+    leased.target_lease_epoch = Some(fencing_epoch);
+    leased.updated_at += chrono::Duration::microseconds(1);
+    match repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: leased,
+            expected_phase: AgentWorkspaceRepairPhase::Ready,
+            expected_updated_at: targeted.updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Ready,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("checkpoint direct-update target lease")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_) => {}
+        outcome => panic!("direct-update target lease must apply, got {outcome:?}"),
+    }
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    let chat = Arc::new(MockChatService::with_agent_run_repo(Arc::clone(
+        &agent_run_repo,
+    )));
+
+    let routed = super::route_agent_workspace_pr_autofix_if_needed_with_notifications(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        &worktree,
+        101,
+        &conversation_id,
+        workspace_repo.clone(),
+        Some(agent_run_repo),
+        Some(Arc::clone(&repair_repo)),
+        Some(branch_update_repo),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        None,
+        Some(&project),
+    )
+    .await
+    .expect("settled CI-rerun hold should update directly before waiting");
+
+    assert!(!routed, "the pre-push CI snapshot must not redispatch");
+    assert_eq!(github.state().push_branch_calls, 1);
+    assert!(chat.get_sent_messages().await.is_empty());
+    run_git(
+        &worktree,
+        &["merge-base", "--is-ancestor", "origin/main", "HEAD"],
+    );
+    let current = repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load retained attempt")
+        .expect("attempt remains current");
+    assert_eq!(current.id, held.id);
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Ready);
+    assert_eq!(
+        current.ci_rerun_fingerprint.as_deref(),
+        Some(ci_fingerprint)
+    );
+    assert_eq!(
+        current.base_update_target_commit.as_deref(),
+        Some(observed_base_oid.as_str())
+    );
+    assert_eq!(
+        workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("list route events")
+            .into_iter()
+            .filter(|event| event.step == "pr_base_update" && event.status == "updated")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn live_pr_autofix_behind_base_post_push_marker_rejection_recovers_from_new_head() {
+    let fixture = tempfile::tempdir().expect("fixture root");
+    let remote = fixture.path().join("remote.git");
+    let worktree = fixture.path().join("worktree");
+    let remote_arg = remote.to_string_lossy().to_string();
+    let worktree_arg = worktree.to_string_lossy().to_string();
+    run_git(fixture.path(), &["init", "--bare", &remote_arg]);
+    run_git(fixture.path(), &["clone", &remote_arg, &worktree_arg]);
+    run_git(&worktree, &["config", "user.email", "test@example.com"]);
+    run_git(&worktree, &["config", "user.name", "Test User"]);
+    run_git(&worktree, &["checkout", "-b", "main"]);
+    std::fs::write(worktree.join("README.md"), "initial\n").expect("write initial file");
+    run_git(&worktree, &["add", "."]);
+    run_git(&worktree, &["commit", "-m", "initial"]);
+    run_git(&worktree, &["push", "-u", "origin", "main"]);
+
+    let mut workspace = supervised_workspace(
+        "behind-base-post-push-marker-rejection",
+        "project-behind-base-post-push-marker-rejection",
+        &worktree,
+    );
+    run_git(&worktree, &["checkout", "-b", &workspace.branch_name]);
+    run_git(&worktree, &["push", "-u", "origin", &workspace.branch_name]);
+    run_git(&worktree, &["checkout", "main"]);
+    std::fs::write(worktree.join("BASE.md"), "advanced base\n").expect("advance base");
+    run_git(&worktree, &["add", "."]);
+    run_git(&worktree, &["commit", "-m", "advance base"]);
+    run_git(&worktree, &["push", "origin", "main"]);
+    let observed_base_oid = git_stdout(&worktree, &["rev-parse", "main"]);
+    run_git(&worktree, &["checkout", &workspace.branch_name]);
+
+    workspace.base_commit = Some(observed_base_oid.clone());
+    let conversation_id = workspace.conversation_id.clone();
+    let mut project = Project::new(
+        "Behind base post-push marker rejection".to_string(),
+        worktree.to_string_lossy().to_string(),
+    );
+    project.id = workspace.project_id.clone();
+    project.base_branch = Some("main".to_string());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    let inner_repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
+    let branch_update_repo: Arc<dyn BranchUpdateRepository> =
+        Arc::new(MemoryBranchUpdateRepository::new());
+    let agent_run_repo = seeded_latest_pr_fixer_run_repo(&conversation_id).await;
+    let mut behind_health = open_pr_health("behind-base-post-push-marker-head");
+    behind_health.sync_state.base_ref_oid = Some(observed_base_oid.clone());
+    behind_health.sync_state.merge_state_status = Some(PrMergeStateStatus::Behind);
+    behind_health.checks.push(PrHealthCheck {
+        name: "Rust tests".to_string(),
+        status: Some("completed".to_string()),
+        conclusion: Some("failure".to_string()),
+        details_url: None,
+    });
+    let fingerprint = super::classify_agent_workspace_pr_autofix_issue(101, &behind_health)
+        .expect("failed check should classify")
+        .classification;
+    let held = reserve_health_held_attempt(
+        inner_repair_repo.as_ref(),
+        &conversation_id,
+        &fingerprint,
+        crate::application::agent_workspace_publish_repair_state::UNCHANGED_HEALTH_REPAIR_REASON,
+    )
+    .await;
+    let target_identity = GitService::canonical_target_identity(&worktree, &workspace.branch_name)
+        .await
+        .expect("resolve direct-update target identity");
+    let AcquireGitTargetLeaseOutcome::Acquired { fencing_epoch } = branch_update_repo
+        .acquire_target_lease(AcquireGitTargetLease {
+            identity: target_identity.clone(),
+            owner: GitTargetLeaseOwner::agent_workspace_repair(held.id.as_str()),
+        })
+        .await
+        .expect("acquire direct-update target lease")
+    else {
+        panic!("direct update fixture should acquire its target lease");
+    };
+    let mut leased = held.clone();
+    leased.git_common_dir = Some(
+        target_identity
+            .git_common_dir()
+            .to_string_lossy()
+            .into_owned(),
+    );
+    leased.target_ref = Some(target_identity.full_ref().to_string());
+    leased.target_identity_version = Some(AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION);
+    leased.target_lease_epoch = Some(fencing_epoch);
+    leased.updated_at += chrono::Duration::microseconds(1);
+    match inner_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: leased,
+            expected_phase: AgentWorkspaceRepairPhase::Ready,
+            expected_updated_at: held.updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Ready,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("checkpoint direct-update target lease")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_) => {}
+        outcome => panic!("direct-update target lease must apply, got {outcome:?}"),
+    }
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = Arc::new(
+        RejectPostPushBaseTargetCheckpointRepo::new(Arc::clone(&inner_repair_repo)),
+    );
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(behind_health));
+    let chat = Arc::new(MockChatService::with_agent_run_repo(Arc::clone(
+        &agent_run_repo,
+    )));
+
+    let routed = super::route_agent_workspace_pr_autofix_if_needed_with_notifications(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        &worktree,
+        101,
+        &conversation_id,
+        workspace_repo.clone(),
+        Some(agent_run_repo.clone()),
+        Some(Arc::clone(&repair_repo)),
+        Some(Arc::clone(&branch_update_repo)),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        None,
+        Some(&project),
+    )
+    .await
+    .expect("post-push marker rejection should be harmless");
+
+    assert!(!routed);
+    assert_eq!(github.state().push_branch_calls, 1);
+    assert!(chat.get_sent_messages().await.is_empty());
+    run_git(
+        &worktree,
+        &["merge-base", "--is-ancestor", "origin/main", "HEAD"],
+    );
+    let current = inner_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load post-push attempt")
+        .expect("attempt remains current after rejected marker");
+    assert_eq!(current.id, held.id);
+    assert_eq!(current.base_update_target_commit, None);
+    assert!(
+        workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("list route events")
+            .into_iter()
+            .all(|event| {
+                event.step != "pr_base_update"
+                    || !matches!(event.status.as_str(), "updated" | "blocked")
+            }),
+        "a rejected checkpoint must not emit a success or blocked route event"
+    );
+
+    let new_head = git_stdout(&worktree, &["rev-parse", "HEAD"]);
+    let mut recovered_health = open_pr_health(&new_head);
+    recovered_health.sync_state.base_ref_oid = Some(observed_base_oid);
+    recovered_health.sync_state.merge_state_status = Some(PrMergeStateStatus::Clean);
+    github.state().fetch_pr_health_result = Some(Ok(recovered_health));
+    let routed = super::route_agent_workspace_pr_autofix_if_needed_with_notifications(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        &worktree,
+        101,
+        &conversation_id,
+        workspace_repo,
+        Some(agent_run_repo),
+        Some(repair_repo),
+        Some(branch_update_repo),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        None,
+        Some(&project),
+    )
+    .await
+    .expect("fresh remote head should recover without retrying the old update");
+
+    assert!(!routed);
+    assert_eq!(github.state().push_branch_calls, 1);
+    assert!(chat.get_sent_messages().await.is_empty());
+    assert!(
+        inner_repair_repo
+            .get_current_repair_attempt(&conversation_id)
+            .await
+            .expect("load recovered attempt")
+            .is_none(),
+        "the fresh head must settle the stale held generation instead of retrying its update"
+    );
+}
+
+#[tokio::test]
+async fn live_pr_autofix_behind_base_with_foreign_target_lease_has_no_effects() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let mut workspace = supervised_workspace(
+        "behind-base-foreign-lease",
+        "project-behind-base-foreign-lease",
+        worktree.path(),
+    );
+    init_repair_dispatch_repo(worktree.path(), &workspace.branch_name);
+    workspace.base_commit = Some("base-before-foreign-lease".to_string());
+    let conversation_id = workspace.conversation_id.clone();
+    let mut project = Project::new(
+        "Behind base foreign lease".to_string(),
+        worktree.path().to_string_lossy().to_string(),
+    );
+    project.id = workspace.project_id.clone();
+    project.base_branch = Some("main".to_string());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
+    let branch_update_repo: Arc<dyn BranchUpdateRepository> =
+        Arc::new(MemoryBranchUpdateRepository::new());
+    let agent_run_repo = seeded_latest_pr_fixer_run_repo(&conversation_id).await;
+    let mut health = open_pr_health("behind-base-foreign-lease-head");
+    health.sync_state.base_ref_oid = Some("base-after-foreign-lease".to_string());
+    health.sync_state.merge_state_status = Some(PrMergeStateStatus::Behind);
+    health.checks.push(PrHealthCheck {
+        name: "Rust tests".to_string(),
+        status: Some("completed".to_string()),
+        conclusion: Some("failure".to_string()),
+        details_url: None,
+    });
+    let fingerprint = super::classify_agent_workspace_pr_autofix_issue(101, &health)
+        .expect("failed check should classify")
+        .classification;
+    let held = reserve_health_held_attempt(
+        repair_repo.as_ref(),
+        &conversation_id,
+        &fingerprint,
+        crate::application::agent_workspace_publish_repair_state::UNCHANGED_HEALTH_REPAIR_REASON,
+    )
+    .await;
+    let target_identity =
+        GitService::canonical_target_identity(worktree.path(), &workspace.branch_name)
+            .await
+            .expect("resolve foreign lease target identity");
+    let AcquireGitTargetLeaseOutcome::Acquired { fencing_epoch } = branch_update_repo
+        .acquire_target_lease(AcquireGitTargetLease {
+            identity: target_identity.clone(),
+            owner: GitTargetLeaseOwner::agent_workspace_repair("foreign-base-update-owner"),
+        })
+        .await
+        .expect("acquire foreign target lease")
+    else {
+        panic!("foreign target lease should acquire");
+    };
+    let mut foreign_held = held.clone();
+    foreign_held.target_base_commit = Some("base-before-foreign-lease".to_string());
+    foreign_held.git_common_dir = Some(
+        target_identity
+            .git_common_dir()
+            .to_string_lossy()
+            .into_owned(),
+    );
+    foreign_held.target_ref = Some(target_identity.full_ref().to_string());
+    foreign_held.target_identity_version = Some(AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION);
+    foreign_held.target_lease_epoch = Some(fencing_epoch);
+    foreign_held.updated_at += chrono::Duration::microseconds(1);
+    let foreign_held = match repair_repo
+        .transition_repair_attempt(
+            crate::domain::repositories::AgentWorkspaceRepairAttemptTransition {
+                attempt: foreign_held,
+                expected_phase: AgentWorkspaceRepairPhase::Ready,
+                expected_updated_at: held.updated_at,
+                next_phase: AgentWorkspaceRepairPhase::Ready,
+                compatibility_projection: None,
+                events: Vec::new(),
+            },
+        )
+        .await
+        .expect("persist foreign target authority")
+    {
+        crate::domain::repositories::AgentWorkspaceRepairAttemptTransitionOutcome::Applied(
+            attempt,
+        ) => attempt,
+        outcome => panic!("foreign target authority must apply, got {outcome:?}"),
+    };
+    let head_before = git_stdout(worktree.path(), &["rev-parse", "HEAD"]);
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    let chat = Arc::new(MockChatService::with_agent_run_repo(Arc::clone(
+        &agent_run_repo,
+    )));
+
+    let routed = super::route_agent_workspace_pr_autofix_if_needed_with_notifications(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        workspace_repo.clone(),
+        Some(agent_run_repo),
+        Some(Arc::clone(&repair_repo)),
+        Some(branch_update_repo),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        None,
+        Some(&project),
+    )
+    .await
+    .expect("foreign target lease must stop direct base update harmlessly");
+
+    assert!(!routed);
+    assert_eq!(github.state().push_branch_calls, 0);
+    assert_eq!(
+        git_stdout(worktree.path(), &["rev-parse", "HEAD"]),
+        head_before
+    );
+    assert!(chat.get_sent_messages().await.is_empty());
+    assert!(
+        workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("list publication events")
+            .is_empty(),
+        "foreign target lease must prevent base-update events"
+    );
+    let current = repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load foreign-held attempt")
+        .expect("held attempt remains current");
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Ready);
+    assert_eq!(current.updated_at, foreign_held.updated_at);
+    let unchanged_workspace = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load unchanged workspace")
+        .expect("workspace remains present");
+    assert_eq!(
+        unchanged_workspace.base_commit.as_deref(),
+        Some("base-before-foreign-lease")
     );
 }
 

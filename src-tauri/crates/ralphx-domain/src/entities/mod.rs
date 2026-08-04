@@ -148,6 +148,7 @@ pub use agent_workspace_repair::{
     AgentWorkspaceRepairOperationHoldReason, AgentWorkspaceRepairOperationStage,
     AgentWorkspaceRepairOperationStatus,
     AgentWorkspaceRepairOutcome, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
+    PR_AUTOFIX_BASE_STALE_AFTER_UPDATE_PENDING_REASON,
 };
 pub use agent_workspace_pr_metadata::AgentWorkspacePrMetadataDecision;
 pub use agent_run::{

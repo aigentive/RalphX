@@ -155,12 +155,15 @@ repair_string_enum!(AgentWorkspaceRepairOperationStatus {
 });
 
 repair_string_enum!(AgentWorkspaceRepairOperationHoldReason {
+    BaseStale => "base_stale",
     HealthEvidence => "health_evidence",
     PublishRedrive => "publish_redrive",
 });
 
 pub const PR_AUTOFIX_PRE_EXISTING_ON_BASE_PENDING_REASON: &str = "pr_autofix_pre_existing_on_base";
 pub const PR_AUTOFIX_UNCHANGED_HEALTH_PENDING_REASON: &str = "pr_autofix_unchanged_health";
+pub const PR_AUTOFIX_BASE_STALE_AFTER_UPDATE_PENDING_REASON: &str =
+    "pr_autofix_base_stale_after_update";
 pub const PR_AUTOFIX_HEAD_REDRIVE_PENDING_REASON_PREFIX: &str = "pr_autofix_head_redrive:";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -174,6 +177,9 @@ pub struct AgentWorkspaceRepairAttempt {
     pub reserved_agent_run_id: Option<AgentRunId>,
     pub target_base_ref: String,
     pub target_base_commit: Option<String>,
+    /// GitHub base tip targeted by a completed automatic update route for this attempt.
+    #[serde(default)]
+    pub base_update_target_commit: Option<String>,
     pub pending_reasons: Vec<String>,
     pub review_required: bool,
     pub auto_publish_enabled: bool,
@@ -227,6 +233,7 @@ impl AgentWorkspaceRepairAttempt {
             reserved_agent_run_id: None,
             target_base_ref: target_base_ref.into(),
             target_base_commit: None,
+            base_update_target_commit: None,
             pending_reasons: Vec::new(),
             review_required,
             auto_publish_enabled,
@@ -288,6 +295,12 @@ impl AgentWorkspaceRepairAttempt {
                 .any(|reason| reason.starts_with(PR_AUTOFIX_HEAD_REDRIVE_PENDING_REASON_PREFIX))
             {
                 Some(AgentWorkspaceRepairOperationHoldReason::PublishRedrive)
+            } else if self
+                .pending_reasons
+                .iter()
+                .any(|reason| reason == PR_AUTOFIX_BASE_STALE_AFTER_UPDATE_PENDING_REASON)
+            {
+                Some(AgentWorkspaceRepairOperationHoldReason::BaseStale)
             } else if self.pending_reasons.iter().any(|reason| {
                 matches!(
                     reason.as_str(),

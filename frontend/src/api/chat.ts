@@ -2099,6 +2099,7 @@ export type AgentWorkspaceMaintenanceOperationStatus =
   | "ready"
   | "blocked";
 export type AgentWorkspaceMaintenanceOperationHoldReason =
+  | "base_stale"
   | "health_evidence"
   | "publish_redrive";
 
@@ -2695,7 +2696,7 @@ export const AgentWorkspaceMaintenanceOperationResponseSchema = z.object({
   ]),
   status: z.enum(["active", "ready", "blocked"]),
   hold_reason: z
-    .enum(["health_evidence", "publish_redrive"])
+    .enum(["base_stale", "health_evidence", "publish_redrive"])
     .nullable()
     .optional()
     .default(null),
