@@ -1624,7 +1624,7 @@ function renderPublishPanelForWorkspaceRerender(
             activeSubTab="automation"
             showReviewTab
             onSubTabChange={() => {}}
-            reviewContent={null}
+            reviewContent={() => null}
           />
         </div>
       </TooltipProvider>
@@ -3722,6 +3722,50 @@ describe("AgentsArtifactPane", () => {
       screen.getByRole("button", { name: "Run review" }),
     ).toBeInTheDocument();
     expect(startWorkspaceReviewMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps Workspace Review in a checking state while its owner context is pending", async () => {
+    getWorkspaceReviewContextMock.mockImplementation(() => new Promise(() => {}));
+
+    renderPane(
+      "review",
+      workspace({ mode: "edit" }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    expect(
+      await screen.findByText("Checking reviewable changes…"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("No reviewable changes")).not.toBeInTheDocument();
+  });
+
+  it("surfaces Workspace Review context failures and retries the exact owner", async () => {
+    getWorkspaceReviewContextMock.mockRejectedValue(
+      new Error("workspace target lookup failed"),
+    );
+
+    renderPane(
+      "review",
+      workspace({ mode: "edit" }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    expect(
+      await screen.findByText("Workspace Review unavailable"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("workspace target lookup failed")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() =>
+      expect(getWorkspaceReviewContextMock).toHaveBeenCalledWith(
+        "conversation-1",
+        expect.objectContaining({ refreshTarget: true }),
+      ),
+    );
+    expect(screen.queryByText("No reviewable changes")).not.toBeInTheDocument();
   });
 
   it("keeps the no-changes publish guard active when Review mounts first", async () => {

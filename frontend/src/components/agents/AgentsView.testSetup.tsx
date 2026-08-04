@@ -1220,7 +1220,7 @@ vi.mock("./AgentsArtifactPane", async () => {
           }
           showReviewTab
           onSubTabChange={() => {}}
-          reviewContent={null}
+          reviewContent={() => null}
         />
       </div>
     ) : (

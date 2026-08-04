@@ -52,6 +52,7 @@ import { useReviewSettings } from "@/hooks/useReviewSettings";
 import type { Artifact } from "@/types/artifact";
 
 import { EmptyArtifactState } from "./AgentsArtifactEmptyState";
+import type { AgentPublishReviewEvidence } from "./AgentsPublishPanel";
 import type { AgentWorkspaceReviewActionBlocker } from "./agentWorkspacePublishState";
 import {
   hasWorkspaceReviewPublishAuthorization,
@@ -110,6 +111,9 @@ interface AgentReviewPanelProps {
   reviewStartResult: StartAgentWorkspaceReviewResult | null;
   reviewStartError: Error | null;
   isReviewLoading: boolean;
+  isReviewContextLoading: boolean;
+  reviewContextError: Error | null;
+  publishReviewEvidence: AgentPublishReviewEvidence;
   isReviewActionPending: boolean;
   isFixIssuesActionPending?: boolean;
   isApproveAnywayActionPending?: boolean;
@@ -121,6 +125,7 @@ interface AgentReviewPanelProps {
   onViewTranscript?: () => void;
   onStartReview: (force: boolean) => void;
   onStartReviewIntent?: () => void;
+  onRetryReviewContext?: () => void;
   onFixIssues: () => void;
   onApproveAnyway?: () => Promise<void>;
   isReviewPrWorkspace?: boolean;
@@ -279,11 +284,17 @@ function reviewActionDisabledReason({
 function reviewStatusForState({
   context,
   hasArtifact,
+  isReviewContextLoading,
+  reviewContextError,
+  publishReviewEvidence,
   isRunFailed,
   isRunning,
 }: {
   context: ReviewDisplayContext | null;
   hasArtifact: boolean;
+  isReviewContextLoading: boolean;
+  reviewContextError: Error | null;
+  publishReviewEvidence: AgentPublishReviewEvidence;
   isRunFailed: boolean;
   isRunning: boolean;
 }): ReviewStatus {
@@ -303,6 +314,64 @@ function reviewStatusForState({
       label: "Review failed",
       detail: "The last review attempt did not complete.",
       color: "var(--status-error)",
+      icon: AlertCircle,
+    };
+  }
+  if (!context?.target) {
+    if (isReviewContextLoading) {
+      return {
+        label: "Checking reviewable changes…",
+        detail: "Resolving the current Workspace Review target.",
+        color: "var(--accent-primary)",
+        icon: Loader2,
+        iconClassName: "animate-spin",
+      };
+    }
+    if (reviewContextError) {
+      return {
+        label: "Workspace Review unavailable",
+        detail:
+          reviewContextError.message ||
+          "The current Workspace Review target could not be resolved.",
+        color: "var(--status-error)",
+        icon: AlertCircle,
+      };
+    }
+    if (publishReviewEvidence.status === "loading") {
+      return {
+        label: "Checking reviewable changes…",
+        detail: "Checking the cumulative workspace changes.",
+        color: "var(--accent-primary)",
+        icon: Loader2,
+        iconClassName: "animate-spin",
+      };
+    }
+    if (publishReviewEvidence.status === "error") {
+      return {
+        label: "Workspace Review unavailable",
+        detail:
+          publishReviewEvidence.error.message ||
+          "The cumulative workspace changes could not be checked.",
+        color: "var(--status-error)",
+        icon: AlertCircle,
+      };
+    }
+    if (publishReviewEvidence.changeCount > 0) {
+      const fileLabel =
+        publishReviewEvidence.changeCount === 1 ? "changed file" : "changed files";
+      return {
+        label: "Review target unavailable",
+        detail: `Changes found ${publishReviewEvidence.changeCount} ${fileLabel}, but Workspace Review could not resolve the current target. Retry.`,
+        color: "var(--status-warning)",
+        icon: AlertCircle,
+      };
+    }
+    return {
+      label: hasArtifact ? "Review available" : "No reviewable changes",
+      detail: hasArtifact
+        ? "The latest Review is available below."
+        : "No reviewable changes were found for this workspace.",
+      color: "var(--text-muted)",
       icon: AlertCircle,
     };
   }
@@ -374,10 +443,8 @@ function reviewStatusForState({
     };
   }
   return {
-    label: hasArtifact ? "Review available" : "No reviewable changes",
-    detail: hasArtifact
-      ? "The latest Review is available below."
-      : "No reviewable changes were found for this workspace.",
+    label: "Review pending",
+    detail: "Reviewable changes are available.",
     color: "var(--text-muted)",
     icon: AlertCircle,
   };
@@ -390,6 +457,9 @@ export function AgentReviewPanel({
   reviewStartResult,
   reviewStartError,
   isReviewLoading,
+  isReviewContextLoading,
+  reviewContextError,
+  publishReviewEvidence,
   isReviewActionPending,
   isFixIssuesActionPending = false,
   isApproveAnywayActionPending = false,
@@ -401,6 +471,7 @@ export function AgentReviewPanel({
   onViewTranscript,
   onStartReview,
   onStartReviewIntent,
+  onRetryReviewContext,
   onFixIssues,
   onApproveAnyway,
   isReviewPrWorkspace = false,
@@ -510,6 +581,9 @@ export function AgentReviewPanel({
   const status = reviewStatusForState({
     context: displayContext,
     hasArtifact: hasReviewArtifact,
+    isReviewContextLoading,
+    reviewContextError,
+    publishReviewEvidence,
     isRunFailed,
     isRunning,
   });
@@ -816,6 +890,29 @@ export function AgentReviewPanel({
     onStartReview,
     onStartReviewIntent,
   ]);
+  const shouldShowReviewContextRetry =
+    !isReviewPrWorkspace &&
+    !isRunning &&
+    !displayContext?.target &&
+    Boolean(onRetryReviewContext) &&
+    (Boolean(reviewContextError) ||
+      publishReviewEvidence.status === "error" ||
+      (publishReviewEvidence.status === "ready" &&
+        publishReviewEvidence.changeCount > 0));
+  const statusActionButton = shouldShowReviewContextRetry ? (
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      className="h-8 gap-1.5"
+      onClick={onRetryReviewContext}
+    >
+      <RefreshCw className="h-4 w-4" />
+      Retry
+    </Button>
+  ) : (
+    actionButton
+  );
 
   const selectedReviewArtifact =
     !isReviewPrWorkspace && reviewBodyMode === "requested_changes"
@@ -853,7 +950,18 @@ export function AgentReviewPanel({
     <EmptyArtifactState title="Loading review..." />
   ) : null;
 
-  if (!displayContext && hasReviewArtifact && !isReviewPrWorkspace) {
+  const hasUnsettledReviewEvidence =
+    isReviewContextLoading ||
+    Boolean(reviewContextError) ||
+    publishReviewEvidence.status !== "ready" ||
+    publishReviewEvidence.changeCount > 0;
+
+  if (
+    !displayContext &&
+    hasReviewArtifact &&
+    !isReviewPrWorkspace &&
+    !hasUnsettledReviewEvidence
+  ) {
     return (
       <div className={embedded ? "min-h-full" : "min-h-full px-4 pb-4 pt-4"}>
         {reviewDocuments}
@@ -951,7 +1059,7 @@ export function AgentReviewPanel({
               )}
             </div>
           </div>
-          <div className="shrink-0">{actionButton}</div>
+          <div className="shrink-0">{statusActionButton}</div>
         </div>
 
         {shouldShowConversationActiveSkippedReason && (

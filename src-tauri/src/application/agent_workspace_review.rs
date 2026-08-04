@@ -201,6 +201,18 @@ pub struct AgentWorkspaceReviewTarget {
     pub review_packet: AgentWorkspaceReviewPacket,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AgentWorkspaceReviewTargetMaterialization {
+    IdentityOnly,
+    FullPacket,
+}
+
+impl AgentWorkspaceReviewTargetMaterialization {
+    pub(crate) fn satisfies(self, required: Self) -> bool {
+        matches!(self, Self::FullPacket) || self == required
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AgentWorkspaceReviewPacket {
     pub summary: AgentWorkspaceReviewDiffSummary,
@@ -718,6 +730,19 @@ pub async fn load_agent_workspace_review_context(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
 ) -> AppResult<AgentWorkspaceReviewContext> {
+    load_agent_workspace_review_context_with_materialization(
+        state,
+        workspace,
+        AgentWorkspaceReviewTargetMaterialization::FullPacket,
+    )
+    .await
+}
+
+pub(crate) async fn load_agent_workspace_review_context_with_materialization(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    materialization: AgentWorkspaceReviewTargetMaterialization,
+) -> AppResult<AgentWorkspaceReviewContext> {
     let workspace = load_workspace_review_eligible(state, workspace, true).await?;
     let workspace = &workspace;
     let started = Instant::now();
@@ -726,7 +751,8 @@ pub async fn load_agent_workspace_review_context(
         .get_by_id(&workspace.project_id)
         .await?
         .ok_or_else(|| AppError::NotFound("Project not found".to_string()))?;
-    let target = resolve_review_target(workspace, &project).await?;
+    let target =
+        resolve_review_target_with_materialization(workspace, &project, materialization).await?;
     let mut monitor = load_or_create_monitor(state, workspace).await?;
     if target.is_none()
         && (matches!(
@@ -846,6 +872,19 @@ pub(crate) async fn start_agent_workspace_review_unlocked_with_revalidated_targe
     .await
 }
 
+fn workspace_review_target_binding_matches(
+    expected: &AgentWorkspaceReviewTarget,
+    current: &AgentWorkspaceReviewTarget,
+) -> bool {
+    expected.scope == current.scope
+        && expected.base_ref == current.base_ref
+        && expected.base_sha == current.base_sha
+        && expected.head_ref == current.head_ref
+        && expected.head_sha == current.head_sha
+        && expected.diff_fingerprint == current.diff_fingerprint
+        && expected.source_pull_request_number == current.source_pull_request_number
+}
+
 #[cfg(test)]
 async fn start_agent_workspace_review_with_chat_service<S: ChatService + ?Sized>(
     state: Arc<AppState>,
@@ -895,45 +934,43 @@ async fn start_agent_workspace_review_with_revalidated_target_and_chat_service<
         force,
         "Received workspace Review start request"
     );
-    let target = if let Some(target) = revalidated_target {
-        info!(
-            target: WORKSPACE_REVIEW_LOG_TARGET,
-            operation = "workspace_review_start_phase",
-            phase = "resolve_target",
-            source = "revalidated",
-            conversation_id = %workspace.conversation_id,
-            project_id = %workspace.project_id,
-            branch = %workspace.branch_name,
-            elapsed_ms = 0u128,
-            total_elapsed_ms = request_started.elapsed().as_millis(),
-            "Workspace Review phase completed"
-        );
-        Some(target)
-    } else {
-        let phase_started = Instant::now();
-        let project = state
-            .project_repo
-            .get_by_id(&workspace.project_id)
-            .await?
-            .ok_or_else(|| AppError::NotFound("Project not found".to_string()))?;
-        log_workspace_review_phase(
-            "workspace_review_start_phase",
-            workspace,
-            "load_project",
-            phase_started,
-            request_started,
-        );
-        let phase_started = Instant::now();
-        let target = resolve_review_target(workspace, &project).await?;
-        log_workspace_review_phase(
-            "workspace_review_start_phase",
-            workspace,
-            "resolve_target",
-            phase_started,
-            request_started,
-        );
-        target
+    let phase_started = Instant::now();
+    let project = state
+        .project_repo
+        .get_by_id(&workspace.project_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Project not found".to_string()))?;
+    log_workspace_review_phase(
+        "workspace_review_start_phase",
+        workspace,
+        "load_project",
+        phase_started,
+        request_started,
+    );
+    let phase_started = Instant::now();
+    let resolved_target = resolve_review_target(workspace, &project).await?;
+    let target = match revalidated_target {
+        Some(expected_target) => match resolved_target {
+            Some(current_target)
+                if workspace_review_target_binding_matches(&expected_target, &current_target) =>
+            {
+                Some(current_target)
+            }
+            _ => {
+                return Err(AppError::Conflict(
+                    "Workspace Review target changed; refresh and confirm again".to_string(),
+                ));
+            }
+        },
+        None => resolved_target,
     };
+    log_workspace_review_phase(
+        "workspace_review_start_phase",
+        workspace,
+        "resolve_target",
+        phase_started,
+        request_started,
+    );
     let phase_started = Instant::now();
     let mut monitor = load_or_create_monitor(&state, workspace).await?;
     log_workspace_review_phase(
@@ -4415,24 +4452,52 @@ pub(crate) async fn resolve_review_target(
     workspace: &AgentConversationWorkspace,
     project: &Project,
 ) -> AppResult<Option<AgentWorkspaceReviewTarget>> {
-    resolve_review_target_in_lane(workspace, project, GitCommandLane::Background).await
+    resolve_review_target_with_materialization(
+        workspace,
+        project,
+        AgentWorkspaceReviewTargetMaterialization::FullPacket,
+    )
+    .await
 }
 
 pub(crate) async fn resolve_review_target_for_user(
     workspace: &AgentConversationWorkspace,
     project: &Project,
 ) -> AppResult<Option<AgentWorkspaceReviewTarget>> {
-    resolve_review_target_in_lane(workspace, project, GitCommandLane::Foreground).await
+    resolve_review_target_in_lane(
+        workspace,
+        project,
+        GitCommandLane::Foreground,
+        AgentWorkspaceReviewTargetMaterialization::FullPacket,
+    )
+    .await
+}
+
+async fn resolve_review_target_with_materialization(
+    workspace: &AgentConversationWorkspace,
+    project: &Project,
+    materialization: AgentWorkspaceReviewTargetMaterialization,
+) -> AppResult<Option<AgentWorkspaceReviewTarget>> {
+    resolve_review_target_in_lane(
+        workspace,
+        project,
+        GitCommandLane::Background,
+        materialization,
+    )
+    .await
 }
 
 async fn resolve_review_target_in_lane(
     workspace: &AgentConversationWorkspace,
     project: &Project,
     lane: GitCommandLane,
+    materialization: AgentWorkspaceReviewTargetMaterialization,
 ) -> AppResult<Option<AgentWorkspaceReviewTarget>> {
     git_cmd::with_git_command_lane(lane, async {
         ensure_workspace_review_supported_mode(workspace)?;
-        if let Some(workspace_target) = resolve_workspace_delta_target(workspace).await? {
+        if let Some(workspace_target) =
+            resolve_workspace_delta_target(workspace, materialization).await?
+        {
             return Ok(Some(workspace_target));
         }
         resolve_selected_source_target(workspace, project).await
@@ -4458,6 +4523,7 @@ pub(crate) fn ensure_workspace_review_supported_mode(
 
 async fn resolve_workspace_delta_target(
     workspace: &AgentConversationWorkspace,
+    materialization: AgentWorkspaceReviewTargetMaterialization,
 ) -> AppResult<Option<AgentWorkspaceReviewTarget>> {
     let total_started = Instant::now();
     let worktree_path = PathBuf::from(&workspace.worktree_path);
@@ -4499,6 +4565,64 @@ async fn resolve_workspace_delta_target(
         phase_started,
         total_started,
     );
+    if materialization == AgentWorkspaceReviewTargetMaterialization::IdentityOnly {
+        let phase_started = Instant::now();
+        let trees = workspace_delta_tree_fingerprints(&worktree_path, &base_ref).await?;
+        log_workspace_review_phase(
+            "workspace_review_target_phase",
+            workspace,
+            "fingerprint_workspace",
+            phase_started,
+            total_started,
+        );
+        if trees.base_tree == trees.target_tree {
+            log_workspace_review_phase(
+                "workspace_review_target_phase",
+                workspace,
+                "total",
+                total_started,
+                total_started,
+            );
+            return Ok(None);
+        }
+        let phase_started = Instant::now();
+        let (base_sha, head_sha) = tokio::join!(
+            rev_parse(&worktree_path, &base_ref),
+            rev_parse(&worktree_path, &head_ref),
+        );
+        let base_sha = base_sha.ok();
+        let head_sha = head_sha.ok();
+        log_workspace_review_phase(
+            "workspace_review_target_phase",
+            workspace,
+            "resolve_shas",
+            phase_started,
+            total_started,
+        );
+        let target = AgentWorkspaceReviewTarget {
+            scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+            base_ref,
+            base_sha,
+            head_ref,
+            head_sha,
+            diff_fingerprint: fingerprint_parts([
+                "workspace_delta_content_v1",
+                &trees.base_tree,
+                &trees.target_tree,
+            ]),
+            working_directory: worktree_path,
+            source_pull_request_number: None,
+            review_packet: AgentWorkspaceReviewPacket::default(),
+        };
+        log_workspace_review_phase(
+            "workspace_review_target_phase",
+            workspace,
+            "total",
+            total_started,
+            total_started,
+        );
+        return Ok(Some(target));
+    }
     let phase_started = Instant::now();
     let committed_diff_args = [
         "diff",
