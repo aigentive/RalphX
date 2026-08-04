@@ -12477,6 +12477,19 @@ pub async fn update_agent_conversation_coordination_mode(
         return Err("Cannot change capabilities while the agent is running".to_string());
     }
 
+    if conversation.coordination_mode == CoordinationMode::RxNativeTeam
+        && coordination_mode != CoordinationMode::RxNativeTeam
+    {
+        state
+            .managed_team
+            .exit_team_before_coordination_change(
+                &crate::application::AgentTaskService::new(state.agent_task_repo.clone()),
+                &conversation.id,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+
     state
         .chat_conversation_repo
         .update_coordination_mode(&conversation_id, coordination_mode)

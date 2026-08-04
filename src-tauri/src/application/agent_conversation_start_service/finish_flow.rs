@@ -226,6 +226,53 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                 return Err(error.to_string());
             }
             if let Some(coordination_mode) = requested_coordination_mode {
+                if previous.coordination_mode == CoordinationMode::RxNativeTeam
+                    && coordination_mode != CoordinationMode::RxNativeTeam
+                {
+                    match self
+                        .deps
+                        .state
+                        .managed_team
+                        .exit_team_before_coordination_change(
+                            &crate::application::AgentTaskService::new(
+                                self.deps.state.agent_task_repo.clone(),
+                            ),
+                            &conversation.id,
+                        )
+                        .await
+                    {
+                        Ok(_) => {}
+                        Err(error) => {
+                            let rollback_error = self
+                                .deps
+                                .state
+                                .chat_conversation_repo
+                                .update_agent_mode(&conversation.id, previous.agent_mode)
+                                .await
+                                .err();
+                            if let Some(rollback_error) = rollback_error.as_ref() {
+                                tracing::error!(
+                                    conversation_id = %conversation.id,
+                                    %rollback_error,
+                                    "Failed to restore conversation mode after Team exit failed"
+                                );
+                            }
+                            remove_new_private_workspace_after_failure(
+                                self.deps.state,
+                                &conversation.id,
+                                private_workspace_existed,
+                                "exit_team_before_coordination_mode",
+                            )
+                            .await;
+                            return match rollback_error {
+                                Some(rollback_error) => Err(format!(
+                                    "{error}; failed to restore prior conversation mode: {rollback_error}"
+                                )),
+                                None => Err(error.to_string()),
+                            };
+                        }
+                    }
+                }
                 if let Err(error) = self
                     .deps
                     .state
