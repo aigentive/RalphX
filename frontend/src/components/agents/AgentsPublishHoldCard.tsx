@@ -47,7 +47,7 @@ export function AgentsPublishHoldCard({
         />
         <div className="min-w-0">
           <h3 className="text-sm font-semibold text-[var(--text-primary)]">
-            Repair paused — waiting for new CI evidence
+            {hold.title}
           </h3>
           <p className="mt-1 text-xs leading-relaxed text-[var(--text-secondary)]">
             <span>{hold.agentStatus}</span>. {hold.waitingOn}

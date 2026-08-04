@@ -2096,15 +2096,17 @@ export type AgentWorkspaceMaintenanceOperationStage =
   | "reviewing"
   | "publishing"
   | "ready"
-  | "blocked";
+  | "blocked"
+  | "held";
 export type AgentWorkspaceMaintenanceOperationStatus =
   | "active"
   | "ready"
-  | "blocked";
+  | "blocked"
+  | "held";
 export type AgentWorkspaceMaintenanceOperationHoldReason =
-  | "health_evidence"
-  | "publish_redrive"
-  | "ci_rerun_pending";
+  | "pr_autofix_unchanged_health"
+  | "pr_autofix_pre_existing_on_base"
+  | "pr_autofix_ci_rerun_pending";
 
 export interface AgentWorkspaceMaintenanceOperation {
   operationId: string;
@@ -2702,10 +2704,15 @@ export const AgentWorkspaceMaintenanceOperationResponseSchema = z.object({
     "publishing",
     "ready",
     "blocked",
+    "held",
   ]),
-  status: z.enum(["active", "ready", "blocked"]),
+  status: z.enum(["active", "ready", "blocked", "held"]),
   hold_reason: z
-    .enum(["health_evidence", "publish_redrive", "ci_rerun_pending"])
+    .enum([
+      "pr_autofix_unchanged_health",
+      "pr_autofix_pre_existing_on_base",
+      "pr_autofix_ci_rerun_pending",
+    ])
     .nullable()
     .optional()
     .default(null),

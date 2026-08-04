@@ -202,9 +202,7 @@ function heldRepairActionInput(workspace: AgentConversationWorkspace | null) {
   const operation = workspace?.maintenanceOperation;
   if (
     !operation ||
-    operation.stage !== "ready" ||
-    (operation.holdReason !== "health_evidence" &&
-      operation.holdReason !== "ci_rerun_pending")
+    operation.stage !== "held"
   ) {
     throw new Error("This repair hold is no longer current. Refresh and try again.");
   }
@@ -379,10 +377,7 @@ export function AgentPublishPanel({
   }, [conversationId]);
   const maintenancePresentation = getAgentWorkspaceMaintenancePresentation(workspace);
   const fingerprintSpend = getAgentWorkspacePrAutofixFingerprintSpendPresentation(workspace);
-  const isHeld =
-    workspace?.maintenanceOperation?.stage === "ready" &&
-    (workspace.maintenanceOperation.holdReason === "health_evidence" ||
-      workspace.maintenanceOperation.holdReason === "ci_rerun_pending");
+  const isHeld = workspace?.maintenanceOperation?.stage === "held";
   const isMaintenanceActive = isAgentWorkspaceMaintenanceActive(workspace);
   const blocksGitInspection = blocksAgentWorkspaceGitInspection(workspace);
   const isPublishingWorkspace =

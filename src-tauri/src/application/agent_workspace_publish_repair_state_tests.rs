@@ -19,9 +19,9 @@ use crate::application::agent_workspace_publish_repair_state::{
     current_agent_workspace_repair_claim_for_completion, inspect_agent_workspace_repair_completion,
     is_machine_repair_reason_marker, last_human_repair_reason,
     reconcile_active_agent_workspace_repair,
-    reopen_agent_workspace_repair_after_validation_failure, repair_event_authorizes_active_run,
-    reserve_agent_workspace_ci_await, reserve_agent_workspace_ci_rerun,
-    reserve_agent_workspace_pre_existing_on_base,
+    reopen_agent_workspace_repair_after_validation_failure, repair_attempt_projection,
+    repair_event_authorizes_active_run, reserve_agent_workspace_ci_await,
+    reserve_agent_workspace_ci_rerun, reserve_agent_workspace_pre_existing_on_base,
     reserve_agent_workspace_repair_completion_validation, reserve_agent_workspace_repair_dispatch,
     resume_current_agent_workspace_repair_publish, retry_agent_workspace_pr_autofix_hold_override,
     settle_agent_workspace_repair_dispatch_outcome, settle_agent_workspace_repair_failure,
@@ -162,6 +162,47 @@ fn ci_held_predicate_recognizes_rerun_reservations_and_await_holds() {
         .pending_reasons
         .push(AWAITING_CI_REPAIR_REASON.to_string());
     assert!(agent_workspace_repair_is_ci_held(&attempt));
+}
+
+#[test]
+fn compatibility_projection_marks_only_stationary_ready_repairs_as_held() {
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        ChatConversationId::from_string("repair-projection-hold"),
+        AgentWorkspaceRepairSource::PrAutofix,
+        AgentWorkspaceRepairContinuation::ResumePrSupervision,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    attempt.phase = AgentWorkspaceRepairPhase::Ready;
+    attempt.pending_reasons = vec![UNCHANGED_HEALTH_REPAIR_REASON.to_string()];
+    assert_eq!(
+        repair_attempt_projection(&attempt, "held", Some(false))
+            .pr_supervision_status
+            .as_deref(),
+        Some("held")
+    );
+
+    attempt.pending_reasons = vec!["pr_autofix_head_redrive:local-head".to_string()];
+    assert_eq!(
+        repair_attempt_projection(&attempt, "redrive", Some(false))
+            .pr_supervision_status
+            .as_deref(),
+        Some("paused"),
+        "active publish redrive must never project a held supervision status"
+    );
+
+    attempt.pending_reasons.clear();
+    assert_eq!(
+        repair_attempt_projection(&attempt, "ready", Some(false))
+            .pr_supervision_status
+            .as_deref(),
+        Some("paused"),
+        "genuine Ready remains publishable"
+    );
 }
 
 fn repair_workspace(conversation_id: ChatConversationId) -> AgentConversationWorkspace {
@@ -3371,7 +3412,7 @@ async fn reserve_pre_existing_on_base_settles_to_ready_with_marker() {
             .expect("workspace exists")
             .pr_supervision_status
             .as_deref(),
-        Some("paused")
+        Some("held")
     );
 }
 
@@ -3649,7 +3690,7 @@ async fn reserve_ci_rerun_increments_count_and_settles_to_ready() {
             .expect("workspace exists")
             .pr_supervision_status
             .as_deref(),
-        Some("paused")
+        Some("held")
     );
 }
 

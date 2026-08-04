@@ -9,7 +9,7 @@
 use dashmap::DashMap;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
 
@@ -55,8 +55,9 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRunId,
     AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrReviewMonitorStatus,
-    AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation, AgentWorkspaceRepairPhase,
-    AgentWorkspaceRepairSource, ChatContextType, ChatConversationId, IdeationSessionId, ProjectId,
+    AgentWorkspaceRepairAttempt, AgentWorkspaceRepairAttemptId, AgentWorkspaceRepairContinuation,
+    AgentWorkspaceRepairOperationStatus, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
+    ChatContextType, ChatConversationId, IdeationSessionId, ProjectId,
 };
 use crate::domain::entities::{InternalStatus, PlanBranch, PlanBranchId, Project, TaskId};
 use crate::domain::entities::{
@@ -87,6 +88,17 @@ const AGENT_WORKSPACE_REPAIR_ACTION_UPDATE_ONLY_CLASSIFICATION: &str = "agent_fi
 const AGENT_WORKSPACE_AUTO_MERGE_DISARM_STEP: &str = "auto_merge_disabled_for_repair";
 const AGENT_WORKSPACE_AUTO_MERGE_DISARM_SUMMARY: &str =
     "Temporarily disabled GitHub auto-merge before starting PR repair.";
+
+static HELD_PR_HEALTH_RECHECKS: OnceLock<
+    DashMap<ChatConversationId, Arc<tokio::sync::OnceCell<Result<bool, String>>>>,
+> = OnceLock::new();
+
+#[derive(Clone)]
+struct HeldPrHealthRecheckAuthority {
+    attempt_id: AgentWorkspaceRepairAttemptId,
+    generation: u64,
+    updated_at: chrono::DateTime<chrono::Utc>,
+}
 
 async fn update_agent_workspace_pr_supervision_state(
     workspace_repo: &dyn AgentConversationWorkspaceRepository,
@@ -3035,6 +3047,103 @@ async fn route_agent_workspace_pr_autofix_if_needed_with_notifications(
         branch_update_repo,
         chat_service,
         notification_service,
+        None,
+    )
+    .await
+}
+
+/// Performs one authoritative held-health reconciliation and shares its completion with
+/// concurrent callers for the same conversation.
+pub(crate) async fn recheck_agent_workspace_pr_health(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    chat_service: Arc<dyn ChatService>,
+) -> crate::AppResult<bool> {
+    let rechecks = HELD_PR_HEALTH_RECHECKS.get_or_init(DashMap::new);
+    let shared = rechecks
+        .entry(conversation_id.clone())
+        .or_insert_with(|| Arc::new(tokio::sync::OnceCell::new()))
+        .clone();
+    let result = shared
+        .get_or_init(|| async {
+            recheck_agent_workspace_pr_health_once(state, conversation_id, chat_service)
+                .await
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .clone();
+    if rechecks
+        .get(conversation_id)
+        .is_some_and(|current| Arc::ptr_eq(current.value(), &shared))
+    {
+        rechecks.remove(conversation_id);
+    }
+    result.map_err(AppError::Infrastructure)
+}
+
+async fn recheck_agent_workspace_pr_health_once(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    chat_service: Arc<dyn ChatService>,
+) -> crate::AppResult<bool> {
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!(
+                "Agent conversation workspace not found for conversation {conversation_id}"
+            ))
+        })?;
+    let pr_number = workspace.publication_pr_number.ok_or_else(|| {
+        AppError::Conflict("Held PR health recheck requires a linked pull request".to_string())
+    })?;
+    let attempt = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(conversation_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::Conflict(
+                "Held PR health recheck requires a current repair attempt".to_string(),
+            )
+        })?;
+    if !attempt.is_unsettled()
+        || attempt.operation_snapshot().status != AgentWorkspaceRepairOperationStatus::Held
+    {
+        return Err(AppError::Conflict(
+            "The PR repair hold is no longer current".to_string(),
+        ));
+    }
+    let authority = HeldPrHealthRecheckAuthority {
+        attempt_id: attempt.id,
+        generation: attempt.generation,
+        updated_at: attempt.updated_at,
+    };
+    let project = state
+        .project_repo
+        .get_by_id(&workspace.project_id)
+        .await?
+        .ok_or_else(|| AppError::ProjectNotFound(workspace.project_id.to_string()))?;
+    let working_dir = resolve_valid_agent_conversation_workspace_path(&project, &workspace).await?;
+    let github = state
+        .github_service
+        .as_ref()
+        .map(Arc::clone)
+        .ok_or_else(|| AppError::Infrastructure("GitHub service is unavailable".to_string()))?;
+
+    route_agent_workspace_pr_autofix_for_target(
+        github,
+        &working_dir,
+        AgentWorkspacePrAutofixTarget::direct(&workspace, pr_number),
+        workspace,
+        conversation_id,
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        Some(Arc::clone(&state.agent_run_repo)),
+        Some(Arc::clone(&state.agent_workspace_repair_repo)),
+        Some(Arc::clone(&state.branch_update_repo)),
+        chat_service,
+        Some(state.notification_service()),
+        Some(authority),
     )
     .await
 }
@@ -3089,6 +3198,7 @@ pub(crate) async fn route_ideation_plan_pr_autofix_if_needed(
         None,
         chat_service,
         None,
+        None,
     )
     .await
 }
@@ -3106,6 +3216,7 @@ async fn route_agent_workspace_pr_autofix_for_target(
     branch_update_repo: Option<Arc<dyn BranchUpdateRepository>>,
     chat_service: Arc<dyn ChatService>,
     notification_service: Option<Arc<NotificationService>>,
+    expected_held_attempt: Option<HeldPrHealthRecheckAuthority>,
 ) -> crate::AppResult<bool> {
     let target_matches_workspace_mode = matches!(
         (workspace.mode, &target.kind),
@@ -3150,10 +3261,21 @@ async fn route_agent_workspace_pr_autofix_for_target(
     // pre-existing on base. Neither outcome authorizes a new fixer until GitHub changes health.
     // Do not launch a new fixer generation until GitHub reports a different conclusion.
     if let Some(repair_repo) = repair_repo.as_ref() {
-        if let Some(attempt) = repair_repo
+        let current_attempt = repair_repo
             .get_current_repair_attempt(conversation_id)
-            .await?
-        {
+            .await?;
+        if expected_held_attempt.is_some() && current_attempt.is_none() {
+            return Ok(false);
+        }
+        if let Some(attempt) = current_attempt {
+            if expected_held_attempt.as_ref().is_some_and(|expected| {
+                attempt.id != expected.attempt_id
+                    || attempt.generation != expected.generation
+                    || attempt.updated_at != expected.updated_at
+                    || attempt.phase != AgentWorkspaceRepairPhase::Ready
+            }) {
+                return Ok(false);
+            }
             if attempt.phase == AgentWorkspaceRepairPhase::Ready {
                 let health_suppressed = agent_workspace_repair_is_health_held(&attempt);
                 let ci_held = agent_workspace_repair_is_ci_held(&attempt);

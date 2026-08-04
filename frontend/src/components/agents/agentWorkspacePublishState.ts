@@ -159,14 +159,17 @@ export type AgentWorkspacePrAutofixFingerprintSpendPresentation = {
 export type AgentWorkspaceHoldPresentation = {
   agentStatus: string;
   generationVerdict: string;
+  title: string;
   waitingOnLabel: string;
   waitingOn: string;
 };
 
 const HOLD_SUMMARIES = {
-  health_evidence:
-    "RalphX is waiting for new PR health evidence before spending another repair generation.",
-  ci_rerun_pending:
+  pr_autofix_unchanged_health:
+    "The fixer ran but changed nothing, and GitHub still reports the same failing check. RalphX won't spend another generation until this PR's health changes.",
+  pr_autofix_pre_existing_on_base:
+    "This failure already exists on the base branch, so fixing it on this PR branch would not help.",
+  pr_autofix_ci_rerun_pending:
     "RalphX asked GitHub to re-run the failed jobs and is waiting for the result.",
 };
 
@@ -193,11 +196,7 @@ export function getAgentWorkspaceHoldPresentation(
   workspace: AgentConversationWorkspace | null | undefined,
 ): AgentWorkspaceHoldPresentation | null {
   const operation = getAgentWorkspaceMaintenanceOperation(workspace);
-  if (
-    operation?.stage !== "ready" ||
-    (operation.holdReason !== "health_evidence" &&
-      operation.holdReason !== "ci_rerun_pending")
-  ) {
+  if (operation?.stage !== "held") {
     return null;
   }
   const holdSummary = operation.holdReason
@@ -205,12 +204,20 @@ export function getAgentWorkspaceHoldPresentation(
     : null;
   const waitingOn =
     holdSummary ?? "RalphX paused this repair until new PR health evidence is available.";
+  const preExisting = operation.holdReason === "pr_autofix_pre_existing_on_base";
+  const ciRerun = operation.holdReason === "pr_autofix_ci_rerun_pending";
   return {
     agentStatus: "Nothing is running",
     generationVerdict:
       operation.summary ?? "The last repair generation did not clear this failure.",
-    waitingOnLabel:
-      operation.holdReason === "ci_rerun_pending"
+    title: preExisting
+      ? "Repair paused — failure exists on the base branch"
+      : ciRerun
+        ? "Repair paused — waiting for CI rerun"
+        : "Repair paused — waiting for new CI evidence",
+    waitingOnLabel: preExisting
+      ? "Base branch repair"
+      : ciRerun
         ? "GitHub CI rerun"
         : "New PR health evidence",
     waitingOn,
@@ -315,38 +322,18 @@ export function getAgentWorkspaceMaintenancePresentation(
         action: "none",
         automaticContinuation,
       };
+    case "held": {
+      const hold = getAgentWorkspaceHoldPresentation(workspace);
+      return {
+        title: hold?.title ?? "Repair paused",
+        summary: hold?.waitingOn ?? summary,
+        tone: "warning",
+        busy: false,
+        action: "hold",
+        automaticContinuation: null,
+      };
+    }
     case "ready":
-      if (operation.holdReason === "publish_redrive") {
-        return {
-          title: "Pushing rebased branch…",
-          summary,
-          tone: "neutral",
-          busy: true,
-          action: "none",
-          automaticContinuation: "RalphX is resuming publication automatically.",
-        };
-      }
-      if (operation.holdReason === "health_evidence") {
-        return {
-          title: "Holding — waiting for new CI evidence",
-          summary,
-          tone: "warning",
-          busy: false,
-          action: "hold",
-          automaticContinuation:
-            "RalphX will continue when the PR evidence changes.",
-        };
-      }
-      if (operation.holdReason === "ci_rerun_pending") {
-        return {
-          title: "Holding — waiting for CI rerun",
-          summary,
-          tone: "warning",
-          busy: false,
-          action: "hold",
-          automaticContinuation: "RalphX is waiting for GitHub to finish the rerun.",
-        };
-      }
       return {
         title: "Base updated — ready to publish",
         summary,

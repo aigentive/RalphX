@@ -26,7 +26,7 @@ use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
-use tauri::{Emitter, Manager, Runtime, State};
+use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use uuid::Uuid;
 
 use crate::application::agent_conversation_archive::{
@@ -4796,14 +4796,28 @@ pub struct AgentWorkspaceRepairHoldActionInput {
 pub async fn recheck_pr_health(
     conversation_id: String,
     state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
+    app: AppHandle,
 ) -> Result<(), String> {
-    schedule_pr_supervision_recovery_for_conversation_id(
-        state.inner(),
-        ChatConversationId::from_string(conversation_id),
-        AgentWorkspacePrSupervisionRecoveryTrigger::WorkspaceLoad,
-        true,
+    let chat_service: Arc<dyn ChatService> =
+        Arc::new(create_chat_service(&state, app, &execution_state));
+    recheck_pr_health_for_state(conversation_id, state.inner(), chat_service)
+        .await
+        .map(|_| ())
+}
+
+async fn recheck_pr_health_for_state(
+    conversation_id: String,
+    state: &AppState,
+    chat_service: Arc<dyn ChatService>,
+) -> Result<bool, String> {
+    crate::application::services::pr_merge_poller::recheck_agent_workspace_pr_health(
+        state,
+        &ChatConversationId::from_string(conversation_id),
+        chat_service,
     )
     .await
+    .map_err(|error| error.to_string())
 }
 
 /// Retries a held PR autofix only when the UI's exact durable attempt version still owns it.

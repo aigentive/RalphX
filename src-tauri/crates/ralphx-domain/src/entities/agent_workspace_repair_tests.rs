@@ -166,7 +166,7 @@ fn repair_operation_snapshots_project_every_terminal_and_active_stage() {
 }
 
 #[test]
-fn health_held_ready_repair_projects_typed_hold_reason() {
+fn stationary_ready_repair_holds_project_distinct_typed_identities() {
     let now = Utc::now();
     let mut attempt = AgentWorkspaceRepairAttempt::new(
         conversation_id(),
@@ -184,32 +184,84 @@ fn health_held_ready_repair_projects_typed_hold_reason() {
         .pending_reasons
         .push("pr_autofix_unchanged_health".to_string());
 
-    let held = attempt.operation_snapshot();
-
+    let unchanged = attempt.operation_snapshot();
+    assert_eq!(unchanged.stage, AgentWorkspaceRepairOperationStage::Held);
+    assert_eq!(unchanged.status, AgentWorkspaceRepairOperationStatus::Held);
     assert_eq!(
-        held.hold_reason,
-        Some(AgentWorkspaceRepairOperationHoldReason::HealthEvidence)
+        unchanged.hold_reason,
+        Some(AgentWorkspaceRepairOperationHoldReason::UnchangedHealth)
     );
-    assert!(!held.automatic_continuation);
+    assert!(!unchanged.automatic_continuation);
 
-    attempt.pending_reasons = vec!["pr_autofix_head_redrive:local-head".to_string()];
+    attempt.pending_reasons = vec!["pr_autofix_pre_existing_on_base".to_string()];
+    let pre_existing = attempt.operation_snapshot();
+    assert_eq!(pre_existing.stage, AgentWorkspaceRepairOperationStage::Held);
     assert_eq!(
-        attempt.operation_snapshot().hold_reason,
-        Some(AgentWorkspaceRepairOperationHoldReason::PublishRedrive)
+        pre_existing.status,
+        AgentWorkspaceRepairOperationStatus::Held
+    );
+    assert_eq!(
+        pre_existing.hold_reason,
+        Some(AgentWorkspaceRepairOperationHoldReason::PreExistingOnBase)
     );
 
     attempt.pending_reasons.clear();
-    assert_eq!(attempt.operation_snapshot().hold_reason, None);
-
     attempt.ci_rerun_count = 1;
     attempt.ci_rerun_fingerprint = Some("ci-rerun:123".to_string());
+    let ci_rerun = attempt.operation_snapshot();
+    assert_eq!(ci_rerun.stage, AgentWorkspaceRepairOperationStage::Held);
+    assert_eq!(ci_rerun.status, AgentWorkspaceRepairOperationStatus::Held);
     assert_eq!(
-        attempt.operation_snapshot().hold_reason,
+        ci_rerun.hold_reason,
         Some(AgentWorkspaceRepairOperationHoldReason::CiRerunPending)
     );
 
+    for reason in [
+        AgentWorkspaceRepairOperationHoldReason::UnchangedHealth,
+        AgentWorkspaceRepairOperationHoldReason::PreExistingOnBase,
+        AgentWorkspaceRepairOperationHoldReason::CiRerunPending,
+    ] {
+        assert_eq!(reason.as_str().parse(), Ok(reason));
+    }
+}
+
+#[test]
+fn ready_blocked_and_publish_redrive_keep_their_non_hold_identity() {
+    let now = Utc::now();
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        conversation_id(),
+        AgentWorkspaceRepairSource::PrAutofix,
+        AgentWorkspaceRepairContinuation::ResumePrSupervision,
+        "origin/main",
+        false,
+        true,
+        false,
+        None,
+        now,
+    );
+    attempt.phase = AgentWorkspaceRepairPhase::Ready;
+
+    let ready = attempt.operation_snapshot();
+    assert_eq!(ready.stage, AgentWorkspaceRepairOperationStage::Ready);
+    assert_eq!(ready.status, AgentWorkspaceRepairOperationStatus::Ready);
+    assert_eq!(ready.hold_reason, None);
+
+    attempt.pending_reasons = vec!["pr_autofix_head_redrive:local-head".to_string()];
+    let redrive = attempt.operation_snapshot();
+    assert_eq!(
+        redrive.stage,
+        AgentWorkspaceRepairOperationStage::Publishing
+    );
+    assert_eq!(redrive.status, AgentWorkspaceRepairOperationStatus::Active);
+    assert_eq!(redrive.hold_reason, None);
+    assert!(redrive.automatic_continuation);
+
     attempt.phase = AgentWorkspaceRepairPhase::Blocked;
-    assert_eq!(attempt.operation_snapshot().hold_reason, None);
+    attempt.pending_reasons = vec!["pr_autofix_unchanged_health".to_string()];
+    let blocked = attempt.operation_snapshot();
+    assert_eq!(blocked.stage, AgentWorkspaceRepairOperationStage::Blocked);
+    assert_eq!(blocked.status, AgentWorkspaceRepairOperationStatus::Blocked);
+    assert_eq!(blocked.hold_reason, None);
 }
 
 #[test]

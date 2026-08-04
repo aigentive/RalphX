@@ -1706,7 +1706,7 @@ describe("chat api", () => {
     ).toBeNull();
   });
 
-  it("transforms a typed CI-rerun hold reason", async () => {
+  it("transforms a typed held maintenance operation", async () => {
     mockInvoke.mockResolvedValueOnce([
       {
         ...planSeedWorkspaceResponse(),
@@ -1714,9 +1714,9 @@ describe("chat api", () => {
           operation_id: "maintenance-held",
           generation: 3,
           source: "pr_autofix",
-          stage: "ready",
-          status: "ready",
-          hold_reason: "ci_rerun_pending",
+          stage: "held",
+          status: "held",
+          hold_reason: "pr_autofix_pre_existing_on_base",
           summary: "RalphX is waiting for the CI rerun.",
           blocker: null,
           automatic_continuation: false,
@@ -1728,7 +1728,31 @@ describe("chat api", () => {
 
     const result = await listAgentConversationWorkspacesByProject("project-1");
 
-    expect(result[0]?.maintenanceOperation?.holdReason).toBe("ci_rerun_pending");
+    expect(result[0]?.maintenanceOperation).toMatchObject({
+      stage: "held",
+      status: "held",
+      holdReason: "pr_autofix_pre_existing_on_base",
+    });
+  });
+
+  it("keeps legacy maintenance payloads without a hold reason compatible", () => {
+    expect(
+      AgentConversationWorkspaceResponseSchema.parse({
+        ...planSeedWorkspaceResponse(),
+        maintenance_operation: {
+          operation_id: "maintenance-ready",
+          generation: 1,
+          source: "base_update",
+          stage: "ready",
+          status: "ready",
+          summary: "Base updated.",
+          blocker: null,
+          automatic_continuation: false,
+          started_at: "2026-01-24T10:00:00Z",
+          updated_at: "2026-01-24T10:01:00Z",
+        },
+      }).maintenance_operation?.hold_reason,
+    ).toBeNull();
   });
 
   it("sends the current repair version for hold actions", async () => {

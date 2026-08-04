@@ -291,7 +291,7 @@ impl AgentWorkspaceRepairTransitionOutcome {
     }
 }
 
-fn repair_attempt_projection(
+pub(crate) fn repair_attempt_projection(
     attempt: &AgentWorkspaceRepairAttempt,
     summary: &str,
     auto_merge_current: Option<bool>,
@@ -305,7 +305,10 @@ fn repair_attempt_projection(
         AgentWorkspaceRepairPhase::ContinuationPending | AgentWorkspaceRepairPhase::Continuing => {
             ("refreshed", "publishing")
         }
-        AgentWorkspaceRepairPhase::Ready if attempt.operation_snapshot().hold_reason.is_some() => {
+        AgentWorkspaceRepairPhase::Ready
+            if attempt.operation_snapshot().status
+                == crate::domain::entities::AgentWorkspaceRepairOperationStatus::Held =>
+        {
             ("refreshed", "held")
         }
         AgentWorkspaceRepairPhase::Ready => ("refreshed", "paused"),
