@@ -1,3 +1,5 @@
+import { useState } from "react";
+
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -1414,11 +1416,82 @@ describe("AgentComposerSurface", () => {
       screen.queryByTestId("agent-composer-runtime-provider-submenu"),
     ).not.toBeInTheDocument();
     expect(screen.getByTestId("agent-composer-runtime-menu")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("agent-composer-runtime-provider-menu-trigger"),
+    ).toHaveTextContent("Codex");
+    expect(
+      screen.getByTestId("agent-composer-runtime-model-menu-trigger"),
+    ).toHaveTextContent("gpt-5.5");
     await waitFor(() =>
       expect(
         screen.getByTestId("agent-composer-runtime-provider-menu-trigger"),
       ).toHaveFocus(),
     );
+  });
+
+  it("renders one coherent controlled runtime after an enabled provider commits", () => {
+    function RuntimeHarness() {
+      const [provider, setProvider] = useState<"claude" | "codex">("codex");
+      const isClaude = provider === "claude";
+      return (
+        <AgentComposerSurface
+          project={{
+            value: "project-1",
+            onValueChange: vi.fn(),
+            options: [{ id: "project-1", label: "RalphX" }],
+            placeholder: "Project",
+          }}
+          provider={{
+            value: provider,
+            onValueChange: setProvider,
+            options: [
+              { id: "codex", label: "Codex" },
+              { id: "claude", label: "Claude" },
+            ],
+          }}
+          model={{
+            value: isClaude ? "sonnet" : "gpt-5.5",
+            onValueChange: vi.fn(),
+            options: isClaude
+              ? [{ id: "sonnet", label: "Sonnet" }]
+              : [{ id: "gpt-5.5", label: "gpt-5.5" }],
+          }}
+          effort={{
+            value: isClaude ? "high" : "xhigh",
+            onValueChange: vi.fn(),
+            options: [
+              { id: isClaude ? "high" : "xhigh", label: isClaude ? "High" : "Extra High" },
+            ],
+          }}
+          mode={{
+            value: "edit",
+            onValueChange: vi.fn(),
+            options: [{ id: "edit", label: "Agent" }],
+          }}
+          onSend={vi.fn()}
+          actionTestId="agent-composer-submit"
+        />
+      );
+    }
+
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <TooltipProvider delayDuration={0}>
+          <RuntimeHarness />
+        </TooltipProvider>
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+    fireEvent.pointerMove(screen.getByRole("button", { name: /^Provider,/ }));
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-provider-claude"));
+
+    expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveTextContent("Sonnet");
+    expect(screen.getByRole("button", { name: /^Provider,/ })).toHaveTextContent("Claude");
+    expect(screen.getByRole("button", { name: /^Model,/ })).toHaveTextContent("Sonnet");
+    fireEvent.pointerMove(screen.getByRole("button", { name: /^Model,/ }));
+    expect(screen.getByTestId("agent-composer-runtime-model-sonnet")).toBeInTheDocument();
+    expect(screen.queryByTestId("agent-composer-runtime-model-gpt-5.5")).not.toBeInTheDocument();
   });
 
   it("opens from the composer-scoped shortcut and resets nested state after closing", () => {

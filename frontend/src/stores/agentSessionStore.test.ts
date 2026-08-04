@@ -991,6 +991,40 @@ describe("agentSessionStore", () => {
       });
     });
 
+    it("records explicit composer runtime authority without persisting it", () => {
+      useAgentSessionStore.getState().setComposerRuntimeForConversation(
+        "review-1",
+        "project-1",
+        { provider: "claude", modelId: "opus", effort: "xhigh" },
+      );
+
+      const state = useAgentSessionStore.getState();
+      expect(state.composerRuntimeOverridesByConversationId["review-1"]).toEqual({
+        provider: "claude",
+        modelId: "opus",
+        effort: "xhigh",
+      });
+      expect(state.runtimeByConversationId["review-1"]).toEqual(
+        state.composerRuntimeOverridesByConversationId["review-1"],
+      );
+      expect(state.lastRuntimeByProjectId["project-1"]).toEqual(
+        state.composerRuntimeOverridesByConversationId["review-1"],
+      );
+      expect(state.lastModelEffortByProvider.claude).toEqual({
+        modelId: "opus",
+        effort: "xhigh",
+      });
+
+      const persisted = useAgentSessionStore.persist.getOptions().partialize?.(
+        state,
+      ) as Record<string, unknown>;
+      expect(persisted).not.toHaveProperty(
+        "composerRuntimeOverridesByConversationId",
+      );
+      const merged = mergeAgentSessionStore(persisted, state);
+      expect(merged.composerRuntimeOverridesByConversationId).toEqual({});
+    });
+
     it("keeps new-run runtime preferences isolated by project mode", () => {
       const state = useAgentSessionStore.getState();
       state.setLastRuntimeForProjectMode("project-1", "edit", {
