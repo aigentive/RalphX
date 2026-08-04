@@ -25,7 +25,7 @@ use crate::domain::entities::{
     ProjectId, ProviderUsageSnapshot, TaskId, UsageCapture, UsageProvenance,
 };
 use crate::domain::repositories::{
-    AgentRunRepository, ChatMessageRepository, ChatTimelineRepository, QueuedMessageRepository,
+    AgentRunRepository, ChatMessageRepository, ChatTimelineRepository,
 };
 use crate::domain::services::{
     MemoryRunningAgentRegistry, QueueKey, RunningAgentKey, RunningAgentRegistry,
@@ -905,7 +905,11 @@ async fn claude_stream_error_turn_complete_does_not_wait_for_interactive_timeout
 #[tokio::test]
 async fn error_turn_complete_with_persisted_output_does_not_requeue_pending_stdin() {
     let mut child = spawn_interactive_jsonl_process_that_stays_alive(
-        r#"{"type":"result","session_id":"sess-error-recovery","is_error":true,"errors":["API Error: 529 Overloaded"],"result":"partial assistant output","cost_usd":0.0}"#,
+        concat!(
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"partial assistant output"}]},"session_id":"sess-error-recovery"}"#,
+            "\n",
+            r#"{"type":"result","session_id":"sess-error-recovery","is_error":true,"errors":["API Error: 529 Overloaded"],"cost_usd":0.0}"#,
+        ),
     )
     .await;
     let state = AppState::new_test();
@@ -973,6 +977,7 @@ async fn error_turn_complete_with_persisted_output_does_not_requeue_pending_stdi
         Some(Arc::clone(&app_state.chat_message_repo)),
         Some(Arc::clone(&app_state.chat_timeline_repo)),
         Some(pre_assistant_id.clone()),
+        None,
         CancellationToken::new(),
         StreamingStateCache::new(),
         None,

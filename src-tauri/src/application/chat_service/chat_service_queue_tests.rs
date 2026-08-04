@@ -1,7 +1,6 @@
 use super::*;
 use crate::domain::agents::LogicalEffort;
 use crate::domain::entities::{ChatAttachmentId, ChatContextType, ChatConversationId};
-use crate::domain::repositories::{ChatMessageRepository, QueuedMessageRepository};
 use crate::domain::services::{
     ComposerArtifactReference, ComposerExcerptReference, ComposerIntegrationReference,
     ComposerProjectReference, ComposerProjectReferenceKind,
