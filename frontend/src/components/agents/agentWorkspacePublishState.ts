@@ -284,6 +284,16 @@ export function getAgentWorkspaceMaintenancePresentation(
           automaticContinuation: "RalphX is resuming publication automatically.",
         };
       }
+      if (operation.holdReason === "base_stale") {
+        return {
+          title: "Behind base — update did not take",
+          summary,
+          tone: "warning",
+          busy: false,
+          action: "none",
+          automaticContinuation: null,
+        };
+      }
       if (operation.holdReason === "health_evidence") {
         return {
           title: "Holding — waiting for new CI evidence",

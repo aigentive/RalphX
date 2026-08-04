@@ -70,6 +70,7 @@ pub(crate) const PRE_EXISTING_ON_BASE_REPAIR_REASON: &str = "pr_autofix_pre_exis
 /// Distinct from `PRE_EXISTING_ON_BASE_REPAIR_REASON`: RalphX has not proven anything about the
 /// base branch, only that spending another agent generation on identical evidence is waste.
 pub(crate) const UNCHANGED_HEALTH_REPAIR_REASON: &str = "pr_autofix_unchanged_health";
+pub(crate) use crate::domain::entities::PR_AUTOFIX_BASE_STALE_AFTER_UPDATE_PENDING_REASON as BASE_STALE_AFTER_UPDATE_REPAIR_REASON;
 /// Held because the workflow run RalphX intends to rerun has not finished yet.
 pub(crate) const AWAITING_CI_REPAIR_REASON: &str = "pr_autofix_awaiting_ci";
 pub(crate) const REPAIR_FINGERPRINT_HOLD_STEP: &str = "repair_fingerprint_hold";
@@ -88,6 +89,7 @@ pub(crate) fn is_machine_repair_reason_marker(reason: &str) -> bool {
         NEEDS_HUMAN_REPAIR_REASON
             | PRE_EXISTING_ON_BASE_REPAIR_REASON
             | UNCHANGED_HEALTH_REPAIR_REASON
+            | BASE_STALE_AFTER_UPDATE_REPAIR_REASON
             | AWAITING_CI_REPAIR_REASON
     ) || trimmed.starts_with(
         crate::application::agent_workspace_publish_recovery::AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX,
@@ -678,6 +680,88 @@ pub(crate) async fn reserve_agent_workspace_unchanged_health_hold(
         summary,
         auto_merge_current,
         vec![event],
+    )
+    .await
+}
+
+/// Fence a direct PR branch freshness update before any Git or GitHub mutation. The targeted base
+/// tip is deliberately not persisted yet: a crash after this reservation must not look like an
+/// update that actually ran.
+pub(crate) async fn reserve_agent_workspace_base_update(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    mut attempt: AgentWorkspaceRepairAttempt,
+    observed_base_commit: &str,
+    summary: &str,
+    auto_merge_current: Option<bool>,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    if observed_base_commit.trim().is_empty() {
+        return Ok(AgentWorkspaceRepairTransitionOutcome::Stale(attempt));
+    }
+    let expected_phase = attempt.phase;
+    let expected_updated_at = attempt.updated_at;
+    attempt.phase = AgentWorkspaceRepairPhase::Ready;
+    attempt.summary = Some(summary.to_string());
+    attempt.blocker = None;
+    attempt.updated_at = next_transition_at(Some(expected_updated_at));
+    let projection = repair_attempt_projection(&attempt, summary, auto_merge_current);
+    repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Ready,
+            compatibility_projection: Some(projection),
+            events: Vec::new(),
+        })
+        .await
+        .map(repair_attempt_transition_outcome)
+}
+
+/// Record the base tip after the reserved update route has produced a concrete outcome. This
+/// separate CAS prevents a pre-effect crash from tripping the already-updated anti-runaway guard.
+pub(crate) async fn mark_agent_workspace_base_update_target(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    mut attempt: AgentWorkspaceRepairAttempt,
+    observed_base_commit: &str,
+    summary: &str,
+    auto_merge_current: Option<bool>,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    if observed_base_commit.trim().is_empty() {
+        return Ok(AgentWorkspaceRepairTransitionOutcome::Stale(attempt));
+    }
+    let expected_phase = attempt.phase;
+    let expected_updated_at = attempt.updated_at;
+    attempt.base_update_target_commit = Some(observed_base_commit.to_string());
+    attempt.summary = Some(summary.to_string());
+    attempt.updated_at = next_transition_at(Some(expected_updated_at));
+    let projection = repair_attempt_projection(&attempt, summary, auto_merge_current);
+    repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Ready,
+            compatibility_projection: Some(projection),
+            events: Vec::new(),
+        })
+        .await
+        .map(repair_attempt_transition_outcome)
+}
+
+/// Hold after a reserved automatic update failed to make GitHub observe the branch as current.
+pub(crate) async fn reserve_agent_workspace_base_stale_hold(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    attempt: AgentWorkspaceRepairAttempt,
+    summary: &str,
+    auto_merge_current: Option<bool>,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    reserve_agent_workspace_repair_health_hold(
+        repair_repo,
+        attempt,
+        BASE_STALE_AFTER_UPDATE_REPAIR_REASON,
+        summary,
+        auto_merge_current,
+        Vec::new(),
     )
     .await
 }
