@@ -94,6 +94,12 @@ async fn wake_uses_hidden_resume_metadata_and_parent_runtime_overrides() {
     assert_eq!(metadata["hidden_from_ui"], true);
     assert_eq!(metadata["resume_in_place"], true);
     assert_eq!(metadata["persist_hidden_marker"], true);
+    assert_eq!(metadata["ralphx_action_kind"], "delegation_park_wake");
+    assert_eq!(
+        metadata["ralphx_action_context_id"],
+        park.parent_conversation_id.as_str()
+    );
+    assert_eq!(metadata["ralphx_action_target_id"], park.id.as_str());
     assert_eq!(options.harness_override, Some(AgentHarnessKind::Codex));
     assert_eq!(options.model_override.as_deref(), Some("gpt-5.6"));
     assert_eq!(options.logical_effort_override, Some(LogicalEffort::High));
@@ -269,7 +275,7 @@ async fn deadline_wake_names_delegates_that_are_still_running() {
     let mut park = park(conversation, parent.id, delegate.id);
     park.deadline_at = Utc::now() - Duration::seconds(1);
     park.jobs[0].settled_status = None;
-    harness.parks.insert(park).await;
+    harness.parks.insert(park.clone()).await;
 
     harness
         .service()
@@ -283,6 +289,20 @@ async fn deadline_wake_names_delegates_that_are_still_running() {
         harness.parks.settled.lock().await.as_slice(),
         &[DelegationParkState::Expired]
     );
+    let options = harness.chat.get_sent_options().await;
+    let metadata: serde_json::Value = serde_json::from_str(
+        options[0]
+            .metadata
+            .as_deref()
+            .expect("deadline wake metadata"),
+    )
+    .unwrap();
+    assert_eq!(metadata["ralphx_action_kind"], "delegation_park_wake");
+    assert_eq!(
+        metadata["ralphx_action_context_id"],
+        park.parent_conversation_id.as_str()
+    );
+    assert_eq!(metadata["ralphx_action_target_id"], park.id.as_str());
 }
 
 #[tokio::test(start_paused = true)]
