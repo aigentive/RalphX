@@ -2366,7 +2366,44 @@ async fn publish_failure_does_not_instruct_agent_when_current_repair_owns_head_r
         )
         .await
         .expect("failed redrive lease should seed");
+    let active_operation =
+        crate::application::agent_workspace_publish_lease::begin_publish_operation_scope(
+            &workspace.conversation_id,
+        );
+    crate::application::agent_workspace_publish_lease::
+        spawn_publish_operation_lease_heartbeat_for_scope(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            workspace.conversation_id.clone(),
+            "failed-redrive-token".to_string(),
+            &active_operation,
+        );
     let service = MockChatService::new();
+
+    mark_agent_workspace_failure_with_routing_and_action(
+        &state,
+        &workspace,
+        "push transport reported an interrupted publish",
+        None,
+        &service,
+        true,
+        &target,
+        AgentWorkspacePostRepairAction::Publish,
+        false,
+    )
+    .await;
+
+    let live_workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&workspace.conversation_id)
+        .await
+        .expect("load live-operation workspace")
+        .expect("live-operation workspace exists");
+    assert_eq!(
+        live_workspace.publish_lease_token.as_deref(),
+        Some("failed-redrive-token"),
+        "durable suppression must not release a live operation's lease"
+    );
+    drop(active_operation);
 
     mark_agent_workspace_failure_with_routing_and_action(
         &state,

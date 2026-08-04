@@ -83,6 +83,54 @@ async fn publish_lease_rejects_live_owner_and_fences_stale_token() {
 }
 
 #[tokio::test]
+async fn normal_workspace_upsert_preserves_publish_lease_authority() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("39393939-3939-4939-8939-393939393939");
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .expect("workspace should persist");
+    let mut stale_workspace = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace read should succeed")
+        .expect("workspace should exist");
+    let claimed_at = chrono::Utc::now();
+    repo.claim_publish_lease(
+        &conversation_id,
+        "run-one",
+        "token-one",
+        claimed_at,
+        None,
+        false,
+    )
+    .await
+    .expect("publish lease should claim");
+
+    stale_workspace.base_commit = Some("updated-base".to_string());
+    let updated = repo
+        .create_or_update(stale_workspace)
+        .await
+        .expect("normal workspace fields should update");
+
+    assert_eq!(updated.base_commit.as_deref(), Some("updated-base"));
+    assert_eq!(
+        updated.publish_lease_owner_run_id.as_deref(),
+        Some("run-one")
+    );
+    assert_eq!(updated.publish_lease_token.as_deref(), Some("token-one"));
+    assert_eq!(updated.publish_lease_heartbeat_at, Some(claimed_at));
+    assert!(repo
+        .release_publish_lease(
+            &conversation_id,
+            "token-one",
+            Some("refreshed"),
+            claimed_at + chrono::Duration::seconds(1),
+        )
+        .await
+        .expect("the original owner should still release the lease"));
+}
+
+#[tokio::test]
 async fn publish_lease_immediately_reclaims_a_dead_owner() {
     let repo = MemoryAgentConversationWorkspaceRepository::new();
     let conversation_id = ChatConversationId::from_string("conversation-publish-reclaim");

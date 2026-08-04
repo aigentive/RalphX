@@ -299,6 +299,11 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         let mut workspaces = self.workspaces.write().await;
         if let Some(existing) = workspaces.get(&workspace.conversation_id) {
             workspace.created_at = existing.created_at;
+            // Lease authority is changed only by the token-scoped claim, heartbeat, and release
+            // methods. Normal workspace upserts may carry a snapshot loaded before the claim.
+            workspace.publish_lease_owner_run_id = existing.publish_lease_owner_run_id.clone();
+            workspace.publish_lease_token = existing.publish_lease_token.clone();
+            workspace.publish_lease_heartbeat_at = existing.publish_lease_heartbeat_at;
             // Receipt authority is changed only by its attempt-scoped CAS methods.
             // Normal workspace upserts must not erase an in-flight receipt.
             if workspace.publication_metadata_attempt_id.is_none() {

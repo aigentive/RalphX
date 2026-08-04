@@ -9708,11 +9708,24 @@ async fn mark_agent_workspace_failure_with_routing_and_action<S>(
     if matches!(post_repair_action, AgentWorkspacePostRepairAction::Publish)
         && durable_repair_owns_publish_continuation(state, workspace).await
     {
+        let owned_token = match releasable_orphaned_publish_operation_lease_token(state, workspace)
+            .await
+        {
+            Ok(token) => token,
+            Err(error) => {
+                tracing::warn!(
+                    conversation_id = %workspace.conversation_id,
+                    error = %error,
+                    "Could not prove orphaned publish-operation lease ownership during durable continuation suppression"
+                );
+                None
+            }
+        };
         if let Err(error) = settle_agent_workspace_publish_lease_status(
             state,
             workspace,
             "needs_agent",
-            None,
+            owned_token.as_deref(),
         )
         .await
         {
@@ -9743,6 +9756,30 @@ async fn mark_agent_workspace_failure_with_routing_and_action<S>(
         explicit_user_publish,
     )
     .await;
+}
+
+async fn releasable_orphaned_publish_operation_lease_token(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+) -> crate::error::AppResult<Option<String>> {
+    let Some(current) = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&workspace.conversation_id)
+        .await?
+    else {
+        return Ok(None);
+    };
+    let expected_owner = format!("publish-operation:{}", current.conversation_id);
+    if current.publish_lease_owner_run_id.as_deref() != Some(expected_owner.as_str()) {
+        return Ok(None);
+    }
+    let token = current.publish_lease_token.ok_or_else(|| {
+        AppError::Validation("publish-operation lease is missing its fencing token".to_string())
+    })?;
+    if publish_operation_lease_is_live(&current.conversation_id, Some(&token)) {
+        return Ok(None);
+    }
+    Ok(Some(token))
 }
 
 /// A generic failure may not enqueue a fixer when a current durable attempt already owns the
