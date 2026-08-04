@@ -10,6 +10,7 @@ import { useAgentTerminalStore } from "@/components/agents/agentTerminalStore";
 import type { MergePipelineTask } from "@/api/merge-pipeline";
 import { useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
+import { LOCAL_ENVIRONMENT_ID, useEnvironmentStore } from "@/stores/environmentStore";
 
 vi.mock("./RunningProcessPopover", () => ({
   RunningProcessPopover: ({
@@ -125,6 +126,10 @@ describe("ExecutionControlBar", () => {
       projects: {},
       activeProjectId: null,
     });
+    useEnvironmentStore.setState({
+      activeEnvironmentId: LOCAL_ENVIRONMENT_ID,
+      environments: [{ id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" }],
+    });
   });
 
   it("renders indeterminate counts instead of healthy zeroes when status is unknown", () => {
@@ -235,6 +240,23 @@ describe("ExecutionControlBar", () => {
     it("disables pause button when isLoading", () => {
       renderBar({ runningCount: 1, queuedCount: 3, isLoading: true });
       expect(screen.getByTestId("pause-toggle-button")).toBeDisabled();
+    });
+
+    it("disables only the remote resume direction and never calls its handler", () => {
+      const onPauseToggle = vi.fn();
+      useEnvironmentStore.setState({
+        activeEnvironmentId: "remote-1",
+        environments: [{ id: "remote-1", name: "Studio", kind: "remote" }],
+        effectiveScopes: { "remote-1": ["ui:read", "ui:operate", "ui:agent"] },
+      });
+      const { rerender } = renderBar({ isPaused: true, haltMode: "paused", onPauseToggle });
+      expect(screen.getByTestId("pause-toggle-button")).toBeDisabled();
+      fireEvent.click(screen.getByTestId("pause-toggle-button"));
+      expect(onPauseToggle).not.toHaveBeenCalled();
+
+      rerender(<ExecutionControlBar projectId="proj-1" runningCount={1} maxConcurrent={10} queuedCount={0} mergingCount={0} hasAttentionMerges={false} mergePipelineData={null} isPaused={false} onPauseToggle={onPauseToggle} onStop={vi.fn()} />);
+      fireEvent.click(screen.getByTestId("pause-toggle-button"));
+      expect(onPauseToggle).toHaveBeenCalledOnce();
     });
   });
 

@@ -94,8 +94,9 @@ export async function navigateNotification(
     if (!requestId) return false;
     let pending;
     try {
-      pending = await permissionApi.getPendingPermissions();
+      pending = await permissionApi.listPendingPermissionGates();
     } catch {
+      toast.error("Unable to load pending permission requests");
       return false;
     }
     if (!pending.some((request) => request.request_id === requestId)) {

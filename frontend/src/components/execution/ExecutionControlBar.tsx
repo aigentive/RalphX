@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { useState, useEffect, useMemo } from "react";
 import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
+import { useAgentGate } from "@/hooks/useAgentGate";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
@@ -198,6 +199,7 @@ export function ExecutionControlBar({
   onNavigateToTask,
 }: ExecutionControlBarProps) {
   const isRemoteEnvironment = useIsRemoteEnvironment();
+  const executionResumeGate = useAgentGate("executionResume");
   const laneByName = new Map(lanes.map((lane) => [lane.lane, lane]));
   const workspaceLane = laneByName.get("workspaces");
   const taskLane = laneByName.get("tasks");
@@ -243,7 +245,9 @@ export function ExecutionControlBar({
   const terminalCount = terminalSessions.length;
   const canStop = statusKnown && displayRunningCount > 0 && !isLoading;
   const isStopped = haltMode === "stopped";
-  const canPauseToggle = statusKnown && !isLoading;
+  const nextActionNeedsResume = isPaused || isStopped;
+  const canPauseToggle =
+    statusKnown && !isLoading && !(nextActionNeedsResume && executionResumeGate.gated);
   const statusColor = getStatusColor(displayRunningCount, isPaused, haltMode);
   const statusState = isStopped ? "stopped" : getStatusState(displayRunningCount, isPaused);
   const isRunning = displayRunningCount > 0 && !isPaused;
@@ -745,7 +749,9 @@ export function ExecutionControlBar({
             </TooltipTrigger>
             <TooltipContent side="top">
               <p>
-                {isStopped
+                {nextActionNeedsResume && executionResumeGate.gated
+                  ? executionResumeGate.reason
+                  : isStopped
                   ? "Start execution again. Stopped tasks remain stopped until you restart them."
                   : isPaused
                   ? "Resume paused tasks and queue ⌘P"

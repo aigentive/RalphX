@@ -57,9 +57,6 @@ function ActionButtonsCard({
   onReviewCode?: () => void;
 }) {
   const moveGate = useAgentGate("taskMove");
-  const executionResumeGate = useAgentGate("executionResume");
-  // Moving the task to ready is independently useful; a stopped scheduler is reported by the resume preflight.
-  void executionResumeGate;
   return (
     <div className="flex gap-2 justify-end">
       {onReviewCode && (
@@ -106,6 +103,7 @@ function ActionButtonsCard({
 }
 
 export function CompletedTaskDetail({ task, isHistorical = false }: CompletedTaskDetailProps) {
+  const executionResumeGate = useAgentGate("executionResume");
   const queryClient = useQueryClient();
   const { data: history, isLoading } = useTaskStateHistory(task.id);
   const { data: stateTransitions = [] } = useTaskStateTransitions(task.id);
@@ -150,7 +148,9 @@ export function CompletedTaskDetail({ task, isHistorical = false }: CompletedTas
           case "revert_commit":
           case "create_new":
             await api.tasks.move(task.id, "ready", result.note);
-            await resumeExecutionIfStopped(task.projectId);
+            if (!executionResumeGate.gated) {
+              await resumeExecutionIfStopped(task.projectId);
+            }
             break;
         }
 
@@ -165,7 +165,7 @@ export function CompletedTaskDetail({ task, isHistorical = false }: CompletedTas
         setIsProcessing(false);
       }
     },
-    [task.id, task.projectId, queryClient]
+    [executionResumeGate.gated, task.id, task.projectId, queryClient]
   );
 
   if (isLoading) {

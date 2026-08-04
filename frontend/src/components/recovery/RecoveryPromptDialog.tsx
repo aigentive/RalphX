@@ -15,6 +15,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { RemoteHostOnlyNotice } from "@/components/remote/RemoteHostOnlyNotice";
+import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
 
 interface RecoveryPromptDialogProps {
   taskId?: string | undefined;
@@ -30,6 +32,7 @@ export function RecoveryPromptDialog({
   const setPromptSurface = useUiStore((s) => s.setRecoveryPromptSurface);
   const clearPrompt = useUiStore((s) => s.clearRecoveryPrompt);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const isRemoteEnvironment = useIsRemoteEnvironment();
 
   useEffect(() => {
     if (!prompt || !taskId || prompt.taskId !== taskId) return;
@@ -77,7 +80,14 @@ export function RecoveryPromptDialog({
           <DialogTitle>Recovery required</DialogTitle>
           <DialogDescription>{prompt.reason}</DialogDescription>
         </DialogHeader>
+        {isRemoteEnvironment ? (
+          <RemoteHostOnlyNotice subject="Recovery actions" />
+        ) : null}
         <DialogFooter className="gap-2 sm:gap-2">
+          {isRemoteEnvironment ? (
+            <Button type="button" onClick={clearPrompt}>Dismiss</Button>
+          ) : (
+            <>
           <Button
             type="button"
             variant="secondary"
@@ -93,6 +103,8 @@ export function RecoveryPromptDialog({
           >
             {prompt.primaryAction.label}
           </Button>
+            </>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

@@ -37,12 +37,24 @@ vi.mock("@tauri-apps/plugin-updater", () => ({
   check: (...args: unknown[]) => mocks.check(...args),
 }));
 
+vi.mock("@/hooks/useClientUpdateChannel", () => ({
+  useClientUpdateChannel: () => ({
+    updateChannel: updateChannelState.channel,
+    isSettled: updateChannelState.isSettled,
+    isError: updateChannelState.isError,
+    loadError: updateChannelState.error,
+  }),
+}));
+
 vi.mock("@/hooks/useUpdateChannel", () => ({
   useUpdateChannel: () => ({
     updateChannel: updateChannelState.channel,
     isSettled: updateChannelState.isSettled,
     isError: updateChannelState.isError,
     loadError: updateChannelState.error,
+    setUpdateChannel: vi.fn(),
+    isSaving: false,
+    saveError: null,
   }),
 }));
 

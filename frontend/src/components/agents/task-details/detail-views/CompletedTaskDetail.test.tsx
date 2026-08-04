@@ -274,4 +274,16 @@ describe("Agents CompletedTaskDetail", () => {
     await waitFor(() => expect(moveTask).toHaveBeenCalledWith("task-1", "ready", "Review new changes"));
     expect(await screen.findByText("scheduler resume unavailable")).toBeInTheDocument();
   });
+
+  it("commits a remote-agent rerun without invoking unavailable execution resume", async () => {
+    setDetailViewEnvironment("remote-agent");
+    render(<CompletedTaskDetail task={task()} />, { wrapper: TestWrapper });
+    fireEvent.click(screen.getByTestId("reopen-task-button"));
+    fireEvent.click(screen.getByTestId("confirm-rerun"));
+    await waitFor(() =>
+      expect(moveTask).toHaveBeenCalledWith("task-1", "ready", "Review new changes"),
+    );
+    expect(resumeExecution).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.queryByTestId("confirm-rerun")).not.toBeInTheDocument());
+  });
 });

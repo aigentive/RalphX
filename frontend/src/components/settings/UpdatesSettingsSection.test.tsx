@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { UpdatesSettingsSection } from "./UpdatesSettingsSection";
+import { LOCAL_ENVIRONMENT_ID, useEnvironmentStore } from "@/stores/environmentStore";
 
 if (!HTMLElement.prototype.hasPointerCapture) {
   Object.defineProperty(HTMLElement.prototype, "hasPointerCapture", {
@@ -60,6 +61,10 @@ describe("UpdatesSettingsSection", () => {
     mocks.saveError = null;
     mocks.isSaving = false;
     mocks.setUpdateChannel.mockReset();
+    useEnvironmentStore.setState({
+      activeEnvironmentId: LOCAL_ENVIRONMENT_ID,
+      environments: [{ id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" }],
+    });
   });
 
   it("defaults to the selected Stable radio and saves an accessible Nightly selection", async () => {
@@ -94,6 +99,19 @@ describe("UpdatesSettingsSection", () => {
     rerender(<UpdatesSettingsSection />);
     expect(screen.getByRole("radio", { name: "Stable — Recommended" })).toBeDisabled();
     expect(screen.getByRole("radio", { name: "Nightly — Early access" })).toBeDisabled();
+  });
+
+  it("renders host-only disabled channel controls remotely without saving", async () => {
+    useEnvironmentStore.setState({
+      activeEnvironmentId: "remote-1",
+      environments: [{ id: "remote-1", name: "Studio", kind: "remote" }],
+    });
+    render(<UpdatesSettingsSection />);
+    const nightly = screen.getByRole("radio", { name: "Nightly — Early access" });
+    expect(nightly).toBeDisabled();
+    expect(screen.getByTestId("remote-host-only-notice")).toHaveTextContent("Studio");
+    await userEvent.click(nightly);
+    expect(mocks.setUpdateChannel).not.toHaveBeenCalled();
   });
 
   it("explains the Nightly safety boundary without exposing custom sources", () => {

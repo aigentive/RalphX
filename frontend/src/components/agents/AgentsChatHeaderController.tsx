@@ -3,6 +3,8 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { chatApi } from "@/api/chat";
+import { useIsRemoteEnvironment } from "@/hooks/useActiveEnvironment";
+import { isRemotelyAvailable } from "@/lib/remote/agent-gate";
 import { useResolvedAgentArtifactState } from "./agentArtifactState";
 import {
   cancelDeferredFrameJob,
@@ -55,6 +57,7 @@ export function AgentsChatHeaderController({
     conversation?.id ?? null,
     hasAutoOpenArtifacts,
   );
+  const isRemoteEnvironment = useIsRemoteEnvironment();
   const workspaceConversationId =
     workspace?.conversationId ?? conversation?.id ?? null;
   const terminalOpen = useAgentTerminalStore((state) =>
@@ -75,7 +78,11 @@ export function AgentsChatHeaderController({
     queryKey: ["workspace-open-targets"],
     queryFn: chatApi.listWorkspaceOpenTargets,
     staleTime: Infinity,
-    enabled: Boolean(conversation && workspace),
+    enabled: Boolean(
+      conversation &&
+        workspace &&
+        (!isRemoteEnvironment || isRemotelyAvailable("list_workspace_open_targets")),
+    ),
   });
   const clearWorkspaceOpenTimer = useCallback(() => {
     if (workspaceOpenClearTimerRef.current !== null) {
@@ -214,7 +221,11 @@ export function AgentsChatHeaderController({
       terminalUnavailableReason={terminalUnavailableReason}
       onToggleTerminal={handleToggleTerminal}
       onPreloadTerminal={handlePreloadTerminal}
-      workspaceOpenTargets={workspaceOpenTargetsQuery.data ?? []}
+      workspaceOpenTargets={
+        isRemoteEnvironment && !isRemotelyAvailable("list_workspace_open_targets")
+          ? [{ id: "host", label: "Host workspace", kind: "editor" }]
+          : (workspaceOpenTargetsQuery.data ?? [])
+      }
       openingWorkspaceTargetId={visibleWorkspaceOpeningTargetId}
       onOpenWorkspaceTarget={handleOpenWorkspaceTarget}
       onToggleArtifacts={handleToggleArtifacts}

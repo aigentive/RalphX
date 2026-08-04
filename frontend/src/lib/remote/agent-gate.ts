@@ -154,6 +154,8 @@ export const AGENT_GATED_AFFORDANCES = {
   // Reviewing feedback and execution resume remain local-only command surfaces.
   taskRequestChangesFromReviewing: "request_task_changes_from_reviewing",
   executionResume: "resume_execution",
+  executionPause: "pause_execution",
+  executionStop: "stop_execution",
   applyProposals: "apply_proposals_to_kanban",
   taskEditContent: "update_task",
   stepCreate: "create_task_step",

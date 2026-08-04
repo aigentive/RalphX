@@ -30,7 +30,7 @@ vi.mock("@/components/automations/automationRunNavigation", () => ({
   requestAutomationRunOpen: vi.fn(),
 }));
 vi.mock("@/api/automations", () => ({ automationsApi: { resume: vi.fn() } }));
-vi.mock("@/api/permission", () => ({ permissionApi: { getPendingPermissions: vi.fn() } }));
+vi.mock("@/api/permission", () => ({ permissionApi: { listPendingPermissionGates: vi.fn() } }));
 vi.mock("@/lib/navigation", () => ({
   navigateToAgentConversation: vi.fn(),
   navigateToAgentPlan: vi.fn(),
@@ -55,7 +55,7 @@ describe("navigateNotification", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(openTaskInAgents).mockResolvedValue(true);
-    vi.mocked(permissionApi.getPendingPermissions).mockResolvedValue([]);
+    vi.mocked(permissionApi.listPendingPermissionGates).mockResolvedValue([]);
     vi.mocked(requestAutomationRunOpen).mockResolvedValue({ applied: true });
     vi.spyOn(useUiStore, "getState").mockReturnValue({ setCurrentView } as ReturnType<typeof useUiStore.getState>);
     vi.spyOn(useProjectStore, "getState").mockReturnValue({ activeProjectId: "project-1", selectProject } as ReturnType<typeof useProjectStore.getState>);
@@ -165,7 +165,7 @@ describe("navigateNotification", () => {
     const onClose = vi.fn();
     const listener = vi.fn();
     window.addEventListener("ralphx:open-permission-dialog", listener);
-    vi.mocked(permissionApi.getPendingPermissions).mockResolvedValue([
+    vi.mocked(permissionApi.listPendingPermissionGates).mockResolvedValue([
       { request_id: "request-1", tool_name: "Bash", tool_input: {} },
     ]);
 
@@ -183,6 +183,7 @@ describe("navigateNotification", () => {
     expect(navigated).toBe(true);
     expect(listener).toHaveBeenCalledWith(expect.objectContaining({ detail: { requestId: "request-1" } }));
     expect(onClose).toHaveBeenCalledOnce();
+    expect(permissionApi.listPendingPermissionGates).toHaveBeenCalledOnce();
     window.removeEventListener("ralphx:open-permission-dialog", listener);
   });
 
@@ -195,8 +196,9 @@ describe("navigateNotification", () => {
     };
 
     await expect(navigateNotification(item, {} as QueryClient)).resolves.toBe(true);
-    vi.mocked(permissionApi.getPendingPermissions).mockRejectedValueOnce(new Error("offline"));
+    vi.mocked(permissionApi.listPendingPermissionGates).mockRejectedValueOnce(new Error("offline"));
     await expect(navigateNotification(item, {} as QueryClient)).resolves.toBe(false);
+    expect(toastError).toHaveBeenCalledWith("Unable to load pending permission requests");
   });
 
   it("routes task notifications through the shared Agents owner", async () => {

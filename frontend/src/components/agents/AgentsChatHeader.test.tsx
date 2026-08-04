@@ -9,6 +9,7 @@ import { useChatStore } from "@/stores/chatStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { useTicketingStore } from "@/stores/ticketingStore";
 import { useUiStore } from "@/stores/uiStore";
+import { LOCAL_ENVIRONMENT_ID, useEnvironmentStore } from "@/stores/environmentStore";
 import { toast } from "sonner";
 import { AgentsChatFocusBar, AgentsChatHeader } from "./AgentsChatHeader";
 import { AgentsChatHeaderController } from "./AgentsChatHeaderController";
@@ -94,6 +95,10 @@ function conversationStats(
 
 describe("AgentsChatHeader", () => {
   beforeEach(() => {
+    useEnvironmentStore.setState({
+      activeEnvironmentId: LOCAL_ENVIRONMENT_ID,
+      environments: [{ id: LOCAL_ENVIRONMENT_ID, name: "This Mac", kind: "local" }],
+    });
     vi.mocked(useConversationTicket).mockReturnValue({
       data: null,
       isLoading: false,
@@ -1208,6 +1213,30 @@ describe("AgentsChatHeader", () => {
       await vi.advanceTimersByTimeAsync(1);
     });
     expect(openButton).not.toBeDisabled();
+  });
+
+  it("does not query denied workspace targets remotely and still renders the host-only control", async () => {
+    useEnvironmentStore.setState({
+      activeEnvironmentId: "remote-1",
+      environments: [{ id: "remote-1", name: "Studio", kind: "remote" }],
+    });
+    const listTargets = vi.spyOn(chatApi, "listWorkspaceOpenTargets");
+    renderWithProviders(
+      <AgentsChatHeaderController
+        conversation={conversation({ id: "conversation-1" })}
+        workspace={conversationWorkspace({ mode: "edit" })}
+        hasAutoOpenArtifacts={false}
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onPublishWorkspace={vi.fn().mockResolvedValue(undefined)}
+        onOpenPublishPane={vi.fn()}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />,
+    );
+    const openButton = await screen.findByTestId("agents-open-workspace");
+    expect(openButton).toBeDisabled();
+    expect(openButton).toHaveAccessibleName(/available on the host mac/i);
+    expect(listTargets).not.toHaveBeenCalled();
   });
 
   it("opens the workspace using the workspace owner conversation id", async () => {

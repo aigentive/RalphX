@@ -247,7 +247,10 @@ describe("affordance mapping", () => {
    * boundary exists to give it to. Adding a row here is a boundary change — the op's class is
    * asserted below so a reclassified op cannot ride in on this list.
    */
-  const DEFAULT_PAIRING_BRAKES = ["agentStop"] as const;
+  // Whole-scheduler pause/stop joined 2026-08-04: both ops are registered `operate`
+  // (authority-reducing — they halt work, never start it), so their affordances must stay
+  // usable on a default pairing exactly like the per-conversation stop brake.
+  const DEFAULT_PAIRING_BRAKES = ["agentStop", "executionPause", "executionStop"] as const;
 
   it("resolves every affordance to a defined state without ui:agent", () => {
     for (const affordance of Object.keys(

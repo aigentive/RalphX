@@ -2961,6 +2961,9 @@ function AgentPlanPanel({
   onOpenTasks: () => void;
 }) {
   const planApproveGate = useAgentGate("planApprove");
+  const executionPauseGate = useAgentGate("executionPause");
+  const executionResumeGate = useAgentGate("executionResume");
+  const executionStopGate = useAgentGate("executionStop");
   const generatedPlanBundleTabsId = useId();
   const planBundleTabsId = `agents-plan-bundle-${generatedPlanBundleTabsId.replace(
     /:/g,
@@ -3510,7 +3513,7 @@ function AgentPlanPanel({
   }, [loadActivePlan, queryClient, session, workspaceConversationId]);
 
   const handlePauseExecutionPlan = useCallback(() => {
-    if (!session || !canPauseExecutionPlan) {
+    if (!session || !canPauseExecutionPlan || executionPauseGate.gated) {
       return;
     }
 
@@ -3541,11 +3544,12 @@ function AgentPlanPanel({
     confirm,
     invalidateExecutionPlanControlQueries,
     pauseExecutionPlanMutation,
+    executionPauseGate.gated,
     session,
   ]);
 
   const handleResumeExecutionPlan = useCallback(() => {
-    if (!session || !canResumeExecutionPlan) {
+    if (!session || !canResumeExecutionPlan || executionResumeGate.gated) {
       return;
     }
 
@@ -3576,11 +3580,12 @@ function AgentPlanPanel({
     confirm,
     invalidateExecutionPlanControlQueries,
     resumeExecutionPlanMutation,
+    executionResumeGate.gated,
     session,
   ]);
 
   const handleStopExecutionPlan = useCallback(() => {
-    if (!session || !canStopExecutionPlan) {
+    if (!session || !canStopExecutionPlan || executionStopGate.gated) {
       return;
     }
 
@@ -3613,6 +3618,7 @@ function AgentPlanPanel({
     invalidateExecutionPlanControlQueries,
     session,
     stopExecutionPlanMutation,
+    executionStopGate.gated,
   ]);
 
   const planLifecycleState = useMemo<PlanLifecycleState | null>(() => {
@@ -3837,7 +3843,8 @@ function AgentPlanPanel({
         label: resumeExecutionPlanMutation.isPending ? "Resuming..." : "Resume",
         onClick: handleResumeExecutionPlan,
         icon: Play,
-        disabled,
+        disabled: disabled || executionResumeGate.gated,
+        disabledReason: executionResumeGate.reason,
         loading: resumeExecutionPlanMutation.isPending,
         primary: true,
         testId: "plan-lifecycle-resume-button",
@@ -3849,7 +3856,8 @@ function AgentPlanPanel({
         label: pauseExecutionPlanMutation.isPending ? "Pausing..." : "Pause",
         onClick: handlePauseExecutionPlan,
         icon: Pause,
-        disabled,
+        disabled: disabled || executionPauseGate.gated,
+        disabledReason: executionPauseGate.reason,
         loading: pauseExecutionPlanMutation.isPending,
         testId: "plan-lifecycle-pause-button",
       });
@@ -3860,7 +3868,8 @@ function AgentPlanPanel({
         label: stopExecutionPlanMutation.isPending ? "Stopping..." : "Stop",
         onClick: handleStopExecutionPlan,
         icon: Square,
-        disabled,
+        disabled: disabled || executionStopGate.gated,
+        disabledReason: executionStopGate.reason,
         loading: stopExecutionPlanMutation.isPending,
         tone: "danger",
         testId: "plan-lifecycle-stop-button",
@@ -3871,6 +3880,12 @@ function AgentPlanPanel({
     canPauseExecutionPlan,
     canResumeExecutionPlan,
     canStopExecutionPlan,
+    executionPauseGate.gated,
+    executionPauseGate.reason,
+    executionResumeGate.gated,
+    executionResumeGate.reason,
+    executionStopGate.gated,
+    executionStopGate.reason,
     handlePauseExecutionPlan,
     handleResumeExecutionPlan,
     handleStopExecutionPlan,

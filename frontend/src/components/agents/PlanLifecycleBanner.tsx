@@ -23,6 +23,7 @@ export interface PlanLifecycleAction {
   onClick: () => void;
   icon?: ElementType;
   disabled?: boolean;
+  disabledReason?: string | null;
   loading?: boolean;
   primary?: boolean;
   tone?: "default" | "success" | "danger";
@@ -367,6 +368,7 @@ export function PlanLifecycleBanner({
                       data-testid={action.testId}
                       onClick={action.onClick}
                       disabled={action.disabled || action.loading}
+                      title={action.disabled ? (action.disabledReason ?? undefined) : undefined}
                       className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[0.75rem] font-semibold transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-60"
                       style={actionButtonStyle(action)}
                     >
