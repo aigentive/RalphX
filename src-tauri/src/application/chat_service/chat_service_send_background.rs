@@ -1109,7 +1109,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                 recovery_repositories.as_ref().map(
                     |(_, chat_message_repo)| super::chat_service_queue::AnsweredTurnEvidence {
                         chat_message_repo,
-                        conversation_id,
+                        conversation_id: &conversation_id,
                     },
                 ),
             )
