@@ -12,6 +12,8 @@ use crate::domain::entities::{
     AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest, ArtifactId,
     ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
+    WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED, WORKSPACE_REVIEW_FIXER_STATUS_QUEUED,
+    WORKSPACE_REVIEW_FIXER_STATUS_ROUTING, WORKSPACE_REVIEW_FIXER_STATUS_RUNNING,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
@@ -938,6 +940,118 @@ fn make_workspace(conversation_id: ChatConversationId) -> AgentConversationWorks
         "ralphx/project-memory/agent".to_string(),
         "/tmp/ralphx/project-memory/agent".to_string(),
     )
+}
+
+#[tokio::test]
+async fn review_automation_override_resets_budget_and_preserves_active_attempt_identity() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("review-automation-memory");
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .expect("workspace should persist");
+    let mut capped = AgentWorkspaceReviewMonitor::new(
+        conversation_id.clone(),
+        ProjectId::from_string("project-memory".to_string()),
+    );
+    capped.review_fixer_cycle_count = 3;
+    capped.review_fixer_status = Some(WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED.to_string());
+    capped.review_fixer_attempt_id = Some("capped-attempt".to_string());
+    repo.upsert_workspace_review_monitor(capped)
+        .await
+        .expect("capped monitor should persist");
+
+    repo.set_review_automation_override(&conversation_id, Some(true))
+        .await
+        .expect("rearm should persist");
+    assert_eq!(
+        repo.get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace should load")
+            .expect("workspace should exist")
+            .review_automation_override,
+        Some(true)
+    );
+    let rearmed = repo
+        .get_workspace_review_monitor(&conversation_id)
+        .await
+        .expect("monitor should load")
+        .expect("monitor should exist");
+    assert_eq!(rearmed.review_fixer_cycle_count, 0);
+    assert!(rearmed.review_fixer_status.is_none());
+    assert!(rearmed.review_fixer_attempt_id.is_none());
+
+    let mut idle = rearmed;
+    idle.review_fixer_cycle_count = 2;
+    repo.upsert_workspace_review_monitor(idle)
+        .await
+        .expect("idle monitor should persist");
+    repo.set_review_automation_override(&conversation_id, Some(false))
+        .await
+        .expect("disarm should persist without resetting the budget");
+    let idle = repo
+        .get_workspace_review_monitor(&conversation_id)
+        .await
+        .expect("idle monitor should load")
+        .expect("idle monitor should exist");
+    assert_eq!(idle.review_fixer_cycle_count, 2);
+
+    repo.set_review_automation_override(&conversation_id, Some(true))
+        .await
+        .expect("arming should reset an idle budget");
+    let mut failed = repo
+        .get_workspace_review_monitor(&conversation_id)
+        .await
+        .expect("rearmed idle monitor should load")
+        .expect("rearmed idle monitor should exist");
+    assert_eq!(failed.review_fixer_cycle_count, 0);
+    failed.review_fixer_cycle_count = 2;
+    failed.review_fixer_status = Some("failed".to_string());
+    failed.review_fixer_attempt_id = Some("failed-attempt".to_string());
+    repo.upsert_workspace_review_monitor(failed)
+        .await
+        .expect("failed monitor should persist");
+    repo.set_review_automation_override(&conversation_id, Some(true))
+        .await
+        .expect("arming should reset a settled failed budget");
+    let failed = repo
+        .get_workspace_review_monitor(&conversation_id)
+        .await
+        .expect("failed monitor should load")
+        .expect("failed monitor should exist");
+    assert_eq!(failed.review_fixer_cycle_count, 0);
+    assert_eq!(failed.review_fixer_status.as_deref(), Some("failed"));
+    assert_eq!(
+        failed.review_fixer_attempt_id.as_deref(),
+        Some("failed-attempt")
+    );
+
+    for status in [
+        WORKSPACE_REVIEW_FIXER_STATUS_ROUTING,
+        WORKSPACE_REVIEW_FIXER_STATUS_QUEUED,
+        WORKSPACE_REVIEW_FIXER_STATUS_RUNNING,
+    ] {
+        let mut active = failed.clone();
+        active.review_fixer_cycle_count = 2;
+        active.review_fixer_status = Some(status.to_string());
+        active.review_fixer_attempt_id = Some(format!("{status}-attempt"));
+        repo.upsert_workspace_review_monitor(active)
+            .await
+            .expect("active monitor should persist");
+        repo.set_review_automation_override(&conversation_id, Some(true))
+            .await
+            .expect("active automation preference should persist");
+        let active = repo
+            .get_workspace_review_monitor(&conversation_id)
+            .await
+            .expect("active monitor should load")
+            .expect("active monitor should exist");
+        assert_eq!(active.review_fixer_cycle_count, 0);
+        assert_eq!(active.review_fixer_status.as_deref(), Some(status));
+        assert_eq!(
+            active.review_fixer_attempt_id.as_deref(),
+            Some(format!("{status}-attempt").as_str())
+        );
+    }
 }
 
 #[tokio::test]

@@ -84,6 +84,7 @@ import { AgentsPublishChecksTab } from "./AgentsPublishChecksTab";
 import { AgentsPublishAutomationTab } from "./AgentsPublishAutomationTab";
 import {
   deriveAgentsPublishAutomationSnapshot,
+  hasActiveAgentsPublishAutomation,
   type AgentsPublishAutomationSnapshot,
 } from "./agentsPublishAutomationSnapshot";
 import { PublishEventLog, selectPublishHistory } from "./AgentsPublishEventLog";
@@ -888,13 +889,14 @@ export function AgentPublishPanel({
     autoPublishEnabled,
     isAutoPublishSaving,
     isPrSupervisionSaving,
+    isReviewAutomationSaving,
     prAutofixEnabled,
     prAutoMergeCurrent,
     prAutoMergeDesired,
     prSupervisionStatus,
   } = effectiveAutomationSnapshot;
   const isAutomationPreferenceSaving =
-    isAutoPublishSaving || isPrSupervisionSaving;
+    isAutoPublishSaving || isPrSupervisionSaving || isReviewAutomationSaving;
   const prConflictSummary = getAgentWorkspacePrConflictSummary(workspace);
   const hasPrConflict = prConflictSummary !== null;
   const workspaceReviewRequired =
@@ -1765,9 +1767,7 @@ export function AgentPublishPanel({
               >
                 <Zap className="h-3.5 w-3.5" aria-hidden="true" />
                 <span>Automation</span>
-                {(autoPublishEnabled ||
-                  prAutofixEnabled ||
-                  prAutoMergeDesired) && (
+                {hasActiveAgentsPublishAutomation(effectiveAutomationSnapshot) && (
                   <span
                     aria-label="Automation active"
                     className="h-1.5 w-1.5 rounded-full"

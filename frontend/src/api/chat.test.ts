@@ -43,6 +43,7 @@ import {
   precomputeAgentConversationWorkspacePrDescription,
   setAgentConversationWorkspaceAutoPublish,
   setAgentConversationWorkspacePrSupervision,
+  setAgentConversationWorkspaceReviewAutomation,
   startAgentConversation,
   startAgentConversationInvokeInput,
   transformStartAgentConversationResponse,
@@ -2336,6 +2337,54 @@ describe("chat api", () => {
     });
   });
 
+  it("sets the tri-state workspace review automation override", async () => {
+    mockInvoke.mockResolvedValue({
+      conversation_id: "conversation-1",
+      project_id: "project-1",
+      mode: "edit",
+      base_ref_kind: "project_default",
+      base_ref: "main",
+      base_display_name: "Project default (main)",
+      base_commit: "base-sha",
+      branch_name: "ralphx/demo/agent-conversation-1",
+      worktree_path: "/tmp/ralphx/conversation-1",
+      linked_ideation_session_id: null,
+      linked_plan_branch_id: null,
+      publication_pr_number: null,
+      publication_pr_url: null,
+      publication_pr_status: null,
+      publication_push_status: null,
+      auto_publish_enabled: true,
+      auto_publish_paused_pr_autofix_enabled: null,
+      auto_publish_paused_pr_auto_merge_desired: null,
+      pr_autofix_enabled: false,
+      pr_auto_merge_desired: false,
+      pr_auto_merge_method: "squash",
+      pr_auto_merge_current: null,
+      pr_supervision_status: null,
+      pr_supervision_summary: null,
+      pr_supervision_updated_at: null,
+      review_automation_override: true,
+      status: "active",
+      created_at: "2026-01-24T10:00:00Z",
+      updated_at: "2026-01-24T10:01:00Z",
+    });
+
+    const result = await setAgentConversationWorkspaceReviewAutomation(
+      "conversation-1",
+      { enabled: true },
+    );
+
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "set_agent_conversation_workspace_review_automation",
+      {
+        conversationId: "conversation-1",
+        input: { enabled: true },
+      },
+    );
+    expect(result.reviewAutomationOverride).toBe(true);
+  });
+
   it("sets agent conversation workspace auto publish", async () => {
     mockInvoke.mockResolvedValue({
       conversation_id: "conversation-1",
@@ -3919,6 +3968,7 @@ describe("getConversationActiveState", () => {
 
     const result = await startAgentWorkspaceReview("conversation/1", {
       force: true,
+      enableReviewAutomation: true,
       runtimeOverride: {
         provider: "codex",
         model: "gpt-5.5",
@@ -3936,6 +3986,7 @@ describe("getConversationActiveState", () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           force: true,
+          enable_review_automation: true,
           runtime_override: {
             provider: "codex",
             model: "gpt-5.5",
