@@ -89,6 +89,12 @@ pub const SESSION_HISTORY_ARTIFACT_THRESHOLD_BYTES: usize = 2000;
 /// Preview budget for long history messages that have a full artifact reference.
 pub const SESSION_HISTORY_PREVIEW_BYTES: usize = 500;
 
+#[cfg(any(test, feature = "test-utils"))]
+fn explicit_test_spawn_is_allowed() -> bool {
+    std::env::var("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS")
+        .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+}
+
 pub async fn await_required_external_mcp(
     external_mcp: Option<&Arc<crate::infrastructure::ExternalMcpSupervisor>>,
     provider: AgentHarnessKind,
@@ -104,9 +110,13 @@ pub async fn await_required_external_mcp(
     )? {
         return Ok(());
     }
-    let external_mcp = external_mcp.ok_or_else(|| {
-        "External MCP transport requires the managed application runtime".to_string()
-    })?;
+    let Some(external_mcp) = external_mcp else {
+        #[cfg(any(test, feature = "test-utils"))]
+        if explicit_test_spawn_is_allowed() {
+            return Ok(());
+        }
+        return Err("External MCP transport requires the managed application runtime".to_string());
+    };
     external_mcp
         .await_ready(std::time::Duration::from_secs(
             external_mcp_config().startup_timeout_secs,

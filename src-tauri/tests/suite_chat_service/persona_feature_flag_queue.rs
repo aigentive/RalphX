@@ -70,6 +70,8 @@ async fn queued_builder_drain_rejects_flag_off_and_flag_on_passes_the_gate() {
         let conversation = conversation_repo.create(conversation).await.unwrap();
         let mut initial_state = AppState::new_test();
         initial_state.chat_conversation_repo = conversation_repo;
+        let events = RecordingEventSink::new();
+        initial_state.events = Arc::new(events.clone());
         let queue_context_id = conversation.id.as_str();
         initial_state
             .message_queue
@@ -97,11 +99,6 @@ async fn queued_builder_drain_rejects_flag_off_and_flag_on_passes_the_gate() {
             .manage(initial_state)
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
-        let errors = Arc::new(Mutex::new(Vec::new()));
-        let captured = Arc::clone(&errors);
-        let _listener = app.listen("agent:error", move |event| {
-            captured.lock().unwrap().push(event.payload().to_string());
-        });
         let state = app.state::<AppState>();
         process_queued_messages_for_test_with_persona_feature(
             state.inner(),
@@ -116,8 +113,10 @@ async fn queued_builder_drain_rejects_flag_off_and_flag_on_passes_the_gate() {
             enabled,
         )
         .await;
-        let captured_errors = errors.lock().unwrap().clone();
-        captured_errors
+        recorded_event_payloads(&events, "agent:error")
+            .into_iter()
+            .map(|payload| payload.to_string())
+            .collect()
     }
 
     let disabled_errors = drain_with_flag(false).await;
@@ -144,6 +143,8 @@ async fn queued_builder_conversation_lookup_error_surfaces_without_spawn() {
     conversation_repo.fail_get_by_id(conversation.id).await;
     let mut initial_state = AppState::new_test();
     initial_state.chat_conversation_repo = conversation_repo;
+    let events = RecordingEventSink::new();
+    initial_state.events = Arc::new(events.clone());
     let queue_context_id = conversation.id.as_str();
     initial_state
         .message_queue
@@ -171,12 +172,6 @@ async fn queued_builder_conversation_lookup_error_surfaces_without_spawn() {
         .manage(initial_state)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("build queued lookup failure app");
-    let errors = Arc::new(Mutex::new(Vec::new()));
-    let captured = Arc::clone(&errors);
-    let _listener = app.listen("agent:error", move |event| {
-        captured.lock().unwrap().push(event.payload().to_string());
-    });
-
     let state = app.state::<AppState>();
     let (processed, last_run_id) = process_queued_messages_for_test(
         state.inner(),
@@ -193,11 +188,11 @@ async fn queued_builder_conversation_lookup_error_surfaces_without_spawn() {
 
     assert_eq!(processed, 1);
     assert!(last_run_id.is_none());
-    assert!(errors
-        .lock()
-        .unwrap()
+    assert!(recorded_event_payloads(&events, "agent:error")
         .iter()
-        .any(|payload| payload.contains("injected conversation lookup failure")));
+        .any(|payload| payload
+            .to_string()
+            .contains("injected conversation lookup failure")));
     assert!(app
         .state::<AppState>()
         .agent_run_repo
