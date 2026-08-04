@@ -84,7 +84,7 @@ export function AgentsPublishHoldCard({
         <PublishFact
           icon={Clock3}
           label="Waiting on"
-          value="New PR health evidence"
+          value={hold.waitingOnLabel}
           description={hold.waitingOn}
         />
       </div>

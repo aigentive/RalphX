@@ -1705,7 +1705,7 @@ describe("chat api", () => {
     ).toBeNull();
   });
 
-  it("transforms a typed repair hold reason", async () => {
+  it("transforms a typed CI-rerun hold reason", async () => {
     mockInvoke.mockResolvedValueOnce([
       {
         ...planSeedWorkspaceResponse(),
@@ -1715,8 +1715,8 @@ describe("chat api", () => {
           source: "pr_autofix",
           stage: "ready",
           status: "ready",
-          hold_reason: "health_evidence",
-          summary: "RalphX is holding the repair on identical CI evidence.",
+          hold_reason: "ci_rerun_pending",
+          summary: "RalphX is waiting for the CI rerun.",
           blocker: null,
           automatic_continuation: false,
           started_at: "2026-01-24T10:00:00Z",
@@ -1727,7 +1727,7 @@ describe("chat api", () => {
 
     const result = await listAgentConversationWorkspacesByProject("project-1");
 
-    expect(result[0]?.maintenanceOperation?.holdReason).toBe("health_evidence");
+    expect(result[0]?.maintenanceOperation?.holdReason).toBe("ci_rerun_pending");
   });
 
   it("sends the current repair version for hold actions", async () => {
@@ -1748,8 +1748,10 @@ describe("chat api", () => {
       input: { conversationId: "conversation-1", ...input },
     });
 
-    mockInvoke.mockResolvedValue(undefined);
-    await recheckAgentConversationWorkspacePrHealth("conversation-1");
+    mockInvoke.mockResolvedValue(null);
+    await expect(
+      recheckAgentConversationWorkspacePrHealth("conversation-1"),
+    ).resolves.toBeUndefined();
     expect(mockInvoke).toHaveBeenLastCalledWith("recheck_pr_health", {
       conversationId: "conversation-1",
     });

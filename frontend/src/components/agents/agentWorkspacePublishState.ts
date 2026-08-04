@@ -159,12 +159,15 @@ export type AgentWorkspacePrAutofixFingerprintSpendPresentation = {
 export type AgentWorkspaceHoldPresentation = {
   agentStatus: string;
   generationVerdict: string;
+  waitingOnLabel: string;
   waitingOn: string;
 };
 
 const HOLD_SUMMARIES = {
   health_evidence:
     "RalphX is waiting for new PR health evidence before spending another repair generation.",
+  ci_rerun_pending:
+    "RalphX asked GitHub to re-run the failed jobs and is waiting for the result.",
 };
 
 export function getAgentWorkspacePrAutofixFingerprintSpendPresentation(
@@ -192,7 +195,8 @@ export function getAgentWorkspaceHoldPresentation(
   const operation = getAgentWorkspaceMaintenanceOperation(workspace);
   if (
     operation?.stage !== "ready" ||
-    operation.holdReason !== "health_evidence"
+    (operation.holdReason !== "health_evidence" &&
+      operation.holdReason !== "ci_rerun_pending")
   ) {
     return null;
   }
@@ -205,6 +209,10 @@ export function getAgentWorkspaceHoldPresentation(
     agentStatus: "Nothing is running",
     generationVerdict:
       operation.summary ?? "The last repair generation did not clear this failure.",
+    waitingOnLabel:
+      operation.holdReason === "ci_rerun_pending"
+        ? "GitHub CI rerun"
+        : "New PR health evidence",
     waitingOn,
   };
 }
@@ -324,9 +332,19 @@ export function getAgentWorkspaceMaintenancePresentation(
           summary,
           tone: "warning",
           busy: false,
-          action: "none",
+          action: "hold",
           automaticContinuation:
             "RalphX will continue when the PR evidence changes.",
+        };
+      }
+      if (operation.holdReason === "ci_rerun_pending") {
+        return {
+          title: "Holding — waiting for CI rerun",
+          summary,
+          tone: "warning",
+          busy: false,
+          action: "hold",
+          automaticContinuation: "RalphX is waiting for GitHub to finish the rerun.",
         };
       }
       return {

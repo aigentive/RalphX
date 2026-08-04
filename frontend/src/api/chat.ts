@@ -2102,7 +2102,8 @@ export type AgentWorkspaceMaintenanceOperationStatus =
   | "blocked";
 export type AgentWorkspaceMaintenanceOperationHoldReason =
   | "health_evidence"
-  | "publish_redrive";
+  | "publish_redrive"
+  | "ci_rerun_pending";
 
 export interface AgentWorkspaceMaintenanceOperation {
   operationId: string;
@@ -2698,7 +2699,7 @@ export const AgentWorkspaceMaintenanceOperationResponseSchema = z.object({
   ]),
   status: z.enum(["active", "ready", "blocked"]),
   hold_reason: z
-    .enum(["health_evidence", "publish_redrive"])
+    .enum(["health_evidence", "publish_redrive", "ci_rerun_pending"])
     .nullable()
     .optional()
     .default(null),
@@ -4540,7 +4541,7 @@ export async function publishAgentConversationWorkspace(
 export async function recheckAgentConversationWorkspacePrHealth(
   conversationId: string,
 ): Promise<void> {
-  await typedInvoke("recheck_pr_health", { conversationId }, z.void());
+  await typedInvoke("recheck_pr_health", { conversationId }, z.null());
 }
 
 export async function retryAgentConversationWorkspacePrAutofixOverride(

@@ -1011,6 +1011,9 @@ describe("AgentsView publish", () => {
     const card = await screen.findByTestId("agents-publish-hold-card");
     expect(card).toHaveTextContent("Nothing is running");
     expect(within(card).getByRole("button", { name: "Re-check PR health" })).toBeEnabled();
+    expect(
+      within(actionbar).getByTestId("agents-publish-recheck-pr-health"),
+    ).toBeEnabled();
     expect(within(actionbar).queryByTestId("agents-publish-change-facts")).not.toBeInTheDocument();
 
     fireEvent.click(within(card).getByRole("button", { name: "Re-check PR health" }));

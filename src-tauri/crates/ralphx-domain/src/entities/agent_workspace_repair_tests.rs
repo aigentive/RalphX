@@ -200,6 +200,16 @@ fn health_held_ready_repair_projects_typed_hold_reason() {
 
     attempt.pending_reasons.clear();
     assert_eq!(attempt.operation_snapshot().hold_reason, None);
+
+    attempt.ci_rerun_count = 1;
+    attempt.ci_rerun_fingerprint = Some("ci-rerun:123".to_string());
+    assert_eq!(
+        attempt.operation_snapshot().hold_reason,
+        Some(AgentWorkspaceRepairOperationHoldReason::CiRerunPending)
+    );
+
+    attempt.phase = AgentWorkspaceRepairPhase::Blocked;
+    assert_eq!(attempt.operation_snapshot().hold_reason, None);
 }
 
 #[test]

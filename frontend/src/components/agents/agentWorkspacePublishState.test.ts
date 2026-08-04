@@ -242,9 +242,29 @@ describe("maintenance operation presentation", () => {
     expect(canResumeAgentWorkspacePublish(held)).toBe(false);
     expect(getAgentWorkspaceMaintenancePresentation(held)).toMatchObject({
       title: "Holding — waiting for new CI evidence",
-      action: "none",
+      action: "hold",
       busy: false,
       automaticContinuation: "RalphX will continue when the PR evidence changes.",
+    });
+  });
+
+  it("presents a reserved CI rerun as held without enabling publish", () => {
+    const held = workspace({
+      maintenanceOperation: {
+        ...maintenanceOperation,
+        source: "pr_autofix",
+        stage: "ready",
+        status: "ready",
+        holdReason: "ci_rerun_pending",
+        automaticContinuation: false,
+      },
+    });
+
+    expect(canResumeAgentWorkspacePublish(held)).toBe(false);
+    expect(getAgentWorkspaceMaintenancePresentation(held)).toMatchObject({
+      title: "Holding — waiting for CI rerun",
+      action: "hold",
+      busy: false,
     });
   });
 

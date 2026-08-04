@@ -157,6 +157,7 @@ repair_string_enum!(AgentWorkspaceRepairOperationStatus {
 repair_string_enum!(AgentWorkspaceRepairOperationHoldReason {
     HealthEvidence => "health_evidence",
     PublishRedrive => "publish_redrive",
+    CiRerunPending => "ci_rerun_pending",
 });
 
 pub const PR_AUTOFIX_PRE_EXISTING_ON_BASE_PENDING_REASON: &str = "pr_autofix_pre_existing_on_base";
@@ -296,6 +297,13 @@ impl AgentWorkspaceRepairAttempt {
                 )
             }) {
                 Some(AgentWorkspaceRepairOperationHoldReason::HealthEvidence)
+            } else if (self.ci_rerun_count > 0 && self.ci_rerun_fingerprint.is_some())
+                || self
+                    .pending_reasons
+                    .iter()
+                    .any(|reason| reason == "pr_autofix_awaiting_ci")
+            {
+                Some(AgentWorkspaceRepairOperationHoldReason::CiRerunPending)
             } else {
                 None
             }
