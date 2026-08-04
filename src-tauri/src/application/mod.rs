@@ -58,6 +58,9 @@ pub(crate) mod agent_workspace_publish_lease;
 #[cfg(test)]
 mod agent_workspace_publish_lease_tests;
 pub mod agent_workspace_publish_recovery;
+pub(crate) mod agent_workspace_base_staleness;
+#[cfg(test)]
+mod agent_workspace_base_staleness_tests;
 pub(crate) mod agent_workspace_ci_rerun;
 pub(crate) mod agent_workspace_publish_repair_state;
 pub mod agent_workspace_review;
