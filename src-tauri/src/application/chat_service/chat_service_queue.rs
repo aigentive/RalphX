@@ -360,7 +360,7 @@ pub(crate) async fn requeue_pending_stdin_turns<R: Runtime>(
             Ok(messages) => messages
                 .into_iter()
                 .filter(|message| message.role == get_assistant_role(&context_type))
-                .last()
+                .next_back()
                 .map(|message| message.created_at),
             Err(error) => {
                 tracing::warn!(
