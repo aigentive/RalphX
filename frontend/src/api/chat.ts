@@ -324,6 +324,10 @@ function normalizeToolCall(raw: unknown, idx = 0): ToolCall {
     name: typeof name === "string" ? name : "unknown",
     arguments: record.arguments ?? record.input ?? {},
   };
+  const blockIndex = getNumberField(record, "block_index", "blockIndex");
+  if (blockIndex != null) {
+    toolCall.blockIndex = blockIndex;
+  }
   if ("result" in record) {
     toolCall.result = record.result;
   }
@@ -376,6 +380,8 @@ export function parseContentBlocks(raw: unknown): ContentBlockItem[] {
       text: block.text,
       durationMs: typeof block.duration_ms === "number" ? block.duration_ms : block.durationMs,
       isSettled: typeof block.is_settled === "boolean" ? block.is_settled : block.isSettled,
+      estimatedTokens: typeof block.estimated_tokens === "number" ? block.estimated_tokens : block.estimatedTokens,
+      reasoningTokens: typeof block.reasoning_tokens === "number" ? block.reasoning_tokens : block.reasoningTokens,
       id: block.id,
       name: block.name,
       arguments: block.arguments ?? block.input,
@@ -1368,6 +1374,9 @@ function transformTimelineItem(
   const conversationId = raw.conversation_id ?? fallbackConversationId ?? null;
   const contentBlocks = parseContentBlocks(raw.content_blocks);
   const toolCall = raw.tool_call ? normalizeToolCall(raw.tool_call) : null;
+  if (toolCall && toolCall.blockIndex == null) {
+    toolCall.blockIndex = raw.block_index;
+  }
   const asMessage: ChatMessageResponse = {
     id: raw.id,
     sessionId: null,

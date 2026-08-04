@@ -1503,6 +1503,7 @@ export function useChatEvents({
       bus.subscribe<{
         text: string; conversation_id: string; block_index?: number; duration_ms?: number;
         is_settled?: boolean; seq?: number; append_to_previous?: boolean; run_id?: string | null;
+        estimated_tokens?: number; reasoning_tokens?: number;
       }>("agent:thinking", (payload) => {
         if (!isRelevant(payload)) return;
         if (activeAgentRunId && payload.run_id && payload.run_id !== activeAgentRunId) return;
@@ -1534,8 +1535,14 @@ export function useChatEvents({
             ...(payload.block_index != null ? { blockIndex: payload.block_index } : {}),
             ...(payload.duration_ms != null ? { durationMs: payload.duration_ms } : {}),
             ...(payload.is_settled != null ? { isSettled: payload.is_settled } : {}),
-            ...(existingThinking?.estimatedTokens != null
-              ? { estimatedTokens: existingThinking.estimatedTokens } : {}),
+            ...(payload.estimated_tokens != null
+              ? { estimatedTokens: payload.estimated_tokens }
+              : existingThinking?.estimatedTokens != null
+                ? { estimatedTokens: existingThinking.estimatedTokens } : {}),
+            ...(payload.reasoning_tokens != null
+              ? { reasoningTokens: payload.reasoning_tokens }
+              : existingThinking?.reasoningTokens != null
+                ? { reasoningTokens: existingThinking.reasoningTokens } : {}),
             ...(payload.seq != null ? { seq: payload.seq } : {}),
           };
           if (at < 0) {

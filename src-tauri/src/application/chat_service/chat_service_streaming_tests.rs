@@ -1,15 +1,15 @@
 use super::{
-    agent_run_usage_from_codex_usage, capture_file_diff_baseline, codex_tool_call_content_block,
-    completion_tool_result_accepted, current_text_block_position, events,
-    flush_content_before_error, flush_streaming_persistence_if_dirty, format_agent_exit_stderr,
-    is_completion_tool_name, is_user_attended_turn_completion,
+    agent_run_usage_from_codex_usage, attach_codex_reasoning_tokens, capture_file_diff_baseline,
+    codex_tool_call_content_block, completion_tool_result_accepted, current_text_block_position,
+    events, flush_content_before_error, flush_streaming_persistence_if_dirty,
+    format_agent_exit_stderr, is_completion_tool_name, is_user_attended_turn_completion,
     normalize_codex_cumulative_usage_for_persistence, normalize_codex_stream_usage_for_persistence,
     persist_assistant_message_snapshot, persist_message_text_timeline_item,
     persist_timeline_snapshot, persist_usage_capture_run_first, process_codex_stream_background,
     process_exit_details, process_stream_background, provider_session_ref_for_harness,
     record_agent_waiting_if_user_attended, resolve_codex_file_change_tool_call_snapshots,
-    stream_mode_for_harness, upsert_codex_tool_call_snapshot, ProcessExitDetails, StreamOutcome,
-    StreamingStateCache,
+    stream_mode_for_harness, tool_call_block_index, upsert_codex_tool_call_snapshot,
+    ProcessExitDetails, StreamOutcome, StreamingStateCache,
 };
 use crate::application::chat_service::chat_service_context::create_assistant_message;
 use crate::application::chat_service::chat_service_errors::{ProviderErrorCategory, StreamError};
@@ -97,6 +97,7 @@ async fn chunk_block_index_matches_persisted_block_index_across_interleaved_bloc
         ContentBlockItem::Thinking {
             text: "reasoning".to_string(),
             duration_ms: Some(12),
+            reasoning_tokens: Some(170),
         },
         ContentBlockItem::Text {
             text: "A".to_string(),
@@ -134,7 +135,10 @@ async fn chunk_block_index_matches_persisted_block_index_across_interleaved_bloc
         .find(|item| item.kind == ChatTimelineItemKind::Thinking)
         .expect("thinking must persist as a timeline item");
     assert_eq!(thinking.text.as_deref(), Some("reasoning"));
-    assert_eq!(thinking.metadata.as_deref(), Some(r#"{"duration_ms":12}"#));
+    assert_eq!(
+        thinking.metadata.as_deref(),
+        Some(r#"{"duration_ms":12,"reasoning_tokens":170}"#)
+    );
 
     assert_eq!(chunk_block_index, persisted_block_index as u64);
     assert_eq!(chunk_block_index, 3);
@@ -214,10 +218,12 @@ async fn persist_timeline_snapshot_skips_whitespace_thinking_blocks_without_remo
         ContentBlockItem::Thinking {
             text: " \n\t ".to_string(),
             duration_ms: None,
+            reasoning_tokens: None,
         },
         ContentBlockItem::Thinking {
             text: "kept reasoning".to_string(),
             duration_ms: Some(12),
+            reasoning_tokens: None,
         },
         ContentBlockItem::Text {
             text: String::new(),
@@ -1405,7 +1411,6 @@ async fn codex_reasoning_persists_as_thinking_without_entering_response_text() {
         .create(pre_assistant)
         .await
         .expect("seed assistant message");
-
     let child = spawn_jsonl_process(&[
         r#"{"type":"event_msg","payload":{"type":"agent_reasoning","text":"Checking git status"}}"#,
         r#"{"type":"event_msg","msg":{"type":"agent_message","message":"Working tree is clean."}}"#,
@@ -1467,6 +1472,17 @@ async fn live_codex_exec_json_reasoning_persists_as_thinking_blocks() {
         .create(pre_assistant)
         .await
         .expect("seed assistant message");
+    let app = mock_builder()
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let emitted = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+    let emitted_for_listener = Arc::clone(&emitted);
+    let _listener = app.listen(events::AGENT_THINKING, move |event| {
+        emitted_for_listener
+            .lock()
+            .expect("thinking event log lock")
+            .push(serde_json::from_str(event.payload()).expect("valid thinking payload"));
+    });
 
     let child = spawn_jsonl_process(&[
         r#"{"type":"thread.started","thread_id":"019fb273-ea3a-7b02-b139-aa5bd7df9a1c"}"#,
@@ -1474,7 +1490,7 @@ async fn live_codex_exec_json_reasoning_persists_as_thinking_blocks() {
         r#"{"type":"item.completed","item":{"id":"item_2","type":"reasoning","text":"**Verifying line counting commands**"}}"#,
         r#"{"type":"item.completed","item":{"id":"item_5","type":"reasoning","text":"**Confirming command verification**"}}"#,
         r#"{"type":"item.completed","item":{"id":"item_6","type":"agent_message","text":"Total lines: 5"}}"#,
-        r#"{"type":"turn.completed","usage":{"input_tokens":53565,"cached_input_tokens":30208,"output_tokens":558}}"#,
+        r#"{"type":"turn.completed","usage":{"input_tokens":53565,"cached_input_tokens":30208,"output_tokens":558,"reasoning_output_tokens":170}}"#,
     ])
     .await;
 
@@ -1483,7 +1499,7 @@ async fn live_codex_exec_json_reasoning_persists_as_thinking_blocks() {
         ChatContextType::Ideation,
         context_id.as_str(),
         &conversation_id,
-        None::<tauri::AppHandle<MockRuntime>>,
+        Some(app.handle().clone()),
         None,
         None,
         Some(state.chat_message_repo.clone()),
@@ -1521,6 +1537,76 @@ async fn live_codex_exec_json_reasoning_persists_as_thinking_blocks() {
         ],
         "both live reasoning items become ordered Thinking blocks"
     );
+    assert!(
+        matches!(
+            outcome.content_blocks.get(1),
+            Some(ContentBlockItem::Thinking {
+                reasoning_tokens: Some(170),
+                ..
+            })
+        ),
+        "turn usage settles the latest reasoning block without reordering the trailing response"
+    );
+    assert!(matches!(
+        outcome.content_blocks.last(),
+        Some(ContentBlockItem::Text { text }) if text == "Total lines: 5"
+    ));
+    let emitted = emitted.lock().expect("thinking event log lock");
+    assert_eq!(emitted.len(), 3);
+    assert_eq!(emitted[2]["text"], "");
+    assert_eq!(emitted[2]["block_index"], 1);
+    assert_eq!(emitted[2]["append_to_previous"], true);
+    assert_eq!(emitted[2]["reasoning_tokens"], 170);
+    assert_eq!(emitted[2]["is_settled"], true);
+}
+
+#[tokio::test]
+async fn codex_stream_does_not_attach_later_turn_usage_to_prior_reasoning() {
+    // `process_codex_stream_background` exits on `turn.completed`, so a second completed
+    // turn cannot reach this loop. A subsequent `turn.started` is the reachable boundary that
+    // must revoke the prior turn's reasoning ownership before the terminal usage arrives.
+    let outcome = run_codex_stream_lines(&[
+        r#"{"type":"thread.started","thread_id":"turn-local-reasoning"}"#,
+        r#"{"type":"turn.started"}"#,
+        r#"{"type":"item.completed","item":{"id":"reasoning-1","type":"reasoning","text":"First turn reasoning"}}"#,
+        r#"{"type":"turn.started"}"#,
+        r#"{"type":"item.completed","item":{"id":"message-2","type":"agent_message","text":"Second turn response"}}"#,
+        r#"{"type":"turn.completed","usage":{"reasoning_output_tokens":50}}"#,
+    ])
+    .await
+    .expect("Codex stream should complete");
+
+    assert_eq!(outcome.response_text, "Second turn response");
+    assert!(matches!(
+        outcome.content_blocks.first(),
+        Some(ContentBlockItem::Thinking {
+            text,
+            reasoning_tokens: None,
+            ..
+        }) if text == "First turn reasoning"
+    ));
+}
+
+#[tokio::test]
+async fn codex_stream_does_not_label_a_thinking_block_with_session_total_usage() {
+    let outcome = run_codex_stream_lines(&[
+        r#"{"type":"thread.started","thread_id":"session-total-reasoning"}"#,
+        r#"{"type":"turn.started"}"#,
+        r#"{"type":"item.completed","item":{"id":"reasoning-1","type":"reasoning","text":"Turn reasoning"}}"#,
+        r#"{"type":"item.completed","item":{"id":"message-1","type":"agent_message","text":"Turn response"}}"#,
+        r#"{"type":"turn.completed","usage":{"total_token_usage":{"reasoning_output_tokens":1169}}}"#,
+    ])
+    .await
+    .expect("Codex stream should complete");
+
+    assert!(matches!(
+        outcome.content_blocks.first(),
+        Some(ContentBlockItem::Thinking {
+            text,
+            reasoning_tokens: None,
+            ..
+        }) if text == "Turn reasoning"
+    ));
 }
 
 #[tokio::test]
@@ -2234,6 +2320,7 @@ fn agent_run_usage_from_codex_usage_maps_cached_input_as_cache_read() {
         input_tokens: Some(50),
         cached_input_tokens: Some(40),
         output_tokens: Some(10),
+        reasoning_output_tokens: Some(7),
     });
 
     assert_eq!(usage.input_tokens, Some(50));
@@ -2828,7 +2915,7 @@ fn upsert_codex_tool_call_snapshot_updates_existing_tool_call_in_place() {
     }];
     let mut content_blocks = vec![codex_tool_call_content_block(&tool_calls[0])];
 
-    upsert_codex_tool_call_snapshot(
+    let block_index = upsert_codex_tool_call_snapshot(
         &mut tool_calls,
         &mut content_blocks,
         ToolCall {
@@ -2845,6 +2932,8 @@ fn upsert_codex_tool_call_snapshot_updates_existing_tool_call_in_place() {
             stats: None,
         },
     );
+
+    assert_eq!(block_index, 0);
 
     assert_eq!(tool_calls.len(), 1);
     assert_eq!(tool_calls[0].id.as_deref(), Some("item_1"));
@@ -2884,7 +2973,7 @@ fn upsert_codex_tool_call_snapshot_appends_new_tool_ids_in_order() {
     let mut tool_calls = Vec::new();
     let mut content_blocks = Vec::new();
 
-    upsert_codex_tool_call_snapshot(
+    let first_block_index = upsert_codex_tool_call_snapshot(
         &mut tool_calls,
         &mut content_blocks,
         ToolCall {
@@ -2897,7 +2986,7 @@ fn upsert_codex_tool_call_snapshot_appends_new_tool_ids_in_order() {
             stats: None,
         },
     );
-    upsert_codex_tool_call_snapshot(
+    let second_block_index = upsert_codex_tool_call_snapshot(
         &mut tool_calls,
         &mut content_blocks,
         ToolCall {
@@ -2911,10 +3000,67 @@ fn upsert_codex_tool_call_snapshot_appends_new_tool_ids_in_order() {
         },
     );
 
+    assert_eq!(first_block_index, 0);
+    assert_eq!(second_block_index, 1);
     assert_eq!(tool_calls.len(), 2);
     assert_eq!(tool_calls[0].id.as_deref(), Some("item_1"));
     assert_eq!(tool_calls[1].id.as_deref(), Some("item_2"));
     assert_eq!(content_blocks.len(), 2);
+}
+
+#[test]
+fn tool_call_block_index_uses_the_persisted_interleaved_position() {
+    let tool_call = ToolCall {
+        id: Some("tool-2".to_string()),
+        name: "bash".to_string(),
+        arguments: serde_json::json!({ "command": "pwd" }),
+        result: None,
+        parent_tool_use_id: None,
+        diff_context: None,
+        stats: None,
+    };
+    let content_blocks = vec![
+        ContentBlockItem::Text {
+            text: "before".to_string(),
+        },
+        ContentBlockItem::ToolUse {
+            id: Some("tool-1".to_string()),
+            name: "read".to_string(),
+            arguments: serde_json::json!({ "path": "README.md" }),
+            result: None,
+            parent_tool_use_id: None,
+            diff_context: None,
+        },
+        ContentBlockItem::Thinking {
+            text: "checking command".to_string(),
+            duration_ms: None,
+            reasoning_tokens: None,
+        },
+        codex_tool_call_content_block(&tool_call),
+    ];
+
+    assert_eq!(tool_call_block_index(&content_blocks, &tool_call), Some(3));
+}
+
+#[test]
+fn attach_codex_reasoning_tokens_does_not_reuse_an_older_turn_block() {
+    let mut content_blocks = vec![ContentBlockItem::Thinking {
+        text: "older turn".to_string(),
+        duration_ms: None,
+        reasoning_tokens: Some(100),
+    }];
+
+    assert_eq!(
+        attach_codex_reasoning_tokens(&mut content_blocks, None, 50),
+        None
+    );
+    assert!(matches!(
+        content_blocks.as_slice(),
+        [ContentBlockItem::Thinking {
+            reasoning_tokens: Some(100),
+            ..
+        }]
+    ));
 }
 
 #[test]

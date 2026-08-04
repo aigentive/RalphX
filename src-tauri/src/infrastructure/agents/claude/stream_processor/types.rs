@@ -242,6 +242,9 @@ pub enum ContentBlockItem {
         text: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         duration_ms: Option<u64>,
+        /// Provider-reported reasoning-token total when a harness exposes it.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reasoning_tokens: Option<u64>,
     },
     #[serde(rename = "tool_use")]
     ToolUse {

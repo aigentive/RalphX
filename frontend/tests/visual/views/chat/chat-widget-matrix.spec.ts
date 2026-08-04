@@ -28,12 +28,16 @@ test.describe("shared chat activity presentation", () => {
     });
   });
 
-  test("renders a collapsed then expanded thinking viewer", async ({ page }) => {
+  test("renders thinking expanded by default and preserves manual toggling", async ({ page }) => {
     await openChatActivityPage(page, { theme: "dark", width: 760 });
     const fixture = page.getByTestId("chat-activity-claude");
     const toggle = fixture.getByTestId("thinking-group-toggle");
-    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
     await expect(toggle).toHaveText("Agent thought for 2s");
+    await expect(fixture.getByTestId("thinking-scroll-body")).toBeVisible();
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect(fixture.getByTestId("thinking-scroll-body")).toHaveCount(0);
     await toggle.click();
     await expect(toggle).toHaveAttribute("aria-expanded", "true");
     await expect(fixture.getByTestId("thinking-scroll-body")).toBeVisible();

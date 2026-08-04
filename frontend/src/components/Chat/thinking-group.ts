@@ -2,6 +2,7 @@ export interface ThinkingSegmentLifecycle {
   isSettled?: boolean | undefined;
   durationMs?: number | undefined;
   estimatedTokens?: number | undefined;
+  reasoningTokens?: number | undefined;
 }
 
 export interface ThinkingGroupAggregate {
@@ -9,6 +10,7 @@ export interface ThinkingGroupAggregate {
   segmentCount: number;
   totalDurationMs?: number | undefined;
   estimatedTokens?: number | undefined;
+  reasoningTokens?: number | undefined;
 }
 
 export function aggregateThinkingSegments(
@@ -20,6 +22,7 @@ export function aggregateThinkingSegments(
     .map((segment) => segment.durationMs)
     .filter((duration): duration is number => duration != null);
   const latestTokenSegment = [...segments].reverse().find((segment) => segment.estimatedTokens != null);
+  const latestReasoningTokenSegment = [...segments].reverse().find((segment) => segment.reasoningTokens != null);
 
   return {
     isSettled,
@@ -27,6 +30,9 @@ export function aggregateThinkingSegments(
     ...(durations.length > 0 ? { totalDurationMs: durations.reduce((total, duration) => total + duration, 0) } : {}),
     ...(!isSettled && latestTokenSegment?.estimatedTokens != null
       ? { estimatedTokens: latestTokenSegment.estimatedTokens }
+      : {}),
+    ...(isSettled && latestReasoningTokenSegment?.reasoningTokens != null
+      ? { reasoningTokens: latestReasoningTokenSegment.reasoningTokens }
       : {}),
   };
 }

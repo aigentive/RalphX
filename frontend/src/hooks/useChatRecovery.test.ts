@@ -46,7 +46,15 @@ vi.mock("@/types/status", () => ({
 }));
 
 vi.mock("@/api/chat", () => ({
-  parseToolCalls: (raw: unknown) => Array.isArray(raw) ? raw : [],
+  parseToolCalls: (raw: unknown) => Array.isArray(raw)
+    ? raw.map((toolCall) => {
+        if (toolCall == null || typeof toolCall !== "object") return toolCall;
+        const record = toolCall as Record<string, unknown>;
+        return typeof record.block_index === "number"
+          ? { ...record, blockIndex: record.block_index }
+          : record;
+      })
+    : [],
   chatApi: {
     isAgentRunning: vi.fn(),
     getConversationActiveState: vi.fn(),
@@ -67,6 +75,7 @@ import {
   useEnvironmentStore,
 } from "@/stores/environmentStore";
 import { projectPersistedStreamingContentBlocks } from "./chat-transcript/projection";
+import { buildLiveTranscriptRows } from "@/components/Chat/ChatMessageList.liveRows";
 
 const mockIsAgentRunning = vi.mocked(chatApi.isAgentRunning);
 const mockGetConversationActiveState = vi.mocked(chatApi.getConversationActiveState);
@@ -322,6 +331,31 @@ describe("useChatRecovery", () => {
       expect(reconciled.filter((block) => block.type === "thinking")).toHaveLength(1);
       expect(reconciled).toEqual([
         { type: "thinking", text: "Reconsidering the recovery path", blockIndex: 2 },
+      ]);
+    });
+
+    it("keeps cache-only thinking groups separated by an indexed recovered tool call", async () => {
+      const setStreamingContentBlocks = vi.fn();
+      mockGetConversationActiveState.mockResolvedValueOnce({
+        is_active: true,
+        tool_calls: [{ id: "tool-between", name: "Read", arguments: {}, block_index: 1 }],
+        streaming_tasks: [],
+        partial_text: "",
+        partial_thinking_segments: ["Before", "", "After"],
+      });
+
+      renderHook(() => useChatRecovery(makeProps({ setStreamingContentBlocks })));
+      await act(async () => {});
+
+      const updater = setStreamingContentBlocks.mock.calls[0][0] as (
+        prev: StreamingContentBlock[],
+      ) => StreamingContentBlock[];
+      const reconciled = updater([]);
+      expect(reconciled.map((block) => block.type)).toEqual([
+        "thinking", "tool_use", "thinking",
+      ]);
+      expect(buildLiveTranscriptRows(reconciled, new Map()).map((row) => row.kind)).toEqual([
+        "thinking_group", "tool_group", "thinking_group",
       ]);
     });
 

@@ -1976,6 +1976,9 @@ pub struct ActiveToolCall {
     pub id: String,
     /// Tool name (e.g., "bash", "read", "edit")
     pub name: String,
+    /// Authoritative logical content-block position for recovered active-state ordering.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub block_index: Option<u64>,
     /// Current arguments (may be partial during streaming)
     pub arguments: serde_json::Value,
     /// Result if completed
@@ -1994,6 +1997,7 @@ impl From<crate::application::chat_service::CachedToolCall> for ActiveToolCall {
         Self {
             id: cached.id,
             name: cached.name,
+            block_index: cached.block_index,
             arguments: cached.arguments,
             result: cached.result,
             diff_context: cached.diff_context,
