@@ -39,13 +39,13 @@ import {
   listAgentConversationWorkspacesByProject,
   listAgentSidebarConversations,
   updateAgentConversationWorkspaceFromBase,
+  recheckAgentConversationWorkspacePrHealth,
+  retryAgentConversationWorkspacePrAutofixOverride,
+  stopAgentConversationWorkspacePrAutofixForFailure,
   commitAgentConversationWorkspaceLocally,
   precomputeAgentConversationWorkspacePrDescription,
   setAgentConversationWorkspaceAutoPublish,
   setAgentConversationWorkspacePrSupervision,
-  recheckAgentConversationWorkspacePrHealth,
-  retryAgentConversationWorkspacePrAutofixOverride,
-  stopAgentConversationWorkspacePrAutofixForFailure,
   startAgentConversation,
   startAgentConversationInvokeInput,
   transformStartAgentConversationResponse,
@@ -68,7 +68,6 @@ import {
   chatApi,
   getConversationActiveState,
   getChildSessionStatus,
-  AgentWorkspaceMaintenanceOperationResponseSchema,
   AgentConversationWorkspaceResponseSchema,
 } from "./chat";
 import type { ConversationActiveStateResponse } from "./chat";
@@ -1646,6 +1645,7 @@ describe("chat api", () => {
           source: "base_update",
           stage: "repairing",
           status: "active",
+          hold_reason: null,
           summary: "Resolving the base conflict",
           blocker: null,
           automatic_continuation: true,
@@ -1686,6 +1686,7 @@ describe("chat api", () => {
         generation: 2,
         stage: "repairing",
         status: "active",
+        holdReason: null,
         automaticContinuation: true,
       },
       prAutofixFingerprintSpend: {
@@ -1704,18 +1705,18 @@ describe("chat api", () => {
     ).toBeNull();
   });
 
-  it("parses and transforms held maintenance operations", async () => {
-    mockInvoke.mockResolvedValue([
+  it("transforms a typed repair hold reason", async () => {
+    mockInvoke.mockResolvedValueOnce([
       {
         ...planSeedWorkspaceResponse(),
         maintenance_operation: {
           operation_id: "maintenance-held",
           generation: 3,
           source: "pr_autofix",
-          stage: "held",
-          status: "held",
-          hold_reason: "pr_autofix_unchanged_health",
-          summary: "The same check is still failing.",
+          stage: "ready",
+          status: "ready",
+          hold_reason: "health_evidence",
+          summary: "RalphX is holding the repair on identical CI evidence.",
           blocker: null,
           automatic_continuation: false,
           started_at: "2026-01-24T10:00:00Z",
@@ -1724,37 +1725,12 @@ describe("chat api", () => {
       },
     ]);
 
-    await expect(listAgentConversationWorkspacesByProject("project-1")).resolves.toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          maintenanceOperation: expect.objectContaining({
-            stage: "held",
-            status: "held",
-            holdReason: "pr_autofix_unchanged_health",
-          }),
-        }),
-      ]),
-    );
+    const result = await listAgentConversationWorkspacesByProject("project-1");
+
+    expect(result[0]?.maintenanceOperation?.holdReason).toBe("health_evidence");
   });
 
-  it("keeps a missing hold reason compatible with older backend payloads", () => {
-    expect(
-      AgentWorkspaceMaintenanceOperationResponseSchema.parse({
-        operation_id: "maintenance-1",
-        generation: 1,
-        source: "base_update",
-        stage: "ready",
-        status: "ready",
-        summary: null,
-        blocker: null,
-        automatic_continuation: false,
-        started_at: "2026-01-24T10:00:00Z",
-        updated_at: "2026-01-24T10:01:00Z",
-      }).hold_reason,
-    ).toBeNull();
-  });
-
-  it("sends the exact held repair version for retry and stop actions", async () => {
+  it("sends the current repair version for hold actions", async () => {
     const input = {
       attemptId: "repair-attempt-1",
       generation: 2,

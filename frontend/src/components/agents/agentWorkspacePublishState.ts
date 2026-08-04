@@ -12,6 +12,8 @@ const AGENT_WORKSPACE_ACTIVE_PUBLISH_STATUSES = new Set([
   "refreshing",
   "describing",
   "pushing",
+  "redrive_pending",
+  "redrive_delivering",
 ]);
 
 export type AgentWorkspacePublishTerminalEvent = {
@@ -160,13 +162,9 @@ export type AgentWorkspaceHoldPresentation = {
   waitingOn: string;
 };
 
-const HOLD_SUMMARIES: Record<string, string> = {
-  pr_autofix_unchanged_health:
-    "The fixer ran but changed nothing, and GitHub still reports the same failing check. RalphX won't spend another generation until this PR's health changes.",
-  pr_autofix_ci_rerun_pending:
-    "RalphX asked GitHub to re-run the failed jobs and is waiting for the result.",
-  pr_autofix_pre_existing_on_base:
-    "This failure already exists on the base branch, so fixing it here wouldn't help.",
+const HOLD_SUMMARIES = {
+  health_evidence:
+    "RalphX is waiting for new PR health evidence before spending another repair generation.",
 };
 
 export function getAgentWorkspacePrAutofixFingerprintSpendPresentation(
@@ -192,7 +190,10 @@ export function getAgentWorkspaceHoldPresentation(
   workspace: AgentConversationWorkspace | null | undefined,
 ): AgentWorkspaceHoldPresentation | null {
   const operation = getAgentWorkspaceMaintenanceOperation(workspace);
-  if (operation?.stage !== "held") {
+  if (
+    operation?.stage !== "ready" ||
+    operation.holdReason !== "health_evidence"
+  ) {
     return null;
   }
   const holdSummary = operation.holdReason
@@ -239,7 +240,8 @@ export function canResumeAgentWorkspacePublish(
   return Boolean(
     !getAgentWorkspaceTerminalPublicationStatus(workspace ?? null) &&
       operation?.status === "ready" &&
-      operation.stage === "ready",
+      operation.stage === "ready" &&
+      operation.holdReason == null,
   );
 }
 
@@ -260,17 +262,6 @@ export function getAgentWorkspaceMaintenancePresentation(
       : null;
   const summary = operation.blocker ?? operation.summary ?? "RalphX is continuing this workspace operation.";
   switch (operation.stage) {
-    case "held": {
-      const holdPresentation = getAgentWorkspaceHoldPresentation(workspace);
-      return {
-        title: "Repair paused — waiting for new CI evidence",
-        summary: holdPresentation?.waitingOn ?? summary,
-        tone: "warning",
-        busy: false,
-        action: "hold",
-        automaticContinuation: null,
-      };
-    }
     case "updating_base":
       return {
         title: "Updating base",
@@ -317,6 +308,27 @@ export function getAgentWorkspaceMaintenancePresentation(
         automaticContinuation,
       };
     case "ready":
+      if (operation.holdReason === "publish_redrive") {
+        return {
+          title: "Pushing rebased branch…",
+          summary,
+          tone: "neutral",
+          busy: true,
+          action: "none",
+          automaticContinuation: "RalphX is resuming publication automatically.",
+        };
+      }
+      if (operation.holdReason === "health_evidence") {
+        return {
+          title: "Holding — waiting for new CI evidence",
+          summary,
+          tone: "warning",
+          busy: false,
+          action: "none",
+          automaticContinuation:
+            "RalphX will continue when the PR evidence changes.",
+        };
+      }
       return {
         title: "Base updated — ready to publish",
         summary,

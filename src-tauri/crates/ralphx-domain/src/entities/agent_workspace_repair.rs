@@ -14,7 +14,7 @@ macro_rules! repair_string_enum {
         pub enum $name { $($variant),+ }
 
         impl $name {
-            pub const fn as_str(self) -> &'static str {
+            pub fn as_str(self) -> &'static str {
                 match self { $(Self::$variant => $wire),+ }
             }
         }
@@ -146,21 +146,22 @@ repair_string_enum!(AgentWorkspaceRepairOperationStage {
     Publishing => "publishing",
     Ready => "ready",
     Blocked => "blocked",
-    Held => "held",
 });
 
 repair_string_enum!(AgentWorkspaceRepairOperationStatus {
     Active => "active",
     Ready => "ready",
     Blocked => "blocked",
-    Held => "held",
 });
 
-repair_string_enum!(AgentWorkspaceRepairHoldReason {
-    UnchangedHealth => "pr_autofix_unchanged_health",
-    PreExistingOnBase => "pr_autofix_pre_existing_on_base",
-    CiRerunPending => "pr_autofix_ci_rerun_pending",
+repair_string_enum!(AgentWorkspaceRepairOperationHoldReason {
+    HealthEvidence => "health_evidence",
+    PublishRedrive => "publish_redrive",
 });
+
+pub const PR_AUTOFIX_PRE_EXISTING_ON_BASE_PENDING_REASON: &str = "pr_autofix_pre_existing_on_base";
+pub const PR_AUTOFIX_UNCHANGED_HEALTH_PENDING_REASON: &str = "pr_autofix_unchanged_health";
+pub const PR_AUTOFIX_HEAD_REDRIVE_PENDING_REASON_PREFIX: &str = "pr_autofix_head_redrive:";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentWorkspaceRepairAttempt {
@@ -257,52 +258,49 @@ impl AgentWorkspaceRepairAttempt {
     }
 
     pub fn operation_snapshot(&self) -> AgentWorkspaceRepairOperationSnapshot {
-        let hold_reason = if self.phase == AgentWorkspaceRepairPhase::Ready {
-            self.pending_reasons
+        let stage = match self.phase {
+            AgentWorkspaceRepairPhase::Requested | AgentWorkspaceRepairPhase::Dispatching => {
+                AgentWorkspaceRepairOperationStage::UpdatingBase
+            }
+            AgentWorkspaceRepairPhase::Repairing => AgentWorkspaceRepairOperationStage::Repairing,
+            AgentWorkspaceRepairPhase::Validating => AgentWorkspaceRepairOperationStage::Validating,
+            AgentWorkspaceRepairPhase::AwaitingReview => {
+                AgentWorkspaceRepairOperationStage::Reviewing
+            }
+            AgentWorkspaceRepairPhase::ContinuationPending
+            | AgentWorkspaceRepairPhase::Continuing => {
+                AgentWorkspaceRepairOperationStage::Publishing
+            }
+            AgentWorkspaceRepairPhase::Ready => AgentWorkspaceRepairOperationStage::Ready,
+            AgentWorkspaceRepairPhase::Blocked => AgentWorkspaceRepairOperationStage::Blocked,
+        };
+        let status = match self.phase {
+            AgentWorkspaceRepairPhase::Ready => AgentWorkspaceRepairOperationStatus::Ready,
+            AgentWorkspaceRepairPhase::Blocked => AgentWorkspaceRepairOperationStatus::Blocked,
+            _ => AgentWorkspaceRepairOperationStatus::Active,
+        };
+        let hold_reason = if self.phase == AgentWorkspaceRepairPhase::Ready
+            && self.source == AgentWorkspaceRepairSource::PrAutofix
+        {
+            if self
+                .pending_reasons
                 .iter()
-                .find_map(|reason| AgentWorkspaceRepairHoldReason::from_str(reason).ok())
-                .or(
-                    if self.ci_rerun_count > 0 && self.ci_rerun_fingerprint.is_some() {
-                        Some(AgentWorkspaceRepairHoldReason::CiRerunPending)
-                    } else {
-                        None
-                    },
+                .any(|reason| reason.starts_with(PR_AUTOFIX_HEAD_REDRIVE_PENDING_REASON_PREFIX))
+            {
+                Some(AgentWorkspaceRepairOperationHoldReason::PublishRedrive)
+            } else if self.pending_reasons.iter().any(|reason| {
+                matches!(
+                    reason.as_str(),
+                    PR_AUTOFIX_PRE_EXISTING_ON_BASE_PENDING_REASON
+                        | PR_AUTOFIX_UNCHANGED_HEALTH_PENDING_REASON
                 )
+            }) {
+                Some(AgentWorkspaceRepairOperationHoldReason::HealthEvidence)
+            } else {
+                None
+            }
         } else {
             None
-        };
-        let stage = if hold_reason.is_some() {
-            AgentWorkspaceRepairOperationStage::Held
-        } else {
-            match self.phase {
-                AgentWorkspaceRepairPhase::Requested | AgentWorkspaceRepairPhase::Dispatching => {
-                    AgentWorkspaceRepairOperationStage::UpdatingBase
-                }
-                AgentWorkspaceRepairPhase::Repairing => {
-                    AgentWorkspaceRepairOperationStage::Repairing
-                }
-                AgentWorkspaceRepairPhase::Validating => {
-                    AgentWorkspaceRepairOperationStage::Validating
-                }
-                AgentWorkspaceRepairPhase::AwaitingReview => {
-                    AgentWorkspaceRepairOperationStage::Reviewing
-                }
-                AgentWorkspaceRepairPhase::ContinuationPending
-                | AgentWorkspaceRepairPhase::Continuing => {
-                    AgentWorkspaceRepairOperationStage::Publishing
-                }
-                AgentWorkspaceRepairPhase::Ready => AgentWorkspaceRepairOperationStage::Ready,
-                AgentWorkspaceRepairPhase::Blocked => AgentWorkspaceRepairOperationStage::Blocked,
-            }
-        };
-        let status = if hold_reason.is_some() {
-            AgentWorkspaceRepairOperationStatus::Held
-        } else {
-            match self.phase {
-                AgentWorkspaceRepairPhase::Ready => AgentWorkspaceRepairOperationStatus::Ready,
-                AgentWorkspaceRepairPhase::Blocked => AgentWorkspaceRepairOperationStatus::Blocked,
-                _ => AgentWorkspaceRepairOperationStatus::Active,
-            }
         };
 
         AgentWorkspaceRepairOperationSnapshot {
@@ -396,7 +394,8 @@ pub struct AgentWorkspaceRepairOperationSnapshot {
     pub source: AgentWorkspaceRepairSource,
     pub stage: AgentWorkspaceRepairOperationStage,
     pub status: AgentWorkspaceRepairOperationStatus,
-    pub hold_reason: Option<AgentWorkspaceRepairHoldReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold_reason: Option<AgentWorkspaceRepairOperationHoldReason>,
     pub summary: Option<String>,
     pub blocker: Option<String>,
     pub automatic_continuation: bool,

@@ -988,9 +988,9 @@ describe("AgentsView publish", () => {
           operationId: "maintenance-held",
           generation: 2,
           source: "pr_autofix",
-          stage: "held",
-          status: "held",
-          holdReason: "pr_autofix_unchanged_health",
+          stage: "ready",
+          status: "ready",
+          holdReason: "health_evidence",
           summary: "The fixer made no changes.",
           blocker: null,
           automaticContinuation: false,
@@ -1010,10 +1010,10 @@ describe("AgentsView publish", () => {
     const actionbar = await openPublishPane();
     const card = await screen.findByTestId("agents-publish-hold-card");
     expect(card).toHaveTextContent("Nothing is running");
-    expect(within(actionbar).getByRole("button", { name: "Re-check PR health" })).toBeEnabled();
+    expect(within(card).getByRole("button", { name: "Re-check PR health" })).toBeEnabled();
     expect(within(actionbar).queryByTestId("agents-publish-change-facts")).not.toBeInTheDocument();
 
-    fireEvent.click(within(actionbar).getByRole("button", { name: "Re-check PR health" }));
+    fireEvent.click(within(card).getByRole("button", { name: "Re-check PR health" }));
     await waitFor(() =>
       expect(recheckAgentConversationWorkspacePrHealthMock).toHaveBeenCalledWith(
         "conversation-1",

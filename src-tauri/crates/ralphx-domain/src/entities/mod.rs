@@ -142,9 +142,9 @@ pub use agent_workspace_repair::{
     AgentWorkspaceRepairAttempt, AgentWorkspaceRepairAttemptId,
     AgentWorkspaceRepairCompletionAuthority, AgentWorkspaceRepairContinuation,
     AgentWorkspaceRepairEffect, AgentWorkspaceRepairEffectId, AgentWorkspaceRepairEffectKind,
-    AgentWorkspaceRepairEffectStatus, AgentWorkspaceRepairHoldReason,
-    AgentWorkspaceRepairOperationSnapshot,
-    AgentWorkspaceRepairOperationStage, AgentWorkspaceRepairOperationStatus,
+    AgentWorkspaceRepairEffectStatus, AgentWorkspaceRepairOperationSnapshot,
+    AgentWorkspaceRepairOperationHoldReason, AgentWorkspaceRepairOperationStage,
+    AgentWorkspaceRepairOperationStatus,
     AgentWorkspaceRepairOutcome, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
 };
 pub use agent_workspace_pr_metadata::AgentWorkspacePrMetadataDecision;

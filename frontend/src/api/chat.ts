@@ -2095,13 +2095,14 @@ export type AgentWorkspaceMaintenanceOperationStage =
   | "reviewing"
   | "publishing"
   | "ready"
-  | "held"
   | "blocked";
 export type AgentWorkspaceMaintenanceOperationStatus =
   | "active"
   | "ready"
-  | "held"
   | "blocked";
+export type AgentWorkspaceMaintenanceOperationHoldReason =
+  | "health_evidence"
+  | "publish_redrive";
 
 export interface AgentWorkspaceMaintenanceOperation {
   operationId: string;
@@ -2109,11 +2110,17 @@ export interface AgentWorkspaceMaintenanceOperation {
   source: AgentWorkspaceMaintenanceOperationSource;
   stage: AgentWorkspaceMaintenanceOperationStage;
   status: AgentWorkspaceMaintenanceOperationStatus;
-  holdReason?: string | null;
+  holdReason?: AgentWorkspaceMaintenanceOperationHoldReason | null;
   summary: string | null;
   blocker: string | null;
   automaticContinuation: boolean;
   startedAt: string;
+  updatedAt: string;
+}
+
+export interface AgentWorkspaceRepairHoldActionInput {
+  attemptId: string;
+  generation: number;
   updatedAt: string;
 }
 
@@ -2122,12 +2129,6 @@ export interface AgentWorkspacePrAutofixFingerprintSpend {
   minutes: number;
   budgetMinutes: number;
   isExhausted: boolean;
-}
-
-export interface AgentWorkspaceRepairHoldActionInput {
-  attemptId: string;
-  generation: number;
-  updatedAt: string;
 }
 
 export interface AgentConversationWorkspace {
@@ -2693,11 +2694,14 @@ export const AgentWorkspaceMaintenanceOperationResponseSchema = z.object({
     "reviewing",
     "publishing",
     "ready",
-    "held",
     "blocked",
   ]),
-  status: z.enum(["active", "ready", "held", "blocked"]),
-  hold_reason: z.string().nullable().optional().default(null),
+  status: z.enum(["active", "ready", "blocked"]),
+  hold_reason: z
+    .enum(["health_evidence", "publish_redrive"])
+    .nullable()
+    .optional()
+    .default(null),
   summary: z.string().nullable(),
   blocker: z.string().nullable(),
   automatic_continuation: z.boolean(),
