@@ -339,6 +339,13 @@ pub async fn get_remote_execution_resume_request(
     request_id: String,
     state: State<'_, AppState>,
 ) -> Result<RemoteResumeRequestView, String> {
+    get_remote_execution_resume_request_for_state(&state, request_id).await
+}
+
+pub async fn get_remote_execution_resume_request_for_state(
+    state: &AppState,
+    request_id: String,
+) -> Result<RemoteResumeRequestView, String> {
     let row = state
         .remote_execution_resume_request_repo
         .get(&request_id)
@@ -359,6 +366,13 @@ pub async fn get_remote_execution_resume_request(
 pub async fn get_remote_task_action_request(
     request_id: String,
     state: State<'_, AppState>,
+) -> Result<RemoteResumeRequestView, String> {
+    get_remote_task_action_request_for_state(&state, request_id).await
+}
+
+pub async fn get_remote_task_action_request_for_state(
+    state: &AppState,
+    request_id: String,
 ) -> Result<RemoteResumeRequestView, String> {
     let row = state
         .remote_task_action_request_repo

@@ -1375,7 +1375,7 @@ pub(crate) async fn dispatch_one_remote_execution_resume(
         return Ok(());
     };
     if let Some(project_id) = &row.project_id {
-        if !matches!(state.project_repo.get_by_id(project_id).await, Ok(Some(_))) {
+        if state.project_repo.get_by_id(project_id).await?.is_none() {
             state
                 .remote_execution_resume_request_repo
                 .fail(
@@ -1427,48 +1427,10 @@ pub(crate) async fn dispatch_one_remote_task_action(
     execution: &Arc<ExecutionState>,
     app: &tauri::AppHandle,
 ) -> AppResult<()> {
-    use crate::domain::entities::{InternalStatus, RemoteTaskAction};
-    let Some(row) = state
-        .remote_task_action_request_repo
-        .claim_pending(chrono::Utc::now())
-        .await?
-    else {
+    use crate::domain::entities::RemoteTaskAction;
+    let Some(row) = claim_and_revalidate_remote_task_action(state).await? else {
         return Ok(());
     };
-    let valid = match row.action {
-        RemoteTaskAction::Resume => match &row.task_id {
-            Some(id) => {
-                matches!(state.task_repo.get_by_id(id).await,Ok(Some(task)) if task.internal_status==InternalStatus::Paused)
-            }
-            None => false,
-        },
-        RemoteTaskAction::Restart => match &row.task_id {
-            Some(id) => {
-                matches!(state.task_repo.get_by_id(id).await,Ok(Some(task)) if matches!(task.internal_status,InternalStatus::Stopped|InternalStatus::Failed))
-            }
-            None => false,
-        },
-        RemoteTaskAction::GroupResume => {
-            matches!(
-                state.project_repo.get_by_id(&row.project_id).await,
-                Ok(Some(_))
-            ) && matches!(
-                row.group_kind.as_deref(),
-                Some("status" | "session" | "uncategorized")
-            )
-        }
-    };
-    if !valid {
-        state
-            .remote_task_action_request_repo
-            .fail(
-                &row.id,
-                crate::commands::remote_resume_commands::REMOTE_RESUME_AUTHORITY_CHANGED,
-                chrono::Utc::now(),
-            )
-            .await?;
-        return Ok(());
-    }
     let result = match row.action {
         RemoteTaskAction::Resume => crate::commands::task_commands::resume_task_for_state(
             row.task_id.expect("validated task id").as_str().to_string(),
@@ -1520,6 +1482,61 @@ pub(crate) async fn dispatch_one_remote_task_action(
         }
     }
     Ok(())
+}
+
+pub(crate) async fn claim_and_revalidate_remote_task_action(
+    state: &AppState,
+) -> AppResult<Option<crate::domain::entities::RemoteTaskActionRequest>> {
+    use crate::domain::entities::{InternalStatus, RemoteTaskAction};
+    let Some(row) = state
+        .remote_task_action_request_repo
+        .claim_pending(chrono::Utc::now())
+        .await?
+    else {
+        return Ok(None);
+    };
+    let valid = match row.action {
+        RemoteTaskAction::Resume => match &row.task_id {
+            Some(id) => state
+                .task_repo
+                .get_by_id(id)
+                .await?
+                .is_some_and(|task| task.internal_status == InternalStatus::Paused),
+            None => false,
+        },
+        RemoteTaskAction::Restart => match &row.task_id {
+            Some(id) => state.task_repo.get_by_id(id).await?.is_some_and(|task| {
+                matches!(
+                    task.internal_status,
+                    InternalStatus::Stopped | InternalStatus::Failed
+                )
+            }),
+            None => false,
+        },
+        RemoteTaskAction::GroupResume => {
+            state
+                .project_repo
+                .get_by_id(&row.project_id)
+                .await?
+                .is_some()
+                && matches!(
+                    row.group_kind.as_deref(),
+                    Some("status" | "session" | "uncategorized")
+                )
+        }
+    };
+    if !valid {
+        state
+            .remote_task_action_request_repo
+            .fail(
+                &row.id,
+                crate::commands::remote_resume_commands::REMOTE_RESUME_AUTHORITY_CHANGED,
+                chrono::Utc::now(),
+            )
+            .await?;
+        return Ok(None);
+    }
+    Ok(Some(row))
 }
 
 /// Longer than the stop lease because a switch can legitimately take a while: preparing a
