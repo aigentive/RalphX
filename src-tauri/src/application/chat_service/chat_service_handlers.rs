@@ -1606,8 +1606,8 @@ pub(super) async fn handle_stream_success<R: Runtime>(
     )
     .with_completion_event_delivery(external_events_repo, webhook_publisher);
 
-    disarm_armed_delegation_park_after_terminal_parent(app_handle, agent_run_id, "stream_success")
-        .await;
+    // Successful turn completion is the steady state for a parked coordinator. Keep any
+    // armed park so a later delegate settlement can resume the parent conversation.
 
     // Handle task state transition (only for TaskExecution)
     if context_type == ChatContextType::TaskExecution {
@@ -2569,6 +2569,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
             task_repo,
         )
         .await;
+        // This path has neither a completed turn nor a successor launched by this handler, so
+        // the parent turn was abandoned and must not be resumed by a later delegate wake.
         disarm_armed_delegation_park_after_terminal_parent(
             app_handle,
             agent_run_id,
@@ -3039,12 +3041,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                     let _ = agent_run_repo
                         .complete(&AgentRunId::from_string(agent_run_id))
                         .await;
-                    disarm_armed_delegation_park_after_terminal_parent(
-                        app_handle,
-                        agent_run_id,
-                        "validated_error_completion",
-                    )
-                    .await;
+                    // This diagnostic was converted into a proven completion. Preserve any
+                    // armed park just as the ordinary stream-success path does.
                     let (existing_content, existing_tool_calls, existing_content_blocks) =
                         read_existing_message_content(chat_message_repo, pre_assistant_msg_id)
                             .await;
@@ -3087,6 +3085,9 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
     let _ = agent_run_repo
         .fail(&AgentRunId::from_string(agent_run_id), &redacted_error)
         .await;
+    // Recovery and continuation paths return before this point. Reaching the generic failure
+    // finalizer means no successor run exists, so a later delegate wake must not resume the
+    // failed parent turn.
     disarm_armed_delegation_park_after_terminal_parent(app_handle, agent_run_id, "stream_error")
         .await;
 
