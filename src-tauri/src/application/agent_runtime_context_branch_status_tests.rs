@@ -152,6 +152,52 @@ fn pr_observation_records_relation_without_inventing_commit_counts() {
     );
 }
 
+#[test]
+fn pr_observation_renders_every_known_merge_relation() {
+    let observed_at = Utc.timestamp_opt(1_700_000_000, 0).unwrap();
+    let cases = [
+        (PrMergeStateStatus::Behind, "behind"),
+        (PrMergeStateStatus::Dirty, "conflicting"),
+        (PrMergeStateStatus::Clean, "mergeable"),
+        (PrMergeStateStatus::Blocked, "blocked"),
+        (PrMergeStateStatus::Draft, "draft"),
+        (PrMergeStateStatus::Unknown, "unknown"),
+        (PrMergeStateStatus::Unstable, "unstable"),
+        (PrMergeStateStatus::HasHooks, "hooks"),
+        (PrMergeStateStatus::Other("custom".to_string()), "other"),
+    ];
+
+    for (index, (merge_state_status, expected_relation)) in cases.into_iter().enumerate() {
+        let cache = BranchStatusCache::default();
+        let workspace_path = format!("/tmp/pr-observation-{index}");
+        cache.observe_pr_sync(
+            Path::new(&workspace_path),
+            &PrSyncState {
+                status: PrStatus::Open,
+                merge_state_status: Some(merge_state_status),
+                mergeable: Some(PrMergeableState::Mergeable),
+                is_draft: false,
+                head_ref_name: "feature/runtime".to_string(),
+                base_ref_name: "main".to_string(),
+                head_ref_oid: Some("head".to_string()),
+                base_ref_oid: Some("base".to_string()),
+            },
+            observed_at,
+        );
+
+        let rendered = render_branch_status(
+            &cache,
+            Path::new(&workspace_path),
+            observed_at,
+            Duration::minutes(5),
+        );
+        assert!(
+            rendered.contains(&format!("relation=\"{expected_relation}\"")),
+            "expected {expected_relation} relation for case {index}: {rendered}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn local_refresh_reads_dirty_and_base_counts_without_a_remote() {
     let repo = tempfile::TempDir::new().expect("temp repo should be created");
