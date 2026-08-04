@@ -172,11 +172,17 @@ vi.mock("@/api/harness-providers", () => ({
 
 function Harness({
   onStartReview,
+  reviewAutomation = null,
 }: {
   onStartReview: (input: {
     force: boolean;
     confirmation: AgentWorkspaceReviewStartConfirmation;
+    enableReviewAutomation?: boolean;
   }) => Promise<unknown>;
+  reviewAutomation?: {
+    effectiveLoopActive: boolean;
+    overrideOn: boolean;
+  } | null;
 }) {
   const {
     startReview,
@@ -189,6 +195,7 @@ function Harness({
       projectId: "project-1",
       onStartReview,
       onStartFixer: vi.fn(),
+      reviewAutomation,
     });
   return (
     <>
@@ -236,6 +243,7 @@ describe("useWorkspaceReviewActions", () => {
 
   beforeEach(() => {
     vi.mocked(chatApi.getAgentWorkspaceReviewStartPreview).mockReset();
+    vi.mocked(chatApi.getAgentWorkspaceReviewContext).mockReset();
     vi.mocked(logger.debug).mockReset();
     for (const mock of Object.values(operationToastMock)) {
       mock.mockReset();
@@ -314,6 +322,98 @@ describe("useWorkspaceReviewActions", () => {
         }),
       );
     }
+  });
+
+  it("offers and forwards the conversation-only automation opt-in when the loop is not effective", async () => {
+    const preview: AgentWorkspaceReviewStartPreview = {
+      success: true,
+      target: {
+        scope: "workspace_delta",
+        baseRef: "main",
+        baseSha: "base",
+        headRef: "HEAD",
+        headSha: "head",
+        diffFingerprint: "fingerprint",
+        sourcePullRequestNumber: null,
+      },
+      willDisableAutoMerge: false,
+      prNumber: null,
+      mergeMethod: null,
+      restoreAfterPublish: false,
+      confirmation: {
+        targetScope: "workspace_delta",
+        diffFingerprint: "fingerprint",
+        headSha: "head",
+        prNumber: null,
+        willDisableAutoMerge: false,
+        mergeMethod: null,
+        restoreAfterPublish: false,
+      },
+    };
+    vi.mocked(chatApi.getAgentWorkspaceReviewStartPreview).mockResolvedValue(preview);
+    const onStartReview = vi.fn().mockResolvedValue(undefined);
+    const user = userEvent.setup();
+
+    render(
+      <Harness
+        onStartReview={onStartReview}
+        reviewAutomation={{ effectiveLoopActive: false, overrideOn: false }}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Run review" }));
+
+    const dialog = await screen.findByRole("alertdialog");
+    const automationSwitch = await within(dialog).findByRole("switch", {
+      name: "Auto Review & Fix until passing",
+    });
+    expect(automationSwitch).not.toBeChecked();
+    await user.click(automationSwitch);
+    await user.click(within(dialog).getByRole("button", { name: "Start review" }));
+
+    await waitFor(() =>
+      expect(onStartReview).toHaveBeenCalledWith({
+        force: false,
+        confirmation: preview.confirmation,
+        runtimeOverride: reviewerRuntime,
+        enableReviewAutomation: true,
+      }),
+    );
+  });
+
+  it("hides the opt-in when the full automation loop is already effective", async () => {
+    vi.mocked(chatApi.getAgentWorkspaceReviewStartPreview).mockResolvedValue({
+      success: true,
+      target: null,
+      willDisableAutoMerge: false,
+      prNumber: null,
+      mergeMethod: null,
+      restoreAfterPublish: false,
+      confirmation: {
+        targetScope: null,
+        diffFingerprint: null,
+        headSha: null,
+        prNumber: null,
+        willDisableAutoMerge: false,
+        mergeMethod: null,
+        restoreAfterPublish: false,
+      },
+    });
+    const user = userEvent.setup();
+    render(
+      <Harness
+        onStartReview={vi.fn().mockResolvedValue(undefined)}
+        reviewAutomation={{ effectiveLoopActive: true, overrideOn: false }}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Run review" }));
+
+    const dialog = await screen.findByRole("alertdialog");
+    await within(dialog).findByRole("button", { name: "Start review" });
+    expect(
+      within(dialog).queryByRole("switch", {
+        name: "Auto Review & Fix until passing",
+      }),
+    ).not.toBeInTheDocument();
   });
 
   it("captures intent before the preview receipt arrives and submits that receipt", async () => {

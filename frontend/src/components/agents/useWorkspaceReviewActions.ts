@@ -16,6 +16,7 @@ import {
   type AgentWorkspaceOperationToast,
 } from "./agentWorkspaceOperationToast";
 import { useRoleRuntimeConfirmation } from "./useRoleRuntimeConfirmation";
+import { WORKSPACE_REVIEW_AUTOMATION_COPY } from "./workspaceReviewAutomationCopy";
 
 function reviewTargetLabel(preview: AgentWorkspaceReviewStartPreview): string {
   const target = preview.target;
@@ -85,6 +86,7 @@ export function useWorkspaceReviewActions({
   projectId,
   onStartReview,
   onStartFixer,
+  reviewAutomation = null,
 }: {
   conversationId: string | null;
   projectId: string | null;
@@ -92,7 +94,12 @@ export function useWorkspaceReviewActions({
     force: boolean;
     confirmation: AgentWorkspaceReviewStartConfirmation;
     runtimeOverride: ManualRoleRuntimeSelection;
+    enableReviewAutomation?: boolean;
   }) => Promise<unknown>;
+  reviewAutomation?: {
+    effectiveLoopActive: boolean;
+    overrideOn: boolean;
+  } | null;
   onStartFixer: (input: {
     confirmation: AgentWorkspaceReviewFixerConfirmation;
     runtimeOverride: ManualRoleRuntimeSelection;
@@ -186,11 +193,21 @@ export function useWorkspaceReviewActions({
           const description = blockedWorkspaceReviewCopy(error);
           return description ? { description, confirmDisabled: true } : null;
         },
+        ...(reviewAutomation
+          ? {
+              optIn: {
+                title: "Auto Review & Fix until passing",
+                description: `${WORKSPACE_REVIEW_AUTOMATION_COPY} Applies to this conversation and stays on until you turn it off.`,
+                initialValue: reviewAutomation.overrideOn,
+                hidden: reviewAutomation.effectiveLoopActive,
+              },
+            }
+          : {}),
         closeOnConfirm: true,
         onIntent: () => {
           startReviewToast("Checking the current review target and auto-merge state");
         },
-        onConfirm: async (runtimeOverride) => {
+        onConfirm: async (runtimeOverride, optInEnabled) => {
           const confirmedPreview = confirmedPreviewRef.current;
           if (!confirmedPreview) {
             throw new Error("Workspace Review preparation did not finish");
@@ -205,6 +222,9 @@ export function useWorkspaceReviewActions({
             force,
             confirmation: preview.confirmation,
             runtimeOverride,
+            ...(!reviewAutomation?.overrideOn && optInEnabled
+              ? { enableReviewAutomation: true }
+              : {}),
           });
           clearReviewPreview();
           if (confirmedPreviewRef.current === confirmedPreview) {
@@ -243,6 +263,7 @@ export function useWorkspaceReviewActions({
       conversationId,
       loadReviewPreview,
       onStartReview,
+      reviewAutomation,
       startReviewToast,
     ],
   );
