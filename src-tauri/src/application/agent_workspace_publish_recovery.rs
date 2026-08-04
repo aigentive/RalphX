@@ -47,8 +47,6 @@ mod pr_autofix_redelivery;
 
 #[cfg(test)]
 pub(crate) use durable_attempt_recovery::due_repair_dispatch_message;
-#[cfg(test)]
-pub(crate) use durable_attempt_recovery::CONTINUATION_RECOVERY_BLOCKED_STEP;
 pub(crate) use durable_attempt_recovery::is_blocked_and_not_auto_retryable;
 #[cfg(any(test, feature = "test-utils"))]
 pub use durable_attempt_recovery::recover_agent_workspace_repair_after_terminal_run;
@@ -56,14 +54,21 @@ pub use durable_attempt_recovery::recover_agent_workspace_repair_after_terminal_
 pub(crate) use durable_attempt_recovery::recover_agent_workspace_repair_after_terminal_run;
 pub(crate) use durable_attempt_recovery::recover_agent_workspace_repair_attempts_for_state;
 use durable_attempt_recovery::recover_stale_publish_repair_for_workspace_in_state_result;
+#[cfg(test)]
+pub(crate) use durable_attempt_recovery::CONTINUATION_RECOVERY_BLOCKED_STEP;
+#[cfg(test)]
+pub(crate) use durable_attempt_recovery::{
+    recover_agent_workspace_repair_continuation, DurableRepairRecoveryOutcome,
+};
 pub(crate) use durable_attempt_recovery::{
     AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX, AUTO_RETRY_READY_REPAIR_REASON_PREFIX,
+    EXHAUSTED_PUBLISH_REDRIVE_CHECKED_REASON_PREFIX,
 };
 #[cfg(test)]
 pub(crate) use pr_autofix_redelivery::due_pr_autofix_redispatch_message;
+pub(crate) use pr_autofix_redelivery::pr_autofix_fingerprint_spend;
 #[cfg(test)]
 pub(crate) use pr_autofix_redelivery::{evaluate_pr_autofix_successor, PrAutofixSuccessorDecision};
-pub(crate) use pr_autofix_redelivery::pr_autofix_fingerprint_spend;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StalePublishRepairRecoveryOutcome {

@@ -1,0 +1,319 @@
+use super::agent_workspace_ci_rerun::{
+    ci_rerun_hold_still_pending, classify_check_conclusion, transient_ci_rerun_plan, CiFailureKind,
+    CiHoldIdentity, TransientCiPlan,
+};
+use crate::domain::services::github_service::{
+    PrHealth, PrHealthCheck, PrMergeableState, PrStatus, PrSyncState,
+};
+
+fn health(head_oid: Option<&str>, checks: Vec<PrHealthCheck>) -> PrHealth {
+    PrHealth {
+        sync_state: PrSyncState {
+            status: PrStatus::Open,
+            merge_state_status: None,
+            mergeable: Some(PrMergeableState::Mergeable),
+            is_draft: false,
+            head_ref_name: "feature/transient-ci".to_string(),
+            base_ref_name: "main".to_string(),
+            head_ref_oid: head_oid.map(str::to_string),
+            base_ref_oid: Some("base-oid".to_string()),
+        },
+        review_decision: None,
+        checks,
+        issue_comments: Vec::new(),
+        auto_merge_request: None,
+    }
+}
+
+fn check(
+    name: &str,
+    status: Option<&str>,
+    conclusion: Option<&str>,
+    run_id: Option<i64>,
+) -> PrHealthCheck {
+    PrHealthCheck {
+        name: name.to_string(),
+        status: status.map(str::to_string),
+        conclusion: conclusion.map(str::to_string),
+        details_url: run_id
+            .map(|id| format!("https://github.com/acme/ralphx/actions/runs/{id}/jobs/42")),
+    }
+}
+
+#[test]
+fn classify_check_conclusion_maps_every_known_conclusion() {
+    for conclusion in ["failure", " failed ", "ERROR", "action_required", "stale"] {
+        assert_eq!(
+            classify_check_conclusion(conclusion),
+            Some(CiFailureKind::Deterministic),
+            "{conclusion:?} must remain a real product failure"
+        );
+    }
+
+    for conclusion in [
+        "cancelled",
+        " CANCELED ",
+        "timed_out",
+        "TIMEDOUT",
+        "startup_failure",
+    ] {
+        assert_eq!(
+            classify_check_conclusion(conclusion),
+            Some(CiFailureKind::Transient),
+            "{conclusion:?} must remain rerunnable infrastructure failure"
+        );
+    }
+
+    for conclusion in ["success", "neutral", "skipped", "", "unknown"] {
+        assert_eq!(
+            classify_check_conclusion(conclusion),
+            None,
+            "{conclusion:?}"
+        );
+    }
+}
+
+#[test]
+fn plan_rejects_when_head_ref_oid_is_missing() {
+    assert_eq!(
+        transient_ci_rerun_plan(&health(None, Vec::new())),
+        TransientCiPlan::MissingHead
+    );
+    assert_eq!(
+        transient_ci_rerun_plan(&health(Some(""), Vec::new())),
+        TransientCiPlan::MissingHead
+    );
+}
+
+#[test]
+fn plan_rejects_when_any_deterministic_failure_exists() {
+    let health = health(
+        Some("head-1"),
+        vec![
+            check("Rust tests", Some("completed"), Some("failure"), Some(7)),
+            check(
+                "Hosted runner",
+                Some("completed"),
+                Some("cancelled"),
+                Some(8),
+            ),
+        ],
+    );
+
+    assert_eq!(
+        transient_ci_rerun_plan(&health),
+        TransientCiPlan::DeterministicFailures(vec!["Rust tests (failure)".to_string()])
+    );
+}
+
+#[test]
+fn plan_rejects_deterministic_failure_listed_after_cancellation() {
+    let health = health(
+        Some("head-1"),
+        vec![
+            check(
+                "Hosted runner",
+                Some("completed"),
+                Some("cancelled"),
+                Some(8),
+            ),
+            check("Rust tests", Some("completed"), Some("failure"), Some(7)),
+        ],
+    );
+
+    assert_eq!(
+        transient_ci_rerun_plan(&health),
+        TransientCiPlan::DeterministicFailures(vec!["Rust tests (failure)".to_string()])
+    );
+}
+
+#[test]
+fn plan_awaits_when_the_transient_run_has_in_flight_jobs() {
+    let health = health(
+        Some("head-1"),
+        vec![
+            check(
+                "Hosted runner",
+                Some("completed"),
+                Some("cancelled"),
+                Some(976),
+            ),
+            check("Hosted runner / job", Some("in_progress"), None, Some(976)),
+        ],
+    );
+    let hold = CiHoldIdentity::new("head-1", [976]);
+
+    assert_eq!(
+        transient_ci_rerun_plan(&health),
+        TransientCiPlan::AwaitRuns(hold)
+    );
+}
+
+#[test]
+fn plan_reruns_every_distinct_terminal_transient_run() {
+    let health = health(
+        Some("head-1"),
+        vec![
+            check("Runner one", Some("completed"), Some("cancelled"), Some(30)),
+            check("Runner two", Some("completed"), Some("timed_out"), Some(10)),
+            check(
+                "Runner one duplicate",
+                Some("completed"),
+                Some("canceled"),
+                Some(30),
+            ),
+        ],
+    );
+    let hold = CiHoldIdentity::new("head-1", [10, 30]);
+
+    assert_eq!(
+        transient_ci_rerun_plan(&health),
+        TransientCiPlan::Rerun {
+            run_ids: vec![10, 30],
+            hold,
+        }
+    );
+}
+
+#[test]
+fn plan_reruns_only_terminal_runs_when_mixed() {
+    let health = health(
+        Some("head-1"),
+        vec![
+            check(
+                "Completed runner",
+                Some("completed"),
+                Some("cancelled"),
+                Some(10),
+            ),
+            check(
+                "Still running",
+                Some("completed"),
+                Some("timed_out"),
+                Some(20),
+            ),
+            check("Still running / job", Some("waiting"), None, Some(20)),
+        ],
+    );
+    let hold = CiHoldIdentity::new("head-1", [10]);
+
+    assert_eq!(
+        transient_ci_rerun_plan(&health),
+        TransientCiPlan::Rerun {
+            run_ids: vec![10],
+            hold,
+        }
+    );
+}
+
+#[test]
+fn plan_reports_no_observed_failure_for_all_green() {
+    let health = health(
+        Some("head-1"),
+        vec![check(
+            "Rust tests",
+            Some("completed"),
+            Some("success"),
+            Some(1),
+        )],
+    );
+
+    assert_eq!(
+        transient_ci_rerun_plan(&health),
+        TransientCiPlan::NoObservedFailure
+    );
+}
+
+#[test]
+fn plan_ignores_transient_checks_without_a_parsable_run_url() {
+    let mut unparseable = check("Hosted runner", Some("completed"), Some("cancelled"), None);
+    unparseable.details_url = Some("https://github.com/acme/ralphx/actions/jobs/99".to_string());
+    let health = health(Some("head-1"), vec![unparseable]);
+
+    assert_eq!(
+        transient_ci_rerun_plan(&health),
+        TransientCiPlan::NoObservedFailure
+    );
+}
+
+#[test]
+fn hold_identity_fingerprint_round_trips_and_sorts() {
+    let identity = CiHoldIdentity::new("head-1", [30, 10, 30, 20]);
+
+    assert_eq!(identity.run_ids, vec![10, 20, 30]);
+    assert_eq!(identity.to_fingerprint(), "ci-hold:v1:head-1:10,20,30");
+    assert_eq!(
+        CiHoldIdentity::parse(&identity.to_fingerprint()),
+        Some(identity)
+    );
+}
+
+#[test]
+fn hold_pending_while_any_identified_run_is_in_flight() {
+    let health = health(
+        Some("head-1"),
+        vec![
+            check("Finished", Some("completed"), Some("cancelled"), Some(10)),
+            check("Running", Some("queued"), None, Some(20)),
+        ],
+    );
+    let fingerprint = CiHoldIdentity::new("head-1", [10, 20]).to_fingerprint();
+
+    assert!(ci_rerun_hold_still_pending(&health, Some(&fingerprint)));
+}
+
+#[test]
+fn hold_ends_when_all_identified_runs_are_terminal() {
+    let health = health(
+        Some("head-1"),
+        vec![check(
+            "Finished",
+            Some("completed"),
+            Some("cancelled"),
+            Some(10),
+        )],
+    );
+    let fingerprint = CiHoldIdentity::new("head-1", [10]).to_fingerprint();
+
+    assert!(!ci_rerun_hold_still_pending(&health, Some(&fingerprint)));
+}
+
+#[test]
+fn hold_ends_when_head_moved() {
+    let health = health(
+        Some("head-2"),
+        vec![check("Running", Some("in_progress"), None, Some(10))],
+    );
+    let fingerprint = CiHoldIdentity::new("head-1", [10]).to_fingerprint();
+
+    assert!(!ci_rerun_hold_still_pending(&health, Some(&fingerprint)));
+}
+
+#[test]
+fn hold_ends_for_legacy_or_unparsable_fingerprint() {
+    let health = health(
+        Some("head-1"),
+        vec![check("Running", Some("in_progress"), None, Some(10))],
+    );
+
+    assert!(!ci_rerun_hold_still_pending(
+        &health,
+        Some("head-1:CI / test:failure:https://github.com/acme/ralphx/actions/runs/10")
+    ));
+    assert!(!ci_rerun_hold_still_pending(
+        &health,
+        Some("ci-hold:v1:head-1:not-a-run")
+    ));
+    assert!(!ci_rerun_hold_still_pending(&health, None));
+}
+
+#[test]
+fn hold_ends_when_identified_runs_are_absent_from_health() {
+    let health = health(
+        Some("head-1"),
+        vec![check("Other run", Some("in_progress"), None, Some(20))],
+    );
+    let fingerprint = CiHoldIdentity::new("head-1", [10]).to_fingerprint();
+
+    assert!(!ci_rerun_hold_still_pending(&health, Some(&fingerprint)));
+}

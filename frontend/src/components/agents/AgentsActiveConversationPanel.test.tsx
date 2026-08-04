@@ -3165,7 +3165,7 @@ describe("AgentsActiveConversationPanel", () => {
     );
   });
 
-  it("bridges attached Plan-mode planning session questions into the workspace chat", () => {
+  it("bridges Plan-mode conversation questions before the attached planning session", () => {
     renderPanel({
       activeConversation: { ...projectConversation(), agentMode: "plan" },
       activeConversationMode: "plan",
@@ -3179,7 +3179,21 @@ describe("AgentsActiveConversationPanel", () => {
 
     expect(screen.getByTestId("integrated-chat-panel")).toHaveAttribute(
       "data-question-session-ids",
-      "planning-session-1",
+      "conversation-1,planning-session-1",
+    );
+  });
+
+  it("bridges the Plan-mode conversation question without an attached planning session", () => {
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "plan" },
+      activeConversationMode: "plan",
+      activeWorkspace: { ...workspace(), mode: "plan" },
+      attachedIdeationSessionId: null,
+    });
+
+    expect(screen.getByTestId("integrated-chat-panel")).toHaveAttribute(
+      "data-question-session-ids",
+      "conversation-1",
     );
   });
 

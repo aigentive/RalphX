@@ -13,6 +13,8 @@
 // - agent:queue_sent - Queued message sent
 // - agent:startup_progress - Project agent startup phase label for chat typing indicator
 
+pub(crate) mod plan_edit_handoff;
+
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
@@ -91,7 +93,8 @@ use crate::application::agent_workspace_publish_recovery::{
     pr_autofix_fingerprint_spend, recover_stale_publish_repair_for_workspace_in_state,
 };
 use crate::application::agent_workspace_publish_repair_state::{
-    classify_agent_workspace_repair_delivery, reserve_agent_workspace_repair_dispatch,
+    classify_agent_workspace_repair_delivery, last_human_repair_reason,
+    reserve_agent_workspace_repair_dispatch,
     resume_current_agent_workspace_repair_publish, resume_ready_agent_workspace_repair_for_publish,
     retry_agent_workspace_pr_autofix_hold_override, settle_agent_workspace_repair_dispatch_outcome,
     start_or_join_agent_workspace_repair, stop_agent_workspace_pr_autofix_for_hold,
@@ -1117,7 +1120,7 @@ pub async fn agent_workspace_response_for_state(
 /// Returns the persisted workspace and durable repair projection without starting recovery work.
 /// Preference no-ops use this read-only form so an already-enabled Auto Publish toggle cannot
 /// become a second producer for an in-flight repair continuation.
-async fn agent_workspace_response_without_repair_recovery_for_state(
+pub(crate) async fn agent_workspace_response_without_repair_recovery_for_state(
     state: &AppState,
     workspace: AgentConversationWorkspace,
 ) -> Result<AgentConversationWorkspaceResponse, String> {
@@ -2458,21 +2461,27 @@ fn timeline_item_content_block(
     }
 
     if item.kind.to_string() == "thinking" {
-        let duration_ms = item
+        let metadata = item
             .metadata
             .as_deref()
-            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
-            .and_then(|metadata| {
-                metadata
-                    .get("duration_ms")
-                    .and_then(serde_json::Value::as_u64)
-            });
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok());
+        let duration_ms = metadata
+            .as_ref()
+            .and_then(|value| value.get("duration_ms"))
+            .and_then(serde_json::Value::as_u64);
+        let reasoning_tokens = metadata
+            .as_ref()
+            .and_then(|value| value.get("reasoning_tokens"))
+            .and_then(serde_json::Value::as_u64);
         let mut block = serde_json::json!({
             "type": "thinking",
             "text": item.text.clone().unwrap_or_default(),
         });
         if let Some(duration_ms) = duration_ms {
             block["duration_ms"] = serde_json::json!(duration_ms);
+        }
+        if let Some(reasoning_tokens) = reasoning_tokens {
+            block["reasoning_tokens"] = serde_json::json!(reasoning_tokens);
         }
         return block;
     }
@@ -3845,19 +3854,28 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
 
     if agent_is_running {
         if let ModeSwitchRunningAgentPolicy::StopWithService(chat_service) = running_agent_policy {
-            let stop_context_id = conversation.id.as_str();
-            let stopped = chat_service
-                .stop_agent(ChatContextType::Project, &stop_context_id)
-                .await
-                .map_err(|error| error.to_string())?;
-            tracing::info!(
-                conversation_id = %conversation.id,
-                target_mode = %target_mode,
-                stopped,
-                "Stopped running project agent before switching conversation mode"
-            );
-            if state.running_agent_registry.is_running(&running_key).await {
-                return Err("Cannot change mode while the agent is running".to_string());
+            if plan_to_edit_handoff {
+                plan_edit_handoff::stop_plan_to_edit_handoff_before_commit(
+                    state,
+                    chat_service,
+                    &conversation,
+                )
+                .await?;
+            } else {
+                let stop_context_id = conversation.id.as_str();
+                let stopped = chat_service
+                    .stop_agent(ChatContextType::Project, &stop_context_id)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                tracing::info!(
+                    conversation_id = %conversation.id,
+                    target_mode = %target_mode,
+                    stopped,
+                    "Stopped running project agent before switching conversation mode"
+                );
+                if state.running_agent_registry.is_running(&running_key).await {
+                    return Err("Cannot change mode while the agent is running".to_string());
+                }
             }
         }
     }
@@ -3996,19 +4014,6 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
             invalidate_workspace_review_presentation_context(&conversation.id);
     }
 
-    if plan_to_edit_handoff && conversation.provider_session_ref().is_some() {
-        state
-            .chat_conversation_repo
-            .clear_provider_session_ref(&conversation.id)
-            .await
-            .map_err(|error| error.to_string())?;
-        conversation.clear_provider_session_ref();
-        tracing::info!(
-            conversation_id = %conversation.id,
-            "Cleared planning provider session before Plan-to-Edit implementation handoff"
-        );
-    }
-
     if let Some(runtime_override) = input.runtime_override.as_ref() {
         let coordination_mode = runtime_override.coordination_mode.unwrap_or_default();
         state
@@ -4038,6 +4043,26 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
             .await
             .map_err(|error| error.to_string())?;
         conversation.set_agent_mode(Some(target_mode));
+    }
+
+    if plan_to_edit_handoff {
+        match running_agent_policy {
+            ModeSwitchRunningAgentPolicy::StopWithService(chat_service) => {
+                plan_edit_handoff::finish_plan_to_edit_handoff_after_commit(
+                    state,
+                    chat_service,
+                    &mut conversation,
+                )
+                .await?;
+            }
+            ModeSwitchRunningAgentPolicy::Reject | ModeSwitchRunningAgentPolicy::Allow => {
+                plan_edit_handoff::clear_plan_provider_session_after_commit(
+                    state,
+                    &mut conversation,
+                )
+                .await?;
+            }
+        }
     }
 
     let conversation = state
@@ -9518,11 +9543,11 @@ where
         worktree_path: Some(resolved.path),
     };
 
-    let error = last_meaningful_agent_workspace_repair_reason(&attempt);
+    let error = compose_blocked_repair_retry_context(&attempt, &target.base_ref);
     mark_agent_workspace_failure_with_routing_and_action_classified(
         state,
         &retry_workspace,
-        error,
+        &error,
         None,
         repair_service,
         true,
@@ -9559,31 +9584,43 @@ fn repair_handoff_verification_result(
     }
 }
 
-/// Delivery retries append `auto_retry_*` streak markers to the durable reason history. Those
-/// markers describe recovery bookkeeping rather than the publish failure the repair agent needs.
-fn last_meaningful_agent_workspace_repair_reason(attempt: &AgentWorkspaceRepairAttempt) -> &str {
-    attempt
-        .pending_reasons
-        .iter()
-        .rev()
-        .map(String::as_str)
-        .find(|reason| {
-            let trimmed = reason.trim();
-            !trimmed.is_empty()
-                && !trimmed.starts_with(
-                    crate::application::agent_workspace_publish_recovery::AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX,
-                )
-                && !trimmed.starts_with(
-                    crate::application::agent_workspace_publish_recovery::AUTO_RETRY_READY_REPAIR_REASON_PREFIX,
-                )
-        })
+/// Successor context for a user-directed retry of a blocked repair. Prefer the previous fixer's
+/// blocker and human-authored reason before the durable delivery summary; machine markers in
+/// `pending_reasons` must never become the successor's only context.
+fn compose_blocked_repair_retry_context(
+    attempt: &AgentWorkspaceRepairAttempt,
+    new_base_ref: &str,
+) -> String {
+    let core = attempt
+        .blocker
+        .as_deref()
+        .filter(|blocker| !blocker.trim().is_empty())
+        .or_else(|| last_human_repair_reason(attempt))
         .or_else(|| {
             attempt
                 .summary
                 .as_deref()
                 .filter(|summary| !summary.trim().is_empty())
         })
-        .unwrap_or("Retrying blocked workspace repair.")
+        .unwrap_or("Retrying blocked workspace repair.");
+
+    let mut context = format!("Previous repair attempt was blocked: {core}");
+    if let Some(repair_head_commit) = attempt
+        .repair_head_commit
+        .as_deref()
+        .filter(|commit| !commit.trim().is_empty())
+    {
+        context.push_str(&format!(
+            " The previous repair agent committed {repair_head_commit} before blocking; inspect that commit rather than redoing its work."
+        ));
+    }
+    if attempt.target_base_ref != new_base_ref {
+        context.push_str(&format!(
+            " The base has since been updated from {} to {new_base_ref}; verify the workspace against the new base.",
+            attempt.target_base_ref
+        ));
+    }
+    context
 }
 
 async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
@@ -12484,6 +12521,19 @@ pub async fn update_agent_conversation_coordination_mode(
     );
     if state.running_agent_registry.is_running(&running_key).await {
         return Err("Cannot change capabilities while the agent is running".to_string());
+    }
+
+    if conversation.coordination_mode == CoordinationMode::RxNativeTeam
+        && coordination_mode != CoordinationMode::RxNativeTeam
+    {
+        state
+            .managed_team
+            .exit_team_before_coordination_change(
+                &crate::application::AgentTaskService::new(state.agent_task_repo.clone()),
+                &conversation.id,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
     }
 
     state

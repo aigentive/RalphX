@@ -16,21 +16,23 @@ use tokio::task::JoinHandle;
 use crate::application::agent_conversation_workspace::{
     agent_name_for_workspace_mode, resolve_valid_agent_conversation_workspace_path,
 };
+use crate::application::agent_workspace_ci_rerun::ci_rerun_hold_still_pending;
 use crate::application::agent_workspace_pr_autofix_attempt::{
     load_pr_autofix_attempt_decision, pr_autofix_action_metadata,
 };
-#[cfg(test)]
 use crate::application::agent_workspace_publish_repair_state::{
-    claim_agent_workspace_repair, repair_run_event_classification,
-    settle_agent_workspace_repair_failure, AgentWorkspaceRepairClaim,
-};
-use crate::application::agent_workspace_publish_repair_state::{
+    agent_workspace_repair_is_ci_held, agent_workspace_repair_is_health_held,
     classify_agent_workspace_repair_delivery, reserve_agent_workspace_repair_dispatch,
     settle_agent_workspace_repair_dispatch_outcome, start_or_join_agent_workspace_repair,
     start_or_join_agent_workspace_repair_without_projection,
     validate_agent_workspace_repair_target_lease, AgentWorkspaceRepairDispatchOutcome,
     AgentWorkspaceRepairDispatchSettlement, AgentWorkspaceRepairStartOutcome,
     AgentWorkspaceRepairStartRequest,
+};
+#[cfg(test)]
+use crate::application::agent_workspace_publish_repair_state::{
+    claim_agent_workspace_repair, repair_run_event_classification,
+    settle_agent_workspace_repair_failure, AgentWorkspaceRepairClaim,
 };
 use crate::application::agent_workspace_terminal_cleanup::{
     settle_review_pr_terminal_observation, terminalize_agent_workspace_after_pr,
@@ -3032,11 +3034,14 @@ async fn route_agent_workspace_pr_autofix_for_target(
             .await?
         {
             if attempt.phase == AgentWorkspaceRepairPhase::Ready {
-                // Both hold kinds — pre-existing-on-base and unchanged-health — park a generation
-                // against an exact observed failure identity, and neither may be ended by anything
-                // other than GitHub reporting different health.
-                let health_suppressed = crate::application::agent_workspace_publish_repair_state::agent_workspace_repair_is_health_held(&attempt);
-                if health_suppressed
+                let health_suppressed = agent_workspace_repair_is_health_held(&attempt);
+                let ci_held = agent_workspace_repair_is_ci_held(&attempt);
+                if ci_held {
+                    if ci_rerun_hold_still_pending(&health, attempt.ci_rerun_fingerprint.as_deref())
+                    {
+                        return Ok(false);
+                    }
+                } else if health_suppressed
                     && current_issue.as_ref().is_some_and(|issue| {
                         attempt.pr_autofix_health_fingerprint.as_deref()
                             == Some(issue.classification.as_str())
@@ -3044,17 +3049,7 @@ async fn route_agent_workspace_pr_autofix_for_target(
                 {
                     return Ok(false);
                 }
-                if health_suppressed || attempt.ci_rerun_count > 0 {
-                    // Only a generation that actually reserved a rerun can be waiting on that
-                    // rerun's conclusion. Without this guard a health hold whose failure is not
-                    // transient-CI shaped compares `None == None` here and suppresses itself
-                    // forever, even once GitHub reports something new.
-                    if attempt.ci_rerun_count > 0
-                        && attempt.ci_rerun_fingerprint.as_deref()
-                            == transient_ci_health_fingerprint(&health).as_deref()
-                    {
-                        return Ok(false);
-                    }
+                if health_suppressed || ci_held {
                     // A changed conclusion ends the rerun-pending generation. The next normal
                     // dispatch below creates a fresh, independently fenced repair attempt.
                     match repair_repo
@@ -3522,29 +3517,6 @@ async fn cross_streak_fingerprint_suppresses_dispatch(
         "Suppressing a fresh PR autofix streak against an already-exhausted failure identity"
     );
     Ok(true)
-}
-
-fn transient_ci_health_fingerprint(health: &PrHealth) -> Option<String> {
-    let failed = health.checks.iter().find(|check| {
-        check.conclusion.as_deref().is_some_and(|value| {
-            matches!(
-                value.to_ascii_uppercase().as_str(),
-                "FAILURE" | "CANCELLED" | "TIMED_OUT"
-            )
-        })
-    })?;
-    let url = failed.details_url.as_deref()?;
-    Some(format!(
-        "{}:{}:{}:{}",
-        health
-            .sync_state
-            .head_ref_oid
-            .as_deref()
-            .unwrap_or("missing-head"),
-        failed.name,
-        failed.conclusion.as_deref().unwrap_or("unknown"),
-        url
-    ))
 }
 
 async fn record_agent_workspace_pr_autofix_pre_start_failure(

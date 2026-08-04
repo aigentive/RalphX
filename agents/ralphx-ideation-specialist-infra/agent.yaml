@@ -15,6 +15,7 @@ capabilities:
     - list_session_proposals
     - get_proposal
     - get_parent_session_context
+    - get_parent_context
     - search_memories
     - get_memory
     - get_memories_for_paths

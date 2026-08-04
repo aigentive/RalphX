@@ -30,6 +30,9 @@ Reasoning arrives as `item.completed` with `item.type == "reasoning"` and a flat
 holding the summary parts joined by `\n`. There is no `summary` array and no `event_msg` envelope on
 this transport.
 
+The same captured `turn.completed` reports aggregate `usage.reasoning_output_tokens` (170 in the
+fixture). It is a whole-turn total, not a per-reasoning-item allocation.
+
 `event_msg` belongs to the persisted session rollout (`~/.codex/sessions/**/rollout-*.jsonl`), which
 RalphX never reads. There the envelope key is `payload`, reasoning is tagged `agent_reasoning`, and
 the `summary: [{type: "summary_text", text}]` array appears on `response_item` payloads.

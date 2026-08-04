@@ -13,6 +13,7 @@ import { createTestQueryClient } from "@/test/store-utils";
 import {
   agentWorkspaceMaintenanceOperationToastId,
   agentWorkspaceOperationToastId,
+  resetAgentWorkspaceOperationToastStateForTests,
 } from "./agentWorkspaceOperationToast";
 import {
   createAgentWorkspacePublishAttempt,
@@ -129,6 +130,7 @@ function wrapper(queryClient: ReturnType<typeof createTestQueryClient>) {
 
 describe("useAgentWorkspacePublisher", () => {
   beforeEach(() => {
+    resetAgentWorkspaceOperationToastStateForTests();
     getAgentConversationWorkspaceMock.mockReset();
     getAgentConversationWorkspaceFreshnessMock.mockReset();
     listAgentConversationWorkspacePublicationEventsMock.mockReset();
@@ -277,6 +279,10 @@ describe("useAgentWorkspacePublisher", () => {
       expect(toastLoadingMock).toHaveBeenLastCalledWith(
         "Repairing workspace",
         expect.objectContaining({
+          action: {
+            label: "Open conversation",
+            onClick: expect.any(Function),
+          },
           id: agentWorkspaceMaintenanceOperationToastId(
             "conversation-1",
             "maintenance-1",
@@ -790,6 +796,10 @@ describe("useAgentWorkspacePublisher", () => {
       expect(toastLoadingMock).toHaveBeenLastCalledWith(
         "Repairing workspace",
         expect.objectContaining({
+          action: {
+            label: "Open conversation",
+            onClick: expect.any(Function),
+          },
           id: agentWorkspaceMaintenanceOperationToastId(
             "conversation-1",
             "maintenance-after-error",

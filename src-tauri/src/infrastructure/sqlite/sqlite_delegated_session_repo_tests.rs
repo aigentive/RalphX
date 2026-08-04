@@ -2,8 +2,8 @@ use super::sqlite_delegated_session_repo::SqliteDelegatedSessionRepository;
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{DelegatedSession, DelegatedSessionId, Project};
 use crate::domain::repositories::{DelegatedSessionRepository, ProjectRepository};
-use crate::testing::SqliteTestDb;
 use crate::infrastructure::sqlite::SqliteProjectRepository;
+use crate::testing::SqliteTestDb;
 
 fn setup_test_db() -> SqliteTestDb {
     SqliteTestDb::new("sqlite_delegated_session_repo_tests")
@@ -41,6 +41,34 @@ async fn test_create_and_get_by_id() {
     assert_eq!(found.parent_context_type, "task_execution");
     assert_eq!(found.parent_context_id, "task-1");
     assert_eq!(found.harness, AgentHarnessKind::Codex);
+    assert!(found.delegate_context_authorized);
+    assert!(found.caller_conversation_id.is_none());
+}
+
+#[tokio::test]
+async fn test_create_round_trips_delegate_context_authorization_and_caller_link() {
+    let db = setup_test_db();
+    let repo = SqliteDelegatedSessionRepository::from_shared(db.shared_conn());
+    let project_id = create_project(&db).await;
+    let mut session = DelegatedSession::new(
+        project_id,
+        "conversation",
+        "delegated-conversation",
+        "ralphx-general-worker",
+        AgentHarnessKind::Codex,
+    );
+    session.delegate_context_authorized = false;
+    session.caller_conversation_id = Some("caller-conversation".to_string());
+    let id = session.id.clone();
+
+    repo.create(session).await.unwrap();
+
+    let found = repo.get_by_id(&id).await.unwrap().unwrap();
+    assert!(!found.delegate_context_authorized);
+    assert_eq!(
+        found.caller_conversation_id.as_deref(),
+        Some("caller-conversation")
+    );
 }
 
 #[tokio::test]
@@ -72,7 +100,10 @@ async fn test_get_by_parent_context_orders_latest_first() {
     let newer_id = newer.id.clone();
     repo.create(newer).await.unwrap();
 
-    let sessions = repo.get_by_parent_context("review", "review-1").await.unwrap();
+    let sessions = repo
+        .get_by_parent_context("review", "review-1")
+        .await
+        .unwrap();
     assert_eq!(sessions.len(), 2);
     assert_eq!(sessions[0].id, newer_id);
     assert_eq!(sessions[1].id, older_id);

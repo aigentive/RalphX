@@ -2,11 +2,12 @@ use super::chat_service_context::noninteractive_agent_name;
 use super::{
     agent_conversation_mode_for_send, canonical_parented_agent_binding,
     conversation_spawn_harness_override, get_agent_name, interactive_run_started_provider_session,
-    persona_builder_runtime_message, persona_switch_requires_process_invalidation,
-    plan_mode_runtime_message, preferred_agent_override,
-    provider_harness_switch_requires_fresh_session, registered_persona_metadata,
-    resolve_agent_name_for_send, should_inherit_parent_harness_for_fresh_spawn,
-    spawn_settings_require_task_metadata, supervised_workspace_runtime_message,
+    launch_identity_requires_process_invalidation, persona_builder_runtime_message,
+    persona_switch_requires_process_invalidation, plan_mode_runtime_message,
+    preferred_agent_override, provider_harness_switch_requires_fresh_session,
+    registered_persona_metadata, resolve_agent_name_for_send,
+    should_inherit_parent_harness_for_fresh_spawn, spawn_settings_require_task_metadata,
+    supervised_workspace_runtime_message,
 };
 use super::{ChatService, ChatServiceError, SendMessageOptions, SendQueuePolicy};
 use crate::application::interactive_process_registry::{
@@ -422,6 +423,8 @@ fn interactive_run_started_provider_session_prefers_process_metadata_harness() {
             provider_session_id: None,
             persona_id: None,
             persona_content_hash: None,
+            agent_name: None,
+            agent_profile: None,
         }),
     );
 
@@ -456,6 +459,8 @@ fn provider_harness_switch_requires_fresh_session_for_process_harness_mismatch()
             provider_session_id: Some("claude-session-123".to_string()),
             persona_id: None,
             persona_content_hash: None,
+            agent_name: None,
+            agent_profile: None,
         }),
     );
 
@@ -480,6 +485,8 @@ fn provider_harness_switch_uses_conversation_when_process_harness_missing() {
             provider_session_id: Some("legacy-session-123".to_string()),
             persona_id: None,
             persona_content_hash: None,
+            agent_name: None,
+            agent_profile: None,
         }),
     );
 
@@ -495,6 +502,8 @@ fn persona_invalidation_for_content_hash_mismatch() {
         provider_session_id: Some("claude-session-123".to_string()),
         persona_id: Some("persona-a".to_string()),
         persona_content_hash: Some("old-hash".to_string()),
+        agent_name: None,
+        agent_profile: None,
     };
 
     assert!(persona_switch_requires_process_invalidation(
@@ -512,6 +521,8 @@ fn persona_invalidation_for_persona_id_mismatch() {
         provider_session_id: None,
         persona_id: Some("persona-a".to_string()),
         persona_content_hash: Some("hash-a".to_string()),
+        agent_name: None,
+        agent_profile: None,
     };
     let unbound = InteractiveProcessMetadata::default();
 
@@ -539,6 +550,31 @@ fn persona_invalidation_skipped_when_both_unbound() {
 }
 
 #[test]
+fn launch_identity_invalidation_rejects_stale_agent_or_profile_but_keeps_legacy_metadata() {
+    let current = InteractiveProcessMetadata {
+        agent_name: Some("ralphx-ideation".to_string()),
+        agent_profile: Some("plan".to_string()),
+        ..Default::default()
+    };
+
+    assert!(!launch_identity_requires_process_invalidation(
+        Some(&current),
+        "ralphx-ideation",
+        Some("plan"),
+    ));
+    assert!(launch_identity_requires_process_invalidation(
+        Some(&current),
+        "ralphx-general-worker",
+        None,
+    ));
+    assert!(!launch_identity_requires_process_invalidation(
+        Some(&InteractiveProcessMetadata::default()),
+        "ralphx-general-worker",
+        None,
+    ));
+}
+
+#[test]
 fn persona_invalidation_independent_of_harness_override() {
     let resolved = resolved_persona("persona-a", "hash-a");
     let process = InteractiveProcessMetadata {
@@ -547,6 +583,8 @@ fn persona_invalidation_independent_of_harness_override() {
         provider_session_id: Some("codex-session-123".to_string()),
         persona_id: Some("persona-a".to_string()),
         persona_content_hash: Some("stale-hash".to_string()),
+        agent_name: None,
+        agent_profile: None,
     };
 
     assert!(persona_switch_requires_process_invalidation(

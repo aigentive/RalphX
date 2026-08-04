@@ -32,10 +32,10 @@ use crate::application::automation::plan_gate::{
 };
 use crate::application::automation::plan_judge::{
     append_automation_plan_judge_retry_instruction, build_automation_plan_judge_prompt,
-    parse_automation_plan_judge_verdict, AutomationPlanJudgeDecision,
-    AutomationPlanJudgeValidationContext, AutomationPlanJudgeVerdict,
+    parse_automation_plan_judge_verdict, plan_blueprint_truncation_policy,
+    AutomationPlanJudgeDecision, AutomationPlanJudgeValidationContext, AutomationPlanJudgeVerdict,
     AutomationPlanVerificationGapSummary, AutomationPlanVerificationJudgeContext,
-    BuildAutomationPlanJudgePromptInput, PLAN_BLUEPRINT_MAX_BYTES,
+    BuildAutomationPlanJudgePromptInput,
 };
 use crate::application::automation::provisioning::{
     AutomationRunProvisioner, AutomationRunStarter,
@@ -730,10 +730,11 @@ impl AutomationPlanJudgeTask {
             AutomationPlanJudgeValidationContext {
                 expected_overview_artifact_id: Some(&payload.overview_artifact_id),
                 expected_blueprint_artifact_id: payload.blueprint_artifact_id.as_deref(),
-                blueprint_truncated: payload
-                    .blueprint_content
-                    .as_ref()
-                    .is_some_and(|content| content.len() > PLAN_BLUEPRINT_MAX_BYTES),
+                blueprint_truncation_blocks_approval: plan_blueprint_truncation_policy(
+                    payload.blueprint_content.as_deref(),
+                    run.plan_revision_round,
+                )
+                .blocks_approval(),
             },
         )
         .map_err(|error| JudgeInvocationFailure::InvalidOutput {
@@ -3719,7 +3720,7 @@ impl AutomationScheduler {
             AutomationPlanJudgeValidationContext {
                 expected_overview_artifact_id: None,
                 expected_blueprint_artifact_id: None,
-                blueprint_truncated: false,
+                blueprint_truncation_blocks_approval: false,
             },
         ) {
             Ok(verdict) => verdict,
@@ -4374,7 +4375,7 @@ fn prior_revision_instruction_repeats(
         AutomationPlanJudgeValidationContext {
             expected_overview_artifact_id: None,
             expected_blueprint_artifact_id: None,
-            blueprint_truncated: false,
+            blueprint_truncation_blocks_approval: false,
         },
     ) else {
         return false;

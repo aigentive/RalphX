@@ -1,3 +1,18 @@
+---
+paths:
+  - "agents/ralphx-workspace-reviewer/**"
+  - "agents/ralphx-pr-reviewer/**"
+  - "src-tauri/src/application/agent_workspace_review*.rs"
+  - "src-tauri/src/application/agent_workspace_pr_*.rs"
+  - "src-tauri/src/application/pr_startup_recovery.rs"
+  - "src-tauri/src/application/agent_workspace_terminal_cleanup.rs"
+  - "src-tauri/src/application/services/pr_merge_poller.rs"
+  - "src-tauri/src/http_server/handlers/agent_workspaces/**"
+  - "src-tauri/src/infrastructure/memory/*agent_conversation_workspace_repo.rs"
+  - "src-tauri/src/infrastructure/sqlite/*agent_conversation_workspace_repo.rs"
+  - "frontend/src/components/agents/**"
+---
+
 > **Maintainer note:** Keep this file compact. Prefer one-line rules, tables, and explicit non-negotiables over prose.
 
 # Agent Workspace Review Modes
@@ -36,7 +51,7 @@ RalphX has two distinct review workflows. A local checkout exists in both, but i
 | Concern | Workspace Review owner | Review PR owner |
 |---|---|---|
 | Agent contract | `agents/ralphx-workspace-reviewer/` | `agents/ralphx-pr-reviewer/` |
-| Application/runtime | `src-tauri/src/application/agent_workspace_review*.rs` | `src-tauri/src/application/services/pr_merge_poller.rs`, `pr_startup_recovery.rs`, `agent_workspace_terminal_cleanup.rs` |
+| Application/runtime | `src-tauri/src/application/agent_workspace_review*.rs` | `src-tauri/src/application/services/pr_merge_poller.rs`, `src-tauri/src/application/pr_startup_recovery.rs`, `src-tauri/src/application/agent_workspace_terminal_cleanup.rs` |
 | HTTP/tool transitions | `src-tauri/src/http_server/handlers/agent_workspaces/workspace_review_context.rs` + workspace-review handlers in `mod.rs` | `src-tauri/src/http_server/handlers/agent_workspaces/pr_review/` |
 | Persistence | Workspace-review monitor/artifact repositories | `AgentConversationWorkspaceRepository` PR monitor/action/terminal-settlement methods; SQLite and memory implementations |
 | Frontend | Workspace Review artifact/gate surfaces | `AgentWorkspacePrReviewCard.tsx`, presentation helper, sidebar publication polling |

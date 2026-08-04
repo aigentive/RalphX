@@ -19,17 +19,20 @@ use crate::application::managed_team::{
     ManagedTeamAssignmentRequest, ManagedTeamMemberSpec, ManagedTeamWorkspaceRequest,
     TeamExitAction,
 };
-use crate::http_server::native_delegation_launcher::{
-    NativeDelegationLaunchParent, NativeDelegationLaunchRequest, NativeDelegationLauncher,
-};
 use crate::application::AgentTaskService;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort, DEFAULT_AGENT_HARNESS};
 use crate::domain::entities::{
     AgentRunId, AgentTaskAssignmentTerminalStatus, AgentTaskScope, ChatContextType,
-    ChatConversationId, DelegatedSession, ProjectId, TeamRunBindingStatus, TeamWorkClassification,
+    ChatConversationId, DelegatedSession, ProjectId, TeamWorkClassification,
 };
 use crate::http_server::handlers::coordination::{
     ensure_delegated_conversation, fail_started_delegated_launch,
+};
+use crate::http_server::handlers::managed_team::authority::{
+    resolve_team_authority, TeamAuthorityKind,
+};
+use crate::http_server::native_delegation_launcher::{
+    NativeDelegationLaunchParent, NativeDelegationLaunchRequest, NativeDelegationLauncher,
 };
 use crate::http_server::types::{
     AddManagedTeamMemberRequest, AssignManagedTeamMemberRequest, ExitManagedTeamRequest,
@@ -79,155 +82,34 @@ struct CoordinatorAuthority {
     working_directory: PathBuf,
 }
 
-/// Resolves model authority only from the transport identity and a member-null
-/// coordinator binding. Read failures are terminal: there is no fallback to a
-/// request body team/member/run id.
 async fn resolve_coordinator_authority(
     state: &HttpServerState,
     headers: &HeaderMap,
 ) -> Result<CoordinatorAuthority, JsonError> {
-    let enabled = state
-        .app_state
-        .managed_team
-        .team_capability_enabled()
-        .await
-        .map_err(|error| {
-            json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to read Team capability: {error}"),
-            )
-        })?;
-    if !enabled {
-        return Err(json_error(
-            StatusCode::FORBIDDEN,
-            "Team capability is disabled",
-        ));
-    }
-    let conversation_id = headers
-        .get("x-ralphx-conversation-id")
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            json_error(
-                StatusCode::BAD_REQUEST,
-                "Team tools require trusted caller conversation context",
-            )
-        })?;
-    let run_id = headers
-        .get("x-ralphx-agent-run-id")
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            json_error(
-                StatusCode::BAD_REQUEST,
-                "Team tools require trusted caller run context",
-            )
-        })?;
-    let conversation_id = ChatConversationId::from_string(conversation_id);
-    let run_id = AgentRunId::from_string(run_id);
-    let active_run = state
-        .app_state
-        .agent_run_repo
-        .get_active_for_conversation(&conversation_id)
-        .await
-        .map_err(|error| {
-            json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to load active coordinator run: {error}"),
-            )
-        })?
-        .ok_or_else(|| {
-            json_error(
-                StatusCode::CONFLICT,
-                "Trusted coordinator run is not active",
-            )
-        })?;
-    if active_run.id != run_id {
-        return Err(json_error(
-            StatusCode::CONFLICT,
-            "Trusted coordinator run is not active",
-        ));
-    }
-    let binding = state
-        .app_state
-        .managed_team
-        .run_binding_repo()
-        .get_by_agent_run_id(&run_id)
-        .await
-        .map_err(|error| {
-            json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to resolve Team run binding: {error}"),
-            )
-        })?
-        .ok_or_else(|| {
-            json_error(
-                StatusCode::NOT_FOUND,
-                "Trusted coordinator run has no Team binding",
-            )
-        })?;
-    if binding.team_member_id.is_some()
-        || binding.conversation_id != conversation_id
-        || !matches!(
-            binding.status,
-            TeamRunBindingStatus::Planned
-                | TeamRunBindingStatus::Launching
-                | TeamRunBindingStatus::Running
-        )
-    {
+    let resolution = resolve_team_authority(state, headers).await?;
+    if !matches!(&resolution.kind, TeamAuthorityKind::Coordinator) {
         return Err(json_error(
             StatusCode::FORBIDDEN,
             "Trusted run is not a current Team coordinator binding",
         ));
     }
-    let session = state
-        .app_state
-        .managed_team
-        .team_repo()
-        .get_session(&binding.team_id)
-        .await
-        .map_err(|error| {
-            json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to load Team session: {error}"),
-            )
-        })?
-        .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Team session was not found"))?;
-    if session.coordinator_conversation_id != conversation_id || session.status.is_closed() {
-        return Err(json_error(
-            StatusCode::FORBIDDEN,
-            "Trusted run does not own an open Team",
-        ));
-    }
-    let conversation = state
-        .app_state
-        .chat_conversation_repo
-        .get_by_id(&conversation_id)
-        .await
-        .map_err(|error| {
-            json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to load coordinator conversation: {error}"),
-            )
-        })?
+    let caller_agent_name = resolution
+        .run
+        .agent_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|agent_name| !agent_name.is_empty())
+        .map(str::to_string)
         .ok_or_else(|| {
             json_error(
-                StatusCode::NOT_FOUND,
-                "Coordinator conversation was not found",
+                StatusCode::FORBIDDEN,
+                "Coordinator run has no canonical agent identity",
             )
         })?;
-    let caller_agent_name = conversation.bound_agent_name.ok_or_else(|| {
-        json_error(
-            StatusCode::FORBIDDEN,
-            "Coordinator conversation has no canonical agent identity",
-        )
-    })?;
     let project = state
         .app_state
         .project_repo
-        .get_by_id(&session.project_id)
+        .get_by_id(&resolution.session.project_id)
         .await
         .map_err(|error| {
             json_error(
@@ -242,10 +124,10 @@ async fn resolve_coordinator_authority(
     )
     .map_err(|error| json_error(StatusCode::CONFLICT, error.to_string()))?;
     Ok(CoordinatorAuthority {
-        team_id: session.id,
-        project_id: session.project_id,
-        conversation_id,
-        run_id,
+        team_id: resolution.session.id,
+        project_id: resolution.session.project_id,
+        conversation_id: resolution.conversation_id,
+        run_id: resolution.run.id,
         caller_agent_name,
         working_directory,
     })
@@ -333,6 +215,8 @@ pub async fn assign_managed_team_member(
         harness,
     );
     delegated.status = "pending".to_string();
+    delegated.delegate_context_authorized = true;
+    delegated.caller_conversation_id = Some(authority.conversation_id.as_str());
     delegated.parent_message_id = None;
     delegated.title = Some(format!("Team assignment: {}", member.name));
     let delegated = state
@@ -431,6 +315,7 @@ pub async fn assign_managed_team_member(
                 parent_conversation_id: Some(authority.conversation_id.as_str()),
                 ideation_verification: false,
             },
+            inherit_context: true,
             caller_agent_run_id: Some(authority.run_id.as_str()),
             target_agent_name: plan.member.canonical_agent_name.clone(),
             reusable_delegated_session: Some(delegated.clone()),

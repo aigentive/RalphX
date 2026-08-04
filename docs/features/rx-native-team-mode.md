@@ -9,6 +9,8 @@ When enabled, the Team panel exposes roster and assignment controls, derived tok
 - **Suspend Team** fences new dispatch and wakes, suspends idle members, and returns the conversation to Solo only after the durable exit stage completes.
 - **Drain and close** fences new work, cancels active Team bindings and releases their reservations, closes the Team, then returns the conversation to Solo.
 
+Switching Capabilities away from Team uses the same staged exit: it resumes a pending action or drains and closes, and the capability change fails if that exit cannot complete.
+
 Usage is always derived from `TeamRunBinding` rows joined to `AgentRun`; there is no writable Team usage total. Startup recovery releases a workspace reservation when its exact Team binding is terminal.
 
 Remaining follow-ups: controlled rollout telemetry, production exercise of mixed-provider launches, and an operator runbook for retrying a pending exit after a process crash.
