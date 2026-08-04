@@ -1,10 +1,13 @@
 use super::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
-    AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind, AgentWorkspacePrReviewMonitor,
+    workspace_review_fixer_status_is_active, AgentConversationWorkspace,
+    AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus, AgentWorkspacePrReviewAction,
+    AgentWorkspacePrReviewActionKind, AgentWorkspacePrReviewMonitor,
     AgentWorkspaceReviewAutoMergeGuardStatus, AgentWorkspaceReviewGateStatus,
     AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewRuntimeState, AgentWorkspaceReviewTargetScope, ArtifactId,
     ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
+    WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED, WORKSPACE_REVIEW_FIXER_STATUS_QUEUED,
+    WORKSPACE_REVIEW_FIXER_STATUS_ROUTING, WORKSPACE_REVIEW_FIXER_STATUS_RUNNING,
 };
 use chrono::Utc;
 use std::str::FromStr;
@@ -84,6 +87,22 @@ fn workspace_review_runtime_states_use_stable_response_values() {
     ] {
         assert_eq!(state.to_string(), value);
     }
+}
+
+#[test]
+fn workspace_review_fixer_active_status_vocabulary_is_shared() {
+    for status in [
+        WORKSPACE_REVIEW_FIXER_STATUS_ROUTING,
+        WORKSPACE_REVIEW_FIXER_STATUS_QUEUED,
+        WORKSPACE_REVIEW_FIXER_STATUS_RUNNING,
+    ] {
+        assert!(workspace_review_fixer_status_is_active(Some(status)));
+    }
+    assert!(!workspace_review_fixer_status_is_active(None));
+    assert!(!workspace_review_fixer_status_is_active(Some(
+        WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED,
+    )));
+    assert!(!workspace_review_fixer_status_is_active(Some("failed")));
 }
 
 fn monitor_and_action() -> (AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewAction) {

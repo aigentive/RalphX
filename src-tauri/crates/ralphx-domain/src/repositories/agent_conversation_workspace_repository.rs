@@ -517,6 +517,14 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         fingerprint: Option<&str>,
     ) -> AppResult<()>;
 
+    /// Sets the per-workspace Auto Review & Fix override. Enabling re-arms only a capped fixer
+    /// cycle, leaving any active routing/queued/running reservation untouched.
+    async fn set_review_automation_override(
+        &self,
+        conversation_id: &ChatConversationId,
+        value: Option<bool>,
+    ) -> AppResult<()>;
+
     async fn update_auto_publish_preferences(
         &self,
         _conversation_id: &ChatConversationId,

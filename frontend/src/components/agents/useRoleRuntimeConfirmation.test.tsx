@@ -152,9 +152,11 @@ vi.mock("./RoleRuntimeConfirmationBody", () => ({
 function Harness({
   onReview,
   onRepair,
+  optIn = false,
 }: {
   onReview: (runtime: typeof reviewerRuntime) => Promise<unknown>;
   onRepair: (runtime: typeof repairRuntime) => Promise<unknown>;
+  optIn?: boolean;
 }) {
   const { confirmRoleRuntime, confirmationDialogProps, ConfirmationDialog } =
     useRoleRuntimeConfirmation({
@@ -170,6 +172,13 @@ function Harness({
           title: "Review",
           description: "Review runtime",
           confirmText: "Start review",
+          ...(optIn && {
+            optIn: {
+              title: "Keep automatic review enabled",
+              description: "Continue the review loop after this run.",
+              initialValue: true,
+            },
+          }),
           onConfirm: onReview,
         })}
       >
@@ -327,5 +336,28 @@ describe("useRoleRuntimeConfirmation", () => {
 
     await waitFor(() => expect(onRepair).toHaveBeenCalledWith(repairRuntime));
     expect(onReview).not.toHaveBeenCalled();
+  });
+
+  it("passes the changed opt-in choice with the selected runtime", async () => {
+    vi.mocked(manualRoleDefaultsApi.list).mockResolvedValue(
+      catalog("workspace_reviewer"),
+    );
+    const onReview = vi.fn().mockResolvedValue(undefined);
+    const onRepair = vi.fn().mockResolvedValue(undefined);
+    const user = userEvent.setup();
+
+    render(<Harness onReview={onReview} onRepair={onRepair} optIn />);
+    await user.click(screen.getByRole("button", { name: "Open review" }));
+    const dialog = await screen.findByRole("alertdialog");
+    const optInSwitch = await within(dialog).findByRole("switch", {
+      name: "Keep automatic review enabled",
+    });
+    expect(optInSwitch).toBeChecked();
+    await user.click(optInSwitch);
+    await user.click(within(dialog).getByRole("button", { name: "Start review" }));
+
+    await waitFor(() =>
+      expect(onReview).toHaveBeenCalledWith(reviewerRuntime, false),
+    );
   });
 });

@@ -22,7 +22,9 @@ use crate::domain::entities::{
     AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest, ArtifactId,
     ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
-    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD, WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED,
+    WORKSPACE_REVIEW_FIXER_STATUS_QUEUED, WORKSPACE_REVIEW_FIXER_STATUS_ROUTING,
+    WORKSPACE_REVIEW_FIXER_STATUS_RUNNING,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
@@ -32,6 +34,7 @@ use crate::domain::repositories::{
     AgentWorkspacePublicationUpdate, AgentWorkspacePublishLeaseClaim,
 };
 use crate::error::{AppError, AppResult};
+
 use crate::infrastructure::agents::claude::git_runtime_config;
 use crate::infrastructure::sqlite::DbConnection;
 
@@ -147,6 +150,7 @@ fn row_to_workspace(row: &rusqlite::Row<'_>) -> AppResult<AgentConversationWorks
         auto_publish_paused_pr_auto_merge_desired: row
             .get("auto_publish_paused_pr_auto_merge_desired")?,
         pr_autofix_enabled: row.get("pr_autofix_enabled")?,
+        review_automation_override: row.get("review_automation_override")?,
         pr_auto_merge_desired: row.get("pr_auto_merge_desired")?,
         pr_auto_merge_method: row
             .get::<_, Option<String>>("pr_auto_merge_method")?
@@ -894,6 +898,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
         let auto_publish_paused_pr_auto_merge_desired =
             workspace.auto_publish_paused_pr_auto_merge_desired;
         let pr_autofix_enabled = workspace.pr_autofix_enabled;
+        let review_automation_override = workspace.review_automation_override;
         let pr_auto_merge_desired = workspace.pr_auto_merge_desired;
         let pr_auto_merge_method = workspace.pr_auto_merge_method.clone();
         let pr_auto_merge_current = workspace.pr_auto_merge_current;
@@ -920,11 +925,11 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         publication_push_status, auto_publish_enabled,
                         auto_publish_initial_pr_enabled, auto_publish_paused_pr_autofix_enabled,
                         auto_publish_paused_pr_auto_merge_desired, pr_autofix_enabled,
-                        pr_auto_merge_desired, pr_auto_merge_method,
+                        review_automation_override, pr_auto_merge_desired, pr_auto_merge_method,
                         pr_auto_merge_current, pr_supervision_status,
                         pr_supervision_summary, pr_supervision_updated_at, status,
                         created_at, updated_at
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37)
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38)
                     ON CONFLICT(conversation_id) DO UPDATE SET
                         project_id=excluded.project_id,
                         mode=excluded.mode,
@@ -953,6 +958,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         auto_publish_paused_pr_autofix_enabled=excluded.auto_publish_paused_pr_autofix_enabled,
                         auto_publish_paused_pr_auto_merge_desired=excluded.auto_publish_paused_pr_auto_merge_desired,
                         pr_autofix_enabled=excluded.pr_autofix_enabled,
+                        review_automation_override=excluded.review_automation_override,
                         pr_auto_merge_desired=excluded.pr_auto_merge_desired,
                         pr_auto_merge_method=excluded.pr_auto_merge_method,
                         pr_auto_merge_current=excluded.pr_auto_merge_current,
@@ -990,6 +996,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         auto_publish_paused_pr_autofix_enabled,
                         auto_publish_paused_pr_auto_merge_desired,
                         pr_autofix_enabled,
+                        review_automation_override,
                         pr_auto_merge_desired,
                         pr_auto_merge_method,
                         pr_auto_merge_current,
@@ -2754,6 +2761,48 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
             .await
     }
 
+    async fn set_review_automation_override(
+        &self,
+        conversation_id: &ChatConversationId,
+        value: Option<bool>,
+    ) -> AppResult<()> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let now = Utc::now().to_rfc3339();
+        self.db
+            .run_transaction(move |conn| {
+                conn.execute(
+                    "UPDATE agent_conversation_workspaces
+                     SET review_automation_override = ?2,
+                         updated_at = ?3
+                     WHERE conversation_id = ?1",
+                    rusqlite::params![conversation_id, value, now],
+                )?;
+                if value == Some(true) {
+                    conn.execute(
+                        "UPDATE agent_workspace_review_monitors
+                         SET review_fixer_cycle_count = 0,
+                             review_fixer_status = CASE
+                                 WHEN review_fixer_status = ?3 THEN NULL
+                                 ELSE review_fixer_status
+                             END,
+                             review_fixer_attempt_id = CASE
+                                 WHEN review_fixer_status = ?3 THEN NULL
+                                 ELSE review_fixer_attempt_id
+                             END,
+                             updated_at = ?2
+                         WHERE conversation_id = ?1",
+                        rusqlite::params![
+                            conversation_id,
+                            now,
+                            WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED,
+                        ],
+                    )?;
+                }
+                Ok(())
+            })
+            .await
+    }
+
     async fn update_auto_publish_initial_pr_preference(
         &self,
         conversation_id: &ChatConversationId,
@@ -4278,7 +4327,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
             .run(move |conn| {
                 Ok(conn.execute(
                     "UPDATE agent_workspace_review_monitors
-                     SET review_fixer_status = 'routing',
+                     SET review_fixer_status = ?12,
                          review_fixer_attempt_id = ?10,
                          review_fixer_cycle_count = review_fixer_cycle_count + 1,
                          review_fixer_run_id = NULL,
@@ -4301,7 +4350,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                        AND current_plan_context_fingerprint IS ?9
                        AND reviewed_plan_context_fingerprint IS ?9
                        AND (review_fixer_status IS NULL
-                            OR review_fixer_status NOT IN ('routing', 'queued', 'running'))",
+                            OR review_fixer_status NOT IN (?12, ?13, ?14))",
                     rusqlite::params![
                         conversation_id,
                         target_scope,
@@ -4314,6 +4363,9 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         plan_context_fingerprint,
                         attempt_id,
                         claimed_at,
+                        WORKSPACE_REVIEW_FIXER_STATUS_ROUTING,
+                        WORKSPACE_REVIEW_FIXER_STATUS_QUEUED,
+                        WORKSPACE_REVIEW_FIXER_STATUS_RUNNING,
                     ],
                 )? == 1)
             })
@@ -4425,7 +4477,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                      WHERE conversation_id = ?1
                        AND ((?2 IS NULL AND review_fixer_attempt_id IS NULL)
                             OR review_fixer_attempt_id = ?2)
-                       AND review_fixer_status IN ('routing', 'queued', 'running')
+                       AND review_fixer_status IN (?5, ?6, ?7)
                        AND (current_target_scope IS NULL
                             OR reviewed_target_scope IS NULL
                             OR current_target_scope != reviewed_target_scope
@@ -4443,7 +4495,15 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                             OR review_requested_changes_artifact_version <= 0
                             OR review_blocking_fingerprint IS NULL
                             OR TRIM(review_blocking_fingerprint) = '')",
-                    rusqlite::params![conversation_id, expected_attempt_id, error, updated_at,],
+                    rusqlite::params![
+                        conversation_id,
+                        expected_attempt_id,
+                        error,
+                        updated_at,
+                        WORKSPACE_REVIEW_FIXER_STATUS_ROUTING,
+                        WORKSPACE_REVIEW_FIXER_STATUS_QUEUED,
+                        WORKSPACE_REVIEW_FIXER_STATUS_RUNNING,
+                    ],
                 )? == 1)
             })
             .await?;
@@ -4553,7 +4613,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                        AND review_requested_changes_artifact_version IS NOT NULL
                        AND review_requested_changes_artifact_version > 0
                        AND (review_fixer_status IS NULL
-                            OR review_fixer_status NOT IN ('routing', 'queued', 'running'))
+                            OR review_fixer_status NOT IN (?7, ?8, ?9))
                        AND EXISTS (
                            SELECT 1
                              FROM agent_conversation_workspaces workspace
@@ -4574,6 +4634,9 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         artifact_id,
                         artifact_version,
                         approved_at_value,
+                        WORKSPACE_REVIEW_FIXER_STATUS_ROUTING,
+                        WORKSPACE_REVIEW_FIXER_STATUS_QUEUED,
+                        WORKSPACE_REVIEW_FIXER_STATUS_RUNNING,
                     ],
                 )?;
                 if changed == 0 {
@@ -4631,10 +4694,17 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
             .run(move |conn| {
                 let mut stmt = conn.prepare(
                     "SELECT * FROM agent_workspace_review_monitors
-                     WHERE review_fixer_status IN ('routing', 'queued', 'running')
+                     WHERE review_fixer_status IN (?1, ?2, ?3)
                      ORDER BY updated_at DESC",
                 )?;
-                let rows = stmt.query_map([], row_to_workspace_review_monitor)?;
+                let rows = stmt.query_map(
+                    rusqlite::params![
+                        WORKSPACE_REVIEW_FIXER_STATUS_ROUTING,
+                        WORKSPACE_REVIEW_FIXER_STATUS_QUEUED,
+                        WORKSPACE_REVIEW_FIXER_STATUS_RUNNING,
+                    ],
+                    row_to_workspace_review_monitor,
+                )?;
                 let mut monitors = Vec::new();
                 for row in rows {
                     monitors.push(row?);
