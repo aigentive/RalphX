@@ -38,6 +38,7 @@ use ralphx_lib::domain::services::running_agent_registry::{
 };
 use ralphx_lib::domain::services::QueueKey;
 use ralphx_lib::infrastructure::memory::MemoryChatConversationRepository;
+use ralphx_lib::testing::{GetByIdFailingAgentRunRepository, AGENT_RUN_GET_BY_ID_FAILURE};
 
 use crate::support::erroring_persona_repository::ErroringPersonaRepository;
 use crate::support::failing_chat_message_repository::{
@@ -160,6 +161,7 @@ async fn setup_live_project_continuation(
     state: &AppState,
     context_id: &str,
     completed_runtime: Option<(&str, &str)>,
+    live_runtime: Option<(&str, &str)>,
 ) -> (
     tempfile::TempDir,
     ralphx_lib::domain::entities::ChatConversationId,
@@ -197,7 +199,12 @@ async fn setup_live_project_continuation(
             .expect("persist completed continuation runtime");
     }
 
-    let run = AgentRun::new(conversation_id);
+    let mut run = AgentRun::new(conversation_id);
+    if let Some((logical_model, effective_model_id)) = live_runtime {
+        run.harness = Some(ralphx_lib::domain::agents::AgentHarnessKind::Claude);
+        run.logical_model = Some(logical_model.to_string());
+        run.effective_model_id = Some(effective_model_id.to_string());
+    }
     let run_id = run.id.as_str().to_string();
     state
         .agent_run_repo
@@ -1405,7 +1412,13 @@ async fn gate1_project_agent_conversation_delivers_exact_stream_json_to_live_cla
     let state = AppState::new_test();
     let context_id = "project-gate1-agent-conversation";
     let (_project_dir, conversation_id, run_id, interactive_key, mut child) =
-        setup_live_project_continuation(&state, context_id, None).await;
+        setup_live_project_continuation(
+            &state,
+            context_id,
+            None,
+            Some(("sonnet", "claude-sonnet-4-6")),
+        )
+        .await;
 
     let service = state.build_chat_service_with_execution_state(Arc::new(ExecutionState::new()));
     let exact_user_text = "continue the existing Claude conversation immediately";
@@ -1475,7 +1488,13 @@ async fn gate1_ownerless_process_falls_through_without_stdin_or_message_side_eff
     state.events = Arc::new(events.clone());
     let context_id = "project-gate1-ownerless";
     let (_project_dir, conversation_id, _run_id, interactive_key, mut original_child) =
-        setup_live_project_continuation(&state, context_id, None).await;
+        setup_live_project_continuation(
+            &state,
+            context_id,
+            None,
+            Some(("sonnet", "claude-sonnet-4-6")),
+        )
+        .await;
 
     let mut ownerless_child = tokio::process::Command::new("cat")
         .stdin(std::process::Stdio::piped())
@@ -1566,7 +1585,13 @@ async fn gate1_message_persistence_failure_prevents_untracked_stdin_delivery() {
     let state = app.state::<AppState>();
     let context_id = "project-gate1-message-persistence-failure";
     let (_project_dir, conversation_id, _run_id, interactive_key, mut child) =
-        setup_live_project_continuation(&state, context_id, None).await;
+        setup_live_project_continuation(
+            &state,
+            context_id,
+            None,
+            Some(("sonnet", "claude-sonnet-4-6")),
+        )
+        .await;
 
     let run_started_events = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
     let run_started_listener = Arc::clone(&run_started_events);
@@ -1669,8 +1694,13 @@ async fn gate1_model_alias_matches_effective_claude_identity() {
     let state = AppState::new_test();
     let context_id = "project-gate1-alias-model";
     let (_project_dir, conversation_id, _run_id, interactive_key, mut child) =
-        setup_live_project_continuation(&state, context_id, Some(("sonnet", "claude-sonnet-4-6")))
-            .await;
+        setup_live_project_continuation(
+            &state,
+            context_id,
+            None,
+            Some(("sonnet", "claude-sonnet-4-6")),
+        )
+        .await;
     let service = state.build_chat_service_with_execution_state(Arc::new(ExecutionState::new()));
 
     let result = service
@@ -1701,8 +1731,13 @@ async fn gate1_genuine_model_change_queues_behind_the_live_claude_run() {
     let state = AppState::new_test();
     let context_id = "project-gate1-different-model";
     let (_project_dir, conversation_id, _run_id, interactive_key, mut child) =
-        setup_live_project_continuation(&state, context_id, Some(("sonnet", "claude-sonnet-4-6")))
-            .await;
+        setup_live_project_continuation(
+            &state,
+            context_id,
+            None,
+            Some(("sonnet", "claude-sonnet-4-6")),
+        )
+        .await;
     let service = state.build_chat_service_with_execution_state(Arc::new(ExecutionState::new()));
 
     let result = service
@@ -1721,11 +1756,244 @@ async fn gate1_genuine_model_change_queues_behind_the_live_claude_run() {
 
     assert!(result.was_queued);
     assert!(result.queued_message_id.is_some());
+    let queued = state
+        .queued_message_repo
+        .list(&QueueKey::new(
+            ChatContextType::Project,
+            conversation_id.as_str(),
+        ))
+        .await
+        .expect("read durable queue");
+    assert_eq!(queued.len(), 1);
+    assert!(queued[0].force_new_provider_session);
     state
         .interactive_process_registry
         .remove(&interactive_key)
         .await;
     let _ = child.kill().await;
+}
+
+#[tokio::test]
+async fn gate1_stale_completed_run_model_does_not_queue_same_model_live_turn() {
+    let state = AppState::new_test();
+    let context_id = "project-gate1-stale-completed-model";
+    let (_project_dir, conversation_id, live_run_id, interactive_key, mut child) =
+        setup_live_project_continuation(
+            &state,
+            context_id,
+            Some(("opus", "claude-opus-5")),
+            Some(("fable", "claude-fable-5")),
+        )
+        .await;
+    let service = state.build_chat_service_with_execution_state(Arc::new(ExecutionState::new()));
+    let exact_user_text = "continue on the live fable run";
+
+    let result = service
+        .send_message(
+            ChatContextType::Project,
+            context_id,
+            exact_user_text,
+            SendMessageOptions {
+                conversation_id_override: Some(conversation_id),
+                model_override: Some("fable".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("the live run model must control Gate 1");
+
+    assert!(!result.was_queued);
+    assert!(result.queued_message_id.is_none());
+    assert_eq!(result.agent_run_id, live_run_id);
+    assert!(
+        state
+            .queued_message_repo
+            .list(&QueueKey::new(
+                ChatContextType::Project,
+                conversation_id.as_str()
+            ))
+            .await
+            .expect("read durable queue")
+            .is_empty(),
+        "stale completed-run evidence must not create a durable queue row"
+    );
+
+    state
+        .interactive_process_registry
+        .remove(&interactive_key)
+        .await;
+    let mut observed = String::new();
+    child
+        .stdout
+        .take()
+        .expect("observer stdout")
+        .read_to_string(&mut observed)
+        .await
+        .expect("read stream-json stdin");
+    let _ = child.wait().await;
+    let envelope: serde_json::Value = serde_json::from_str(observed.trim())
+        .expect("Gate 1 must write one well-formed stream-json envelope");
+    assert_eq!(envelope["type"], "user");
+    assert_eq!(envelope["message"]["role"], "user");
+    assert!(
+        envelope["message"]["content"]
+            .as_str()
+            .is_some_and(|content| content.contains(exact_user_text)),
+        "the live process must receive the exact user content"
+    );
+}
+
+#[tokio::test]
+async fn gate1_live_model_change_queues_even_when_completed_run_matches() {
+    let state = AppState::new_test();
+    let context_id = "project-gate1-live-model-change";
+    let (_project_dir, conversation_id, _run_id, interactive_key, mut child) =
+        setup_live_project_continuation(
+            &state,
+            context_id,
+            Some(("fable", "claude-fable-5")),
+            Some(("opus", "claude-opus-5")),
+        )
+        .await;
+    let service = state.build_chat_service_with_execution_state(Arc::new(ExecutionState::new()));
+
+    let result = service
+        .send_message(
+            ChatContextType::Project,
+            context_id,
+            "switch the live run to fable",
+            SendMessageOptions {
+                conversation_id_override: Some(conversation_id),
+                model_override: Some("fable".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("a genuine live-run model switch must queue");
+
+    assert!(result.was_queued);
+    assert!(result.queued_message_id.is_some());
+    state
+        .interactive_process_registry
+        .remove(&interactive_key)
+        .await;
+    let mut observed = Vec::new();
+    child
+        .stdout
+        .take()
+        .expect("observer stdout")
+        .read_to_end(&mut observed)
+        .await
+        .expect("read observer stdout");
+    let _ = child.wait().await;
+    assert!(
+        observed.is_empty(),
+        "a genuine model switch must not write to the live process"
+    );
+}
+
+#[tokio::test]
+async fn gate1_live_run_without_model_does_not_queue() {
+    let state = AppState::new_test();
+    let context_id = "project-gate1-live-run-without-model";
+    let (_project_dir, conversation_id, live_run_id, interactive_key, mut child) =
+        setup_live_project_continuation(&state, context_id, Some(("opus", "claude-opus-5")), None)
+            .await;
+    let service = state.build_chat_service_with_execution_state(Arc::new(ExecutionState::new()));
+
+    let result = service
+        .send_message(
+            ChatContextType::Project,
+            context_id,
+            "continue without model evidence",
+            SendMessageOptions {
+                conversation_id_override: Some(conversation_id),
+                model_override: Some("fable".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("missing live-run model evidence must remain non-switching");
+
+    assert!(!result.was_queued);
+    assert!(result.queued_message_id.is_none());
+    assert_eq!(result.agent_run_id, live_run_id);
+    state
+        .interactive_process_registry
+        .remove(&interactive_key)
+        .await;
+    let _ = child.wait().await;
+}
+
+#[tokio::test]
+async fn gate1_live_run_read_failure_returns_repository_error_without_stdin_delivery() {
+    let mut state = AppState::new_test();
+    state.agent_run_repo = Arc::new(GetByIdFailingAgentRunRepository::new(Arc::clone(
+        &state.agent_run_repo,
+    )));
+    let context_id = "project-gate1-live-run-read-failure";
+    let (_project_dir, conversation_id, _live_run_id, interactive_key, mut child) =
+        setup_live_project_continuation(
+            &state,
+            context_id,
+            None,
+            Some(("sonnet", "claude-sonnet-4-6")),
+        )
+        .await;
+
+    let error = state
+        .build_chat_service_with_execution_state(Arc::new(ExecutionState::new()))
+        .send_message(
+            ChatContextType::Project,
+            context_id,
+            "must not write without live-run authority",
+            SendMessageOptions {
+                conversation_id_override: Some(conversation_id),
+                model_override: Some("sonnet".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("an authoritative live-run read failure must abort Gate 1");
+
+    assert!(
+        matches!(
+            error,
+            ChatServiceError::RepositoryError(ref message)
+                if message.contains(AGENT_RUN_GET_BY_ID_FAILURE)
+        ),
+        "live-run read failures must remain repository errors: {error}"
+    );
+    assert!(
+        state
+            .queued_message_repo
+            .list(&QueueKey::new(
+                ChatContextType::Project,
+                conversation_id.as_str(),
+            ))
+            .await
+            .expect("read durable queue")
+            .is_empty(),
+        "a failed authority read must not queue or claim delivery"
+    );
+
+    state
+        .interactive_process_registry
+        .remove(&interactive_key)
+        .await;
+    let mut observed = Vec::new();
+    child
+        .stdout
+        .take()
+        .expect("observer stdout")
+        .read_to_end(&mut observed)
+        .await
+        .expect("read observer stdout");
+    let _ = child.wait().await;
+    assert!(
+        observed.is_empty(),
+        "a failed authority read must not write to stdin"
+    );
 }
 
 // ============================================================================
