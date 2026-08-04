@@ -20,6 +20,7 @@ use crate::error::AppError;
 pub(super) async fn request_transient_ci_rerun(
     state: &HttpServerState,
     conversation_id: &ChatConversationId,
+    owning_conversation_id: &ChatConversationId,
     run_id: &AgentRunId,
     attempt: AgentWorkspaceRepairAttempt,
     workspace: &AgentConversationWorkspace,
@@ -71,6 +72,7 @@ pub(super) async fn request_transient_ci_rerun(
             await_transient_ci_runs(
                 state,
                 conversation_id,
+                owning_conversation_id,
                 run_id,
                 attempt,
                 workspace,
@@ -105,7 +107,7 @@ pub(super) async fn request_transient_ci_rerun(
                 AgentWorkspaceRepairTransitionOutcome::Applied(attempt) => attempt,
                 AgentWorkspaceRepairTransitionOutcome::Stale(_)
                 | AgentWorkspaceRepairTransitionOutcome::Missing => {
-                    return stale_completion_transition_response(state, conversation_id, run_id)
+                    return stale_completion_transition_response(state, conversation_id, owning_conversation_id, run_id)
                         .await;
                 }
             };
@@ -143,6 +145,7 @@ pub(super) async fn request_transient_ci_rerun(
             await_transient_ci_runs(
                 state,
                 conversation_id,
+                owning_conversation_id,
                 run_id,
                 reserved,
                 workspace,
@@ -165,6 +168,7 @@ fn reject_transient_ci_claim(
 async fn await_transient_ci_runs(
     state: &HttpServerState,
     conversation_id: &ChatConversationId,
+    owning_conversation_id: &ChatConversationId,
     run_id: &AgentRunId,
     attempt: AgentWorkspaceRepairAttempt,
     workspace: &AgentConversationWorkspace,
@@ -187,7 +191,7 @@ async fn await_transient_ci_runs(
         }
         AgentWorkspaceRepairTransitionOutcome::Stale(_)
         | AgentWorkspaceRepairTransitionOutcome::Missing => {
-            stale_completion_transition_response(state, conversation_id, run_id).await
+            stale_completion_transition_response(state, conversation_id, owning_conversation_id, run_id).await
         }
     }
 }
