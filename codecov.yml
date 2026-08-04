@@ -32,6 +32,23 @@ coverage:
           # Startup commands wrap Tauri State/AppHandle and the opener plugin.
           # Their deterministic diagnostics/retry/path helpers are sidecar-tested.
           - "!src-tauri/src/commands/startup_commands.rs"
+          # Tauri/Axum adapters below compose live AppState, execution state,
+          # schedulers, and event sinks. Their deterministic service, transition,
+          # repository, and HTTP behavior is covered by focused sidecar/integration
+          # suites; keep the patch gate on those owned seams instead of adapter glue.
+          - "!src-tauri/src/commands/ideation_commands/ideation_commands_proposals.rs"
+          - "!src-tauri/src/commands/ideation_commands/ideation_commands_dependencies.rs"
+          - "!src-tauri/src/commands/execution_commands/lifecycle.rs"
+          - "!src-tauri/src/commands/execution_commands/settings.rs"
+          - "!src-tauri/src/commands/task_commands/helpers.rs"
+          - "!src-tauri/src/commands/review_commands.rs"
+          - "!src-tauri/src/commands/ticketing_commands/mod.rs"
+          - "!src-tauri/src/http_server/handlers/ideation/acceptance.rs"
+          - "!src-tauri/src/http_server/handlers/reviews/human.rs"
+          # Task cleanup coordinates live interactive processes, running-agent
+          # registries, git worktrees, and persistence. The integration suite
+          # exercises those stop/archive/error paths and sidecar tests cover events.
+          - "!src-tauri/src/application/task_cleanup_service.rs"
           # Tauri RunEvent / HTTP-server boot glue — same composition-root pattern.
           # The Exit-arm body needs the full production AppState AND a non-async
           # caller context (tauri::async_runtime::block_on panics inside
