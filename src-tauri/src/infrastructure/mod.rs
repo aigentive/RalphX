@@ -4,6 +4,7 @@
 pub(crate) mod agent_run_error_message;
 pub mod agents;
 pub mod atlassian_client;
+pub(crate) mod atlassian_jira_fields;
 pub mod clickup_client;
 pub(crate) mod git_auth;
 #[cfg(test)]
@@ -47,6 +48,10 @@ pub use webhook_publisher::WebhookPublisher as ConcreteWebhookPublisher;
 mod agent_run_error_message_tests;
 #[cfg(test)]
 mod atlassian_client_tests;
+#[cfg(test)]
+mod atlassian_client_unit_tests;
+#[cfg(test)]
+mod atlassian_jira_fields_tests;
 #[cfg(test)]
 mod jira_agile_client_tests;
 #[cfg(test)]
