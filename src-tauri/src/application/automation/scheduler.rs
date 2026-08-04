@@ -74,10 +74,10 @@ use crate::domain::entities::{
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::{
-    AgentConversationWorkspaceRepository, AgentRunRepository, ArtifactRepository,
-    AutomationRepository, AutomationRunPublicationMetadata, AutomationRunRepository,
-    ChatConversationRepository, IdeationSessionRepository, PlanApprovalActor, PlanArtifactApproval,
-    PlanArtifactApprovalRepository,
+    AgentConversationWorkspaceRepository, AgentRunRepository, AgentWorkspaceRepairRepository,
+    ArtifactRepository, AutomationRepository, AutomationRunPublicationMetadata,
+    AutomationRunRepository, ChatConversationRepository, IdeationSessionRepository,
+    PlanApprovalActor, PlanArtifactApproval, PlanArtifactApprovalRepository,
 };
 use crate::domain::services::github_service::{GithubServiceTrait, PrStatus};
 use crate::domain::services::{
@@ -1360,6 +1360,7 @@ pub struct AutomationScheduler {
     conversation_repo: Arc<dyn ChatConversationRepository>,
     run_repo: Arc<dyn AutomationRunRepository>,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
     ideation_session_repo: Arc<dyn IdeationSessionRepository>,
     plan_approval_repo: Arc<dyn PlanArtifactApprovalRepository>,
     plan_approval_writer: Arc<dyn PlanArtifactApprovalWriter>,
@@ -1383,6 +1384,7 @@ impl AutomationScheduler {
         agent_run_repo: Arc<dyn AgentRunRepository>,
         conversation_repo: Arc<dyn ChatConversationRepository>,
         workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+        repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
         ideation_session_repo: Arc<dyn IdeationSessionRepository>,
         plan_approval_repo: Arc<dyn PlanArtifactApprovalRepository>,
         plan_approval_writer: Arc<dyn PlanArtifactApprovalWriter>,
@@ -1430,6 +1432,7 @@ impl AutomationScheduler {
             conversation_repo,
             run_repo,
             workspace_repo,
+            repair_repo,
             ideation_session_repo,
             plan_approval_repo,
             plan_approval_writer,
@@ -1979,8 +1982,9 @@ impl AutomationScheduler {
                 .await?;
             }
             Some("needs_agent")
-                if elapsed_since(workspace.updated_at)
-                    .is_some_and(|elapsed| elapsed >= self.config.publish_grace) =>
+                if self
+                    .publish_repair_grace_exhausted(conversation_id, &workspace)
+                    .await? =>
             {
                 self.fail_running_run(
                     run,
@@ -2379,6 +2383,39 @@ impl AutomationScheduler {
                     .await?;
                 }
             }
+        }
+        Ok(true)
+    }
+
+    /// `needs_agent` means a repair agent owns the publish path. The flat `publish_grace` is
+    /// sized for "the agent finished, publishing should have started by now", not for a repair
+    /// that legitimately runs for many minutes, so an unsettled durable repair attempt suspends
+    /// the grace entirely. A repair that never settles is still bounded by `max_run_duration`.
+    ///
+    /// Repository errors propagate instead of collapsing into "no repair in flight": a failed
+    /// read must not authorize killing the run.
+    async fn publish_repair_grace_exhausted(
+        &self,
+        conversation_id: &ChatConversationId,
+        workspace: &AgentConversationWorkspace,
+    ) -> AppResult<bool> {
+        if elapsed_since(workspace.updated_at)
+            .is_none_or(|elapsed| elapsed < self.config.publish_grace)
+        {
+            return Ok(false);
+        }
+        let current_repair = self
+            .repair_repo
+            .get_current_repair_attempt(conversation_id)
+            .await?;
+        if let Some(attempt) = current_repair {
+            tracing::debug!(
+                conversation_id = %conversation_id,
+                repair_attempt_id = %attempt.id,
+                repair_phase = %attempt.phase,
+                "Publish grace suspended while a durable workspace repair attempt is unsettled"
+            );
+            return Ok(false);
         }
         Ok(true)
     }

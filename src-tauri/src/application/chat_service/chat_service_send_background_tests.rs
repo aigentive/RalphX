@@ -1885,8 +1885,21 @@ async fn queue_processing_stops_before_launch_when_run_persistence_fails() {
         )
         .await;
 
-    assert_eq!(outcome.total_processed, 1);
-    assert!(outcome.last_run_id.is_some());
+    assert_eq!(
+        outcome.total_processed, 0,
+        "a queued message restored to the queue front must not count as processed"
+    );
+    assert!(
+        outcome.last_run_id.is_none(),
+        "a run that was never persisted must not be reported as the last run"
+    );
+    assert_eq!(
+        message_queue
+            .get_queued(ChatContextType::Ideation, "session-create-fails")
+            .len(),
+        1,
+        "the queued message must be restored so it is not lost"
+    );
     assert!(
         !run_started.load(Ordering::SeqCst),
         "a queued continuation without a durable AgentRun must not emit run_started"

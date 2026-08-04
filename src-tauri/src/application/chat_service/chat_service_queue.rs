@@ -1879,6 +1879,63 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
             let queued_run_agent_name = queued_run.agent_name.clone();
             let queued_run_launch_role = queued_run.launch_role.clone();
             let queued_run_started_at = queued_run.started_at.to_rfc3339();
+            let queue_registry_key =
+                RunningAgentKey::new(context_type.to_string(), queue_context_id);
+            let queue_conversation_id = conversation_id.as_str().to_string();
+            // Reserve the launch slot BEFORE persisting the run row. Losing the slot is
+            // contention, not an agent failure: persisting first left a `failed` run whose
+            // `started_at` was newer than the winner's, so `get_latest_for_conversation`
+            // handed terminal authority to a run that never launched.
+            if let Err(error) = running_agent_registry
+                .try_register(
+                    queue_registry_key.clone(),
+                    queue_conversation_id.clone(),
+                    queued_run_id.clone(),
+                )
+                .await
+            {
+                match error {
+                    TryRegisterError::Occupied(existing) => {
+                        tracing::info!(
+                            conversation_id = %conversation_id,
+                            queued_run_id = %queued_run_id,
+                            existing_run_id = %existing.agent_run_id,
+                            "[QUEUE] Launch slot already owned, restoring queued message for the owning run"
+                        );
+                    }
+                    TryRegisterError::Storage(error) => {
+                        let error_string =
+                            format!("failed to reserve queued continuation launch slot: {error}");
+                        tracing::error!(
+                            conversation_id = %conversation_id,
+                            queued_run_id = %queued_run_id,
+                            error = %error_string,
+                            "[QUEUE] Failed to reserve queued continuation launch slot"
+                        );
+                        emit_queued_preflight_error(
+                            app_handle.as_ref(),
+                            &conversation_id,
+                            context_type,
+                            context_id,
+                            None,
+                            error_string,
+                        );
+                    }
+                }
+                restore_queue_front(
+                    queued_message_repo.as_ref(),
+                    message_queue,
+                    &queue_key,
+                    queued_msg,
+                )
+                .await;
+                // Restored to the queue front, so the message was not processed.
+                total_processed = total_processed.saturating_sub(1);
+                return QueueProcessingOutcome {
+                    total_processed,
+                    last_run_id,
+                };
+            }
             if let Err(error) = agent_run_repo.create(queued_run).await {
                 let error_string =
                     format!("Failed to persist queued continuation agent run: {error}");
@@ -1888,51 +1945,31 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     conversation_id = %conversation_id,
                     "[QUEUE] Failed to persist queued continuation agent run"
                 );
+                // The slot is held but no run row exists, so release it explicitly instead of
+                // leaving the conversation blocked behind a run that was never persisted.
+                running_agent_registry
+                    .unregister(&queue_registry_key, &queued_run_id)
+                    .await;
                 emit_queued_preflight_error(
                     app_handle.as_ref(),
                     &conversation_id,
                     context_type,
                     context_id,
-                    Some(queued_run_id.clone()),
+                    None,
                     error_string,
                 );
-                return QueueProcessingOutcome {
-                    total_processed,
-                    last_run_id: Some(queued_run_id),
-                };
-            }
-            let queue_registry_key =
-                RunningAgentKey::new(context_type.to_string(), queue_context_id);
-            let queue_conversation_id = conversation_id.as_str().to_string();
-            if let Err(error) = running_agent_registry
-                .try_register(
-                    queue_registry_key.clone(),
-                    queue_conversation_id.clone(),
-                    queued_run_id.clone(),
-                )
-                .await
-            {
-                let error_string = match error {
-                    TryRegisterError::Occupied(existing) => format!(
-                        "queued continuation launch slot is owned by agent run {}",
-                        existing.agent_run_id
-                    ),
-                    TryRegisterError::Storage(error) => {
-                        format!("failed to reserve queued continuation launch slot: {error}")
-                    }
-                };
-                fail_queued_agent_run(
-                    agent_run_repo,
-                    running_agent_registry,
-                    &queue_registry_key,
-                    app_handle.as_ref(),
-                    &queued_run_id,
-                    &error_string,
+                restore_queue_front(
+                    queued_message_repo.as_ref(),
+                    message_queue,
+                    &queue_key,
+                    queued_msg,
                 )
                 .await;
+                // Restored to the queue front, so the message was not processed.
+                total_processed = total_processed.saturating_sub(1);
                 return QueueProcessingOutcome {
                     total_processed,
-                    last_run_id: Some(queued_run_id),
+                    last_run_id,
                 };
             }
             let launch_reservation_guard = super::launch_reservation::LaunchReservationGuard::new(

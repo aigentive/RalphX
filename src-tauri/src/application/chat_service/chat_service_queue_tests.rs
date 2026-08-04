@@ -621,6 +621,151 @@ async fn missing_completed_owner_requeues_message_without_preflight_failure_run(
     );
 }
 
+#[tokio::test]
+async fn occupied_launch_slot_requeues_message_without_persisting_a_failed_run() {
+    let app_state = AppState::new_test();
+    let message_queue = Arc::clone(&app_state.message_queue);
+    let running_agent_registry = Arc::clone(&app_state.running_agent_registry);
+    let agent_run_repo = Arc::clone(&app_state.agent_run_repo);
+    let chat_message_repo = Arc::clone(&app_state.chat_message_repo);
+    let chat_attachment_repo = Arc::clone(&app_state.chat_attachment_repo);
+    let artifact_repo = Arc::clone(&app_state.artifact_repo);
+    let activity_event_repo = Arc::clone(&app_state.activity_event_repo);
+    let task_repo = Arc::clone(&app_state.task_repo);
+    let ideation_session_repo = Arc::clone(&app_state.ideation_session_repo);
+    let conversation_id = ChatConversationId::new();
+
+    // The completed owner of the provider session: without it the drain replays through a
+    // fresh session and never reaches the launch-slot reservation.
+    let mut owner_run = AgentRun::new(conversation_id.clone());
+    owner_run.harness = Some(AgentHarnessKind::Claude);
+    owner_run.provider_session_id = Some("claude-session-owned".to_string());
+    owner_run.status = crate::domain::entities::AgentRunStatus::Completed;
+    let owner_run_id = owner_run.id.as_str().to_string();
+    agent_run_repo
+        .create(owner_run)
+        .await
+        .expect("seed completed owner run");
+
+    let registry_key = RunningAgentKey::new(
+        ChatContextType::Ideation.to_string(),
+        "contended-plan-session",
+    );
+    running_agent_registry
+        .try_register(
+            registry_key.clone(),
+            ChatConversationId::new().as_str().to_string(),
+            "run-already-launching".to_string(),
+        )
+        .await
+        .expect("occupy the launch slot");
+
+    message_queue.queue_with_runtime_overrides_and_project_references(
+        ChatContextType::Ideation,
+        "contended-plan-session",
+        "continue the plan".to_string(),
+        None,
+        None,
+        None,
+        None,
+        crate::domain::entities::PersonaDirective::Inherit,
+        None,
+        None,
+        None,
+        false,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        None,
+        Vec::new(),
+        Vec::new(),
+    );
+
+    let outcome = process_queued_messages::<tauri::test::MockRuntime>(
+        ChatContextType::Ideation,
+        AgentHarnessKind::Claude,
+        "contended-plan-session",
+        "contended-plan-session",
+        conversation_id.clone(),
+        "claude-session-owned",
+        false,
+        &message_queue,
+        None,
+        None,
+        &running_agent_registry,
+        &agent_run_repo,
+        &chat_message_repo,
+        None,
+        &chat_attachment_repo,
+        &artifact_repo,
+        &activity_event_repo,
+        &task_repo,
+        &ideation_session_repo,
+        std::path::Path::new("/definitely/missing/ralphx-test-cli"),
+        std::path::Path::new("."),
+        std::path::Path::new("."),
+        None,
+        None,
+        None,
+        None,
+        None,
+        tokio_util::sync::CancellationToken::new(),
+        None,
+        None,
+        crate::application::chat_service::StreamingStateCache::new(),
+    )
+    .await;
+
+    assert_eq!(
+        outcome.total_processed, 0,
+        "contention must not count the message as processed"
+    );
+    let queued = message_queue.get_queued(ChatContextType::Ideation, "contended-plan-session");
+    assert_eq!(
+        queued.len(),
+        1,
+        "the message must stay queued for the owning run to drain"
+    );
+    assert_eq!(queued[0].content, "continue the plan");
+
+    let runs = agent_run_repo
+        .get_by_conversation(&conversation_id)
+        .await
+        .expect("load agent runs");
+    assert_eq!(
+        runs.len(),
+        1,
+        "launch-slot contention must not persist a phantom agent run: {runs:?}"
+    );
+    assert_eq!(runs[0].id.as_str(), owner_run_id);
+    assert!(
+        !runs
+            .iter()
+            .any(|run| run.status == crate::domain::entities::AgentRunStatus::Failed),
+        "contention is not an agent failure"
+    );
+
+    let latest = agent_run_repo
+        .get_latest_for_conversation(&conversation_id)
+        .await
+        .expect("load latest run")
+        .expect("latest run exists");
+    assert_eq!(
+        latest.id.as_str(),
+        owner_run_id,
+        "terminal authority must stay with the run that actually launched"
+    );
+
+    let reservation = running_agent_registry
+        .get(&registry_key)
+        .await
+        .expect("slot still owned");
+    assert_eq!(
+        reservation.agent_run_id, "run-already-launching",
+        "the losing drain must not steal or clear the winner's reservation"
+    );
+}
+
 #[test]
 fn hidden_resume_marker_metadata_strips_transient_flags() {
     let metadata = hidden_resume_in_place_marker_metadata(Some(
