@@ -1093,6 +1093,60 @@ function forkResult(): ForkAgentConversationResult {
   };
 }
 
+function setActiveReviewerRuntime(
+  runtime: {
+    provider: "claude" | "codex";
+    model: string;
+    effort: string;
+    serviceTier: "provider_default" | "standard" | "fast";
+  },
+) {
+  vi.mocked(invoke).mockImplementation((command) => {
+    if (command === "get_manual_role_defaults") {
+      return Promise.resolve({
+        project_id: "project-1",
+        roles: [
+          {
+            role: "workspace_reviewer",
+            display_name: "Reviewer",
+            description: "Review",
+            family: "workspace",
+            family_display_name: "Workspace",
+            requires_tasks: false,
+            configured: null,
+            effective: {
+              provider: runtime.provider,
+              model: runtime.model,
+              effort: runtime.effort,
+              service_tier: runtime.serviceTier,
+              coordination_mode: "solo",
+              persona_id: null,
+              approval_policy: null,
+              sandbox_mode: null,
+            },
+            source: "project",
+            diagnostics: [],
+            controls: {
+              capabilities: [],
+              speeds: [],
+              persona: { enabled: true, disabled_reason: null },
+            },
+          },
+        ],
+      });
+    }
+    return Promise.resolve(undefined);
+  });
+  useChatStore.setState({
+    activeAgentRunMeta: {
+      "project:conversation-1": {
+        launchRole: "workspace_reviewer",
+        agentName: "reviewer",
+      },
+    },
+  });
+}
+
 function planArtifact(status: "draft" | "approved" = "draft") {
   return {
     id: "artifact-1",
@@ -4160,6 +4214,15 @@ describe("AgentsActiveConversationPanel", () => {
   it("switches to Plan mode when the user accepts a plan-mode proposal question", async () => {
     const user = userEvent.setup();
     const planWorkspace = { ...workspace(), mode: "plan" as const };
+    setActiveReviewerRuntime({
+      provider: "claude",
+      model: "sonnet",
+      effort: "medium",
+      serviceTier: "provider_default",
+    });
+    useAgentSessionStore
+      .getState()
+      .setServiceTierForConversation("conversation-1", "fast");
     switchAgentConversationModeMock.mockResolvedValue({
       workspace: planWorkspace,
     });
@@ -4170,9 +4233,16 @@ describe("AgentsActiveConversationPanel", () => {
       activeConversation: { ...projectConversation(), agentMode: "edit" },
       activeConversationMode: "edit",
       activeWorkspace: { ...workspace(), mode: "edit" },
+      normalizedActiveRuntime: {
+        provider: "codex",
+        modelId: "gpt-5.5",
+        effort: "high",
+      },
       onConversationModeSwitched,
       onAgentUserMessageSent,
     });
+
+    await screen.findByTestId("agents-role-runtime-banner");
 
     await user.click(screen.getByTestId("accept-plan-mode-proposal"));
 
@@ -4201,8 +4271,9 @@ describe("AgentsActiveConversationPanel", () => {
       expect.objectContaining({
         conversationId: "conversation-1",
         providerHarness: "claude",
-        modelId: "opus",
-        logicalEffort: "high",
+        modelId: "sonnet",
+        logicalEffort: "medium",
+        codexFastMode: null,
       }),
     );
     expect(onAgentUserMessageSent).toHaveBeenCalledWith(
@@ -4846,6 +4917,15 @@ describe("AgentsActiveConversationPanel", () => {
     const user = userEvent.setup();
     const onAgentUserMessageSent = vi.fn();
     const onForkConversation = vi.fn().mockResolvedValue(forkResult());
+    setActiveReviewerRuntime({
+      provider: "claude",
+      model: "sonnet",
+      effort: "medium",
+      serviceTier: "provider_default",
+    });
+    useAgentSessionStore
+      .getState()
+      .setServiceTierForConversation("conversation-1", "fast");
     renderPanel({
       normalizedActiveRuntime: {
         provider: "codex",
@@ -4855,6 +4935,8 @@ describe("AgentsActiveConversationPanel", () => {
       onAgentUserMessageSent,
       onForkConversation,
     });
+
+    await screen.findByTestId("agents-role-runtime-banner");
 
     await user.click(screen.getByTestId("send-fork-followup-command"));
     await user.click(screen.getByRole("button", { name: "Fork session" }));
@@ -4867,9 +4949,9 @@ describe("AgentsActiveConversationPanel", () => {
         undefined,
         {
           conversationId: "conversation-fork",
-          providerHarness: "codex",
-          modelId: "gpt-5.5",
-          logicalEffort: "high",
+          providerHarness: "claude",
+          modelId: "sonnet",
+          logicalEffort: "medium",
           codexFastMode: null,
         },
       ),
@@ -4885,6 +4967,44 @@ describe("AgentsActiveConversationPanel", () => {
         queuedMessageId: null,
       },
     });
+  });
+
+  it("retains a fast-mode flag for a Codex active reviewer fork", async () => {
+    const user = userEvent.setup();
+    const onForkConversation = vi.fn().mockResolvedValue(forkResult());
+    setActiveReviewerRuntime({
+      provider: "codex",
+      model: "gpt-5.5",
+      effort: "high",
+      serviceTier: "fast",
+    });
+    renderPanel({
+      normalizedActiveRuntime: {
+        provider: "claude",
+        modelId: "opus",
+        effort: "high",
+      },
+      onForkConversation,
+    });
+
+    await screen.findByTestId("agents-role-runtime-banner");
+    await user.click(screen.getByTestId("send-fork-followup-command"));
+    await user.click(screen.getByRole("button", { name: "Fork session" }));
+
+    await waitFor(() =>
+      expect(chatApi.sendAgentMessage).toHaveBeenCalledWith(
+        "project",
+        "project-1",
+        "continue this thread",
+        undefined,
+        expect.objectContaining({
+          providerHarness: "codex",
+          modelId: "gpt-5.5",
+          logicalEffort: "high",
+          codexFastMode: true,
+        }),
+      ),
+    );
   });
 
   it("requires confirmation before running the composer fork action", async () => {

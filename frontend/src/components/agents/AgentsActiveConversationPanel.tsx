@@ -2512,7 +2512,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
             providerHarness: workspaceSendRuntime.provider,
             modelId: workspaceSendRuntime.modelId,
             logicalEffort: workspaceSendRuntime.effort,
-            codexFastMode: activeCodexFastModeOption,
+            codexFastMode: panelCodexFastModeOption,
           },
         );
         onAgentUserMessageSent({
@@ -2531,9 +2531,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       }
     },
     [
-      activeCodexFastModeOption,
       activeProjectId,
       onAgentUserMessageSent,
+      panelCodexFastModeOption,
       workspaceSendRuntime,
     ],
   );
@@ -2949,7 +2949,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                         providerHarness: workspaceSendRuntime.provider,
                         modelId: workspaceSendRuntime.modelId,
                         logicalEffort: workspaceSendRuntime.effort,
-                        codexFastMode: activeCodexFastModeOption,
+                        codexFastMode: panelCodexFastModeOption,
                         ...(options?.capabilityIntent
                           ? { capabilityIntent: options.capabilityIntent }
                           : {}),
