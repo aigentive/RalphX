@@ -103,6 +103,7 @@ for filter in \
   release_notes_commands \
   agent_workspace_repair_auto_publish \
   agent_workspace_pr_review_notifications \
+  agent_conversation_start_team_exit \
   metrics_commands \
   metrics_delivery_trends \
   metrics_integration \
