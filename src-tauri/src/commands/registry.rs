@@ -419,6 +419,7 @@ macro_rules! register_tauri_commands {
             commands::unified_chat_commands::stop_pr_autofix_for_failure,
             commands::unified_chat_commands::set_agent_conversation_workspace_auto_publish,
             commands::unified_chat_commands::set_agent_conversation_workspace_pr_supervision,
+            commands::unified_chat_commands::set_agent_conversation_workspace_review_automation,
             commands::unified_chat_commands::list_agent_conversation_workspaces_by_project,
             commands::unified_chat_commands::list_agent_conversation_workspace_publication_events,
             commands::unified_chat_commands::get_agent_conversation_workspace_freshness,

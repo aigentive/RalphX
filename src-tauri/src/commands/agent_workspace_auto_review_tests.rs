@@ -219,6 +219,10 @@ fn skip_reason_codes_are_stable() {
             "no_reviewable_changes",
         ),
         (AutoReviewSkipReason::GateNotRequired, "gate_not_required"),
+        (
+            AutoReviewSkipReason::WorkspaceAutomationOff,
+            "workspace_automation_off",
+        ),
         (AutoReviewSkipReason::AlreadyReviewing, "already_reviewing"),
         (AutoReviewSkipReason::BlockingFindings, "blocking_findings"),
         (AutoReviewSkipReason::ReviewFailed, "review_failed"),
@@ -419,6 +423,52 @@ async fn auto_review_start_action_starts_first_review_for_dirty_workspace_withou
         .expect("auto-review action should resolve");
 
     assert_eq!(action, AutoReviewStartAction::Start);
+}
+
+#[tokio::test]
+async fn review_automation_start_honors_enabled_workspace_override_when_globals_are_off() {
+    let (_temp, repo, base_sha) = init_repo();
+    commit_workspace_delta(&repo);
+    let state = AppState::new_test();
+    let execution_state = ExecutionState::new();
+    let project = seed_project(&state, &repo).await;
+    let mut workspace = workspace(&project, &repo, Some(base_sha));
+    workspace.review_automation_override = Some(true);
+    seed_workspace_conversation(&state, &workspace).await;
+    state
+        .review_settings_repo
+        .update_settings(&ReviewSettings {
+            require_workspace_review: false,
+            ..ReviewSettings::default()
+        })
+        .await
+        .expect("review settings should update");
+
+    assert_eq!(
+        resolve_auto_review_start_action(&state, &execution_state, &workspace)
+            .await
+            .expect("auto-review action should resolve"),
+        AutoReviewStartAction::Start
+    );
+}
+
+#[tokio::test]
+async fn review_automation_start_reports_explicit_workspace_opt_out() {
+    let (_temp, repo, base_sha) = init_repo();
+    commit_workspace_delta(&repo);
+    let state = AppState::new_test();
+    let execution_state = ExecutionState::new();
+    let project = seed_project(&state, &repo).await;
+    let mut workspace = workspace(&project, &repo, Some(base_sha));
+    workspace.review_automation_override = Some(false);
+    seed_workspace_conversation(&state, &workspace).await;
+
+    assert_eq!(
+        resolve_auto_review_start_action(&state, &execution_state, &workspace)
+            .await
+            .expect("auto-review action should resolve"),
+        AutoReviewStartAction::Skip(AutoReviewSkipReason::WorkspaceAutomationOff)
+    );
 }
 
 #[tokio::test]

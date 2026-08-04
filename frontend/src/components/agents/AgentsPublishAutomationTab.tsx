@@ -16,6 +16,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useConfirmation } from "@/hooks/useConfirmation";
+import { useReviewSettings } from "@/hooks/useReviewSettings";
 import { extractErrorMessage } from "@/lib/errors";
 import { useUiStore } from "@/stores/uiStore";
 import {
@@ -26,6 +27,7 @@ import {
   deriveAgentsPublishAutomationSnapshot,
   type AgentsPublishAutomationSnapshot,
 } from "./agentsPublishAutomationSnapshot";
+import { WORKSPACE_REVIEW_AUTOMATION_COPY } from "./workspaceReviewAutomationCopy";
 
 type PrSupervisionResultOverride = {
   sourceWorkspaceUpdatedAt: string | null;
@@ -39,6 +41,15 @@ type AutoPublishMutationInput = {
 type PrSupervisionMutationInput = {
   autoFixEnabled: boolean;
   autoMergeDesired: boolean;
+};
+
+type ReviewAutomationMutationInput = {
+  enabled: boolean | null;
+};
+
+type ReviewAutomationResultOverride = {
+  sourceWorkspaceUpdatedAt: string | null;
+  workspace: AgentConversationWorkspace;
 };
 
 const PR_AUTOFIX_LEDGER_STEPS = new Set([
@@ -117,6 +128,9 @@ export function AgentsPublishAutomationTab({
   const conversationId = workspace.conversationId;
   const [prSupervisionResultOverride, setPrSupervisionResultOverride] =
     useState<PrSupervisionResultOverride | null>(null);
+  const [reviewAutomationResultOverride, setReviewAutomationResultOverride] =
+    useState<ReviewAutomationResultOverride | null>(null);
+  const reviewSettingsQuery = useReviewSettings();
   const { confirm, confirmationDialogProps, ConfirmationDialog } =
     useConfirmation();
   const autoPublishMutation = useMutation<
@@ -176,6 +190,28 @@ export function AgentsPublishAutomationTab({
       );
     },
   });
+  const reviewAutomationMutation = useMutation<
+    AgentConversationWorkspace,
+    Error,
+    ReviewAutomationMutationInput
+  >({
+    mutationFn: (input) =>
+      chatApi.setAgentConversationWorkspaceReviewAutomation(conversationId, input),
+    onSuccess: (updatedWorkspace) => {
+      queryClient.setQueryData(
+        agentWorkspaceKeys.workspace(updatedWorkspace.conversationId),
+        updatedWorkspace,
+      );
+      setReviewAutomationResultOverride({
+        sourceWorkspaceUpdatedAt: workspace.updatedAt ?? null,
+        workspace: updatedWorkspace,
+      });
+      void invalidateWorkspaceQueries(queryClient, updatedWorkspace.conversationId);
+    },
+    onError: (error) => {
+      toast.error(extractErrorMessage(error, "Unable to update Auto Review & Fix"));
+    },
+  });
   useEffect(() => {
     if (!prSupervisionResultOverride) {
       return;
@@ -202,6 +238,29 @@ export function AgentsPublishAutomationTab({
       setPrSupervisionResultOverride(null);
     }
   }, [prSupervisionResultOverride, workspace]);
+  useEffect(() => {
+    if (!reviewAutomationResultOverride) {
+      return;
+    }
+    if (
+      workspace.conversationId !==
+      reviewAutomationResultOverride.workspace.conversationId
+    ) {
+      setReviewAutomationResultOverride(null);
+      return;
+    }
+    const updatedWorkspace = reviewAutomationResultOverride.workspace;
+    const workspaceMatchesResult =
+      workspace.reviewAutomationOverride ===
+      updatedWorkspace.reviewAutomationOverride;
+    const workspaceRefreshedAfterMutation =
+      reviewAutomationResultOverride.sourceWorkspaceUpdatedAt !== null &&
+      workspace.updatedAt !==
+        reviewAutomationResultOverride.sourceWorkspaceUpdatedAt;
+    if (workspaceMatchesResult || workspaceRefreshedAfterMutation) {
+      setReviewAutomationResultOverride(null);
+    }
+  }, [reviewAutomationResultOverride, workspace]);
 
   const pendingAutoPublish = autoPublishMutation.isPending
     ? autoPublishMutation.variables
@@ -209,10 +268,18 @@ export function AgentsPublishAutomationTab({
   const pendingPrSupervision = prSupervisionMutation.isPending
     ? prSupervisionMutation.variables
     : null;
+  const pendingReviewAutomation = reviewAutomationMutation.isPending
+    ? reviewAutomationMutation.variables
+    : null;
   const settledPrSupervisionWorkspace =
     prSupervisionResultOverride?.workspace.conversationId ===
     workspace.conversationId
       ? prSupervisionResultOverride.workspace
+      : null;
+  const settledReviewAutomationWorkspace =
+    reviewAutomationResultOverride?.workspace.conversationId ===
+    workspace.conversationId
+      ? reviewAutomationResultOverride.workspace
       : null;
   const snapshot = useMemo(
     () =>
@@ -221,16 +288,22 @@ export function AgentsPublishAutomationTab({
         hasPublishedPr,
         pendingAutoPublish,
         pendingPrSupervision,
+        pendingReviewAutomation,
         settledPrSupervisionWorkspace,
+        settledReviewAutomationWorkspace,
         isAutoPublishSaving: autoPublishMutation.isPending,
         isPrSupervisionSaving: prSupervisionMutation.isPending,
+        isReviewAutomationSaving: reviewAutomationMutation.isPending,
       }),
     [
       autoPublishMutation.isPending,
       hasPublishedPr,
       pendingAutoPublish,
       pendingPrSupervision,
+      pendingReviewAutomation,
       prSupervisionMutation.isPending,
+      reviewAutomationMutation.isPending,
+      settledReviewAutomationWorkspace,
       settledPrSupervisionWorkspace,
       workspace,
     ],
@@ -243,12 +316,17 @@ export function AgentsPublishAutomationTab({
     canRunPrSupervisionAutomation,
     isAutoPublishSaving,
     isPrSupervisionSaving,
+    isReviewAutomationSaving,
     prAutofixEnabled,
     prAutoMergeDesired,
+    reviewAutomationOverride,
   } = snapshot;
   const canConfigureAutoPublish = canConfigurePrSupervision;
   const prAutofixLedger = useMemo(
-    () => publicationEvents.filter((event) => PR_AUTOFIX_LEDGER_STEPS.has(event.step)),
+    () =>
+      publicationEvents.filter((event) =>
+        PR_AUTOFIX_LEDGER_STEPS.has(event.step),
+      ),
     [publicationEvents],
   );
   const prAutofixSpend = workspace.prAutofixFingerprintSpend;
@@ -303,6 +381,40 @@ export function AgentsPublishAutomationTab({
         autoPublishMutation.mutateAsync({ autoPublishEnabled: nextEnabled }),
     });
   };
+  const confirmReviewAutomationChange = (enabled: boolean | null) => {
+    if (isReviewAutomationSaving) {
+      return;
+    }
+    const action =
+      enabled === null
+        ? {
+            title: "Inherit Auto Review & Fix?",
+            confirmText: "Use global Review settings",
+            detail: "This conversation will follow the global Review settings again.",
+          }
+        : enabled
+          ? {
+              title: "Turn on Auto Review & Fix?",
+              confirmText: "Turn on Auto Review & Fix",
+              detail: "This conversation will keep the Review → Fix → Review loop armed.",
+            }
+          : {
+              title: "Turn off Auto Review & Fix?",
+              confirmText: "Turn off Auto Review & Fix",
+              detail: "Manual Workspace Review and Fix Issues remain available.",
+            };
+    void confirm({
+      title: action.title,
+      description: `${WORKSPACE_REVIEW_AUTOMATION_COPY} ${action.detail}`,
+      confirmText: action.confirmText,
+      pendingText: "Saving...",
+      onConfirm: () => reviewAutomationMutation.mutateAsync({ enabled }),
+    });
+  };
+  const globalReviewLoopActive = Boolean(
+    reviewSettingsQuery.data?.require_workspace_review &&
+      reviewSettingsQuery.data?.autofix_workspace_review_blocking_findings,
+  );
 
   const cardStyle = {
     backgroundColor: "var(--bg-subtle)",
@@ -336,6 +448,46 @@ export function AgentsPublishAutomationTab({
                   ? "Controls background publishing for this PR, including publish-after-turn, stale-base scans, PR autofix publishing, and auto-merge automation."
                   : "Runs Commit & Publish automatically when the agent finishes before a pull request exists."}
             </PublishSwitchInfoTooltip>
+          </div>
+        </div>
+        <div className="rounded-lg p-3" style={cardStyle}>
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5 text-[var(--text-secondary)]">
+                <span className="text-xs font-medium">Auto Review &amp; Fix</span>
+              </div>
+              <p className="mt-1 text-xs leading-relaxed text-[var(--text-muted)]">
+                {WORKSPACE_REVIEW_AUTOMATION_COPY}
+              </p>
+              {reviewAutomationOverride === null && (
+                <p className="mt-1 text-[11px] text-[var(--text-muted)]">
+                  Follows global Review settings (currently {globalReviewLoopActive ? "on" : "off"})
+                </p>
+              )}
+            </div>
+            <div
+              className="inline-flex shrink-0 rounded-md border p-0.5"
+              style={{ borderColor: "var(--border-subtle)" }}
+              role="group"
+              aria-label="Auto Review & Fix preference"
+            >
+              {([
+                [null, "Inherit"],
+                [true, "On"],
+                [false, "Off"],
+              ] as const).map(([value, label]) => (
+                <button
+                  key={label}
+                  type="button"
+                  aria-pressed={reviewAutomationOverride === value}
+                  disabled={isReviewAutomationSaving}
+                  onClick={() => confirmReviewAutomationChange(value)}
+                  className="rounded px-2 py-1 text-[11px] font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] aria-pressed:bg-[var(--accent-muted)] aria-pressed:text-[var(--accent-primary)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--focus-ring)] disabled:opacity-60"
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
         <div className="rounded-lg p-3" style={cardStyle}>
@@ -408,8 +560,11 @@ export function AgentsPublishAutomationTab({
                 className="mt-1 text-xs font-medium text-[var(--text-primary)]"
                 data-testid="agents-pr-autofix-budget"
               >
-                {prAutofixSpend.minutes} / {prAutofixSpend.budgetMinutes} min · {prAutofixSpend.generations} generations
-                {prAutofixSpend.isExhausted ? " · Repair budget exhausted" : ""}
+                {prAutofixSpend.minutes} / {prAutofixSpend.budgetMinutes} min ·{" "}
+                {prAutofixSpend.generations} generations
+                {prAutofixSpend.isExhausted
+                  ? " · Repair budget exhausted"
+                  : ""}
               </div>
             )}
             {prAutofixLedger.length > 0 && (

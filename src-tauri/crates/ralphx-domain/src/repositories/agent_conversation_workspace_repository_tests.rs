@@ -75,6 +75,14 @@ impl AgentConversationWorkspaceRepository for FallbackOnlyWorkspaceRepository {
         Ok(())
     }
 
+    async fn set_review_automation_override(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _value: Option<bool>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
     async fn update_status(
         &self,
         _conversation_id: &ChatConversationId,

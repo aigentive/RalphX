@@ -92,9 +92,8 @@ use crate::application::agent_workspace_pr_supervision_recovery::{
 };
 use crate::application::agent_workspace_publish_lease::{
     begin_publish_operation_scope, publish_operation_lease_is_live,
-    publish_operation_lease_token_for_scope,
-    spawn_publish_operation_lease_heartbeat_for_scope, stop_publish_operation_lease_heartbeat,
-    PublishOperationScopeGuard,
+    publish_operation_lease_token_for_scope, spawn_publish_operation_lease_heartbeat_for_scope,
+    stop_publish_operation_lease_heartbeat, PublishOperationScopeGuard,
 };
 use crate::application::agent_workspace_publish_recovery::{
     agent_workspace_repair_owns_unpublished_publish_continuation, pr_autofix_fingerprint_spend,
@@ -102,15 +101,14 @@ use crate::application::agent_workspace_publish_recovery::{
 };
 use crate::application::agent_workspace_publish_repair_state::{
     classify_agent_workspace_repair_delivery, last_human_repair_reason,
-    reserve_agent_workspace_repair_dispatch,
-    resume_current_agent_workspace_repair_publish, resume_ready_agent_workspace_repair_for_publish,
+    reserve_agent_workspace_repair_dispatch, resume_current_agent_workspace_repair_publish,
+    resume_ready_agent_workspace_repair_for_publish,
     retry_agent_workspace_pr_autofix_hold_override, settle_agent_workspace_repair_dispatch_outcome,
     start_or_join_agent_workspace_repair, stop_agent_workspace_pr_autofix_for_hold,
     AgentWorkspacePrAutofixHoldActionOutcome, AgentWorkspaceRepairDispatchOutcome,
     AgentWorkspaceRepairDispatchSettlement, AgentWorkspaceRepairPublishResumeOutcome,
     AgentWorkspaceRepairStartOutcome, AgentWorkspaceRepairStartRequest,
-    AgentWorkspaceRepairTransitionOutcome, PublishAuthority,
-    DEFERRED_REPAIR_WAIT_TIMEOUT_SECS,
+    AgentWorkspaceRepairTransitionOutcome, PublishAuthority, DEFERRED_REPAIR_WAIT_TIMEOUT_SECS,
 };
 use crate::application::agent_workspace_review::{
     load_workspace_review_publish_blocker, lock_workspace_review_lifecycle,
@@ -161,17 +159,17 @@ use crate::domain::entities::plan_branch::PrPushStatus;
 use crate::domain::entities::task_step::StepProgressSummary;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
-    AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent, AgentRun,
-    AgentRunId, AgentRunStatus, AgentWorkspacePrDescription, AgentWorkspacePrMetadataDecision,
-    AgentWorkspaceRepairAttempt, AgentWorkspaceRepairAttemptId, AgentWorkspaceRepairContinuation,
-    AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource, AgentWorkspaceReviewMonitorStatus,
-    AgentWorkspaceSourcePullRequest, ArtifactContent, ChatAttachmentId, ChatContextType,
-    ChatConversation, ChatConversationId, ChatMessage, ChatMessageId, ChatTimelineItem,
-    CoordinationMode, DelegatedSessionId, ExecutionPlanStatus, GitTargetIdentity,
-    IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, IdeationSessionId,
-    InternalStatus, PersonaId, PlanBranch, PlanBranchStatus, Project, ProjectId, RuntimeSource,
-    Task, TaskCategory, TeamIntent, TeamMessageTarget,
-    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent,
+    AgentConversationWorkspaceStatus, AgentRun, AgentRunId, AgentRunStatus,
+    AgentWorkspacePrDescription, AgentWorkspacePrMetadataDecision, AgentWorkspaceRepairAttempt,
+    AgentWorkspaceRepairAttemptId, AgentWorkspaceRepairContinuation, AgentWorkspaceRepairPhase,
+    AgentWorkspaceRepairSource, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceSourcePullRequest,
+    ArtifactContent, ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId,
+    ChatMessage, ChatMessageId, ChatTimelineItem, CoordinationMode, DelegatedSessionId,
+    ExecutionPlanStatus, GitTargetIdentity, IdeationAnalysisBaseRefKind, IdeationSession,
+    IdeationSessionFlow, IdeationSessionId, InternalStatus, PersonaId, PlanBranch,
+    PlanBranchStatus, Project, ProjectId, RuntimeSource, Task, TaskCategory, TeamIntent,
+    TeamMessageTarget, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::execution::{
     build_running_ideation_session, build_running_process, context_matches_running_status,
@@ -451,6 +449,7 @@ pub struct AgentConversationWorkspaceResponse {
     pub auto_publish_paused_pr_autofix_enabled: Option<bool>,
     pub auto_publish_paused_pr_auto_merge_desired: Option<bool>,
     pub pr_autofix_enabled: bool,
+    pub review_automation_override: Option<bool>,
     pub pr_auto_merge_desired: bool,
     pub pr_auto_merge_method: String,
     pub pr_auto_merge_current: Option<bool>,
@@ -481,6 +480,12 @@ pub struct AgentConversationWorkspacePrSupervisionInput {
     pub auto_fix_enabled: bool,
     pub auto_merge_desired: bool,
     pub auto_merge_method: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentConversationWorkspaceReviewAutomationInput {
+    pub enabled: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -551,6 +556,7 @@ impl From<AgentConversationWorkspace> for AgentConversationWorkspaceResponse {
             auto_publish_paused_pr_auto_merge_desired: workspace
                 .auto_publish_paused_pr_auto_merge_desired,
             pr_autofix_enabled: workspace.pr_autofix_enabled,
+            review_automation_override: workspace.review_automation_override,
             pr_auto_merge_desired: workspace.pr_auto_merge_desired,
             pr_auto_merge_method: workspace.pr_auto_merge_method,
             pr_auto_merge_current: workspace.pr_auto_merge_current,
@@ -5131,7 +5137,6 @@ async fn reconcile_agent_workspace_auto_merge_for_supervision_toggle(
                 pr_number,
                 &desired_workspace,
                 Arc::clone(&state.agent_conversation_workspace_repo),
-                Arc::clone(&state.agent_workspace_repair_repo),
             )
             .await
             .map_err(|error| error.to_string())?;
@@ -5192,7 +5197,6 @@ async fn reconcile_agent_workspace_auto_merge_for_supervision_toggle(
             pr_number,
             &desired_workspace,
             Arc::clone(&state.agent_conversation_workspace_repo),
-            Arc::clone(&state.agent_workspace_repair_repo),
         )
         .await
         {
@@ -5370,6 +5374,53 @@ pub async fn set_agent_conversation_workspace_pr_supervision_for_state(
         .get_by_conversation_id(&conversation_id)
         .await
         .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Agent conversation workspace not found".to_string())?;
+    agent_workspace_response_for_state(state, updated).await
+}
+
+/// Set the durable Auto Review & Fix override for a project-backed agent workspace.
+#[tauri::command]
+pub async fn set_agent_conversation_workspace_review_automation(
+    conversation_id: String,
+    input: AgentConversationWorkspaceReviewAutomationInput,
+    state: State<'_, AppState>,
+) -> Result<AgentConversationWorkspaceResponse, String> {
+    set_agent_conversation_workspace_review_automation_for_state(
+        conversation_id,
+        input,
+        state.inner(),
+    )
+    .await
+}
+
+pub async fn set_agent_conversation_workspace_review_automation_for_state(
+    conversation_id: String,
+    input: AgentConversationWorkspaceReviewAutomationInput,
+    state: &AppState,
+) -> Result<AgentConversationWorkspaceResponse, String> {
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let Some(workspace) = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+    else {
+        return Err("Agent conversation workspace not found".to_string());
+    };
+    if workspace.status == AgentConversationWorkspaceStatus::Archived {
+        return Err("Review automation cannot be changed for an archived workspace".to_string());
+    }
+
+    state
+        .agent_conversation_workspace_repo
+        .set_review_automation_override(&conversation_id, input.enabled)
+        .await
+        .map_err(|error| error.to_string())?;
+    let updated = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
         .ok_or_else(|| "Agent conversation workspace not found".to_string())?;
     agent_workspace_response_for_state(state, updated).await
 }
@@ -5657,7 +5708,6 @@ pub async fn set_agent_conversation_workspace_auto_publish_for_state(
                 pr_number,
                 &refreshed_for_sync,
                 Arc::clone(&state.agent_conversation_workspace_repo),
-                Arc::clone(&state.agent_workspace_repair_repo),
             )
             .await
             {
@@ -7879,7 +7929,6 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
             pr_number,
             &refreshed,
             Arc::clone(&state.agent_conversation_workspace_repo),
-            Arc::clone(&state.agent_workspace_repair_repo),
         )
         .await
         {
@@ -9153,7 +9202,6 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
             outcome.pr_number,
             &refreshed,
             Arc::clone(&state.agent_conversation_workspace_repo),
-            Arc::clone(&state.agent_workspace_repair_repo),
         )
         .await
         {
@@ -9280,10 +9328,8 @@ async fn mark_agent_workspace_publish_status(
         push_status,
         "refreshed" | "pushed" | "failed" | "no_changes"
     ) {
-        let owned_token = publish_operation_lease_token_for_scope(
-            &current.conversation_id,
-            operation_scope,
-        );
+        let owned_token =
+            publish_operation_lease_token_for_scope(&current.conversation_id, operation_scope);
         if let Some(token) = owned_token.as_deref() {
             let release = state
                 .agent_conversation_workspace_repo
@@ -10090,13 +10136,7 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
     {
         let push_status = "failed";
         if let Err(release_error) =
-            settle_agent_workspace_publish_lease_status(
-                state,
-                workspace,
-                push_status,
-                None,
-            )
-            .await
+            settle_agent_workspace_publish_lease_status(state, workspace, push_status, None).await
         {
             tracing::warn!(
                 conversation_id = %workspace.conversation_id,
@@ -10164,13 +10204,8 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
         "failed"
     };
     if let Err(release_error) =
-        settle_agent_workspace_publish_lease_status(
-            state,
-            workspace,
-            lease_settlement_status,
-            None,
-        )
-        .await
+        settle_agent_workspace_publish_lease_status(state, workspace, lease_settlement_status, None)
+            .await
     {
         tracing::warn!(
             conversation_id = %workspace.conversation_id,
