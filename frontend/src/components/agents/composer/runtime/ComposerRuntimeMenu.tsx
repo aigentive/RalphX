@@ -42,7 +42,7 @@ interface ComposerRuntimeMenuProps {
     onReset: () => Promise<unknown> | void;
   };
   viewingProvider: AgentProvider;
-  onViewingProviderChange: (provider: AgentProvider) => void;
+  onPreviewProviderChange: (provider: AgentProvider | null) => void;
   level: ComposerRuntimeMenuLevel;
   onLevelChange: (level: ComposerRuntimeMenuLevel) => void;
   narrow: boolean;
@@ -61,7 +61,7 @@ export function ComposerRuntimeMenu({
   speed,
   runtimeDefault,
   viewingProvider,
-  onViewingProviderChange,
+  onPreviewProviderChange,
   level,
   onLevelChange,
   narrow,
@@ -107,8 +107,12 @@ export function ComposerRuntimeMenu({
     nextProvider: AgentProvider,
     disabled: boolean,
   ) => {
-    onViewingProviderChange(nextProvider);
-    if (!disabled && !provider.disabled) {
+    if (disabled) {
+      onPreviewProviderChange(nextProvider);
+      return;
+    }
+    if (!provider.disabled) {
+      onPreviewProviderChange(null);
       provider.onValueChange(nextProvider);
       returnToOverview(providerTriggerRef);
     }
