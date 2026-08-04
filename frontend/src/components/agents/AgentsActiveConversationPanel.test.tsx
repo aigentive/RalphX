@@ -809,7 +809,9 @@ vi.mock("./AgentComposerSurface", () => ({
         type="button"
         data-testid="change-workspace-provider"
         disabled={provider.disabled}
-        onClick={() => provider.onValueChange("codex")}
+        onClick={() =>
+          provider.onValueChange(provider.value === "codex" ? "claude" : "codex")
+        }
       />
       <button
         type="button"
@@ -1089,6 +1091,60 @@ function forkResult(): ForkAgentConversationResult {
     copiedMessageCount: 2,
     copiedTimelineItemCount: 0,
   };
+}
+
+function setActiveReviewerRuntime(
+  runtime: {
+    provider: "claude" | "codex";
+    model: string;
+    effort: string;
+    serviceTier: "provider_default" | "standard" | "fast";
+  },
+) {
+  vi.mocked(invoke).mockImplementation((command) => {
+    if (command === "get_manual_role_defaults") {
+      return Promise.resolve({
+        project_id: "project-1",
+        roles: [
+          {
+            role: "workspace_reviewer",
+            display_name: "Reviewer",
+            description: "Review",
+            family: "workspace",
+            family_display_name: "Workspace",
+            requires_tasks: false,
+            configured: null,
+            effective: {
+              provider: runtime.provider,
+              model: runtime.model,
+              effort: runtime.effort,
+              service_tier: runtime.serviceTier,
+              coordination_mode: "solo",
+              persona_id: null,
+              approval_policy: null,
+              sandbox_mode: null,
+            },
+            source: "project",
+            diagnostics: [],
+            controls: {
+              capabilities: [],
+              speeds: [],
+              persona: { enabled: true, disabled_reason: null },
+            },
+          },
+        ],
+      });
+    }
+    return Promise.resolve(undefined);
+  });
+  useChatStore.setState({
+    activeAgentRunMeta: {
+      "project:conversation-1": {
+        launchRole: "workspace_reviewer",
+        agentName: "reviewer",
+      },
+    },
+  });
 }
 
 function planArtifact(status: "draft" | "approved" = "draft") {
@@ -1654,6 +1710,20 @@ describe("AgentsActiveConversationPanel", () => {
     expect(screen.getByTestId("workspace-runtime-tag")).toHaveTextContent("REV");
     expect(screen.getByTestId("workspace-advanced-popover-header")).toHaveTextContent("Advanced · Reviewer runtime");
     await waitFor(() => expect(screen.getByTestId("workspace-provider-value")).toHaveTextContent("codex"));
+    fireEvent.click(screen.getByTestId("change-workspace-provider"));
+    expect(
+      useAgentSessionStore.getState().roleRuntimeOverridesByConversationId[
+        "conversation-1"
+      ]?.workspace_reviewer,
+    ).toMatchObject({
+      provider: "claude",
+      model: "sonnet",
+      effort: "medium",
+    });
+    expect(screen.getByTestId("workspace-provider-value")).toHaveTextContent("claude");
+    expect(screen.getByTestId("workspace-model-value")).toHaveTextContent("sonnet");
+    expect(screen.getByTestId("workspace-effort-value")).toHaveTextContent("medium");
+    expect(screen.queryByTestId("agents-conversation-speed")).not.toBeInTheDocument();
     fireEvent.click(screen.getByTestId("change-workspace-model"));
     expect(useAgentSessionStore.getState().roleRuntimeOverridesByConversationId["conversation-1"]?.workspace_reviewer?.model).toBe("sonnet");
     expect(useAgentSessionStore.getState().runtimeByConversationId["conversation-1"]).toEqual({
@@ -1664,7 +1734,7 @@ describe("AgentsActiveConversationPanel", () => {
     fireEvent.click(screen.getByTestId("agent-composer-runtime-reset"));
     expect(useAgentSessionStore.getState().roleRuntimeOverridesByConversationId["conversation-1"]?.workspace_reviewer).toBeUndefined();
     expect(screen.getByTestId("workspace-provider-value")).toHaveTextContent("codex");
-    expect(screen.getByTestId("workspace-model-value")).toHaveTextContent("gpt-5.6");
+    expect(screen.getByTestId("workspace-model-value")).toHaveTextContent("gpt-5.5");
     expect(useAgentSessionStore.getState().runtimeByConversationId["conversation-1"]).toEqual({
       provider: "claude",
       modelId: "opus",
@@ -2977,7 +3047,71 @@ describe("AgentsActiveConversationPanel", () => {
       "data-send-conversation-id",
       "review-conversation-1",
     );
-    expect(panel).toHaveAttribute("data-send-codex-fast-mode", "false");
+    expect(panel).toHaveAttribute("data-send-codex-fast-mode", "null");
+  });
+
+  it("uses the active Codex reviewer runtime and fast mode for a focused workspace Review send", async () => {
+    setActiveReviewerRuntime({
+      provider: "codex",
+      model: "gpt-5.5",
+      effort: "high",
+      serviceTier: "fast",
+    });
+    renderPanel({
+      chatFocus: {
+        type: "workspace_review",
+        conversationId: "review-conversation-1",
+      },
+      normalizedActiveRuntime: {
+        provider: "claude",
+        modelId: "opus",
+        effort: "high",
+      },
+    });
+
+    await screen.findByTestId("agents-role-runtime-banner");
+
+    await waitFor(() => {
+      const panel = screen.getByTestId("integrated-chat-panel");
+      expect(panel).toHaveAttribute(
+        "data-send-conversation-id",
+        "review-conversation-1",
+      );
+      expect(panel).toHaveAttribute("data-send-provider-harness", "codex");
+      expect(panel).toHaveAttribute("data-send-model-id", "gpt-5.5");
+      expect(panel).toHaveAttribute("data-send-logical-effort", "high");
+      expect(panel).toHaveAttribute("data-send-codex-fast-mode", "true");
+    });
+  });
+
+  it("sends no fast-mode flag for an active Claude reviewer in focused workspace Review", async () => {
+    setActiveReviewerRuntime({
+      provider: "claude",
+      model: "sonnet",
+      effort: "medium",
+      serviceTier: "fast",
+    });
+    renderPanel({
+      chatFocus: {
+        type: "workspace_review",
+        conversationId: "review-conversation-1",
+      },
+      normalizedActiveRuntime: {
+        provider: "codex",
+        modelId: "gpt-5.5",
+        effort: "high",
+      },
+    });
+
+    await screen.findByTestId("agents-role-runtime-banner");
+
+    await waitFor(() => {
+      const panel = screen.getByTestId("integrated-chat-panel");
+      expect(panel).toHaveAttribute("data-send-provider-harness", "claude");
+      expect(panel).toHaveAttribute("data-send-model-id", "sonnet");
+      expect(panel).toHaveAttribute("data-send-logical-effort", "medium");
+      expect(panel).toHaveAttribute("data-send-codex-fast-mode", "null");
+    });
   });
 
   it("uses durable focused Review speed ahead of the client speed projection", () => {
@@ -4906,6 +5040,40 @@ describe("AgentsActiveConversationPanel", () => {
         queuedMessageId: null,
       },
     });
+  });
+
+  it("retains a fast-mode flag for a Codex workspace fork", async () => {
+    const user = userEvent.setup();
+    const onForkConversation = vi.fn().mockResolvedValue(forkResult());
+    useAgentSessionStore
+      .getState()
+      .setServiceTierForConversation("conversation-1", "fast");
+    renderPanel({
+      normalizedActiveRuntime: {
+        provider: "codex",
+        modelId: "gpt-5.5",
+        effort: "high",
+      },
+      onForkConversation,
+    });
+
+    await user.click(screen.getByTestId("send-fork-followup-command"));
+    await user.click(screen.getByRole("button", { name: "Fork session" }));
+
+    await waitFor(() =>
+      expect(chatApi.sendAgentMessage).toHaveBeenCalledWith(
+        "project",
+        "project-1",
+        "continue this thread",
+        undefined,
+        expect.objectContaining({
+          providerHarness: "codex",
+          modelId: "gpt-5.5",
+          logicalEffort: "high",
+          codexFastMode: true,
+        }),
+      ),
+    );
   });
 
   it("requires confirmation before running the composer fork action", async () => {

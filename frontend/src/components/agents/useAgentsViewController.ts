@@ -277,12 +277,14 @@ export function useAgentsViewController({
   const { registry: modelRegistry } = useAgentModels();
   const {
     clearAgentConversationSelection: clearStoredAgentConversationSelection,
+    composerRuntimeOverridesByConversationId,
     focusedProjectId,
     lastRuntimeByProjectId,
     runtimeByConversationId,
     selectConversation: selectStoredConversation,
     selectedProjectId,
     setActiveConversation,
+    setComposerRuntimeForConversation,
     setFocusedProject,
     setLastRuntimeForProjectMode,
     setRuntimeForConversation,
@@ -595,6 +597,7 @@ export function useAgentsViewController({
   } = useAgentsWorkspaceModel({
     activeConversation,
     activeProject,
+    composerRuntimeOverridesByConversationId,
     focusedWorkspaceReviewConversation,
     focusedWorkspaceReviewConversationId:
       chatFocus.type === "workspace_review"
@@ -1749,7 +1752,7 @@ export function useAgentsViewController({
     runtimeConversationId: activeRuntimeConversationId,
     runtimeByConversationId,
     selectedConversationId,
-    setRuntimeForConversation,
+    setComposerRuntimeForConversation,
   });
 
   const sidebarProps = useAgentsSidebarProps({

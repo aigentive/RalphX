@@ -16,6 +16,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ideationApi } from "@/api/ideation";
 import { useIdeationEvents } from "@/hooks/useIdeationEvents";
 import { defaultIdeationSettings } from "@/types/ideation-config";
+import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { AgentsView } from "./AgentsView";
 import { useAgentArtifactUiStore } from "./agentArtifactUiStore";
 import {
@@ -558,6 +559,11 @@ describe("AgentsView", () => {
             : null,
       isLoading: false,
     }));
+    useAgentSessionStore.getState().setRuntimeForConversation(
+      workspaceConversation.id,
+      "project-1",
+      { provider: "codex", modelId: "gpt-5.5", effort: "xhigh" },
+    );
 
     renderAgentsView();
     selectSidebarConversationRow();
@@ -585,6 +591,59 @@ describe("AgentsView", () => {
             providerHarness: "codex",
             modelId: "gpt-5.5",
             logicalEffort: "xhigh",
+          }),
+        }),
+      );
+    });
+
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+    fireEvent.pointerMove(screen.getByRole("button", { name: /^Provider,/ }));
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-provider-claude"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveTextContent(
+        "sonnet",
+      );
+    });
+    fireEvent.pointerMove(screen.getByRole("button", { name: /^Model,/ }));
+    expect(
+      screen.getByTestId("agent-composer-runtime-model-sonnet"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agent-composer-runtime-model-gpt-5.5"),
+    ).not.toBeInTheDocument();
+    expect(
+      useAgentSessionStore.getState().roleRuntimeOverridesByConversationId[
+        workspaceConversation.id
+      ]?.workspace_reviewer,
+    ).toMatchObject({ provider: "claude", model: "sonnet" });
+    expect(
+      useAgentSessionStore.getState().runtimeByConversationId[
+        workspaceConversation.id
+      ],
+    ).toEqual({ provider: "codex", modelId: "gpt-5.5", effort: "xhigh" });
+
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+    fireEvent.click(screen.getByTestId("agents-composer-chat-focus-pill"));
+    fireEvent.click(
+      screen.getByTestId("agents-composer-chat-focus-option-workspace"),
+    );
+    fireEvent.click(screen.getByTestId("agents-composer-chat-focus-pill"));
+    fireEvent.click(
+      screen.getByTestId("agents-composer-chat-focus-option-workspace_review"),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveTextContent(
+        "sonnet",
+      );
+      expect(
+        getAgentsViewTestMocks().integratedChatPanelRenderMock,
+      ).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sendOptions: expect.objectContaining({
+            providerHarness: "claude",
+            modelId: "sonnet",
           }),
         }),
       );

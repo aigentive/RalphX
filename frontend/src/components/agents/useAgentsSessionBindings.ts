@@ -18,11 +18,17 @@ export function useAgentsSessionBindings({
   const selectedProjectId = useAgentSessionStore((s) => s.selectedProjectId);
   const storedSelectedConversationId = useAgentSessionStore((s) => s.selectedConversationId);
   const runtimeByConversationId = useAgentSessionStore((s) => s.runtimeByConversationId);
+  const composerRuntimeOverridesByConversationId = useAgentSessionStore(
+    (s) => s.composerRuntimeOverridesByConversationId,
+  );
   const lastRuntimeByProjectId = useAgentSessionStore((s) => s.lastRuntimeByProjectId);
   const setFocusedProject = useAgentSessionStore((s) => s.setFocusedProject);
   const selectAgentConversation = useAgentSessionStore((s) => s.selectConversation);
   const clearSelection = useAgentSessionStore((s) => s.clearSelection);
   const setRuntimeForConversation = useAgentSessionStore((s) => s.setRuntimeForConversation);
+  const setComposerRuntimeForConversation = useAgentSessionStore(
+    (s) => s.setComposerRuntimeForConversation,
+  );
   const setLastRuntimeForProjectMode = useAgentSessionStore(
     (s) => s.setLastRuntimeForProjectMode,
   );
@@ -54,12 +60,14 @@ export function useAgentsSessionBindings({
 
   return {
     clearAgentConversationSelection,
+    composerRuntimeOverridesByConversationId,
     focusedProjectId,
     lastRuntimeByProjectId,
     runtimeByConversationId,
     selectConversation,
     selectedProjectId,
     setActiveConversation,
+    setComposerRuntimeForConversation,
     setFocusedProject,
     setLastRuntimeForProjectMode,
     setRuntimeForConversation,

@@ -93,8 +93,8 @@ export function ComposerRuntimeSelector({
   }, [model.fastMode, speed]);
   const [open, setOpen] = useState(false);
   const [level, setLevel] = useState<ComposerRuntimeMenuLevel>("overview");
-  const [viewingProvider, setViewingProvider] = useState<AgentProvider>(
-    provider.value,
+  const [previewProvider, setPreviewProvider] = useState<AgentProvider | null>(
+    null,
   );
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
   const [isNarrow, setIsNarrow] = useState(false);
@@ -135,8 +135,8 @@ export function ComposerRuntimeSelector({
   }, [effort.value, model.value, optionSignature]);
 
   useEffect(() => {
-    if (!open) setViewingProvider(provider.value);
-  }, [open, provider.value]);
+    setPreviewProvider(null);
+  }, [provider.value]);
 
   useEffect(() => {
     const surface = surfaceRef.current;
@@ -204,7 +204,7 @@ export function ComposerRuntimeSelector({
         setOpen(nextOpen);
         if (!nextOpen) {
           setLevel("overview");
-          setViewingProvider(provider.value);
+          setPreviewProvider(null);
           setPreviewIndex(null);
         }
       }}
@@ -288,8 +288,8 @@ export function ComposerRuntimeSelector({
             {...(persona ? { persona } : {})}
             {...(effectiveSpeed ? { speed: effectiveSpeed } : {})}
             {...(runtimeDefault ? { runtimeDefault } : {})}
-            viewingProvider={viewingProvider}
-            onViewingProviderChange={setViewingProvider}
+            viewingProvider={previewProvider ?? provider.value}
+            onPreviewProviderChange={setPreviewProvider}
             level={level}
             onLevelChange={setLevel}
             narrow={isNarrow}
