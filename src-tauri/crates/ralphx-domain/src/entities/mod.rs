@@ -119,7 +119,7 @@ pub use agent_conversation_linear_issue::{
 };
 pub use agent_conversation_workspace::{
     is_open_pr, is_pr_status_pollable_push_status, is_publication_push_active,
-    is_terminal_publication_pr_status,
+    is_terminal_publication_pr_status, workspace_review_fixer_status_is_active,
     pr_comment_body_excerpt, AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
     AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent,
     AgentConversationWorkspaceStatus, AgentWorkspaceFollowupProvenance,
@@ -136,7 +136,9 @@ pub use agent_conversation_workspace::{
     AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewRuntimeState,
     AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest,
-    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD, WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED,
+    WORKSPACE_REVIEW_FIXER_STATUS_QUEUED, WORKSPACE_REVIEW_FIXER_STATUS_ROUTING,
+    WORKSPACE_REVIEW_FIXER_STATUS_RUNNING,
 };
 pub use agent_workspace_repair::{
     AgentWorkspaceRepairAttempt, AgentWorkspaceRepairAttemptId,

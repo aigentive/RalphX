@@ -7,11 +7,11 @@ use chrono::{DateTime, Utc};
 use tokio::sync::RwLock;
 
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode,
-    AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
-    AgentWorkspaceFollowupProvenance, AgentWorkspacePrCommentEvidence,
-    AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
-    AgentWorkspacePrMetadataDecision, AgentWorkspacePrReviewAction,
+    workspace_review_fixer_status_is_active, AgentConversationWorkspace,
+    AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent,
+    AgentConversationWorkspaceStatus, AgentWorkspaceFollowupProvenance,
+    AgentWorkspacePrCommentEvidence, AgentWorkspacePrCommentEvidenceUpsert,
+    AgentWorkspacePrDescription, AgentWorkspacePrMetadataDecision, AgentWorkspacePrReviewAction,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
     AgentWorkspacePrReviewMonitorStatus, AgentWorkspacePublicationMetadataPhase,
     AgentWorkspacePublicationMetadataReceipt, AgentWorkspacePublicationMetadataState,
@@ -22,6 +22,7 @@ use crate::domain::entities::{
     AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewTargetScope, ArtifactId, ChatConversationId, IdeationSessionId,
     PlanBranchId, ProjectId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED, WORKSPACE_REVIEW_FIXER_STATUS_ROUTING,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
@@ -1389,6 +1390,36 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         Ok(())
     }
 
+    async fn set_review_automation_override(
+        &self,
+        conversation_id: &ChatConversationId,
+        value: Option<bool>,
+    ) -> AppResult<()> {
+        let now = Utc::now();
+        if let Some(workspace) = self.workspaces.write().await.get_mut(conversation_id) {
+            workspace.review_automation_override = value;
+            workspace.updated_at = now;
+        }
+        if value == Some(true) {
+            if let Some(monitor) = self
+                .workspace_review_monitors
+                .write()
+                .await
+                .get_mut(conversation_id)
+            {
+                monitor.review_fixer_cycle_count = 0;
+                if monitor.review_fixer_status.as_deref()
+                    == Some(WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED)
+                {
+                    monitor.review_fixer_status = None;
+                    monitor.review_fixer_attempt_id = None;
+                }
+                monitor.updated_at = now;
+            }
+        }
+        Ok(())
+    }
+
     async fn update_auto_publish_preferences(
         &self,
         conversation_id: &ChatConversationId,
@@ -2241,14 +2272,11 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
                 != Some(snapshot.requested_changes_artifact_version)
             || monitor.review_blocking_fingerprint.as_deref()
                 != Some(snapshot.blocking_fingerprint.as_str())
-            || matches!(
-                monitor.review_fixer_status.as_deref(),
-                Some("routing" | "queued" | "running")
-            )
+            || workspace_review_fixer_status_is_active(monitor.review_fixer_status.as_deref())
         {
             return Ok(None);
         }
-        monitor.review_fixer_status = Some("routing".to_string());
+        monitor.review_fixer_status = Some(WORKSPACE_REVIEW_FIXER_STATUS_ROUTING.to_string());
         monitor.review_fixer_attempt_id = Some(attempt_id.to_string());
         monitor.review_fixer_cycle_count = monitor.review_fixer_cycle_count.saturating_add(1);
         monitor.review_fixer_run_id = None;
@@ -2309,10 +2337,7 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             return Ok(None);
         };
         if current.review_fixer_attempt_id.as_deref() != expected_attempt_id
-            || !matches!(
-                current.review_fixer_status.as_deref(),
-                Some("routing" | "queued" | "running")
-            )
+            || !workspace_review_fixer_status_is_active(current.review_fixer_status.as_deref())
             || AgentWorkspaceReviewFixerSnapshot::from_monitor(current).is_some()
         {
             return Ok(None);
@@ -2380,10 +2405,8 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         let Some(monitor) = monitors.get_mut(conversation_id) else {
             return Ok(None);
         };
-        let fixer_active = matches!(
-            monitor.review_fixer_status.as_deref(),
-            Some("routing" | "queued" | "running")
-        );
+        let fixer_active =
+            workspace_review_fixer_status_is_active(monitor.review_fixer_status.as_deref());
         if monitor.status != AgentWorkspaceReviewMonitorStatus::Ready
             || monitor.review_outcome != AgentWorkspaceReviewOutcome::Blocking
             || monitor.review_gate_status != AgentWorkspaceReviewGateStatus::Blocking
@@ -2441,10 +2464,7 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .await
             .values()
             .filter(|monitor| {
-                matches!(
-                    monitor.review_fixer_status.as_deref(),
-                    Some("routing" | "queued" | "running")
-                )
+                workspace_review_fixer_status_is_active(monitor.review_fixer_status.as_deref())
             })
             .cloned()
             .collect::<Vec<_>>();

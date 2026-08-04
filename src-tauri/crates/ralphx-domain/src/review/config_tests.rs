@@ -22,6 +22,52 @@ fn test_autofix_workspace_review_blocking_findings_default_helper() {
 }
 
 #[test]
+fn workspace_review_automation_override_uses_the_full_truth_table() {
+    let globals_off = ReviewSettings {
+        require_workspace_review: false,
+        autofix_workspace_review_blocking_findings: false,
+        ..Default::default()
+    };
+    let globals_on = ReviewSettings::default();
+
+    assert_eq!(
+        globals_off.effective_workspace_review_automation(None),
+        EffectiveWorkspaceReviewAutomation {
+            autofix_blocking_findings: false,
+            auto_review: false,
+        }
+    );
+    assert_eq!(
+        globals_on.effective_workspace_review_automation(None),
+        EffectiveWorkspaceReviewAutomation {
+            autofix_blocking_findings: true,
+            auto_review: true,
+        }
+    );
+    assert_eq!(
+        globals_off.effective_workspace_review_automation(Some(true)),
+        EffectiveWorkspaceReviewAutomation {
+            autofix_blocking_findings: true,
+            auto_review: true,
+        }
+    );
+    assert_eq!(
+        globals_on.effective_workspace_review_automation(Some(false)),
+        EffectiveWorkspaceReviewAutomation {
+            autofix_blocking_findings: false,
+            auto_review: false,
+        }
+    );
+    assert_eq!(
+        globals_off.effective_workspace_review_automation(Some(false)),
+        EffectiveWorkspaceReviewAutomation {
+            autofix_blocking_findings: false,
+            auto_review: false,
+        }
+    );
+}
+
+#[test]
 fn test_run_task_validations_default_helper() {
     assert!(default_run_task_validations());
 }

@@ -8500,6 +8500,15 @@ impl AgentConversationWorkspaceRepository for SequencedWorkspaceRepository {
     ) -> AppResult<()> {
         Ok(())
     }
+    async fn set_review_automation_override(
+        &self,
+        conversation_id: &ChatConversationId,
+        value: Option<bool>,
+    ) -> AppResult<()> {
+        self.inner
+            .set_review_automation_override(conversation_id, value)
+            .await
+    }
     async fn create_or_update(
         &self,
         workspace: AgentConversationWorkspace,
@@ -8757,6 +8766,13 @@ impl AgentConversationWorkspaceRepository for ReviewMonitorLookupErrorRepository
     ) -> AppResult<()> {
         Ok(())
     }
+    async fn set_review_automation_override(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _value: Option<bool>,
+    ) -> AppResult<()> {
+        Err(repo_error())
+    }
     async fn create_or_update(
         &self,
         workspace: AgentConversationWorkspace,
@@ -8902,6 +8918,13 @@ impl AgentConversationWorkspaceRepository for WorkspaceLookupErrorRepository {
         _fingerprint: Option<&str>,
     ) -> AppResult<()> {
         Ok(())
+    }
+    async fn set_review_automation_override(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _value: Option<bool>,
+    ) -> AppResult<()> {
+        Err(repo_error())
     }
     async fn create_or_update(
         &self,
