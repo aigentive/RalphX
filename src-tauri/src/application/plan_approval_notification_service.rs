@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use rusqlite::OptionalExtension;
 
 use crate::application::interactive_notification_producer::{
@@ -8,8 +10,8 @@ use crate::application::{AppState, NotificationContextResolver};
 use crate::domain::entities::ideation::PlanArtifactBundle;
 use crate::domain::entities::{
     AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus, AgentRunActionKind,
-    AgentRunId, AgentRunStatus, ChatConversationId, IdeationSession, IdeationSessionFlow,
-    IdeationSessionId, NotificationTargetKind,
+    AgentRunId, AgentRunStatus, ChatConversationId, DelegationParkId, IdeationSession,
+    IdeationSessionFlow, IdeationSessionId, NotificationTargetKind,
 };
 use crate::error::{AppError, AppResult};
 
@@ -228,6 +230,14 @@ async fn should_defer_on_publish(
         Some(AgentRunActionKind::VerifyPlan) => {
             run.action_context_id.as_deref() == Some(session.id.as_str())
                 && run.action_target_id.as_deref() == Some(artifact_id)
+        }
+        Some(AgentRunActionKind::DelegationParkWake) => {
+            run.action_context_id.as_deref() == Some(authority.conversation_id.as_str().as_str())
+                && run
+                    .action_target_id
+                    .as_deref()
+                    .and_then(|target| DelegationParkId::from_str(target).ok())
+                    .is_some_and(|target| !target.as_uuid().is_nil())
         }
         Some(AgentRunActionKind::PrAutofix | AgentRunActionKind::WorkspaceReviewFixer) => false,
     }

@@ -1,7 +1,9 @@
 use std::time::Duration;
 
 use crate::application::chat_service::{SendCallerContext, SendMessageOptions, SendQueuePolicy};
-use crate::domain::entities::{DelegationPark, DelegationParkState, DelegationWakeReason};
+use crate::domain::entities::{
+    AgentRunActionKind, DelegationPark, DelegationParkState, DelegationWakeReason,
+};
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::delegation_config;
 
@@ -136,6 +138,9 @@ impl DelegationParkService {
                     "hidden_from_ui": true,
                     "recovery_context": true,
                     "wake_reason": format!("{reason:?}").to_lowercase(),
+                    "ralphx_action_kind": AgentRunActionKind::DelegationParkWake.to_string(),
+                    "ralphx_action_context_id": park.parent_conversation_id.as_str(),
+                    "ralphx_action_target_id": park.id.as_str(),
                 })
                 .to_string(),
             ),

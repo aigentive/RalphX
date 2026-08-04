@@ -363,6 +363,7 @@ async fn settle_writes_terminal_state_and_error() {
         Utc::now() + Duration::hours(1),
     );
     repo.arm(park.clone()).await.unwrap();
+    assert!(repo.claim_wake(&park.id, park.generation).await.unwrap());
 
     repo.settle(
         &park.id,
@@ -375,6 +376,33 @@ async fn settle_writes_terminal_state_and_error() {
     let loaded = repo.get(&park.id).await.unwrap().unwrap();
     assert_eq!(loaded.state, DelegationParkState::Failed);
     assert_eq!(loaded.last_error.as_deref(), Some("dispatch failed"));
+}
+
+#[tokio::test]
+async fn late_settle_does_not_overwrite_a_superseded_park() {
+    let (_db, repo) = setup();
+    let park = park(
+        ChatConversationId::new(),
+        1,
+        Utc::now() + Duration::hours(1),
+    );
+    repo.arm(park.clone()).await.unwrap();
+    assert!(repo.claim_wake(&park.id, park.generation).await.unwrap());
+    assert_eq!(
+        repo.supersede_for_conversation(&park.parent_conversation_id)
+            .await
+            .unwrap(),
+        1
+    );
+
+    repo.settle(&park.id, DelegationParkState::Woken, None)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        repo.get(&park.id).await.unwrap().unwrap().state,
+        DelegationParkState::Superseded
+    );
 }
 
 #[tokio::test]

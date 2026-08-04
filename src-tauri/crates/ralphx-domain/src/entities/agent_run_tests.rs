@@ -115,6 +115,39 @@ fn verify_plan_action_metadata_is_typed_and_roundtrips() {
 }
 
 #[test]
+fn delegation_park_wake_action_metadata_is_typed_and_roundtrips() {
+    let metadata = r#"{"ralphx_action_kind":"delegation_park_wake","ralphx_action_context_id":"conversation-1","ralphx_action_target_id":"7e231618-a84f-4a58-a26e-3528d78c024d"}"#;
+    let parsed = AgentRunAction::from_metadata_json(Some(metadata)).expect("complete action tuple");
+
+    assert_eq!(parsed.kind, AgentRunActionKind::DelegationParkWake);
+    assert_eq!(parsed.context_id, "conversation-1");
+    assert_eq!(parsed.target_id, "7e231618-a84f-4a58-a26e-3528d78c024d");
+
+    let mut run = AgentRun::new(ChatConversationId::new());
+    run.apply_action_metadata_json(Some(metadata));
+    assert_eq!(
+        run.action_kind,
+        Some(AgentRunActionKind::DelegationParkWake)
+    );
+    assert_eq!(run.action_context_id.as_deref(), Some("conversation-1"));
+    assert_eq!(
+        run.action_target_id.as_deref(),
+        Some("7e231618-a84f-4a58-a26e-3528d78c024d")
+    );
+    assert_eq!(run.launch_role, None);
+    assert_eq!(
+        AgentRunActionKind::DelegationParkWake.to_string(),
+        "delegation_park_wake"
+    );
+    assert_eq!(
+        "delegation_park_wake"
+            .parse::<AgentRunActionKind>()
+            .unwrap(),
+        AgentRunActionKind::DelegationParkWake
+    );
+}
+
+#[test]
 fn workspace_review_fixer_action_metadata_is_typed_and_roundtrips() {
     let parsed = AgentRunAction::from_metadata_json(Some(
         r#"{"ralphx_action_kind":"workspace_review_fixer","ralphx_action_context_id":"conversation-1","ralphx_action_target_id":"attempt-1"}"#,
