@@ -22,13 +22,13 @@
     {
       "name": "agent:conversation_created",
       "file": "src-tauri/src/application/agent_conversation_start_service/finish_flow.rs",
-      "line": 475,
+      "line": 522,
       "kind": "method"
     },
     {
       "name": "agent:conversation_created",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 8260,
+      "line": 8266,
       "kind": "wrapper_method"
     },
     {
@@ -232,19 +232,19 @@
     {
       "name": "agent:message_created",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 5932,
+      "line": 5938,
       "kind": "wrapper_method"
     },
     {
       "name": "agent:message_created",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 7072,
+      "line": 7078,
       "kind": "wrapper_method"
     },
     {
       "name": "agent:message_created",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 8090,
+      "line": 8096,
       "kind": "wrapper_method"
     },
     {
@@ -292,7 +292,7 @@
     {
       "name": "agent:queue_sent",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 8113,
+      "line": 8119,
       "kind": "wrapper_method"
     },
     {
@@ -334,13 +334,13 @@
     {
       "name": "agent:run_completed",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 8365,
+      "line": 8371,
       "kind": "wrapper_method"
     },
     {
       "name": "agent:run_completed",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 8394,
+      "line": 8400,
       "kind": "wrapper_method"
     },
     {
@@ -370,13 +370,13 @@
     {
       "name": "agent:run_started",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 6083,
+      "line": 6089,
       "kind": "wrapper_method"
     },
     {
       "name": "agent:run_started",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 7546,
+      "line": 7552,
       "kind": "wrapper_method"
     },
     {
@@ -418,13 +418,13 @@
     {
       "name": "agent:stopped",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 8339,
+      "line": 8345,
       "kind": "wrapper_method"
     },
     {
       "name": "agent:stopped",
       "file": "src-tauri/src/application/chat_service/mod.rs",
-      "line": 8385,
+      "line": 8391,
       "kind": "wrapper_method"
     },
     {
@@ -1744,7 +1744,7 @@
     {
       "name": "ticketing:cache_invalidated",
       "file": "src-tauri/src/application/agent_conversation_start_service/finish_flow.rs",
-      "line": 449,
+      "line": 496,
       "kind": "method"
     },
     {

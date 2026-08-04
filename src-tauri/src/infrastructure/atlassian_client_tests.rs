@@ -484,6 +484,7 @@ async fn fetch_jira_renders_issue_fields_and_recent_comments() {
             title: Some("Fallback title".to_string()),
             ..integration_reference("jira", "ignored-id")
         },
+        &[],
     )
     .await
     .expect("jira fetch");
@@ -495,9 +496,12 @@ async fn fetch_jira_renders_issue_fields_and_recent_comments() {
     assert!(content
         .body
         .contains("Description:\nSelected references should be valid"));
-    assert!(!content.body.contains("first comment"));
+    assert!(content
+        .body
+        .contains("Comment by Jira user (unknown date):\nfirst comment"));
     assert!(content.body.contains("second comment"));
     assert!(content.body.contains("fourth comment"));
+    assert!(!content.body.contains("older comments omitted"));
 }
 
 #[tokio::test]
@@ -619,6 +623,7 @@ async fn fetch_jira_parses_adf_description_comments_and_attachments() {
             key: Some("RX-42".to_string()),
             ..integration_reference("jira", "ignored-id")
         },
+        &[],
     )
     .await
     .expect("jira fetch");
@@ -667,8 +672,109 @@ async fn fetch_jira_parses_adf_description_comments_and_attachments() {
     );
     assert_eq!(content.attachments[0].size, Some(2048));
     assert_eq!(content.attachments[0].author.as_deref(), Some("Designer"));
-    assert!(content.body.contains("Comment:\nPlease cover parser"));
-    assert!(content.body.contains("Comment:\nAdded focused tests"));
+    assert!(content
+        .body
+        .contains("Comment by Reviewer (2026-06-17T10:02:00.000+0000):\nPlease cover parser"));
+    assert!(content
+        .body
+        .contains("Comment by Implementer (unknown date):\nAdded focused tests"));
+}
+
+#[tokio::test]
+async fn fetch_jira_requests_custom_acceptance_criteria_and_prefers_it_to_description() {
+    let requester = FakeAtlassianRequester::new(vec![Ok(json!({
+        "fields": {
+            "summary": "Use the custom field",
+            "description": "## Acceptance Criteria\n\n- Description fallback",
+            "customfield_10037": {
+                "type": "doc",
+                "content": [{
+                    "type": "bulletList",
+                    "content": [{
+                        "type": "listItem",
+                        "content": [{
+                            "type": "paragraph",
+                            "content": [{ "type": "text", "text": "Custom field wins" }]
+                        }]
+                    }]
+                }]
+            }
+        }
+    }))]);
+    let custom_fields = vec!["customfield_10037".to_string()];
+
+    let content = fetch_jira(
+        &requester,
+        &auth_context(),
+        &ComposerIntegrationReference {
+            key: Some("RX-101".to_string()),
+            ..integration_reference("jira", "ignored-id")
+        },
+        &custom_fields,
+    )
+    .await
+    .expect("jira fetch");
+
+    assert!(requester.requests()[0]
+        .url
+        .contains("fields=summary,status,description,assignee,reporter,updated,comment,attachment,customfield_10037"));
+    assert_eq!(
+        content.acceptance_criteria_markdown.as_deref(),
+        Some("- Custom field wins")
+    );
+    assert_eq!(
+        content.acceptance_criteria_text.as_deref(),
+        Some("Custom field wins")
+    );
+    let acceptance_offset = content
+        .body
+        .find("Acceptance Criteria:")
+        .expect("acceptance criteria in prompt body");
+    let description_offset = content
+        .body
+        .find("Description:")
+        .expect("description in prompt body");
+    assert!(acceptance_offset < description_offset);
+}
+
+#[tokio::test]
+async fn fetch_jira_renders_five_newest_comments_with_metadata_and_omitted_count() {
+    let comments = (1..=8)
+        .map(|index| {
+            json!({
+                "id": format!("c{index}"),
+                "author": { "displayName": format!("Author {index}") },
+                "created": format!("2026-06-{index:02}T10:00:00Z"),
+                "body": format!("comment body {index}")
+            })
+        })
+        .collect::<Vec<_>>();
+    let requester = FakeAtlassianRequester::new(vec![Ok(json!({
+        "fields": {
+            "summary": "Comment bounds",
+            "comment": { "comments": comments }
+        }
+    }))]);
+
+    let content = fetch_jira(
+        &requester,
+        &auth_context(),
+        &ComposerIntegrationReference {
+            key: Some("RX-102".to_string()),
+            ..integration_reference("jira", "ignored-id")
+        },
+        &[],
+    )
+    .await
+    .expect("jira fetch");
+
+    assert!(!content.body.contains("comment body 3"));
+    assert!(content
+        .body
+        .contains("Comment by Author 4 (2026-06-04T10:00:00Z):\ncomment body 4"));
+    assert!(content.body.contains("comment body 8"));
+    assert!(content.body.contains("(3 older comments omitted)"));
+    assert_eq!(content.body.matches("Comment by ").count(), 5);
 }
 
 #[tokio::test]

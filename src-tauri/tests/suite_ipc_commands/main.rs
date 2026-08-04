@@ -24,6 +24,7 @@ mod agent_conversation_start_pr_workspace;
 mod agent_conversation_start_seeded;
 mod agent_conversation_start_standalone;
 mod agent_conversation_start_support;
+mod agent_conversation_start_team_exit;
 mod api_key_commands;
 mod chat_attachment_commands;
 mod conversation_folder_reference_commands;

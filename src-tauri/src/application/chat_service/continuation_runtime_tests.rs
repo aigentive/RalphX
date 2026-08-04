@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use super::continuation_runtime::{
-    resolve_for_conversation, ContinuationRuntime, ModelIdentityComparison, RuntimeOverridePresence,
+    compare_live_run_model_identity, compare_model_identity_fields, resolve_for_conversation,
+    ContinuationRuntime, ModelIdentityComparison, RuntimeOverridePresence,
 };
 use super::SendMessageOptions;
 use crate::application::agent_lane_resolution::ResolvedAgentSpawnSettings;
@@ -198,6 +199,75 @@ fn model_identity_is_unknown_without_persisted_model_attribution() {
 
     assert_eq!(
         runtime.compare_model_identity("sonnet"),
+        ModelIdentityComparison::Unknown
+    );
+}
+
+#[test]
+fn model_identity_fields_preserve_alias_tolerance_and_unknown_semantics() {
+    assert_eq!(
+        compare_model_identity_fields(Some(" SONNET "), None, "sonnet"),
+        ModelIdentityComparison::Same
+    );
+    assert_eq!(
+        compare_model_identity_fields(
+            Some("sonnet"),
+            Some("claude-sonnet-4-6"),
+            "claude-sonnet-4-6",
+        ),
+        ModelIdentityComparison::Same
+    );
+    assert_eq!(
+        compare_model_identity_fields(Some("sonnet"), Some("claude-sonnet-4-6"), "opus",),
+        ModelIdentityComparison::Changed
+    );
+    assert_eq!(
+        compare_model_identity_fields(None, None, "sonnet"),
+        ModelIdentityComparison::Unknown
+    );
+    assert_eq!(
+        compare_model_identity_fields(Some("  "), Some("\t"), "sonnet"),
+        ModelIdentityComparison::Unknown
+    );
+}
+
+#[tokio::test]
+async fn live_model_identity_requires_a_running_run() {
+    let repository: Arc<dyn AgentRunRepository> = Arc::new(MemoryAgentRunRepository::new());
+    let conversation_id = crate::domain::entities::ChatConversationId::new();
+    let mut running = AgentRun::new(conversation_id);
+    running.logical_model = Some("sonnet".to_string());
+    running.effective_model_id = Some("claude-sonnet-4-6".to_string());
+    let running_id = running.id;
+    repository.create(running).await.unwrap();
+
+    assert_eq!(
+        compare_live_run_model_identity(&repository, &running_id, "sonnet")
+            .await
+            .unwrap(),
+        ModelIdentityComparison::Same
+    );
+
+    let mut completed = AgentRun::new(conversation_id);
+    completed.complete();
+    completed.logical_model = Some("sonnet".to_string());
+    let completed_id = completed.id;
+    repository.create(completed).await.unwrap();
+
+    assert_eq!(
+        compare_live_run_model_identity(&repository, &completed_id, "opus")
+            .await
+            .unwrap(),
+        ModelIdentityComparison::Unknown
+    );
+    assert_eq!(
+        compare_live_run_model_identity(
+            &repository,
+            &crate::domain::entities::AgentRunId::new(),
+            "sonnet",
+        )
+        .await
+        .unwrap(),
         ModelIdentityComparison::Unknown
     );
 }
