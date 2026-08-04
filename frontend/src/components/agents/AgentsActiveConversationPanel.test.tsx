@@ -809,7 +809,9 @@ vi.mock("./AgentComposerSurface", () => ({
         type="button"
         data-testid="change-workspace-provider"
         disabled={provider.disabled}
-        onClick={() => provider.onValueChange("codex")}
+        onClick={() =>
+          provider.onValueChange(provider.value === "codex" ? "claude" : "codex")
+        }
       />
       <button
         type="button"
@@ -1646,6 +1648,20 @@ describe("AgentsActiveConversationPanel", () => {
     expect(screen.getByTestId("workspace-runtime-tag")).toHaveTextContent("REV");
     expect(screen.getByTestId("workspace-advanced-popover-header")).toHaveTextContent("Advanced · Reviewer runtime");
     await waitFor(() => expect(screen.getByTestId("workspace-provider-value")).toHaveTextContent("codex"));
+    fireEvent.click(screen.getByTestId("change-workspace-provider"));
+    expect(
+      useAgentSessionStore.getState().roleRuntimeOverridesByConversationId[
+        "conversation-1"
+      ]?.workspace_reviewer,
+    ).toMatchObject({
+      provider: "claude",
+      model: "sonnet",
+      effort: "medium",
+    });
+    expect(screen.getByTestId("workspace-provider-value")).toHaveTextContent("claude");
+    expect(screen.getByTestId("workspace-model-value")).toHaveTextContent("sonnet");
+    expect(screen.getByTestId("workspace-effort-value")).toHaveTextContent("medium");
+    expect(screen.queryByTestId("agents-conversation-speed")).not.toBeInTheDocument();
     fireEvent.click(screen.getByTestId("change-workspace-model"));
     expect(useAgentSessionStore.getState().roleRuntimeOverridesByConversationId["conversation-1"]?.workspace_reviewer?.model).toBe("sonnet");
     expect(useAgentSessionStore.getState().runtimeByConversationId["conversation-1"]).toEqual({
@@ -1656,7 +1672,7 @@ describe("AgentsActiveConversationPanel", () => {
     fireEvent.click(screen.getByTestId("agent-composer-runtime-reset"));
     expect(useAgentSessionStore.getState().roleRuntimeOverridesByConversationId["conversation-1"]?.workspace_reviewer).toBeUndefined();
     expect(screen.getByTestId("workspace-provider-value")).toHaveTextContent("codex");
-    expect(screen.getByTestId("workspace-model-value")).toHaveTextContent("gpt-5.6");
+    expect(screen.getByTestId("workspace-model-value")).toHaveTextContent("gpt-5.5");
     expect(useAgentSessionStore.getState().runtimeByConversationId["conversation-1"]).toEqual({
       provider: "claude",
       modelId: "opus",
