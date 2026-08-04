@@ -12,7 +12,8 @@ use crate::domain::entities::{
     AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest, ArtifactId,
     ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
-    WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED,
+    WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED, WORKSPACE_REVIEW_FIXER_STATUS_QUEUED,
+    WORKSPACE_REVIEW_FIXER_STATUS_ROUTING, WORKSPACE_REVIEW_FIXER_STATUS_RUNNING,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentWorkspaceLocalCleanupClaim,
@@ -789,7 +790,7 @@ fn make_workspace(conversation_id: ChatConversationId) -> AgentConversationWorks
 }
 
 #[tokio::test]
-async fn review_automation_override_resets_inactive_budget_and_preserves_active_attempts() {
+async fn review_automation_override_resets_budget_and_preserves_active_attempt_identity() {
     let repo = MemoryAgentConversationWorkspaceRepository::new();
     let conversation_id = ChatConversationId::from_string("review-automation-memory");
     repo.create_or_update(make_workspace(conversation_id.clone()))
@@ -871,7 +872,11 @@ async fn review_automation_override_resets_inactive_budget_and_preserves_active_
         Some("failed-attempt")
     );
 
-    for status in ["routing", "queued", "running"] {
+    for status in [
+        WORKSPACE_REVIEW_FIXER_STATUS_ROUTING,
+        WORKSPACE_REVIEW_FIXER_STATUS_QUEUED,
+        WORKSPACE_REVIEW_FIXER_STATUS_RUNNING,
+    ] {
         let mut active = failed.clone();
         active.review_fixer_cycle_count = 2;
         active.review_fixer_status = Some(status.to_string());
@@ -887,7 +892,7 @@ async fn review_automation_override_resets_inactive_budget_and_preserves_active_
             .await
             .expect("active monitor should load")
             .expect("active monitor should exist");
-        assert_eq!(active.review_fixer_cycle_count, 2);
+        assert_eq!(active.review_fixer_cycle_count, 0);
         assert_eq!(active.review_fixer_status.as_deref(), Some(status));
         assert_eq!(
             active.review_fixer_attempt_id.as_deref(),
