@@ -1,6 +1,7 @@
 //! Agent workspace HTTP handlers.
 
 mod repair_completion;
+pub(crate) mod repair_completion_ci_rerun;
 mod workspace_review_diff;
 pub use repair_completion::*;
 pub use workspace_review_diff::*;
@@ -33,6 +34,8 @@ use crate::application::agent_conversation_workspace::AgentConversationWorkspace
 use crate::application::agent_workspace_local_commit::{
     commit_agent_workspace_locally, AgentWorkspaceLocalCommitRequest,
 };
+use crate::application::agent_workspace_publish_recovery::
+    recover_stale_publish_repair_for_workspace_in_state;
 #[cfg(test)]
 use crate::application::agent_workspace_pr_autofix_attempt::{
     load_pr_autofix_completion_authority, PrAutofixCompletionAuthority,
@@ -89,7 +92,9 @@ use crate::application::{AppState, ChatService};
 #[cfg(test)]
 use crate::application::GitService;
 use crate::commands::unified_chat_commands::{
-    agent_workspace_response_for_state, get_agent_conversation_workspace_freshness_for_app_state,
+    agent_workspace_response_for_state,
+    agent_workspace_response_without_repair_recovery_for_state,
+    get_agent_conversation_workspace_freshness_for_app_state,
     publish_agent_conversation_workspace_for_app_state,
     publish_agent_conversation_workspace_for_app_state_with_repair_intent,
     resume_durable_agent_workspace_repair_publish,
@@ -1263,8 +1268,19 @@ pub async fn get_agent_workspace_publish_status(
     Path(conversation_id): Path<String>,
 ) -> Result<Json<AgentWorkspacePublishStatusResponse>, JsonError> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
-    let workspace =
-        load_agent_workspace_response(state.app_state.as_ref(), &conversation_id).await?;
+    let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
+    let workspace = recover_stale_publish_repair_for_workspace_in_state(
+        state.app_state.as_ref(),
+        workspace,
+    )
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let workspace = agent_workspace_response_without_repair_recovery_for_state(
+        state.app_state.as_ref(),
+        workspace,
+    )
+    .await
+    .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error, None))?;
     let events =
         load_agent_workspace_publication_events(state.app_state.as_ref(), &conversation_id).await?;
     Ok(Json(AgentWorkspacePublishStatusResponse {

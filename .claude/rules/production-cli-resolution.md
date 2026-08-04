@@ -1,3 +1,8 @@
+---
+paths:
+  - "src-tauri/src/**/*.rs"
+---
+
 > **Maintainer note:** Keep this compact. Add binaries here only when production app runtime launches them.
 
 # Production CLI Resolution

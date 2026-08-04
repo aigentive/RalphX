@@ -42,25 +42,32 @@ jobs:
         uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
         with:
           list-files: shell
+          predicate-quantifier: every
           filters: |
             plugins:
-              - 'scripts/summarize-coverage.mjs'
-              - 'plugins/app/ralphx-external-mcp/**'
-              - 'plugins/app/ralphx-mcp-server/**'
+              - added|modified|deleted:
+                  - 'scripts/summarize-coverage.mjs'
+                  - 'plugins/app/ralphx-external-mcp/**'
+                  - 'plugins/app/ralphx-mcp-server/**'
+              - '!**/CLAUDE.md'
             rust:
-              - '.cargo/**'
-              - '.github/actions/**'
-              - 'scripts/summarize-coverage.mjs'
-              - 'scripts/bench-rust-build.sh'
-              - 'scripts/check-rust-test-features.py'
-              - 'scripts/test-rust-fast.sh'
-              - 'src-tauri/**'
-              - 'rust-toolchain.toml'
-              - 'scripts/ci-install-linux-deps.sh'
-              - 'scripts/validate_sqlite_migrations.py'
+              - added|modified|deleted:
+                  - '.cargo/**'
+                  - '.github/actions/**'
+                  - 'scripts/summarize-coverage.mjs'
+                  - 'scripts/bench-rust-build.sh'
+                  - 'scripts/check-rust-test-features.py'
+                  - 'scripts/test-rust-fast.sh'
+                  - 'src-tauri/**'
+                  - 'rust-toolchain.toml'
+                  - 'scripts/ci-install-linux-deps.sh'
+                  - 'scripts/validate_sqlite_migrations.py'
+              - '!**/CLAUDE.md'
             frontend:
-              - 'scripts/summarize-coverage.mjs'
-              - 'frontend/**'
+              - added|modified|deleted:
+                  - 'scripts/summarize-coverage.mjs'
+                  - 'frontend/**'
+              - '!**/CLAUDE.md'
 
       - name: Decide coverage scope
         id: decide
@@ -544,6 +551,7 @@ jobs:
               'test(release_notes_commands) or ' \
               'test(agent_workspace_repair_auto_publish) or ' \
               'test(agent_workspace_pr_review_notifications) or ' \
+              'test(agent_conversation_start_team_exit) or ' \
               'test(metrics_commands) or ' \
               'test(metrics_delivery_trends) or ' \
               'test(metrics_integration) or ' \

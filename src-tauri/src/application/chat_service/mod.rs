@@ -619,6 +619,24 @@ fn persona_switch_requires_process_invalidation(
     process_persona != resolved_persona
 }
 
+fn launch_identity_requires_process_invalidation(
+    process_metadata: Option<&InteractiveProcessMetadata>,
+    expected_agent_name: &str,
+    expected_agent_profile: Option<&str>,
+) -> bool {
+    let Some(process_metadata) = process_metadata else {
+        return false;
+    };
+    // Registrations created before launch identity was recorded must preserve
+    // their established Gate 1 reuse behavior until they naturally exit.
+    let Some(recorded_agent_name) = process_metadata.agent_name.as_deref() else {
+        return false;
+    };
+
+    recorded_agent_name != expected_agent_name
+        || process_metadata.agent_profile.as_deref() != expected_agent_profile
+}
+
 fn effective_resolved_persona_for_injection<'a>(
     resolved: Option<&'a ResolvedPersona>,
     injection_would_be_skipped: bool,
@@ -1600,6 +1618,17 @@ pub trait ChatService: Send + Sync {
     /// leaves the durable continuation available to normal recovery.
     async fn finalize_idle_runtime_handoff(&self, _owner: RuntimeHandoffOwner) -> bool {
         false
+    }
+
+    /// Retire a directly superseded interactive runtime only when both runtime
+    /// registries still identify the same captured, unarmed idle owner. A stable
+    /// absence is idempotent success; active or disagreeing registries return false.
+    async fn retire_idle_interactive_process(
+        &self,
+        _context_type: ChatContextType,
+        _context_id: &str,
+    ) -> Result<bool, ChatServiceError> {
+        Ok(false)
     }
 }
 
@@ -4578,6 +4607,8 @@ impl<R: Runtime> AppChatService<R> {
                         provider_session_id: stored_session_id.map(str::to_string),
                         persona_id: registered_persona_id,
                         persona_content_hash: registered_persona_content_hash,
+                        agent_name: agent_name_override.map(str::to_string),
+                        agent_profile: agent_profile.map(str::to_string),
                     },
                 )
                 .await;
@@ -5092,6 +5123,46 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         finalized
     }
 
+    async fn retire_idle_interactive_process(
+        &self,
+        context_type: ChatContextType,
+        context_id: &str,
+    ) -> Result<bool, ChatServiceError> {
+        let owner = match self
+            .capture_runtime_handoff_owner(context_type, context_id)
+            .await
+        {
+            RuntimeHandoffCapture::Captured(owner) => owner,
+            RuntimeHandoffCapture::NoOwner => {
+                let interactive_key =
+                    InteractiveProcessKey::new(context_type.to_string(), context_id);
+                return Ok(!self.ipr().has_process(&interactive_key).await
+                    && self
+                        .running_agent_registry
+                        .get(&RunningAgentKey::new(context_type.to_string(), context_id))
+                        .await
+                        .is_none());
+            }
+            RuntimeHandoffCapture::FailedOrUncertain => return Ok(false),
+        };
+
+        let removed = chat_service_runtime_handoff::retire_unarmed_idle_runtime_owner(
+            &self.running_agent_registry,
+            &self.ipr(),
+            &owner,
+        )
+        .await;
+        let retired = removed.is_some();
+        self.requeue_pending_turns_from_removed(
+            removed,
+            context_type,
+            context_id,
+            None,
+        )
+        .await;
+        Ok(retired)
+    }
+
     async fn send_message(
         &self,
         context_type: ChatContextType,
@@ -5468,15 +5539,18 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 };
             }
         }
+        let gate_workspace = if let Some(conversation) = existing_conv.as_ref() {
+            self.load_agent_conversation_workspace(
+                context_type,
+                &conversation.context_id,
+                Some(&conversation.id),
+            )
+            .await?
+        } else {
+            None
+        };
         let resolved_persona = if let Some(conversation) = existing_conv.as_ref() {
             if self.persona_feature_enabled() {
-                let gate_workspace = self
-                    .load_agent_conversation_workspace(
-                        context_type,
-                        &conversation.context_id,
-                        Some(&conversation.id),
-                    )
-                    .await?;
                 self.resolve_persona_for_send(
                     conversation,
                     &options,
@@ -5513,6 +5587,43 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 effective_resolved,
                 interactive_process_metadata.as_ref(),
             );
+        let launch_identity_requires_process_invalidation = if has_ipr_entry {
+            match (interactive_process_metadata.as_ref(), existing_conv.as_ref()) {
+                (Some(metadata), Some(conversation)) if metadata.agent_name.is_some() => {
+                    let entity_status = self.get_entity_status(context_type, context_id).await;
+                    let agent_mode = agent_conversation_mode_for_send(
+                        context_type,
+                        conversation.agent_mode,
+                        gate_workspace.as_ref().map(|workspace| workspace.mode),
+                    );
+                    let expected_agent_name = resolve_agent_name_for_send(
+                        &context_type,
+                        entity_status.as_deref(),
+                        preferred_agent_override(
+                            options.agent_name_override.as_deref(),
+                            conversation.bound_agent_name.as_deref(),
+                        ),
+                        agent_mode,
+                    );
+                    let expected_agent_profile = agent_mode.and_then(|mode| {
+                        resolve_agent_conversation_runtime_profile(
+                            mode,
+                            conversation.coordination_mode,
+                        )
+                    });
+                    launch_identity_requires_process_invalidation(
+                        Some(metadata),
+                        expected_agent_name,
+                        expected_agent_profile,
+                    )
+                }
+                _ => false,
+            }
+        } else {
+            false
+        };
+        let stale_process_invalidation_required = persona_switch_requires_process_invalidation
+            || launch_identity_requires_process_invalidation;
         let agent_override_requires_fresh_session = options.agent_name_override.is_some();
         let force_new_provider_session = chat_service_helpers::should_start_fresh_provider_session(
             options.force_new_provider_session,
@@ -5528,6 +5639,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             force_new_provider_session,
             provider_switch_requires_fresh_session,
             persona_switch_requires_process_invalidation,
+            launch_identity_requires_process_invalidation,
             agent_override_requires_fresh_session,
             "[GATE_TRACE] Gate 1 (IPR lookup)"
         );
@@ -5584,7 +5696,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         }
         if has_ipr_entry
             && !options.skips_provider_session_invalidation()
-            && persona_switch_requires_process_invalidation
+            && stale_process_invalidation_required
         {
             if let Some(existing) = self
                 .active_provider_switch_blocking_run(
@@ -5637,12 +5749,21 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     .map(|conversation| conversation.id.as_str()),
             )
             .await;
-            tracing::info!(
-                %context_type,
-                context_id,
-                runtime_context_id = %runtime_context_id,
-                "chat_service.send_message: removed stale interactive process after persona mismatch"
-            );
+            if launch_identity_requires_process_invalidation {
+                tracing::info!(
+                    %context_type,
+                    context_id,
+                    runtime_context_id = %runtime_context_id,
+                    "chat_service.send_message: removed stale interactive process after launch-identity mismatch"
+                );
+            } else {
+                tracing::info!(
+                    %context_type,
+                    context_id,
+                    runtime_context_id = %runtime_context_id,
+                    "chat_service.send_message: removed stale interactive process after persona mismatch"
+                );
+            }
         }
         if has_ipr_entry
             && !options.skips_provider_session_invalidation()
@@ -5668,7 +5789,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         let mut interactive_owner = None;
         if has_ipr_entry
             && !force_new_provider_session
-            && !persona_switch_requires_process_invalidation
+            && !stale_process_invalidation_required
         {
             interactive_owner = ipr_ref.capture_owner(&interactive_key).await;
             match interactive_owner.as_ref() {
@@ -5695,7 +5816,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         if has_ipr_entry
             && !options.skips_provider_session_invalidation()
             && !force_new_provider_session
-            && !persona_switch_requires_process_invalidation
+            && !stale_process_invalidation_required
         {
             if options.queue_policy == SendQueuePolicy::RequireImmediateStart {
                 return Err(ChatServiceError::ImmediateStartRejected(
@@ -9438,6 +9559,8 @@ mod agent_workspace_send_tests {
                     provider_session_id: Some("claude-session-active".to_string()),
                     persona_id: None,
                     persona_content_hash: None,
+                    agent_name: None,
+                    agent_profile: None,
                 },
             )
             .await;

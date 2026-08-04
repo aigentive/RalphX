@@ -244,6 +244,7 @@ impl StreamProcessor {
                         self.content_blocks.push(ContentBlockItem::Thinking {
                             text: std::mem::take(&mut self.current_thinking_block),
                             duration_ms,
+                            reasoning_tokens: None,
                         });
                         events.push(StreamEvent::ThinkingSettled {
                             block_index,
@@ -400,6 +401,7 @@ impl StreamProcessor {
                                 self.content_blocks.push(ContentBlockItem::Thinking {
                                     text: thinking.clone(),
                                     duration_ms: None,
+                                    reasoning_tokens: None,
                                 });
                                 events.push(StreamEvent::Thinking {
                                     text: thinking,

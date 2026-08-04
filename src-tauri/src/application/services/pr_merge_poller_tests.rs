@@ -250,6 +250,24 @@ async fn reserve_pending_ci_rerun_attempt(
     conversation_id: &ChatConversationId,
     fingerprint: &str,
 ) -> AgentWorkspaceRepairAttempt {
+    reserve_ci_hold_attempt(repair_repo, conversation_id, fingerprint, 1, false).await
+}
+
+async fn reserve_pending_ci_await_attempt(
+    repair_repo: &dyn AgentWorkspaceRepairRepository,
+    conversation_id: &ChatConversationId,
+    fingerprint: &str,
+) -> AgentWorkspaceRepairAttempt {
+    reserve_ci_hold_attempt(repair_repo, conversation_id, fingerprint, 0, true).await
+}
+
+async fn reserve_ci_hold_attempt(
+    repair_repo: &dyn AgentWorkspaceRepairRepository,
+    conversation_id: &ChatConversationId,
+    fingerprint: &str,
+    ci_rerun_count: u32,
+    awaiting: bool,
+) -> AgentWorkspaceRepairAttempt {
     use crate::domain::repositories::{
         AgentWorkspaceRepairAttemptTransition, AgentWorkspaceRepairAttemptTransitionOutcome,
         StartOrJoinAgentWorkspaceRepairAttempt, StartOrJoinAgentWorkspaceRepairAttemptOutcome,
@@ -281,8 +299,14 @@ async fn reserve_pending_ci_rerun_attempt(
     };
     let mut pending = started.clone();
     pending.phase = AgentWorkspaceRepairPhase::Ready;
-    pending.ci_rerun_count = 1;
+    pending.ci_rerun_count = ci_rerun_count;
     pending.ci_rerun_fingerprint = Some(fingerprint.to_string());
+    if awaiting {
+        pending.pending_reasons.push(
+            crate::application::agent_workspace_publish_repair_state::AWAITING_CI_REPAIR_REASON
+                .to_string(),
+        );
+    }
     pending.updated_at += chrono::Duration::microseconds(1);
     match repair_repo
         .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
@@ -5882,16 +5906,21 @@ async fn live_pr_autofix_suppresses_same_fingerprint_while_ci_rerun_is_pending()
     let branch_update_repo: Arc<dyn BranchUpdateRepository> =
         Arc::new(MemoryBranchUpdateRepository::new());
     let agent_run_repo = seeded_latest_pr_fixer_run_repo(&conversation_id).await;
-    let fingerprint =
-        "pending-head:Rust tests:failure:https://github.com/owner/repo/actions/runs/901";
+    let fingerprint = "ci-hold:v1:pending-head:901";
     let pending =
         reserve_pending_ci_rerun_attempt(repair_repo.as_ref(), &conversation_id, fingerprint).await;
     let mut health = open_pr_health("pending-head");
     health.checks.push(PrHealthCheck {
         name: "Rust tests".to_string(),
         status: Some("completed".to_string()),
-        conclusion: Some("failure".to_string()),
+        conclusion: Some("cancelled".to_string()),
         details_url: Some("https://github.com/owner/repo/actions/runs/901".to_string()),
+    });
+    health.checks.push(PrHealthCheck {
+        name: "Rust tests / sibling".to_string(),
+        status: Some("in_progress".to_string()),
+        conclusion: None,
+        details_url: Some("https://github.com/owner/repo/actions/runs/901/jobs/2".to_string()),
     });
     let github = Arc::new(MockGithubService::new());
     github.state().fetch_pr_health_result = Some(Ok(health));
@@ -5930,7 +5959,7 @@ async fn live_pr_autofix_suppresses_same_fingerprint_while_ci_rerun_is_pending()
 }
 
 #[tokio::test]
-async fn live_pr_autofix_dispatches_new_generation_after_ci_rerun_fingerprint_changes() {
+async fn legacy_ci_rerun_fingerprint_settles_instead_of_hanging() {
     let worktree = tempfile::tempdir().expect("worktree path");
     let mut workspace = supervised_workspace(
         "changed-rerun-fingerprint",
@@ -6001,6 +6030,285 @@ async fn live_pr_autofix_dispatches_new_generation_after_ci_rerun_fingerprint_ch
         .expect("changed fingerprint should start a new generation");
     assert_eq!(current.generation, pending.generation + 1);
     assert_eq!(current.phase, AgentWorkspaceRepairPhase::Repairing);
+}
+
+#[tokio::test]
+async fn ci_rerun_hold_settles_once_reran_runs_are_terminal() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let mut workspace = supervised_workspace(
+        "terminal-rerun-hold",
+        "project-terminal-rerun-hold",
+        worktree.path(),
+    );
+    init_repair_dispatch_repo(worktree.path(), &workspace.branch_name);
+    workspace.base_commit = Some("base-terminal-rerun".to_string());
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
+    let branch_update_repo: Arc<dyn BranchUpdateRepository> =
+        Arc::new(MemoryBranchUpdateRepository::new());
+    let agent_run_repo = seeded_latest_pr_fixer_run_repo(&conversation_id).await;
+    let pending = reserve_pending_ci_rerun_attempt(
+        repair_repo.as_ref(),
+        &conversation_id,
+        "ci-hold:v1:terminal-head:904",
+    )
+    .await;
+    let mut health = open_pr_health("terminal-head");
+    health.checks.push(PrHealthCheck {
+        name: "Rust tests".to_string(),
+        status: Some("completed".to_string()),
+        conclusion: Some("cancelled".to_string()),
+        details_url: Some("https://github.com/owner/repo/actions/runs/904/jobs/1".to_string()),
+    });
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    let chat = Arc::new(MockChatService::with_agent_run_repo(Arc::clone(
+        &agent_run_repo,
+    )));
+
+    let routed = super::route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        workspace_repo,
+        Some(agent_run_repo),
+        Some(Arc::clone(&repair_repo)),
+        Some(branch_update_repo),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("terminal rerun should settle and allow a fresh dispatch");
+
+    assert!(routed);
+    assert_eq!(chat.get_sent_messages().await.len(), 1);
+    let settled = repair_repo
+        .get_repair_attempt(&pending.id)
+        .await
+        .expect("settled attempt should load")
+        .expect("settled attempt stays durable");
+    assert_eq!(
+        settled.outcome,
+        Some(crate::domain::entities::AgentWorkspaceRepairOutcome::Succeeded)
+    );
+}
+
+#[tokio::test]
+async fn ci_await_hold_suppresses_dispatch_and_survives_unchanged_classification() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let mut workspace = supervised_workspace(
+        "await-rerun-hold",
+        "project-await-rerun-hold",
+        worktree.path(),
+    );
+    init_repair_dispatch_repo(worktree.path(), &workspace.branch_name);
+    workspace.base_commit = Some("base-await-rerun".to_string());
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
+    let branch_update_repo: Arc<dyn BranchUpdateRepository> =
+        Arc::new(MemoryBranchUpdateRepository::new());
+    let agent_run_repo = seeded_latest_pr_fixer_run_repo(&conversation_id).await;
+    let pending = reserve_pending_ci_await_attempt(
+        repair_repo.as_ref(),
+        &conversation_id,
+        "ci-hold:v1:await-head:905",
+    )
+    .await;
+    let mut health = open_pr_health("await-head");
+    health.checks.push(PrHealthCheck {
+        name: "Rust tests / cancelled".to_string(),
+        status: Some("completed".to_string()),
+        conclusion: Some("cancelled".to_string()),
+        details_url: Some("https://github.com/owner/repo/actions/runs/905/jobs/1".to_string()),
+    });
+    health.checks.push(PrHealthCheck {
+        name: "Rust tests / sibling".to_string(),
+        status: Some("in_progress".to_string()),
+        conclusion: None,
+        details_url: Some("https://github.com/owner/repo/actions/runs/905/jobs/2".to_string()),
+    });
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    let chat = Arc::new(MockChatService::with_agent_run_repo(Arc::clone(
+        &agent_run_repo,
+    )));
+
+    let routed = super::route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        workspace_repo,
+        Some(agent_run_repo),
+        Some(Arc::clone(&repair_repo)),
+        Some(branch_update_repo),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("awaiting CI should suppress duplicate dispatch");
+
+    assert!(!routed);
+    assert!(chat.get_sent_messages().await.is_empty());
+    let current = repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("current attempt should load")
+        .expect("awaiting attempt stays current");
+    assert_eq!(current.id, pending.id);
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Ready);
+    assert_eq!(current.ci_rerun_count, 0);
+}
+
+#[tokio::test]
+async fn ci_hold_settles_when_head_moves() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let mut workspace = supervised_workspace(
+        "moved-head-rerun-hold",
+        "project-moved-head-rerun-hold",
+        worktree.path(),
+    );
+    init_repair_dispatch_repo(worktree.path(), &workspace.branch_name);
+    workspace.base_commit = Some("base-moved-head-rerun".to_string());
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
+    let branch_update_repo: Arc<dyn BranchUpdateRepository> =
+        Arc::new(MemoryBranchUpdateRepository::new());
+    let agent_run_repo = seeded_latest_pr_fixer_run_repo(&conversation_id).await;
+    let pending = reserve_pending_ci_rerun_attempt(
+        repair_repo.as_ref(),
+        &conversation_id,
+        "ci-hold:v1:old-head:906",
+    )
+    .await;
+    let mut health = open_pr_health("new-head");
+    health.checks.push(PrHealthCheck {
+        name: "Rust tests".to_string(),
+        status: Some("in_progress".to_string()),
+        conclusion: None,
+        details_url: Some("https://github.com/owner/repo/actions/runs/906/jobs/1".to_string()),
+    });
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    let chat = Arc::new(MockChatService::with_agent_run_repo(Arc::clone(
+        &agent_run_repo,
+    )));
+
+    let routed = super::route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        workspace_repo,
+        Some(agent_run_repo),
+        Some(Arc::clone(&repair_repo)),
+        Some(branch_update_repo),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("a moved head should end the old CI hold");
+
+    assert!(!routed);
+    assert!(chat.get_sent_messages().await.is_empty());
+    let settled = repair_repo
+        .get_repair_attempt(&pending.id)
+        .await
+        .expect("settled attempt should load")
+        .expect("settled attempt stays durable");
+    assert_eq!(
+        settled.outcome,
+        Some(crate::domain::entities::AgentWorkspaceRepairOutcome::Succeeded)
+    );
+}
+
+#[tokio::test]
+async fn unrelated_conversation_dispatch_does_not_settle_a_ci_hold() {
+    let routed_worktree = tempfile::tempdir().expect("routed worktree path");
+    let held_worktree = tempfile::tempdir().expect("held worktree path");
+    let mut routed_workspace = supervised_workspace(
+        "00000000-0000-0000-0000-000000000101",
+        "00000000-0000-0000-0000-000000000201",
+        routed_worktree.path(),
+    );
+    let held_workspace = supervised_workspace(
+        "00000000-0000-0000-0000-000000000102",
+        "00000000-0000-0000-0000-000000000202",
+        held_worktree.path(),
+    );
+    init_repair_dispatch_repo(routed_worktree.path(), &routed_workspace.branch_name);
+    routed_workspace.base_commit = Some("base-routed-conversation".to_string());
+    let routed_conversation_id = routed_workspace.conversation_id.clone();
+    let held_conversation_id = held_workspace.conversation_id.clone();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(routed_workspace)
+        .await
+        .expect("routed workspace should persist");
+    workspace_repo
+        .create_or_update(held_workspace)
+        .await
+        .expect("held workspace should persist");
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
+    let held = reserve_pending_ci_rerun_attempt(
+        repair_repo.as_ref(),
+        &held_conversation_id,
+        "ci-hold:v1:held-head:907",
+    )
+    .await;
+    let branch_update_repo: Arc<dyn BranchUpdateRepository> =
+        Arc::new(MemoryBranchUpdateRepository::new());
+    let agent_run_repo = seeded_latest_pr_fixer_run_repo(&routed_conversation_id).await;
+    let mut health = open_pr_health("routed-head");
+    health.checks.push(PrHealthCheck {
+        name: "Rust tests".to_string(),
+        status: Some("completed".to_string()),
+        conclusion: Some("failure".to_string()),
+        details_url: Some("https://github.com/owner/repo/actions/runs/908/jobs/1".to_string()),
+    });
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    let chat = Arc::new(MockChatService::with_agent_run_repo(Arc::clone(
+        &agent_run_repo,
+    )));
+
+    let routed = super::route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        routed_worktree.path(),
+        101,
+        &routed_conversation_id,
+        workspace_repo,
+        Some(agent_run_repo),
+        Some(Arc::clone(&repair_repo)),
+        Some(branch_update_repo),
+        chat as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("the routed conversation should process independently");
+
+    assert!(routed);
+    let held_after = repair_repo
+        .get_repair_attempt(&held.id)
+        .await
+        .expect("held attempt should load")
+        .expect("held attempt stays durable");
+    assert_eq!(
+        held_after, held,
+        "unrelated routing must not mutate the hold"
+    );
 }
 
 /// Builds a workspace whose PR is failing one named check, ready for base-comparison tests.

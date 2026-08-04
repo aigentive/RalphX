@@ -38,17 +38,23 @@ jobs:
         if: github.event_name != 'merge_group'
         uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
         with:
+          predicate-quantifier: every
           filters: |
             actions:
-              - '.github/workflows/**'
-              - '.github/codeql/**'
+              - added|modified|deleted:
+                  - '.github/workflows/**'
+                  - '.github/codeql/**'
             javascript:
-              - 'frontend/**'
-              - 'plugins/app/ralphx-external-mcp/**'
-              - 'plugins/app/ralphx-mcp-server/**'
+              - added|modified|deleted:
+                  - 'frontend/**'
+                  - 'plugins/app/ralphx-external-mcp/**'
+                  - 'plugins/app/ralphx-mcp-server/**'
+              - '!**/CLAUDE.md'
             rust:
-              - 'src-tauri/**'
-              - 'rust-toolchain.toml'
+              - added|modified|deleted:
+                  - 'src-tauri/**'
+                  - 'rust-toolchain.toml'
+              - '!**/CLAUDE.md'
 
       - name: Decide CodeQL scope
         id: decide
@@ -132,6 +138,7 @@ jobs:
   code-scanning-gate:
     name: Code scanning gate
     needs:
+      - changes
       - analyze-actions
       - analyze-javascript
       - analyze-rust
@@ -141,6 +148,26 @@ jobs:
       contents: read
       security-events: read
     steps:
+      - name: Finalize CodeQL analysis status
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ needs.changes.result }}" != "success" ]]; then
+            echo "CodeQL scope detection failed." >&2
+            exit 1
+          fi
+
+          for job_result in \
+            "${{ needs.analyze-actions.result }}" \
+            "${{ needs.analyze-javascript.result }}" \
+            "${{ needs.analyze-rust.result }}"; do
+            if [[ "${job_result}" != "success" && "${job_result}" != "skipped" ]]; then
+              echo "CodeQL analysis result: ${job_result}" >&2
+              exit 1
+            fi
+          done
+
       - name: Fail on open medium+ CodeQL alerts for this pull request
         env:
           GH_TOKEN: ${{ github.token }}

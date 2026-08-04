@@ -1,3 +1,8 @@
+---
+paths:
+  - "frontend/src/**/*.{ts,tsx}"
+---
+
 > **Maintainer note:** Keep this file compact. Prefer one-line rules, links to source docs, and explicit non-negotiables over prose.
 
 # Frontend Interaction Performance

@@ -1,3 +1,6 @@
+use super::plan_edit_handoff::{
+    finish_plan_to_edit_handoff_after_commit, stop_plan_to_edit_handoff_before_commit,
+};
 use super::{
     agent_conversation_response_for_state, agent_conversation_responses_for_state,
     agent_workspace_freshness_cache, agent_workspace_freshness_cache_key,
@@ -6,11 +9,11 @@ use super::{
     apply_base_resolution_to_publish_target, archive_agent_conversation,
     build_agent_workspace_publish_repair_message_for_target,
     build_agent_workspace_repair_message_for_target, cached_agent_workspace_freshness,
-    create_agent_conversation, emit_agent_conversation_fork_events,
-    ensure_plan_workspace_planning_session_link_for_send, existing_pr_retarget_block_reason,
-    filter_agent_list_visible_conversations, fork_agent_conversation,
-    fork_agent_conversation_response_for_state, fork_terminal_agent_conversation_for_send,
-    get_agent_conversation_runtime_index_for_app_state,
+    compose_blocked_repair_retry_context, create_agent_conversation,
+    emit_agent_conversation_fork_events, ensure_plan_workspace_planning_session_link_for_send,
+    existing_pr_retarget_block_reason, filter_agent_list_visible_conversations,
+    fork_agent_conversation, fork_agent_conversation_response_for_state,
+    fork_terminal_agent_conversation_for_send, get_agent_conversation_runtime_index_for_app_state,
     get_agent_conversation_runtime_statuses_for_app_state,
     get_agent_conversation_summary_for_app_state,
     get_agent_conversation_timeline_page_for_app_state, get_agent_conversation_workspace_freshness,
@@ -68,10 +71,14 @@ use crate::application::agent_conversation_workspace_base::{
 };
 use crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrSupervisionRecoveryTrigger;
 use crate::application::git_service::GitService;
+use crate::application::managed_team::{
+    ManagedTeamAssignmentRequest, ManagedTeamMemberSpec, ManagedTeamService,
+    ManagedTeamWorkspaceRequest,
+};
 use crate::application::publish_resilience::PublishBranchFreshnessStatus;
 use crate::application::{
     chat_service::{AgentRuntimeStatus, MockChatService},
-    AppState,
+    AgentTaskService, AppState,
 };
 use crate::commands::ExecutionState;
 use crate::domain::agents::{
@@ -83,7 +90,8 @@ use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
     AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent, AgentRun,
-    AgentRunId, AgentRunStatus, AgentWorkspacePrMetadataDecision, AgentWorkspaceRepairAttempt,
+    AgentRunId, AgentRunStatus, AgentTaskAssignmentState, AgentTaskCreate, AgentTaskScope,
+    AgentWorkspacePrMetadataDecision, AgentWorkspaceRepairAttempt,
     AgentWorkspaceRepairContinuation, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
     AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewAutoMergeGuardStatus,
     AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
@@ -91,16 +99,19 @@ use crate::domain::entities::{
     ArtifactId, AutomationId, AutomationRunId, ChatContextType, ChatConversation,
     ChatConversationId, ChatMessage, ChatMessageId, ChatTimelineItem, ChatTimelineItemId,
     ChatTimelineItemKind, ChatTimelineItemStatus, CoordinationMode, DelegatedSession,
-    ExecutionPlan, ExecutionPlanId, ExecutionPlanStatus, IdeationAnalysisBaseRefKind,
-    IdeationSession, IdeationSessionFlow, IdeationSessionId, InternalStatus, MessageRole,
-    PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId, RuntimeSource, SessionPurpose,
-    Task, TaskId, TeamIntent, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    DelegatedSessionId, ExecutionPlan, ExecutionPlanId, ExecutionPlanStatus,
+    IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, IdeationSessionId,
+    InternalStatus, MessageRole, PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId,
+    RuntimeSource, SessionPurpose, Task, TaskId, TeamIntent, TeamMember, TeamMemberId,
+    TeamMemberStatus, TeamRunBindingStatus, TeamSession, TeamSessionId, TeamSessionStatus,
+    TeamWorkClassification, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::execution::ExecutionSettings;
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentWorkspaceRepairAttemptTransition,
     AgentWorkspaceRepairAttemptTransitionOutcome, StartOrJoinAgentWorkspaceRepairAttempt,
-    StartOrJoinAgentWorkspaceRepairAttemptOutcome,
+    StartOrJoinAgentWorkspaceRepairAttemptOutcome, TeamRepository,
+    TeamWorkspaceReservationRepository,
 };
 use crate::domain::review::ReviewSettings;
 use crate::domain::services::github_generated_markdown::{
@@ -114,8 +125,13 @@ use crate::domain::services::{
     PrMergeableState, PrStatus as GithubPrStatus, PrSyncState, RunningAgentKey,
     RunningAgentRegistry,
 };
-use crate::error::AppError;
-use crate::infrastructure::memory::MemoryAgentConversationWorkspaceRepository;
+use crate::error::{AppError, AppResult};
+use crate::infrastructure::memory::{
+    MemoryAgentConversationWorkspaceRepository, MemoryQueuedMessageRepository,
+    MemoryTeamCoordinationTransitionRepository, MemoryTeamMessageRepository, MemoryTeamRepository,
+    MemoryTeamRunBindingRepository, MemoryTeamWakeBatchRepository,
+    MemoryTeamWorkspaceReservationRepository,
+};
 use crate::infrastructure::{MockAgenticClient, MockCallType};
 use crate::tests::mock_github_service::MockGithubService;
 use async_trait::async_trait;
@@ -843,6 +859,111 @@ fn enable_team_capability_for_test(state: &AppState) {
     );
 }
 
+fn align_managed_team_for_command_test(
+    state: &mut AppState,
+) -> Arc<MemoryTeamWorkspaceReservationRepository> {
+    let sessions = MemoryTeamRepository::new_shared_sessions();
+    let reservation_repo = Arc::new(MemoryTeamWorkspaceReservationRepository::new());
+    state.managed_team = Arc::new(ManagedTeamService::new(
+        Arc::new(MemoryTeamRepository::with_sessions(Arc::clone(&sessions))),
+        Arc::new(MemoryTeamCoordinationTransitionRepository::with_sessions(
+            sessions,
+        )),
+        Arc::new(MemoryTeamRunBindingRepository::new()),
+        Arc::new(MemoryTeamMessageRepository::new()),
+        Arc::new(MemoryTeamWakeBatchRepository::new()),
+        Arc::new(MemoryQueuedMessageRepository::new()),
+        Arc::clone(&state.chat_conversation_repo),
+        Arc::clone(&state.agent_run_repo),
+        Arc::clone(&reservation_repo) as Arc<dyn TeamWorkspaceReservationRepository>,
+        Arc::clone(&state.ui_feature_flag_overrides_repo),
+    ));
+    reservation_repo
+}
+
+struct OpenSessionReadFailingTeamRepository;
+
+#[async_trait]
+impl TeamRepository for OpenSessionReadFailingTeamRepository {
+    async fn ensure_session(&self, _session: TeamSession) -> AppResult<TeamSession> {
+        panic!("unexpected Team session write")
+    }
+
+    async fn get_session(&self, _id: &TeamSessionId) -> AppResult<Option<TeamSession>> {
+        panic!("unexpected Team session lookup")
+    }
+
+    async fn get_open_session_for_conversation(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<TeamSession>> {
+        Err(AppError::Database(
+            "Team session storage unavailable".to_string(),
+        ))
+    }
+
+    async fn list_open_sessions(&self) -> AppResult<Vec<TeamSession>> {
+        panic!("unexpected Team session list")
+    }
+
+    async fn update_session(
+        &self,
+        _session: TeamSession,
+        _expected_version: i64,
+    ) -> AppResult<bool> {
+        panic!("unexpected Team session update")
+    }
+
+    async fn create_member(&self, _member: TeamMember) -> AppResult<TeamMember> {
+        panic!("unexpected Team member write")
+    }
+
+    async fn get_member(&self, _id: &TeamMemberId) -> AppResult<Option<TeamMember>> {
+        panic!("unexpected Team member lookup")
+    }
+
+    async fn list_members(&self, _team_id: &TeamSessionId) -> AppResult<Vec<TeamMember>> {
+        panic!("unexpected Team member list")
+    }
+
+    async fn update_member(
+        &self,
+        _member: TeamMember,
+        _expected_generation: i64,
+    ) -> AppResult<bool> {
+        panic!("unexpected Team member update")
+    }
+}
+
+async fn seed_rx_native_team_conversation(state: &AppState) -> (ChatConversation, TeamSession) {
+    let project_id = ProjectId::from_string("project-1".to_string());
+    let mut conversation = ChatConversation::new_project(project_id.clone());
+    conversation.coordination_mode = CoordinationMode::RxNativeTeam;
+    let conversation = state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("Team conversation should be created");
+    let team = state
+        .managed_team
+        .ensure_team(project_id, &conversation.id)
+        .await
+        .expect("Team session should be ensured");
+    (conversation, team)
+}
+
+fn team_test_task(title: &str) -> AgentTaskCreate {
+    AgentTaskCreate {
+        title: title.to_string(),
+        details: format!("{title} details"),
+        active_label: None,
+        owner_agent: None,
+        metadata: None,
+        blocked_by: Vec::new(),
+        blocks: Vec::new(),
+    }
+}
+
 #[tokio::test]
 async fn create_agent_conversation_persists_team_intent_coordination_mode() {
     let state = AppState::new_test();
@@ -1023,6 +1144,302 @@ async fn update_agent_conversation_coordination_mode_persists_idle_project_conve
         .expect("stored conversation should load")
         .expect("stored conversation should exist");
     assert_eq!(stored.coordination_mode, CoordinationMode::RxNativeTeam);
+}
+
+#[tokio::test]
+async fn leaving_team_mode_performs_staged_drain() {
+    let mut state = AppState::new_test();
+    let reservation_repo = align_managed_team_for_command_test(&mut state);
+    enable_team_capability_for_test(&state);
+    let app = build_send_now_command_app(state);
+    let state = app.state::<AppState>();
+    let (conversation, team) = seed_rx_native_team_conversation(&state).await;
+    let member = state
+        .managed_team
+        .add_member(
+            &team.id,
+            ManagedTeamMemberSpec {
+                name: "Writer One".to_string(),
+                canonical_agent_name: "ralphx-general-worker".to_string(),
+                role_summary: "writes scoped changes".to_string(),
+                harness: None,
+                logical_model: None,
+                logical_effort: None,
+            },
+        )
+        .await
+        .expect("Team member should be added");
+    let task_service = AgentTaskService::new(state.agent_task_repo.clone());
+    let mut scope = AgentTaskScope::new("conversation", conversation.id.as_str());
+    scope.project_id = Some(ProjectId::from_string("project-1".to_string()));
+    task_service
+        .create_task(&scope, team_test_task("first Team task"))
+        .await
+        .expect("first Team task should be created");
+    task_service
+        .create_task(&scope, team_test_task("second Team task"))
+        .await
+        .expect("second Team task should be created");
+    let plan = state
+        .managed_team
+        .plan_member_assignment(
+            &task_service,
+            ManagedTeamAssignmentRequest {
+                team_id: team.id.clone(),
+                member_name: member.normalized_name.clone(),
+                expected_member_generation: member.generation,
+                caller_scope: scope,
+                caller_agent_run_id: AgentRunId::new(),
+                task_ref: "1".to_string(),
+                delegated_session_id: DelegatedSessionId::new(),
+                delegated_conversation_id: ChatConversationId::new(),
+                planned_agent_run_id: AgentRunId::new(),
+                work_classification: TeamWorkClassification::Write,
+                workspace: Some(ManagedTeamWorkspaceRequest {
+                    writable_paths: vec!["src/owned.rs".to_string()],
+                    generated_outputs: Vec::new(),
+                    resource_locks: Vec::new(),
+                }),
+            },
+        )
+        .await
+        .expect("active Team assignment should be planned");
+    assert!(
+        plan.reservation.is_some(),
+        "test must seed a workspace reservation"
+    );
+    state
+        .managed_team
+        .mark_member_assignment_launching(&plan)
+        .await
+        .expect("Team assignment should enter launching state");
+    state
+        .managed_team
+        .complete_member_assignment_launch(&task_service, &plan)
+        .await
+        .expect("Team assignment should bind its active run");
+
+    let response = update_agent_conversation_coordination_mode(
+        UpdateAgentConversationCoordinationModeInput {
+            conversation_id: conversation.id.as_str(),
+            coordination_mode: "solo".to_string(),
+            model_override: None,
+        },
+        app.state(),
+    )
+    .await
+    .expect("leaving Team mode should drain before changing capability");
+
+    assert_eq!(response.coordination_mode, "solo");
+    assert_eq!(
+        state
+            .managed_team
+            .team_repo()
+            .get_session(&team.id)
+            .await
+            .expect("Team session should load")
+            .expect("Team session should exist")
+            .status,
+        TeamSessionStatus::Closed
+    );
+    let drained_member = state
+        .managed_team
+        .team_repo()
+        .get_member(&member.id)
+        .await
+        .expect("Team member should load")
+        .expect("Team member should exist");
+    assert_eq!(drained_member.status, TeamMemberStatus::Stopped);
+    assert!(drained_member.current_run_id.is_none());
+    assert!(drained_member.current_assignment_id.is_none());
+    let drained_binding = state
+        .managed_team
+        .run_binding_repo()
+        .get_by_id(&plan.binding.id)
+        .await
+        .expect("Team binding should load")
+        .expect("Team binding should exist");
+    assert_eq!(drained_binding.status, TeamRunBindingStatus::Cancelled);
+    assert_eq!(
+        drained_binding.last_error.as_deref(),
+        Some("team_exit_drain")
+    );
+    let assignment = state
+        .agent_task_repo
+        .get_assignment_for_run(&plan.binding.agent_run_id)
+        .await
+        .expect("Team assignment should load")
+        .expect("Team assignment should exist");
+    assert_eq!(
+        assignment.assignment.state,
+        AgentTaskAssignmentState::Cancelled
+    );
+    assert_eq!(
+        assignment.assignment.settlement_reason.as_deref(),
+        Some("team_exit_drain")
+    );
+    let active_reservations = reservation_repo
+        .list_active_for_assignment(plan.assignment.assignment.id.as_str())
+        .await
+        .expect("active Team reservations should load");
+    assert!(active_reservations.is_empty());
+}
+
+#[tokio::test]
+async fn leaving_team_mode_resumes_pending_suspend_exit() {
+    let mut state = AppState::new_test();
+    align_managed_team_for_command_test(&mut state);
+    enable_team_capability_for_test(&state);
+    let app = build_send_now_command_app(state);
+    let state = app.state::<AppState>();
+    let (conversation, team) = seed_rx_native_team_conversation(&state).await;
+    let mut pending = state
+        .managed_team
+        .team_repo()
+        .get_session(&team.id)
+        .await
+        .expect("Team session should load")
+        .expect("Team session should exist");
+    pending.pending_exit_action = Some("suspend".to_string());
+    pending.version += 1;
+    assert!(state
+        .managed_team
+        .team_repo()
+        .update_session(pending, team.version)
+        .await
+        .expect("pending action should be stored"));
+
+    let response = update_agent_conversation_coordination_mode(
+        UpdateAgentConversationCoordinationModeInput {
+            conversation_id: conversation.id.as_str(),
+            coordination_mode: "solo".to_string(),
+            model_override: None,
+        },
+        app.state(),
+    )
+    .await
+    .expect("stored suspend action should be resumed");
+
+    assert_eq!(response.coordination_mode, "solo");
+    assert_eq!(
+        state
+            .managed_team
+            .team_repo()
+            .get_session(&team.id)
+            .await
+            .expect("Team session should load")
+            .expect("Team session should exist")
+            .status,
+        TeamSessionStatus::Suspended
+    );
+}
+
+#[tokio::test]
+async fn leaving_team_mode_fails_closed_for_corrupt_pending_exit_action() {
+    let mut state = AppState::new_test();
+    align_managed_team_for_command_test(&mut state);
+    enable_team_capability_for_test(&state);
+    let app = build_send_now_command_app(state);
+    let state = app.state::<AppState>();
+    let (conversation, team) = seed_rx_native_team_conversation(&state).await;
+    let mut pending = state
+        .managed_team
+        .team_repo()
+        .get_session(&team.id)
+        .await
+        .expect("Team session should load")
+        .expect("Team session should exist");
+    pending.pending_exit_action = Some("bogus".to_string());
+    pending.version += 1;
+    assert!(state
+        .managed_team
+        .team_repo()
+        .update_session(pending, team.version)
+        .await
+        .expect("corrupt action should be stored"));
+
+    let error = update_agent_conversation_coordination_mode(
+        UpdateAgentConversationCoordinationModeInput {
+            conversation_id: conversation.id.as_str(),
+            coordination_mode: "solo".to_string(),
+            model_override: None,
+        },
+        app.state(),
+    )
+    .await
+    .expect_err("corrupt pending action must block the capability change");
+
+    assert!(error.contains("managed Team exit action must be suspend or drain_and_close"));
+    assert_eq!(
+        state
+            .chat_conversation_repo
+            .get_by_id(&conversation.id)
+            .await
+            .expect("conversation should load")
+            .expect("conversation should exist")
+            .coordination_mode,
+        CoordinationMode::RxNativeTeam
+    );
+    assert_eq!(
+        state
+            .managed_team
+            .team_repo()
+            .get_session(&team.id)
+            .await
+            .expect("Team session should load")
+            .expect("Team session should exist")
+            .status,
+        TeamSessionStatus::Active
+    );
+}
+
+#[tokio::test]
+async fn leaving_team_mode_fails_closed_when_team_session_read_fails() {
+    let mut state = AppState::new_test();
+    enable_team_capability_for_test(&state);
+    state.managed_team = Arc::new(ManagedTeamService::new(
+        Arc::new(OpenSessionReadFailingTeamRepository),
+        Arc::new(MemoryTeamCoordinationTransitionRepository::new()),
+        Arc::new(MemoryTeamRunBindingRepository::new()),
+        Arc::new(MemoryTeamMessageRepository::new()),
+        Arc::new(MemoryTeamWakeBatchRepository::new()),
+        Arc::new(MemoryQueuedMessageRepository::new()),
+        Arc::clone(&state.chat_conversation_repo),
+        Arc::clone(&state.agent_run_repo),
+        Arc::new(MemoryTeamWorkspaceReservationRepository::new()),
+        Arc::clone(&state.ui_feature_flag_overrides_repo),
+    ));
+    let mut conversation = ChatConversation::new_project(ProjectId::new());
+    conversation.coordination_mode = CoordinationMode::RxNativeTeam;
+    let conversation = state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("Team conversation should be created");
+    let app = build_send_now_command_app(state);
+
+    let error = update_agent_conversation_coordination_mode(
+        UpdateAgentConversationCoordinationModeInput {
+            conversation_id: conversation.id.as_str(),
+            coordination_mode: "solo".to_string(),
+            model_override: None,
+        },
+        app.state(),
+    )
+    .await
+    .expect_err("Team repository read failure must block the capability change");
+
+    assert!(error.contains("Team session storage unavailable"));
+    assert_eq!(
+        app.state::<AppState>()
+            .chat_conversation_repo
+            .get_by_id(&conversation.id)
+            .await
+            .expect("conversation should load")
+            .expect("conversation should exist")
+            .coordination_mode,
+        CoordinationMode::RxNativeTeam
+    );
 }
 
 #[tokio::test]
@@ -3699,6 +4116,190 @@ async fn seed_blocked_command_repair_attempt(
     }
 }
 
+#[test]
+fn blocked_workspace_repair_retry_context_carries_blocker_commit_and_base_retarget() {
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        ChatConversationId::from_string("retry-context-blocker".to_string()),
+        AgentWorkspaceRepairSource::BaseUpdate,
+        AgentWorkspaceRepairContinuation::UpdateOnly,
+        "ralphx/old",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    attempt.blocker = Some("old base ref was deleted after its PR merged".to_string());
+    attempt.repair_head_commit = Some("bba066f".to_string());
+    attempt.pending_reasons = vec![
+        "real repair failure".to_string(),
+        crate::application::agent_workspace_publish_repair_state::NEEDS_HUMAN_REPAIR_REASON
+            .to_string(),
+    ];
+
+    let context = compose_blocked_repair_retry_context(&attempt, "main");
+
+    assert!(context.contains("old base ref was deleted after its PR merged"));
+    assert!(context.contains("bba066f"));
+    assert!(context.contains("ralphx/old"));
+    assert!(context.contains("main"));
+    assert!(!context.contains(
+        crate::application::agent_workspace_publish_repair_state::NEEDS_HUMAN_REPAIR_REASON
+    ));
+}
+
+#[test]
+fn blocked_workspace_repair_retry_context_uses_summary_when_no_human_reason_exists() {
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        ChatConversationId::from_string("retry-context-summary".to_string()),
+        AgentWorkspaceRepairSource::BaseUpdate,
+        AgentWorkspaceRepairContinuation::UpdateOnly,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    attempt.pending_reasons = vec![
+        crate::application::agent_workspace_publish_repair_state::NEEDS_HUMAN_REPAIR_REASON
+            .to_string(),
+    ];
+    attempt.summary = Some("repair summary retained for retry".to_string());
+
+    let context = compose_blocked_repair_retry_context(&attempt, "main");
+
+    assert!(context.contains("repair summary retained for retry"));
+    assert!(!context.contains(
+        crate::application::agent_workspace_publish_repair_state::NEEDS_HUMAN_REPAIR_REASON
+    ));
+}
+
+#[test]
+fn blocked_workspace_repair_retry_context_prefers_human_reason_over_summary() {
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        ChatConversationId::from_string("retry-context-human-reason".to_string()),
+        AgentWorkspaceRepairSource::BaseUpdate,
+        AgentWorkspaceRepairContinuation::UpdateOnly,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    attempt.pending_reasons = vec!["real reason".to_string()];
+    attempt.summary = Some("internal delivery message".to_string());
+
+    let context = compose_blocked_repair_retry_context(&attempt, "main");
+
+    assert!(context.contains("real reason"));
+    assert!(!context.contains("internal delivery message"));
+}
+
+#[test]
+fn blocked_workspace_repair_retry_context_uses_default_without_human_context() {
+    let attempt = AgentWorkspaceRepairAttempt::new(
+        ChatConversationId::from_string("retry-context-default".to_string()),
+        AgentWorkspaceRepairSource::BaseUpdate,
+        AgentWorkspaceRepairContinuation::UpdateOnly,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+
+    let context = compose_blocked_repair_retry_context(&attempt, "main");
+
+    assert!(context.contains("Retrying blocked workspace repair."));
+}
+
+#[test]
+fn blocked_workspace_repair_retry_context_omits_retarget_details_for_same_base() {
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        ChatConversationId::from_string("retry-context-same-base".to_string()),
+        AgentWorkspaceRepairSource::BaseUpdate,
+        AgentWorkspaceRepairContinuation::UpdateOnly,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    attempt.blocker = Some("still needs a repair".to_string());
+
+    let context = compose_blocked_repair_retry_context(&attempt, "main");
+
+    assert!(context.contains("still needs a repair"));
+    assert!(!context.contains("The base has since been updated"));
+}
+
+#[tokio::test]
+async fn explicit_workspace_repair_retry_prompt_carries_predecessor_blocker_and_commit() {
+    let (_temp, state, conversation_id, _github) = setup_publish_command_state(
+        "retry-blocker-context",
+        true,
+        None,
+        Arc::new(MockGithubService::new()),
+    )
+    .await;
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    let blocked = seed_blocked_command_repair_attempt(&state, &workspace).await;
+    let mut enriched = blocked.clone();
+    enriched.blocker = Some("old base ref was deleted after its PR merged".to_string());
+    enriched.repair_head_commit = Some("bba066f".to_string());
+    enriched.pending_reasons.push(
+        crate::application::agent_workspace_publish_repair_state::NEEDS_HUMAN_REPAIR_REASON
+            .to_string(),
+    );
+    enriched.updated_at += chrono::Duration::microseconds(1);
+    match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: enriched,
+            expected_phase: blocked.phase,
+            expected_updated_at: blocked.updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Blocked,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("persist predecessor repair context")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_) => {}
+        outcome => panic!("expected enriched blocked repair attempt, got {outcome:?}"),
+    }
+    let service = MockChatService::new();
+
+    assert!(
+        retry_blocked_agent_workspace_repair_for_explicit_user_action(
+            &state,
+            &workspace,
+            &service,
+            AgentWorkspacePostRepairAction::UpdateOnly,
+        )
+        .await
+    );
+
+    let messages = service.get_sent_messages().await;
+    assert_eq!(messages.len(), 1);
+    assert!(messages[0].contains(
+        "Error: Previous repair attempt was blocked: old base ref was deleted after its PR merged"
+    ));
+    assert!(messages[0].contains("bba066f"));
+    assert!(!messages[0].contains(
+        crate::application::agent_workspace_publish_repair_state::NEEDS_HUMAN_REPAIR_REASON
+    ));
+}
+
 #[tokio::test]
 async fn explicit_workspace_repair_retry_prompt_uses_root_pending_reason_not_delivery_summary() {
     let (_temp, state, conversation_id, _github) = setup_publish_command_state(
@@ -3729,7 +4330,7 @@ async fn explicit_workspace_repair_retry_prompt_uses_root_pending_reason_not_del
 
     let messages = service.get_sent_messages().await;
     assert_eq!(messages.len(), 1);
-    assert!(messages[0].contains("Error: publish rejected: protected branch requires approval"));
+    assert!(messages[0].contains("publish rejected: protected branch requires approval"));
     assert!(!messages[0].contains("Automatic repair delivery retries are exhausted"));
 }
 
@@ -9451,6 +10052,73 @@ async fn switching_branchless_chat_to_edit_persists_source_pull_request_metadata
 }
 
 #[tokio::test]
+async fn plan_to_edit_precommit_rejects_a_runtime_that_remains_registered_after_stop() {
+    let state = AppState::new_test();
+    let conversation = ChatConversation::new_project(ProjectId::new());
+    let running_key = RunningAgentKey::new(
+        ChatContextType::Project.to_string(),
+        conversation.id.as_str(),
+    );
+    state
+        .running_agent_registry
+        .register(
+            running_key.clone(),
+            123,
+            conversation.id.as_str(),
+            "run-still-registered".to_string(),
+            None,
+            None,
+        )
+        .await;
+    let service = MockChatService::new();
+
+    let error = stop_plan_to_edit_handoff_before_commit(&state, &service, &conversation)
+        .await
+        .expect_err("a still-registered runtime must block the authority transition");
+
+    assert_eq!(error, "Cannot change mode while the agent is running");
+    assert_eq!(
+        service.get_stop_agent_calls().await,
+        vec![(
+            ChatContextType::Project,
+            conversation.id.as_str().to_string()
+        )]
+    );
+    assert!(state.running_agent_registry.is_running(&running_key).await);
+}
+
+#[tokio::test]
+async fn plan_to_edit_postcommit_preserves_session_when_idle_retirement_is_rejected() {
+    let state = AppState::new_test();
+    let mut conversation = ChatConversation::new_project(ProjectId::new());
+    conversation.set_provider_session_ref(ProviderSessionRef {
+        harness: AgentHarnessKind::Claude,
+        provider_session_id: "planning-session".to_string(),
+    });
+    let conversation_id = conversation.id.as_str().to_string();
+    let service = MockChatService::new();
+    service
+        .set_retire_idle_interactive_process_result(false)
+        .await;
+
+    let error = finish_plan_to_edit_handoff_after_commit(&state, &service, &mut conversation)
+        .await
+        .expect_err("unverified idle retirement must reject direct implementation");
+
+    assert!(error.contains("runtime handoff is still active"));
+    assert_eq!(
+        service.get_retire_idle_interactive_process_calls().await,
+        vec![(ChatContextType::Project, conversation_id)]
+    );
+    assert_eq!(
+        conversation
+            .provider_session_ref()
+            .map(|session| session.provider_session_id),
+        Some("planning-session".to_string())
+    );
+}
+
+#[tokio::test]
 async fn accepted_plan_proposal_switch_can_bypass_running_agent_guard() {
     let state = AppState::new_test();
     let project_id = ProjectId::from_string("project-running-plan-switch".to_string());
@@ -9864,7 +10532,7 @@ async fn switching_unlocked_linked_plan_ideation_to_edit_uses_plan_worktree() {
 }
 
 #[tokio::test]
-async fn switching_to_plan_defers_planning_session_until_first_send_and_edit_preserves_it() {
+async fn switching_to_plan_defers_session_and_edit_preserves_link_but_clears_provider() {
     let state = AppState::new_test();
     let temp = tempfile::tempdir().expect("tempdir should be created");
     let repo_path = temp.path().join("repo");
@@ -9931,6 +10599,18 @@ async fn switching_to_plan_defers_planning_session_until_first_send_and_edit_pre
             .await
             .expect("existing planning session should be reused");
     assert!(!second_ensure);
+
+    state
+        .chat_conversation_repo
+        .update_provider_session_ref(
+            &conversation_id,
+            &ProviderSessionRef {
+                harness: AgentHarnessKind::Claude,
+                provider_session_id: "planning-provider-session".to_string(),
+            },
+        )
+        .await
+        .expect("planning provider session should persist before Edit handoff");
 
     let plan_workspace = state
         .agent_conversation_workspace_repo
@@ -10010,6 +10690,7 @@ async fn switching_to_plan_defers_planning_session_until_first_send_and_edit_pre
         Some(session_id.as_str())
     );
     assert!(edit_workspace.linked_plan_branch_id.is_none());
+    assert!(edit_response.conversation.provider_session_id.is_none());
     let cleaned_review = state
         .agent_conversation_workspace_repo
         .get_workspace_review_monitor(&conversation_id)
@@ -10637,7 +11318,7 @@ fn timeline_item_response_builds_text_message_block() {
 }
 
 #[test]
-fn timeline_item_response_builds_thinking_block_with_duration() {
+fn timeline_item_response_builds_thinking_block_with_duration_and_reasoning_tokens() {
     let conversation_id = ChatConversationId::new();
     let message_id = ChatMessageId::from_string("assistant-message-thinking");
     let mut item = ChatTimelineItem::for_message_block(
@@ -10648,7 +11329,7 @@ fn timeline_item_response_builds_thinking_block_with_duration() {
         ChatTimelineItemKind::Thinking,
     );
     item.text = Some("Considering the request".to_string());
-    item.metadata = Some(r#"{"duration_ms":1234}"#.to_string());
+    item.metadata = Some(r#"{"duration_ms":1234,"reasoning_tokens":321}"#.to_string());
 
     let response = AgentTimelineItemResponse::from(item);
 
@@ -10658,7 +11339,8 @@ fn timeline_item_response_builds_thinking_block_with_duration() {
         json!([{
             "type": "thinking",
             "text": "Considering the request",
-            "duration_ms": 1234
+            "duration_ms": 1234,
+            "reasoning_tokens": 321
         }])
     );
 }
@@ -10704,7 +11386,7 @@ async fn conversation_timeline_page_hydrates_persisted_thinking_item() {
         ChatTimelineItemKind::Thinking,
     );
     item.text = Some("Persisted reasoning".to_string());
-    item.metadata = Some(r#"{"duration_ms":1234}"#.to_string());
+    item.metadata = Some(r#"{"duration_ms":1234,"reasoning_tokens":321}"#.to_string());
     state
         .chat_timeline_repo
         .upsert_item(item)
@@ -10722,7 +11404,8 @@ async fn conversation_timeline_page_hydrates_persisted_thinking_item() {
         json!([{
             "type": "thinking",
             "text": "Persisted reasoning",
-            "duration_ms": 1234
+            "duration_ms": 1234,
+            "reasoning_tokens": 321
         }])
     );
     assert!(page.items[0].tool_call.is_none());

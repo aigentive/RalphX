@@ -1878,7 +1878,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       return undefined;
     }
     if (activeConversationMode === "plan") {
-      return attachedIdeationSessionId ? [attachedIdeationSessionId] : undefined;
+      return attachedIdeationSessionId
+        ? [selectedConversationId, attachedIdeationSessionId]
+        : [selectedConversationId];
     }
     return [selectedConversationId];
   }, [
