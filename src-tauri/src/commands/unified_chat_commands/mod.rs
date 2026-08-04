@@ -5137,6 +5137,7 @@ async fn reconcile_agent_workspace_auto_merge_for_supervision_toggle(
                 pr_number,
                 &desired_workspace,
                 Arc::clone(&state.agent_conversation_workspace_repo),
+                Arc::clone(&state.agent_workspace_repair_repo),
             )
             .await
             .map_err(|error| error.to_string())?;
@@ -5197,6 +5198,7 @@ async fn reconcile_agent_workspace_auto_merge_for_supervision_toggle(
             pr_number,
             &desired_workspace,
             Arc::clone(&state.agent_conversation_workspace_repo),
+            Arc::clone(&state.agent_workspace_repair_repo),
         )
         .await
         {
@@ -5708,6 +5710,7 @@ pub async fn set_agent_conversation_workspace_auto_publish_for_state(
                 pr_number,
                 &refreshed_for_sync,
                 Arc::clone(&state.agent_conversation_workspace_repo),
+                Arc::clone(&state.agent_workspace_repair_repo),
             )
             .await
             {
@@ -7929,6 +7932,7 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
             pr_number,
             &refreshed,
             Arc::clone(&state.agent_conversation_workspace_repo),
+            Arc::clone(&state.agent_workspace_repair_repo),
         )
         .await
         {
@@ -9202,6 +9206,7 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
             outcome.pr_number,
             &refreshed,
             Arc::clone(&state.agent_conversation_workspace_repo),
+            Arc::clone(&state.agent_workspace_repair_repo),
         )
         .await
         {
