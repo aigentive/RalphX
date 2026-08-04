@@ -20,7 +20,7 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, AgentWorkspaceLocalCleanupClaim,
-    PlanBranchRepository,
+    AgentWorkspacePublishLeaseClaim, PlanBranchRepository,
 };
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::memory::{
@@ -455,6 +455,157 @@ async fn terminalize_stops_active_run_and_records_archive_reason_before_cleanup(
             .as_deref(),
         Some("cleaned")
     );
+}
+
+#[tokio::test]
+async fn terminalize_reports_missing_workspace_without_claiming_cleanup() {
+    let repository_dir = tempfile::tempdir().expect("repository tempdir");
+    let worktree_parent = tempfile::tempdir().expect("worktree parent tempdir");
+    setup_repo(repository_dir.path());
+    let project = project_for(repository_dir.path(), worktree_parent.path());
+    let conversation_id =
+        ChatConversationId::from_string("69696969-6969-6969-6969-696969696969".to_string());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+
+    let outcome = terminalize_agent_workspace_after_pr(
+        workspace_repo,
+        Arc::new(MemoryAgentRunRepository::new()),
+        None,
+        None,
+        &conversation_id,
+        &project,
+        TerminalAgentWorkspaceCause::ClosedPr,
+    )
+    .await;
+
+    assert!(outcome.runtime_shutdown_succeeded);
+    assert_eq!(outcome.cleanup_claim, TerminalCleanupClaimState::NotClaimed);
+    assert_eq!(
+        outcome.local_cleanup,
+        TerminalLocalCleanupResult::FailedOperational
+    );
+    assert!(outcome
+        .message
+        .as_deref()
+        .is_some_and(|message| message.contains("disappeared before local cleanup")));
+}
+
+#[tokio::test]
+async fn terminalize_releases_the_observed_operation_owned_publish_lease() {
+    let repository_dir = tempfile::tempdir().expect("repository tempdir");
+    let worktree_parent = tempfile::tempdir().expect("worktree parent tempdir");
+    setup_repo(repository_dir.path());
+    let project = project_for(repository_dir.path(), worktree_parent.path());
+    let conversation_id =
+        ChatConversationId::from_string("67676767-6767-6767-6767-676767676767".to_string());
+    let workspace = workspace_for(&project, conversation_id.clone());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("persist workspace");
+    workspace_repo
+        .claim_publish_lease(
+            &conversation_id,
+            &format!("publish-operation:{conversation_id}"),
+            "terminal-operation-token",
+            Utc::now(),
+            None,
+            false,
+        )
+        .await
+        .expect("claim operation-owned lease");
+
+    let outcome = terminalize_agent_workspace_after_pr(
+        workspace_repo.clone(),
+        Arc::new(MemoryAgentRunRepository::new()),
+        None,
+        None,
+        &conversation_id,
+        &project,
+        TerminalAgentWorkspaceCause::ClosedPr,
+    )
+    .await;
+
+    assert!(outcome.runtime_shutdown_succeeded);
+    let stored = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load workspace")
+        .expect("workspace remains stored");
+    assert_eq!(stored.publish_lease_owner_run_id, None);
+    assert_eq!(stored.publish_lease_token, None);
+    assert_eq!(stored.publish_lease_heartbeat_at, None);
+    assert_eq!(stored.publication_push_status.as_deref(), Some("failed"));
+    assert!(workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("load publication events")
+        .iter()
+        .any(|event| event.step == "publish_lease_released"));
+}
+
+#[tokio::test]
+async fn terminalize_never_releases_a_newer_publish_lease_token() {
+    let repository_dir = tempfile::tempdir().expect("repository tempdir");
+    let worktree_parent = tempfile::tempdir().expect("worktree parent tempdir");
+    setup_repo(repository_dir.path());
+    let project = project_for(repository_dir.path(), worktree_parent.path());
+    let conversation_id =
+        ChatConversationId::from_string("68686868-6868-6868-6868-686868686868".to_string());
+    let workspace_repo = Arc::new(ControlledWorkspaceRepo::new());
+    workspace_repo
+        .create_or_update(workspace_for(&project, conversation_id.clone()))
+        .await
+        .expect("persist workspace");
+    workspace_repo
+        .claim_publish_lease(
+            &conversation_id,
+            "publish-operation:old",
+            "old-terminal-token",
+            Utc::now(),
+            None,
+            false,
+        )
+        .await
+        .expect("claim old lease");
+    workspace_repo.replace_lease_after_next_get(
+        "old-terminal-token",
+        "publish-operation:new",
+        "new-redrive-token",
+    );
+
+    let outcome = terminalize_agent_workspace_after_pr(
+        workspace_repo.clone(),
+        Arc::new(MemoryAgentRunRepository::new()),
+        None,
+        None,
+        &conversation_id,
+        &project,
+        TerminalAgentWorkspaceCause::ClosedPr,
+    )
+    .await;
+
+    assert!(outcome.runtime_shutdown_succeeded);
+    let stored = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load workspace")
+        .expect("workspace remains stored");
+    assert_eq!(
+        stored.publish_lease_owner_run_id.as_deref(),
+        Some("publish-operation:new")
+    );
+    assert_eq!(
+        stored.publish_lease_token.as_deref(),
+        Some("new-redrive-token")
+    );
+    assert!(workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("load events")
+        .iter()
+        .all(|event| event.step != "publish_lease_released"));
 }
 
 #[tokio::test]
@@ -1168,6 +1319,7 @@ struct ControlledWorkspaceRepo {
     claim_result: Mutex<Option<AppResult<AgentWorkspaceLocalCleanupClaim>>>,
     finalize_result: Mutex<Option<AppResult<bool>>>,
     status_result: Mutex<Option<AppResult<Option<String>>>>,
+    replace_lease_after_get: Mutex<Option<(String, String, String)>>,
 }
 
 impl ControlledWorkspaceRepo {
@@ -1177,6 +1329,7 @@ impl ControlledWorkspaceRepo {
             claim_result: Mutex::new(None),
             finalize_result: Mutex::new(None),
             status_result: Mutex::new(None),
+            replace_lease_after_get: Mutex::new(None),
         }
     }
 
@@ -1196,6 +1349,17 @@ impl ControlledWorkspaceRepo {
 
     fn set_next_status(&self, status: Option<String>) {
         *self.status_result.lock().expect("status result lock") = Some(Ok(status));
+    }
+
+    fn replace_lease_after_next_get(&self, expected_token: &str, owner_run_id: &str, token: &str) {
+        *self
+            .replace_lease_after_get
+            .lock()
+            .expect("lease replacement lock") = Some((
+            expected_token.to_string(),
+            owner_run_id.to_string(),
+            token.to_string(),
+        ));
     }
 }
 
@@ -1219,7 +1383,71 @@ impl AgentConversationWorkspaceRepository for ControlledWorkspaceRepo {
         &self,
         conversation_id: &ChatConversationId,
     ) -> AppResult<Option<AgentConversationWorkspace>> {
-        self.inner.get_by_conversation_id(conversation_id).await
+        let observed = self.inner.get_by_conversation_id(conversation_id).await?;
+        let replacement = self
+            .replace_lease_after_get
+            .lock()
+            .expect("lease replacement lock")
+            .take();
+        if let Some((expected_token, owner_run_id, token)) = replacement {
+            let outcome = self
+                .inner
+                .claim_publish_lease(
+                    conversation_id,
+                    &owner_run_id,
+                    &token,
+                    Utc::now(),
+                    Some(&expected_token),
+                    true,
+                )
+                .await?;
+            assert_eq!(outcome, AgentWorkspacePublishLeaseClaim::Reclaimed);
+        }
+        Ok(observed)
+    }
+
+    async fn claim_publish_lease(
+        &self,
+        conversation_id: &ChatConversationId,
+        owner_run_id: &str,
+        token: &str,
+        now: DateTime<Utc>,
+        expected_previous_token: Option<&str>,
+        previous_owner_is_dead: bool,
+    ) -> AppResult<AgentWorkspacePublishLeaseClaim> {
+        self.inner
+            .claim_publish_lease(
+                conversation_id,
+                owner_run_id,
+                token,
+                now,
+                expected_previous_token,
+                previous_owner_is_dead,
+            )
+            .await
+    }
+
+    async fn heartbeat_publish_lease(
+        &self,
+        conversation_id: &ChatConversationId,
+        token: &str,
+        now: DateTime<Utc>,
+    ) -> AppResult<bool> {
+        self.inner
+            .heartbeat_publish_lease(conversation_id, token, now)
+            .await
+    }
+
+    async fn release_publish_lease(
+        &self,
+        conversation_id: &ChatConversationId,
+        token: &str,
+        terminal_status: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> AppResult<bool> {
+        self.inner
+            .release_publish_lease(conversation_id, token, terminal_status, now)
+            .await
     }
 
     async fn get_by_project_id(

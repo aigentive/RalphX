@@ -388,6 +388,7 @@ async fn recover_agent_workspace_pr_pollers_restarts_active_direct_workspaces() 
         Arc::clone(&chat_service) as Arc<dyn ChatService>,
         None,
         Some(Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>),
+        None,
         empty_startup_blocked_projects(),
     )
     .await;

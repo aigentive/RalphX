@@ -12,6 +12,8 @@ const AGENT_WORKSPACE_ACTIVE_PUBLISH_STATUSES = new Set([
   "refreshing",
   "describing",
   "pushing",
+  "redrive_pending",
+  "redrive_delivering",
 ]);
 
 export type AgentWorkspacePublishTerminalEvent = {
@@ -204,7 +206,8 @@ export function canResumeAgentWorkspacePublish(
   return Boolean(
     !getAgentWorkspaceTerminalPublicationStatus(workspace ?? null) &&
       operation?.status === "ready" &&
-      operation.stage === "ready",
+      operation.stage === "ready" &&
+      operation.holdReason == null,
   );
 }
 
@@ -271,6 +274,27 @@ export function getAgentWorkspaceMaintenancePresentation(
         automaticContinuation,
       };
     case "ready":
+      if (operation.holdReason === "publish_redrive") {
+        return {
+          title: "Pushing rebased branch…",
+          summary,
+          tone: "neutral",
+          busy: true,
+          action: "none",
+          automaticContinuation: "RalphX is resuming publication automatically.",
+        };
+      }
+      if (operation.holdReason === "health_evidence") {
+        return {
+          title: "Holding — waiting for new CI evidence",
+          summary,
+          tone: "warning",
+          busy: false,
+          action: "none",
+          automaticContinuation:
+            "RalphX will continue when the PR evidence changes.",
+        };
+      }
       return {
         title: "Base updated — ready to publish",
         summary,

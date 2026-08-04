@@ -154,6 +154,15 @@ repair_string_enum!(AgentWorkspaceRepairOperationStatus {
     Blocked => "blocked",
 });
 
+repair_string_enum!(AgentWorkspaceRepairOperationHoldReason {
+    HealthEvidence => "health_evidence",
+    PublishRedrive => "publish_redrive",
+});
+
+pub const PR_AUTOFIX_PRE_EXISTING_ON_BASE_PENDING_REASON: &str = "pr_autofix_pre_existing_on_base";
+pub const PR_AUTOFIX_UNCHANGED_HEALTH_PENDING_REASON: &str = "pr_autofix_unchanged_health";
+pub const PR_AUTOFIX_HEAD_REDRIVE_PENDING_REASON_PREFIX: &str = "pr_autofix_head_redrive:";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentWorkspaceRepairAttempt {
     pub id: AgentWorkspaceRepairAttemptId,
@@ -270,6 +279,29 @@ impl AgentWorkspaceRepairAttempt {
             AgentWorkspaceRepairPhase::Blocked => AgentWorkspaceRepairOperationStatus::Blocked,
             _ => AgentWorkspaceRepairOperationStatus::Active,
         };
+        let hold_reason = if self.phase == AgentWorkspaceRepairPhase::Ready
+            && self.source == AgentWorkspaceRepairSource::PrAutofix
+        {
+            if self
+                .pending_reasons
+                .iter()
+                .any(|reason| reason.starts_with(PR_AUTOFIX_HEAD_REDRIVE_PENDING_REASON_PREFIX))
+            {
+                Some(AgentWorkspaceRepairOperationHoldReason::PublishRedrive)
+            } else if self.pending_reasons.iter().any(|reason| {
+                matches!(
+                    reason.as_str(),
+                    PR_AUTOFIX_PRE_EXISTING_ON_BASE_PENDING_REASON
+                        | PR_AUTOFIX_UNCHANGED_HEALTH_PENDING_REASON
+                )
+            }) {
+                Some(AgentWorkspaceRepairOperationHoldReason::HealthEvidence)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
         AgentWorkspaceRepairOperationSnapshot {
             operation_id: self.id.to_string(),
@@ -277,6 +309,7 @@ impl AgentWorkspaceRepairAttempt {
             source: self.source,
             stage,
             status,
+            hold_reason,
             summary: self.summary.clone(),
             blocker: self.blocker.clone(),
             automatic_continuation: self.continuation.is_automatic()
@@ -361,6 +394,8 @@ pub struct AgentWorkspaceRepairOperationSnapshot {
     pub source: AgentWorkspaceRepairSource,
     pub stage: AgentWorkspaceRepairOperationStage,
     pub status: AgentWorkspaceRepairOperationStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold_reason: Option<AgentWorkspaceRepairOperationHoldReason>,
     pub summary: Option<String>,
     pub blocker: Option<String>,
     pub automatic_continuation: bool,
