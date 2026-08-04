@@ -551,6 +551,7 @@ jobs:
               'test(release_notes_commands) or ' \
               'test(agent_workspace_repair_auto_publish) or ' \
               'test(agent_workspace_pr_review_notifications) or ' \
+              'test(agent_conversation_start_team_exit) or ' \
               'test(metrics_commands) or ' \
               'test(metrics_delivery_trends) or ' \
               'test(metrics_integration) or ' \
