@@ -664,7 +664,7 @@
     {
       "name": "dependency:added",
       "file": "src-tauri/src/http_server/helpers.rs",
-      "line": 192,
+      "line": 191,
       "kind": "wrapper"
     },
     {
@@ -778,7 +778,7 @@
     {
       "name": "ideation:finalize_pending_confirmation",
       "file": "src-tauri/src/http_server/helpers.rs",
-      "line": 994,
+      "line": 993,
       "kind": "wrapper"
     },
     {
@@ -1132,13 +1132,13 @@
     {
       "name": "proposal:archived",
       "file": "src-tauri/src/http_server/helpers.rs",
-      "line": 860,
+      "line": 859,
       "kind": "wrapper"
     },
     {
       "name": "proposal:created",
       "file": "src-tauri/src/http_server/helpers.rs",
-      "line": 367,
+      "line": 366,
       "kind": "wrapper"
     },
     {
@@ -1162,7 +1162,7 @@
     {
       "name": "proposal:updated",
       "file": "src-tauri/src/http_server/helpers.rs",
-      "line": 610,
+      "line": 609,
       "kind": "wrapper"
     },
     {

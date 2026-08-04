@@ -644,6 +644,9 @@ mod v20260804105225_remote_resume_requests_tests;
 mod v20260804120000_remote_plan_approval_requests;
 #[cfg(test)]
 mod v20260804120000_remote_plan_approval_requests_tests;
+mod v20260805120000_remote_finalize_decision_requests;
+#[cfg(test)]
+mod v20260805120000_remote_finalize_decision_requests_tests;
 #[cfg(test)]
 pub(super) fn migrate_scripted_agent_workflows_for_test(conn: &Connection) -> AppResult<()> {
     v20260715194617_scripted_agent_workflows::migrate(conn)
@@ -738,7 +741,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260804105225;
+pub const SCHEMA_VERSION: i64 = 20260805120000;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -2023,6 +2026,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260804120000,
         name: "remote_plan_approval_requests",
         migrate: v20260804120000_remote_plan_approval_requests::migrate,
+    },
+    Migration {
+        version: 20260805120000,
+        name: "remote_finalize_decision_requests",
+        migrate: v20260805120000_remote_finalize_decision_requests::migrate,
     },
 ];
 

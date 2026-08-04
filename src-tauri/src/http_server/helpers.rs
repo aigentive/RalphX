@@ -10,8 +10,7 @@ use crate::application::git_service::GitService;
 use crate::application::task_context_service::resolve_task_blueprint_artifact_id;
 use crate::application::{AppState, CreateProposalOptions, UpdateProposalOptions, UpdateSource};
 use crate::commands::ideation_commands::{
-    apply_pending_proposals_core, apply_proposals_core, is_local_proposal, ApplyProposalsInput,
-    TaskProposalResponse,
+    apply_proposals_core, is_local_proposal, ApplyProposalsInput, TaskProposalResponse,
 };
 use crate::domain::entities::{
     AcceptanceStatus, Artifact, ArtifactContent, ArtifactSummary, ArtifactType,
@@ -1130,36 +1129,10 @@ pub async fn apply_pending_proposals_core_for_session(
     state: &AppState,
     session_id: &str,
 ) -> AppResult<crate::commands::ideation_commands::ApplyProposalsResult> {
-    let session_id_typed = IdeationSessionId::from_string(session_id.to_string());
-
-    let _session = state
-        .ideation_session_repo
-        .get_by_id(&session_id_typed)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("Session {} not found", session_id)))?;
-
-    let all_proposals = state
-        .task_proposal_repo
-        .get_by_session(&session_id_typed)
-        .await?;
-    let active_proposals: Vec<_> = all_proposals
-        .into_iter()
-        .filter(|p| p.archived_at.is_none())
-        .collect();
-
-    let proposal_ids: Vec<String> = active_proposals
-        .into_iter()
-        .map(|p| p.id.as_str().to_string())
-        .collect();
-
-    let input = ApplyProposalsInput {
-        session_id: session_id.to_string(),
-        proposal_ids,
-        target_column: "auto".to_string(),
-        base_branch_override: None,
-    };
-
-    apply_pending_proposals_core(state, input).await
+    crate::application::ideation_finalize_execution::apply_pending_proposals_core_for_session(
+        state, session_id,
+    )
+    .await
 }
 
 // ============================================================================

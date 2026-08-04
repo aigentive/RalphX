@@ -674,6 +674,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     capabilities: [],
     pins: [],
   },
+  "get_remote_ideation_finalize_request": {
+    opClass: "read",
+    argumentSensitive: false,
+    capabilities: [],
+    pins: [],
+  },
   "get_remote_plan_approval_request": {
     opClass: "read",
     argumentSensitive: false,
@@ -1215,6 +1221,12 @@ export const REMOTE_FACADE_OPS: Readonly<Record<string, RemoteFacadeOp>> = {
     pins: [],
   },
   "request_remote_group_resume": {
+    opClass: "agentControl",
+    argumentSensitive: false,
+    capabilities: ["seedsSpawnTriggeringState"],
+    pins: [],
+  },
+  "request_remote_ideation_finalize_decision": {
     opClass: "agentControl",
     argumentSensitive: false,
     capabilities: ["seedsSpawnTriggeringState"],

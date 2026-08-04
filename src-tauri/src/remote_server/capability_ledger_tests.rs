@@ -1058,13 +1058,18 @@ fn detector_b_is_calibrated_and_floor_enforced() {
         // `remote-execution-resume` / `remote-task-action` surfaces; all six remain silent on
         // (a)/(c), with the host-owned dispatcher as the only caller of the denied local seams.
         // 575 -> 576: `set_agent_conversation_workspace_review_automation`, main's #965
-        // 576 -> 578: remote plan-approval request twin plus its poll read (Wave B2a).
         // per-conversation Auto Review & Fix override setter, classified at the merge: a clean
         // fail-closed repo write whose response projection reaches CLI resolution through
         // `agent_workspace_response_for_state`'s repair recovery, so its ledger row sits at the
         // process floor (Elevated, PROCESS_AND_SEEDS). A census-count change, not a detector
         // change.
-        578,
+        // 576 -> 578: remote plan-approval request twin plus its poll read (Wave B2a). The
+        // write is a detector-(b) member through the `remote-plan-approval` surface; both are
+        // silent on (a)/(c).
+        // 578 -> 580: remote ideation finalize-decision twin plus its poll read (Wave B2b),
+        // same shape through the `remote-finalize-decision` surface; the host-owned dispatcher
+        // is the only caller of the re-homed apply seam.
+        580,
         "review the detector against the full command census"
     );
     let flagged = spawn_triggering_writers(
@@ -7567,4 +7572,3 @@ fn zz_temp_probe_loop_ids() {
         }
     }
 }
-

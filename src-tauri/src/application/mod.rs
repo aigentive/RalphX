@@ -136,6 +136,8 @@ pub mod http_shutdown;
 #[cfg(test)]
 mod http_shutdown_tests;
 pub mod ideation_effort_bootstrap;
+pub mod ideation_finalize_execution;
+pub mod ideation_finalize_types;
 pub mod ideation_harness_availability;
 pub mod ideation_model_bootstrap;
 pub mod ideation_service;
@@ -215,6 +217,7 @@ pub mod recovery_queue;
 pub mod remote_environment_service;
 pub mod remote_event_relay;
 pub mod remote_plan_approval_intent;
+pub mod remote_finalize_decision_intent;
 pub mod remote_resume_intent;
 pub mod resume_validator;
 pub mod review_issue_service;
@@ -244,6 +247,8 @@ mod standalone_workspace_tests;
 pub mod startup_background;
 #[cfg(test)]
 mod startup_remote_plan_tests;
+#[cfg(test)]
+mod startup_remote_finalize_tests;
 #[cfg(test)]
 mod startup_remote_resume_tests;
 pub mod startup_bootstrap;

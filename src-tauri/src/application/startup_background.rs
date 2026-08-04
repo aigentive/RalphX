@@ -1347,6 +1347,16 @@ pub(crate) fn spawn_remote_resume_dispatchers(
         {
             tracing::error!(%error, "remote plan-approval stale sweep failed");
         }
+        // `Starting` rows older than this at boot are swept to `FailedStale` and NEVER auto-respawned:
+        // a lost race between a dead claim and a re-spawn is a double-conversation factory, so we fail
+        // closed and let the user retry explicitly.
+        if let Err(error) = state
+            .remote_finalize_decision_request_repo
+            .fail_stale(cutoff, now)
+            .await
+        {
+            tracing::error!(%error, "remote finalize-decision stale sweep failed");
+        }
         let mut interval = tokio::time::interval(Duration::from_secs(2));
         interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
@@ -1368,8 +1378,122 @@ pub(crate) fn spawn_remote_resume_dispatchers(
             if let Err(error) = dispatch_one_remote_plan_approval(&state).await {
                 tracing::warn!(%error, "remote plan-approval dispatch failed");
             }
+            if let Err(error) =
+                dispatch_one_remote_finalize_decision(&state, &execution_state, Some(&app_handle))
+                    .await
+            {
+                tracing::warn!(%error, "remote finalize-decision dispatch failed");
+            }
         }
     });
+}
+
+pub(crate) async fn dispatch_one_remote_finalize_decision(
+    state: &AppState,
+    execution: &Arc<ExecutionState>,
+    app: Option<&tauri::AppHandle>,
+) -> AppResult<()> {
+    use crate::application::remote_finalize_decision_intent::{
+        REMOTE_FINALIZE_AUTHORITY_CHANGED, REMOTE_FINALIZE_HOST_FAILED, REMOTE_FINALIZE_NOT_PENDING,
+    };
+    use crate::domain::entities::{
+        AcceptanceStatus, IdeationSessionStatus, RemoteFinalizeDecision,
+    };
+    let Some(row) = state
+        .remote_finalize_decision_request_repo
+        .claim_pending(chrono::Utc::now())
+        .await?
+    else {
+        return Ok(());
+    };
+    let Some(session) = state
+        .ideation_session_repo
+        .get_by_id(&row.session_id)
+        .await?
+    else {
+        state
+            .remote_finalize_decision_request_repo
+            .fail(
+                &row.id,
+                REMOTE_FINALIZE_AUTHORITY_CHANGED,
+                chrono::Utc::now(),
+            )
+            .await?;
+        return Ok(());
+    };
+    if session.status != IdeationSessionStatus::Active {
+        state
+            .remote_finalize_decision_request_repo
+            .fail(
+                &row.id,
+                REMOTE_FINALIZE_AUTHORITY_CHANGED,
+                chrono::Utc::now(),
+            )
+            .await?;
+        return Ok(());
+    }
+    if session.acceptance_status != Some(AcceptanceStatus::Pending) {
+        state
+            .remote_finalize_decision_request_repo
+            .fail(&row.id, REMOTE_FINALIZE_NOT_PENDING, chrono::Utc::now())
+            .await?;
+        return Ok(());
+    }
+    let result = match row.decision {
+        RemoteFinalizeDecision::Accept => {
+            match crate::application::ideation_finalize_execution::apply_pending_proposals_core_for_session(
+                state,
+                row.session_id.as_str(),
+            ).await {
+                Ok(value) => Ok((
+                    serialize_remote_dispatch_result_or_null(
+                        value.created_task_ids,
+                        "ideation finalize accept",
+                        &row.id,
+                    ),
+                    value.any_ready_tasks,
+                )),
+                Err(crate::error::AppError::Validation(message))
+                    if message == crate::application::ideation_finalize_execution::SESSION_NO_LONGER_AWAITING_ACCEPTANCE =>
+                {
+                    Err(REMOTE_FINALIZE_NOT_PENDING)
+                }
+                Err(error @ (crate::error::AppError::Database(_)
+                    | crate::error::AppError::Infrastructure(_))) => return Err(error),
+                Err(error) => {
+                    tracing::warn!(request_id=%row.id,%error,"remote finalize accept host seam failed");
+                    Err(REMOTE_FINALIZE_HOST_FAILED)
+                }
+            }
+        }
+        RemoteFinalizeDecision::Reject => match state.ideation_session_repo
+            .update_acceptance_status(&row.session_id, Some(AcceptanceStatus::Pending), None).await {
+            Ok(true) => Ok((serde_json::json!({"status": "rejected", "sessionId": row.session_id.as_str()}), false)),
+            Ok(false) => Err(REMOTE_FINALIZE_NOT_PENDING),
+            Err(error) => return Err(error),
+        },
+    };
+    match result {
+        Ok((value, any_ready_tasks)) => {
+            state
+                .remote_finalize_decision_request_repo
+                .complete(&row.id, value, chrono::Utc::now())
+                .await?;
+            crate::application::spawn_ready_task_scheduler_if_needed(
+                state,
+                Arc::clone(execution),
+                app.cloned(),
+                any_ready_tasks,
+            );
+        }
+        Err(code) => {
+            state
+                .remote_finalize_decision_request_repo
+                .fail(&row.id, code, chrono::Utc::now())
+                .await?
+        }
+    }
+    Ok(())
 }
 
 pub(crate) async fn dispatch_one_remote_plan_approval(state: &AppState) -> AppResult<()> {

@@ -1421,6 +1421,22 @@ crate::remote_commands! {
         call: async,
         result: fallible,
     },
+    "request_remote_ideation_finalize_decision"
+        => crate::commands::remote_ideation_commands::request_remote_ideation_finalize_decision {
+        class: AgentControl,
+        caps: [SeedsSpawnTriggeringState],
+        params: [(arg input: crate::commands::remote_ideation_commands::RequestRemoteFinalizeDecisionInput), (app_state)],
+        call: async,
+        result: fallible,
+    },
+    "get_remote_ideation_finalize_request"
+        => crate::commands::remote_ideation_commands::get_remote_ideation_finalize_request {
+        class: Read,
+        caps: [],
+        params: [(arg request_id: String), (app_state)],
+        call: async,
+        result: fallible,
+    },
 
     // The client's post-submit poll target for the stop intent. Pure repository read.
     "get_remote_agent_stop_request"
