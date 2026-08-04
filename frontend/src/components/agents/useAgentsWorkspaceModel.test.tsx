@@ -245,6 +245,47 @@ describe("useAgentsWorkspaceModel", () => {
     expect(result.current.focusedWorkspaceReviewServiceTier).toBe("fast");
   });
 
+  it("uses only transient explicit composer intent ahead of hydrated review metadata", () => {
+    const { result } = renderHook(
+      () =>
+        useAgentsWorkspaceModel({
+          activeConversation: projectConversation(),
+          composerRuntimeOverridesByConversationId: {
+            "review-conversation-1": {
+              provider: "claude",
+              modelId: "sonnet",
+              effort: "high",
+            },
+          },
+          focusedWorkspaceReviewConversation: projectConversation({
+            id: "review-conversation-1",
+            providerHarness: "codex",
+            logicalModel: "gpt-5.5",
+            logicalEffort: "high",
+          }),
+          focusedWorkspaceReviewConversationId: "review-conversation-1",
+          modelRegistry: AGENT_MODEL_CATALOG,
+          optimisticWorkspacesByConversationId: {},
+          runtimeByConversationId: {
+            "review-conversation-1": {
+              provider: "claude",
+              modelId: "sonnet",
+              effort: "high",
+            },
+          },
+          selectedConversationId: "conversation-1",
+          workspaceReviewerRuntime: null,
+        }),
+      { wrapper: wrapper() },
+    );
+
+    expect(result.current.normalizedActiveRuntime).toEqual({
+      provider: "claude",
+      modelId: "sonnet",
+      effort: "high",
+    });
+  });
+
   it("normalizes remembered Codex Ultra effort before alias-aware send checks", () => {
     const { result } = renderHook(
       () =>

@@ -94,7 +94,7 @@ function controlsArgs(overrides: Partial<ControlsArgs> = {}): ControlsArgs {
     runtimeConversationId: "conversation-1",
     runtimeByConversationId: {},
     selectedConversationId: "conversation-1",
-    setRuntimeForConversation: vi.fn(),
+    setComposerRuntimeForConversation: vi.fn(),
     ...overrides,
   };
 }
@@ -160,7 +160,7 @@ describe("useAgentsActiveComposerControls", () => {
             modelId: "sonnet",
             effort: "medium",
           },
-          setRuntimeForConversation,
+          setComposerRuntimeForConversation: setRuntimeForConversation,
         }),
       ),
     );
@@ -195,13 +195,16 @@ describe("useAgentsActiveComposerControls", () => {
             modelId: "opus",
             effort: "high",
           },
-          setRuntimeForConversation,
+          setComposerRuntimeForConversation: setRuntimeForConversation,
         }),
       ),
     );
 
+    let committedRuntime: ReturnType<
+      typeof result.current.handleActiveProviderChange
+    >;
     act(() => {
-      result.current.handleActiveProviderChange("codex", [
+      committedRuntime = result.current.handleActiveProviderChange("codex", [
         "low",
         "medium",
         "high",
@@ -218,6 +221,11 @@ describe("useAgentsActiveComposerControls", () => {
         effort: "xhigh",
       },
     );
+    expect(committedRuntime!).toEqual({
+      provider: "codex",
+      modelId: "gpt-5.5",
+      effort: "xhigh",
+    });
   });
 
   it("normalizes review provider changes through the provider default catalog", () => {
@@ -231,7 +239,7 @@ describe("useAgentsActiveComposerControls", () => {
             effort: "medium",
           },
           runtimeConversationId: "review-conversation-1",
-          setRuntimeForConversation,
+          setComposerRuntimeForConversation: setRuntimeForConversation,
         }),
       ),
     );
@@ -263,7 +271,7 @@ describe("useAgentsActiveComposerControls", () => {
         controlsArgs({
           runtimeConversationId: null,
           selectedConversationId: null,
-          setRuntimeForConversation,
+          setComposerRuntimeForConversation: setRuntimeForConversation,
         }),
       ),
     );
@@ -278,6 +286,37 @@ describe("useAgentsActiveComposerControls", () => {
     });
 
     expect(setRuntimeForConversation).not.toHaveBeenCalled();
+  });
+
+  it("commits a private conversation runtime without project-scoped memory", () => {
+    const setComposerRuntimeForConversation = vi.fn();
+    const { result } = renderHook(() =>
+      useAgentsActiveComposerControls(
+        controlsArgs({
+          activeProjectId: null,
+          defaultProjectId: null,
+          setComposerRuntimeForConversation,
+        }),
+      ),
+    );
+
+    let committedRuntime: ReturnType<
+      typeof result.current.handleActiveProviderChange
+    >;
+    act(() => {
+      committedRuntime = result.current.handleActiveProviderChange("claude");
+    });
+
+    expect(committedRuntime!).toEqual({
+      provider: "claude",
+      modelId: "sonnet",
+      effort: "medium",
+    });
+    expect(setComposerRuntimeForConversation).toHaveBeenCalledWith(
+      "conversation-1",
+      null,
+      committedRuntime!,
+    );
   });
 
   it("updates the selected capability for the active project conversation", async () => {
@@ -387,7 +426,7 @@ describe("useAgentsActiveComposerControls", () => {
             modelId: "opus",
             effort: "high",
           },
-          setRuntimeForConversation,
+          setComposerRuntimeForConversation: setRuntimeForConversation,
         }),
       ),
     );
