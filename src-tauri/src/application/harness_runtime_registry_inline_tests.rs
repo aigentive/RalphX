@@ -1,4 +1,5 @@
 use super::*;
+use crate::application::harness_runtime_test_support::HARNESS_RUNTIME_TEST_MUTEX;
 use std::ffi::OsStr;
 use tempfile::TempDir;
 

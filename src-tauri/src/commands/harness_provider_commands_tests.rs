@@ -1,7 +1,8 @@
 use crate::application::harness_runtime_registry::{
     clear_harness_runtime_caches_for_tests, refresh_harness_runtime_probe_with_force,
-    HarnessRuntimeProbe, HARNESS_RUNTIME_TEST_MUTEX,
+    HarnessRuntimeProbe,
 };
+use crate::application::harness_runtime_test_support::HARNESS_RUNTIME_TEST_MUTEX;
 use crate::application::managed_provider_cli::override_managed_codex_binary_path_for_tests;
 use crate::application::{AppState, AGENT_LANES};
 use crate::domain::agents::{

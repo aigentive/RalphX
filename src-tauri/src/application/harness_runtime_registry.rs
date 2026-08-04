@@ -282,8 +282,6 @@ static HARNESS_RUNTIME_REFRESH_CACHE: OnceLock<
 static HARNESS_RUNTIME_PROBE_IN_FLIGHT: OnceLock<
     Mutex<HashMap<AgentHarnessKind, Arc<HarnessRuntimeProbeInFlight>>>,
 > = OnceLock::new();
-#[cfg(test)]
-pub(crate) static HARNESS_RUNTIME_TEST_MUTEX: Mutex<()> = Mutex::new(());
 static CHAT_HARNESS_CLI_CACHE: OnceLock<
     Mutex<HashMap<(AgentHarnessKind, PathBuf), Result<ResolvedChatHarnessCli, String>>>,
 > = OnceLock::new();

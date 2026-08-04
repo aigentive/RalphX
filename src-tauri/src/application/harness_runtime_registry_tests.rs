@@ -9,6 +9,8 @@ use std::ffi::OsStr;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
+use super::harness_runtime_test_support::HARNESS_RUNTIME_TEST_MUTEX;
+
 struct EnvGuard {
     key: &'static str,
     original: Option<std::ffi::OsString>,
@@ -118,7 +120,7 @@ fn set_modified_time(path: &Path, modified: SystemTime) {
 
 #[cfg(unix)]
 fn with_fake_harness_binaries(test: impl FnOnce(&Path, &Path)) {
-    let _runtime_lock = super::harness_runtime_registry::HARNESS_RUNTIME_TEST_MUTEX
+    let _runtime_lock = HARNESS_RUNTIME_TEST_MUTEX
         .lock()
         .expect("harness runtime mutex");
     let _env_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
@@ -236,7 +238,7 @@ fn probe_harness_keeps_existing_no_refresh_cache_behavior() {
 #[cfg(unix)]
 #[test]
 fn refresh_supported_harnesses_reprobes_claude_aliases_after_cli_update() {
-    let _runtime_lock = super::harness_runtime_registry::HARNESS_RUNTIME_TEST_MUTEX
+    let _runtime_lock = HARNESS_RUNTIME_TEST_MUTEX
         .lock()
         .expect("harness runtime mutex");
     let _env_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX

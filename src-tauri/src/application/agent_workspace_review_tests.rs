@@ -20,6 +20,7 @@ use crate::domain::services::{QueueKey, QueuedMessage};
 use crate::infrastructure::MockAgenticClient;
 use std::collections::BTreeSet;
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc as StdArc, Mutex as StdMutex};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -44,6 +45,57 @@ struct WorkspaceReviewGitLaneEvent {
 
 struct WorkspaceReviewGitLaneLayer {
     captured: StdArc<StdMutex<Vec<WorkspaceReviewGitLaneEvent>>>,
+}
+
+struct WorkspaceReviewGitWriteTreeGateLayer {
+    completed_write_trees: AtomicUsize,
+    reached: std::sync::mpsc::SyncSender<()>,
+    resume: StdMutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl<S: tracing::Subscriber> Layer<S> for WorkspaceReviewGitWriteTreeGateLayer {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        #[derive(Default)]
+        struct CommandVisitor {
+            command: Option<String>,
+        }
+
+        impl tracing::field::Visit for CommandVisitor {
+            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                if field.name() == "command" {
+                    self.command = Some(value.to_string());
+                }
+            }
+
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "command" {
+                    self.command = Some(format!("{value:?}").replace('"', ""));
+                }
+            }
+        }
+
+        let mut visitor = CommandVisitor::default();
+        event.record(&mut visitor);
+        if visitor.command.as_deref() != Some("write-tree") {
+            return;
+        }
+        let completed = self.completed_write_trees.fetch_add(1, Ordering::SeqCst) + 1;
+        if completed != 2 {
+            return;
+        }
+        self.reached
+            .send(())
+            .expect("fingerprint test should wait for the final settle check");
+        self.resume
+            .lock()
+            .expect("fingerprint resume receiver lock should remain available")
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("fingerprint test should resume the final settle check");
+    }
 }
 
 impl<S: tracing::Subscriber> Layer<S> for WorkspaceReviewGitLaneLayer {
@@ -916,14 +968,31 @@ async fn workspace_delta_fingerprint_rejects_conflicted_index_created_during_res
     git(&repo, &["add", "README.md"]);
     git(&repo, &["commit", "-m", "main change"]);
 
-    let gate = StdArc::new(tokio::sync::Barrier::new(2));
-    workspace_delta_fingerprint_test_hook::set(&repo, StdArc::clone(&gate));
+    let (reached_tx, reached_rx) = std::sync::mpsc::sync_channel(1);
+    let (resume_tx, resume_rx) = std::sync::mpsc::sync_channel(1);
     let fingerprint_repo = repo.clone();
-    let fingerprint_task = tokio::spawn(async move {
-        workspace_delta_tree_fingerprints(&fingerprint_repo, &base_sha).await
+    let fingerprint_task = std::thread::spawn(move || {
+        let subscriber =
+            tracing_subscriber::registry().with(WorkspaceReviewGitWriteTreeGateLayer {
+                completed_write_trees: AtomicUsize::new(0),
+                reached: reached_tx,
+                resume: StdMutex::new(resume_rx),
+            });
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("fingerprint test runtime should build");
+        tracing::subscriber::with_default(subscriber, || {
+            runtime.block_on(workspace_delta_tree_fingerprints(
+                &fingerprint_repo,
+                &base_sha,
+            ))
+        })
     });
 
-    gate.wait().await;
+    reached_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("fingerprinting should pause before the final settle check");
     let merge = Command::new("git")
         .args(["merge", "conflict-source"])
         .current_dir(&repo)
@@ -948,16 +1017,17 @@ async fn workspace_delta_fingerprint_rejects_conflicted_index_created_during_res
             .is_empty(),
         "test precondition requires an unmerged index"
     );
-    gate.wait().await;
+    resume_tx
+        .send(())
+        .expect("fingerprint test should resume the final settle check");
 
     let error = match fingerprint_task
-        .await
+        .join()
         .expect("fingerprint task should join")
     {
         Ok(_) => panic!("a conflicted index created mid-fingerprint must be rejected"),
         Err(error) => error,
     };
-    workspace_delta_fingerprint_test_hook::clear(&repo);
     assert!(matches!(
         error,
         AppError::WorkspaceReviewUnfinishedGitOperation
