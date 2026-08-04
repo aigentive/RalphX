@@ -21,7 +21,7 @@ use super::{
     get_agent_timeline_item_tool_call_detail_for_app_state, hidden_user_message_metadata,
     invalidate_agent_workspace_freshness_cache, list_agent_conversations_page,
     load_delegated_tool_runtime_snapshot, mark_agent_workspace_failure_with_routing_and_action,
-    mark_agent_workspace_publish_failure_with_target,
+    mark_agent_workspace_publish_failure_with_target, mark_agent_workspace_publish_status,
     mark_agent_workspace_update_failure_with_target, merge_delegated_snapshot_into_result,
     normalize_agent_runtime_selection, normalize_agent_workspace_source_pull_request,
     normalize_explicit_publish_base_selection, normalized_effort_for_supported,
@@ -39,6 +39,7 @@ use super::{
     set_agent_conversation_workspace_auto_publish_for_state,
     set_agent_conversation_workspace_pr_supervision_for_state,
     set_agent_conversation_workspace_review_automation_for_state,
+    settle_agent_workspace_publish_lease_status,
     should_defer_agent_workspace_repair_message_for_registry,
     spawn_deferred_agent_workspace_repair_message, store_agent_workspace_freshness,
     switch_agent_conversation_mode_for_state,
@@ -158,6 +159,136 @@ fn hidden_user_message_metadata_suppresses_visible_chat_message() {
     assert_eq!(metadata["persist_hidden_marker"], true);
     assert_eq!(metadata["hidden_from_ui"], true);
     assert_eq!(metadata["recovery_context"], true);
+}
+
+#[tokio::test]
+async fn terminal_publish_and_repair_handoff_statuses_release_the_owned_lease() {
+    let state = AppState::new_test();
+    let workspace = command_test_workspace();
+    let conversation_id = workspace.conversation_id.clone();
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should seed");
+    let operation_scope =
+        crate::application::agent_workspace_publish_lease::begin_publish_operation_scope(
+            &conversation_id,
+        );
+    mark_agent_workspace_publish_status(&state, &workspace, "checking", &operation_scope)
+        .await
+        .expect("publish operation should claim its lease");
+    mark_agent_workspace_publish_status(&state, &workspace, "refreshed", &operation_scope)
+        .await
+        .expect("successful update should settle its lease");
+    let refreshed = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace should load")
+        .expect("workspace should exist");
+    assert_eq!(refreshed.publish_lease_token, None);
+    assert_eq!(
+        refreshed.publication_push_status.as_deref(),
+        Some("refreshed")
+    );
+
+    state
+        .agent_conversation_workspace_repo
+        .claim_publish_lease(
+            &conversation_id,
+            &format!("publish-operation:{conversation_id}"),
+            "repair-handoff-token",
+            chrono::Utc::now(),
+            None,
+            false,
+        )
+        .await
+        .expect("repair handoff lease should seed");
+    settle_agent_workspace_publish_lease_status(
+        &state,
+        &workspace,
+        "needs_agent",
+        Some("repair-handoff-token"),
+    )
+    .await
+    .expect("repair handoff should settle its lease");
+    let handed_off = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace should load")
+        .expect("workspace should exist");
+    assert_eq!(handed_off.publish_lease_owner_run_id, None);
+    assert_eq!(handed_off.publish_lease_token, None);
+    assert_eq!(
+        handed_off.publication_push_status.as_deref(),
+        Some("needs_agent")
+    );
+}
+
+#[tokio::test]
+async fn terminal_status_without_an_owned_token_preserves_a_live_foreign_lease() {
+    let state = AppState::new_test();
+    let workspace = command_test_workspace();
+    let conversation_id = workspace.conversation_id.clone();
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should seed");
+    state
+        .agent_conversation_workspace_repo
+        .claim_publish_lease(
+            &conversation_id,
+            &format!("publish-operation:{conversation_id}"),
+            "live-owner-token",
+            chrono::Utc::now(),
+            None,
+            false,
+        )
+        .await
+        .expect("live owner lease should seed");
+
+    settle_agent_workspace_publish_lease_status(&state, &workspace, "failed", None)
+        .await
+        .expect("non-owner failure status should still persist");
+
+    let refreshed = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace should load")
+        .expect("workspace should exist");
+    assert_eq!(
+        refreshed.publish_lease_token.as_deref(),
+        Some("live-owner-token"),
+        "a pre-claim failure must not clear another operation's live lease"
+    );
+    assert_eq!(refreshed.publication_push_status.as_deref(), Some("failed"));
+
+    let competing_scope =
+        crate::application::agent_workspace_publish_lease::begin_publish_operation_scope(
+            &conversation_id,
+        );
+    mark_agent_workspace_publish_status(&state, &workspace, "no_changes", &competing_scope)
+        .await
+        .expect("non-owner terminal status should remain a lease no-op");
+    let refreshed = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace should reload")
+        .expect("workspace should exist");
+    assert_eq!(
+        refreshed.publish_lease_token.as_deref(),
+        Some("live-owner-token"),
+        "a competing operation must not release the row's current token"
+    );
+    assert_eq!(
+        refreshed.publication_push_status.as_deref(),
+        Some("no_changes")
+    );
 }
 
 fn workspace_for_runtime_test(
@@ -2187,6 +2318,143 @@ async fn fixable_publish_failure_routes_repair_and_records_events() {
             && event.status == "succeeded"
             && event.summary == "Sent publish failure to workspace agent"
     }));
+}
+
+#[tokio::test]
+async fn publish_failure_does_not_instruct_agent_when_current_repair_owns_head_redrive() {
+    let state = AppState::new_test();
+    let (_temp, workspace, target) = command_test_workspace_with_git_target();
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    let ready = seed_ready_command_repair_attempt(
+        &state,
+        &workspace,
+        AgentWorkspaceRepairContinuation::Publish,
+    )
+    .await;
+    let mut redrive = ready.clone();
+    redrive.repair_head_commit = Some("validated-unpublished-repair-head".to_string());
+    redrive
+        .pending_reasons
+        .push("pr_autofix_head_redrive:validated-unpublished-repair-head".to_string());
+    redrive.updated_at += chrono::Duration::microseconds(1);
+    let redrive = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: redrive,
+            expected_phase: AgentWorkspaceRepairPhase::Ready,
+            expected_updated_at: ready.updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Ready,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("authorize durable head redrive")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("head-redrive checkpoint must apply, got {outcome:?}"),
+    };
+    state
+        .agent_conversation_workspace_repo
+        .claim_publish_lease(
+            &workspace.conversation_id,
+            &format!("publish-operation:{}", workspace.conversation_id),
+            "failed-redrive-token",
+            chrono::Utc::now(),
+            None,
+            false,
+        )
+        .await
+        .expect("failed redrive lease should seed");
+    let active_operation =
+        crate::application::agent_workspace_publish_lease::begin_publish_operation_scope(
+            &workspace.conversation_id,
+        );
+    crate::application::agent_workspace_publish_lease::
+        spawn_publish_operation_lease_heartbeat_for_scope(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            workspace.conversation_id.clone(),
+            "failed-redrive-token".to_string(),
+            &active_operation,
+        );
+    let service = MockChatService::new();
+
+    mark_agent_workspace_failure_with_routing_and_action(
+        &state,
+        &workspace,
+        "push transport reported an interrupted publish",
+        None,
+        &service,
+        true,
+        &target,
+        AgentWorkspacePostRepairAction::Publish,
+        false,
+    )
+    .await;
+
+    let live_workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&workspace.conversation_id)
+        .await
+        .expect("load live-operation workspace")
+        .expect("live-operation workspace exists");
+    assert_eq!(
+        live_workspace.publish_lease_token.as_deref(),
+        Some("failed-redrive-token"),
+        "durable suppression must not release a live operation's lease"
+    );
+    drop(active_operation);
+
+    mark_agent_workspace_failure_with_routing_and_action(
+        &state,
+        &workspace,
+        "push transport reported an interrupted publish",
+        None,
+        &service,
+        true,
+        &target,
+        AgentWorkspacePostRepairAction::Publish,
+        false,
+    )
+    .await;
+
+    assert!(
+        service.get_sent_messages().await.is_empty(),
+        "the durable publisher owns this continuation, so no agent must be told to replay it"
+    );
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&workspace.conversation_id)
+        .await
+        .expect("load current repair")
+        .expect("current head redrive remains durable");
+    assert_eq!(current.id, redrive.id);
+    assert_eq!(current.generation, redrive.generation);
+    assert_eq!(current.updated_at, redrive.updated_at);
+    let settled_workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&workspace.conversation_id)
+        .await
+        .expect("load settled workspace")
+        .expect("settled workspace exists");
+    assert_eq!(settled_workspace.publish_lease_owner_run_id, None);
+    assert_eq!(settled_workspace.publish_lease_token, None);
+    assert_eq!(
+        settled_workspace.publication_push_status.as_deref(),
+        Some("needs_agent")
+    );
+    assert!(
+        state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&workspace.conversation_id)
+            .await
+            .expect("list publication events")
+            .is_empty(),
+        "suppression must not append a fake repair-delivery effect"
+    );
 }
 
 #[tokio::test]
