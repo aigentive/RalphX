@@ -217,7 +217,13 @@ impl DelegationParkRepository for MemoryDelegationParkRepo {
         state: DelegationParkState,
         error: Option<&str>,
     ) -> AppResult<()> {
-        if let Some(park) = self.parks.write().await.get_mut(id) {
+        if let Some(park) = self
+            .parks
+            .write()
+            .await
+            .get_mut(id)
+            .filter(|park| park.state == DelegationParkState::Waking)
+        {
             park.state = state;
             park.last_error = error.map(str::to_string);
             park.updated_at = Utc::now();
